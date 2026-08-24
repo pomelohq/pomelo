@@ -16,7 +16,7 @@ export SIGN_ID NOTARY_PROFILE GH_USER_PUBLISH GH_USER_BACK RELEASE_REPO
 
 APP_VERSION = $(shell grep '^const appVersion' cmd/libpom/libpom.go | cut -d'"' -f2)
 
-.PHONY: build dev release install clean test vet check check-strict patch minor major app-publish version-check dmg
+.PHONY: build dev release install clean test vet check check-strict patch minor major app-publish version-check dmg dev-app
 
 # --- Development ---
 
@@ -95,6 +95,14 @@ _release: version-check
 dmg:
 	@DRY_RUN=$(DRY_RUN) bash desktop/PomeloApp/package.sh
 
+# Local dev .app you can actually click through — Debug build, no hardened
+# runtime, adhoc-signed, opens automatically. `make dmg`'s hardened-runtime
+# .app won't launch with an adhoc identity (dyld refuses to load
+# Sparkle.framework across two independently-adhoc-signed binaries); this
+# skips that entirely. Never ship this build.
+dev-app:
+	@bash desktop/PomeloApp/dev-app.sh
+
 # Native app release: build+notarize DMG, then create the pomelo-releases GitHub
 # release with the DMG + Sparkle appcast + checksums (keeps old releases, switches
 # gh accounts). Run after `make patch`. `make app-publish DRY_RUN=1` builds only.
@@ -104,3 +112,4 @@ app-publish: version-check
 clean:
 	rm -f $(BINARY)
 	rm -rf dist/
+	rm -rf desktop/PomeloApp/dist-dev/
