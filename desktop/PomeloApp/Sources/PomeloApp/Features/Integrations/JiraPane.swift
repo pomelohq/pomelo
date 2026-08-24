@@ -11,6 +11,13 @@ struct JiraComment: Decodable, Equatable, Identifiable {
     }
 }
 
+struct JiraWebLink: Decodable, Equatable, Identifiable {
+    var title = ""
+    var url = ""
+    var icon = ""
+    var id: String { url }
+}
+
 struct JiraDetail: Decodable, Equatable {
     var configured = false
     var key = ""
@@ -19,7 +26,13 @@ struct JiraDetail: Decodable, Equatable {
     var url = ""
     var description = ""
     var comments: [JiraComment] = []
+    var webLinks: [JiraWebLink] = []
     var error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case configured, key, summary, status, url, description, comments, error
+        case webLinks = "web_links"
+    }
 }
 
 struct JiraPane: View {
@@ -91,6 +104,9 @@ struct JiraPane: View {
                         } else {
                             MarkdownText(d.description)
                         }
+                        if !d.webLinks.isEmpty {
+                            webLinksSection(d.webLinks)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
@@ -101,6 +117,52 @@ struct JiraPane: View {
                 }
             }
         }
+    }
+
+    private func webLinksSection(_ links: [JiraWebLink]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("WEB LINKS").font(.system(size: 10.5, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
+            VStack(spacing: 0) {
+                ForEach(links) { link in
+                    Button {
+                        if let u = URL(string: link.url) { NSWorkspace.shared.open(u) }
+                    } label: {
+                        HStack(spacing: 8) {
+                            webLinkIcon(link.icon)
+                            Text(link.title.isEmpty ? link.url : link.title)
+                                .font(.system(size: 12.5)).foregroundStyle(Theme.fg).lineLimit(1)
+                            Spacer()
+                            Image(systemName: "arrow.up.forward.square").font(.system(size: 10.5)).foregroundStyle(Theme.dim)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if link.id != links.last?.id {
+                        Divider().overlay(Theme.borderSoft)
+                    }
+                }
+            }
+            .background(Theme.bgSoft, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderSoft, lineWidth: 1))
+        }
+    }
+
+    private func webLinkIcon(_ icon: String) -> some View {
+        Group {
+            if let u = URL(string: icon), !icon.isEmpty {
+                AsyncImage(url: u) { phase in
+                    if let img = phase.image {
+                        img.resizable()
+                    } else {
+                        Image(systemName: "link").foregroundStyle(Theme.dim)
+                    }
+                }
+            } else {
+                Image(systemName: "link").foregroundStyle(Theme.dim)
+            }
+        }
+        .frame(width: 14, height: 14)
     }
 
     private func commentsPane(_ comments: [JiraComment]) -> some View {

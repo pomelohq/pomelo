@@ -177,9 +177,36 @@ type Comment struct {
 	Body    string `json:"body"`
 }
 
+type WebLink struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+	Icon  string `json:"icon"`
+}
+
 type IssueDetail struct {
 	Key, Summary, Status, URL, Description string
 	Comments                               []Comment `json:"comments"`
+	WebLinks                               []WebLink `json:"web_links"`
+}
+
+func (c *Client) RemoteLinks(key string) ([]WebLink, error) {
+	var body []struct {
+		Object struct {
+			URL   string `json:"url"`
+			Title string `json:"title"`
+			Icon  struct {
+				URL16x16 string `json:"url16x16"`
+			} `json:"icon"`
+		} `json:"object"`
+	}
+	if err := c.get("/rest/api/3/issue/"+key+"/remotelink", &body); err != nil {
+		return nil, err
+	}
+	out := make([]WebLink, 0, len(body))
+	for _, l := range body {
+		out = append(out, WebLink{Title: l.Object.Title, URL: l.Object.URL, Icon: l.Object.Icon.URL16x16})
+	}
+	return out, nil
 }
 
 func (c *Client) IssueWithDescription(key string) (*IssueDetail, error) {
@@ -221,11 +248,13 @@ func (c *Client) IssueWithDescription(key string) (*IssueDetail, error) {
 			Author: cm.Author.DisplayName, Created: cm.Created, Body: ADFMarkdown(cm.Body),
 		})
 	}
+	webLinks, _ := c.RemoteLinks(key)
 	return &IssueDetail{
 		Key: key, Summary: body.Fields.Summary, Status: body.Fields.Status.Name,
 		URL:         c.BrowseURL(key),
 		Description: desc,
 		Comments:    comments,
+		WebLinks:    webLinks,
 	}, nil
 }
 

@@ -108,7 +108,7 @@ func (f *Jira) Issue(key string) map[string]any {
 	return map[string]any{
 		"configured": true, "key": d.Key, "summary": d.Summary,
 		"status": d.Status, "url": d.URL, "description": d.Description,
-		"comments": d.Comments,
+		"comments": d.Comments, "web_links": d.WebLinks,
 	}
 }
 
