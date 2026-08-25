@@ -95,10 +95,10 @@ struct ActivityView: View {
                                 let bkey = "b:" + branch
                                 treeHeader(branch, key: bkey, rows: rows, indent: 0, accent: true)
                                 if !collapsed.contains(bkey) {
-                                    ForEach(repoGroups(rows), id: \.0) { repo, svcs in
-                                        let rkey = "r:" + branch + "/" + repo
-                                        treeHeader(repo, key: rkey, rows: svcs, indent: 1, accent: false)
-                                        if !collapsed.contains(rkey) { ForEach(svcs) { procRow($0, indent: 2) } }
+                                    // id must include the branch — every workspace has a "workspace" group; a shared repo id blanks the duplicates in the LazyVStack
+                                    ForEach(repoGroups(rows).map { (rkey: "r:" + branch + "/" + $0.0, repo: $0.0, svcs: $0.1) }, id: \.rkey) { g in
+                                        treeHeader(g.repo, key: g.rkey, rows: g.svcs, indent: 1, accent: false)
+                                        if !collapsed.contains(g.rkey) { ForEach(g.svcs) { procRow($0, indent: 2) } }
                                     }
                                 }
                             }
@@ -147,7 +147,7 @@ struct ActivityView: View {
             HStack(spacing: 8) {
                 Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
                     .font(.system(size: 8)).foregroundStyle(Theme.dim).frame(width: 10)
-                Image(systemName: accent ? "arrow.triangle.branch" : "folder.fill")
+                Image(systemName: accent ? "square.stack.3d.up.fill" : "folder.fill")
                     .font(.system(size: accent ? 10 : 9)).foregroundStyle(accent ? Theme.accent : Theme.fgMuted).frame(width: 14)
                 Text(label).font(Theme.mono(accent ? 11 : 11.5, .semibold)).foregroundStyle(accent ? Theme.accent : Theme.fg).lineLimit(1)
                 Spacer(minLength: 8)
