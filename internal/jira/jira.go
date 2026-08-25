@@ -37,9 +37,6 @@ var httpClient = &http.Client{Timeout: 8 * time.Second}
 
 func Resolve(cfg *config.Config) *Client {
 	site, email, tokenEnv := "", "", ""
-	if cfg != nil && cfg.Jira != nil {
-		site, email, tokenEnv = cfg.Jira.Site, cfg.Jira.Email, cfg.Jira.TokenEnv
-	}
 	session := ""
 	if cfg != nil {
 		session = cfg.Session

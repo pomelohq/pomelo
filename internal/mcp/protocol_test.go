@@ -28,7 +28,7 @@ func TestServeProtocol(t *testing.T) {
 	}, "\n") + "\n"
 
 	var out strings.Builder
-	if err := Serve(strings.NewReader(in), &out, "tncli", "test", tools); err != nil {
+	if err := Serve(strings.NewReader(in), &out, "pomelo", "test", tools); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")

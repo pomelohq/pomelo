@@ -10,7 +10,7 @@ import (
 	"github.com/pomelohq/pomelo/internal/config"
 )
 
-const SharedNetworkName = "tncli-shared"
+const SharedNetworkName = "pomelo-shared"
 
 func CreateDockerNetwork(name string) error { return createDockerNetwork(name) }
 func RemoveDockerNetwork(name string)       { _ = exec.Command("docker", "network", "rm", name).Run() }

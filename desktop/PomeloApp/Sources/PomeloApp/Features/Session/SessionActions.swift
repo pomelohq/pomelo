@@ -4,16 +4,22 @@ import AppKit
 extension AppState {
     func switchSession(_ name: String) {
         Task {
-            let d = await Task.detached { PomCore.shared.sessionSwitch(name: name) }.value
-            struct R: Decodable { var ok = false; var project = ""; var error = "" }
-            let r = PomJSON.decode(R.self, from: d)
-            if let r, r.ok {
-                PomCore.shared.updateSession(r.project.isEmpty ? name : r.project)
-                selection = "main:" + (workspaces.first(where: \.isMain)?.branch ?? "main")
-                await refresh(); await loadSessions(); await refreshConfigHealth()
-            } else {
-                switchError = "Can't switch to “\(name)”: \(r?.error.isEmpty == false ? r!.error : "session unavailable")"
+            // A freshly created session isn't in the cached list yet — reload before failing.
+            if !sessions.contains(where: { $0.name == name }) { await loadSessions() }
+            guard let dir = sessions.first(where: { $0.name == name })?.path, !dir.isEmpty else {
+                switchError = "Can't switch to “\(name)”: session unavailable"
+                return
             }
+            let hasCfg = ["pom.yml"].contains {
+                FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent($0))
+            }
+            guard hasCfg else {
+                switchError = "Can't switch to “\(name)”: no pom.yml in \(dir)"
+                return
+            }
+            // Re-boot into the session's project — the whole FFI/ptyhost/session state is
+            // tied to the booted config, so an in-place cfg swap can't switch it cleanly.
+            bootProject(dir)
         }
     }
 
@@ -44,7 +50,7 @@ struct CreateSessionSheet: View {
                     .font(.system(size: 20)).foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("New session").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.fg)
-                    Text("Clone repos, scaffold a project, and switch to it.")
+                    Text("Clone repos, scaffold a session, and switch to it.")
                         .font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
                 }
                 Spacer()

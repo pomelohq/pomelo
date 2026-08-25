@@ -53,7 +53,7 @@ private struct MCPPane: View {
                     if !listLine.isEmpty {
                         Text(listLine).font(Theme.mono(10.5)).foregroundStyle(Theme.fgMuted).textSelection(.enabled)
                     }
-                    Text("The pom MCP is registered globally so `claude mcp list` and every Claude session (terminal + the in-app work Claude) can use it, resolving the project from the working directory.")
+                    Text("The pom MCP is registered globally so `claude mcp list` and every Claude session (terminal + the in-app work Claude) can use it, resolving the session from the working directory.")
                         .font(.system(size: 11)).foregroundStyle(Theme.fgMuted).fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 8) {

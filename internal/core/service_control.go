@@ -139,7 +139,7 @@ func (s *Server) ServiceControl(ref serviceRef, action string) map[string]any {
 	if s.cfg() == nil {
 		return map[string]any{"ok": false, "error": "no project config loaded"}
 	}
-	session := "tncli_" + s.cfg().Session
+	session := s.cfg().Session
 	var window string
 	var startFn func() error
 
@@ -169,10 +169,11 @@ func (s *Server) ServiceControl(ref serviceRef, action string) map[string]any {
 	switch action {
 	case "stop":
 		stop()
-		go ptyhost.ReapOrphanServices(s.WorkspaceRoot)
+		pp := pomAllocatedPorts()
+		go ptyhost.ReapOrphanServices(s.WorkspaceRoot, pp)
 	case "restart":
 		stop()
-		ptyhost.ReapOrphanServices(s.WorkspaceRoot)
+		ptyhost.ReapOrphanServices(s.WorkspaceRoot, pomAllocatedPorts())
 		if err := startFn(); err != nil {
 			return map[string]any{"ok": false, "error": err.Error()}
 		}
@@ -197,7 +198,7 @@ func (s *Server) doServiceRestart(ref serviceRef) error {
 	if cfg == nil {
 		return fmt.Errorf("no config")
 	}
-	session := "tncli_" + cfg.Session
+	session := cfg.Session
 	cfgRepo, ok := cfg.Repos[ref.Repo]
 	if !ok {
 		return fmt.Errorf("unknown repo %s", ref.Repo)

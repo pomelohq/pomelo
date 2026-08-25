@@ -21,7 +21,6 @@ type Config struct {
 	Environments   map[string]map[string]string `yaml:"environments"`
 	CodeAgents     *CodeAgentsConfig            `yaml:"code_agents"`
 	UI             *UIConfig                    `yaml:"ui"`
-	Jira           *JiraConfig                  `yaml:"jira"`
 	Sync           *SyncConfig                  `yaml:"sync"`
 	Seed           []string                     `yaml:"seed"`
 	PrepareMain    []string                     `yaml:"prepare_main"`
@@ -208,12 +207,6 @@ type UIConfig struct {
 	Editor string `yaml:"editor"`
 }
 
-type JiraConfig struct {
-	Site     string `yaml:"site"`
-	Email    string `yaml:"email"`
-	TokenEnv string `yaml:"token_env"`
-}
-
 type SyncConfig struct {
 	AutoPush           bool `yaml:"auto_push"`
 	IntervalSec        int  `yaml:"interval_sec"`
@@ -342,10 +335,6 @@ type ResolvedService struct {
 	WorkDir  string
 	Env      string
 	PreStart string
-}
-
-func (c *Config) SvcSession() string {
-	return "tncli_" + c.Session
 }
 
 func (c *Config) PrepareMainPhases() []string {
@@ -616,14 +605,14 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Session: "tncli",
+		Session: "pomelo",
 		Repos:   make(map[string]*Dir),
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
 	}
 	if cfg.Session == "" {
-		cfg.Session = "tncli"
+		cfg.Session = "pomelo"
 	}
 
 	extractRepoOrder(cfg, &raw)

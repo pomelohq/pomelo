@@ -16,7 +16,7 @@ export SIGN_ID NOTARY_PROFILE GH_USER_PUBLISH GH_USER_BACK RELEASE_REPO
 
 APP_VERSION = $(shell grep '^const appVersion' cmd/libpom/libpom.go | cut -d'"' -f2)
 
-.PHONY: build dev release install clean test vet check check-strict patch minor major app-publish version-check dmg dev-app
+.PHONY: build dev app app-run release install clean test vet check check-strict patch minor major version-check dmg
 
 # --- Development ---
 
@@ -25,6 +25,13 @@ build:
 
 dev:
 	go build -o $(BINARY) ./cmd/pom/ && ./$(BINARY) $(ARGS)
+
+# Native app dev build (unsigned Debug .app). `make app-run` builds + opens it.
+app:
+	bash desktop/PomeloApp/build.sh
+
+app-run:
+	bash desktop/PomeloApp/build.sh run
 
 test:
 	go test ./...
@@ -54,7 +61,7 @@ install: release
 # ONE version for both the CLI (pom) and the native app; keep the two consts in
 # lockstep (appVersion drives the DMG name + Sparkle appcast). Convention:
 #   patch = bug fix / no new surface   minor = new feature   major = breaking
-# make patch  ->  0.10.8 -> 0.10.9 -> tag -> push   (then: make app-publish)
+# make patch  ->  0.10.8 -> 0.10.9 -> tag -> push   (tag push -> CI publishes)
 # make minor  ->  0.10.8 -> 0.11.0 -> tag -> push
 # make major  ->  0.10.8 ->  1.0.0 -> tag -> push
 
@@ -87,27 +94,14 @@ _release: version-check
 	@echo "v$(NEW_VERSION) tagged & pushed. GitHub Actions (release.yml) now builds"
 	@echo "and publishes the notarized DMG + appcast to the release. Watch:"
 	@echo "  gh run watch --repo pomelohq/pomelo"
-	@echo "(Local fallback without CI: make app-publish)"
 
-# --- Native macOS app (.app → signed + notarized DMG) ---
+# --- Native macOS app (.app → signed DMG, local build only) ---
+# Release is CI-only (push a tag; .github/workflows/release.yml publishes). This
+# target just builds a local DMG for testing — it never publishes.
 # make dmg            -> build + sign + notarize + staple -> desktop/PomeloApp/dist/Pomelo-<v>.dmg
 # make dmg DRY_RUN=1  -> build + sign + assemble DMG, skip notarization
 dmg:
 	@DRY_RUN=$(DRY_RUN) bash desktop/PomeloApp/package.sh
-
-# Local dev .app you can actually click through — Debug build, no hardened
-# runtime, adhoc-signed, opens automatically. `make dmg`'s hardened-runtime
-# .app won't launch with an adhoc identity (dyld refuses to load
-# Sparkle.framework across two independently-adhoc-signed binaries); this
-# skips that entirely. Never ship this build.
-dev-app:
-	@bash desktop/PomeloApp/dev-app.sh
-
-# Native app release: build+notarize DMG, then create the pomelo-releases GitHub
-# release with the DMG + Sparkle appcast + checksums (keeps old releases, switches
-# gh accounts). Run after `make patch`. `make app-publish DRY_RUN=1` builds only.
-app-publish: version-check
-	@DRY_RUN=$(DRY_RUN) RELEASE_NOTES_FILE="$(RELEASE_NOTES_FILE)" RELEASE_NOTES="$(RELEASE_NOTES)" bash scripts/release-app.sh
 
 clean:
 	rm -f $(BINARY)

@@ -29,23 +29,23 @@ guards against drift:
    app touched → `swift build && swift test` in `desktop/PomeloApp`).
 2. **One command:** `make patch` (or `minor` / `major`). Bumps both consts, commits
    `release: v<x>`, tags `v<x>`, pushes to `main`.
-3. That's it — pushing the tag triggers **`.github/workflows/release.yml`** on a
-   GitHub-hosted macOS runner: build → sign → notarize → DMG → Sparkle appcast →
-   publish the `pomelohq/pomelo` GitHub Release with `Pomelo-<x>.dmg` +
-   `appcast.xml` + `checksums.txt`. Watch it: `gh run watch --repo pomelohq/pomelo`.
-4. Bump the docs landing version in `pomelo-docs` (`.vitepress/theme/PomHome.vue`
-   eyebrow), `npm run build`, push.
+3. That's it — pushing the tag triggers **`.github/workflows/release.yml`**, which
+   calls the reusable **`app-build.yml`** (`publish: true`) on a GitHub-hosted
+   `macos-26` runner (Xcode pinned by `.github/actions/setup-xcode`): build → sign →
+   notarize → DMG → Sparkle appcast → publish the `pomelohq/pomelo` GitHub Release
+   with `Pomelo-<x>.dmg` + `appcast.xml` + `checksums.txt`. Watch it:
+   `gh run watch --repo pomelohq/pomelo`.
+
+The docs landing version is **not** bumped by hand — `pomelo-docs`
+(`PomHome.vue`) reads it live from `releases/latest`.
 
 CI needs these repo secrets (Settings ▸ Secrets ▸ Actions): `MACOS_CERT_P12`
 (base64 .p12), `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY`, `KEYCHAIN_PASSWORD`,
 `NOTARY_APPLE_ID`, `NOTARY_APP_PASSWORD`, `NOTARY_TEAM_ID`, `SPARKLE_ED_PRIVATE_KEY`.
 
-## Local fallback (no CI)
-
-`make app-publish` runs the same `package.sh` on your Mac (uses the local
-`pomelo-notary` keychain profile + the keychain EdDSA key) and publishes to
-`pomelohq/pomelo` via `gh`. `make app-publish DRY_RUN=1` builds the DMG without
-publishing.
+Every PR (and push to `main`) runs **`ci.yml`** → the same `app-build.yml` with
+`publish: false`, which compiles the app unsigned as a merge gate. `make dmg`
+builds a local DMG for testing only — there is no local publish path.
 
 ## Rules
 

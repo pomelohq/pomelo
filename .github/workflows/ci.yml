@@ -1,0 +1,22 @@
+name: CI
+
+# On every PR (and pushes to main), compile the app unsigned to prove it builds
+# before it can merge — the same gate that would otherwise only fail at release.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/app-build.yml
+    with:
+      publish: false

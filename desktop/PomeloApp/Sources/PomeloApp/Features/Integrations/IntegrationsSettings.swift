@@ -69,7 +69,7 @@ struct IntegrationsSettings: View {
                     statusDot(data.github.authed, data.github.authed ? "configured" : "no token")
                 }
             } header: { Text("Forge · GitHub") } footer: {
-                Text("Pomelo talks to GitHub directly (no `gh` CLI). A fine-grained PAT with Pull requests: read is enough — stored encrypted app-local (secret `github`), per project. Or export GH_TOKEN in your shell.")
+                Text("Pomelo talks to GitHub directly (no `gh` CLI). A fine-grained PAT with Pull requests: read is enough — stored encrypted app-local (secret `github`), per session. Or export GH_TOKEN in your shell.")
             }
 
             Section {
@@ -109,8 +109,8 @@ struct IntegrationsSettings: View {
             Section {
                 providerPicker("AI Agent", current: "Claude", soon: ["Codex", "Gemini"])
                 providerPicker("Shell", current: "zsh", soon: ["bash", "fish"])
-            } header: { Text("Machine · shared across projects") } footer: {
-                Text("Not per-project: the agent uses your machine's `claude` CLI login; services launch via your login zsh. Only one provider ships today — the picker shows what's supported; more are coming.")
+            } header: { Text("Machine · shared across sessions") } footer: {
+                Text("Not per-session: the agent uses your machine's `claude` CLI login; services launch via your login zsh. Only one provider ships today — the picker shows what's supported; more are coming.")
             }
         }
         .formStyle(.grouped).scrollContentBackground(.hidden)

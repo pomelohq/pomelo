@@ -7,4 +7,3 @@ Vendor/libpom.h
 Sources/CPom/include/libpom.h
 
 dist/
-dist-dev/

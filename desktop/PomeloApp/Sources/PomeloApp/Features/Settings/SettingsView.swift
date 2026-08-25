@@ -58,7 +58,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 2) {
             Color.clear.frame(height: 30)
             navGroup("APP", .app)
-            navGroup("PROJECT · \(PomCore.shared.session.isEmpty ? "—" : PomCore.shared.session)", .project)
+            navGroup("SESSION · \(PomCore.shared.session.isEmpty ? "—" : PomCore.shared.session)", .project)
             Spacer()
         }
         .frame(width: 200)

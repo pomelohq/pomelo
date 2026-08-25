@@ -52,8 +52,6 @@ func TestSplitToFragmentsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	orig := `session: demo
 default_branch: main
-jira:
-  site: https://x.atlassian.net
 repos:
   api:
     alias: api
@@ -92,7 +90,7 @@ repos:
 	if cfg.Repos["api"] == nil || cfg.Repos["web"] == nil {
 		t.Fatalf("repos lost after split: %v", cfg.Repos)
 	}
-	if cfg.Jira == nil || cfg.Jira.Site == "" {
+	if cfg.DefaultBranch != "main" {
 		t.Fatal("non-repo config lost after split")
 	}
 }

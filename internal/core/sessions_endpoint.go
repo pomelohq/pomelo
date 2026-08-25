@@ -29,13 +29,13 @@ func (s *Server) SessionList() map[string]any {
 	for _, ss := range reg.Sessions {
 		_, ok := configFileIn(ss.Path)
 		out = append(out, item{
-			Name: ss.Name, Path: ss.Path, Current: ss.Name == reg.Current,
+			Name: ss.Name, Path: ss.Path, Current: ss.Name == s.Project,
 			Running: services.SessionRunning(ss.Name), Available: ok,
 		})
 	}
 	return map[string]any{
 		"sessions": out,
-		"current":  reg.Current,
+		"current":  s.Project,
 		"active":   s.Project,
 		"root":     sessions.SessionsRoot(),
 	}

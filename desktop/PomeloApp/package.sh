@@ -118,12 +118,13 @@ if [ "${DRY_RUN:-0}" != "1" ]; then
   rm -f "$DIST/Pomelo.zip"
 fi
 
-echo "==> build DMG"
-STAGE="$DIST/stage"; rm -rf "$STAGE"; mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/Pomelo.app"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Pomelo" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-rm -rf "$STAGE"
+echo "==> build styled DMG (dmgbuild — headless, no Finder)"
+DMGVENV="$DIST/dmgvenv"
+python3 -m venv "$DMGVENV"
+"$DMGVENV/bin/pip" install --quiet --disable-pip-version-check dmgbuild
+"$DMGVENV/bin/dmgbuild" -s "$here/dmg/dmg_settings.py" \
+  -D app="$APP" -D background="$here/dmg/background.png" "Pomelo" "$DMG"
+rm -rf "$DMGVENV"
 codesign --force --sign "$SIGN_ID" --timestamp "$DMG"
 
 if [ "${DRY_RUN:-0}" != "1" ]; then
@@ -149,10 +150,10 @@ fi
 DMG_URL="https://github.com/pomelohq/pomelo/releases/download/v$VERSION/Pomelo-$VERSION.dmg"
 
 # Sparkle shows <description> (HTML) in the update dialog. Render RELEASE_NOTES
-# (set by release-app.sh) as a bullet list, else a generic line.
+# (optional; CI leaves it unset and uses --generate-notes) as a bullet list, else generic.
 DESC="<p>Pomelo $VERSION</p>"
 if [ -n "${RELEASE_NOTES:-}" ]; then
-  LIS=$(printf '%s\n' "$RELEASE_NOTES" | sed -n 's/^[-*][[:space:]]*\(.*\)/<li>\1<\/li>/p' | tr -d '\n')
+  LIS=$(printf '%s\n' "$RELEASE_NOTES" | sed -n 's/^[-*][[:space:]][[:space:]]*\(.*\)/<li>\1<\/li>/p' | tr -d '\n')
   if [ -n "$LIS" ]; then DESC="<h3>What's new in $VERSION</h3><ul>$LIS</ul>"; else DESC="<p>$RELEASE_NOTES</p>"; fi
 fi
 cat > "$DIST/appcast.xml" <<XML

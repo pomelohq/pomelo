@@ -23,13 +23,15 @@ Full details in `RELEASE.md`. The release IS the native macOS app.
 make patch                         # 0.10.8 → 0.10.9 → bump BOTH version consts → tag → push
 make minor                         # 0.10.8 → 0.11.0
 make major                         # 0.10.8 → 1.0.0
-make app-publish                   # build notarized DMG → pomelo-releases (DMG + appcast + checksums)
 ```
 
 `make patch/minor/major` bumps `cmd/pom/root.go` `version` AND `cmd/libpom/libpom.go`
 `appVersion` in lockstep (`make version-check` guards drift), commits, tags, pushes.
-Then `make app-publish`. The app self-updates via Sparkle (appcast); there is no
-`pom update` / CLI distribution / daemon anymore.
+**Release is CI-only**: pushing the `v*` tag triggers `.github/workflows/release.yml`
+(→ reusable `app-build.yml` with `publish:true`) which builds, signs, notarizes, and
+publishes the DMG + Sparkle appcast to the GitHub Release. There is no local publish
+path. `make dmg` builds a local DMG for testing only (never publishes). The app
+self-updates via Sparkle (appcast); there is no `pom update` / CLI distribution / daemon.
 
 ## Docs Rule
 
@@ -168,11 +170,9 @@ actually happened.
 - `go build ./... && go vet ./... && go test ./...` + `make check`
 - App touched → `swift build && swift test` in `desktop/PomeloApp`
 - User-facing change → update `pomelo-docs` (separate repo) same day
-- Release = `make patch` (bump BOTH version consts + tag + push) then
-  **`make app-publish`** (`scripts/release-app.sh`): builds the notarized DMG and
-  creates the `pomelo-releases` release with DMG + Sparkle appcast + checksums,
-  switching gh accounts around it. `make app-publish DRY_RUN=1` builds without
-  publishing. See `RELEASE.md`. Don't hand-roll the dmg/gh steps.
+- Release = `make patch` (bump BOTH version consts + tag + push). The tag push is
+  the whole release: CI (`release.yml` → `app-build.yml`) builds, signs, notarizes,
+  and publishes the DMG + Sparkle appcast. No local publish. See `RELEASE.md`.
 - Test before commit; never commit without the user's go-ahead on behavior
   changes
 

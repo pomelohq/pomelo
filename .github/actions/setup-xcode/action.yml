@@ -1,0 +1,19 @@
+name: Select Xcode
+description: Pin the Xcode toolchain every Pomelo build/release job uses.
+
+# Pinned in one place: CI (PR builds) and release both consume this, so bumping
+# the toolchain is a one-line change instead of hunting every workflow.
+inputs:
+  xcode-version:
+    description: Override the pinned version (leave unset).
+    required: false
+    default: "26.4.1"
+
+runs:
+  using: composite
+  steps:
+    - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+      with:
+        xcode-version: ${{ inputs.xcode-version }}
+    - shell: bash
+      run: xcodebuild -version

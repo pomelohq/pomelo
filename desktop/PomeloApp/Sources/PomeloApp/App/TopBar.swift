@@ -72,9 +72,8 @@ struct HeaderLeading: View {
         HStack(spacing: 8) {
             Button { state.showSessions.toggle() } label: {
                 HStack(spacing: 6) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(LinearGradient(colors: [.orange, .pink], startPoint: .top, endPoint: .bottom))
-                        .frame(width: 15, height: 15)
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable().frame(width: 16, height: 16)
                     Text(PomCore.shared.session.isEmpty ? "pomelo" : PomCore.shared.session)
                         .font(.system(size: 13, weight: .semibold))
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
@@ -96,6 +95,9 @@ struct SessionsMenu: View {
         VStack(alignment: .leading, spacing: 1) {
             SessionMenuButton(label: "New session…", icon: "plus.circle") {
                 state.showSessions = false; state.showCreateSession = true
+            }
+            SessionMenuButton(label: "Open a session…", icon: "folder") {
+                state.showSessions = false; state.openExistingSession()
             }
             Divider().overlay(Theme.borderSoft).padding(.vertical, 4)
             Text("SESSIONS").font(.system(size: 10, weight: .semibold)).kerning(0.6)
@@ -190,8 +192,8 @@ struct HeaderTrailing: View {
                 .buttonStyle(.plain).tooltip("Shared services", shortcut: "⇧⌘S", align: .bottomTrailing)
             Button { state.openActivity(scope: nil) } label: { Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Activity Monitor · all workspaces", shortcut: "⇧⌘0", align: .bottomTrailing)
-            Button { state.showProjectPanel = true } label: { Image(systemName: "chevron.left.forwardslash.chevron.right").font(.system(size: 12)) }
-                .buttonStyle(.plain).tooltip("Project — config editor + ENV inspector", shortcut: "⇧⌘P", align: .bottomTrailing)
+            Button { state.showSessionPanel = true } label: { Image(systemName: "chevron.left.forwardslash.chevron.right").font(.system(size: 12)) }
+                .buttonStyle(.plain).tooltip("Session — config editor + ENV inspector", shortcut: "⇧⌘P", align: .bottomTrailing)
             Button { theme.cycle() } label: { Image(systemName: icon).font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Theme: \(theme.mode.rawValue)", shortcut: "⇧⌘T", align: .bottomTrailing)
             Button { state.showSettings = true } label: { Image(systemName: "gearshape").font(.system(size: 12)) }

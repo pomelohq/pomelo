@@ -5,20 +5,26 @@ import Sparkle
 final class AppUpdater: ObservableObject {
     static let shared = AppUpdater()
 
-    private let controller: SPUStandardUpdaterController
+    private let controller: SPUStandardUpdaterController?
 
     private init() {
-        controller = SPUStandardUpdaterController(startingUpdater: true,
-                                                  updaterDelegate: nil,
-                                                  userDriverDelegate: nil)
+        // Sparkle requires a real .app bundle; a bare dev binary (build.sh run)
+        // has none and would crash it. Skip the updater when running unbundled.
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            controller = SPUStandardUpdaterController(startingUpdater: true,
+                                                      updaterDelegate: nil,
+                                                      userDriverDelegate: nil)
+        } else {
+            controller = nil
+        }
     }
 
-    func checkForUpdates() { controller.updater.checkForUpdates() }
+    func checkForUpdates() { controller?.updater.checkForUpdates() }
 
-    var canCheckForUpdates: Bool { controller.updater.canCheckForUpdates }
+    var canCheckForUpdates: Bool { controller?.updater.canCheckForUpdates ?? false }
 
     var automaticChecks: Bool {
-        get { controller.updater.automaticallyChecksForUpdates }
-        set { controller.updater.automaticallyChecksForUpdates = newValue }
+        get { controller?.updater.automaticallyChecksForUpdates ?? false }
+        set { controller?.updater.automaticallyChecksForUpdates = newValue }
     }
 }

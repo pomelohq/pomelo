@@ -13,15 +13,7 @@ type WorkspaceState struct {
 }
 
 func wsStatePath(wsFolder string) string {
-	pom := filepath.Join(wsFolder, ".pom-workspace.json")
-	if _, err := os.Stat(pom); err == nil {
-		return pom
-	}
-	legacy := filepath.Join(wsFolder, ".tncli-workspace.json")
-	if _, err := os.Stat(legacy); err == nil {
-		return legacy
-	}
-	return pom
+	return filepath.Join(wsFolder, ".pom-workspace.json")
 }
 
 func LoadWorkspaceState(wsFolder string) WorkspaceState {

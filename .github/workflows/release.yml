@@ -1,8 +1,9 @@
 name: Release
 
 # Push a version tag (v*) -> build, sign, notarize, and publish the DMG +
-# Sparkle appcast to this repo's GitHub Release. Public repo => free macOS
-# runner minutes. Requires these repository secrets:
+# Sparkle appcast to this repo's GitHub Release. All build logic lives in the
+# reusable app-build.yml; this just calls it with publish=true. Requires these
+# repository secrets:
 #   MACOS_CERT_P12          base64 of the Developer ID Application .p12
 #   MACOS_CERT_PASSWORD     password for that .p12
 #   MACOS_SIGN_IDENTITY     e.g. "Developer ID Application: Your Name (TEAMID)"
@@ -26,77 +27,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build & publish DMG
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode.app
-
-      - name: Import Developer ID certificate
-        env:
-          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          KC="$RUNNER_TEMP/build.keychain"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
-          security set-keychain-settings -lut 21600 "$KC"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
-          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KC"
-          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
-          rm -f "$RUNNER_TEMP/cert.p12"
-
-      - name: Store notarization credentials
-        env:
-          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-          NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
-          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
-        run: |
-          xcrun notarytool store-credentials pomelo-notary \
-            --apple-id "$NOTARY_APPLE_ID" \
-            --password "$NOTARY_APP_PASSWORD" \
-            --team-id "$NOTARY_TEAM_ID"
-
-      - name: Write Sparkle signing key
-        env:
-          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
-        run: |
-          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_ed_key"
-          echo "SPARKLE_ED_KEY_FILE=$RUNNER_TEMP/sparkle_ed_key" >> "$GITHUB_ENV"
-
-      - name: Build, sign, notarize, package
-        env:
-          SIGN_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          NOTARY_PROFILE: pomelo-notary
-        run: bash desktop/PomeloApp/package.sh
-
-      - name: Checksums
-        working-directory: desktop/PomeloApp/dist
-        run: |
-          VERSION=$(grep '^const version' ../../../cmd/pom/root.go | cut -d'"' -f2)
-          shasum -a 256 "Pomelo-$VERSION.dmg" appcast.xml > checksums.txt
-
-      - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION=$(grep '^const version' cmd/pom/root.go | cut -d'"' -f2)
-          cd desktop/PomeloApp/dist
-          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" \
-            --title "v$VERSION" --generate-notes \
-            "Pomelo-$VERSION.dmg" appcast.xml checksums.txt \
-          || gh release upload "v$VERSION" --repo "$GITHUB_REPOSITORY" --clobber \
-            "Pomelo-$VERSION.dmg" appcast.xml checksums.txt
-
-      - name: Clean up keychain
-        if: always()
-        run: security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
+    uses: ./.github/workflows/app-build.yml
+    with:
+      publish: true
+    secrets: inherit

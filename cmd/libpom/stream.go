@@ -208,7 +208,7 @@ func PomStreamSend(id C.int, data *C.char, length C.int) {
 
 //export PomStreamResize
 func PomStreamResize(id C.int, cols, rows C.int) {
-	feed(id, []byte(fmt.Sprintf(`{"__tncli":"resize","cols":%d,"rows":%d}`, int(cols), int(rows))))
+	feed(id, []byte(fmt.Sprintf(`{"__pom":"resize","cols":%d,"rows":%d}`, int(cols), int(rows))))
 }
 
 func feed(id C.int, b []byte) {

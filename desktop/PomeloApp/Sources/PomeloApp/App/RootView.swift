@@ -52,8 +52,8 @@ struct RootView: View {
             .sheet(isPresented: $state.showShared) {
                 SharedServicesView(onClose: { state.showShared = false }).environmentObject(state).environmentObject(theme)
             }
-            .sheet(isPresented: $state.showProjectPanel) {
-                ProjectPanel(onClose: { state.showProjectPanel = false }).environmentObject(state).environmentObject(theme)
+            .sheet(isPresented: $state.showSessionPanel) {
+                SessionPanel(onClose: { state.showSessionPanel = false }).environmentObject(state).environmentObject(theme)
             }
             .sheet(isPresented: $state.showSetup) {
                 SetupWizard(onClose: { state.showSetup = false }).environmentObject(state).environmentObject(theme)
@@ -106,7 +106,7 @@ struct RootView: View {
                     }
                     Group {
                         if let err = state.configError {
-                            ConfigErrorOverlay(message: err) { state.showProjectPanel = true }
+                            ConfigErrorOverlay(message: err) { state.showSessionPanel = true }
                                 .environmentObject(state)
                         } else if let ws = state.selectedWorkspace {
                             WorkspacePane(workspace: ws)
@@ -175,6 +175,12 @@ struct RootView: View {
                 set: { if !$0 { state.switchError = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(state.switchError ?? "") }
+            .alert("Couldn’t open session", isPresented: Binding(
+                get: { state.openError != nil },
+                set: { if !$0 { state.openError = nil } })) {
+                Button("Choose another…") { state.openExistingSession() }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text(state.openError ?? "") }
         }
     }
 }
@@ -387,6 +393,7 @@ struct CreateWorkspaceView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var ticket = ""
     @State private var desc = ""
+    @State private var autoDesc = ""   // last summary auto-filled from a ticket; empty = user typed
     @State private var picked: Set<String> = []
     @State private var busy = false
     @State private var suggesting = false
@@ -423,9 +430,8 @@ struct CreateWorkspaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 9) {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(LinearGradient(colors: [.orange, .pink], startPoint: .top, endPoint: .bottom))
-                    .frame(width: 20, height: 20)
+                Image(nsImage: NSApplication.shared.applicationIconImage)
+                    .resizable().frame(width: 22, height: 22)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Create workspace").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
                     Text("Pick a sprint ticket or describe the work").font(.system(size: 11)).foregroundStyle(Theme.dim)
@@ -462,7 +468,7 @@ struct CreateWorkspaceView: View {
         .task { await loadBoards(); theme.applyToWindow() }
         .onChange(of: board) { Task { await loadSprint() } }
         .onChange(of: ticketFocused) { _, f in if f { showSuggest = true } }
-        .onChange(of: ticket) { showSuggest = true; schedulePreview(); refined = false }
+        .onChange(of: ticket) { showSuggest = true; schedulePreview(); refined = false; name = ""; slugOverride = "" }
         .onChange(of: desc) { refined = false }
     }
 
@@ -650,7 +656,13 @@ struct CreateWorkspaceView: View {
 
     private func pick(_ iss: SprintIssue) {
         ticket = iss.key
-        if desc.trimmingCharacters(in: .whitespaces).isEmpty { desc = iss.summary }
+        // Refresh desc from the picked ticket unless the user typed their own —
+        // else switching tickets keeps the old summary and the refined name/slug
+        // describes the wrong ticket.
+        if desc.trimmingCharacters(in: .whitespaces).isEmpty || desc == autoDesc {
+            desc = iss.summary
+            autoDesc = iss.summary
+        }
         showSuggest = false
         ticketFocused = false
     }

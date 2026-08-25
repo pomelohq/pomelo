@@ -1,0 +1,56 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in the Pomelo app or CLI
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: "When I do X, Y happens instead of Z."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the issue.
+      placeholder: |
+        1. Open a workspace for branch feat-login
+        2. Start the api service
+        3. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Pomelo version
+      description: See the app's sidebar footer, or run `pom version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "14.5 (Apple Silicon)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Relevant output. Redact any secrets, tokens, or private repo details.
+    validations:
+      required: false

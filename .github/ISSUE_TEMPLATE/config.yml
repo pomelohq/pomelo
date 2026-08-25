@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://pomelohq.app
+    about: Install, quick start, config reference, and troubleshooting.

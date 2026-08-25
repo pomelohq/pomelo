@@ -363,7 +363,7 @@ func validateConfigYAML(y string) error {
 	if err := yaml.Unmarshal([]byte(y), &sink); err != nil {
 		return fmt.Errorf("yaml parse error: %w", err)
 	}
-	tmp, err := os.CreateTemp("", "tncli-cfg-*.yml")
+	tmp, err := os.CreateTemp("", "pom-cfg-*.yml")
 	if err != nil {
 		return err
 	}
