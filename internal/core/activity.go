@@ -111,18 +111,10 @@ func (f *activityFeature) workspaceList() []wsInfo {
 }
 
 func friendlyHolder(label string) (name, kind string) {
-	switch {
-	case strings.Contains(label, "claude"):
+	if strings.Contains(label, "claude") {
 		return "Claude", "claude"
-	case strings.HasPrefix(label, "appsh-"):
-		return "terminal", "shell"
-	case strings.HasPrefix(label, "reposh-"):
-		return "shell " + strings.TrimPrefix(label, "reposh-"), "shell"
-	case strings.HasPrefix(label, "sh-"):
-		return "shortcut", "shortcut"
-	default:
-		return label, "pty"
 	}
+	return services.HolderFor(label).Display()
 }
 
 func (f *activityFeature) handlePs(w http.ResponseWriter, r *http.Request) {

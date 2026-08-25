@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/pomelohq/pomelo/internal/provider/shell"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -159,12 +160,14 @@ func (s *Server) handleRunInEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	services.RegenerateWorkspaceEnv(s.WorkspaceRoot, s.cfg(), req.Branch)
+	env := services.ResolveRepoEnv(s.WorkspaceRoot, s.cfg(), req.Branch, req.Repo)
 
-	shellCmd := "cd " + shell.Quote(wt) + " && set -a; source .env.local 2>/dev/null; set +a; " + req.Cmd
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	login := shell.Login(shellCmd)
+	login := shell.Login(req.Cmd)
 	cmd := exec.CommandContext(ctx, login[0], login[1:]...)
+	cmd.Dir = wt
+	cmd.Env = append(os.Environ(), env...)
 	out, runErr := cmd.CombinedOutput()
 	exit := 0
 	if ee, ok := runErr.(*exec.ExitError); ok {

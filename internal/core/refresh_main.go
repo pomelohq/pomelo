@@ -1,7 +1,6 @@
 package core
 
 import (
-	"fmt"
 	"github.com/pomelohq/pomelo/internal/provider/shell"
 	"log"
 	"strings"
@@ -75,9 +74,9 @@ func (s *Server) refreshMain() {
 
 func (s *Server) runMainMigrate(branch, repo, wt string, cmds []string) {
 	services.RegenerateWorkspaceEnv(s.WorkspaceRoot, s.cfg(), branch)
-	script := fmt.Sprintf("set -a; source .env.local 2>/dev/null; set +a; %s", strings.Join(cmds, " && "))
-	login := shell.Login(script)
-	if out, err := services.RunTimeout(5*time.Minute, wt, login[0], login[1:]...); err != nil {
+	env := services.ResolveRepoEnv(s.WorkspaceRoot, s.cfg(), branch, repo)
+	login := shell.Login(strings.Join(cmds, " && "))
+	if out, err := services.RunTimeoutEnv(5*time.Minute, wt, env, login[0], login[1:]...); err != nil {
 		log.Printf("refresh_main: %s migrate failed: %v\n%s", repo, err, string(out))
 		return
 	}

@@ -88,7 +88,7 @@ func (s *Server) PaneKill(paneID string) map[string]any {
 func reapEphemeralShells() int {
 	n := 0
 	for _, h := range ptyhost.Holders() {
-		if strings.HasPrefix(h.Name, "appsh-") || strings.HasPrefix(h.Name, "sh-") || strings.HasPrefix(h.Name, "reposh-") {
+		if services.HolderFor(h.Name).Reapable() {
 			if ptyhost.KillHolder(h.Name) == nil {
 				n++
 			}
