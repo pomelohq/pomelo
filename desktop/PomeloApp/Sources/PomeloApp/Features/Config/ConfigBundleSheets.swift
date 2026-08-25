@@ -166,7 +166,7 @@ struct ImportBundleSheet: View {
             Toggle("Overwrite my config with this (kept as .bak, split into pom.d/)", isOn: $writeConfig)
             if !status.isEmpty { Text(status).font(.system(size: 11)).foregroundStyle(isError ? Theme.danger : Theme.ok) }
             HStack {
-                Button("Adapt with Claude") { adapt() }.help("Save the source config into the project and open Claude (with the pom MCP) to merge it into yours")
+                Button("Adapt with Claude") { adapt() }.help("Save the source config into the session and open Claude (with the pom MCP) to merge it into yours")
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Apply") { apply() }.buttonStyle(.borderedProminent).tint(Theme.accent)

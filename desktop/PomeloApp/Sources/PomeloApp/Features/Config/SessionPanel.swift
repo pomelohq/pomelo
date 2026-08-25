@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ProjectPanel: View {
+struct SessionPanel: View {
     @EnvironmentObject var theme: ThemeManager
     @EnvironmentObject var state: AppState
     var onClose: () -> Void = {}
@@ -17,7 +17,7 @@ struct ProjectPanel: View {
             HStack(spacing: 10) {
                 Image(systemName: "shippingbox.fill").font(.system(size: 13)).foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Project").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
+                    Text("Session").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
                     Text(PomCore.shared.session.isEmpty ? "—" : PomCore.shared.session)
                         .font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
                 }

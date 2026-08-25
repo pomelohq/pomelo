@@ -11,16 +11,16 @@ struct WelcomeView: View {
                 .resizable().frame(width: 92, height: 92)
                 .clipShape(RoundedRectangle(cornerRadius: 20))
             Text("Welcome to Pomelo").font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.fg).padding(.top, 18)
-            Text("A dev environment per branch. Open a project to get started,\nor create a new one — Pomelo scaffolds the rest.")
+            Text("A dev environment per branch. Open a session to get started,\nor start a new one — Pomelo scaffolds the rest.")
                 .font(.system(size: 13)).foregroundStyle(Theme.fgMuted)
                 .multilineTextAlignment(.center).lineSpacing(3).padding(.top, 8)
 
             HStack(spacing: 12) {
-                Button { state.openExistingProject() } label: {
-                    label("folder", "Open a project…", "a folder with pom.yml")
+                Button { state.openExistingSession() } label: {
+                    label("folder", "Open a session…", "a folder with pom.yml")
                 }.buttonStyle(.plain)
-                Button { state.createNewProject() } label: {
-                    label("plus.rectangle.on.folder", "New project…", "scaffold an empty one")
+                Button { state.showCreateSession = true } label: {
+                    label("plus.rectangle.on.folder", "New session…", "add repos, agent writes the config")
                 }.buttonStyle(.plain)
             }
             .padding(.top, 26)

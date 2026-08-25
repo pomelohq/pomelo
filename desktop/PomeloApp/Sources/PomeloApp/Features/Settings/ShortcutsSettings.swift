@@ -7,7 +7,7 @@ struct ShortcutsSettings: View {
         .init(keys: "⌘N", label: "New workspace"),
         .init(keys: "⇧⌘N", label: "New session"),
         .init(keys: "⇧⌘S", label: "Shared services"),
-        .init(keys: "⇧⌘P", label: "Project — config editor + ENV"),
+        .init(keys: "⇧⌘P", label: "Session — config editor + ENV"),
         .init(keys: "⇧⌘0", label: "Activity Monitor (all workspaces)"),
         .init(keys: "⇧⌘T", label: "Cycle theme"),
         .init(keys: "⌘,", label: "Settings"),

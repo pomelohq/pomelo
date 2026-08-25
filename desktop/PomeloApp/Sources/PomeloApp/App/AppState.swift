@@ -37,7 +37,7 @@ final class AppState: ObservableObject {
             let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
             if shift && (ch == "0" || ch == ")") { self.openActivity(scope: nil); return nil }
             if shift && ch == "s" { self.showShared = true; return nil }
-            if shift && ch == "p" { self.showProjectPanel = true; return nil }   // ⌘⇧P — Project (config editor + ENV)
+            if shift && ch == "p" { self.showSessionPanel = true; return nil }   // ⌘⇧P — Project (config editor + ENV)
             if shift && ch == "t" { self.themeManager?.cycle(); return nil }      // ⌘⇧T — cycle theme
             if ch == "n" { if shift { self.showCreateSession = true } else { self.openCreateWorkspace = true }; return nil }
             guard let ws = self.selectedWorkspace, let ui = self.uiStore else { return e }
@@ -118,7 +118,7 @@ final class AppState: ObservableObject {
 
     @Published var showSettings = false
     @Published var showShared = false
-    @Published var showProjectPanel = false
+    @Published var showSessionPanel = false
     @Published var showCreateSession = false
     @Published var showSessions = false
     @Published var switchError: String?
@@ -299,32 +299,18 @@ final class AppState: ObservableObject {
 
     func bootProject(_ dir: String) { setLastProject(dir); booted = false; boot() }
 
-    func openExistingProject() {
+    func openExistingSession() {
         let p = NSOpenPanel()
         p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
-        p.prompt = "Open"; p.message = "Choose your project folder (the one with pom.yml)"
+        p.prompt = "Open"; p.message = "Choose your session folder (the one with pom.yml)"
         guard p.runModal() == .OK, let url = p.url else { return }
         let dir = url.path
         let hasCfg = ["pom.yml"].contains {
             FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent($0))
         }
         guard hasCfg else {
-            openError = "No pom.yml in “\(url.lastPathComponent)”. Pick the project root (the folder that has pom.yml), or create a new project."
+            openError = "No pom.yml in “\(url.lastPathComponent)”. Pick the session root (the folder that has pom.yml), or start a new session."
             return
-        }
-        bootProject(dir)
-    }
-
-    func createNewProject() {
-        let p = NSOpenPanel()
-        p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
-        p.prompt = "Create here"; p.message = "Choose a folder for your new Pomelo project"
-        guard p.runModal() == .OK, let url = p.url else { return }
-        let dir = url.path
-        let cfgPath = (dir as NSString).appendingPathComponent("pom.yml")
-        if !FileManager.default.fileExists(atPath: cfgPath) {
-            let name = url.lastPathComponent.replacingOccurrences(of: " ", with: "-").lowercased()
-            try? "session: \(name)\ndefault_branch: main\nrepos: {}\n".write(toFile: cfgPath, atomically: true, encoding: .utf8)
         }
         bootProject(dir)
     }

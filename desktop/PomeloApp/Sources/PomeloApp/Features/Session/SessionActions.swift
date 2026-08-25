@@ -50,7 +50,7 @@ struct CreateSessionSheet: View {
                     .font(.system(size: 20)).foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("New session").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.fg)
-                    Text("Clone repos, scaffold a project, and switch to it.")
+                    Text("Clone repos, scaffold a session, and switch to it.")
                         .font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
                 }
                 Spacer()

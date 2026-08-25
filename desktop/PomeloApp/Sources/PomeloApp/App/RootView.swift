@@ -52,8 +52,8 @@ struct RootView: View {
             .sheet(isPresented: $state.showShared) {
                 SharedServicesView(onClose: { state.showShared = false }).environmentObject(state).environmentObject(theme)
             }
-            .sheet(isPresented: $state.showProjectPanel) {
-                ProjectPanel(onClose: { state.showProjectPanel = false }).environmentObject(state).environmentObject(theme)
+            .sheet(isPresented: $state.showSessionPanel) {
+                SessionPanel(onClose: { state.showSessionPanel = false }).environmentObject(state).environmentObject(theme)
             }
             .sheet(isPresented: $state.showSetup) {
                 SetupWizard(onClose: { state.showSetup = false }).environmentObject(state).environmentObject(theme)
@@ -106,7 +106,7 @@ struct RootView: View {
                     }
                     Group {
                         if let err = state.configError {
-                            ConfigErrorOverlay(message: err) { state.showProjectPanel = true }
+                            ConfigErrorOverlay(message: err) { state.showSessionPanel = true }
                                 .environmentObject(state)
                         } else if let ws = state.selectedWorkspace {
                             WorkspacePane(workspace: ws)
@@ -175,10 +175,10 @@ struct RootView: View {
                 set: { if !$0 { state.switchError = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(state.switchError ?? "") }
-            .alert("Couldn’t open project", isPresented: Binding(
+            .alert("Couldn’t open session", isPresented: Binding(
                 get: { state.openError != nil },
                 set: { if !$0 { state.openError = nil } })) {
-                Button("Choose another…") { state.openExistingProject() }
+                Button("Choose another…") { state.openExistingSession() }
                 Button("Cancel", role: .cancel) {}
             } message: { Text(state.openError ?? "") }
         }

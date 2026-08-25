@@ -135,7 +135,7 @@ struct AgentSheet: View {
                     if !model.started {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Starting Claude…").font(Theme.mono(11.5)).foregroundStyle(Theme.fg)
-                            Text("Initializing the pom MCP tools and reading your config. On a large project this takes a moment before the first output.")
+                            Text("Initializing the pom MCP tools and reading your config. On a large codebase this takes a moment before the first output.")
                                 .font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
                             if slow {
                                 Text("Still starting — Claude may be initializing, or `claude` isn't signed in yet (run `claude` once in a terminal to log in). It keeps running in the background.")

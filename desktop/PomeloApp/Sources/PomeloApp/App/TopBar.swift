@@ -97,8 +97,8 @@ struct SessionsMenu: View {
             SessionMenuButton(label: "New session…", icon: "plus.circle") {
                 state.showSessions = false; state.showCreateSession = true
             }
-            SessionMenuButton(label: "Open a project…", icon: "folder") {
-                state.showSessions = false; state.openExistingProject()
+            SessionMenuButton(label: "Open a session…", icon: "folder") {
+                state.showSessions = false; state.openExistingSession()
             }
             Divider().overlay(Theme.borderSoft).padding(.vertical, 4)
             Text("SESSIONS").font(.system(size: 10, weight: .semibold)).kerning(0.6)
@@ -193,8 +193,8 @@ struct HeaderTrailing: View {
                 .buttonStyle(.plain).tooltip("Shared services", shortcut: "⇧⌘S", align: .bottomTrailing)
             Button { state.openActivity(scope: nil) } label: { Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Activity Monitor · all workspaces", shortcut: "⇧⌘0", align: .bottomTrailing)
-            Button { state.showProjectPanel = true } label: { Image(systemName: "chevron.left.forwardslash.chevron.right").font(.system(size: 12)) }
-                .buttonStyle(.plain).tooltip("Project — config editor + ENV inspector", shortcut: "⇧⌘P", align: .bottomTrailing)
+            Button { state.showSessionPanel = true } label: { Image(systemName: "chevron.left.forwardslash.chevron.right").font(.system(size: 12)) }
+                .buttonStyle(.plain).tooltip("Session — config editor + ENV inspector", shortcut: "⇧⌘P", align: .bottomTrailing)
             Button { theme.cycle() } label: { Image(systemName: icon).font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Theme: \(theme.mode.rawValue)", shortcut: "⇧⌘T", align: .bottomTrailing)
             Button { state.showSettings = true } label: { Image(systemName: "gearshape").font(.system(size: 12)) }

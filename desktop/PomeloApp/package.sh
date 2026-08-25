@@ -152,7 +152,7 @@ DMG_URL="https://github.com/pomelohq/pomelo/releases/download/v$VERSION/Pomelo-$
 # (optional; CI leaves it unset and uses --generate-notes) as a bullet list, else generic.
 DESC="<p>Pomelo $VERSION</p>"
 if [ -n "${RELEASE_NOTES:-}" ]; then
-  LIS=$(printf '%s\n' "$RELEASE_NOTES" | sed -n 's/^[-*][[:space:]]*\(.*\)/<li>\1<\/li>/p' | tr -d '\n')
+  LIS=$(printf '%s\n' "$RELEASE_NOTES" | sed -n 's/^[-*][[:space:]][[:space:]]*\(.*\)/<li>\1<\/li>/p' | tr -d '\n')
   if [ -n "$LIS" ]; then DESC="<h3>What's new in $VERSION</h3><ul>$LIS</ul>"; else DESC="<p>$RELEASE_NOTES</p>"; fi
 fi
 cat > "$DIST/appcast.xml" <<XML
