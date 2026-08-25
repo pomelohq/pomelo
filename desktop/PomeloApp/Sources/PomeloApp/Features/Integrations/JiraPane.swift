@@ -259,12 +259,14 @@ struct JiraPane: View {
     }
 
     private func load() async {
+        detail = nil
+        loading = true
         guard let k = key else { loading = false; return }
         let fresh = await Task.detached(priority: .userInitiated) { () -> JiraDetail? in
             let d = PomCore.shared.jiraIssueData(key: k)
             return PomJSON.decode(JiraDetail.self, from: d)
         }.value
         loading = false
-        if let fresh { detail = fresh }
+        detail = fresh
     }
 }
