@@ -16,7 +16,7 @@ export SIGN_ID NOTARY_PROFILE GH_USER_PUBLISH GH_USER_BACK RELEASE_REPO
 
 APP_VERSION = $(shell grep '^const appVersion' cmd/libpom/libpom.go | cut -d'"' -f2)
 
-.PHONY: build dev release install clean test vet check check-strict patch minor major version-check dmg
+.PHONY: build dev app app-run release install clean test vet check check-strict patch minor major version-check dmg
 
 # --- Development ---
 
@@ -25,6 +25,13 @@ build:
 
 dev:
 	go build -o $(BINARY) ./cmd/pom/ && ./$(BINARY) $(ARGS)
+
+# Native app dev build (unsigned Debug .app). `make app-run` builds + opens it.
+app:
+	bash desktop/PomeloApp/build.sh
+
+app-run:
+	bash desktop/PomeloApp/build.sh run
 
 test:
 	go test ./...

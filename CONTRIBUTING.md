@@ -13,8 +13,12 @@ required — services run on self-managed PTY holders.
 ```bash
 git clone https://github.com/<your-fork>/pomelo.git && cd pomelo
 make build                             # Go core / CLI -> ./pom
-cd desktop/PomeloApp && ./build.sh     # native app (Go c-archive -> SwiftPM)
+make app-run                           # build the native app (Debug .app) and open it
 ```
+
+`make app` builds an unsigned Debug `.app` bundle; `make app-run` also opens it.
+The dev build runs as a real `.app` (not a bare binary) so bundle-dependent APIs
+(auto-update, notifications) behave like the shipped app.
 
 ## Build & test
 
