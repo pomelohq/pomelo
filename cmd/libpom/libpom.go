@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/pomelohq/pomelo/internal/agent/claude"
@@ -26,6 +27,7 @@ import (
 	"github.com/pomelohq/pomelo/internal/mcp"
 	"github.com/pomelohq/pomelo/internal/ptyhost"
 	"github.com/pomelohq/pomelo/internal/services"
+	"github.com/pomelohq/pomelo/internal/sessions"
 )
 
 var (
@@ -52,6 +54,9 @@ func PomInit(cfgPath *C.char) *C.char {
 	dir := filepath.Dir(p)
 	services.InitNetwork(dir, cfg.Session, cfg)
 	services.SetSharedStable(cfg.Session)
+	reg := sessions.Load()
+	reg.Touch(cfg.Session, dir, time.Now().Unix())
+	_ = reg.Save()
 	s := core.New("", cfg.Session, dir, cfg.GlobalDefaultBranch(), cfg)
 	s.StartApp()
 	mu.Lock()
