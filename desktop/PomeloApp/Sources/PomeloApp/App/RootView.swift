@@ -393,6 +393,7 @@ struct CreateWorkspaceView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var ticket = ""
     @State private var desc = ""
+    @State private var autoDesc = ""   // last summary auto-filled from a ticket; empty = user typed
     @State private var picked: Set<String> = []
     @State private var busy = false
     @State private var suggesting = false
@@ -468,7 +469,7 @@ struct CreateWorkspaceView: View {
         .task { await loadBoards(); theme.applyToWindow() }
         .onChange(of: board) { Task { await loadSprint() } }
         .onChange(of: ticketFocused) { _, f in if f { showSuggest = true } }
-        .onChange(of: ticket) { showSuggest = true; schedulePreview(); refined = false }
+        .onChange(of: ticket) { showSuggest = true; schedulePreview(); refined = false; name = ""; slugOverride = "" }
         .onChange(of: desc) { refined = false }
     }
 
@@ -656,7 +657,13 @@ struct CreateWorkspaceView: View {
 
     private func pick(_ iss: SprintIssue) {
         ticket = iss.key
-        if desc.trimmingCharacters(in: .whitespaces).isEmpty { desc = iss.summary }
+        // Refresh desc from the picked ticket unless the user typed their own —
+        // else switching tickets keeps the old summary and the refined name/slug
+        // describes the wrong ticket.
+        if desc.trimmingCharacters(in: .whitespaces).isEmpty || desc == autoDesc {
+            desc = iss.summary
+            autoDesc = iss.summary
+        }
         showSuggest = false
         ticketFocused = false
     }
