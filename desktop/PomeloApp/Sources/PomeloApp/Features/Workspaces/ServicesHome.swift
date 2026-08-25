@@ -230,15 +230,20 @@ struct RepoColumn: View {
     private func runAll(_ action: String) {
         let targets = action == "restart" ? services
             : services.filter { action == "start" ? !$0.running : $0.running }
+        guard !targets.isEmpty else { return }
+        let keys = targets.map { state.svcKey(branch: branch, repo: repo.name, svc: $0.name) }
+        let label = action == "stop" ? "stopping…" : (action == "restart" ? "restarting…" : "starting…")
+        withAnimation(.easeInOut(duration: 0.2)) { for k in keys { state.pendingSvc[k] = label } }
         Task {
-            await Task.detached(priority: .userInitiated) {
+            await withTaskGroup(of: Void.self) { group in
                 for svc in targets {
                     let ref: [String: Any] = ["branch": branch, "is_main": isMain, "repo": repo.name, "svc": svc.name]
                     let body = (try? JSONSerialization.data(withJSONObject: ref)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-                    _ = PomCore.shared.serviceControl(refJSON: body, action: action)
+                    group.addTask { _ = await Task.detached(priority: .userInitiated) { PomCore.shared.serviceControl(refJSON: body, action: action) }.value }
                 }
-            }.value
+            }
             await state.refresh()
+            withAnimation(.easeInOut(duration: 0.25)) { for k in keys { state.pendingSvc[k] = nil } }
         }
     }
 }
@@ -280,6 +285,9 @@ struct SvcCard: View {
 
     private var curEnv: String { envPick ?? service.env ?? "local" }
     private var envIsRemote: Bool { curEnv != "local" }
+    private var myKey: String { state.svcKey(branch: branch, repo: repoName, svc: service.name) }
+    private var pendingLabel: String? { state.pendingSvc[myKey] }
+    private var isBusy: Bool { busy || pendingLabel != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -295,6 +303,8 @@ struct SvcCard: View {
             }
         }
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.borderSoft))
+        .animation(.easeInOut(duration: 0.22), value: service.running)
+        .animation(.easeInOut(duration: 0.18), value: isBusy)
     }
 
     private var head: some View {
@@ -325,13 +335,14 @@ struct SvcCard: View {
     }
 
     @ViewBuilder private func body(for svc: Service) -> some View {
-        if busy {
+        if isBusy {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small).scaleEffect(0.7)
-                Text(busyLabel).font(.system(size: 11.5)).foregroundStyle(Theme.accent)
+                Text(busy ? busyLabel : (pendingLabel ?? "…")).font(.system(size: 11.5)).foregroundStyle(Theme.accent)
                 Spacer()
             }
             .padding(.horizontal, 14).padding(.vertical, 9)
+            .transition(.opacity)
         } else if svc.running {
             if let win = svc.tmuxWindow, let lines = peek.lines[win], !lines.isEmpty {
                 SvcPeekView(lines: lines).onTapGesture { openTerminal(win) }

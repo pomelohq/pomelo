@@ -186,6 +186,8 @@ final class AppState: ObservableObject {
     }
     var agentStates: [String: String] { get { agentsvm.states } set { agentsvm.states = newValue } }
     @Published var ops: [WsOp] = []
+    @Published var pendingSvc: [String: String] = [:]
+    func svcKey(branch: String, repo: String, svc: String) -> String { "\(branch)|\(repo)|\(svc)" }
     var wsPRs: [String: [WorkspacePR]] { get { prsvm.wsPRs } set { prsvm.wsPRs = newValue } }
     var prsLoading: Bool { get { prsvm.loading } set { prsvm.loading = newValue } }
     var jiraIssues: [String: JiraIssue] { get { jiravm.issues } set { jiravm.issues = newValue } }
