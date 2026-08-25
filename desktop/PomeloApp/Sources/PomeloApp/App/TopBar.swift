@@ -97,6 +97,9 @@ struct SessionsMenu: View {
             SessionMenuButton(label: "New session…", icon: "plus.circle") {
                 state.showSessions = false; state.showCreateSession = true
             }
+            SessionMenuButton(label: "Open a project…", icon: "folder") {
+                state.showSessions = false; state.openExistingProject()
+            }
             Divider().overlay(Theme.borderSoft).padding(.vertical, 4)
             Text("SESSIONS").font(.system(size: 10, weight: .semibold)).kerning(0.6)
                 .foregroundStyle(Theme.muted).padding(.horizontal, 10).padding(.bottom, 4)
