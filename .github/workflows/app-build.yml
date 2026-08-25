@@ -78,13 +78,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+          VERSION="${GITHUB_REF_NAME#v}"
+          SECTION=$(awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" {g=1; next}
+            g && /^## \[/ {exit}
+            g {print}' CHANGELOG.md)
+          AUTO=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
             -f tag_name="$GITHUB_REF_NAME" --jq .body 2>/dev/null || true)
-          [ -z "$NOTES" ] && NOTES="Pomelo $GITHUB_REF_NAME"
-          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          # Curated CHANGELOG section drives the notes; the auto "What's Changed"
+          # (PR list + authors + compare link) is appended. Fall back to auto alone.
+          if [ -n "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
+            { printf '%s\n' "$SECTION"; [ -n "$AUTO" ] && printf '\n---\n\n%s\n' "$AUTO"; } > "$RUNNER_TEMP/notes.md"
+            APPCAST="$SECTION"
+          else
+            printf '%s\n' "${AUTO:-Pomelo $GITHUB_REF_NAME}" > "$RUNNER_TEMP/notes.md"
+            APPCAST="$AUTO"
+          fi
           {
             echo "RELEASE_NOTES<<__POMEOF__"
-            printf '%s\n' "$NOTES"
+            printf '%s\n' "$APPCAST"
             echo "__POMEOF__"
           } >> "$GITHUB_ENV"
 

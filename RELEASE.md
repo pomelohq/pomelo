@@ -27,9 +27,13 @@ guards against drift:
 
 1. Land your changes on `main` (green: `go build ./... && go vet ./... && go test ./...`;
    app touched → `swift build && swift test` in `desktop/PomeloApp`).
-2. **One command:** `make patch` (or `minor` / `major`). Bumps both consts, commits
+2. Update `CHANGELOG.md`: move the `## [Unreleased]` items into a new
+   `## [<version>] - <YYYY-MM-DD>` section. Claude drafts this from the
+   Conventional-Commit history since the last tag (`git log <lastTag>..HEAD`);
+   review the wording, then commit it just before the bump.
+3. **One command:** `make patch` (or `minor` / `major`). Bumps both consts, commits
    `release: v<x>`, tags `v<x>`, pushes to `main`.
-3. That's it — pushing the tag triggers **`.github/workflows/release.yml`**, which
+4. That's it — pushing the tag triggers **`.github/workflows/release.yml`**, which
    calls the reusable **`app-build.yml`** (`publish: true`) on a GitHub-hosted
    `macos-26` runner (Xcode pinned by `.github/actions/setup-xcode`): build → sign →
    notarize → DMG → Sparkle appcast → publish the `pomelohq/pomelo` GitHub Release
