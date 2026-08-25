@@ -2,6 +2,7 @@ package ptyhost
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
@@ -202,7 +203,11 @@ func ListeningPortInTree(name string, lo, hi int) int {
 	return 0
 }
 
-func ReapOrphanServices(scope string) []int {
+// ReapOrphanServices reclaims processes that escaped their holder. pomPorts is
+// the set of ports Pomelo itself allocated — a port listener is only ever a reap
+// candidate if it sits on one of OUR ports, so a user's own dev server (vite,
+// puma, …) on any other port is never touched.
+func ReapOrphanServices(scope string, pomPorts map[int]bool) []int {
 	var victims []int
 	seen := map[int]bool{}
 	add := func(pid int) {
@@ -256,6 +261,9 @@ func ReapOrphanServices(scope string) []int {
 				continue
 			}
 			if c.Laddr.Port < lo || c.Laddr.Port > hi {
+				continue
+			}
+			if !pomPorts[int(c.Laddr.Port)] { // only reclaim ports WE allocated
 				continue
 			}
 			if p, err := process.NewProcess(int32(pid)); err == nil {
@@ -436,6 +444,63 @@ func CrashInfo(name string) (crashed bool, output []byte) {
 	return strings.HasPrefix(string(data[:nl]), "CRASH"), data[nl+1:]
 }
 
+// stripDeviceQueries scrubs terminal query sequences (DA / DSR / DECRQM /
+// XTVERSION / OSC color queries) from a scrollback snapshot. Programs emit these
+// to probe the terminal; replaying them when a tab re-attaches makes the emulator
+// answer a second time and injects the reply at the shell prompt (e.g. a stray
+// `2026;2$y`). Only the historical snapshot is scrubbed — the live stream keeps
+// every byte, so real queries still get answered.
+func stripDeviceQueries(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); {
+		if b[i] == 0x1b && i+1 < len(b) {
+			switch b[i+1] {
+			case '[': // CSI
+				j := i + 2
+				for j < len(b) && b[j] >= 0x20 && b[j] <= 0x3f {
+					j++
+				}
+				if j < len(b) && csiIsQuery(b[i:j+1]) {
+					i = j + 1
+					continue
+				}
+			case ']': // OSC — drop color/clipboard queries (contain ";?")
+				j := i + 2
+				for j < len(b) {
+					if b[j] == 0x07 {
+						j++
+						break
+					}
+					if b[j] == 0x1b && j+1 < len(b) && b[j+1] == '\\' {
+						j += 2
+						break
+					}
+					j++
+				}
+				if bytes.Contains(b[i:j], []byte(";?")) {
+					i = j
+					continue
+				}
+			}
+		}
+		out = append(out, b[i])
+		i++
+	}
+	return out
+}
+
+func csiIsQuery(seq []byte) bool {
+	switch seq[len(seq)-1] {
+	case 'c', 'n': // Device Attributes, Device Status Report
+		return true
+	case 'p': // DECRQM: CSI [?]Ps $ p
+		return bytes.IndexByte(seq, '$') >= 0
+	case 'q': // XTVERSION: CSI > Ps q (DECSCUSR uses a SP intermediate, keep it)
+		return bytes.IndexByte(seq, '>') >= 0
+	}
+	return false
+}
+
 func serveConn(s *Session, conn net.Conn) {
 	defer conn.Close()
 	snap, out, cancel := s.Subscribe()
@@ -444,7 +509,7 @@ func serveConn(s *Session, conn net.Conn) {
 	clientID := s.AddClient()
 	defer s.RemoveClient(clientID)
 
-	if _, err := conn.Write(snap); err != nil {
+	if _, err := conn.Write(stripDeviceQueries(snap)); err != nil {
 		return
 	}
 

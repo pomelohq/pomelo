@@ -169,10 +169,11 @@ func (s *Server) ServiceControl(ref serviceRef, action string) map[string]any {
 	switch action {
 	case "stop":
 		stop()
-		go ptyhost.ReapOrphanServices(s.WorkspaceRoot)
+		pp := pomAllocatedPorts()
+		go ptyhost.ReapOrphanServices(s.WorkspaceRoot, pp)
 	case "restart":
 		stop()
-		ptyhost.ReapOrphanServices(s.WorkspaceRoot)
+		ptyhost.ReapOrphanServices(s.WorkspaceRoot, pomAllocatedPorts())
 		if err := startFn(); err != nil {
 			return map[string]any{"ok": false, "error": err.Error()}
 		}
