@@ -35,6 +35,15 @@ func (s *Server) dialOrSpawnHolder(name string, cols, rows int, cwd string) (net
 	if c, err := net.Dial("unix", sockPath); err == nil {
 		return c, nil
 	}
+	// pre-created holders (services + shortcut/editor shells) are started elsewhere — attach just waits for their socket, never spawns a bare shell over the running command
+	switch {
+	case strings.HasPrefix(name, "svc-"), strings.HasPrefix(name, "ws-"),
+		strings.HasPrefix(name, "sh-"), strings.HasPrefix(name, "reposh-"):
+		if c, err := ptyhost.DialWait(sockPath, 4*time.Second); err == nil {
+			return c, nil
+		}
+		return nil, fmt.Errorf("holder %q is not running", name)
+	}
 	ptySpawnMu.Lock()
 	defer ptySpawnMu.Unlock()
 	if c, err := net.Dial("unix", sockPath); err == nil {

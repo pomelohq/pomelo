@@ -129,7 +129,7 @@ func (s *Server) buildMux() *http.ServeMux {
 }
 
 func (s *Server) startBackground() {
-	go reapEphemeralShells()
+	// no launch reap: a relaunch/2nd instance would SIGTERM a live instance's shells (+ claude); cleanup is on quit
 	s.startResourceMonitor()
 	go s.watchConfigFiles()
 	go s.pr.WarmLoop()
