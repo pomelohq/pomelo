@@ -118,12 +118,13 @@ if [ "${DRY_RUN:-0}" != "1" ]; then
   rm -f "$DIST/Pomelo.zip"
 fi
 
-echo "==> build DMG"
-STAGE="$DIST/stage"; rm -rf "$STAGE"; mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/Pomelo.app"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Pomelo" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-rm -rf "$STAGE"
+echo "==> build styled DMG (dmgbuild — headless, no Finder)"
+DMGVENV="$DIST/dmgvenv"
+python3 -m venv "$DMGVENV"
+"$DMGVENV/bin/pip" install --quiet --disable-pip-version-check dmgbuild
+"$DMGVENV/bin/dmgbuild" -s "$here/dmg/dmg_settings.py" \
+  -D app="$APP" -D background="$here/dmg/background.png" "Pomelo" "$DMG"
+rm -rf "$DMGVENV"
 codesign --force --sign "$SIGN_ID" --timestamp "$DMG"
 
 if [ "${DRY_RUN:-0}" != "1" ]; then
