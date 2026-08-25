@@ -387,6 +387,58 @@ func slugify(_ s: String) -> String {
     return out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
 }
 
+private struct SuggestionRowView: View {
+    let iss: SprintIssue
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 9) {
+                avatar
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(iss.key).font(Theme.mono(11, .medium)).foregroundStyle(Theme.accent)
+                        Text(iss.summary).font(.system(size: 11.5)).foregroundStyle(Theme.fg).lineLimit(1)
+                    }
+                    HStack(spacing: 6) {
+                        Text(iss.mine ? "You" : (iss.assignee.isEmpty ? "Unassigned" : iss.assignee))
+                            .font(.system(size: 10)).foregroundStyle(iss.mine ? Theme.accent : Theme.fgMuted)
+                        if !iss.sprint.isEmpty { badge(iss.sprint) }
+                        if !iss.status.isEmpty { badge(iss.status) }
+                    }
+                }
+                Spacer(minLength: 6)
+                if iss.mine {
+                    Text("mine").font(.system(size: 8.5, weight: .bold)).foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 4).padding(.vertical, 1).background(Theme.accentSoft, in: Capsule())
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(hover ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+    }
+
+    private var avatar: some View {
+        let initial = String((iss.mine ? "You" : iss.assignee).prefix(1)).uppercased()
+        return Circle()
+            .fill(iss.mine ? Theme.accent.opacity(0.25) : Theme.hover)
+            .frame(width: 20, height: 20)
+            .overlay(Text(initial.isEmpty ? "?" : initial).font(.system(size: 9, weight: .semibold)).foregroundStyle(iss.mine ? Theme.accent : Theme.fgMuted))
+            .padding(.top, 1)
+    }
+
+    private func badge(_ text: String) -> some View {
+        Text(text).font(.system(size: 9)).foregroundStyle(Theme.dim)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Theme.chip, in: Capsule()).lineLimit(1)
+    }
+}
+
 struct CreateWorkspaceView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var theme: ThemeManager
@@ -404,6 +456,7 @@ struct CreateWorkspaceView: View {
     @State private var sprint: [SprintIssue] = []
     @State private var loadingSprint = false
     @State private var showSuggest = false
+    @State private var justPicked = false
     @State private var preview: JiraDetail?
     @State private var previewLoading = false
     @State private var refined = false
@@ -467,8 +520,8 @@ struct CreateWorkspaceView: View {
         .background(Theme.bgSoft)
         .task { await loadBoards(); theme.applyToWindow() }
         .onChange(of: board) { Task { await loadSprint() } }
-        .onChange(of: ticketFocused) { _, f in if f { showSuggest = true } }
-        .onChange(of: ticket) { showSuggest = true; schedulePreview(); refined = false; name = ""; slugOverride = "" }
+        .onChange(of: ticketFocused) { _, f in showSuggest = f && !justPicked }
+        .onChange(of: ticket) { if !justPicked { showSuggest = true }; schedulePreview(); refined = false; name = ""; slugOverride = "" }
         .onChange(of: desc) { refined = false }
     }
 
@@ -592,6 +645,7 @@ struct CreateWorkspaceView: View {
                 }
             Text(loadingSprint ? "loading sprint…" : "optional — pick from the sprint or type a key")
                 .font(.system(size: 10.5)).foregroundStyle(Theme.dim)
+                .opacity(showSuggest && !suggestions.isEmpty ? 0 : 1)
         }
     }
 
@@ -600,51 +654,16 @@ struct CreateWorkspaceView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(suggestions.prefix(20)) { iss in
-                    Button { pick(iss) } label: { suggestionRow(iss) }.buttonStyle(.plain)
+                    SuggestionRowView(iss: iss) { pick(iss) }
                 }
             }.padding(4)
         }
         .frame(height: h)
-        .background(Theme.panel3, in: RoundedRectangle(cornerRadius: 8))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.bgSoft))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.panel3))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.border))
-        .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
-    }
-
-    private func suggestionRow(_ iss: SprintIssue) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            avatar(iss)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(iss.key).font(Theme.mono(11, .medium)).foregroundStyle(Theme.accent)
-                    Text(iss.summary).font(.system(size: 11.5)).foregroundStyle(Theme.fg).lineLimit(1)
-                }
-                HStack(spacing: 6) {
-                    Text(iss.mine ? "You" : (iss.assignee.isEmpty ? "Unassigned" : iss.assignee))
-                        .font(.system(size: 10)).foregroundStyle(iss.mine ? Theme.accent : Theme.fgMuted)
-                    if !iss.sprint.isEmpty {
-                        metaBadge(iss.sprint, Theme.dim)
-                    }
-                    if !iss.status.isEmpty { metaBadge(iss.status, Theme.dim) }
-                }
-            }
-            Spacer(minLength: 6)
-            if iss.mine {
-                Text("mine").font(.system(size: 8.5, weight: .bold)).foregroundStyle(Theme.accent)
-                    .padding(.horizontal, 4).padding(.vertical, 1).background(Theme.accentSoft, in: Capsule())
-            }
-        }
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-    }
-
-    private func avatar(_ iss: SprintIssue) -> some View {
-        let initial = String((iss.mine ? "You" : iss.assignee).prefix(1)).uppercased()
-        return Circle()
-            .fill(iss.mine ? Theme.accent.opacity(0.25) : Theme.hover)
-            .frame(width: 20, height: 20)
-            .overlay(Text(initial.isEmpty ? "?" : initial).font(.system(size: 9, weight: .semibold)).foregroundStyle(iss.mine ? Theme.accent : Theme.fgMuted))
-            .padding(.top, 1)
+        .compositingGroup()
+        .shadow(color: .black.opacity(0.45), radius: 14, y: 7)
     }
 
     private func metaBadge(_ text: String, _ c: Color) -> some View {
@@ -655,6 +674,10 @@ struct CreateWorkspaceView: View {
     }
 
     private func pick(_ iss: SprintIssue) {
+        // @FocusState updates async, so guard the re-show with a plain flag that
+        // outlives the pick's onChange(ticket)/refocus before clearing itself.
+        justPicked = true
+        Task { try? await Task.sleep(nanoseconds: 400_000_000); justPicked = false }
         ticket = iss.key
         // Refresh desc from the picked ticket unless the user typed their own —
         // else switching tickets keeps the old summary and the refined name/slug

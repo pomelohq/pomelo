@@ -63,11 +63,6 @@ struct RightClickCatcher: NSViewRepresentable {
     }
 }
 
-final class MenuActionRelay: NSObject {
-    var onPick: (String) -> Void = { _ in }
-    @objc func fire(_ sender: NSMenuItem) { onPick(sender.representedObject as? String ?? sender.title) }
-}
-
 struct ChipSelect: View {
     let text: String
     let color: Color
@@ -75,10 +70,10 @@ struct ChipSelect: View {
     var current: String? = nil
     let onPick: (String) -> Void
     @State private var hover = false
-    @State private var relay = MenuActionRelay()
+    @State private var open = false
 
     var body: some View {
-        Button(action: popMenu) {
+        Button { open.toggle() } label: {
             HStack(spacing: 3) {
                 Text(text).font(Theme.mono(11))
                 Image(systemName: "chevron.down").font(.system(size: 6, weight: .bold)).opacity(0.7)
@@ -90,24 +85,43 @@ struct ChipSelect: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(options, id: \.self) { opt in
+                    ChipSelectRow(title: opt, selected: opt == (current ?? text), tint: color) {
+                        onPick(opt); open = false
+                    }
+                }
+            }
+            .padding(5)
+            .frame(minWidth: 180)
+            .background(Theme.panel3)
+        }
     }
+}
 
-    private func popMenu() {
-        relay.onPick = onPick
-        let menu = NSMenu()
-        let sel = current ?? text
-        for opt in options {
-            let item = NSMenuItem(title: opt, action: #selector(MenuActionRelay.fire(_:)), keyEquivalent: "")
-            item.target = relay
-            item.representedObject = opt
-            item.state = opt == sel ? .on : .off
-            menu.addItem(item)
+private struct ChipSelectRow: View {
+    let title: String
+    let selected: Bool
+    let tint: Color
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(tint).opacity(selected ? 1 : 0).frame(width: 12)
+                Text(title).font(Theme.mono(11.5)).foregroundStyle(selected ? tint : Theme.fg)
+                Spacer(minLength: 12)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(hover ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 5))
+            .contentShape(Rectangle())
         }
-        if let event = NSApp.currentEvent, let view = event.window?.contentView {
-            menu.popUp(positioning: nil, at: view.convert(event.locationInWindow, from: nil), in: view)
-        } else {
-            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
     }
 }
 
