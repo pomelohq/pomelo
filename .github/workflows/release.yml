@@ -31,3 +31,20 @@ jobs:
     with:
       publish: true
     secrets: inherit
+
+  # The docs site mirrors this repo's CHANGELOG at build time, but only rebuilds on
+  # its own pushes — kick its deploy so the Changelog page reflects this release.
+  # Needs a DOCS_DISPATCH_TOKEN secret (fine-grained PAT, Actions: write on
+  # pomelohq/pomelo-docs); skips quietly if it isn't set.
+  refresh-docs:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger pomelo-docs deploy
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "DOCS_DISPATCH_TOKEN not set — skipping docs refresh"; exit 0
+          fi
+          gh workflow run deploy.yml --repo pomelohq/pomelo-docs --ref main
