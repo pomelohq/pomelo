@@ -73,6 +73,21 @@ jobs:
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_ed_key"
           echo "SPARKLE_ED_KEY_FILE=$RUNNER_TEMP/sparkle_ed_key" >> "$GITHUB_ENV"
 
+      - name: Generate release notes
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" --jq .body 2>/dev/null || true)
+          [ -z "$NOTES" ] && NOTES="Pomelo $GITHUB_REF_NAME"
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          {
+            echo "RELEASE_NOTES<<__POMEOF__"
+            printf '%s\n' "$NOTES"
+            echo "__POMEOF__"
+          } >> "$GITHUB_ENV"
+
       - name: Build, sign, notarize, package
         if: ${{ inputs.publish }}
         env:
@@ -95,7 +110,7 @@ jobs:
           VERSION=$(grep '^const version' cmd/pom/root.go | cut -d'"' -f2)
           cd desktop/PomeloApp/dist
           gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" \
-            --title "v$VERSION" --generate-notes \
+            --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
             "Pomelo-$VERSION.dmg" appcast.xml checksums.txt \
           || gh release upload "v$VERSION" --repo "$GITHUB_REPOSITORY" --clobber \
             "Pomelo-$VERSION.dmg" appcast.xml checksums.txt
