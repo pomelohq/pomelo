@@ -21,7 +21,6 @@ type Config struct {
 	Environments   map[string]map[string]string `yaml:"environments"`
 	CodeAgents     *CodeAgentsConfig            `yaml:"code_agents"`
 	UI             *UIConfig                    `yaml:"ui"`
-	Jira           *JiraConfig                  `yaml:"jira"`
 	Sync           *SyncConfig                  `yaml:"sync"`
 	Seed           []string                     `yaml:"seed"`
 	PrepareMain    []string                     `yaml:"prepare_main"`
@@ -206,12 +205,6 @@ type EnvFileEntry struct {
 
 type UIConfig struct {
 	Editor string `yaml:"editor"`
-}
-
-type JiraConfig struct {
-	Site     string `yaml:"site"`
-	Email    string `yaml:"email"`
-	TokenEnv string `yaml:"token_env"`
 }
 
 type SyncConfig struct {

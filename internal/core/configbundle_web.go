@@ -50,7 +50,7 @@ func (s *Server) BundleAdapt(dataB64, password, yaml string, createSecrets bool)
 		"prompt": "Merge pom-import-source.yml into my pom config, conforming to the CANONICAL schema (docs/config-schema.md) — pom.yml is config to RUN the project, dot-notation ONLY. Steps: " +
 			"(1) map the source's repo names/paths/services/ports onto my project's repos. " +
 			"(2) MIGRATE every legacy form — rewrite colon templates to dot ({{conn:x}}→{{shared.x.url}}, {{host:x}}/{{port:x}}→{{shared.x.host}}/.port, {{db:x}}→{{db.x}}, {{user:x}}/{{pass:x}}/{{slot:x}}→{{shared.x.*}}); NEVER keep a colon form (config_validate rejects them). " +
-			"(3) DROP anything not part of running the project: `proxy:`/`webhook:` (system auto-routes), `ui`/`code_agents` (app settings), `e2e`, `exposes:`+`{{var:}}`, `combinations`/`workspaces`. Don't carry them over. " +
+			"(3) DROP anything not part of running the project: `proxy:`/`webhook:` (system auto-routes), `ui`/`code_agents`/`jira` (app settings), `e2e`, `exposes:`+`{{var:}}`, `combinations`/`workspaces`. Don't carry them over. " +
 			"(4) replace any real secret literal with {{secret.NAME}} (the values are already in the secret store). " +
 			"(5) fold per-repo setup/migrate/seed/shortcuts into `lifecycle.commands`. " +
 			"Then loop config_validate until zero errors, call config_normalize as the FINAL step (it deterministically strips removed keys, migrates colon→dot, and tidies into pom.d), and report exactly what you merged, migrated, and dropped. Delete pom-import-source.yml when done."}

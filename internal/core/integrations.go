@@ -23,9 +23,6 @@ func (s *Server) handleIntegrationsStatus(w http.ResponseWriter, r *http.Request
 func (s *Server) IntegrationsStatus() map[string]any {
 	cfg := s.cfg()
 	site, email, tokenEnv := "", "", ""
-	if cfg != nil && cfg.Jira != nil {
-		site, email, tokenEnv = cfg.Jira.Site, cfg.Jira.Email, cfg.Jira.TokenEnv
-	}
 	if j := appstate.Load(s.session()).Jira; j.Site != "" || j.Email != "" {
 		site, email = j.Site, j.Email
 	}

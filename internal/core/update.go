@@ -21,7 +21,7 @@ func (s *versionFeature) handleVersion(w http.ResponseWriter, r *http.Request) {
 func VersionInfo() map[string]any {
 	return map[string]any{
 		"version":      Version,
-		"releases_url": "https://github.com/pomelohq/pomelo-releases/releases/latest",
+		"releases_url": "https://github.com/pomelohq/pomelo/releases/latest",
 	}
 }
 
