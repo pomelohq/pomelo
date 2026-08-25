@@ -175,6 +175,12 @@ struct RootView: View {
                 set: { if !$0 { state.switchError = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(state.switchError ?? "") }
+            .alert("Couldn’t open project", isPresented: Binding(
+                get: { state.openError != nil },
+                set: { if !$0 { state.openError = nil } })) {
+                Button("Choose another…") { state.openExistingProject() }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text(state.openError ?? "") }
         }
     }
 }

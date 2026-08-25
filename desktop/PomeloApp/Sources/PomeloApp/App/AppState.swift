@@ -122,6 +122,7 @@ final class AppState: ObservableObject {
     @Published var showCreateSession = false
     @Published var showSessions = false
     @Published var switchError: String?
+    @Published var openError: String?
     @Published var openCreateWorkspace = false
     @Published var onboardBranch: String?
 
@@ -306,7 +307,7 @@ final class AppState: ObservableObject {
             FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent($0))
         }
         guard hasCfg else {
-            bootError = "No pom.yml in “\(url.lastPathComponent)”. Pick the project root, or create a new project."
+            openError = "No pom.yml in “\(url.lastPathComponent)”. Pick the project root (the folder that has pom.yml), or create a new project."
             return
         }
         setLastProject(dir); booted = false; boot()
