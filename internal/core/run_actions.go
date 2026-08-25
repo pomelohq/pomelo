@@ -46,9 +46,10 @@ func (s *Server) ShortcutRun(branch string, isMain bool, repo, cmd string) map[s
 	wtPath := repoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
 	safe := strings.NewReplacer("/", "-", " ", "_").Replace(repo)
 	services.RegenerateWorkspaceEnv(s.WorkspaceRoot, s.cfg(), branch)
-	shellCmd := fmt.Sprintf("set -a; source .env.local 2>/dev/null; set +a; %s", cmd)
+	// cat blocks on stdin, exits only on EOF (Ctrl+D); a lone read would grab leftover input and close instantly
+	shellCmd := fmt.Sprintf("set -a; source .env.local 2>/dev/null; set +a; %s; stty sane </dev/tty 2>/dev/null; echo; echo '— done · press Ctrl+D to close —'; cat >/dev/null 2>&1", cmd)
 	holder := shellHolderName(branch, isMain, safe)
-	if err := services.SpawnHolder(holder, wtPath, 0, 0, shell.Login(shellCmd)); err != nil {
+	if err := services.SpawnHolder(holder, wtPath, 0, 0, shell.Command(shellCmd)); err != nil {
 		return map[string]any{"ok": false, "error": err.Error()}
 	}
 	return map[string]any{"ok": true, "window": holder, "pane_id": "pty:" + holder}
