@@ -30,12 +30,14 @@ test -x "$PRODUCTS/PomeloApp" || { echo "build failed: no PomeloApp binary"; exi
 
 # Assemble a real .app bundle. A bare binary crashes on APIs that require a
 # bundle identity (Sparkle, UserNotifications), so the dev build must run as an
-# .app — launched via `open` so LaunchServices registers it.
+# .app — launched via `open` so LaunchServices registers it. Distinct bundle id +
+# executable name from the shipped app so the dev build runs ALONGSIDE a released
+# Pomelo (dogfooding) without either killing/refocusing the other.
 VERSION=$(grep '^const version' "$repo/cmd/pom/root.go" | cut -d'"' -f2)
-APP="$PRODUCTS/Pomelo.app"
+APP="$PRODUCTS/PomeloDev.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
-cp "$PRODUCTS/PomeloApp" "$APP/Contents/MacOS/Pomelo"
+cp "$PRODUCTS/PomeloApp" "$APP/Contents/MacOS/PomeloDev"
 cp "$here/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 for b in "$PRODUCTS"/*.bundle; do
   [ -e "$b" ] || continue
@@ -44,7 +46,7 @@ done
 for f in "$PRODUCTS"/*.framework; do
   [ -d "$f" ] && cp -R "$f" "$APP/Contents/Frameworks/"
 done
-install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Pomelo" 2>/dev/null || true
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/PomeloDev" 2>/dev/null || true
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -52,18 +54,16 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key><string>Pomelo (dev)</string>
-	<key>CFBundleExecutable</key><string>Pomelo</string>
+	<key>CFBundleExecutable</key><string>PomeloDev</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
-	<key>CFBundleIdentifier</key><string>com.pomelo.app</string>
-	<key>CFBundleName</key><string>Pomelo</string>
+	<key>CFBundleIdentifier</key><string>com.pomelo.app.dev</string>
+	<key>CFBundleName</key><string>Pomelo Dev</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>$VERSION</string>
 	<key>CFBundleVersion</key><string>$VERSION</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-	<key>SUFeedURL</key><string>https://github.com/pomelohq/pomelo/releases/latest/download/appcast.xml</string>
-	<key>SUPublicEDKey</key><string>tGnmpupAySzHVMfQcDqtlMFoxuSLC9Pl6TtF4DmGECY=</string>
 	<key>SUEnableAutomaticChecks</key><false/>
 </dict>
 </plist>
@@ -73,7 +73,7 @@ codesign -s - --force --deep "$APP" >/dev/null 2>&1 || true
 echo "Build complete! -> $APP"
 
 case "${1:-}" in
-    run)          exec open "$APP" ;;
+    run)          exec open -n "$APP" ;;
     selftest)     exec "$PRODUCTS/PomeloApp" --selftest ;;
     selftest-pty) exec "$PRODUCTS/PomeloApp" --selftest-pty ;;
 esac
