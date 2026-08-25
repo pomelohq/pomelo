@@ -106,4 +106,3 @@ dmg:
 clean:
 	rm -f $(BINARY)
 	rm -rf dist/
-	rm -rf desktop/PomeloApp/dist-dev/
