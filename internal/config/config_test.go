@@ -6,13 +6,6 @@ import (
 	"testing"
 )
 
-func TestSvcSession(t *testing.T) {
-	cfg := &Config{Session: "myapp"}
-	if got := cfg.SvcSession(); got != "tncli_myapp" {
-		t.Errorf("SvcSession() = %q, want %q", got, "tncli_myapp")
-	}
-}
-
 func TestGlobalDefaultBranch(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -262,7 +255,7 @@ shared_services:
     db_password: secret
 `
 	dir := t.TempDir()
-	path := filepath.Join(dir, "tncli.yml")
+	path := filepath.Join(dir, "pom.yml")
 	if err := os.WriteFile(path, []byte(yml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +331,7 @@ presets:
       - yarn install
 `
 	dir := t.TempDir()
-	path := filepath.Join(dir, "tncli.yml")
+	path := filepath.Join(dir, "pom.yml")
 	if err := os.WriteFile(path, []byte(yml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +403,7 @@ repos:
           VITE_WS:  "{{backend.api.ws}}"
 `
 	dir := t.TempDir()
-	path := filepath.Join(dir, "tncli.yml")
+	path := filepath.Join(dir, "pom.yml")
 	if err := os.WriteFile(path, []byte(yml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +467,7 @@ repos:
 	for name, yml := range cases {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			path := filepath.Join(dir, "tncli.yml")
+			path := filepath.Join(dir, "pom.yml")
 			if err := os.WriteFile(path, []byte(yml), 0o644); err != nil {
 				t.Fatal(err)
 			}

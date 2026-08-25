@@ -292,14 +292,14 @@ func (s *Server) handlePanes(w http.ResponseWriter, r *http.Request) {
 }
 
 func parseAckControl(data []byte) (int, bool) {
-	if !bytes.HasPrefix(data, []byte(`{"__tncli":"ack"`)) {
+	if !bytes.HasPrefix(data, []byte(`{"__pom":"ack"`)) {
 		return 0, false
 	}
 	var msg struct {
-		Tncli string `json:"__tncli"`
+		Ctrl string `json:"__pom"`
 		N     int    `json:"n"`
 	}
-	if json.Unmarshal(data, &msg) != nil || msg.Tncli != "ack" || msg.N <= 0 {
+	if json.Unmarshal(data, &msg) != nil || msg.Ctrl != "ack" || msg.N <= 0 {
 		return 0, false
 	}
 	return msg.N, true
@@ -307,15 +307,15 @@ func parseAckControl(data []byte) (int, bool) {
 
 func parseResizeControl(data []byte) (struct{ Cols, Rows string }, bool) {
 	var out struct{ Cols, Rows string }
-	if !bytes.HasPrefix(data, []byte(`{"__tncli":"resize"`)) {
+	if !bytes.HasPrefix(data, []byte(`{"__pom":"resize"`)) {
 		return out, false
 	}
 	var msg struct {
-		Tncli string `json:"__tncli"`
+		Ctrl string `json:"__pom"`
 		Cols  int    `json:"cols"`
 		Rows  int    `json:"rows"`
 	}
-	if json.Unmarshal(data, &msg) != nil || msg.Tncli != "resize" || msg.Cols <= 0 || msg.Rows <= 0 {
+	if json.Unmarshal(data, &msg) != nil || msg.Ctrl != "resize" || msg.Cols <= 0 || msg.Rows <= 0 {
 		return out, false
 	}
 	out.Cols = strconv.Itoa(msg.Cols)

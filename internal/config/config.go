@@ -344,10 +344,6 @@ type ResolvedService struct {
 	PreStart string
 }
 
-func (c *Config) SvcSession() string {
-	return "tncli_" + c.Session
-}
-
 func (c *Config) PrepareMainPhases() []string {
 	if len(c.PrepareMain) == 0 {
 		return []string{"reset", "migrate", "seed"}
@@ -616,14 +612,14 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Session: "tncli",
+		Session: "pomelo",
 		Repos:   make(map[string]*Dir),
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
 	}
 	if cfg.Session == "" {
-		cfg.Session = "tncli"
+		cfg.Session = "pomelo"
 	}
 
 	extractRepoOrder(cfg, &raw)

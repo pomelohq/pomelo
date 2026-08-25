@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-const lockDir = "/tmp/tncli"
+const lockDir = "/tmp/pom"
 
 func AcquirePrimary(session string) (release func(), ok bool) {
 	EnsureDir()

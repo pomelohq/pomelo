@@ -305,7 +305,7 @@ final class AppState: ObservableObject {
         p.prompt = "Open"; p.message = "Choose your project folder (the one with pom.yml)"
         guard p.runModal() == .OK, let url = p.url else { return }
         let dir = url.path
-        let hasCfg = ["pom.yml", "tncli.yml"].contains {
+        let hasCfg = ["pom.yml"].contains {
             FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent($0))
         }
         guard hasCfg else {

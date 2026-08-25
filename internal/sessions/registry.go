@@ -23,15 +23,9 @@ func SessionsRoot() string {
 	if r := os.Getenv("POM_SESSIONS_ROOT"); r != "" {
 		return r
 	}
-	if r := os.Getenv("TNCLI_SESSIONS_ROOT"); r != "" {
-		return r
-	}
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		return "/tmp/pom"
-	}
-	if legacy := filepath.Join(home, "tncli"); isDir(legacy) {
-		return legacy
 	}
 	return filepath.Join(home, "pom")
 }

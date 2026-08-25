@@ -18,7 +18,7 @@ final class PomCore: @unchecked Sendable {
         let last = home.appendingPathComponent(".local/state/pom/last_project")
         if let dir = try? String(contentsOf: last, encoding: .utf8) {
             let trimmed = dir.trimmingCharacters(in: .whitespacesAndNewlines)
-            for name in ["pom.yml", "tncli.yml"] {
+            for name in ["pom.yml"] {
                 let p = (trimmed as NSString).appendingPathComponent(name)
                 if FileManager.default.fileExists(atPath: p) { return p }
             }
