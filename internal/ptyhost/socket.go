@@ -120,6 +120,9 @@ func KillHolder(name string) error {
 		return fmt.Errorf("no holder for %q", name)
 	}
 	killProcessTree(pid)
+	// the holder removes its own pidfile on a clean shutdown, but a SIGKILLed tree never
+	// gets there — a stale pidfile then reads as alive once the OS recycles the pid.
+	_ = os.Remove(pidPath(name))
 	_ = os.Remove(crashPath(name))
 	return nil
 }
@@ -145,6 +148,7 @@ func KillHoldersNow(names []string) {
 	for _, name := range names {
 		if pid := HolderPID(name); pid != 0 {
 			pids = append(pids, descendantPIDs(pid)...)
+			_ = os.Remove(pidPath(name))
 			_ = os.Remove(crashPath(name))
 		}
 	}
