@@ -137,6 +137,31 @@ func killProcessTree(root int) {
 	signalAll(pids, syscall.SIGKILL)
 }
 
+// KillHoldersNow tears down many holders with ONE shared short grace instead of a
+// per-holder 4s wait — for quit/reap of disposable shells, where the sequential
+// per-holder grace would otherwise stack up and hang the app on exit.
+func KillHoldersNow(names []string) {
+	var pids []int
+	for _, name := range names {
+		if pid := HolderPID(name); pid != 0 {
+			pids = append(pids, descendantPIDs(pid)...)
+			_ = os.Remove(crashPath(name))
+		}
+	}
+	if len(pids) == 0 {
+		return
+	}
+	signalAll(pids, syscall.SIGTERM)
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if !anyAlive(pids) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	signalAll(pids, syscall.SIGKILL)
+}
+
 func descendantPIDs(root int) []int {
 	var out []int
 	seen := map[int]bool{}
