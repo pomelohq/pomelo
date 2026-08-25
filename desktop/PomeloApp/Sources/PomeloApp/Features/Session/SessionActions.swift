@@ -3,18 +3,20 @@ import AppKit
 
 extension AppState {
     func switchSession(_ name: String) {
-        Task {
-            let d = await Task.detached { PomCore.shared.sessionSwitch(name: name) }.value
-            struct R: Decodable { var ok = false; var project = ""; var error = "" }
-            let r = PomJSON.decode(R.self, from: d)
-            if let r, r.ok {
-                PomCore.shared.updateSession(r.project.isEmpty ? name : r.project)
-                selection = "main:" + (workspaces.first(where: \.isMain)?.branch ?? "main")
-                await refresh(); await loadSessions(); await refreshConfigHealth()
-            } else {
-                switchError = "Can't switch to “\(name)”: \(r?.error.isEmpty == false ? r!.error : "session unavailable")"
-            }
+        guard let dir = sessions.first(where: { $0.name == name })?.path, !dir.isEmpty else {
+            switchError = "Can't switch to “\(name)”: session unavailable"
+            return
         }
+        let hasCfg = ["pom.yml", "tncli.yml"].contains {
+            FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent($0))
+        }
+        guard hasCfg else {
+            switchError = "Can't switch to “\(name)”: no pom.yml in \(dir)"
+            return
+        }
+        // Re-boot into the session's project — the whole FFI/ptyhost/session state is
+        // tied to the booted config, so an in-place cfg swap can't switch it cleanly.
+        bootProject(dir)
     }
 
     func deleteSession(_ name: String) {

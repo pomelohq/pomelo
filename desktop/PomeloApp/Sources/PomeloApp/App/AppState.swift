@@ -297,6 +297,8 @@ final class AppState: ObservableObject {
         try? dir.write(to: f, atomically: true, encoding: .utf8)
     }
 
+    func bootProject(_ dir: String) { setLastProject(dir); booted = false; boot() }
+
     func openExistingProject() {
         let p = NSOpenPanel()
         p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
@@ -310,7 +312,7 @@ final class AppState: ObservableObject {
             openError = "No pom.yml in “\(url.lastPathComponent)”. Pick the project root (the folder that has pom.yml), or create a new project."
             return
         }
-        setLastProject(dir); booted = false; boot()
+        bootProject(dir)
     }
 
     func createNewProject() {
@@ -324,7 +326,7 @@ final class AppState: ObservableObject {
             let name = url.lastPathComponent.replacingOccurrences(of: " ", with: "-").lowercased()
             try? "session: \(name)\ndefault_branch: main\nrepos: {}\n".write(toFile: cfgPath, atomically: true, encoding: .utf8)
         }
-        setLastProject(dir); booted = false; boot()
+        bootProject(dir)
     }
 
     private func bootDo(_ cfg: String) {

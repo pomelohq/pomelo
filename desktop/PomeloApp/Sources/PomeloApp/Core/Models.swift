@@ -11,6 +11,7 @@ struct SessionsResponse: Decodable {
 
 struct SessionItem: Decodable, Identifiable, Equatable {
     let name: String
+    let path: String?
     let current: Bool
     let running: Bool
     let available: Bool?
