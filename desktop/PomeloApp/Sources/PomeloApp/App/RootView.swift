@@ -430,9 +430,8 @@ struct CreateWorkspaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 9) {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(LinearGradient(colors: [.orange, .pink], startPoint: .top, endPoint: .bottom))
-                    .frame(width: 20, height: 20)
+                Image(nsImage: NSApplication.shared.applicationIconImage)
+                    .resizable().frame(width: 22, height: 22)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Create workspace").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
                     Text("Pick a sprint ticket or describe the work").font(.system(size: 11)).foregroundStyle(Theme.dim)

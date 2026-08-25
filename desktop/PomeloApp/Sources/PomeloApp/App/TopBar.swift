@@ -72,9 +72,8 @@ struct HeaderLeading: View {
         HStack(spacing: 8) {
             Button { state.showSessions.toggle() } label: {
                 HStack(spacing: 6) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(LinearGradient(colors: [.orange, .pink], startPoint: .top, endPoint: .bottom))
-                        .frame(width: 15, height: 15)
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable().frame(width: 16, height: 16)
                     Text(PomCore.shared.session.isEmpty ? "pomelo" : PomCore.shared.session)
                         .font(.system(size: 13, weight: .semibold))
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
