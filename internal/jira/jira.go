@@ -239,13 +239,16 @@ func (c *Client) IssueWithDescription(key string) (*IssueDetail, error) {
 	if len(imgs) > 0 {
 		desc = strings.TrimSpace(desc) + "\n\n### Attachments\n\n" + strings.Join(imgs, "\n\n")
 	}
-	var comments []Comment
+	comments := make([]Comment, 0, len(body.Fields.Comment.Comments))
 	for _, cm := range body.Fields.Comment.Comments {
 		comments = append(comments, Comment{
 			Author: cm.Author.DisplayName, Created: cm.Created, Body: ADFMarkdown(cm.Body),
 		})
 	}
 	webLinks, _ := c.RemoteLinks(key)
+	if webLinks == nil {
+		webLinks = []WebLink{}
+	}
 	return &IssueDetail{
 		Key: key, Summary: body.Fields.Summary, Status: body.Fields.Status.Name,
 		URL:         c.BrowseURL(key),
