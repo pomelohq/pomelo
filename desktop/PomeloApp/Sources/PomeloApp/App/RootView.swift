@@ -234,6 +234,15 @@ struct WorkspaceSidebar: View {
                                 }
                             })
                     }
+                    // Trailing drop zone so a row can be dropped at the very end
+                    // ("before" an unknown target appends).
+                    Color.clear.frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
+                        .onDrop(of: [.text], delegate: WsReorderDrop(targetId: "\u{1}__end", draggingId: $draggingId) { d, t in
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                state.moveWorkspace(d, before: t)
+                            }
+                        })
                 }
                 .padding(.horizontal, 4).padding(.vertical, 4)
                 .animation(.spring(response: 0.28, dampingFraction: 0.82), value: state.orderedNonMain.map(\.id))
