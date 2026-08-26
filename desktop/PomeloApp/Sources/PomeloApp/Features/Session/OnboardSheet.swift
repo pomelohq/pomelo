@@ -180,27 +180,102 @@ struct OnboardSheet: View {
 
     @State private var findings: [DoctorViewModel.Finding] = []
     @State private var showResult = false
+    @State private var startAt = Date()
+    @State private var endedAt: Date?
+    @State private var showLog = false
 
     var body: some View {
         Group {
-            if showResult {
-                resultSheet
-            } else {
-                AgentSheet(
-                    model: model,
-                    title: "Onboarding",
-                    subtitle: "Reads each repo (framework, monorepo apps, processes, docker-compose incl. extends), writes a runnable config with env wired, and loops config_doctor until clean.",
-                    runningLabel: "Onboarding — analyzing repos & authoring pom.yml…",
-                    onBackground: onClose, onDone: { model.stop(); onClose() },
-                    onStop: { model.stop(); onClose() })
+            if showResult { resultSheet } else { onboardingBody }
+        }
+        .onAppear { startAt = Date(); model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: firstTurn) }
+        .onChange(of: model.running) {
+            if !model.running { endedAt = Date(); Task { await loadFindings() } }
+        }
+    }
+
+    private var onboardingBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                if model.running { ProgressView().controlSize(.small).scaleEffect(0.8) }
+                Text("Onboarding · \(PomCore.shared.session)")
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.fg)
+                Spacer()
+                TimelineView(.periodic(from: startAt, by: 1)) { ctx in
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock").font(.system(size: 10))
+                        Text(mmss(startAt, endedAt ?? ctx.date)).font(Theme.mono(11))
+                    }.foregroundStyle(Theme.fgMuted)
+                }
+            }
+            phaseList
+            Text("Now: \(nowLine)").font(.system(size: 12)).foregroundStyle(Theme.fgMuted).lineLimit(2)
+
+            DisclosureGroup(isExpanded: $showLog) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(model.entries) { AgentEntryRow(entry: $0) }
+                            Color.clear.frame(height: 1).id("bottom")
+                        }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 240).background(Theme.bg, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
+                    .onChange(of: model.tick) { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+            } label: {
+                Text("Activity · \(model.entries.count) step\(model.entries.count == 1 ? "" : "s")")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.accent)
+            }
+
+            Spacer(minLength: 0)
+            HStack {
+                Button("Stop") { model.stop(); onClose() }.buttonStyle(.bordered).tint(Theme.danger)
+                Spacer()
+                Button("Run in background") { onClose() }.buttonStyle(.borderedProminent).tint(Theme.accent)
             }
         }
-        .onAppear { model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: firstTurn) }
-        .onChange(of: model.running) { if !model.running { Task { await loadFindings() } } }
+        .padding(18).frame(width: 640, height: 520)
+    }
+
+    private var phaseList: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            phaseRow(done: true, active: false, "Scan repos", "cloned")
+            phaseRow(done: !model.running, active: model.running, "Author config", model.running ? "writing pom.yml…" : "done")
+        }
+    }
+
+    private func phaseRow(done: Bool, active: Bool, _ title: String, _ detail: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: done ? "checkmark.circle.fill" : (active ? "circle.dashed" : "circle"))
+                .font(.system(size: 11)).foregroundStyle(done ? Theme.ok : (active ? Theme.accent : Theme.dim))
+            Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.fg)
+            Text(detail).font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+            Spacer()
+        }
+    }
+
+    private func mmss(_ from: Date, _ to: Date) -> String {
+        let s = max(0, Int(to.timeIntervalSince(from)))
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    private var nowLine: String {
+        guard let e = model.entries.last else { return model.started ? "working…" : "starting Claude…" }
+        switch e.kind {
+        case .tool: return "running \(e.text)"
+        case .text: return e.text.split(separator: "\n").last.map(String.init) ?? "…"
+        case .system, .error: return e.text
+        }
     }
 
     private var resultSheet: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock").font(.system(size: 10))
+                Text("Onboarding done · \(mmss(startAt, endedAt ?? Date()))").font(.system(size: 12, weight: .medium))
+                Spacer()
+            }.foregroundStyle(Theme.fgMuted).padding(.horizontal, 16).padding(.top, 14)
             ScrollView { OnboardResultView(findings: findings, services: 0, onRetry: retry) }
             HStack {
                 Spacer()
@@ -215,7 +290,7 @@ struct OnboardSheet: View {
         let d = await Task.detached { PomCore.shared.doctorData() }.value
         let report = PomJSON.decode(DoctorViewModel.Report.self, from: d)
         findings = (report?.findings ?? []).filter { $0.severity != "ok" }
-        showResult = !findings.isEmpty
+        showResult = true
     }
 
     private func retry() {

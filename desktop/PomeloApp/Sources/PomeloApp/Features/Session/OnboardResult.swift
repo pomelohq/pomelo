@@ -64,6 +64,19 @@ struct OnboardResultView: View {
     }
 
     var body: some View {
+        if findings.isEmpty {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(Theme.ok)
+                Text("Config authored — project is runnable, no blocking gaps.")
+                    .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.fg)
+                Spacer()
+            }.padding(16)
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(headline)
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.fg)
