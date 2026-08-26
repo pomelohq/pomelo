@@ -134,6 +134,12 @@ final class PomCore: @unchecked Sendable {
         return String(cString: out)
     }
 
+    func codeAgentsData() -> Data {
+        guard let out = PomCodeAgents() else { return Data() }
+        defer { PomFree(out) }
+        return Data(String(cString: out).utf8)
+    }
+
     func syncGetData() -> Data {
         guard let out = PomSyncGet() else { return Data() }
         defer { PomFree(out) }

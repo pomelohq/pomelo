@@ -64,27 +64,28 @@ enum Notifier {
         }
     }
 
+    // Banner is silent; the per-event sound is played by SoundPrefs so it is
+    // customizable and can fire even when the app is focused.
     static func notify(title: String, body: String, wsKey: String) {
         guard authorized else { return }
         let c = UNMutableNotificationContent()
         c.title = title
         c.body = body
-        c.sound = .default
         if !wsKey.isEmpty { c.userInfo = ["ws": wsKey] }
         let req = UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil)
         UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 
-    static func message(ws: String, from: String?, to: String) -> (String, String)? {
+    static func message(ws: String, from: String?, to: String) -> (title: String, event: String)? {
         let wasWorking = from == "thinking" || from == "tool_use"
         if to == "awaiting_input" && from != "awaiting_input" {
-            return ("Claude needs your input", ws)
+            return ("Claude needs your input", "needs_input")
         }
         if to == "compacting" && from != "compacting" {
-            return ("Claude is compacting", ws)
+            return ("Claude is compacting", "compacting")
         }
         if wasWorking && (to == "idle" || to == "stopped") {
-            return ("Claude finished", ws)
+            return ("Claude finished", "finished")
         }
         return nil
     }

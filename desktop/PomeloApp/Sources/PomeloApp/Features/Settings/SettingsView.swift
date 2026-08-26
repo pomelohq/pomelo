@@ -6,17 +6,18 @@ import ServiceManagement
 enum SettingsGroup { case app, project }
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, shortcuts, network, diagnostics, integrations
+    case general, notifications, shortcuts, network, diagnostics, integrations
     var id: String { rawValue }
     var group: SettingsGroup {
         switch self {
-        case .general, .shortcuts, .network, .diagnostics: return .app
+        case .general, .notifications, .shortcuts, .network, .diagnostics: return .app
         case .integrations: return .project
         }
     }
     var title: String {
         switch self {
         case .general: return "General"
+        case .notifications: return "Notifications"
         case .shortcuts: return "Shortcuts"
         case .network: return "Network"
         case .diagnostics: return "Diagnostics"
@@ -26,6 +27,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "gearshape"
+        case .notifications: return "bell"
         case .shortcuts: return "keyboard"
         case .network: return "network"
         case .diagnostics: return "ladybug"
@@ -92,6 +94,7 @@ struct SettingsView: View {
                 .padding(.horizontal, 24).frame(height: 44)
             switch section {
             case .general: GeneralSettings()
+            case .notifications: NotificationsSettings()
             case .shortcuts: ShortcutsSettings()
             case .network: NetworkSettings()
             case .diagnostics: DiagnosticsSettings()

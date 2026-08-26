@@ -9,8 +9,22 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/pomelohq/pomelo/internal/agent/codeagent"
 	"github.com/pomelohq/pomelo/internal/core"
 )
+
+//export PomCodeAgents
+func PomCodeAgents() *C.char {
+	type agent struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	out := []agent{}
+	for _, ca := range codeagent.Builtin() {
+		out = append(out, agent{ID: ca.Cmd, Name: ca.Name})
+	}
+	return bindingJSON(out)
+}
 
 func server() *core.Server {
 	mu.Lock()

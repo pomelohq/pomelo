@@ -488,9 +488,11 @@ final class AppState: ObservableObject {
     }
 
     func refreshAgents() async {
-        await agentsvm.refresh(notify: notifyClaude, activeSelection: selection, appActive: appActive) { [weak self] t, ws in
+        await agentsvm.refresh(notify: notifyClaude, whenFocused: SoundPrefs.shared.whenFocused,
+                               activeSelection: selection, appActive: appActive) { [weak self] title, event, ws in
             guard let self else { return }
-            Notifier.notify(title: t, body: self.workspaceTitle(ws), wsKey: ws)
+            Notifier.notify(title: title, body: self.workspaceTitle(ws), wsKey: ws)
+            SoundPrefs.shared.fire(source: "claude", event: event)
         }
     }
 
