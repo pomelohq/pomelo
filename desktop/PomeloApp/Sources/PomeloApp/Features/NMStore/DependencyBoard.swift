@@ -1,33 +1,56 @@
 import SwiftUI
 import Grape
 
-// Global (session-independent) dependency-cache board. Organised by cache TYPE
-// (node_modules today; go/bundle/venv later); each type renders as an interactive
-// force-directed graph: a repo node linked to its cached hashes — the current one
-// (green, matches main's lockfile) vs stale ones that drifted (amber, tap to
-// reclaim). Uses the Grape SwiftUI graph library.
+// Global (session-independent) dependency-cache board. A force-directed graph with
+// three tiers: cache TYPE (node_modules today; go/bundle/venv later) -> repo -> the
+// cached lockfile hashes for that repo. Current hash (matches main's lockfile) is
+// green; stale ones that drifted are amber (tap to reclaim). Pinch to zoom, drag to
+// pan. Uses the Grape SwiftUI graph library.
 struct DependencyBoard: View {
     var onClose: () -> Void = {}
     @StateObject private var vm = NMStoreViewModel()
     @State private var graphStates = ForceDirectedGraphState(initialIsRunning: true)
 
-    private struct GNode { let id: String; let color: Color; let label: String }
+    private enum Kind { case type, repo, hash }
+    private struct GNode {
+        let id: String
+        let kind: Kind
+        let color: Color
+        let label: String
+        let icon: String
+        let size: CGFloat
+    }
+
+    private let typeID = "type:node_modules"
 
     private var nodes: [GNode] {
-        var out: [GNode] = []
+        var out: [GNode] = [
+            GNode(id: typeID, kind: .type, color: Theme.accent,
+                  label: "node_modules", icon: "shippingbox.fill", size: 26)
+        ]
         let byRepo = Dictionary(grouping: vm.entries, by: \.repo)
         for repo in byRepo.keys.sorted() {
-            out.append(GNode(id: "repo:\(repo)", color: Theme.accent, label: repo))
+            out.append(GNode(id: "repo:\(repo)", kind: .repo, color: Theme.fg,
+                             label: repo, icon: "folder.fill", size: 20))
             for e in byRepo[repo] ?? [] {
-                out.append(GNode(id: "hash:\(e.repo)/\(e.hash)",
+                out.append(GNode(id: "hash:\(e.repo)/\(e.hash)", kind: .hash,
                                  color: e.current ? Theme.ok : Theme.warn,
-                                 label: "\(e.hash.prefix(7)) · \(vm.human(e.bytes))"))
+                                 label: "\(e.hash.prefix(7)) · \(vm.human(e.bytes))",
+                                 icon: "internaldrive.fill", size: 16))
             }
         }
         return out
     }
     private var links: [(String, String)] {
-        vm.entries.map { ("repo:\($0.repo)", "hash:\($0.repo)/\($0.hash)") }
+        var out: [(String, String)] = []
+        let byRepo = Dictionary(grouping: vm.entries, by: \.repo)
+        for repo in byRepo.keys.sorted() {
+            out.append((typeID, "repo:\(repo)"))
+            for e in byRepo[repo] ?? [] {
+                out.append(("repo:\(repo)", "hash:\(e.repo)/\(e.hash)"))
+            }
+        }
+        return out
     }
 
     var body: some View {
@@ -36,7 +59,7 @@ struct DependencyBoard: View {
                 Image(systemName: "shippingbox.fill").font(.system(size: 13)).foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Dependency store").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
-                    Text("node_modules · \(vm.human(vm.total)) total").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+                    Text("node_modules cache · \(vm.human(vm.total)) total").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
                 }
                 Spacer()
                 if !vm.stale.isEmpty {
@@ -57,20 +80,30 @@ struct DependencyBoard: View {
                 Text("No cached node_modules yet.").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                graph
+                graph.overlay(alignment: .bottomLeading) { hint }
             }
         }
         .frame(width: 860, height: 620).background(Theme.bg)
         .task { await vm.load() }
     }
 
+    private var hint: some View {
+        Text("pinch to zoom · drag to pan · tap a stale cache to reclaim")
+            .font(.system(size: 10)).foregroundStyle(Theme.dim)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
     private var graph: some View {
         ForceDirectedGraph(states: graphStates) {
             Series(nodes) { n in
                 NodeMark(id: n.id)
-                    .foregroundStyle(n.color)
-                    .stroke()
-                    .annotation(n.id, offset: .zero) {
+                    .symbolSize(radius: n.size / 2)
+                    .foregroundStyle(n.color.opacity(0.18))
+                    .stroke(n.color)
+                    .annotation(n.id, alignment: .center, offset: .zero) {
+                        Image(systemName: n.icon).font(.system(size: n.size * 0.52)).foregroundStyle(n.color)
+                    }
+                    .annotation("\(n.id)#label", alignment: .bottom, offset: CGVector(dx: 0, dy: n.size * 0.65)) {
                         Text(n.label).font(.system(size: 9)).foregroundStyle(Theme.fgMuted)
                     }
             }
@@ -78,12 +111,13 @@ struct DependencyBoard: View {
                 LinkMark(from: from, to: to)
             }
         } force: {
-            .manyBody(strength: -30.0)
-            .link(originalLength: 42.0)
+            .manyBody(strength: -60.0)
+            .link(originalLength: 54.0)
             .center()
         }
         .graphOverlay { proxy in
             Rectangle().fill(.clear).contentShape(Rectangle())
+                .withGraphMagnifyGesture(proxy)
                 .withGraphDragGesture(proxy, of: String.self)
                 .withGraphTapGesture(proxy, of: String.self) { id in tap(id) }
         }
