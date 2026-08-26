@@ -492,14 +492,17 @@ struct AdvancedSettings: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            List(selection: Binding(get: { path }, set: { if let p = $0 { path = p; Task { await loadFile() } } })) {
-                OutlineGroup(nodes, children: \.children) { node in
-                    Label(node.name, systemImage: node.isDir ? "folder" : "doc.text")
-                        .font(.system(size: 12))
-                        .tag(node.isDir ? "" : node.path)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    ForEach(nodes) { node in
+                        ConfigNodeRow(node: node, depth: 0, selected: path) { p in
+                            path = p
+                            Task { await loadFile() }
+                        }
+                    }
                 }
+                .padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
             }
-            .listStyle(.sidebar)
             Divider().overlay(Theme.borderSoft)
             Button { newName = ""; newError = ""; showNew = true } label: {
                 Label("New file", systemImage: "plus").font(.system(size: 11.5))

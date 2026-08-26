@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 // A node in the config-file tree: pom.yml at the root plus the pom.d/ fragments
 // nested by their relative path. Pure model so the build logic is unit-testable.
@@ -41,4 +41,40 @@ enum ConfigTree {
         }
         return convert(root, prefix: "")
     }
+}
+
+// Recursive plain-view row for the config tree. Deliberately not List/OutlineGroup
+// (those recurse through AppKit constraint updates inside a fixed-width sheet and
+// crash on macOS); a ScrollView of these rows is predictable.
+struct ConfigNodeRow: View {
+    let node: ConfigNode
+    let depth: Int
+    let selected: String
+    let onSelect: (String) -> Void
+    @State private var expanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Button {
+                if node.isDir { expanded.toggle() } else { onSelect(node.path) }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: node.isDir ? (expanded ? "chevron.down" : "chevron.right") : "doc.text")
+                        .font(.system(size: node.isDir ? 9 : 10)).foregroundStyle(Theme.dim).frame(width: 10)
+                    Text(node.name).font(.system(size: 12))
+                        .foregroundStyle(isSelected ? Theme.accent : Theme.fg).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 3).padding(.trailing, 8).padding(.leading, CGFloat(10 + depth * 14))
+                .background(isSelected ? Theme.accentSoft : .clear)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if node.isDir, expanded, let kids = node.children {
+                ForEach(kids) { ConfigNodeRow(node: $0, depth: depth + 1, selected: selected, onSelect: onSelect) }
+            }
+        }
+    }
+
+    private var isSelected: Bool { !node.isDir && node.path == selected }
 }
