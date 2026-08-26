@@ -100,13 +100,13 @@ struct DependencyBoard: View {
                 // connect to it; the mark itself is an invisible hit target. The name
                 // is a cheap native text below.
                 NodeMark(id: n.id)
-                    .symbolSize(radius: 15)
+                    .symbolSize(radius: 4)
                     .foregroundStyle(.clear)
                     .annotation(n.id, alignment: .center, offset: .zero) {
                         Image(systemName: n.icon).font(.system(size: n.size)).foregroundStyle(n.color)
                     }
                     .annotation(Text(verbatim: n.label).font(.system(size: 10)).foregroundColor(Theme.fgMuted),
-                                alignment: .bottom, offset: CGVector(dx: 0, dy: CGFloat(n.size) * 0.75))
+                                alignment: .bottom, offset: CGVector(dx: 0, dy: CGFloat(n.size) + 10))
             }
             Series(links) { from, to in
                 LinkMark(from: from, to: to)
