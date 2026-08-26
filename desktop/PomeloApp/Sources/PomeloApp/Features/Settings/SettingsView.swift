@@ -176,7 +176,6 @@ private struct GeneralSettings: View {
                 Text("A sound + banner when Claude finishes, asks for input, or compacts — for a workspace you're not currently viewing. Needs macOS notification permission.")
             }
             .task { recheckNotif() }
-            NMStoreSection()
             Section {
                 LabeledContent("Version") {
                     Text(version.isEmpty ? "…" : version).monospaced().foregroundStyle(Theme.fgMuted)

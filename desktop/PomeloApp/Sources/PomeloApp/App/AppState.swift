@@ -118,6 +118,7 @@ final class AppState: ObservableObject {
 
     @Published var showSettings = false
     @Published var showShared = false
+    @Published var showDependencies = false
     @Published var showSessionPanel = false
     @Published var showCreateSession = false
     @Published var showSessions = false

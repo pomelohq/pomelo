@@ -53,6 +53,9 @@ struct RootView: View {
             .sheet(isPresented: $state.showShared) {
                 SharedServicesView(onClose: { state.showShared = false }).environmentObject(state).environmentObject(theme)
             }
+            .sheet(isPresented: $state.showDependencies) {
+                DependencyBoard(onClose: { state.showDependencies = false }).environmentObject(state).environmentObject(theme)
+            }
             .sheet(isPresented: $state.showSessionPanel) {
                 SessionPanel(onClose: { state.showSessionPanel = false }).environmentObject(state).environmentObject(theme)
             }

@@ -191,6 +191,8 @@ struct HeaderTrailing: View {
             if state.onboardModel != nil && state.onboardBranch == nil { onboardChip }
             Button { state.showShared = true } label: { Image(systemName: "cylinder.split.1x2").font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Shared services", shortcut: "⇧⌘S", align: .bottomTrailing)
+            Button { state.showDependencies = true } label: { Image(systemName: "shippingbox").font(.system(size: 12)) }
+                .buttonStyle(.plain).tooltip("Dependency store", align: .bottomTrailing)
             Button { state.openActivity(scope: nil) } label: { Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Activity Monitor · all workspaces", shortcut: "⇧⌘0", align: .bottomTrailing)
             Button { state.showSessionPanel = true } label: { Image(systemName: "chevron.left.forwardslash.chevron.right").font(.system(size: 12)) }
