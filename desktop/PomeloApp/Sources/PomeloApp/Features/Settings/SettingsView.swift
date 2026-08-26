@@ -454,6 +454,7 @@ private struct CfgFilesResp: Decodable { var files: [CfgFile] = [] }
 struct AdvancedSettings: View {
     @EnvironmentObject var state: AppState
     @State private var files: [CfgFile] = []
+    @State private var nodes: [ConfigNode] = []
     @State private var path = ""            // selected file
     @State private var text = ""
     @State private var original = ""
@@ -461,24 +462,69 @@ struct AdvancedSettings: View {
     @State private var busy = false
     @State private var showExport = false
     @State private var showImport = false
+    @State private var showNew = false
+    @State private var newName = ""
+    @State private var newError = ""
     @StateObject private var doctor = DoctorViewModel()
 
     private var dirty: Bool { text != original }
 
     var body: some View {
-        VStack(spacing: 0) {
-            toolbar
-            if state.agentModel != nil { agentBanner; Divider().overlay(Theme.borderSoft) }
+        HStack(spacing: 0) {
+            sidebar.frame(width: 220)
             Divider().overlay(Theme.borderSoft)
-            YAMLEditor(text: $text)
-                .background(Theme.bg)
-            Divider().overlay(Theme.borderSoft)
-            ConfigDoctorBar(vm: doctor)
+            VStack(spacing: 0) {
+                toolbar
+                if state.agentModel != nil { agentBanner; Divider().overlay(Theme.borderSoft) }
+                Divider().overlay(Theme.borderSoft)
+                YAMLEditor(text: $text)
+                    .background(Theme.bg)
+                Divider().overlay(Theme.borderSoft)
+                ConfigDoctorBar(vm: doctor)
+            }
         }
         .task { await load() }
         .sheet(isPresented: $showExport) { ExportBundleSheet() }
         .sheet(isPresented: $showImport, onDismiss: { Task { await load() } }) { ImportBundleSheet().environmentObject(state) }
+        .sheet(isPresented: $showNew) { newFileSheet }
         .onChange(of: state.agentModel == nil) { if state.agentModel == nil { Task { await load() } } }
+    }
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            List(selection: Binding(get: { path }, set: { if let p = $0 { path = p; Task { await loadFile() } } })) {
+                OutlineGroup(nodes, children: \.children) { node in
+                    Label(node.name, systemImage: node.isDir ? "folder" : "doc.text")
+                        .font(.system(size: 12))
+                        .tag(node.isDir ? "" : node.path)
+                }
+            }
+            .listStyle(.sidebar)
+            Divider().overlay(Theme.borderSoft)
+            Button { newName = ""; newError = ""; showNew = true } label: {
+                Label("New file", systemImage: "plus").font(.system(size: 11.5))
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 8)
+        }
+        .background(Theme.bgSoft)
+    }
+
+    private var newFileSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("New config fragment").font(.system(size: 13, weight: .semibold))
+            Text("Created under pom.d/ and merged into pom.yml.").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+            TextField("services.yml", text: $newName).textFieldStyle(.roundedBorder).frame(width: 260)
+            if !newError.isEmpty { Text(newError).font(.system(size: 11)).foregroundStyle(Theme.danger) }
+            HStack {
+                Spacer()
+                Button("Cancel") { showNew = false }.keyboardShortcut(.cancelAction)
+                Button("Create") { Task { await createFile() } }
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20).frame(width: 320)
     }
 
     private var agentBanner: some View {
@@ -499,11 +545,8 @@ struct AdvancedSettings: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            Picker("", selection: $path) {
-                ForEach(files, id: \.path) { Text($0.name).tag($0.path) }
-            }
-            .labelsHidden().frame(maxWidth: 320)
-            .onChange(of: path) { Task { await loadFile() } }
+            Text(path.isEmpty ? "No file" : (path as NSString).lastPathComponent)
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.fg).lineLimit(1)
             if !status.isEmpty { Text(status).font(.system(size: 11)).foregroundStyle(Theme.fgMuted).lineLimit(1) }
             Spacer()
             if busy { ProgressView().controlSize(.small) }
@@ -523,6 +566,7 @@ struct AdvancedSettings: View {
         let d = await Task.detached { PomCore.shared.configFilesData() }.value
         if let r = PomJSON.decode(CfgFilesResp.self, from: d) {
             files = r.files
+            nodes = ConfigTree.build(r.files.map { .init(rel: $0.name, path: $0.path) })
             if path.isEmpty { path = r.files.first?.path ?? "" }
         }
         await loadFile()
@@ -536,6 +580,18 @@ struct AdvancedSettings: View {
         let p = path
         let d = await Task.detached { PomCore.shared.configFileGetData(path: p) }.value
         if let r = PomJSON.decode(Doc.self, from: d) { text = r.yaml; original = r.yaml; status = "" }
+    }
+
+    private func createFile() async {
+        let name = newName.trimmingCharacters(in: .whitespaces)
+        let d = await Task.detached { PomCore.shared.configFileCreate(name: name, yaml: "") }.value
+        struct R: Decodable { var ok = false; var error = ""; var path = "" }
+        let r = PomJSON.decode(R.self, from: d)
+        guard let r, r.ok else { newError = r?.error ?? "create failed"; return }
+        showNew = false
+        await load()
+        path = r.path
+        await loadFile()
     }
 
     private func save() async {

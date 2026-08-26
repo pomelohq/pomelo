@@ -303,6 +303,91 @@ func (s *Server) ConfigFileSet(path, yaml string, dry bool) map[string]any {
 	return map[string]any{"ok": true, "note": note}
 }
 
+// ConfigFileCreate makes a new pom.d/<name>.yml fragment. name is relative to
+// pom.d (may include subdirs), must stay under it, and must be a .yml/.yaml file
+// that doesn't already exist. The merged config is validated before the write so
+// a new fragment can't leave the project broken.
+func (s *Server) ConfigFileCreate(name, yaml string) map[string]any {
+	if s.WorkspaceRoot == "" {
+		return map[string]any{"ok": false, "error": "no project loaded"}
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || strings.Contains(name, "..") || strings.HasPrefix(name, "/") {
+		return map[string]any{"ok": false, "error": "invalid file name"}
+	}
+	clean := filepath.Clean(name)
+	if ext := filepath.Ext(clean); ext != ".yml" && ext != ".yaml" {
+		return map[string]any{"ok": false, "error": "file must end in .yml or .yaml"}
+	}
+	dir := filepath.Dir(s.configPath())
+	pomd := filepath.Join(dir, "pom.d")
+	path := filepath.Join(pomd, clean)
+	if !strings.HasPrefix(path, pomd+string(filepath.Separator)) {
+		return map[string]any{"ok": false, "error": "path escapes pom.d"}
+	}
+	if _, err := os.Stat(path); err == nil {
+		return map[string]any{"ok": false, "error": "file already exists"}
+	}
+	if yaml == "" {
+		yaml = "# " + clean + " — merged into pom.yml. Add repos:, shared_services:, env:, etc.\n"
+	}
+	if err := validateConfigYAMLSyntax(yaml); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	if editErr := s.validateConfigWithExtra(path, yaml); editErr != nil {
+		if s.validateCurrentConfig() == nil {
+			return map[string]any{"ok": false, "error": editErr.Error()}
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	return map[string]any{"ok": true, "path": path, "name": filepath.Base(path)}
+}
+
+// validateConfigWithExtra validates the merged config as if a new fragment
+// (extraPath) with extraBody were already present.
+func (s *Server) validateConfigWithExtra(extraPath, extraBody string) error {
+	root := s.configPath()
+	dir := filepath.Dir(root)
+	tmp, err := os.MkdirTemp("", "pom-cfg-mirror-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	write := func(src string, body []byte) error {
+		rel, err := filepath.Rel(dir, src)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(tmp, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, body, 0o644)
+	}
+	for _, f := range s.configFiles() {
+		body, err := os.ReadFile(f.Path)
+		if err != nil {
+			return err
+		}
+		if err := write(f.Path, body); err != nil {
+			return err
+		}
+	}
+	if err := write(extraPath, []byte(extraBody)); err != nil {
+		return err
+	}
+	cfg, err := config.Load(filepath.Join(tmp, filepath.Base(root)))
+	if err != nil {
+		return err
+	}
+	return cfg.Validate()
+}
+
 func (s *Server) validateConfigWithOverride(target, yamlBody string) error {
 	root := s.configPath()
 	dir := filepath.Dir(root)

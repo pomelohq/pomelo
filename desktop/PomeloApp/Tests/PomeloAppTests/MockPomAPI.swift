@@ -17,6 +17,7 @@ final class MockPomAPI: PomAPI {
     func logsData() -> Data { Data(logsJSON.utf8) }
     func configFileGetData(path: String) -> Data { Data("{}".utf8) }
     func configFileSet(path: String, yaml: String, dry: Bool) -> Data { Data(#"{"ok":true}"#.utf8) }
+    func configFileCreate(name: String, yaml: String) -> Data { Data(#"{"ok":true,"path":"pom.d/\#(name)","name":"\#(name)"}"#.utf8) }
     func configReload() -> Data { Data(#"{"ok":true}"#.utf8) }
     func nmStoreListData() -> Data { Data(nmStoreJSON.utf8) }
     func nmStoreDelete(repo: String, hash: String) -> Data { nmDeleted.append(repo + "/" + hash); return Data(#"{"ok":true}"#.utf8) }

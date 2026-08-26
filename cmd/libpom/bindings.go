@@ -476,6 +476,15 @@ func PomConfigFileSet(path, yaml *C.char, dry C.int) *C.char {
 	return bindingJSON(s.ConfigFileSet(C.GoString(path), C.GoString(yaml), dry != 0))
 }
 
+//export PomConfigFileCreate
+func PomConfigFileCreate(name, yaml *C.char) *C.char {
+	s := server()
+	if s == nil {
+		return C.CString(`{"ok":false}`)
+	}
+	return bindingJSON(s.ConfigFileCreate(C.GoString(name), C.GoString(yaml)))
+}
+
 //export PomConfigReload
 func PomConfigReload() *C.char {
 	s := server()

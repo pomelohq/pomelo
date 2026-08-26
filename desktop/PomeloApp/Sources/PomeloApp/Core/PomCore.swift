@@ -90,6 +90,12 @@ final class PomCore: @unchecked Sendable {
         }}
     }
     @discardableResult
+    func configFileCreate(name: String, yaml: String) -> Data {
+        name.withCString { n in yaml.withCString { y in
+            cstr(PomConfigFileCreate(UnsafeMutablePointer(mutating: n), UnsafeMutablePointer(mutating: y)))
+        }}
+    }
+    @discardableResult
     func configReload() -> Data { cstr(PomConfigReload()) }
 
     func nmStoreListData() -> Data {
