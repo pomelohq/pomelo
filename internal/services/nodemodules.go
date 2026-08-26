@@ -34,11 +34,53 @@ func MainLockHash(projectRoot, repo, defaultBranch string) string {
 
 func LockHash(worktree string) string { return lockHash(worktree) }
 
-// RelinkNodeModules CoW-clones a worktree's node_modules from the store to share
-// blocks. Skips cross-volume (clonefile can't span volumes -> would full-copy).
-func RelinkNodeModules(repo, worktree string) (bool, error) {
+type nmLink struct {
+	Hash  string `json:"hash"`
+	MTime int64  `json:"mtime"`
+}
+
+func nmLinksPath() string { return filepath.Join(nmStoreRoot(), ".links.json") }
+
+func loadNMLinks() map[string]nmLink {
+	m := map[string]nmLink{}
+	if data, err := os.ReadFile(nmLinksPath()); err == nil {
+		_ = json.Unmarshal(data, &m)
+	}
+	return m
+}
+
+func saveNMLinks(m map[string]nmLink) {
+	if data, err := json.Marshal(m); err == nil {
+		_ = os.WriteFile(nmLinksPath(), data, 0o644)
+	}
+}
+
+type NMReclaimTarget struct{ Repo, Branch, Worktree string }
+
+// ReclaimNodeModules relinks each target's node_modules to the shared store copy,
+// skipping ones already linked (see relinkOne). Returns how many were actually relinked.
+func ReclaimNodeModules(targets []NMReclaimTarget, progress func(repo, branch string)) int {
+	links := loadNMLinks()
+	relinked := 0
+	for _, t := range targets {
+		if progress != nil {
+			progress(t.Repo, t.Branch)
+		}
+		if ok, _ := relinkOne(t.Repo, t.Worktree, links); ok {
+			relinked++
+		}
+	}
+	saveNMLinks(links)
+	return relinked
+}
+
+// relinkOne CoW-clones a worktree's node_modules from the store so they share blocks.
+// Skips cross-volume (clonefile can't span volumes) and worktrees already linked to
+// this hash and untouched since (mtime unchanged) — a reinstall bumps mtime.
+func relinkOne(repo, worktree string, links map[string]nmLink) (bool, error) {
 	nm := filepath.Join(worktree, "node_modules")
-	if !DirExists(nm) {
+	st, err := os.Stat(nm)
+	if err != nil || !st.IsDir() {
 		return false, nil
 	}
 	h := lockHash(worktree)
@@ -49,8 +91,14 @@ func RelinkNodeModules(repo, worktree string) (bool, error) {
 	if !DirExists(store) || !sameVolume(store, nm) {
 		return false, nil
 	}
+	if l, ok := links[worktree]; ok && l.Hash == h && l.MTime == st.ModTime().UnixNano() {
+		return false, nil
+	}
 	if err := cowCopy(store, nm); err != nil {
 		return false, err
+	}
+	if fi, err := os.Stat(nm); err == nil {
+		links[worktree] = nmLink{Hash: h, MTime: fi.ModTime().UnixNano()}
 	}
 	return true, nil
 }

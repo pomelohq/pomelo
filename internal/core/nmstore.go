@@ -37,15 +37,15 @@ func (s *Server) handleNMStoreReclaim(w http.ResponseWriter, r *http.Request) {
 func (s *Server) NMStoreReclaim() map[string]any {
 	s.NMStoreReconcile()
 	before := services.FreeBytes(s.WorkspaceRoot)
-	relinked := 0
+	var targets []services.NMReclaimTarget
 	for _, ws := range s.collectWorkspaces(false, true) {
 		for _, r := range ws.Repos {
-			setNMProg("Deduping " + r.Name + " (" + ws.Branch + ")")
-			if ok, _ := services.RelinkNodeModules(r.Name, r.Path); ok {
-				relinked++
-			}
+			targets = append(targets, services.NMReclaimTarget{Repo: r.Name, Branch: ws.Branch, Worktree: r.Path})
 		}
 	}
+	relinked := services.ReclaimNodeModules(targets, func(repo, branch string) {
+		setNMProg("Deduping " + repo + " (" + branch + ")")
+	})
 	setNMProg("")
 	reclaimed := services.FreeBytes(s.WorkspaceRoot) - before
 	if reclaimed < 0 {
