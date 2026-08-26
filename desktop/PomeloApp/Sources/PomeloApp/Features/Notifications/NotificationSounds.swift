@@ -290,7 +290,8 @@ private struct EventSoundPicker: View {
     var body: some View {
         Button { open.toggle() } label: {
             HStack(spacing: 3) {
-                Text(clip(summary)).font(Theme.mono(11)).lineLimit(1)
+                Text(clip(summary)).font(Theme.mono(11)).lineLimit(1).truncationMode(.middle)
+                    .frame(width: 92, alignment: .leading)
                 Image(systemName: "chevron.down").font(.system(size: 6, weight: .bold)).opacity(0.7)
             }
             .foregroundStyle(selected.isEmpty ? Theme.fgMuted : Theme.accent)
