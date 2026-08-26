@@ -3,13 +3,16 @@ import SwiftUI
 // Global (session-independent) dependency-cache board. Deterministic left-to-right
 // layered layout (like Turbo/dagre, not a force sim — force layouts turn this
 // bipartite data into crossing spaghetti and can't pan smoothly): node_modules ->
-// each cached hash (red if unused = reclaimable) -> the workspaces using it. Laid
-// out in a ScrollView so panning is native-smooth; pinch to zoom.
+// each cached hash (red if unused = reclaimable) -> the workspaces using it.
+// Drag to pan, pinch/buttons to zoom; hovering a node lights up its whole subtree.
 struct DependencyBoard: View {
     var onClose: () -> Void = {}
     @StateObject private var vm = NMStoreViewModel()
     @State private var zoom: CGFloat = 1
     @GestureState private var pinch: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @GestureState private var dragPan: CGSize = .zero
+    @State private var hovered: String?
 
     private enum Kind { case type, hash, workspace }
     private struct Node: Identifiable {
@@ -22,6 +25,7 @@ struct DependencyBoard: View {
         let y: CGFloat
         var entry: NMStoreViewModel.Entry? = nil
     }
+    private struct Edge { let from: String; let to: String; let p1: CGPoint; let p2: CGPoint }
 
     private let pillW: CGFloat = 250
     private let pillH: CGFloat = 32
@@ -29,12 +33,10 @@ struct DependencyBoard: View {
     private let colGap: CGFloat = 330
     private let pad: CGFloat = 34
 
-    private struct Layout { var nodes: [Node]; var edges: [(CGPoint, CGPoint)]; var size: CGSize }
+    private struct Layout { var nodes: [Node]; var edges: [Edge]; var size: CGSize }
 
     private func build() -> Layout {
         let hashes = vm.entries
-        // Unique workspaces, ordered by the average row of the hashes they touch so
-        // edges cross as little as possible.
         var wsMain: [String: Bool] = [:]
         var wsRows: [String: [Int]] = [:]
         for (i, e) in hashes.enumerated() {
@@ -66,7 +68,7 @@ struct DependencyBoard: View {
             Node(id: "root", kind: .type, icon: "shippingbox.fill", color: Theme.accent,
                  label: "node_modules", x: xRoot, y: rootY)
         ]
-        var edges: [(CGPoint, CGPoint)] = []
+        var edges: [Edge] = []
         let rootRight = CGPoint(x: xRoot + pillW, y: rootY)
 
         for (i, e) in hashes.enumerated() {
@@ -76,10 +78,12 @@ struct DependencyBoard: View {
                               color: e.orphan ? Theme.danger : Theme.ok,
                               label: "\(e.repo)  \(e.hash.prefix(7)) - \(vm.human(e.bytes))",
                               x: xHash, y: hy, entry: e))
-            edges.append((rootRight, CGPoint(x: xHash, y: hy)))
+            edges.append(Edge(from: "root", to: hid, p1: rootRight, p2: CGPoint(x: xHash, y: hy)))
             for c in e.consumers {
                 guard let j = wsIndex[c.branch] else { continue }
-                edges.append((CGPoint(x: xHash + pillW, y: hy), CGPoint(x: xWs, y: y(j, wsList.count))))
+                edges.append(Edge(from: hid, to: "ws:\(c.branch)",
+                                  p1: CGPoint(x: xHash + pillW, y: hy),
+                                  p2: CGPoint(x: xWs, y: y(j, wsList.count))))
             }
         }
         for (j, b) in wsList.enumerated() {
@@ -90,6 +94,13 @@ struct DependencyBoard: View {
                               x: xWs, y: y(j, wsList.count)))
         }
         return Layout(nodes: nodes, edges: edges, size: CGSize(width: contentW, height: contentH))
+    }
+
+    private func activeIDs(_ l: Layout) -> Set<String> {
+        guard let h = hovered else { return [] }
+        var set: Set<String> = [h]
+        for e in l.edges where e.from == h || e.to == h { set.insert(e.from); set.insert(e.to) }
+        return set
     }
 
     var body: some View {
@@ -133,7 +144,7 @@ struct DependencyBoard: View {
     private var zoomControls: some View {
         HStack(spacing: 2) {
             Button { zoom = max(0.4, zoom - 0.15) } label: { Image(systemName: "minus.magnifyingglass") }
-            Button { zoom = 1 } label: { Text("\(Int(zoom * 100))%").font(Theme.mono(10)).frame(width: 34) }
+            Button { zoom = 1; pan = .zero } label: { Text("\(Int(zoom * 100))%").font(Theme.mono(10)).frame(width: 34) }
             Button { zoom = min(2, zoom + 0.15) } label: { Image(systemName: "plus.magnifyingglass") }
         }
         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
@@ -142,7 +153,7 @@ struct DependencyBoard: View {
     }
 
     private var hint: some View {
-        Text("node_modules -> cached hash -> workspaces using it - red = unused (tap to reclaim) - scroll to pan, pinch to zoom")
+        Text("hover a node to trace it - red = unused (tap to reclaim) - drag to pan, pinch or +/- to zoom")
             .font(.system(size: 10)).foregroundStyle(Theme.dim)
             .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -150,34 +161,53 @@ struct DependencyBoard: View {
     private var board: some View {
         let l = build()
         let s = zoom * pinch
-        return ScrollView([.horizontal, .vertical]) {
-            ZStack(alignment: .topLeading) {
-                Canvas { ctx, _ in
-                    for (a, b) in l.edges {
-                        var p = Path()
-                        p.move(to: a)
-                        let mx = (a.x + b.x) / 2
-                        p.addCurve(to: b, control1: CGPoint(x: mx, y: a.y), control2: CGPoint(x: mx, y: b.y))
-                        ctx.stroke(p, with: .color(Theme.borderSoft.opacity(0.7)), lineWidth: 1)
-                    }
-                }
-                .frame(width: l.size.width, height: l.size.height)
-                ForEach(l.nodes) { n in
-                    pill(n).position(x: n.x + pillW / 2, y: n.y)
+        let active = activeIDs(l)
+        return canvas(l, active: active)
+            .scaleEffect(s, anchor: .topLeading)
+            .frame(width: l.size.width * s, height: l.size.height * s, alignment: .topLeading)
+            .offset(x: pan.width + dragPan.width, y: pan.height + dragPan.height)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(16)
+            .contentShape(Rectangle())
+            .clipped()
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .updating($dragPan) { v, st, _ in st = v.translation }
+                    .onEnded { v in pan.width += v.translation.width; pan.height += v.translation.height }
+            )
+            .simultaneousGesture(
+                MagnificationGesture().updating($pinch) { v, st, _ in st = v }
+                    .onEnded { v in zoom = min(2, max(0.4, zoom * v)) }
+            )
+    }
+
+    private func canvas(_ l: Layout, active: Set<String>) -> some View {
+        ZStack(alignment: .topLeading) {
+            GridBackground()
+            Canvas { ctx, _ in
+                for e in l.edges {
+                    let on = hovered != nil && (e.from == hovered || e.to == hovered)
+                    let shade: Color = hovered == nil ? Theme.borderSoft.opacity(0.7)
+                        : (on ? Theme.accent : Theme.borderSoft.opacity(0.18))
+                    var p = Path()
+                    p.move(to: e.p1)
+                    let mx = (e.p1.x + e.p2.x) / 2
+                    p.addCurve(to: e.p2, control1: CGPoint(x: mx, y: e.p1.y), control2: CGPoint(x: mx, y: e.p2.y))
+                    ctx.stroke(p, with: .color(shade), lineWidth: on ? 1.8 : 1)
                 }
             }
             .frame(width: l.size.width, height: l.size.height)
-            .background(GridBackground())
-            .scaleEffect(s, anchor: .topLeading)
-            .frame(width: l.size.width * s, height: l.size.height * s, alignment: .topLeading)
-            .padding(30)
+            ForEach(l.nodes) { n in
+                let dim = hovered != nil && !active.contains(n.id)
+                pill(n).opacity(dim ? 0.3 : 1).position(x: n.x + pillW / 2, y: n.y)
+            }
         }
-        .gesture(MagnificationGesture().updating($pinch) { v, st, _ in st = v }
-            .onEnded { v in zoom = min(2, max(0.4, zoom * v)) })
+        .frame(width: l.size.width, height: l.size.height, alignment: .topLeading)
     }
 
     private func pill(_ n: Node) -> some View {
-        HStack(spacing: 7) {
+        let lit = hovered == n.id
+        return HStack(spacing: 7) {
             Image(systemName: n.icon).font(.system(size: 12)).foregroundStyle(n.color).frame(width: 16)
             Text(n.label).font(.system(size: 11)).foregroundStyle(Theme.fg)
                 .lineLimit(1).truncationMode(.middle)
@@ -185,9 +215,10 @@ struct DependencyBoard: View {
         }
         .padding(.horizontal, 10)
         .frame(width: pillW, height: pillH, alignment: .leading)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(n.color.opacity(n.kind == .type ? 0.6 : 0.4)))
+        .background(lit ? Theme.hover : Theme.surface, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(n.color.opacity(lit ? 0.9 : (n.kind == .type ? 0.6 : 0.4)), lineWidth: lit ? 1.5 : 1))
         .contentShape(Rectangle())
+        .onHover { hovered = $0 ? n.id : (hovered == n.id ? nil : hovered) }
         .onTapGesture { if let e = n.entry, e.orphan { Task { await vm.delete(e) } } }
         .help(n.entry?.orphan == true ? "Unused cache - tap to reclaim \(vm.human(n.entry?.bytes ?? 0))" : n.label)
     }
