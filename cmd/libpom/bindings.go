@@ -9,9 +9,15 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/pomelohq/pomelo/internal/agent/claude"
 	"github.com/pomelohq/pomelo/internal/agent/codeagent"
 	"github.com/pomelohq/pomelo/internal/core"
 )
+
+//export PomClaudeUsage
+func PomClaudeUsage() *C.char {
+	return bindingJSON(claude.FetchUsage())
+}
 
 //export PomCodeAgents
 func PomCodeAgents() *C.char {

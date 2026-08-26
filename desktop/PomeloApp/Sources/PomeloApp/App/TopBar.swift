@@ -189,6 +189,7 @@ struct HeaderTrailing: View {
         HStack(spacing: 12) {
             if state.agentModel != nil { agentChip }
             if state.onboardModel != nil && state.onboardBranch == nil { onboardChip }
+            ClaudeUsageChip()
             Button { state.showShared = true } label: { Image(systemName: "cylinder.split.1x2").font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Shared services", shortcut: "⇧⌘S", align: .bottomTrailing)
             Button { state.showDependencies = true } label: { Image(systemName: "shippingbox").font(.system(size: 12)) }

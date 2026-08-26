@@ -26,6 +26,7 @@ final class MockPomAPI: PomAPI {
     func nmStoreReclaim() -> Data { Data(#"{"ok":true,"relinked":0,"reclaimed":0}"#.utf8) }
     func nmStoreProgress() -> String { "" }
     func codeAgentsData() -> Data { Data(#"[{"id":"claude","name":"Claude Code"}]"#.utf8) }
+    func claudeUsageData() -> Data { Data(#"{"ok":true,"session":{"pct":58,"resets_at":0},"weekly":{"pct":41,"resets_at":0}}"#.utf8) }
     func syncGetData() -> Data { Data(syncJSON.utf8) }
     func syncSet(refreshMain: Bool, intervalSec: Int) -> Data { syncSetCalls.append((refreshMain, intervalSec)); return Data(#"{"ok":true}"#.utf8) }
 
