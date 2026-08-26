@@ -169,18 +169,22 @@ struct AgentSheet: View {
     }
 }
 
-struct OnboardSheet: View {
-    let branch: String
-    let onClose: () -> Void
-    @StateObject private var model = AgentStreamModel()
-    private let firstTurn = "Onboard this session now: analyze every cloned repo and author a correct, complete pom.yml " +
+enum OnboardPrompts {
+    static let firstTurn = "Onboard this session now: analyze every cloned repo and author a correct, complete pom.yml " +
         "(frameworks, monorepo apps, all processes, setup, shared services from every compose incl. extends, and repo " +
         "aliases). Loop config_doctor until zero errors. Then call config_normalize as the FINAL step (it strips " +
         "removed keys, migrates colon→dot, and tidies into pom.d), and confirm what you defined."
+}
+
+struct OnboardSheet: View {
+    @ObservedObject var model: AgentStreamModel
+    let startAt: Date
+    let branch: String
+    var onBackground: () -> Void = {}
+    var onDone: () -> Void = {}
 
     @State private var findings: [DoctorViewModel.Finding] = []
     @State private var showResult = false
-    @State private var startAt = Date()
     @State private var endedAt: Date?
     @State private var showLog = false
     @State private var installing = false
@@ -190,7 +194,7 @@ struct OnboardSheet: View {
         Group {
             if showResult { resultSheet } else { onboardingBody }
         }
-        .onAppear { startAt = Date(); model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: firstTurn) }
+        .onAppear { if !model.running && !authorDone { authorDone = true; Task { await verifyAndInstall() } } }
         .onChange(of: model.running) {
             if !model.running && !authorDone { authorDone = true; Task { await verifyAndInstall() } }
         }
@@ -243,9 +247,9 @@ struct OnboardSheet: View {
 
             Spacer(minLength: 0)
             HStack {
-                Button("Stop") { model.stop(); onClose() }.buttonStyle(.bordered).tint(Theme.danger)
+                Button("Stop") { onDone() }.buttonStyle(.bordered).tint(Theme.danger)
                 Spacer()
-                Button("Run in background") { onClose() }.buttonStyle(.borderedProminent).tint(Theme.accent)
+                Button("Run in background") { onBackground() }.buttonStyle(.borderedProminent).tint(Theme.accent)
             }
         }
         .padding(18).frame(width: 640, height: 520)
@@ -294,7 +298,7 @@ struct OnboardSheet: View {
             ScrollView { OnboardResultView(findings: findings, services: 0, onRetry: retry) }
             HStack {
                 Spacer()
-                Button("Done") { model.stop(); onClose() }.buttonStyle(.borderedProminent).tint(Theme.accent)
+                Button("Done") { onDone() }.buttonStyle(.borderedProminent).tint(Theme.accent)
             }
             .padding(.horizontal, 16).padding(.bottom, 14)
         }
@@ -320,7 +324,6 @@ struct OnboardSheet: View {
         authorDone = false
         installing = false
         endedAt = nil
-        startAt = Date()
-        model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: firstTurn)
+        model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: OnboardPrompts.firstTurn)
     }
 }

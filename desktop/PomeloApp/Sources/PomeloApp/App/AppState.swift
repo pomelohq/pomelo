@@ -171,6 +171,33 @@ final class AppState: ObservableObject {
     }
     func reopenAgent() { if agentModel != nil { showAgentSheet = true } }
     func backgroundAgent() { showAgentSheet = false }
+
+    // Onboarding lives here (not in the sheet) so "Run in background" keeps it
+    // alive and a TopBar chip can reopen it.
+    @Published var onboardModel: AgentStreamModel?
+    @Published var onboardStartAt: Date?
+    private(set) var onboardBranchName = "main"
+    private var onboardBag = Set<AnyCancellable>()
+    var onboardRunning: Bool { onboardModel?.running ?? false }
+
+    func startOnboard(branch: String) {
+        onboardBranchName = branch
+        if onboardModel == nil {
+            let m = AgentStreamModel()
+            onboardBag.removeAll()
+            m.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &onboardBag)
+            onboardModel = m
+            onboardStartAt = Date()
+            m.start(branch: branch, isMain: true, role: "onboarder", firstTurn: OnboardPrompts.firstTurn)
+        }
+        onboardBranch = branch
+        bringMainWindowToFront()
+    }
+    func reopenOnboard() { if onboardModel != nil { onboardBranch = onboardBranchName } }
+    func endOnboard() {
+        onboardModel?.stop(); onboardModel = nil; onboardStartAt = nil; onboardBag.removeAll()
+        onboardBranch = nil; Task { await refreshConfigHealth() }
+    }
     func endAgent() { agentModel?.stop(); agentModel = nil; agentTarget = nil; agentBag.removeAll(); showAgentSheet = false; Task { await refreshConfigHealth() } }
     @Published var jiraOnlyMine = UserDefaults.standard.bool(forKey: "jiraOnlyMine") {
         didSet { UserDefaults.standard.set(jiraOnlyMine, forKey: "jiraOnlyMine") }

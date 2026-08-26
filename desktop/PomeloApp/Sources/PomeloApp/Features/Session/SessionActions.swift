@@ -204,7 +204,7 @@ struct CreateSessionSheet: View {
                 try? await Task.sleep(nanoseconds: 800_000_000)
                 let b = defaultBranch
                 dismiss()
-                state.onboardBranch = b
+                state.startOnboard(branch: b)
             }
             else { status = String(decoding: d, as: UTF8.self).prefix(120).description }
         }

@@ -62,8 +62,12 @@ struct RootView: View {
                 CreateSessionSheet().environmentObject(state).environmentObject(theme)
             }
             .sheet(isPresented: Binding(get: { state.onboardBranch != nil }, set: { if !$0 { state.onboardBranch = nil } })) {
-                OnboardSheet(branch: state.onboardBranch ?? "main", onClose: { state.onboardBranch = nil })
-                    .environmentObject(state).environmentObject(theme)
+                if let m = state.onboardModel {
+                    OnboardSheet(model: m, startAt: state.onboardStartAt ?? Date(), branch: state.onboardBranchName,
+                                 onBackground: { state.onboardBranch = nil },
+                                 onDone: { state.endOnboard() })
+                        .environmentObject(state).environmentObject(theme)
+                }
             }
             .sheet(isPresented: $state.showAgentSheet) {
                 if let m = state.agentModel {
