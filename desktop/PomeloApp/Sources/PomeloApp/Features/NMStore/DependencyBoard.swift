@@ -10,6 +10,9 @@ struct DependencyBoard: View {
     var onClose: () -> Void = {}
     @StateObject private var vm = NMStoreViewModel()
     @State private var graphStates = ForceDirectedGraphState(initialIsRunning: true)
+    @State private var dragNode: String?
+    @State private var panBase: SIMD2<Double>?
+    @State private var didMove = false
 
     private enum Kind { case type, repo, hash }
     private struct GNode {
@@ -88,7 +91,7 @@ struct DependencyBoard: View {
     }
 
     private var hint: some View {
-        Text("pinch to zoom - drag to pan - tap a stale cache to reclaim")
+        Text("drag a node to arrange - pinch to zoom - tap a stale cache to reclaim")
             .font(.system(size: 10)).foregroundStyle(Theme.dim)
             .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -103,9 +106,11 @@ struct DependencyBoard: View {
     private var graph: some View {
         ForceDirectedGraph(states: graphStates) {
             Series(nodes) { n in
+                // The icon IS the node (drawn via native text); the mark itself is an
+                // invisible, generously-sized hit target so the node is easy to grab.
                 NodeMark(id: n.id)
-                    .symbolSize(radius: 3)
-                    .foregroundStyle(n.color)
+                    .symbolSize(radius: 16)
+                    .foregroundStyle(.clear)
                     .annotation(nodeText(n), alignment: .center, offset: .zero)
             }
             Series(links) { from, to in
@@ -116,12 +121,39 @@ struct DependencyBoard: View {
             .link(originalLength: 62.0)
             .center()
         }
+        .graphBackground { _ in GridBackground() }
         .graphOverlay { proxy in
             Rectangle().fill(.clear).contentShape(Rectangle())
                 .withGraphMagnifyGesture(proxy)
-                .withGraphDragGesture(proxy, of: String.self)
-                .withGraphTapGesture(proxy, of: String.self) { id in tap(id) }
+                .gesture(nodeGesture(proxy))
         }
+    }
+
+    // Custom drag: pin the grabbed node to the cursor with a low minimumAlpha so the
+    // rest of the graph stays put (Grape's built-in drag reheats to 0.5 and makes
+    // every node jiggle — that is the "not smooth" feel). Dropped nodes stay pinned.
+    private func nodeGesture(_ proxy: GraphProxy) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onChanged { v in
+                if dragNode == nil && panBase == nil {
+                    if let id = proxy.node(of: String.self, at: v.startLocation) {
+                        dragNode = id
+                    } else {
+                        panBase = proxy.modelTransform.translate
+                    }
+                    didMove = false
+                }
+                if abs(v.translation.width) + abs(v.translation.height) > 3 { didMove = true }
+                if let id = dragNode {
+                    proxy.setNodeFixation(nodeID: id, fixation: v.location, minimumAlpha: 0.1)
+                } else if let base = panBase {
+                    proxy.modelTransform.translate = base + SIMD2<Double>(Double(v.translation.width), Double(v.translation.height))
+                }
+            }
+            .onEnded { _ in
+                if let id = dragNode, !didMove { tap(id) }
+                dragNode = nil; panBase = nil; didMove = false
+            }
     }
 
     private func tap(_ id: String) {
@@ -130,5 +162,20 @@ struct DependencyBoard: View {
         if let e = vm.entries.first(where: { "\($0.repo)/\($0.hash)" == key }), !e.current {
             Task { await vm.delete(e) }
         }
+    }
+}
+
+private struct GridBackground: View {
+    var body: some View {
+        Canvas { ctx, size in
+            let step: CGFloat = 26
+            var path = Path()
+            var x: CGFloat = 0
+            while x <= size.width { path.move(to: CGPoint(x: x, y: 0)); path.addLine(to: CGPoint(x: x, y: size.height)); x += step }
+            var y: CGFloat = 0
+            while y <= size.height { path.move(to: CGPoint(x: 0, y: y)); path.addLine(to: CGPoint(x: size.width, y: y)); y += step }
+            ctx.stroke(path, with: .color(Theme.borderSoft.opacity(0.45)), lineWidth: 0.5)
+        }
+        .background(Theme.bg)
     }
 }
