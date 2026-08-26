@@ -245,8 +245,8 @@ struct NotificationsSettings: View {
     private func pickFile() {
         let p = NSOpenPanel()
         p.allowedContentTypes = [.audio]
-        p.allowsMultipleSelection = false
-        if p.runModal() == .OK, let url = p.url { prefs.importFile(url) }
+        p.allowsMultipleSelection = true
+        if p.runModal() == .OK { for url in p.urls { prefs.importFile(url) } }
     }
 
     private func loadAgents() async {
