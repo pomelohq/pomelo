@@ -22,6 +22,7 @@ final class MockPomAPI: PomAPI {
     func configReload() -> Data { Data(#"{"ok":true}"#.utf8) }
     func nmStoreListData() -> Data { Data(nmStoreJSON.utf8) }
     func nmStoreDelete(repo: String, hash: String) -> Data { nmDeleted.append(repo + "/" + hash); return Data(#"{"ok":true}"#.utf8) }
+    func nmStoreReconcile() -> Data { Data(#"{"ok":true,"added":0,"bytes":0}"#.utf8) }
     func syncGetData() -> Data { Data(syncJSON.utf8) }
     func syncSet(refreshMain: Bool, intervalSec: Int) -> Data { syncSetCalls.append((refreshMain, intervalSec)); return Data(#"{"ok":true}"#.utf8) }
 

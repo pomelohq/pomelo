@@ -91,9 +91,7 @@ func (s *Server) MainPull(branch string) map[string]any {
 		Error  string `json:"error,omitempty"`
 	}
 
-	// Use the real golden-source repos (same enumeration that populates the app's
-	// main board) so paths always match what the user sees, instead of rebuilding
-	// them from config names — which can miss repos when the layout differs.
+	// Real golden-source repos (not config-name paths, which can miss repos).
 	var mainRepos []Repo
 	for _, ws := range s.collectWorkspaces(false, true) {
 		if ws.IsMain {

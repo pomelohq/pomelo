@@ -1,7 +1,5 @@
 import SwiftUI
 
-// Updating the golden source: reset each main repo to its default branch and pull
-// from origin. Shows per-repo progress + result instead of running silently.
 struct UpdateMainSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss

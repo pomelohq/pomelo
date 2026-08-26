@@ -1,10 +1,7 @@
 import SwiftUI
 
-// Global (session-independent) dependency-cache board. Deterministic left-to-right
-// layered layout (like Turbo/dagre, not a force sim — force layouts turn this
-// bipartite data into crossing spaghetti and can't pan smoothly): node_modules ->
-// each cached hash (red if unused = reclaimable) -> the workspaces using it.
-// Drag to pan, pinch/buttons to zoom; hovering a node lights up its whole subtree.
+// node_modules -> cached hash -> workspaces using it. Deterministic layered layout,
+// not a force sim: force turns this bipartite data into crossing spaghetti.
 struct DependencyBoard: View {
     var onClose: () -> Void = {}
     @StateObject private var vm = NMStoreViewModel()
@@ -35,13 +32,39 @@ struct DependencyBoard: View {
 
     private struct Layout { var nodes: [Node]; var edges: [Edge]; var size: CGSize }
 
+    private struct HashItem {
+        let id: String; let color: Color; let label: String
+        let entry: NMStoreViewModel.Entry?
+        let ws: [(branch: String, main: Bool)]
+    }
+
+    private func hashItems() -> [HashItem] {
+        var items: [HashItem] = []
+        for e in vm.entries {
+            items.append(HashItem(id: "hash:\(e.repo)/\(e.hash)",
+                                  color: e.orphan ? Theme.danger : Theme.ok,
+                                  label: "\(e.repo)  \(e.hash.prefix(7)) - \(vm.human(e.bytes))",
+                                  entry: e, ws: e.consumers.map { ($0.branch, $0.is_main) }))
+        }
+        let byHash = Dictionary(grouping: vm.unoptimized, by: { "\($0.repo)/\($0.hash)" })
+        for key in byHash.keys.sorted() {
+            let group = byHash[key]!
+            let u = group[0]
+            items.append(HashItem(id: "hash:\(key)", color: Theme.warn,
+                                  label: "\(u.repo)  \(u.hash.prefix(7)) - not cached",
+                                  entry: nil, ws: group.map { ($0.branch, $0.is_main) }))
+        }
+        return items
+    }
+
     private func build() -> Layout {
-        let hashes = vm.entries
+        let hashes = hashItems()
+        let unoptWs = Set(vm.unoptimized.map(\.branch))
         var wsMain: [String: Bool] = [:]
         var wsRows: [String: [Int]] = [:]
-        for (i, e) in hashes.enumerated() {
-            for c in e.consumers {
-                wsMain[c.branch] = (wsMain[c.branch] ?? false) || c.is_main
+        for (i, h) in hashes.enumerated() {
+            for c in h.ws {
+                wsMain[c.branch] = (wsMain[c.branch] ?? false) || c.main
                 wsRows[c.branch, default: []].append(i)
             }
         }
@@ -71,26 +94,24 @@ struct DependencyBoard: View {
         var edges: [Edge] = []
         let rootRight = CGPoint(x: xRoot + pillW, y: rootY)
 
-        for (i, e) in hashes.enumerated() {
+        for (i, h) in hashes.enumerated() {
             let hy = y(i, hashes.count)
-            let hid = "hash:\(e.repo)/\(e.hash)"
-            nodes.append(Node(id: hid, kind: .hash, icon: "internaldrive.fill",
-                              color: e.orphan ? Theme.danger : Theme.ok,
-                              label: "\(e.repo)  \(e.hash.prefix(7)) - \(vm.human(e.bytes))",
-                              x: xHash, y: hy, entry: e))
-            edges.append(Edge(from: "root", to: hid, p1: rootRight, p2: CGPoint(x: xHash, y: hy)))
-            for c in e.consumers {
+            nodes.append(Node(id: h.id, kind: .hash, icon: "internaldrive.fill",
+                              color: h.color, label: h.label, x: xHash, y: hy, entry: h.entry))
+            edges.append(Edge(from: "root", to: h.id, p1: rootRight, p2: CGPoint(x: xHash, y: hy)))
+            for c in h.ws {
                 guard let j = wsIndex[c.branch] else { continue }
-                edges.append(Edge(from: hid, to: "ws:\(c.branch)",
+                edges.append(Edge(from: h.id, to: "ws:\(c.branch)",
                                   p1: CGPoint(x: xHash + pillW, y: hy),
                                   p2: CGPoint(x: xWs, y: y(j, wsList.count))))
             }
         }
         for (j, b) in wsList.enumerated() {
             let main = wsMain[b] ?? false
+            let unopt = unoptWs.contains(b)
             nodes.append(Node(id: "ws:\(b)", kind: .workspace,
-                              icon: main ? "star.fill" : "square.stack.3d.up.fill",
-                              color: main ? Theme.accent : Theme.fg, label: b,
+                              icon: unopt ? "exclamationmark.triangle.fill" : (main ? "star.fill" : "square.stack.3d.up.fill"),
+                              color: unopt ? Theme.warn : (main ? Theme.accent : Theme.fg), label: b,
                               x: xWs, y: y(j, wsList.count)))
         }
         return Layout(nodes: nodes, edges: edges, size: CGSize(width: contentW, height: contentH))
@@ -110,7 +131,7 @@ struct DependencyBoard: View {
             if vm.loading {
                 VStack(spacing: 8) { ProgressView().controlSize(.small); Text("scanning…").foregroundStyle(Theme.fgMuted) }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.entries.isEmpty {
+            } else if vm.entries.isEmpty && vm.unoptimized.isEmpty {
                 Text("No cached node_modules yet.").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -129,6 +150,17 @@ struct DependencyBoard: View {
                 Text("node_modules cache - \(vm.human(vm.total)) total").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
             }
             Spacer()
+            if let msg = vm.lastOptimize {
+                Text(msg).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
+            }
+            Button { Task { await vm.optimize() } } label: {
+                HStack(spacing: 5) {
+                    if vm.optimizing { ProgressView().controlSize(.small).scaleEffect(0.5) }
+                    else { Image(systemName: "wand.and.stars") }
+                    Text("Optimize").font(.system(size: 11, weight: .medium))
+                }
+            }.buttonStyle(.plain).foregroundStyle(Theme.accent).disabled(vm.optimizing)
+                .help("Capture node_modules installed by hand (e.g. npm install in a terminal) into the store")
             if !vm.stale.isEmpty {
                 Button { Task { await vm.deleteStale() } } label: {
                     Label("Reclaim \(vm.human(vm.staleBytes))", systemImage: "trash").font(.system(size: 11, weight: .medium))
@@ -153,7 +185,7 @@ struct DependencyBoard: View {
     }
 
     private var hint: some View {
-        Text("hover a node to trace it - red = unused (tap to reclaim) - drag to pan, pinch or +/- to zoom")
+        Text("orange = not in store yet (Optimize to capture) - red = unused (tap to reclaim) - hover to trace, drag to pan")
             .font(.system(size: 10)).foregroundStyle(Theme.dim)
             .padding(.horizontal, 14).padding(.vertical, 10)
     }

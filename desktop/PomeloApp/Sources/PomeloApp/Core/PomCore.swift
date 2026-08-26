@@ -116,6 +116,12 @@ final class PomCore: @unchecked Sendable {
         }}
     }
 
+    func nmStoreReconcile() -> Data {
+        guard let out = PomNMStoreReconcile() else { return Data() }
+        defer { PomFree(out) }
+        return Data(String(cString: out).utf8)
+    }
+
     func syncGetData() -> Data {
         guard let out = PomSyncGet() else { return Data() }
         defer { PomFree(out) }

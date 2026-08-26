@@ -9,11 +9,17 @@ final class NMStoreViewModel: ObservableObject {
         var id: String { repo + "/" + hash }
         var orphan: Bool { consumers.isEmpty }
     }
-    struct Payload: Decodable { var entries: [Entry] = []; var total: Int64 = 0 }
+    struct Unopt: Decodable, Identifiable { var branch = ""; var is_main = false; var repo = ""; var hash = ""; var id: String { branch + "/" + repo + "/" + hash } }
+    struct Payload: Decodable { var entries: [Entry] = []; var total: Int64 = 0; var unoptimized: [Unopt] = [] }
+
+    struct ReconcileResult: Decodable { var added = 0; var bytes: Int64 = 0 }
 
     @Published private(set) var entries: [Entry] = []
+    @Published private(set) var unoptimized: [Unopt] = []
     @Published private(set) var total: Int64 = 0
     @Published private(set) var loading = true
+    @Published var optimizing = false
+    @Published var lastOptimize: String?
 
     private let api: CoreAPI
     init(api: CoreAPI = PomCore.shared) { self.api = api }
@@ -33,7 +39,7 @@ final class NMStoreViewModel: ObservableObject {
     func load() async {
         loading = true
         let d = await api.call { $0.nmStoreListData() }
-        if let p = PomJSON.decode(Payload.self, from: d) { entries = p.entries; total = p.total }
+        if let p = PomJSON.decode(Payload.self, from: d) { entries = p.entries; total = p.total; unoptimized = p.unoptimized }
         loading = false
     }
 
@@ -45,5 +51,18 @@ final class NMStoreViewModel: ObservableObject {
     func deleteStale() async {
         for e in stale { _ = await api.call { $0.nmStoreDelete(repo: e.repo, hash: e.hash) } }
         await load()
+    }
+
+    func optimize() async {
+        optimizing = true
+        let d = await api.call { $0.nmStoreReconcile() }
+        let r = PomJSON.decode(ReconcileResult.self, from: d)
+        await load()
+        optimizing = false
+        if let r, r.added > 0 {
+            lastOptimize = "Cached \(r.added) new (\(human(r.bytes)))"
+        } else {
+            lastOptimize = "Already optimized"
+        }
     }
 }
