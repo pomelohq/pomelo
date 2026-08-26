@@ -10,9 +10,6 @@ struct DependencyBoard: View {
     var onClose: () -> Void = {}
     @StateObject private var vm = NMStoreViewModel()
     @State private var graphStates = ForceDirectedGraphState(initialIsRunning: true)
-    @State private var dragNode: String?
-    @State private var panBase: SIMD2<Double>?
-    @State private var didMove = false
 
     private enum Kind { case type, repo, hash }
     private struct GNode {
@@ -29,17 +26,17 @@ struct DependencyBoard: View {
     private var nodes: [GNode] {
         var out: [GNode] = [
             GNode(id: typeID, kind: .type, color: Theme.accent,
-                  label: "node_modules", icon: "shippingbox.fill", size: 26)
+                  label: "node_modules", icon: "shippingbox.fill", size: 22)
         ]
         let byRepo = Dictionary(grouping: vm.entries, by: \.repo)
         for repo in byRepo.keys.sorted() {
             out.append(GNode(id: "repo:\(repo)", kind: .repo, color: Theme.fg,
-                             label: repo, icon: "folder.fill", size: 20))
+                             label: repo, icon: "folder.fill", size: 18))
             for e in byRepo[repo] ?? [] {
                 out.append(GNode(id: "hash:\(e.repo)/\(e.hash)", kind: .hash,
                                  color: e.current ? Theme.ok : Theme.warn,
                                  label: "\(e.hash.prefix(7)) - \(vm.human(e.bytes))",
-                                 icon: "internaldrive.fill", size: 16))
+                                 icon: "internaldrive.fill", size: 15))
             }
         }
         return out
@@ -96,22 +93,20 @@ struct DependencyBoard: View {
             .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
-    // Icon + name as a single NATIVE text annotation (Grape draws it in the Canvas).
-    // ViewAnnotations (AnyView) re-render every simulation tick and make dragging lag.
-    private func nodeText(_ n: GNode) -> Text {
-        Text(Image(systemName: n.icon)).font(.system(size: n.size)).foregroundColor(n.color)
-        + Text(verbatim: "\n\(n.label)").font(.system(size: 9)).foregroundColor(Theme.fgMuted)
-    }
-
     private var graph: some View {
         ForceDirectedGraph(states: graphStates) {
             Series(nodes) { n in
-                // The icon IS the node (drawn via native text); the mark itself is an
-                // invisible, generously-sized hit target so the node is easy to grab.
+                // The icon sits exactly on the node (alignment .center) so links
+                // connect to it; the mark itself is an invisible hit target. The name
+                // is a cheap native text below.
                 NodeMark(id: n.id)
-                    .symbolSize(radius: 16)
+                    .symbolSize(radius: 15)
                     .foregroundStyle(.clear)
-                    .annotation(nodeText(n), alignment: .center, offset: .zero)
+                    .annotation(n.id, alignment: .center, offset: .zero) {
+                        Image(systemName: n.icon).font(.system(size: n.size)).foregroundStyle(n.color)
+                    }
+                    .annotation(Text(verbatim: n.label).font(.system(size: 10)).foregroundColor(Theme.fgMuted),
+                                alignment: .bottom, offset: CGVector(dx: 0, dy: CGFloat(n.size) * 0.75))
             }
             Series(links) { from, to in
                 LinkMark(from: from, to: to)
@@ -125,35 +120,9 @@ struct DependencyBoard: View {
         .graphOverlay { proxy in
             Rectangle().fill(.clear).contentShape(Rectangle())
                 .withGraphMagnifyGesture(proxy)
-                .gesture(nodeGesture(proxy))
+                .withGraphDragGesture(proxy, of: String.self)
+                .withGraphTapGesture(proxy, of: String.self) { id in tap(id) }
         }
-    }
-
-    // Custom drag: pin the grabbed node to the cursor with a low minimumAlpha so the
-    // rest of the graph stays put (Grape's built-in drag reheats to 0.5 and makes
-    // every node jiggle — that is the "not smooth" feel). Dropped nodes stay pinned.
-    private func nodeGesture(_ proxy: GraphProxy) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .onChanged { v in
-                if dragNode == nil && panBase == nil {
-                    if let id = proxy.node(of: String.self, at: v.startLocation) {
-                        dragNode = id
-                    } else {
-                        panBase = proxy.modelTransform.translate
-                    }
-                    didMove = false
-                }
-                if abs(v.translation.width) + abs(v.translation.height) > 3 { didMove = true }
-                if let id = dragNode {
-                    proxy.setNodeFixation(nodeID: id, fixation: v.location, minimumAlpha: 0.1)
-                } else if let base = panBase {
-                    proxy.modelTransform.translate = base + SIMD2<Double>(Double(v.translation.width), Double(v.translation.height))
-                }
-            }
-            .onEnded { _ in
-                if let id = dragNode, !didMove { tap(id) }
-                dragNode = nil; panBase = nil; didMove = false
-            }
     }
 
     private func tap(_ id: String) {
