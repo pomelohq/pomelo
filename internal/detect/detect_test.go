@@ -158,6 +158,15 @@ func TestJS(t *testing.T) {
 			t.Fatalf("got fw=%s port=%d", f.Framework, f.Port)
 		}
 	})
+	t.Run("angular", func(t *testing.T) {
+		f := mustDetect(t, writeRepo(t, map[string]string{
+			"package.json": `{"dependencies":{"@angular/core":"18"}}`,
+			"angular.json": "{}",
+		}))
+		if f.Framework != "angular" || f.Port != 4200 {
+			t.Fatalf("got fw=%s port=%d", f.Framework, f.Port)
+		}
+	})
 	t.Run("express", func(t *testing.T) {
 		f := mustDetect(t, writeRepo(t, map[string]string{
 			"package.json": `{"dependencies":{"express":"4"}}`,

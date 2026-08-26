@@ -38,24 +38,33 @@ func TestMonorepoTurboPnpm(t *testing.T) {
 	}
 }
 
+// nx marks projects with project.json at any depth, hoists deps to the root, and
+// runs via `nx serve <name>`. Apps are kept (with the nx serve cmd), libraries and
+// e2e projects dropped, framework inferred from member config / root deps.
+// (Modelled on nx-examples, an Angular nx workspace.)
 func TestMonorepoNxProjectJSON(t *testing.T) {
 	root := writeRepo(t, map[string]string{
-		"nx.json":      "{}",
-		"package.json": "{}",
-		// Non-conventional location (not apps/ or libs/): nx finds it via project.json.
-		"services/gateway/project.json":  `{"name":"gateway"}`,
-		"services/gateway/package.json":  `{"dependencies":{"@nestjs/core":"10"}}`,
-		"services/gateway/nest-cli.json": "{}",
-		"libs/shared/project.json":       `{"name":"shared"}`,
-		"libs/shared/package.json":       `{"name":"shared"}`,
+		"nx.json":                     "{}",
+		"package.json":                `{"dependencies":{"@angular/core":"21"}}`,
+		"yarn.lock":                   "",
+		"apps/cart/project.json":      `{"name":"cart","projectType":"application"}`,
+		"apps/cart/package.json":      `{"name":"cart"}`,
+		"apps/cart-e2e/project.json":  `{"name":"cart-e2e","projectType":"application","tags":["type:e2e"]}`,
+		"libs/shared/ui/project.json": `{"name":"shared-ui","projectType":"library"}`,
 	})
 	facts := detect.DetectRepo(root)
-	gw, ok := factByDir(facts, "services/gateway")
-	if !ok || gw.Framework != "nest" {
-		t.Fatalf("services/gateway should be nest: %+v", facts)
+	cart, ok := factByDir(facts, "apps/cart")
+	if !ok || cart.Framework != "angular" {
+		t.Fatalf("apps/cart should be angular: %+v", facts)
 	}
-	if _, ok := factByDir(facts, "libs/shared"); ok {
-		t.Fatalf("frameworkless lib should be dropped: %+v", facts)
+	if len(cart.Run) == 0 || cart.Run[0].Cmd != "yarn nx serve cart" {
+		t.Fatalf("apps/cart run should be 'yarn nx serve cart': %+v", cart.Run)
+	}
+	if _, ok := factByDir(facts, "apps/cart-e2e"); ok {
+		t.Fatalf("e2e project should be dropped: %+v", facts)
+	}
+	if _, ok := factByDir(facts, "libs/shared/ui"); ok {
+		t.Fatalf("library should be dropped: %+v", facts)
 	}
 }
 

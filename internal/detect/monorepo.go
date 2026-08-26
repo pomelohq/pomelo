@@ -16,6 +16,11 @@ import (
 // member app (with Dir set); otherwise a single root-level stack.
 func DetectRepo(root string) []StackFacts {
 	rules := loadRules()
+	if exists(root, "nx.json") {
+		if m := nxMembers(root); len(m) > 0 {
+			return m
+		}
+	}
 	members := monorepoMembers(root)
 	var out []StackFacts
 	// A repo can be an app at its root AND have workspace members (e.g. a Rails
