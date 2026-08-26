@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -66,6 +67,20 @@ func (s *Server) SessionDelete(name string, purge bool) map[string]any {
 	if name == reg.Current || ss.Path == s.WorkspaceRoot {
 		return map[string]any{"ok": false, "error": "can't delete the active session — switch to another first"}
 	}
+
+	// Tear the session's runtime down before removing it: kill its ptyhost holders
+	// (services + shells) and bring its shared-service stack down so no containers
+	// (or, on purge, volumes) are orphaned. Best-effort — proceed regardless.
+	services.StopSession(name)
+	compose := filepath.Join(ss.Path, "docker-compose.shared.yml")
+	if _, err := os.Stat(compose); err == nil {
+		args := []string{"compose", "-f", compose, "-p", name + "-shared", "down"}
+		if purge {
+			args = append(args, "-v")
+		}
+		_ = exec.Command("docker", args...).Run()
+	}
+
 	if purge {
 		clean := filepath.Clean(ss.Path)
 		if !filepath.IsAbs(clean) || clean == "/" || clean == filepath.Dir(clean) {

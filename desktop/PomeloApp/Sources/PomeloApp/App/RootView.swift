@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RootView: View {
     @EnvironmentObject var state: AppState
@@ -195,6 +196,7 @@ struct WorkspaceSidebar: View {
     @EnvironmentObject var ui: UIStore
 
     @Environment(\.openWindow) private var openWindow
+    @State private var draggingId: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -213,32 +215,48 @@ struct WorkspaceSidebar: View {
 
             OpsBar()
 
-            List {
-                ForEach(state.mainWorkspaces) { ws in
-                    wsRow(ws).moveDisabled(true)
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(state.mainWorkspaces) { ws in WsRow(ws: ws) }
+                    ForEach(state.orderedNonMain.filter { !state.opBranches.contains($0.branch) }) { ws in
+                        WsRow(ws: ws)
+                            .opacity(draggingId == ws.id ? 0.35 : 1)
+                            .scaleEffect(draggingId == ws.id ? 0.97 : 1)
+                            .onDrag {
+                                draggingId = ws.id
+                                return NSItemProvider(object: ws.id as NSString)
+                            } preview: {
+                                WsRow(ws: ws).frame(width: 236).opacity(0.9)
+                            }
+                            .onDrop(of: [.text], delegate: WsReorderDrop(targetId: ws.id, draggingId: $draggingId) { d, t in
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                    state.moveWorkspace(d, before: t)
+                                }
+                            })
+                    }
                 }
-                ForEach(state.orderedNonMain.filter { !state.opBranches.contains($0.branch) }) { ws in
-                    wsRow(ws)
-                        .draggable(ws.id)
-                        .dropDestination(for: String.self) { items, _ in
-                            guard let dragged = items.first else { return false }
-                            state.moveWorkspace(dragged, before: ws.id)
-                            return true
-                        }
-                }
+                .padding(.horizontal, 4).padding(.vertical, 4)
+                .animation(.spring(response: 0.28, dampingFraction: 0.82), value: state.orderedNonMain.map(\.id))
             }
-            .listStyle(.plain)
-            .environment(\.defaultMinListRowHeight, 1)
             .scrollContentBackground(.hidden)
         }
     }
+}
 
-    private func wsRow(_ ws: Workspace) -> some View {
-        WsRow(ws: ws)
-            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+// Live reorder: as the dragged row enters another row, move it there immediately
+// (spring-animated by the caller) — the smooth iOS-style reorder, not a snap on
+// drop. Kept minimal; state.moveWorkspace persists the order.
+struct WsReorderDrop: DropDelegate {
+    let targetId: String
+    @Binding var draggingId: String?
+    let move: (String, String) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let d = draggingId, d != targetId else { return }
+        move(d, targetId)
     }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool { draggingId = nil; return true }
 }
 
 struct WsRow: View {
