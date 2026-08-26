@@ -100,17 +100,7 @@ struct ServicesBoard: View {
             }
             .buttonStyle(.plain).disabled(investigating)
             .help("Create a throwaway investigate-<date> workspace (all main repos) to reproduce a bug in isolation — no ticket/branch to name.")
-            Button(action: onPrepareMain) {
-                HStack(spacing: 5) {
-                    Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 11))
-                    Text("Prepare main").font(.system(size: 12, weight: .medium))
-                }
-                .foregroundStyle(Theme.accent)
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Theme.accentSoft, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .help("Reset databases + migrate + seed. New workspaces clone these DBs via TEMPLATE.")
+            // Prepare main hidden until the flow is finished.
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .background(Theme.bgSoft)

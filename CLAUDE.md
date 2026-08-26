@@ -19,7 +19,7 @@ make dmg            # local signed DMG for testing (never publishes)
 ```
 
 - Single Go test: `go test ./internal/services/ -run TestEnvFileEntries`
-- App unit tests: `cd desktop/PomeloApp && swift test` (ViewModels against `MockPomAPI`, no FFI)
+- App unit tests: `cd desktop/PomeloApp && xcodebuild test -scheme PomeloApp -destination 'platform=macOS,arch=arm64' -derivedDataPath .ddata -skipPackagePluginValidation` (ViewModels vs `MockPomAPI`; add `-only-testing:PomeloAppTests/<Suite>` to scope). NOTE: `swift test` does NOT work — the CodeEditSymbols dep needs Xcode's resource pipeline. Needs `Vendor/libpom.a` (run `build.sh` once).
 - Requires: Go 1.26+, `zsh`, Xcode + `codesign` (macOS, Apple Silicon). No tmux — services/shells run on self-managed PTY holders.
 
 ## Release (CI-only)

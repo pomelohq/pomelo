@@ -467,17 +467,7 @@ struct CreateWorkspaceView: View {
 
     private var suggestions: [SprintIssue] {
         let existing = Set(state.workspaces.compactMap { jiraKey($0.branch) })
-        let q = ticket.trimmingCharacters(in: .whitespaces)
-        let avail = sprint.filter { !existing.contains($0.key.uppercased()) && (!state.jiraOnlyMine || $0.mine) }
-        let scored: [(iss: SprintIssue, score: Int)] = avail.compactMap { iss in
-            if q.isEmpty { return (iss, 0) }
-            let s = [Fuzzy.score(q, iss.key), Fuzzy.score(q, iss.summary)].compactMap { $0 }.max()
-            return s.map { (iss, $0) }
-        }
-        return scored.sorted {
-            $0.iss.mine != $1.iss.mine ? ($0.iss.mine && !$1.iss.mine)
-                : ($0.score != $1.score ? $0.score > $1.score : $0.iss.key < $1.iss.key)
-        }.map(\.iss)
+        return SprintSuggest.rank(sprint, existing: existing, query: ticket, onlyMine: state.jiraOnlyMine)
     }
 
     var body: some View {

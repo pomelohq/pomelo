@@ -13,6 +13,7 @@ import (
 // ParseCompose).
 type RepoDetection struct {
 	Name   string
+	Alias  string // optional; defaults to Name
 	Apps   []StackFacts
 	Shared []ComposeService
 }
@@ -26,7 +27,11 @@ func Emit(session string, repos []RepoDetection) (string, error) {
 	sharedSeen := map[string]*emitShared{}
 
 	for _, rd := range repos {
-		er := &emitRepo{Alias: rd.Name}
+		al := rd.Alias
+		if al == "" {
+			al = rd.Name
+		}
+		er := &emitRepo{Alias: al}
 		used := map[string]bool{}
 		var setup []string
 		setupSeen := map[string]bool{}

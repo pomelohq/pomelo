@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pomelohq/pomelo/internal/detect"
 	"github.com/pomelohq/pomelo/internal/secrets"
 	"github.com/pomelohq/pomelo/internal/sessions"
-	"gopkg.in/yaml.v3"
 )
 
 type RepoSpec struct {
@@ -76,9 +76,8 @@ func ScaffoldSession(req CreateSessionReq) (string, error) {
 		return "", err
 	}
 
-	reposCfg := map[string]map[string]any{}
-	sharedFromCompose := map[string]any{}
-	var needPostgres, needRedis bool
+	var dets []detect.RepoDetection
+	repoPaths := map[string]string{}
 	for _, repo := range req.Repos {
 		src := strings.TrimSpace(repo.Path)
 		if src == "" {
@@ -112,16 +111,8 @@ func ScaffoldSession(req CreateSessionReq) (string, error) {
 			return "", fmt.Errorf("clone %s: %w", repoName, cloneErr)
 		}
 		repoPath := filepath.Join(wsDir, repoName)
-		entry, pg, redis := detectStack(repoPath)
-		if repo.Alias != "" {
-			entry["alias"] = repo.Alias
-		}
-		needPostgres = needPostgres || pg
-		needRedis = needRedis || redis
-		for k, v := range detectSharedFromCompose(repoPath) {
-			sharedFromCompose[k] = v
-		}
-		reposCfg[repoName] = entry
+		repoPaths[repoName] = repoPath
+		dets = append(dets, detect.RepoDetection{Name: repoName, Alias: repo.Alias})
 	}
 
 	for _, ef := range req.EnvFiles {
@@ -142,34 +133,26 @@ func ScaffoldSession(req CreateSessionReq) (string, error) {
 		_ = os.WriteFile(dst, []byte(ef.Content), 0o644)
 	}
 
-	doc := map[string]any{
-		"session":        name,
-		"default_branch": defaultBranch,
-		"repos":          reposCfg,
-	}
-	shared := map[string]any{}
-	for k, v := range sharedFromCompose {
-		shared[k] = v
-	}
-	if needPostgres {
-		if _, ok := shared["postgres"]; !ok {
-			shared["postgres"] = map[string]any{}
+	// Deterministic draft: detect each repo's stack + backing services and emit a
+	// valid pom.yml. The onboarding agent refines env wiring from here.
+	for i := range dets {
+		p := repoPaths[dets[i].Name]
+		dets[i].Apps = detect.DetectRepo(p)
+		for _, c := range detect.ParseCompose(p) {
+			if c.Kind == detect.KindShared {
+				dets[i].Shared = append(dets[i].Shared, c)
+			}
 		}
 	}
-	if needRedis {
-		if _, ok := shared["redis"]; !ok {
-			shared["redis"] = map[string]any{}
-		}
-	}
-	if len(shared) > 0 {
-		doc["shared_services"] = shared
-	}
-	yml, err := yaml.Marshal(doc)
+	yml, err := detect.Emit(name, dets)
 	if err != nil {
 		_ = os.RemoveAll(sessionDir)
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(sessionDir, "pom.yml"), yml, 0o644); err != nil {
+	if defaultBranch != "main" {
+		yml = strings.Replace(yml, "default_branch: main", "default_branch: "+defaultBranch, 1)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "pom.yml"), []byte(yml), 0o644); err != nil {
 		_ = os.RemoveAll(sessionDir)
 		return "", err
 	}
@@ -294,108 +277,4 @@ func copyFileInto(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
-}
-
-func detectStack(repoDir string) (entry map[string]any, needPostgres, needRedis bool) {
-	entry = map[string]any{}
-	pm := detectPM(repoDir)
-	raw, err := os.ReadFile(filepath.Join(repoDir, "package.json"))
-	if err != nil {
-		return entry, false, false
-	}
-	var pkg struct {
-		Dependencies    map[string]string `json:"dependencies"`
-		DevDependencies map[string]string `json:"devDependencies"`
-		Scripts         map[string]string `json:"scripts"`
-		Workspaces      json.RawMessage   `json:"workspaces"`
-	}
-	_ = json.Unmarshal(raw, &pkg)
-	dep := func(name string) bool {
-		_, a := pkg.Dependencies[name]
-		_, b := pkg.DevDependencies[name]
-		return a || b
-	}
-	hasScript := func(name string) bool { _, ok := pkg.Scripts[name]; return ok }
-
-	entry["setup"] = []string{pm + " install"}
-
-	svcName, cmd := "app", pm+" run dev"
-	switch {
-	case dep("@nestjs/core"):
-		svcName = "api"
-		if hasScript("start:dev") {
-			cmd = pm + " run start:dev"
-		} else {
-			cmd = "npx nest start --watch"
-		}
-		needPostgres, needRedis = true, true
-	case dep("next"):
-		svcName, cmd = "web", pm+" run dev"
-	case dep("vite"):
-		svcName, cmd = "web", pm+" run dev"
-	case dep("react-scripts"):
-		svcName, cmd = "web", pm+" start"
-	case hasScript("dev"):
-		svcName, cmd = "app", pm+" run dev"
-	case hasScript("start"):
-		svcName, cmd = "app", pm+" start"
-	}
-	entry["services"] = map[string]any{svcName: map[string]any{"cmd": cmd}}
-	return entry, needPostgres, needRedis
-}
-
-func detectPM(repoDir string) string {
-	for _, c := range []struct{ file, pm string }{
-		{"pnpm-lock.yaml", "pnpm"}, {"yarn.lock", "yarn"}, {"bun.lockb", "bun"}, {"package-lock.json", "npm"},
-	} {
-		if _, err := os.Stat(filepath.Join(repoDir, c.file)); err == nil {
-			return c.pm
-		}
-	}
-	return "npm"
-}
-
-func detectSharedFromCompose(repoDir string) map[string]any {
-	out := map[string]any{}
-	var raw []byte
-	for _, f := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
-		if b, err := os.ReadFile(filepath.Join(repoDir, f)); err == nil {
-			raw = b
-			break
-		}
-	}
-	if raw == nil {
-		return out
-	}
-	var doc struct {
-		Services map[string]struct {
-			Image string `yaml:"image"`
-		} `yaml:"services"`
-	}
-	if yaml.Unmarshal(raw, &doc) != nil {
-		return out
-	}
-	known := []struct{ sub, name string }{
-		{"postgres", "postgres"}, {"postgis", "postgres"}, {"redis", "redis"},
-		{"minio", "minio"}, {"opensearch", "opensearch"}, {"elasticsearch", "opensearch"},
-		{"mysql", "mysql"}, {"mariadb", "mysql"}, {"mongo", "mongo"},
-		{"rabbitmq", "rabbitmq"}, {"kafka", "kafka"},
-	}
-	for _, svc := range doc.Services {
-		img := strings.ToLower(svc.Image)
-		if img == "" {
-			continue
-		}
-		for _, k := range known {
-			if strings.Contains(img, k.sub) {
-				entry := map[string]any{}
-				if _, wellKnown := map[string]bool{"postgres": true, "redis": true, "minio": true, "opensearch": true}[k.name]; !wellKnown {
-					entry["image"] = svc.Image
-				}
-				out[k.name] = entry
-				break
-			}
-		}
-	}
-	return out
 }
