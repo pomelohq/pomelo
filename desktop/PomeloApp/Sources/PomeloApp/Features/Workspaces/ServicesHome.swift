@@ -356,7 +356,11 @@ struct SvcCard: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .top, spacing: 6) {
                             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9)).foregroundStyle(Theme.danger)
-                            Text(err).font(Theme.mono(10)).foregroundStyle(Theme.danger).lineLimit(6).textSelection(.enabled)
+                            ScrollView {
+                                Text(err).font(Theme.mono(10)).foregroundStyle(Theme.danger)
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: err.count > 240 ? 200 : nil)
                             Spacer(minLength: 0)
                         }
                         HStack(spacing: 6) {

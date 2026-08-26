@@ -64,7 +64,7 @@ func serviceCrash(holder string) (bool, string) {
 	if !crashed || len(out) == 0 {
 		return false, ""
 	}
-	return true, lastLines(reCrashANSI.ReplaceAllString(string(out), ""), 6)
+	return true, lastLines(reCrashANSI.ReplaceAllString(string(out), ""), 200)
 }
 
 type Shortcut struct {
