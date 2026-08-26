@@ -271,6 +271,7 @@ struct SvcCard: View {
     @State private var busyLabel = "starting…"
     @State private var envPick: String?
     @State private var startError: String?
+    @State private var showLogModal = false
 
     private var curEnv: String { envPick ?? service.env ?? "local" }
     private var envIsRemote: Bool { curEnv != "local" }
@@ -356,14 +357,24 @@ struct SvcCard: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .top, spacing: 6) {
                             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9)).foregroundStyle(Theme.danger)
-                            ScrollView {
-                                Text(err).font(Theme.mono(10)).foregroundStyle(Theme.danger)
-                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .frame(maxHeight: err.count > 240 ? 200 : nil)
+                            Text(err).font(Theme.mono(10)).foregroundStyle(Theme.danger)
+                                .lineLimit(4).truncationMode(.tail).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             Spacer(minLength: 0)
                         }
+                        .contentShape(Rectangle())
+                        .onTapGesture { showLogModal = true }
                         HStack(spacing: 6) {
+                            Button { showLogModal = true } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "doc.plaintext").font(.system(size: 9))
+                                    Text("View log").font(.system(size: 10.5, weight: .semibold))
+                                }
+                                .foregroundStyle(Theme.fgMuted)
+                                .padding(.horizontal, 8).padding(.vertical, 2)
+                                .background(Theme.chip, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
                             if err.contains("port") {
                                 Button { act("start", relocate: true) } label: {
                                     Text("Use a new port").font(.system(size: 10.5, weight: .semibold))
@@ -391,7 +402,8 @@ struct SvcCard: View {
                     .background(Theme.danger.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.danger.opacity(0.22)))
                     .padding(.horizontal, 10).padding(.top, 10)
-                    .help(err)
+                    .help("Click to view the full log")
+                    .sheet(isPresented: $showLogModal) { CrashLogSheet(title: "\(repoName) · \(service.name)", log: err) }
                 }
                 Button { act("start") } label: {
                     HStack {
@@ -522,6 +534,35 @@ struct SvcCard: View {
     }
     private func copyToPasteboard(_ s: String) {
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType: .string)
+    }
+}
+
+struct CrashLogSheet: View {
+    let title: String
+    let log: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Theme.danger)
+                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.fg).lineLimit(1)
+                Spacer()
+                Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(log, forType: .string) } label: {
+                    Label("Copy", systemImage: "doc.on.doc").font(.system(size: 11))
+                }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
+                Button { dismiss() } label: { Image(systemName: "xmark").font(.system(size: 12)) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            Divider().overlay(Theme.borderSoft)
+            ScrollView([.vertical, .horizontal]) {
+                Text(log.isEmpty ? "(no output)" : log).font(Theme.mono(11.5)).foregroundStyle(Theme.fg)
+                    .textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(Theme.bg)
+        }
+        .frame(width: 760, height: 520).background(Theme.bgSoft)
     }
 }
 
