@@ -10,6 +10,7 @@ struct DependencyBoard: View {
     @State private var pan: CGSize = .zero
     @GestureState private var dragPan: CGSize = .zero
     @State private var hovered: String?
+    @State private var confirmDedupe = false
 
     private enum Kind { case type, hash, workspace }
     private struct Node: Identifiable {
@@ -161,6 +162,16 @@ struct DependencyBoard: View {
                 }
             }.buttonStyle(.plain).foregroundStyle(Theme.accent).disabled(vm.optimizing)
                 .help("Capture node_modules installed by hand (e.g. npm install in a terminal) into the store")
+            Button { confirmDedupe = true } label: {
+                Label("Dedupe", systemImage: "arrow.triangle.merge").font(.system(size: 11, weight: .medium))
+            }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).disabled(vm.optimizing)
+                .help("Reclaim disk: relink duplicate node_modules to a single shared copy (CoW)")
+                .confirmationDialog("Reclaim disk by deduplicating node_modules?", isPresented: $confirmDedupe, titleVisibility: .visible) {
+                    Button("Dedupe") { Task { await vm.reclaim() } }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Rewrites each workspace's node_modules as a shared CoW clone of the store copy (same content). Stop dev servers first to be safe.")
+                }
             if !vm.stale.isEmpty {
                 Button { Task { await vm.deleteStale() } } label: {
                     Label("Reclaim \(vm.human(vm.staleBytes))", systemImage: "trash").font(.system(size: 11, weight: .medium))

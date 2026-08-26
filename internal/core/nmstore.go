@@ -11,10 +11,35 @@ func (s *Server) nmStoreRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/nmstore/list", s.handleNMStoreList)
 	mux.HandleFunc("/api/nmstore/delete", s.handleNMStoreDelete)
 	mux.HandleFunc("/api/nmstore/reconcile", s.handleNMStoreReconcile)
+	mux.HandleFunc("/api/nmstore/reclaim", s.handleNMStoreReclaim)
 }
 
 func (s *Server) handleNMStoreReconcile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.NMStoreReconcile())
+}
+
+func (s *Server) handleNMStoreReclaim(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.NMStoreReclaim())
+}
+
+// NMStoreReclaim relinks each workspace's node_modules to the shared store copy (CoW);
+// rewrites worktree node_modules. Reports disk freed via free-space delta.
+func (s *Server) NMStoreReclaim() map[string]any {
+	s.NMStoreReconcile()
+	before := services.FreeBytes(s.WorkspaceRoot)
+	relinked := 0
+	for _, ws := range s.collectWorkspaces(false, true) {
+		for _, r := range ws.Repos {
+			if ok, _ := services.RelinkNodeModules(r.Name, r.Path); ok {
+				relinked++
+			}
+		}
+	}
+	reclaimed := services.FreeBytes(s.WorkspaceRoot) - before
+	if reclaimed < 0 {
+		reclaimed = 0
+	}
+	return map[string]any{"ok": true, "relinked": relinked, "reclaimed": reclaimed}
 }
 
 // NMStoreReconcile snapshots hand-installed node_modules (e.g. `npm install` run in a

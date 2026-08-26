@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/pomelohq/pomelo/internal/paths"
 )
@@ -32,6 +33,46 @@ func MainLockHash(projectRoot, repo, defaultBranch string) string {
 }
 
 func LockHash(worktree string) string { return lockHash(worktree) }
+
+// RelinkNodeModules CoW-clones a worktree's node_modules from the store to share
+// blocks. Skips cross-volume (clonefile can't span volumes -> would full-copy).
+func RelinkNodeModules(repo, worktree string) (bool, error) {
+	nm := filepath.Join(worktree, "node_modules")
+	if !DirExists(nm) {
+		return false, nil
+	}
+	h := lockHash(worktree)
+	if h == "" {
+		return false, nil
+	}
+	store := nmStoreDir(repo, h)
+	if !DirExists(store) || !sameVolume(store, nm) {
+		return false, nil
+	}
+	if err := cowCopy(store, nm); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func sameVolume(a, b string) bool {
+	sa, err1 := os.Stat(a)
+	sb, err2 := os.Stat(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	da, oka := sa.Sys().(*syscall.Stat_t)
+	db, okb := sb.Sys().(*syscall.Stat_t)
+	return oka && okb && da.Dev == db.Dev
+}
+
+func FreeBytes(path string) int64 {
+	var st syscall.Statfs_t
+	if syscall.Statfs(path, &st) != nil {
+		return 0
+	}
+	return int64(st.Bavail) * int64(st.Bsize)
+}
 
 func nmIndexPath() string { return filepath.Join(nmStoreRoot(), ".index.json") }
 

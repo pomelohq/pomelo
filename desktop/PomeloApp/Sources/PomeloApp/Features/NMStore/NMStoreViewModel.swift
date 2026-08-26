@@ -13,6 +13,7 @@ final class NMStoreViewModel: ObservableObject {
     struct Payload: Decodable { var entries: [Entry] = []; var total: Int64 = 0; var unoptimized: [Unopt] = [] }
 
     struct ReconcileResult: Decodable { var added = 0; var bytes: Int64 = 0 }
+    struct ReclaimResult: Decodable { var relinked = 0; var reclaimed: Int64 = 0 }
 
     @Published private(set) var entries: [Entry] = []
     @Published private(set) var unoptimized: [Unopt] = []
@@ -63,6 +64,17 @@ final class NMStoreViewModel: ObservableObject {
             lastOptimize = "Cached \(r.added) new (\(human(r.bytes)))"
         } else {
             lastOptimize = "Already optimized"
+        }
+    }
+
+    func reclaim() async {
+        optimizing = true
+        let d = await api.call { $0.nmStoreReclaim() }
+        let r = PomJSON.decode(ReclaimResult.self, from: d)
+        await load()
+        optimizing = false
+        if let r {
+            lastOptimize = r.reclaimed > 0 ? "Reclaimed \(human(r.reclaimed)) (\(r.relinked) relinked)" : "Nothing to reclaim"
         }
     }
 }

@@ -122,6 +122,12 @@ final class PomCore: @unchecked Sendable {
         return Data(String(cString: out).utf8)
     }
 
+    func nmStoreReclaim() -> Data {
+        guard let out = PomNMStoreReclaim() else { return Data() }
+        defer { PomFree(out) }
+        return Data(String(cString: out).utf8)
+    }
+
     func syncGetData() -> Data {
         guard let out = PomSyncGet() else { return Data() }
         defer { PomFree(out) }

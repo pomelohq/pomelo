@@ -91,6 +91,15 @@ func PomNMStoreReconcile() *C.char {
 	return bindingJSON(s.NMStoreReconcile())
 }
 
+//export PomNMStoreReclaim
+func PomNMStoreReclaim() *C.char {
+	s := server()
+	if s == nil {
+		return C.CString(`{"ok":false}`)
+	}
+	return bindingJSON(s.NMStoreReclaim())
+}
+
 //export PomNMStoreDelete
 func PomNMStoreDelete(repo, hash *C.char) *C.char {
 	s := server()
