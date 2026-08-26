@@ -192,13 +192,15 @@ func ResetToDefaultAndPull(dir, defaultBranch string) error {
 			return fmt.Errorf("git %s: %s (%w)", strings.Join(args, " "), strings.TrimSpace(string(out)), err)
 		}
 	}
-	// Pull only the default branch; a repo with a multi-branch fetch refspec otherwise
-	// fails "cannot fast-forward to multiple branches".
+	// Fetch then ff-merge the single FETCH_HEAD; `git pull` on some repos multiplies
+	// merge heads and dies "cannot fast-forward to multiple branches".
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	pull := []string{"-C", dir, "pull", "--ff-only", "origin", defaultBranch}
-	if out, err := exec.CommandContext(ctx, "git", pull...).CombinedOutput(); err != nil {
-		return fmt.Errorf("git pull origin %s: %s (%w)", defaultBranch, strings.TrimSpace(string(out)), err)
+	if out, err := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", defaultBranch).CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch origin %s: %s (%w)", defaultBranch, strings.TrimSpace(string(out)), err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "merge", "--ff-only", "FETCH_HEAD").CombinedOutput(); err != nil {
+		return fmt.Errorf("git merge --ff-only origin/%s: %s (%w)", defaultBranch, strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }
