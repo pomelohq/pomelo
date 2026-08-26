@@ -1,5 +1,6 @@
 /dist
-.claude/
+.claude/*
+!.claude/skills/
 dist/
 /pom
 /pomapp
