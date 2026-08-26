@@ -31,11 +31,6 @@ struct IntegrationsSettings: View {
     @State private var ghSaved = false
     @State private var ghTest = ""
 
-    @State private var secretNames: [String] = []
-    @State private var newSecretName = ""
-    @State private var newSecretValue = ""
-    @State private var revealed: [String: String] = [:]
-    @State private var copied = ""
 
     var body: some View {
         Form {
@@ -72,37 +67,8 @@ struct IntegrationsSettings: View {
                 Text("Pomelo talks to GitHub directly (no `gh` CLI). A fine-grained PAT with Pull requests: read is enough — stored encrypted app-local (secret `github`), per session. Or export GH_TOKEN in your shell.")
             }
 
-            Section {
-                if secretNames.isEmpty {
-                    Text("No secrets yet.").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
-                }
-                ForEach(secretNames, id: \.self) { name in
-                    HStack {
-                        Text("{{secret.\(name)}}").font(Theme.mono(12)).foregroundStyle(Theme.fg)
-                        Spacer()
-                        if let v = revealed[name] {
-                            Text(v).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted).lineLimit(1).textSelection(.enabled)
-                        } else {
-                            Text("••••••").foregroundStyle(Theme.dim)
-                        }
-                        Button { copySecret(name) } label: {
-                            Image(systemName: copied == name ? "checkmark" : "doc.on.doc").font(.system(size: 10))
-                        }.buttonStyle(.plain).foregroundStyle(copied == name ? Theme.ok : Theme.fgMuted).help("Copy value")
-                        Button { toggleReveal(name) } label: {
-                            Image(systemName: revealed[name] != nil ? "eye.slash" : "eye").font(.system(size: 10))
-                        }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
-                        Button(role: .destructive) { setSecret(name, "") } label: { Image(systemName: "trash").font(.system(size: 10)) }
-                            .buttonStyle(.plain).foregroundStyle(Theme.danger)
-                    }
-                }
-                HStack {
-                    TextField("NAME", text: $newSecretName)
-                    SecureField("value", text: $newSecretValue)
-                    Button("Add") { addSecret() }.disabled(newSecretName.isEmpty || newSecretValue.isEmpty)
-                }
-            } header: { Text("Secrets") } footer: {
-                Text("Encrypted app-local values for {{secret.NAME}} in your config (Stripe keys, API tokens…). Names are listed; values are never shown or sent back.")
-            }
+            // Secrets moved to the Session panel (Project ⌘⇧P › Secrets) — they are
+            // per-session and referenced by the config shown there.
 
             SyncSection()
 
@@ -114,7 +80,7 @@ struct IntegrationsSettings: View {
             }
         }
         .formStyle(.grouped).scrollContentBackground(.hidden)
-        .onAppear { refresh(); loadSecrets() }
+        .onAppear { refresh() }
     }
 
     private func providerRow(_ name: String, value: String, scope: String, ok: Bool? = nil) -> some View {
@@ -222,43 +188,6 @@ struct IntegrationsSettings: View {
             if let r = PomJSON.decode(R.self, from: d) {
                 jiraTest = r.ok ? "OK" : ((r.error ?? "").isEmpty ? "failed" : r.error!)
             } else { jiraTest = "failed" }
-        }
-    }
-
-    private func loadSecrets() {
-        Task {
-            let d = await Task.detached { PomCore.shared.secretNamesData() }.value
-            struct R: Decodable { var names: [String]? }
-            secretNames = (PomJSON.decode(R.self, from: d))?.names ?? []
-        }
-    }
-
-    private func addSecret() {
-        setSecret(newSecretName, newSecretValue)
-        newSecretName = ""; newSecretValue = ""
-    }
-
-    private func setSecret(_ name: String, _ value: String) {
-        Task { _ = await Task.detached { PomCore.shared.secretSet(name: name, value: value) }.value; loadSecrets() }
-    }
-
-    private func copySecret(_ name: String) {
-        Task {
-            let d = await Task.detached { PomCore.shared.secretGet(name: name) }.value
-            struct R: Decodable { var value = "" }
-            let v = (PomJSON.decode(R.self, from: d))?.value ?? ""
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(v, forType: .string)
-            copied = name
-            try? await Task.sleep(nanoseconds: 1_200_000_000); if copied == name { copied = "" }
-        }
-    }
-
-    private func toggleReveal(_ name: String) {
-        if revealed[name] != nil { revealed[name] = nil; return }
-        Task {
-            let d = await Task.detached { PomCore.shared.secretGet(name: name) }.value
-            struct R: Decodable { var value = "" }
-            revealed[name] = (PomJSON.decode(R.self, from: d))?.value ?? ""
         }
     }
 

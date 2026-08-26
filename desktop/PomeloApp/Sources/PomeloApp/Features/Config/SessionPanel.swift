@@ -5,10 +5,22 @@ struct SessionPanel: View {
     @EnvironmentObject var state: AppState
     var onClose: () -> Void = {}
 
-    enum Tab: String, CaseIterable, Identifiable { case config, env
+    enum Tab: String, CaseIterable, Identifiable { case config, secrets, env
         var id: String { rawValue }
-        var title: String { self == .config ? "Config" : "ENV inspector" }
-        var icon: String { self == .config ? "chevron.left.forwardslash.chevron.right" : "list.bullet.rectangle" }
+        var title: String {
+            switch self {
+            case .config: return "Config"
+            case .secrets: return "Secrets"
+            case .env: return "ENV inspector"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .config: return "chevron.left.forwardslash.chevron.right"
+            case .secrets: return "key.fill"
+            case .env: return "list.bullet.rectangle"
+            }
+        }
     }
     @State private var tab: Tab = .config
 
@@ -32,6 +44,7 @@ struct SessionPanel: View {
             Divider().overlay(Theme.borderSoft)
             switch tab {
             case .config: AdvancedSettings()
+            case .secrets: SecretsView()
             case .env: EnvInspector()
             }
         }
