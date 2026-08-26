@@ -57,30 +57,19 @@ struct SecretsView: View {
                 .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8)
             Divider().overlay(Theme.borderSoft)
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     if vm.names.isEmpty {
                         Text("No secrets yet.").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
-                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .padding(.horizontal, 16).padding(.vertical, 12)
                     }
-                    ForEach(vm.names, id: \.self) { name in
-                        HStack(spacing: 8) {
-                            Text("{{secret.\(name)}}").font(Theme.mono(12)).foregroundStyle(Theme.tool).lineLimit(1)
-                            if let v = vm.revealed[name] {
-                                Text(v.isEmpty ? "(empty)" : v).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted)
-                                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                            }
-                            Spacer(minLength: 0)
-                            Button { Task { await vm.toggleReveal(name) } } label: {
-                                Image(systemName: vm.revealed[name] != nil ? "eye.slash" : "eye").font(.system(size: 10))
-                            }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Reveal value")
-                            Button { Task { await vm.copyValue(name) } } label: {
-                                Image(systemName: "doc.on.doc").font(.system(size: 10))
-                            }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Copy value to clipboard")
-                            Button { Task { await vm.remove(name) } } label: {
-                                Image(systemName: "trash").font(.system(size: 10))
-                            }.buttonStyle(.plain).foregroundStyle(Theme.danger).help("Delete secret")
+                    ForEach(Array(vm.names.enumerated()), id: \.element) { idx, name in
+                        SecretRow(name: name, value: vm.revealed[name],
+                                  onReveal: { Task { await vm.toggleReveal(name) } },
+                                  onCopy: { Task { await vm.copyValue(name) } },
+                                  onDelete: { Task { await vm.remove(name) } })
+                        if idx < vm.names.count - 1 {
+                            Divider().overlay(Theme.borderSoft).padding(.leading, 16)
                         }
-                        .padding(.horizontal, 16).padding(.vertical, 6)
                     }
                 }
                 .padding(.vertical, 4)
@@ -96,5 +85,48 @@ struct SecretsView: View {
             .padding(.horizontal, 16).padding(.vertical, 12)
         }
         .task { await vm.load() }
+    }
+}
+
+private struct SecretRow: View {
+    let name: String
+    let value: String?          // non-nil = revealed
+    let onReveal: () -> Void
+    let onCopy: () -> Void
+    let onDelete: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "key.fill").font(.system(size: 10)).foregroundStyle(Theme.dim)
+            Text("{{secret.\(name)}}").font(Theme.mono(12)).foregroundStyle(Theme.tool).lineLimit(1)
+            Spacer(minLength: 12)
+            if let v = value {
+                Text(v.isEmpty ? "(empty)" : v)
+                    .font(Theme.mono(11)).foregroundStyle(Theme.fgMuted)
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    .frame(maxWidth: 260, alignment: .trailing)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Theme.bg, in: RoundedRectangle(cornerRadius: 5))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.borderSoft))
+            }
+            HStack(spacing: 4) {
+                iconBtn(value != nil ? "eye.slash" : "eye", Theme.fgMuted, "Reveal value", onReveal)
+                iconBtn("doc.on.doc", Theme.fgMuted, "Copy value", onCopy)
+                iconBtn("trash", Theme.danger, "Delete secret", onDelete)
+            }
+            .opacity(hover ? 1 : 0.5)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 8)
+        .background(hover ? Theme.hover : .clear)
+        .onHover { hover = $0 }
+    }
+
+    private func iconBtn(_ sys: String, _ color: Color, _ tip: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: sys).font(.system(size: 11)).frame(width: 22, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).foregroundStyle(color).help(tip)
     }
 }
