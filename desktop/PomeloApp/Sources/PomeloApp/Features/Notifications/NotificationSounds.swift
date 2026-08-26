@@ -108,17 +108,16 @@ struct NotificationsSettings: View {
             ForEach(sources) { src in
                 Section(src.title) {
                     ForEach(src.events) { ev in
+                        let cur = prefs.sound(src.id, ev.id)
                         LabeledContent(ev.title) {
-                            HStack(spacing: 8) {
-                                Picker("", selection: binding(src.id, ev.id)) {
-                                    Text("None").tag("")
-                                    ForEach(SoundPrefs.systemSounds, id: \.self) { Text($0).tag("sys:\($0)") }
-                                    ForEach(prefs.customFiles, id: \.self) { Text($0).tag("file:\($0)") }
+                            HStack(spacing: 10) {
+                                ChipSelect(text: label(cur), color: cur.isEmpty ? Theme.fgMuted : Theme.accent,
+                                           options: soundLabels, current: label(cur)) { picked in
+                                    prefs.setSound(storage(picked), source: src.id, event: ev.id)
                                 }
-                                .labelsHidden().frame(width: 150)
-                                Button { prefs.play(prefs.sound(src.id, ev.id)) } label: { Image(systemName: "play.circle") }
-                                    .buttonStyle(.plain).foregroundStyle(prefs.sound(src.id, ev.id).isEmpty ? Theme.dim : Theme.accent)
-                                    .disabled(prefs.sound(src.id, ev.id).isEmpty)
+                                Button { prefs.play(cur) } label: { Image(systemName: "play.circle").font(.system(size: 14)) }
+                                    .buttonStyle(.plain).foregroundStyle(cur.isEmpty ? Theme.dim : Theme.accent)
+                                    .disabled(cur.isEmpty)
                             }
                         }
                     }
@@ -137,8 +136,15 @@ struct NotificationsSettings: View {
         .onAppear { recheck() }
     }
 
-    private func binding(_ source: String, _ event: String) -> Binding<String> {
-        Binding(get: { prefs.sound(source, event) }, set: { prefs.setSound($0, source: source, event: event) })
+    private var soundLabels: [String] { ["None"] + SoundPrefs.systemSounds + prefs.customFiles }
+    private func label(_ storage: String) -> String {
+        if storage.hasPrefix("sys:") { return String(storage.dropFirst(4)) }
+        if storage.hasPrefix("file:") { return String(storage.dropFirst(5)) }
+        return "None"
+    }
+    private func storage(_ label: String) -> String {
+        if label == "None" { return "" }
+        return SoundPrefs.systemSounds.contains(label) ? "sys:\(label)" : "file:\(label)"
     }
 
     private func pickFile() {
