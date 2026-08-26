@@ -68,7 +68,6 @@ struct ChipSelect: View {
     let color: Color
     let options: [String]
     var current: String? = nil
-    var maxTextWidth: CGFloat? = nil
     let onPick: (String) -> Void
     @State private var hover = false
     @State private var open = false
@@ -76,8 +75,7 @@ struct ChipSelect: View {
     var body: some View {
         Button { open.toggle() } label: {
             HStack(spacing: 3) {
-                Text(text).font(Theme.mono(11))
-                    .lineLimit(1).truncationMode(.middle).frame(maxWidth: maxTextWidth)
+                Text(text).font(Theme.mono(11)).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 6, weight: .bold)).opacity(0.7)
             }
             .foregroundStyle(color)

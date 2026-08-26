@@ -169,8 +169,8 @@ struct NotificationsSettings: View {
             Section {
                 LabeledContent("Active set") {
                     HStack(spacing: 8) {
-                        ChipSelect(text: prefs.activeSetName, color: Theme.accent, options: prefs.sets.map(\.name),
-                                   current: prefs.activeSetName, maxTextWidth: 130) { name in
+                        ChipSelect(text: clip(prefs.activeSetName), color: Theme.accent, options: prefs.sets.map(\.name),
+                                   current: prefs.activeSetName) { name in
                             if let s = prefs.sets.first(where: { $0.name == name }) { prefs.activeSet = s.id }
                         }
                         Button { setName = ""; showNewSet = true } label: { Image(systemName: "plus.circle") }
@@ -262,6 +262,12 @@ func soundLabel(_ id: String) -> String {
     return id
 }
 
+// Middle-clip a long name so a pill stays compact without a greedy fixed-width frame.
+func clip(_ s: String, _ n: Int = 22) -> String {
+    guard s.count > n else { return s }
+    return String(s.prefix(n / 2)) + "..." + String(s.suffix(n / 2 - 2))
+}
+
 // Multi-select: an event can hold several sounds (Pomelo picks one at random).
 private struct EventSoundPicker: View {
     @ObservedObject var prefs: SoundPrefs
@@ -283,7 +289,7 @@ private struct EventSoundPicker: View {
     var body: some View {
         Button { open.toggle() } label: {
             HStack(spacing: 3) {
-                Text(summary).font(Theme.mono(11)).lineLimit(1).truncationMode(.middle).frame(maxWidth: 150)
+                Text(clip(summary)).font(Theme.mono(11)).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 6, weight: .bold)).opacity(0.7)
             }
             .foregroundStyle(selected.isEmpty ? Theme.fgMuted : Theme.accent)
