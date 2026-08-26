@@ -113,8 +113,8 @@ struct RootView: View {
                         if let err = state.configError {
                             ConfigErrorOverlay(message: err) { state.showSessionPanel = true }
                                 .environmentObject(state)
-                        } else if let ws = state.selectedWorkspace {
-                            WorkspacePane(workspace: ws)
+                        } else if state.selectedWorkspace != nil {
+                            KeepAliveWorkspaceHost()
                         } else if state.loading {
                             VStack(spacing: 12) {
                                 ProgressView().controlSize(.large)
@@ -249,6 +249,39 @@ struct WorkspaceSidebar: View {
             }
             .scrollContentBackground(.hidden)
         }
+    }
+}
+
+// Keeps the selected + recently-visited workspace panes mounted (LRU-capped) and
+// just toggles visibility, so switching between them is instant — no remount, no
+// claude reconnect / "starting…" flash. Panes beyond the cap are dropped (reopen
+// pays a one-time load).
+struct KeepAliveWorkspaceHost: View {
+    @EnvironmentObject var state: AppState
+    @State private var mounted: [String] = []
+    private let cap = 4
+
+    var body: some View {
+        ZStack {
+            ForEach(mounted, id: \.self) { id in
+                if let ws = state.workspaces.first(where: { $0.id == id }) {
+                    WorkspacePane(workspace: ws)
+                        .opacity(id == state.selection ? 1 : 0)
+                        .allowsHitTesting(id == state.selection)
+                        .zIndex(id == state.selection ? 1 : 0)
+                }
+            }
+        }
+        .onAppear(perform: sync)
+        .onChange(of: state.selection) { sync() }
+    }
+
+    private func sync() {
+        guard let sel = state.selection else { return }
+        var m = mounted.filter { $0 != sel }
+        m.insert(sel, at: 0)
+        if m.count > cap { m = Array(m.prefix(cap)) }
+        mounted = m.filter { id in state.workspaces.contains { $0.id == id } }
     }
 }
 
