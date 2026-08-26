@@ -104,6 +104,7 @@ final class AppState: ObservableObject {
     @Published var appActive = true
     @Published var showActivity = false
     @Published var showPipeline = false
+    @Published var updateMainWs: Workspace?
     @Published var fullscreen = false
     var activityScope: String? = nil
 
@@ -473,22 +474,6 @@ final class AppState: ObservableObject {
                     let ref: [String: Any] = ["branch": ws.branch, "is_main": ws.isMain, "repo": repo.name, "svc": svc.name]
                     let body = (try? JSONSerialization.data(withJSONObject: ref)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                     _ = await Task.detached { PomCore.shared.serviceControl(refJSON: body, action: "stop") }.value
-                }
-            }
-            await refreshWorkspaces()
-        }
-    }
-
-    func pullWorkspace(_ ws: Workspace) {
-        Task {
-            if ws.isMain {
-                let branch = ws.branch
-                _ = await Task.detached { PomCore.shared.mainPull(branch: branch) }.value
-            } else {
-                let branch = ws.branch
-                for repo in ws.repos {
-                    let name = repo.name
-                    _ = await Task.detached { PomCore.shared.gitPull(branch: branch, repo: name, isMain: false) }.value
                 }
             }
             await refreshWorkspaces()

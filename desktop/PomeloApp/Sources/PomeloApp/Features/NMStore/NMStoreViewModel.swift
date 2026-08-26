@@ -2,9 +2,12 @@ import Foundation
 
 @MainActor
 final class NMStoreViewModel: ObservableObject {
+    struct Consumer: Decodable, Hashable { var branch = ""; var is_main = false }
     struct Entry: Decodable, Identifiable {
         var repo = ""; var hash = ""; var bytes: Int64 = 0; var current = false
+        var consumers: [Consumer] = []
         var id: String { repo + "/" + hash }
+        var orphan: Bool { consumers.isEmpty }
     }
     struct Payload: Decodable { var entries: [Entry] = []; var total: Int64 = 0 }
 
@@ -15,7 +18,7 @@ final class NMStoreViewModel: ObservableObject {
     private let api: CoreAPI
     init(api: CoreAPI = PomCore.shared) { self.api = api }
 
-    var stale: [Entry] { entries.filter { !$0.current } }
+    var stale: [Entry] { entries.filter { $0.orphan } }
     var staleBytes: Int64 { stale.reduce(0) { $0 + $1.bytes } }
     var sorted: [Entry] {
         entries.sorted { ($0.current ? 1 : 0, $0.bytes) > ($1.current ? 1 : 0, $1.bytes) }

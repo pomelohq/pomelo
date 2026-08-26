@@ -31,6 +31,10 @@ func MainLockHash(projectRoot, repo, defaultBranch string) string {
 	return lockHash(RepoWorktreePath(projectRoot, repo, defaultBranch, true))
 }
 
+// LockHash returns the lockfile hash for a repo worktree (empty if none), used to
+// match a workspace's repo to a cached node_modules snapshot.
+func LockHash(worktree string) string { return lockHash(worktree) }
+
 func nmIndexPath() string { return filepath.Join(nmStoreRoot(), ".index.json") }
 
 func loadNMIndex() map[string]NMStoreEntry {

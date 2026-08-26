@@ -17,25 +17,45 @@ func (s *Server) handleNMStoreList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) NMStoreList() map[string]any {
 	entries := services.NMStoreEntries()
-	branch := ""
-	if c := s.cfg(); c != nil {
-		branch = c.GlobalDefaultBranch()
+
+	// Which workspace/repo currently resolves to each cached (repo, hash): a
+	// workspace "uses" a cache if that repo's lockfile in its worktree hashes to it.
+	type consumer struct {
+		Branch string `json:"branch"`
+		IsMain bool   `json:"is_main"`
 	}
-	curByRepo := map[string]string{}
+	consumers := map[string][]consumer{}
+	for _, ws := range s.collectWorkspaces(false, true) {
+		for _, r := range ws.Repos {
+			h := services.LockHash(r.Path)
+			if h == "" {
+				continue
+			}
+			k := r.Name + "/" + h
+			consumers[k] = append(consumers[k], consumer{Branch: ws.Branch, IsMain: ws.IsMain})
+		}
+	}
+
 	type row struct {
 		services.NMStoreEntry
-		Current bool `json:"current"`
+		Current   bool       `json:"current"`
+		Consumers []consumer `json:"consumers"`
 	}
 	out := make([]row, 0, len(entries))
 	var total int64
 	for _, e := range entries {
 		total += e.Bytes
-		cur, ok := curByRepo[e.Repo]
-		if !ok {
-			cur = services.MainLockHash(s.WorkspaceRoot, e.Repo, branch)
-			curByRepo[e.Repo] = cur
+		cs := consumers[e.Repo+"/"+e.Hash]
+		if cs == nil {
+			cs = []consumer{}
 		}
-		out = append(out, row{NMStoreEntry: e, Current: cur != "" && cur == e.Hash})
+		cur := false
+		for _, c := range cs {
+			if c.IsMain {
+				cur = true
+			}
+		}
+		out = append(out, row{NMStoreEntry: e, Current: cur, Consumers: cs})
 	}
 	return map[string]any{"entries": out, "total": total}
 }

@@ -49,6 +49,9 @@ struct RootView: View {
             .sheet(isPresented: $state.showPipeline) {
                 PrepareMainPipelineView().environmentObject(state).environmentObject(theme)
             }
+            .sheet(item: $state.updateMainWs) { ws in
+                UpdateMainSheet(ws: ws).environmentObject(state).environmentObject(theme)
+            }
             .sheet(isPresented: $state.showShared) {
                 SharedServicesView(onClose: { state.showShared = false }).environmentObject(state).environmentObject(theme)
             }
@@ -364,7 +367,9 @@ struct RowContextMenu: View {
         VStack(spacing: 1) {
             PopItem("Rename…", icon: "pencil") { dismiss(); state.renamingWs = ws }
             PopItem("Open in editor", icon: "square.and.pencil") { dismiss(); state.openEditor(ws) }
-            PopItem(ws.isMain ? "Update main from origin" : "Update from origin", icon: "arrow.triangle.2.circlepath") { dismiss(); state.pullWorkspace(ws) }
+            if ws.isMain {
+                PopItem("Update main from origin", icon: "arrow.triangle.2.circlepath") { dismiss(); state.updateMainWs = ws }
+            }
             if ws.running > 0 {
                 PopItem("Stop all services", icon: "stop.fill") { dismiss(); state.stopAllServices(ws) }
             }

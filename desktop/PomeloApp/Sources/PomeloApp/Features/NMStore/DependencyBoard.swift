@@ -11,7 +11,7 @@ struct DependencyBoard: View {
     @StateObject private var vm = NMStoreViewModel()
     @State private var graphStates = ForceDirectedGraphState(initialIsRunning: true)
 
-    private enum Kind { case type, repo, hash }
+    private enum Kind { case type, hash, workspace }
     private struct GNode {
         let id: String
         let kind: Kind
@@ -23,31 +23,39 @@ struct DependencyBoard: View {
 
     private let typeID = "type:node_modules"
 
+    // Tiers: node_modules -> each cached hash (labelled by repo, red if no workspace
+    // uses it = reclaimable) -> the workspaces currently resolving to that hash.
     private var nodes: [GNode] {
         var out: [GNode] = [
             GNode(id: typeID, kind: .type, color: Theme.accent,
                   label: "node_modules", icon: "shippingbox.fill", size: 22)
         ]
-        let byRepo = Dictionary(grouping: vm.entries, by: \.repo)
-        for repo in byRepo.keys.sorted() {
-            out.append(GNode(id: "repo:\(repo)", kind: .repo, color: Theme.fg,
-                             label: repo, icon: "folder.fill", size: 18))
-            for e in byRepo[repo] ?? [] {
-                out.append(GNode(id: "hash:\(e.repo)/\(e.hash)", kind: .hash,
-                                 color: e.current ? Theme.ok : Theme.warn,
-                                 label: "\(e.hash.prefix(7)) - \(vm.human(e.bytes))",
-                                 icon: "internaldrive.fill", size: 15))
+        var seenWs = Set<String>()
+        for e in vm.entries {
+            let hid = "hash:\(e.repo)/\(e.hash)"
+            out.append(GNode(id: hid, kind: .hash,
+                             color: e.orphan ? Theme.danger : Theme.ok,
+                             label: "\(e.repo)  \(e.hash.prefix(7)) - \(vm.human(e.bytes))",
+                             icon: "internaldrive.fill", size: 15))
+            for c in e.consumers {
+                let wid = "ws:\(c.branch)"
+                if seenWs.insert(wid).inserted {
+                    out.append(GNode(id: wid, kind: .workspace,
+                                     color: c.is_main ? Theme.accent : Theme.fg,
+                                     label: c.branch, icon: c.is_main ? "star.fill" : "square.stack.3d.up.fill",
+                                     size: 13))
+                }
             }
         }
         return out
     }
     private var links: [(String, String)] {
         var out: [(String, String)] = []
-        let byRepo = Dictionary(grouping: vm.entries, by: \.repo)
-        for repo in byRepo.keys.sorted() {
-            out.append((typeID, "repo:\(repo)"))
-            for e in byRepo[repo] ?? [] {
-                out.append(("repo:\(repo)", "hash:\(e.repo)/\(e.hash)"))
+        for e in vm.entries {
+            let hid = "hash:\(e.repo)/\(e.hash)"
+            out.append((typeID, hid))
+            for c in e.consumers {
+                out.append((hid, "ws:\(c.branch)"))
             }
         }
         return out
@@ -88,7 +96,7 @@ struct DependencyBoard: View {
     }
 
     private var hint: some View {
-        Text("drag a node to arrange - pinch to zoom - tap a stale cache to reclaim")
+        Text("each cache links to the workspaces using it - red = unused (tap to reclaim) - drag to arrange, pinch to zoom")
             .font(.system(size: 10)).foregroundStyle(Theme.dim)
             .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -128,7 +136,7 @@ struct DependencyBoard: View {
     private func tap(_ id: String) {
         guard id.hasPrefix("hash:") else { return }
         let key = String(id.dropFirst(5))   // "<repo>/<hash>"
-        if let e = vm.entries.first(where: { "\($0.repo)/\($0.hash)" == key }), !e.current {
+        if let e = vm.entries.first(where: { "\($0.repo)/\($0.hash)" == key }), e.orphan {
             Task { await vm.delete(e) }
         }
     }
