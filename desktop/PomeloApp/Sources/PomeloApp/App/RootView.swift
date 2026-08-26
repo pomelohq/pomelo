@@ -904,11 +904,12 @@ struct WsCard: View {
         case "idle":           return Theme.ok
         case "thinking":       return Theme.warn
         case "tool_use":       return Theme.tool
+        case "compacting":     return Theme.wsAccent
         case "awaiting_input": return Theme.danger
         default:               return Theme.dim
         }
     }
-    private var orbActive: Bool { agent == "thinking" || agent == "tool_use" || agent == "awaiting_input" }
+    private var orbActive: Bool { agent == "thinking" || agent == "tool_use" || agent == "compacting" || agent == "awaiting_input" }
 
     private var openPRs: [WorkspacePR] { prs.filter { $0.pr != nil } }
     private var prColor: Color {

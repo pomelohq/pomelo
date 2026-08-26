@@ -31,6 +31,7 @@ struct ClaudeTerminal: View {
         case "idle":           return Theme.ok
         case "thinking":       return Theme.warn
         case "tool_use":       return Theme.tool
+        case "compacting":     return Theme.wsAccent
         case "awaiting_input": return Theme.danger
         default:               return Theme.ok
         }
