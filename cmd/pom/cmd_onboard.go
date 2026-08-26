@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spf13/cobra"
 	"github.com/pomelohq/pomelo/internal/config"
 	"github.com/pomelohq/pomelo/internal/core"
 	"github.com/pomelohq/pomelo/internal/services"
 	"github.com/pomelohq/pomelo/internal/sessions"
+	"github.com/spf13/cobra"
 )
 
 var onboardCmd = &cobra.Command{
@@ -81,7 +81,7 @@ config, looping config_doctor until it's clean. Portless, single process.`,
 		services.SetSharedStable(cfg.Session)
 		srv := core.New("", cfg.Session, dir, cfg.GlobalDefaultBranch(), cfg)
 		fmt.Printf("Onboarding %q — analyzing repos and authoring pom.yml…\n\n", cfg.Session)
-		return srv.RunOnboardCLI("", false, model, os.Stdout)
+		return srv.RunOnboardCLI(cfg.GlobalDefaultBranch(), true, model, os.Stdout)
 	},
 }
 

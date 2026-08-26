@@ -11,14 +11,19 @@ import (
 
 // runSetup runs each repo's setup (install) commands in its worktree so boot
 // verification tests a real, installed environment. Failures become findings.
-func (s *Server) runSetup(branch string, isMain bool) []doctor.Finding {
+// done tracks repos already installed so a repeated round never reinstalls them.
+func (s *Server) runSetup(branch string, isMain bool, done map[string]bool) []doctor.Finding {
 	cfg := s.cfg()
 	if cfg == nil {
 		return nil
 	}
 	var errs []doctor.Finding
 	for repoName, repo := range cfg.Repos {
+		if done[repoName] {
+			continue
+		}
 		wt := services.RepoWorktreePath(s.WorkspaceRoot, repoName, branch, isMain)
+		ok := true
 		for _, cmd := range repo.Setup {
 			argv := shell.Login(cmd)
 			if out, err := services.RunTimeout(15*time.Minute, wt, argv[0], argv[1:]...); err != nil {
@@ -29,8 +34,12 @@ func (s *Server) runSetup(branch string, isMain bool) []doctor.Finding {
 					Detail:       lastLines(string(out), 6),
 					AgentFixable: true,
 				})
+				ok = false
 				break
 			}
+		}
+		if ok {
+			done[repoName] = true
 		}
 	}
 	return errs
