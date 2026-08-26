@@ -167,6 +167,24 @@ struct NotificationsSettings: View {
     var body: some View {
         Form {
             Section {
+                Toggle("Notify on Claude activity", isOn: $state.notifyClaude)
+                    .onChange(of: state.notifyClaude) { if state.notifyClaude { Notifier.promptOrOpenSettings(); recheck() } }
+                Toggle("Alert even while I'm viewing that workspace", isOn: $prefs.whenFocused)
+                    .disabled(!state.notifyClaude)
+                if state.notifyClaude && !notifOK {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Theme.warn)
+                        Text("macOS hasn't granted notification permission").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
+                        Spacer()
+                        Button("Grant") { Notifier.promptOrOpenSettings(); recheck() }.controlSize(.small)
+                    }
+                }
+                Button("Send test notification") { Notifier.sendTest(); recheck() }.controlSize(.small)
+            } header: { Text("Delivery") } footer: {
+                Text("The master switch. Alert-when-viewing also chimes while you're on that workspace. Needs macOS notification permission.")
+            }
+
+            Section {
                 LabeledContent("Active set") {
                     HStack(spacing: 8) {
                         ChipSelect(text: clip(prefs.activeSetName), color: Theme.accent, options: prefs.sets.map(\.name),
@@ -183,23 +201,6 @@ struct NotificationsSettings: View {
                 }
             } header: { Text("Sound set") } footer: {
                 Text("Save different sound line-ups as sets and switch between them.")
-            }
-
-            Section {
-                Toggle("Notify on Claude activity", isOn: $state.notifyClaude)
-                    .onChange(of: state.notifyClaude) { if state.notifyClaude { Notifier.promptOrOpenSettings(); recheck() } }
-                Toggle("Alert even while I'm viewing that workspace", isOn: $prefs.whenFocused)
-                if state.notifyClaude && !notifOK {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Theme.warn)
-                        Text("macOS hasn't granted notification permission").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
-                        Spacer()
-                        Button("Grant") { Notifier.promptOrOpenSettings(); recheck() }.controlSize(.small)
-                    }
-                }
-                Button("Send test notification") { Notifier.sendTest(); recheck() }.controlSize(.small)
-            } header: { Text("Delivery") } footer: {
-                Text("Alert-when-viewing is handy when you leave a run going and want to hear it finish. Needs macOS notification permission.")
             }
 
             ForEach(sources) { src in
