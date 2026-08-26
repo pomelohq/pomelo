@@ -316,6 +316,7 @@ struct EnvInspector: View {
     @State private var explain: CfgExplain?
     @State private var loading = false
     @State private var revealedEnv: Set<String> = []
+    @State private var errText = ""
 
     private var services: [String] { repos.first(where: { $0.repo == repo })?.services ?? [] }
     private var branches: [String] {
@@ -327,7 +328,11 @@ struct EnvInspector: View {
         VStack(spacing: 0) {
             pickers
             Divider().overlay(Theme.borderSoft)
-            if let e = explain { table(e) } else { placeholder }
+            if let e = explain { table(e) }
+            else if !errText.isEmpty {
+                Text(errText).font(Theme.mono(11)).foregroundStyle(Theme.danger)
+                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            } else { placeholder }
         }
     }
 
@@ -455,6 +460,10 @@ struct EnvInspector: View {
         if let d = PomJSON.decode(CfgExplainResp.self, from: resp) {
             if !d.repos.isEmpty { repos = d.repos }
             explain = d.explain
+            errText = d.explain == nil ? (String(data: resp, encoding: .utf8) ?? "no data").prefix(300).description : ""
+        } else {
+            explain = nil
+            errText = "decode failed: " + (String(data: resp, encoding: .utf8) ?? "").prefix(300).description
         }
     }
 }

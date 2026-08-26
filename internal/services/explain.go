@@ -11,7 +11,7 @@ type EnvPair struct {
 	Key    string `json:"key"`
 	Value  string `json:"value"`
 	Source string `json:"source"`
-	Secret bool   `json:"secret,omitempty"`
+	Secret bool   `json:"secret"`
 }
 
 var secretTmplRe = regexp.MustCompile(`\{\{\s*secret\.`)
