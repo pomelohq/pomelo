@@ -73,7 +73,7 @@ struct ServicesBoard: View {
             .contentShape(Rectangle())
             .help("Drag to reorder")
             .gesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .local)
+                DragGesture(minimumDistance: 4, coordinateSpace: .global)
                     .onChanged { v in
                         if dragId == nil { dragId = repo }
                         dragTranslation = v.translation.width

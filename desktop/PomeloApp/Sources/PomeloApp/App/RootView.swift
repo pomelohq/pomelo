@@ -281,7 +281,7 @@ struct WorkspaceSidebar: View {
     }
 
     private func reorderGesture(idx: Int, ws: Workspace) -> some Gesture {
-        DragGesture(minimumDistance: 6)
+        DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { v in
                 if dragId == nil { dragId = ws.id }
                 dragTranslation = v.translation.height
