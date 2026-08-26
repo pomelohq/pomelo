@@ -33,25 +33,22 @@ func (s *Server) RunOnboardCLI(branch string, isMain bool, model string, out io.
 		s.reloadConfig() // the agent rewrote pom.yml via MCP; verify against its edits, not the seed
 		errs := actionableFindings(s.cfg(), s.WorkspaceRoot, s.Project)
 		if len(errs) == 0 {
-			fmt.Fprintln(out, "\n… installing deps (setup)")
+			fmt.Fprintln(out, "\nInstalling deps (setup)")
 			errs = s.runSetup(branch, isMain, setupDone)
 		}
 		if len(errs) == 0 {
-			fmt.Fprintln(out, "… deps installed — booting services to verify")
+			fmt.Fprintln(out, "Deps installed - booting services to verify")
 			errs = s.verifyBoot(branch, isMain, 12*time.Second)
 			if len(errs) == 0 {
-				fmt.Fprintln(out, "✓ config clean + deps installed + services booted — project is runnable.")
+				fmt.Fprintln(out, "Config clean + deps installed + services booted - project is runnable.")
 				return nil
 			}
 		}
 		if round >= maxRounds {
-			fmt.Fprintf(out, "\n⚠ stopped after %d rounds with %d unresolved finding(s):\n", maxRounds, len(errs))
-			for _, f := range errs {
-				fmt.Fprintf(out, "  - %s: %s\n", f.Title, f.Detail)
-			}
+			summarizeOnboard(s.cfg(), errs).render(out)
 			return nil
 		}
-		fmt.Fprintf(out, "\n… %d finding(s) remain — nudging agent (round %d)\n", len(errs), round+1)
+		fmt.Fprintf(out, "\n%d finding(s) remain - nudging agent (round %d)\n", len(errs), round+1)
 		d.Enqueue(nudgeTurn(errs))
 	}
 }
@@ -112,7 +109,7 @@ func printEvents(ch chan []byte, out io.Writer) {
 		case "text":
 			fmt.Fprint(out, ev.Text)
 		case "tool_use":
-			fmt.Fprintf(out, "\n· %s %s\n", ev.Tool, string(ev.Input))
+			fmt.Fprintf(out, "\n> %s %s\n", ev.Tool, string(ev.Input))
 		case "error":
 			fmt.Fprintf(out, "\n[error] %s\n", ev.Err)
 		case "system":
