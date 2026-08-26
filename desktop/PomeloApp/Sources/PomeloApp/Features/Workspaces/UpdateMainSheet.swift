@@ -5,11 +5,13 @@ struct UpdateMainSheet: View {
     @Environment(\.dismiss) private var dismiss
     let ws: Workspace
 
+    // Optionals: Go omits `error` when ok, and omits `results`/`error` per branch;
+    // Swift's synthesized Decodable throws on an absent non-optional key.
     private struct RepoResult: Decodable, Identifiable {
-        var repo = ""; var branch = ""; var ok = false; var error = ""
+        var repo = ""; var branch = ""; var ok = false; var error: String?
         var id: String { repo }
     }
-    private struct Payload: Decodable { var ok = false; var results: [RepoResult] = []; var error = "" }
+    private struct Payload: Decodable { var ok = false; var results: [RepoResult]?; var error: String? }
 
     @State private var running = true
     @State private var results: [RepoResult] = []
@@ -88,10 +90,10 @@ struct UpdateMainSheet: View {
                 Text(r.branch).font(Theme.mono(10.5)).foregroundStyle(Theme.dim)
             }
             Spacer(minLength: 8)
-            if !running && !r.ok && !r.error.isEmpty {
-                Text(r.error).font(Theme.mono(10)).foregroundStyle(Theme.danger)
+            if !running, !r.ok, let err = r.error, !err.isEmpty {
+                Text(err).font(Theme.mono(10)).foregroundStyle(Theme.danger)
                     .lineLimit(1).truncationMode(.middle).frame(maxWidth: 180, alignment: .trailing)
-                    .help(r.error)
+                    .help(err)
             }
         }
         .padding(.horizontal, 18).padding(.vertical, 7)
@@ -102,7 +104,7 @@ struct UpdateMainSheet: View {
         let branch = ws.branch
         let data = await Task.detached(priority: .userInitiated) { PomCore.shared.mainPull(branch: branch) }.value
         if let p = PomJSON.decode(Payload.self, from: data) {
-            results = p.results; ok = p.ok; rawError = p.error
+            results = p.results ?? []; ok = p.ok; rawError = p.error ?? ""
         } else {
             rawError = String(data: data, encoding: .utf8) ?? "could not read result"
         }
