@@ -31,8 +31,12 @@ func (s *Server) RunOnboardCLI(branch string, isMain bool, model string, out io.
 		}
 		errs := actionableFindings(s.cfg(), s.WorkspaceRoot, s.Project)
 		if len(errs) == 0 {
-			fmt.Fprintln(out, "\n✓ config_doctor clean — project is runnable.")
-			return nil
+			fmt.Fprintln(out, "\n… config_doctor clean — booting services to verify")
+			errs = s.verifyBoot(branch, isMain, 12*time.Second)
+			if len(errs) == 0 {
+				fmt.Fprintln(out, "✓ config_doctor clean + all services booted — project is runnable.")
+				return nil
+			}
 		}
 		if round >= maxRounds {
 			fmt.Fprintf(out, "\n⚠ stopped after %d rounds with %d unresolved finding(s):\n", maxRounds, len(errs))

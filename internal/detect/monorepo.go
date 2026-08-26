@@ -108,9 +108,48 @@ func workspaceGlobs(root string) []string {
 		return []string{"apps/*", "packages/*"}
 	}
 	if exists(root, "nx.json") {
+		// Modern nx marks a project with a project.json at any depth, and
+		// nx.json may relocate them via workspaceLayout — so discover them
+		// instead of assuming apps/libs. Fall back to the classic layout.
+		if p := nxProjects(root); len(p) > 0 {
+			return p
+		}
 		return []string{"apps/*", "libs/*", "packages/*"}
 	}
 	return nil
+}
+
+// nxProjects returns the relative dir of every project.json under root (nx's
+// project marker), skipping vendored/build trees and bounding the walk depth.
+func nxProjects(root string) []string {
+	skip := map[string]bool{"node_modules": true, ".git": true, "dist": true, "build": true, "coverage": true, "tmp": true, ".nx": true}
+	var out []string
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path == root {
+				return nil
+			}
+			if skip[d.Name()] {
+				return filepath.SkipDir
+			}
+			rel, _ := filepath.Rel(root, path)
+			if strings.Count(rel, string(filepath.Separator)) >= 4 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "project.json" {
+			return nil
+		}
+		if rel, err := filepath.Rel(root, filepath.Dir(path)); err == nil && rel != "." {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	return out
 }
 
 func exists(root, name string) bool {

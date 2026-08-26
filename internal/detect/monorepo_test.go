@@ -38,6 +38,27 @@ func TestMonorepoTurboPnpm(t *testing.T) {
 	}
 }
 
+func TestMonorepoNxProjectJSON(t *testing.T) {
+	root := writeRepo(t, map[string]string{
+		"nx.json":      "{}",
+		"package.json": "{}",
+		// Non-conventional location (not apps/ or libs/): nx finds it via project.json.
+		"services/gateway/project.json":  `{"name":"gateway"}`,
+		"services/gateway/package.json":  `{"dependencies":{"@nestjs/core":"10"}}`,
+		"services/gateway/nest-cli.json": "{}",
+		"libs/shared/project.json":       `{"name":"shared"}`,
+		"libs/shared/package.json":       `{"name":"shared"}`,
+	})
+	facts := detect.DetectRepo(root)
+	gw, ok := factByDir(facts, "services/gateway")
+	if !ok || gw.Framework != "nest" {
+		t.Fatalf("services/gateway should be nest: %+v", facts)
+	}
+	if _, ok := factByDir(facts, "libs/shared"); ok {
+		t.Fatalf("frameworkless lib should be dropped: %+v", facts)
+	}
+}
+
 func TestMonorepoPkgJSONWorkspaces(t *testing.T) {
 	root := writeRepo(t, map[string]string{
 		"package.json":               `{"workspaces":["packages/*"]}`,

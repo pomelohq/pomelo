@@ -218,8 +218,7 @@ struct RepoColumn: View {
     }
 
     private func runAll(_ action: String) {
-        let targets = action == "restart" ? services
-            : services.filter { action == "start" ? !$0.running : $0.running }
+        let targets = ServiceRun.targets(services, action: action)
         guard !targets.isEmpty else { return }
         let keys = targets.map { state.svcKey(branch: branch, repo: repo.name, svc: $0.name) }
         let label = action == "stop" ? "stopping…" : (action == "restart" ? "restarting…" : "starting…")
