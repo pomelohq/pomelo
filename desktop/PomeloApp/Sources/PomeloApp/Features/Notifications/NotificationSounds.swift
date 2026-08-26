@@ -38,18 +38,33 @@ final class SoundPrefs: ObservableObject {
     private let d = UserDefaults.standard
     init() { customFiles = (try? FileManager.default.contentsOfDirectory(atPath: soundsDir.path))?.sorted() ?? [] }
 
-    private func key(_ source: String, _ event: String) -> String { "notif.sound.\(source).\(event)" }
-    private func defaultFor(_ event: String) -> String {
+    // An event can hold several sounds; fire() plays a random one (no immediate repeat)
+    // so a user who drops in a few clips gets variety.
+    private var lastPlayed: [String: String] = [:]
+    private func key(_ source: String, _ event: String) -> String { "notif.sounds.\(source).\(event)" }
+    private func legacyKey(_ source: String, _ event: String) -> String { "notif.sound.\(source).\(event)" }
+    private func defaultFor(_ event: String) -> [String] {
         switch event {
-        case "finished", "onboarding_done": return "sys:Glass"
-        case "needs_input": return "sys:Ping"
-        case "service_crashed": return "sys:Basso"
-        default: return ""
+        case "finished", "onboarding_done": return ["sys:Glass"]
+        case "needs_input": return ["sys:Ping"]
+        case "service_crashed": return ["sys:Basso"]
+        default: return []
         }
     }
-    func sound(_ source: String, _ event: String) -> String { d.string(forKey: key(source, event)) ?? defaultFor(event) }
-    func setSound(_ value: String, source: String, event: String) {
-        d.set(value, forKey: key(source, event)); objectWillChange.send()
+    func sounds(_ source: String, _ event: String) -> [String] {
+        if let data = d.data(forKey: key(source, event)), let arr = try? JSONDecoder().decode([String].self, from: data) {
+            return arr
+        }
+        if let legacy = d.string(forKey: legacyKey(source, event)) { return legacy.isEmpty ? [] : [legacy] }
+        return defaultFor(event)
+    }
+    func setSounds(_ values: [String], source: String, event: String) {
+        d.set(try? JSONEncoder().encode(values), forKey: key(source, event)); objectWillChange.send()
+    }
+    func toggle(_ id: String, source: String, event: String) {
+        var arr = sounds(source, event)
+        if let i = arr.firstIndex(of: id) { arr.remove(at: i) } else { arr.append(id) }
+        setSounds(arr, source: source, event: event)
     }
 
     var soundsDir: URL {
@@ -72,7 +87,15 @@ final class SoundPrefs: ObservableObject {
             NSSound(contentsOf: soundsDir.appendingPathComponent(String(storage.dropFirst(5))), byReference: true)?.play()
         }
     }
-    func fire(source: String, event: String) { play(sound(source, event)) }
+    func fire(source: String, event: String) {
+        let arr = sounds(source, event)
+        guard !arr.isEmpty else { return }
+        let k = "\(source).\(event)"
+        var pick = arr.randomElement()!
+        if arr.count > 1, pick == lastPlayed[k] { pick = arr.filter { $0 != lastPlayed[k] }.randomElement() ?? pick }
+        lastPlayed[k] = pick
+        play(pick)
+    }
 }
 
 struct NotificationsSettings: View {
@@ -108,16 +131,12 @@ struct NotificationsSettings: View {
             ForEach(sources) { src in
                 Section(src.title) {
                     ForEach(src.events) { ev in
-                        let cur = prefs.sound(src.id, ev.id)
                         LabeledContent(ev.title) {
                             HStack(spacing: 10) {
-                                ChipSelect(text: label(cur), color: cur.isEmpty ? Theme.fgMuted : Theme.accent,
-                                           options: soundLabels, current: label(cur), maxTextWidth: 150) { picked in
-                                    prefs.setSound(storage(picked), source: src.id, event: ev.id)
-                                }
-                                Button { prefs.play(cur) } label: { Image(systemName: "play.circle").font(.system(size: 14)) }
-                                    .buttonStyle(.plain).foregroundStyle(cur.isEmpty ? Theme.dim : Theme.accent)
-                                    .disabled(cur.isEmpty)
+                                EventSoundPicker(prefs: prefs, source: src.id, event: ev.id, options: optionIDs)
+                                Button { prefs.fire(source: src.id, event: ev.id) } label: { Image(systemName: "play.circle").font(.system(size: 14)) }
+                                    .buttonStyle(.plain).foregroundStyle(prefs.sounds(src.id, ev.id).isEmpty ? Theme.dim : Theme.accent)
+                                    .disabled(prefs.sounds(src.id, ev.id).isEmpty)
                             }
                         }
                     }
@@ -127,7 +146,7 @@ struct NotificationsSettings: View {
             Section {
                 Button { pickFile() } label: { Label("Add sound file...", systemImage: "plus") }
             } footer: {
-                Text("Use your own .wav/.mp3/.aiff — uploaded sounds appear in every dropdown.")
+                Text("Pick several per event and Pomelo plays a random one. Add your own .wav/.mp3/.aiff to use any voice.")
             }
         }
         .formStyle(.grouped)
@@ -136,16 +155,7 @@ struct NotificationsSettings: View {
         .onAppear { recheck() }
     }
 
-    private var soundLabels: [String] { ["None"] + SoundPrefs.systemSounds + prefs.customFiles }
-    private func label(_ storage: String) -> String {
-        if storage.hasPrefix("sys:") { return String(storage.dropFirst(4)) }
-        if storage.hasPrefix("file:") { return String(storage.dropFirst(5)) }
-        return "None"
-    }
-    private func storage(_ label: String) -> String {
-        if label == "None" { return "" }
-        return SoundPrefs.systemSounds.contains(label) ? "sys:\(label)" : "file:\(label)"
-    }
+    private var optionIDs: [String] { SoundPrefs.systemSounds.map { "sys:\($0)" } + prefs.customFiles.map { "file:\($0)" } }
 
     private func pickFile() {
         let p = NSOpenPanel()
@@ -159,5 +169,72 @@ struct NotificationsSettings: View {
         let d = await Task.detached { PomCore.shared.codeAgentsData() }.value
         let agents = (PomJSON.decode([A].self, from: d) ?? []).map { (id: $0.id, name: $0.name) }
         sources = NotifCatalog.sources(agents: agents.isEmpty ? [("claude", "Claude Code")] : agents)
+    }
+}
+
+func soundLabel(_ id: String) -> String {
+    if id.hasPrefix("sys:") { return String(id.dropFirst(4)) }
+    if id.hasPrefix("file:") { return String(id.dropFirst(5)) }
+    return id
+}
+
+// Multi-select: an event can hold several sounds (Pomelo picks one at random).
+private struct EventSoundPicker: View {
+    @ObservedObject var prefs: SoundPrefs
+    let source: String
+    let event: String
+    let options: [String]
+    @State private var open = false
+
+    private var selected: [String] { prefs.sounds(source, event) }
+    private var summary: String {
+        if selected.isEmpty { return "None" }
+        return selected.count == 1 ? soundLabel(selected[0]) : "\(selected.count) sounds"
+    }
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: 3) {
+                Text(summary).font(Theme.mono(11)).lineLimit(1).truncationMode(.middle).frame(maxWidth: 150)
+                Image(systemName: "chevron.down").font(.system(size: 6, weight: .bold)).opacity(0.7)
+            }
+            .foregroundStyle(selected.isEmpty ? Theme.fgMuted : Theme.accent)
+            .padding(.horizontal, 8).padding(.vertical, 2.5)
+            .background((selected.isEmpty ? Theme.fgMuted : Theme.accent).opacity(0.12), in: Capsule())
+            .overlay(Capsule().strokeBorder((selected.isEmpty ? Theme.fgMuted : Theme.accent).opacity(0.35)))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) {
+                row(label: "None", checked: selected.isEmpty, previewable: false) {
+                    prefs.setSounds([], source: source, event: event)
+                }
+                ForEach(options, id: \.self) { id in
+                    row(label: soundLabel(id), checked: selected.contains(id), previewable: true, preview: { prefs.play(id) }) {
+                        prefs.toggle(id, source: source, event: event)
+                    }
+                }
+            }
+            .padding(5).frame(minWidth: 200, maxWidth: 320).background(Theme.panel3)
+        }
+    }
+
+    private func row(label: String, checked: Bool, previewable: Bool, preview: @escaping () -> Void = {}, toggle: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Theme.accent).opacity(checked ? 1 : 0).frame(width: 12)
+            Text(label).font(Theme.mono(11.5)).foregroundStyle(checked ? Theme.accent : Theme.fg)
+                .lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 12)
+            if previewable {
+                Button(action: preview) { Image(systemName: "play.circle").font(.system(size: 12)) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.hover.opacity(0.001))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: toggle)
     }
 }
