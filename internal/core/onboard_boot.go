@@ -23,10 +23,13 @@ func (s *Server) runSetup(branch string, isMain bool, done map[string]bool) []do
 			continue
 		}
 		wt := services.RepoWorktreePath(s.WorkspaceRoot, repoName, branch, isMain)
+		// Inject the resolved repo env so install can auth to private package
+		// registries (a wired {{secret.*}} credential).
+		env := services.ResolveRepoEnv(s.WorkspaceRoot, cfg, branch, repoName)
 		ok := true
 		for _, cmd := range repo.Setup {
 			argv := shell.Login(cmd)
-			if out, err := services.RunTimeout(15*time.Minute, wt, argv[0], argv[1:]...); err != nil {
+			if out, err := services.RunTimeoutEnv(15*time.Minute, wt, env, argv[0], argv[1:]...); err != nil {
 				errs = append(errs, doctor.Finding{
 					ID:           "setup." + repoName,
 					Severity:     doctor.SevError,
