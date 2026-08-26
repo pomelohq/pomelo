@@ -115,7 +115,7 @@ struct SessionsMenu: View {
         .confirmationDialog("Delete session \(confirmDeleteSession ?? "")?", isPresented: Binding(get: { confirmDeleteSession != nil }, set: { if !$0 { confirmDeleteSession = nil } }), titleVisibility: .visible) {
             Button("Delete", role: .destructive) { if let n = confirmDeleteSession { state.deleteSession(n) }; confirmDeleteSession = nil }
             Button("Cancel", role: .cancel) { confirmDeleteSession = nil }
-        } message: { Text("Removes it from the session list. Files on disk are left untouched.") }
+        } message: { Text("Stops the session's services and shared containers, then removes it from the list. Files on disk are left untouched.") }
     }
 }
 

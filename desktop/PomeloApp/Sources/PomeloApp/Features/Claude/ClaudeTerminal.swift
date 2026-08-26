@@ -13,6 +13,7 @@ struct ClaudeTerminal: View {
     @State private var exited = false
     @State private var openedAt = Date()
     @State private var autoRetried = false
+    @State private var slowStart = false
 
     private func onHolderClosed() {
         let fast = Date().timeIntervalSince(openedAt) < 6
@@ -57,11 +58,19 @@ struct ClaudeTerminal: View {
                 Text("Could not start Claude").font(.system(size: 12)).foregroundStyle(Theme.danger)
                     .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
             } else {
+                // Delay the spinner: re-attaching to an existing session resolves in
+                // a few ms, so don't flash "starting claude…" on every workspace switch.
                 VStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("starting claude…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
+                    if slowStart {
+                        ProgressView().controlSize(.small)
+                        Text("starting claude…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
+                .task {
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    if holder == nil && !failed && !exited { slowStart = true }
+                }
             }
         }
         .task { await resolve() }
