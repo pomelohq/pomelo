@@ -7,6 +7,7 @@ struct NotifSource: Identifiable, Hashable { let id: String; let title: String; 
 
 enum NotifCatalog {
     static let agentEvents = [
+        NotifEvent(id: "working", title: "Started working"),
         NotifEvent(id: "finished", title: "Finished"),
         NotifEvent(id: "needs_input", title: "Needs your input"),
         NotifEvent(id: "compacting", title: "Compacting"),

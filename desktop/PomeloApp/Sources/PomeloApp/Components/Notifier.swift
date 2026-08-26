@@ -78,6 +78,7 @@ enum Notifier {
 
     static func message(ws: String, from: String?, to: String) -> (title: String, event: String)? {
         let wasWorking = from == "thinking" || from == "tool_use"
+        let wasIdle = from == nil || from == "idle" || from == "stopped"
         if to == "awaiting_input" && from != "awaiting_input" {
             return ("Claude needs your input", "needs_input")
         }
@@ -86,6 +87,9 @@ enum Notifier {
         }
         if wasWorking && (to == "idle" || to == "stopped") {
             return ("Claude finished", "finished")
+        }
+        if wasIdle && (to == "thinking" || to == "tool_use") {
+            return ("Claude is working", "working")
         }
         return nil
     }

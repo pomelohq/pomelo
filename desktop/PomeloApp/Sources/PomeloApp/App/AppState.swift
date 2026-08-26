@@ -491,7 +491,7 @@ final class AppState: ObservableObject {
         await agentsvm.refresh(notify: notifyClaude, whenFocused: SoundPrefs.shared.whenFocused,
                                activeSelection: selection, appActive: appActive) { [weak self] title, event, ws in
             guard let self else { return }
-            Notifier.notify(title: title, body: self.workspaceTitle(ws), wsKey: ws)
+            if event != "working" { Notifier.notify(title: title, body: self.workspaceTitle(ws), wsKey: ws) }
             SoundPrefs.shared.fire(source: "claude", event: event)
         }
     }
