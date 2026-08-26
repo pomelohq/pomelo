@@ -1,11 +1,13 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func BaseRef(defaultBranch, wtPath string) string {
@@ -184,17 +186,19 @@ func CreateWorktree(repoDir, branch string, copyFilesList []string) (string, err
 }
 
 func ResetToDefaultAndPull(dir, defaultBranch string) error {
-	steps := [][]string{
-		{"reset", "--hard"},
-		{"clean", "-fd"},
-		{"checkout", defaultBranch},
-		{"pull", "--ff-only"},
-	}
-	for _, args := range steps {
+	for _, args := range [][]string{{"reset", "--hard"}, {"clean", "-fd"}, {"checkout", defaultBranch}} {
 		full := append([]string{"-C", dir}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			return fmt.Errorf("git %s: %s (%w)", strings.Join(args, " "), strings.TrimSpace(string(out)), err)
 		}
+	}
+	// Pull only the default branch; a repo with a multi-branch fetch refspec otherwise
+	// fails "cannot fast-forward to multiple branches".
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	pull := []string{"-C", dir, "pull", "--ff-only", "origin", defaultBranch}
+	if out, err := exec.CommandContext(ctx, "git", pull...).CombinedOutput(); err != nil {
+		return fmt.Errorf("git pull origin %s: %s (%w)", defaultBranch, strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

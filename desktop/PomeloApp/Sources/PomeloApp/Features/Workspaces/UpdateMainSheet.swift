@@ -77,23 +77,38 @@ struct UpdateMainSheet: View {
         .task { await run() }
     }
 
+    @State private var expanded: Set<String> = []
+
     private func row(_ r: RepoResult) -> some View {
-        HStack(spacing: 9) {
-            if running {
-                ProgressView().controlSize(.mini)
-            } else {
-                Image(systemName: r.ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                    .font(.system(size: 12)).foregroundStyle(r.ok ? Theme.ok : Theme.danger)
+        let err = (r.error ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let failed = !running && !r.ok && !err.isEmpty
+        let open = expanded.contains(r.repo)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 9) {
+                if running {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: r.ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                        .font(.system(size: 12)).foregroundStyle(r.ok ? Theme.ok : Theme.danger)
+                }
+                Text(r.repo).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.fg)
+                if !r.branch.isEmpty {
+                    Text(r.branch).font(Theme.mono(10.5)).foregroundStyle(Theme.dim)
+                }
+                Spacer(minLength: 8)
+                if failed {
+                    Button { if open { expanded.remove(r.repo) } else { expanded.insert(r.repo) } } label: {
+                        HStack(spacing: 3) {
+                            Text(open ? "hide" : "why?").font(.system(size: 10.5, weight: .medium))
+                            Image(systemName: open ? "chevron.up" : "chevron.down").font(.system(size: 8))
+                        }.foregroundStyle(Theme.danger)
+                    }.buttonStyle(.plain)
+                }
             }
-            Text(r.repo).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.fg)
-            if !r.branch.isEmpty {
-                Text(r.branch).font(Theme.mono(10.5)).foregroundStyle(Theme.dim)
-            }
-            Spacer(minLength: 8)
-            if !running, !r.ok, let err = r.error, !err.isEmpty {
-                Text(err).font(Theme.mono(10)).foregroundStyle(Theme.danger)
-                    .lineLimit(1).truncationMode(.middle).frame(maxWidth: 180, alignment: .trailing)
-                    .help(err)
+            if failed, open {
+                Text(err).font(Theme.mono(10.5)).foregroundStyle(Theme.danger)
+                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(9).background(Theme.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
             }
         }
         .padding(.horizontal, 18).padding(.vertical, 7)
