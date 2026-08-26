@@ -36,7 +36,11 @@ final class SoundPrefs: ObservableObject {
     @Published private(set) var customFiles: [String] = []
 
     private let d = UserDefaults.standard
-    init() { customFiles = (try? FileManager.default.contentsOfDirectory(atPath: soundsDir.path))?.sorted() ?? [] }
+    init() { refreshFiles() }
+
+    private func valid(_ id: String) -> Bool {
+        id.hasPrefix("sys:") || (id.hasPrefix("file:") && customFiles.contains(String(id.dropFirst(5))))
+    }
 
     // An event can hold several sounds; fire() plays a random one (no immediate repeat)
     // so a user who drops in a few clips gets variety.
@@ -53,9 +57,9 @@ final class SoundPrefs: ObservableObject {
     }
     func sounds(_ source: String, _ event: String) -> [String] {
         if let data = d.data(forKey: key(source, event)), let arr = try? JSONDecoder().decode([String].self, from: data) {
-            return arr
+            return arr.filter(valid)
         }
-        if let legacy = d.string(forKey: legacyKey(source, event)) { return legacy.isEmpty ? [] : [legacy] }
+        if let legacy = d.string(forKey: legacyKey(source, event)) { return legacy.isEmpty ? [] : [legacy].filter(valid) }
         return defaultFor(event)
     }
     func setSounds(_ values: [String], source: String, event: String) {
@@ -77,7 +81,15 @@ final class SoundPrefs: ObservableObject {
         let dest = soundsDir.appendingPathComponent(url.lastPathComponent)
         try? FileManager.default.removeItem(at: dest)
         try? FileManager.default.copyItem(at: url, to: dest)
-        customFiles = (try? FileManager.default.contentsOfDirectory(atPath: soundsDir.path))?.sorted() ?? []
+        refreshFiles()
+    }
+    func deleteFile(_ name: String) {
+        try? FileManager.default.removeItem(at: soundsDir.appendingPathComponent(name))
+        refreshFiles()
+    }
+    private func refreshFiles() {
+        customFiles = ((try? FileManager.default.contentsOfDirectory(atPath: soundsDir.path)) ?? [])
+            .filter { !$0.hasPrefix(".") }.sorted()
     }
 
     func play(_ storage: String) {
@@ -205,27 +217,37 @@ private struct EventSoundPicker: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $open, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 1) {
-                row(label: "None", checked: selected.isEmpty, previewable: false) {
-                    prefs.setSounds([], source: source, event: event)
-                }
-                ForEach(options, id: \.self) { id in
-                    row(label: soundLabel(id), checked: selected.contains(id), previewable: true, preview: { prefs.play(id) }) {
-                        prefs.toggle(id, source: source, event: event)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    row(label: "None", checked: selected.isEmpty, previewable: false) {
+                        prefs.setSounds([], source: source, event: event)
+                    }
+                    ForEach(options, id: \.self) { id in
+                        row(label: soundLabel(id), checked: selected.contains(id), previewable: true,
+                            preview: { prefs.play(id) },
+                            onDelete: id.hasPrefix("file:") ? { prefs.deleteFile(String(id.dropFirst(5))) } : nil) {
+                            prefs.toggle(id, source: source, event: event)
+                        }
                     }
                 }
+                .padding(5)
             }
-            .padding(5).frame(minWidth: 200, maxWidth: 320).background(Theme.panel3)
+            .frame(minWidth: 220, maxWidth: 340, maxHeight: 320).background(Theme.panel3)
         }
     }
 
-    private func row(label: String, checked: Bool, previewable: Bool, preview: @escaping () -> Void = {}, toggle: @escaping () -> Void) -> some View {
+    private func row(label: String, checked: Bool, previewable: Bool, preview: @escaping () -> Void = {},
+                     onDelete: (() -> Void)? = nil, toggle: @escaping () -> Void) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(Theme.accent).opacity(checked ? 1 : 0).frame(width: 12)
             Text(label).font(Theme.mono(11.5)).foregroundStyle(checked ? Theme.accent : Theme.fg)
                 .lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 12)
+            if let onDelete {
+                Button(action: onDelete) { Image(systemName: "trash").font(.system(size: 10)) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.dim)
+            }
             if previewable {
                 Button(action: preview) { Image(systemName: "play.circle").font(.system(size: 12)) }
                     .buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
