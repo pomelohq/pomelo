@@ -25,6 +25,7 @@ func (s *Server) RunOnboardCLI(branch string, isMain bool, model string, out io.
 
 	const maxRounds = 6
 	d.Enqueue(claude.OnboardFirstTurn())
+	setupOK := false
 	for round := 1; ; round++ {
 		if err := waitIdle(d, 20*time.Minute); err != nil {
 			return err
@@ -32,10 +33,18 @@ func (s *Server) RunOnboardCLI(branch string, isMain bool, model string, out io.
 		s.reloadConfig() // the agent rewrote pom.yml via MCP; verify against its edits, not the seed
 		errs := actionableFindings(s.cfg(), s.WorkspaceRoot, s.Project)
 		if len(errs) == 0 {
-			fmt.Fprintln(out, "\n… config_doctor clean — booting services to verify")
+			if !setupOK {
+				fmt.Fprintln(out, "\n… installing deps (setup)")
+				if errs = s.runSetup(branch, isMain); len(errs) == 0 {
+					setupOK = true
+				}
+			}
+		}
+		if len(errs) == 0 {
+			fmt.Fprintln(out, "… deps installed — booting services to verify")
 			errs = s.verifyBoot(branch, isMain, 12*time.Second)
 			if len(errs) == 0 {
-				fmt.Fprintln(out, "✓ config_doctor clean + all services booted — project is runnable.")
+				fmt.Fprintln(out, "✓ config clean + deps installed + services booted — project is runnable.")
 				return nil
 			}
 		}

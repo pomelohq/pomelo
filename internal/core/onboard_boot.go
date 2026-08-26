@@ -4,9 +4,37 @@ import (
 	"time"
 
 	"github.com/pomelohq/pomelo/internal/doctor"
+	"github.com/pomelohq/pomelo/internal/provider/shell"
 	"github.com/pomelohq/pomelo/internal/ptyhost"
 	"github.com/pomelohq/pomelo/internal/services"
 )
+
+// runSetup runs each repo's setup (install) commands in its worktree so boot
+// verification tests a real, installed environment. Failures become findings.
+func (s *Server) runSetup(branch string, isMain bool) []doctor.Finding {
+	cfg := s.cfg()
+	if cfg == nil {
+		return nil
+	}
+	var errs []doctor.Finding
+	for repoName, repo := range cfg.Repos {
+		wt := services.RepoWorktreePath(s.WorkspaceRoot, repoName, branch, isMain)
+		for _, cmd := range repo.Setup {
+			argv := shell.Login(cmd)
+			if out, err := services.RunTimeout(15*time.Minute, wt, argv[0], argv[1:]...); err != nil {
+				errs = append(errs, doctor.Finding{
+					ID:           "setup." + repoName,
+					Severity:     doctor.SevError,
+					Title:        "setup failed for " + repoName + ": " + cmd,
+					Detail:       lastLines(string(out), 6),
+					AgentFixable: true,
+				})
+				break
+			}
+		}
+	}
+	return errs
+}
 
 // verifyBoot starts every service for the branch, waits, and reports any that
 // crashed — a clean config only proves the file parses, not that it runs.
