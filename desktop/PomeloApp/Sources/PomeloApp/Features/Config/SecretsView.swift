@@ -4,10 +4,18 @@ import AppKit
 @MainActor
 final class SecretsViewModel: ObservableObject {
     @Published private(set) var names: [String] = []
+    @Published private(set) var revealed: [String: String] = [:]
     @Published var newName = ""
     @Published var newValue = ""
     private let api: SecretsAPI
     init(api: SecretsAPI = PomCore.shared) { self.api = api }
+
+    func toggleReveal(_ name: String) async {
+        if revealed[name] != nil { revealed[name] = nil; return }
+        let d = await api.call { $0.secretGet(name: name) }
+        struct R: Decodable { var value = "" }
+        revealed[name] = PomJSON.decode(R.self, from: d)?.value ?? ""
+    }
 
     func load() async {
         let d = await api.call { $0.secretNamesData() }
@@ -57,7 +65,14 @@ struct SecretsView: View {
                     ForEach(vm.names, id: \.self) { name in
                         HStack(spacing: 8) {
                             Text("{{secret.\(name)}}").font(Theme.mono(12)).foregroundStyle(Theme.tool).lineLimit(1)
+                            if let v = vm.revealed[name] {
+                                Text(v.isEmpty ? "(empty)" : v).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted)
+                                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                            }
                             Spacer(minLength: 0)
+                            Button { Task { await vm.toggleReveal(name) } } label: {
+                                Image(systemName: vm.revealed[name] != nil ? "eye.slash" : "eye").font(.system(size: 10))
+                            }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Reveal value")
                             Button { Task { await vm.copyValue(name) } } label: {
                                 Image(systemName: "doc.on.doc").font(.system(size: 10))
                             }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Copy value to clipboard")
