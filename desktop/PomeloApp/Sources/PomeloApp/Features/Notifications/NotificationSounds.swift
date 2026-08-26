@@ -35,8 +35,45 @@ final class SoundPrefs: ObservableObject {
     }
     @Published private(set) var customFiles: [String] = []
 
+    // A "set" is a named collection of event->sounds mappings; switching sets swaps all
+    // the picks at once, so a user can keep e.g. a quiet set and a loud one.
+    struct SoundSet: Identifiable, Codable, Hashable { var id: String; var name: String }
+    @Published private(set) var sets: [SoundSet] = []
+    @Published var activeSet: String = "default" {
+        didSet { UserDefaults.standard.set(activeSet, forKey: "notif.activeSet"); objectWillChange.send() }
+    }
+
     private let d = UserDefaults.standard
-    init() { refreshFiles() }
+    init() {
+        refreshFiles()
+        if let data = d.data(forKey: "notif.sets"), let s = try? JSONDecoder().decode([SoundSet].self, from: data), !s.isEmpty {
+            sets = s
+        } else {
+            sets = [SoundSet(id: "default", name: "Default")]
+        }
+        activeSet = d.string(forKey: "notif.activeSet").flatMap { id in sets.contains { $0.id == id } ? id : nil } ?? sets[0].id
+    }
+
+    var activeSetName: String { sets.first { $0.id == activeSet }?.name ?? "Default" }
+
+    private func persistSets() { d.set(try? JSONEncoder().encode(sets), forKey: "notif.sets") }
+    func addSet(_ name: String) {
+        let id = UUID().uuidString
+        let prefix = "notif.set.\(activeSet).sounds."
+        for (k, v) in d.dictionaryRepresentation() where k.hasPrefix(prefix) {
+            d.set(v, forKey: "notif.set.\(id).sounds.\(k.dropFirst(prefix.count))")
+        }
+        sets.append(SoundSet(id: id, name: name)); persistSets(); activeSet = id
+    }
+    func renameActiveSet(_ name: String) {
+        if let i = sets.firstIndex(where: { $0.id == activeSet }) { sets[i].name = name; persistSets() }
+    }
+    func deleteActiveSet() {
+        guard sets.count > 1 else { return }
+        let gone = activeSet
+        sets.removeAll { $0.id == gone }; persistSets()
+        activeSet = sets[0].id
+    }
 
     private func valid(_ id: String) -> Bool {
         id.hasPrefix("sys:") || (id.hasPrefix("file:") && customFiles.contains(String(id.dropFirst(5))))
@@ -45,8 +82,8 @@ final class SoundPrefs: ObservableObject {
     // An event can hold several sounds; fire() plays a random one (no immediate repeat)
     // so a user who drops in a few clips gets variety.
     private var lastPlayed: [String: String] = [:]
-    private func key(_ source: String, _ event: String) -> String { "notif.sounds.\(source).\(event)" }
-    private func legacyKey(_ source: String, _ event: String) -> String { "notif.sound.\(source).\(event)" }
+    private func key(_ source: String, _ event: String) -> String { "notif.set.\(activeSet).sounds.\(source).\(event)" }
+    private func preSetKey(_ source: String, _ event: String) -> String { "notif.sounds.\(source).\(event)" }
     private func defaultFor(_ event: String) -> [String] {
         switch event {
         case "finished", "onboarding_done": return ["sys:Glass"]
@@ -59,7 +96,10 @@ final class SoundPrefs: ObservableObject {
         if let data = d.data(forKey: key(source, event)), let arr = try? JSONDecoder().decode([String].self, from: data) {
             return arr.filter(valid)
         }
-        if let legacy = d.string(forKey: legacyKey(source, event)) { return legacy.isEmpty ? [] : [legacy].filter(valid) }
+        // Migrate the pre-set (single, global) mapping into the default set on first read.
+        if activeSet == "default", let data = d.data(forKey: preSetKey(source, event)), let arr = try? JSONDecoder().decode([String].self, from: data) {
+            return arr.filter(valid)
+        }
         return defaultFor(event)
     }
     func setSounds(_ values: [String], source: String, event: String) {
@@ -115,6 +155,9 @@ struct NotificationsSettings: View {
     @StateObject private var prefs = SoundPrefs.shared
     @State private var sources: [NotifSource] = []
     @State private var notifOK = true
+    @State private var showNewSet = false
+    @State private var showRename = false
+    @State private var setName = ""
 
     private func recheck() {
         Notifier.currentlyAuthorized { notifOK = $0 }
@@ -123,6 +166,25 @@ struct NotificationsSettings: View {
 
     var body: some View {
         Form {
+            Section {
+                LabeledContent("Active set") {
+                    HStack(spacing: 8) {
+                        ChipSelect(text: prefs.activeSetName, color: Theme.accent, options: prefs.sets.map(\.name),
+                                   current: prefs.activeSetName, maxTextWidth: 130) { name in
+                            if let s = prefs.sets.first(where: { $0.name == name }) { prefs.activeSet = s.id }
+                        }
+                        Button { setName = ""; showNewSet = true } label: { Image(systemName: "plus.circle") }
+                            .buttonStyle(.plain).foregroundStyle(Theme.accent).help("New set")
+                        Button { setName = prefs.activeSetName; showRename = true } label: { Image(systemName: "pencil") }
+                            .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Rename set")
+                        Button { prefs.deleteActiveSet() } label: { Image(systemName: "trash") }
+                            .buttonStyle(.plain).foregroundStyle(Theme.dim).disabled(prefs.sets.count <= 1).help("Delete set")
+                    }
+                }
+            } header: { Text("Sound set") } footer: {
+                Text("Save different sound line-ups as sets and switch between them.")
+            }
+
             Section {
                 Toggle("Notify on Claude activity", isOn: $state.notifyClaude)
                     .onChange(of: state.notifyClaude) { if state.notifyClaude { Notifier.promptOrOpenSettings(); recheck() } }
@@ -165,6 +227,16 @@ struct NotificationsSettings: View {
         .scrollContentBackground(.hidden)
         .task { await loadAgents() }
         .onAppear { recheck() }
+        .alert("New sound set", isPresented: $showNewSet) {
+            TextField("Name", text: $setName)
+            Button("Create") { let n = setName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { prefs.addSet(n) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Starts as a copy of the current picks; edit them below.") }
+        .alert("Rename set", isPresented: $showRename) {
+            TextField("Name", text: $setName)
+            Button("Save") { let n = setName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { prefs.renameActiveSet(n) } }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private var optionIDs: [String] { SoundPrefs.systemSounds.map { "sys:\($0)" } + prefs.customFiles.map { "file:\($0)" } }
@@ -197,8 +269,12 @@ private struct EventSoundPicker: View {
     let event: String
     let options: [String]
     @State private var open = false
+    @State private var search = ""
 
     private var selected: [String] { prefs.sounds(source, event) }
+    private var filtered: [String] {
+        search.isEmpty ? options : options.filter { soundLabel($0).localizedCaseInsensitiveContains(search) }
+    }
     private var summary: String {
         if selected.isEmpty { return "None" }
         return selected.count == 1 ? soundLabel(selected[0]) : "\(selected.count) sounds"
@@ -217,22 +293,33 @@ private struct EventSoundPicker: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $open, arrowEdge: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 1) {
-                    row(label: "None", checked: selected.isEmpty, previewable: false) {
-                        prefs.setSounds([], source: source, event: event)
-                    }
-                    ForEach(options, id: \.self) { id in
-                        row(label: soundLabel(id), checked: selected.contains(id), previewable: true,
-                            preview: { prefs.play(id) },
-                            onDelete: id.hasPrefix("file:") ? { prefs.deleteFile(String(id.dropFirst(5))) } : nil) {
-                            prefs.toggle(id, source: source, event: event)
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(Theme.dim)
+                    TextField("Filter sounds", text: $search).textFieldStyle(.plain).font(.system(size: 12))
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                Divider().overlay(Theme.borderSoft)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        if search.isEmpty {
+                            row(label: "None", checked: selected.isEmpty, previewable: false) {
+                                prefs.setSounds([], source: source, event: event)
+                            }
+                        }
+                        ForEach(filtered, id: \.self) { id in
+                            row(label: soundLabel(id), checked: selected.contains(id), previewable: true,
+                                preview: { prefs.play(id) },
+                                onDelete: id.hasPrefix("file:") ? { prefs.deleteFile(String(id.dropFirst(5))) } : nil) {
+                                prefs.toggle(id, source: source, event: event)
+                            }
                         }
                     }
+                    .padding(5)
                 }
-                .padding(5)
             }
-            .frame(minWidth: 220, maxWidth: 340, maxHeight: 320).background(Theme.panel3)
+            .frame(minWidth: 240, maxWidth: 340, maxHeight: 340).background(Theme.panel3)
+            .onDisappear { search = "" }
         }
     }
 
