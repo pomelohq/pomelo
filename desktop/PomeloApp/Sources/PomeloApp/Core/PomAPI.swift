@@ -41,6 +41,7 @@ protocol ConfigAPI: PomBaseAPI {
     func configFileGetData(path: String) -> Data
     func configFileSet(path: String, yaml: String, dry: Bool) -> Data
     func configFileCreate(name: String, yaml: String) -> Data
+    func installDeps(branch: String, isMain: Bool) -> Data
     func configReload() -> Data
     func configExplainData(repo: String, branch: String, svc: String, env: String) -> Data
     func environmentsData() -> Data

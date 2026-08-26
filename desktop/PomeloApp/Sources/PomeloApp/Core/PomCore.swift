@@ -96,6 +96,10 @@ final class PomCore: @unchecked Sendable {
         }}
     }
     @discardableResult
+    func installDeps(branch: String, isMain: Bool) -> Data {
+        branch.withCString { b in cstr(PomInstallDeps(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0)) }
+    }
+    @discardableResult
     func configReload() -> Data { cstr(PomConfigReload()) }
 
     func nmStoreListData() -> Data {

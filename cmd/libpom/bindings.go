@@ -485,6 +485,15 @@ func PomConfigFileCreate(name, yaml *C.char) *C.char {
 	return bindingJSON(s.ConfigFileCreate(C.GoString(name), C.GoString(yaml)))
 }
 
+//export PomInstallDeps
+func PomInstallDeps(branch *C.char, isMain C.int) *C.char {
+	s := server()
+	if s == nil {
+		return C.CString(`{"ok":false}`)
+	}
+	return bindingJSON(s.InstallDeps(C.GoString(branch), isMain != 0))
+}
+
 //export PomConfigReload
 func PomConfigReload() *C.char {
 	s := server()

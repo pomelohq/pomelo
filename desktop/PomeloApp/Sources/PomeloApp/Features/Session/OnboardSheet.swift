@@ -183,6 +183,8 @@ struct OnboardSheet: View {
     @State private var startAt = Date()
     @State private var endedAt: Date?
     @State private var showLog = false
+    @State private var installing = false
+    @State private var authorDone = false
 
     var body: some View {
         Group {
@@ -190,8 +192,19 @@ struct OnboardSheet: View {
         }
         .onAppear { startAt = Date(); model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: firstTurn) }
         .onChange(of: model.running) {
-            if !model.running { endedAt = Date(); Task { await loadFindings() } }
+            if !model.running && !authorDone { authorDone = true; Task { await verifyAndInstall() } }
         }
+    }
+
+    private func verifyAndInstall() async {
+        installing = true
+        let d = await Task.detached { PomCore.shared.installDeps(branch: branch, isMain: true) }.value
+        struct Fail: Decodable { var id = ""; var title = ""; var detail = "" }
+        struct R: Decodable { var ok = false; var failed: [Fail] = [] }
+        let failed = PomJSON.decode(R.self, from: d)?.failed ?? []
+        installing = false
+        endedAt = Date()
+        await loadFindings(extraSetup: failed.map { ($0.id, $0.title, $0.detail) })
     }
 
     private var onboardingBody: some View {
@@ -241,7 +254,9 @@ struct OnboardSheet: View {
     private var phaseList: some View {
         VStack(alignment: .leading, spacing: 5) {
             phaseRow(done: true, active: false, "Scan repos", "cloned")
-            phaseRow(done: !model.running, active: model.running, "Author config", model.running ? "writing pom.yml…" : "done")
+            phaseRow(done: authorDone, active: model.running, "Author config", model.running ? "writing pom.yml…" : "done")
+            phaseRow(done: authorDone && !installing, active: installing, "Verify & install",
+                     installing ? "installing deps…" : (authorDone ? "done" : "waiting"))
         }
     }
 
@@ -286,16 +301,26 @@ struct OnboardSheet: View {
         .frame(width: 640, height: 520)
     }
 
-    private func loadFindings() async {
+    private func loadFindings(extraSetup: [(String, String, String)] = []) async {
         let d = await Task.detached { PomCore.shared.doctorData() }.value
         let report = PomJSON.decode(DoctorViewModel.Report.self, from: d)
-        findings = (report?.findings ?? []).filter { $0.severity != "ok" }
+        var all = (report?.findings ?? []).filter { $0.severity != "ok" }
+        for (id, title, detail) in extraSetup {
+            var f = DoctorViewModel.Finding(); f.id = id; f.title = title; f.detail = detail; f.severity = "error"
+            all.append(f)
+        }
+        findings = all
         showResult = true
     }
 
     private func retry() {
+        model.stop()
         showResult = false
         findings = []
+        authorDone = false
+        installing = false
+        endedAt = nil
+        startAt = Date()
         model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: firstTurn)
     }
 }

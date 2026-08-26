@@ -9,6 +9,18 @@ import (
 	"github.com/pomelohq/pomelo/internal/services"
 )
 
+// InstallDeps runs every repo's setup (install) once and reports failures, so the
+// app can install dependencies after onboarding (otherwise Start hits
+// command-not-found). Returns {ok, failed:[{id,title,detail}]}.
+func (s *Server) InstallDeps(branch string, isMain bool) map[string]any {
+	errs := s.runSetup(branch, isMain, map[string]bool{})
+	failed := make([]map[string]string, 0, len(errs))
+	for _, f := range errs {
+		failed = append(failed, map[string]string{"id": f.ID, "title": f.Title, "detail": f.Detail})
+	}
+	return map[string]any{"ok": len(errs) == 0, "failed": failed}
+}
+
 // runSetup runs each repo's setup (install) commands in its worktree so boot
 // verification tests a real, installed environment. Failures become findings.
 // done tracks repos already installed so a repeated round never reinstalls them.
