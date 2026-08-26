@@ -11,13 +11,15 @@ struct UpdateMainSheet: View {
         var repo = ""; var branch = ""; var ok = false; var error = ""
         var id: String { repo }
     }
-    private struct Payload: Decodable { var ok = false; var results: [RepoResult] = [] }
+    private struct Payload: Decodable { var ok = false; var results: [RepoResult] = []; var error = "" }
 
     @State private var running = true
     @State private var results: [RepoResult] = []
+    @State private var ok = false
+    @State private var rawError = ""
 
     private var repoNames: [String] { ws.repos.map(\.name) }
-    private var allOK: Bool { !results.isEmpty && results.allSatisfy(\.ok) }
+    private var allOK: Bool { ok && results.allSatisfy(\.ok) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,8 +38,20 @@ struct UpdateMainSheet: View {
 
             ScrollView {
                 VStack(spacing: 1) {
-                    ForEach(running ? repoNames.map { RepoResult(repo: $0) } : results) { r in
-                        row(r)
+                    if !running && results.isEmpty {
+                        VStack(spacing: 6) {
+                            Text(rawError.isEmpty ? "No git repositories to update." : "Update failed")
+                                .font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
+                            if !rawError.isEmpty {
+                                Text(rawError).font(Theme.mono(10.5)).foregroundStyle(Theme.danger)
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .frame(maxWidth: .infinity).padding(20)
+                    } else {
+                        ForEach(running ? repoNames.map { RepoResult(repo: $0) } : results) { r in
+                            row(r)
+                        }
                     }
                 }
                 .padding(.vertical, 6)
@@ -49,9 +63,10 @@ struct UpdateMainSheet: View {
                     ProgressView().controlSize(.small).scaleEffect(0.7)
                     Text("Pulling \(repoNames.count) repos…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
                 } else {
-                    Label(allOK ? "Up to date" : "Finished with errors",
-                          systemImage: allOK ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .font(.system(size: 12)).foregroundStyle(allOK ? Theme.ok : Theme.danger)
+                    let good = allOK && !results.isEmpty
+                    Label(good ? "Up to date" : (results.isEmpty ? "Nothing updated" : "Finished with errors"),
+                          systemImage: good ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 12)).foregroundStyle(good ? Theme.ok : Theme.danger)
                 }
                 Spacer()
                 Button("Close") { dismiss() }.buttonStyle(.borderedProminent).tint(Theme.accent).disabled(running)
@@ -88,7 +103,11 @@ struct UpdateMainSheet: View {
         running = true
         let branch = ws.branch
         let data = await Task.detached(priority: .userInitiated) { PomCore.shared.mainPull(branch: branch) }.value
-        results = PomJSON.decode(Payload.self, from: data)?.results ?? []
+        if let p = PomJSON.decode(Payload.self, from: data) {
+            results = p.results; ok = p.ok; rawError = p.error
+        } else {
+            rawError = String(data: data, encoding: .utf8) ?? "could not read result"
+        }
         running = false
         await state.refreshWorkspaces()
     }
