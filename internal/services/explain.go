@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/pomelohq/pomelo/internal/config"
 )
@@ -10,7 +11,10 @@ type EnvPair struct {
 	Key    string `json:"key"`
 	Value  string `json:"value"`
 	Source string `json:"source"`
+	Secret bool   `json:"secret,omitempty"`
 }
+
+var secretTmplRe = regexp.MustCompile(`\{\{\s*secret\.`)
 
 type ServiceExplain struct {
 	Repo      string            `json:"repo"`
@@ -57,7 +61,10 @@ func ExplainService(cfg *config.Config, repo, svcName, branch, envName string) (
 	resolved := ResolveEnvTemplates(svcEnv, cfg, branchSafe, branch, wsKey, envName, dbNames)
 	env := make([]EnvPair, len(resolved))
 	for i, r := range resolved {
-		env[i] = EnvPair{Key: r.Key, Value: r.Value, Source: envSource(cfg, dir, svc, own, r.Key)}
+		env[i] = EnvPair{
+			Key: r.Key, Value: r.Value, Source: envSource(cfg, dir, svc, own, r.Key),
+			Secret: secretTmplRe.MatchString(svcEnv[r.Key]),
+		}
 	}
 
 	return &ServiceExplain{

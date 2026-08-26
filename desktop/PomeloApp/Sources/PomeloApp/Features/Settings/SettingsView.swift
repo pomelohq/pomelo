@@ -298,7 +298,7 @@ private struct NetworkSettings: View {
 
 
 private struct CfgSvcRef: Decodable, Hashable { var repo = ""; var alias = ""; var services: [String] = [] }
-private struct CfgEnvPair: Decodable, Identifiable { var key = ""; var value = ""; var source = ""; var id: String { key } }
+private struct CfgEnvPair: Decodable, Identifiable { var key = ""; var value = ""; var source = ""; var secret = false; var id: String { key } }
 private struct CfgExplain: Decodable {
     var repo = ""; var alias = ""; var service = ""; var cmd = ""; var port = 0
     var databases: [String: String] = [:]; var env: [CfgEnvPair] = []
@@ -315,6 +315,7 @@ struct EnvInspector: View {
     @State private var profile = ""   // "" = local
     @State private var explain: CfgExplain?
     @State private var loading = false
+    @State private var revealedEnv: Set<String> = []
 
     private var services: [String] { repos.first(where: { $0.repo == repo })?.services ?? [] }
     private var branches: [String] {
@@ -369,7 +370,7 @@ struct EnvInspector: View {
                 }
                 sectionHeader(e.port > 0 ? "ENVIRONMENT · port \(e.port)" : "ENVIRONMENT")
                 ForEach(e.env) { p in
-                    row(key: p.key, value: p.value, badge: sourceText(p.source), badgeColor: sourceColor(p.source))
+                    row(key: p.key, value: p.value, badge: sourceText(p.source), badgeColor: sourceColor(p.source), secret: p.secret)
                 }
                 if e.env.isEmpty {
                     Text("no env for this service").font(.system(size: 12)).foregroundStyle(Theme.dim).padding(16)
@@ -385,13 +386,20 @@ struct EnvInspector: View {
             .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 6)
     }
 
-    private func row(key: String, value: String, badge: String, badgeColor: Color) -> some View {
-        VStack(spacing: 0) {
+    private func row(key: String, value: String, badge: String, badgeColor: Color, secret: Bool = false) -> some View {
+        let hidden = secret && !revealedEnv.contains(key) && !value.isEmpty
+        let shown = hidden ? String(repeating: "•", count: 12) : (value.isEmpty ? "—" : value)
+        return VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(key).font(Theme.mono(11.5, .medium)).foregroundStyle(Theme.fg)
                     .frame(width: 210, alignment: .leading).lineLimit(1).truncationMode(.middle)
-                Text(value.isEmpty ? "—" : value).font(Theme.mono(11.5)).foregroundStyle(Theme.fgMuted)
+                Text(shown).font(Theme.mono(11.5)).foregroundStyle(hidden ? Theme.dim : Theme.fgMuted)
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).lineLimit(1).truncationMode(.middle)
+                if secret && !value.isEmpty {
+                    Button { toggleReveal(key) } label: {
+                        Image(systemName: revealedEnv.contains(key) ? "eye.slash" : "eye").font(.system(size: 10))
+                    }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Reveal value")
+                }
                 if !value.isEmpty { CopyMini(text: value) }
                 Text(badge).font(.system(size: 9.5, weight: .medium)).foregroundStyle(badgeColor)
                     .padding(.horizontal, 6).padding(.vertical, 2)
@@ -401,6 +409,10 @@ struct EnvInspector: View {
             .padding(.horizontal, 20).padding(.vertical, 5)
             Divider().overlay(Theme.borderSoft.opacity(0.35)).padding(.leading, 20)
         }
+    }
+
+    private func toggleReveal(_ key: String) {
+        if revealedEnv.contains(key) { revealedEnv.remove(key) } else { revealedEnv.insert(key) }
     }
 
     private func sourceText(_ s: String) -> String {
