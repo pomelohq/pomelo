@@ -35,7 +35,7 @@ struct DependencyBoard: View {
             for e in byRepo[repo] ?? [] {
                 out.append(GNode(id: "hash:\(e.repo)/\(e.hash)", kind: .hash,
                                  color: e.current ? Theme.ok : Theme.warn,
-                                 label: "\(e.hash.prefix(7)) · \(vm.human(e.bytes))",
+                                 label: "\(e.hash.prefix(7)) - \(vm.human(e.bytes))",
                                  icon: "internaldrive.fill", size: 16))
             }
         }
@@ -59,7 +59,7 @@ struct DependencyBoard: View {
                 Image(systemName: "shippingbox.fill").font(.system(size: 13)).foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Dependency store").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
-                    Text("node_modules cache · \(vm.human(vm.total)) total").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+                    Text("node_modules cache - \(vm.human(vm.total)) total").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
                 }
                 Spacer()
                 if !vm.stale.isEmpty {
@@ -88,31 +88,32 @@ struct DependencyBoard: View {
     }
 
     private var hint: some View {
-        Text("pinch to zoom · drag to pan · tap a stale cache to reclaim")
+        Text("pinch to zoom - drag to pan - tap a stale cache to reclaim")
             .font(.system(size: 10)).foregroundStyle(Theme.dim)
             .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    // Icon + name as a single NATIVE text annotation (Grape draws it in the Canvas).
+    // ViewAnnotations (AnyView) re-render every simulation tick and make dragging lag.
+    private func nodeText(_ n: GNode) -> Text {
+        Text(Image(systemName: n.icon)).font(.system(size: n.size)).foregroundColor(n.color)
+        + Text(verbatim: "\n\(n.label)").font(.system(size: 9)).foregroundColor(Theme.fgMuted)
     }
 
     private var graph: some View {
         ForceDirectedGraph(states: graphStates) {
             Series(nodes) { n in
                 NodeMark(id: n.id)
-                    .symbolSize(radius: n.size / 2)
-                    .foregroundStyle(n.color.opacity(0.18))
-                    .stroke(n.color)
-                    .annotation(n.id, alignment: .center, offset: .zero) {
-                        Image(systemName: n.icon).font(.system(size: n.size * 0.52)).foregroundStyle(n.color)
-                    }
-                    .annotation("\(n.id)#label", alignment: .bottom, offset: CGVector(dx: 0, dy: n.size * 0.65)) {
-                        Text(n.label).font(.system(size: 9)).foregroundStyle(Theme.fgMuted)
-                    }
+                    .symbolSize(radius: 3)
+                    .foregroundStyle(n.color)
+                    .annotation(nodeText(n), alignment: .center, offset: .zero)
             }
             Series(links) { from, to in
                 LinkMark(from: from, to: to)
             }
         } force: {
-            .manyBody(strength: -60.0)
-            .link(originalLength: 54.0)
+            .manyBody(strength: -80.0)
+            .link(originalLength: 62.0)
             .center()
         }
         .graphOverlay { proxy in
