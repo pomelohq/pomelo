@@ -3,6 +3,7 @@ package services
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,13 +31,39 @@ func MainLockHash(projectRoot, repo, defaultBranch string) string {
 	return lockHash(RepoWorktreePath(projectRoot, repo, defaultBranch, true))
 }
 
+func nmIndexPath() string { return filepath.Join(nmStoreRoot(), ".index.json") }
+
+func loadNMIndex() map[string]NMStoreEntry {
+	idx := map[string]NMStoreEntry{}
+	if data, err := os.ReadFile(nmIndexPath()); err == nil {
+		var arr []NMStoreEntry
+		if json.Unmarshal(data, &arr) == nil {
+			for _, e := range arr {
+				idx[e.Repo+"/"+e.Hash] = e
+			}
+		}
+	}
+	return idx
+}
+
+func saveNMIndex(entries []NMStoreEntry) {
+	if data, err := json.Marshal(entries); err == nil {
+		_ = os.WriteFile(nmIndexPath(), data, 0o644)
+	}
+}
+
+// NMStoreEntries lists the cached node_modules and their sizes. Sizes are read
+// from a persisted index and only recomputed (du) for a cache whose dir mtime
+// changed — so the common read is cheap instead of walking every node_modules.
 func NMStoreEntries() []NMStoreEntry {
 	root := nmStoreRoot()
 	repos, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
+	idx := loadNMIndex()
 	var out []NMStoreEntry
+	dirty := false
 	for _, repo := range repos {
 		if !repo.IsDir() {
 			continue
@@ -54,9 +81,18 @@ func NMStoreEntries() []NMStoreEntry {
 			if fi, err := os.Stat(p); err == nil {
 				mtime = fi.ModTime().Unix()
 			}
+			key := repo.Name() + "/" + h.Name()
+			if c, ok := idx[key]; ok && c.MTime == mtime && c.Bytes > 0 {
+				out = append(out, c)
+				continue
+			}
+			dirty = true
 			out = append(out, NMStoreEntry{Repo: repo.Name(), Hash: h.Name(),
 				Bytes: dirSizeKB(p) * 1024, MTime: mtime})
 		}
+	}
+	if dirty || len(out) != len(idx) {
+		saveNMIndex(out)
 	}
 	return out
 }
@@ -78,7 +114,17 @@ func RemoveNMStoreEntry(repo, hash string) error {
 	if repo == "" || hash == "" || strings.ContainsAny(repo+hash, "/\\") || strings.Contains(repo, "..") || strings.Contains(hash, "..") {
 		return os.ErrInvalid
 	}
-	return os.RemoveAll(filepath.Join(nmStoreRoot(), repo, hash))
+	if err := os.RemoveAll(filepath.Join(nmStoreRoot(), repo, hash)); err != nil {
+		return err
+	}
+	kept := make([]NMStoreEntry, 0)
+	for k, e := range loadNMIndex() {
+		if k != repo+"/"+hash {
+			kept = append(kept, e)
+		}
+	}
+	saveNMIndex(kept)
+	return nil
 }
 
 func lockHash(worktree string) string {
