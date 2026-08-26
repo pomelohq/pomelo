@@ -68,6 +68,30 @@ func TestMonorepoNxProjectJSON(t *testing.T) {
 	}
 }
 
+// A single-app nx workspace: project.json at the root (the app) plus an e2e
+// sibling. The root app must be detected (Dir ""), the e2e project dropped.
+// (Caught on node-express-realworld: root missed, e2e mis-detected.)
+func TestMonorepoNxRootApp(t *testing.T) {
+	root := writeRepo(t, map[string]string{
+		"nx.json":          "{}",
+		"package.json":     `{"dependencies":{"express":"4"}}`,
+		"project.json":     `{"name":"api","projectType":"application","targets":{"serve":{}}}`,
+		"e2e/project.json": `{"name":"e2e","projectType":"application","targets":{"e2e":{}}}`,
+		"e2e/package.json": `{"name":"e2e"}`,
+	})
+	facts := detect.DetectRepo(root)
+	api, ok := factByDir(facts, "")
+	if !ok || api.Framework != "express" {
+		t.Fatalf("root should be express: %+v", facts)
+	}
+	if api.Run[0].Cmd != "npx nx serve api" {
+		t.Fatalf("root run should be 'npx nx serve api': %+v", api.Run)
+	}
+	if _, ok := factByDir(facts, "e2e"); ok {
+		t.Fatalf("e2e project should be dropped: %+v", facts)
+	}
+}
+
 func TestMonorepoPkgJSONWorkspaces(t *testing.T) {
 	root := writeRepo(t, map[string]string{
 		"package.json":               `{"workspaces":["packages/*"]}`,
