@@ -112,7 +112,7 @@ struct NotificationsSettings: View {
                         LabeledContent(ev.title) {
                             HStack(spacing: 10) {
                                 ChipSelect(text: label(cur), color: cur.isEmpty ? Theme.fgMuted : Theme.accent,
-                                           options: soundLabels, current: label(cur)) { picked in
+                                           options: soundLabels, current: label(cur), maxTextWidth: 150) { picked in
                                     prefs.setSound(storage(picked), source: src.id, event: ev.id)
                                 }
                                 Button { prefs.play(cur) } label: { Image(systemName: "play.circle").font(.system(size: 14)) }
