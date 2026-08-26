@@ -38,9 +38,7 @@ func TestMonorepoTurboPnpm(t *testing.T) {
 	}
 }
 
-// nx marks projects with project.json at any depth, hoists deps to the root, and
-// runs via `nx serve <name>`. Apps are kept (with the nx serve cmd), libraries and
-// e2e projects dropped, framework inferred from member config / root deps.
+// nx apps run via `nx serve <name>`; libraries and e2e projects are dropped.
 // (Modelled on nx-examples, an Angular nx workspace.)
 func TestMonorepoNxProjectJSON(t *testing.T) {
 	root := writeRepo(t, map[string]string{
@@ -68,8 +66,7 @@ func TestMonorepoNxProjectJSON(t *testing.T) {
 	}
 }
 
-// A single-app nx workspace: project.json at the root (the app) plus an e2e
-// sibling. The root app must be detected (Dir ""), the e2e project dropped.
+// Single-app nx workspace: root project.json is the app, e2e sibling dropped.
 // (Caught on node-express-realworld: root missed, e2e mis-detected.)
 func TestMonorepoNxRootApp(t *testing.T) {
 	root := writeRepo(t, map[string]string{

@@ -8,12 +8,9 @@ import (
 	"strings"
 )
 
-// nxMembers detects runnable apps in an nx workspace. Unlike classic workspaces,
-// nx marks each project with a project.json (at any depth) and often hoists deps
-// to the root + declares run targets via inferred plugins, so a member's own
-// package.json rarely names its framework. We read project.json for the app/lib
-// split and run via `nx serve <name>`, inferring the framework from the member's
-// build config or the root deps.
+// nxMembers detects apps in an nx workspace: deps are hoisted to the root and run
+// targets are plugin-inferred, so members are read from project.json and run via
+// `nx serve <name>` rather than the normal per-member rule engine.
 func nxMembers(root string) []StackFacts {
 	pm := nxPackageManager(root)
 	dirs := nxProjects(root)
@@ -101,7 +98,7 @@ func nxFramework(memberDir, root string) (string, int) {
 	if hasFile(memberDir, "nest-cli.json") {
 		return "nest", 3000
 	}
-	// The member's own package.json, then the root's (nx hoists deps to the root).
+	// Member deps first, then the root's (nx hoists them up).
 	for _, dir := range []string{memberDir, root} {
 		switch {
 		case rootDep(dir, "@nestjs/core"):

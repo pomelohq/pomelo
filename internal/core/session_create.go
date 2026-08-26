@@ -133,8 +133,7 @@ func ScaffoldSession(req CreateSessionReq) (string, error) {
 		_ = os.WriteFile(dst, []byte(ef.Content), 0o644)
 	}
 
-	// Deterministic draft: detect each repo's stack + backing services and emit a
-	// valid pom.yml. The onboarding agent refines env wiring from here.
+	// Draft a valid pom.yml from detection; the onboarding agent refines env wiring.
 	for i := range dets {
 		p := repoPaths[dets[i].Name]
 		dets[i].Apps = detect.DetectRepo(p)

@@ -15,9 +15,8 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
-// TestVerifyBootDetectsCrash spins two real ptyhost holders — one that stays up,
-// one that exits immediately — and asserts verifyBoot flags only the crasher.
-// It builds a real pom binary so the holders can re-exec `pom pty run`.
+// Spins two real ptyhost holders — one stays up, one exits — and asserts
+// verifyBoot flags only the crasher. Builds pom so holders can re-exec it.
 func TestVerifyBootDetectsCrash(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test spawns real subprocesses")

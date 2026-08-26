@@ -11,10 +11,8 @@ import (
 	"github.com/pomelohq/pomelo/internal/detect"
 )
 
-// TestRealComposeEmit closes the loop on the shared-services path: for every real
-// docker-compose file under POM_DETECT_REAL_ROOT it runs ParseCompose → Emit →
-// config.Load + Validate, asserting the drafted pom.yml is always valid. Opt-in
-// (skips when the env var is unset), so it never runs in CI.
+// For every real docker-compose under POM_DETECT_REAL_ROOT: ParseCompose → Emit →
+// Load + Validate. Opt-in (skips without the env var), so it never runs in CI.
 func TestRealComposeEmit(t *testing.T) {
 	root := os.Getenv("POM_DETECT_REAL_ROOT")
 	if root == "" {

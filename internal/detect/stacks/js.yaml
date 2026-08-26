@@ -55,6 +55,17 @@
   default_port: 5173
   dep_cache: per-project
 
+- id: js.cra
+  language: js
+  framework: cra
+  priority: 18
+  detect:
+    in_manifest: [{ file: package.json, pattern: '"react-scripts"' }]
+  run:
+    - { kind: server, cmd: "{{pm}} start" }
+  default_port: 3000
+  dep_cache: per-project
+
 - id: js.angular
   language: js
   framework: angular

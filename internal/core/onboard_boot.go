@@ -8,10 +8,8 @@ import (
 	"github.com/pomelohq/pomelo/internal/services"
 )
 
-// verifyBoot starts every configured service for the branch, waits a grace
-// period, and reports any that crashed. config_doctor being clean only proves the
-// file parses — the moat is that the environment actually runs, so onboarding is
-// not "done" until services boot without crashing.
+// verifyBoot starts every service for the branch, waits, and reports any that
+// crashed — a clean config only proves the file parses, not that it runs.
 func (s *Server) verifyBoot(branch string, isMain bool, grace time.Duration) []doctor.Finding {
 	cfg := s.cfg()
 	if cfg == nil {

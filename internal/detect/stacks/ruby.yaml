@@ -36,3 +36,28 @@
     - { kind: server, cmd: "ruby app.rb" }
   default_port: 4567
   dep_cache: global-shared
+
+- id: ruby.grape
+  language: ruby
+  framework: grape
+  priority: 16
+  detect:
+    any_manifest:
+      - { file: Gemfile, pattern: "grape" }
+  run:
+    - { kind: server, cmd: "bundle exec rackup -p {{port}}" }
+    - { kind: worker, cmd: "bundle exec sidekiq", when_dep: sidekiq }
+  default_port: 9292
+  dep_cache: global-shared
+
+# A bare Rack app (config.ru, no Rails/Sinatra/Grape) — rackup is the entrypoint.
+- id: ruby.rack
+  language: ruby
+  framework: rack
+  priority: 10
+  detect:
+    any_markers: [config.ru]
+  run:
+    - { kind: server, cmd: "bundle exec rackup -p {{port}}" }
+  default_port: 9292
+  dep_cache: global-shared
