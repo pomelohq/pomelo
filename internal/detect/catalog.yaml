@@ -1,0 +1,21 @@
+# Well-known backing-service images → isolation strategy + per-branch clone method.
+# match_image = case-insensitive substrings of the image. clone: how a branch is
+# seeded from a prepared template — template (native fast clone), dump-restore
+# (logical dump then restore), or none (ephemeral; branch populates at runtime).
+- { type: postgres,      match_image: [postgres, postgis, timescale], strategy: database-per-branch, ports: [5432],       clone: template }
+- { type: mysql,         match_image: [mysql, mariadb, percona],      strategy: database-per-branch, ports: [3306],       clone: dump-restore }
+- { type: mongo,         match_image: [mongo],                        strategy: database-per-branch, ports: [27017],      clone: dump-restore }
+- { type: cockroach,     match_image: [cockroachdb, cockroach],       strategy: database-per-branch, ports: [26257],      clone: dump-restore }
+- { type: clickhouse,    match_image: [clickhouse],                   strategy: database-per-branch, ports: [8123, 9000], clone: dump-restore }
+- { type: redis,         match_image: [redis, valkey, keydb],         strategy: dbindex-slot,        ports: [6379],       clone: none }
+- { type: memcached,     match_image: [memcached],                    strategy: key-prefix,          ports: [11211],      clone: none }
+- { type: nats,          match_image: [nats],                         strategy: key-prefix,          ports: [4222],       clone: none }
+- { type: rabbitmq,      match_image: [rabbitmq],                     strategy: vhost-per-branch,    ports: [5672, 15672], clone: none }
+- { type: kafka,         match_image: [kafka, redpanda],              strategy: namespace-prefix,    ports: [9092],       clone: none }
+- { type: elasticsearch, match_image: [elasticsearch],                strategy: namespace-prefix,    ports: [9200],       clone: none }
+- { type: opensearch,    match_image: [opensearch],                   strategy: namespace-prefix,    ports: [9200],       clone: none }
+- { type: meilisearch,   match_image: [meilisearch],                  strategy: namespace-prefix,    ports: [7700],       clone: none }
+- { type: typesense,     match_image: [typesense],                    strategy: namespace-prefix,    ports: [8108],       clone: none }
+- { type: minio,         match_image: [minio],                        strategy: bucket-per-branch,   ports: [9000, 9001], clone: none }
+- { type: localstack,    match_image: [localstack],                   strategy: bucket-per-branch,   ports: [4566],       clone: none }
+- { type: mail,          match_image: [mailhog, mailpit, mailcatcher], strategy: shared-stateless,   ports: [1025, 8025], clone: none }
