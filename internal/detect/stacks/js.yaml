@@ -1,0 +1,91 @@
+- id: js
+  language: js
+  framework: ""
+  priority: 0
+  detect:
+    markers: [package.json]
+  package_managers:
+    - { lockfile: pnpm-lock.yaml, pm: pnpm }
+    - { lockfile: yarn.lock, pm: yarn }
+    - { lockfile: bun.lock, pm: bun }
+    - { lockfile: bun.lockb, pm: bun }
+    - { lockfile: package-lock.json, pm: npm }
+  default_pm: npm
+  install:
+    npm: "npm install"
+    pnpm: "pnpm install"
+    yarn: "yarn install"
+    bun: "bun install"
+  run:
+    - { kind: server, cmd: "{{pm}} start" }
+  default_port: 0
+  dep_cache: per-project
+
+- id: js.next
+  language: js
+  framework: next
+  priority: 20
+  detect:
+    any_markers: ["next.config.*"]
+    in_manifest: [{ file: package.json, pattern: '"next"' }]
+  run:
+    - { kind: server, cmd: "{{pm}} run dev" }
+  default_port: 3000
+  dep_cache: per-project
+
+- id: js.nest
+  language: js
+  framework: nest
+  priority: 22
+  detect:
+    markers: [nest-cli.json]
+  run:
+    - { kind: server, cmd: "{{pm}} run start:dev" }
+  default_port: 3000
+  dep_cache: per-project
+
+- id: js.vite
+  language: js
+  framework: vite
+  priority: 18
+  detect:
+    any_markers: ["vite.config.*"]
+  run:
+    - { kind: server, cmd: "{{pm}} run dev" }
+  default_port: 5173
+  dep_cache: per-project
+
+- id: js.astro
+  language: js
+  framework: astro
+  priority: 18
+  detect:
+    any_markers: ["astro.config.*"]
+  run:
+    - { kind: server, cmd: "{{pm}} run dev" }
+  default_port: 4321
+  dep_cache: per-project
+
+- id: js.remix
+  language: js
+  framework: remix
+  priority: 22
+  detect:
+    any_manifest:
+      - { file: package.json, pattern: "@remix-run/" }
+      - { file: package.json, pattern: "@react-router/" }
+  run:
+    - { kind: server, cmd: "{{pm}} run dev" }
+  default_port: 3000
+  dep_cache: per-project
+
+- id: js.express
+  language: js
+  framework: express
+  priority: 12
+  detect:
+    in_manifest: [{ file: package.json, pattern: '"express"' }]
+  run:
+    - { kind: server, cmd: "{{pm}} start" }
+  default_port: 3000
+  dep_cache: per-project

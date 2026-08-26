@@ -1,0 +1,38 @@
+- id: ruby
+  language: ruby
+  framework: ""
+  priority: 0
+  detect:
+    markers: [Gemfile]
+  default_pm: bundler
+  install:
+    bundler: "bundle install"
+  run:
+    - { kind: server, cmd: "ruby app.rb" }
+  default_port: 4567
+  dep_cache: global-shared
+
+- id: ruby.rails
+  language: ruby
+  framework: rails
+  priority: 20
+  detect:
+    any_markers: ["bin/rails", "**/config/application.rb"]
+  run:
+    - { kind: server, cmd: "bin/rails server -p {{port}}" }
+    - { kind: worker, cmd: "bundle exec sidekiq", when_dep: sidekiq }
+  setup: ["bundle install", "bin/rails db:create", "bin/rails db:migrate"]
+  default_port: 3000
+  dep_cache: global-shared
+
+- id: ruby.sinatra
+  language: ruby
+  framework: sinatra
+  priority: 15
+  detect:
+    any_manifest:
+      - { file: Gemfile, pattern: "sinatra" }
+  run:
+    - { kind: server, cmd: "ruby app.rb" }
+  default_port: 4567
+  dep_cache: global-shared
