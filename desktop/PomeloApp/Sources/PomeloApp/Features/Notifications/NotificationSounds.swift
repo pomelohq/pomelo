@@ -240,7 +240,7 @@ struct NotificationsSettings: View {
         }
     }
 
-    private var optionIDs: [String] { SoundPrefs.systemSounds.map { "sys:\($0)" } + prefs.customFiles.map { "file:\($0)" } }
+    private var optionIDs: [String] { prefs.customFiles.map { "file:\($0)" } + SoundPrefs.systemSounds.map { "sys:\($0)" } }
 
     private func pickFile() {
         let p = NSOpenPanel()
