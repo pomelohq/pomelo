@@ -56,10 +56,16 @@ struct OnboardResultView: View {
 
     private var sections: [OnboardSection] { OnboardResult.sections(findings) }
     private var bootFails: Int { findings.filter { OnboardCat.of($0.id) == .boot }.count }
+    private var headline: String {
+        let items = "\(findings.count) item(s) need attention."
+        return services > 0
+            ? "Config authored. Verified \(max(0, services - bootFails))/\(services) services. \(items)"
+            : "Config authored. \(items)"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Config authored. Verified \(max(0, services - bootFails))/\(services) services. \(findings.count) item(s) need attention.")
+            Text(headline)
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.fg)
             ForEach(sections) { section in
                 VStack(alignment: .leading, spacing: 6) {

@@ -178,14 +178,49 @@ struct OnboardSheet: View {
         "aliases). Loop config_doctor until zero errors. Then call config_normalize as the FINAL step (it strips " +
         "removed keys, migrates colon→dot, and tidies into pom.d), and confirm what you defined."
 
+    @State private var findings: [DoctorViewModel.Finding] = []
+    @State private var showResult = false
+
     var body: some View {
-        AgentSheet(
-            model: model,
-            title: "Onboarding",
-            subtitle: "Reads each repo (framework, monorepo apps, processes, docker-compose incl. extends), writes a runnable config with env wired, and loops config_doctor until clean.",
-            runningLabel: "Onboarding — analyzing repos & authoring pom.yml…",
-            onBackground: onClose, onDone: { model.stop(); onClose() },
-            onStop: { model.stop(); onClose() })
+        Group {
+            if showResult {
+                resultSheet
+            } else {
+                AgentSheet(
+                    model: model,
+                    title: "Onboarding",
+                    subtitle: "Reads each repo (framework, monorepo apps, processes, docker-compose incl. extends), writes a runnable config with env wired, and loops config_doctor until clean.",
+                    runningLabel: "Onboarding — analyzing repos & authoring pom.yml…",
+                    onBackground: onClose, onDone: { model.stop(); onClose() },
+                    onStop: { model.stop(); onClose() })
+            }
+        }
         .onAppear { model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: firstTurn) }
+        .onChange(of: model.running) { if !model.running { Task { await loadFindings() } } }
+    }
+
+    private var resultSheet: some View {
+        VStack(spacing: 0) {
+            ScrollView { OnboardResultView(findings: findings, services: 0, onRetry: retry) }
+            HStack {
+                Spacer()
+                Button("Done") { model.stop(); onClose() }.buttonStyle(.borderedProminent).tint(Theme.accent)
+            }
+            .padding(.horizontal, 16).padding(.bottom, 14)
+        }
+        .frame(width: 640, height: 520)
+    }
+
+    private func loadFindings() async {
+        let d = await Task.detached { PomCore.shared.doctorData() }.value
+        let report = PomJSON.decode(DoctorViewModel.Report.self, from: d)
+        findings = (report?.findings ?? []).filter { $0.severity != "ok" }
+        showResult = !findings.isEmpty
+    }
+
+    private func retry() {
+        showResult = false
+        findings = []
+        model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: firstTurn)
     }
 }
