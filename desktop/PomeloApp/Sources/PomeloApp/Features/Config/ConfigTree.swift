@@ -62,10 +62,10 @@ struct ConfigNodeRow: View {
                     Image(systemName: node.isDir ? (expanded ? "chevron.down" : "chevron.right") : "doc.text")
                         .font(.system(size: node.isDir ? 9 : 10)).foregroundStyle(Theme.dim).frame(width: 10)
                     Text(node.name).font(.system(size: 12))
-                        .foregroundStyle(isSelected ? Theme.accent : Theme.fg).lineLimit(1)
-                    Spacer(minLength: 0)
+                        .foregroundStyle(isSelected ? Theme.accent : Theme.fg).lineLimit(1).fixedSize()
                 }
-                .padding(.vertical, 3).padding(.trailing, 8).padding(.leading, CGFloat(10 + depth * 14))
+                .padding(.vertical, 3).padding(.trailing, 12).padding(.leading, CGFloat(10 + depth * 14))
+                .frame(minWidth: 196, alignment: .leading)
                 .background(isSelected ? Theme.accentSoft : .clear)
                 .contentShape(Rectangle())
             }

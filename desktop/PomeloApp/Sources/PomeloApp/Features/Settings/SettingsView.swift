@@ -513,7 +513,7 @@ struct AdvancedSettings: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            ScrollView {
+            ScrollView([.vertical, .horizontal]) {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     ForEach(nodes) { node in
                         ConfigNodeRow(node: node, depth: 0, selected: path) { p in
@@ -522,7 +522,7 @@ struct AdvancedSettings: View {
                         }
                     }
                 }
-                .padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
             }
             Divider().overlay(Theme.borderSoft)
             Button { newName = ""; newError = ""; showNew = true } label: {
