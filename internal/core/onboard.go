@@ -29,6 +29,7 @@ func (s *Server) RunOnboardCLI(branch string, isMain bool, model string, out io.
 		if err := waitIdle(d, 20*time.Minute); err != nil {
 			return err
 		}
+		s.reloadConfig() // the agent rewrote pom.yml via MCP; verify against its edits, not the seed
 		errs := actionableFindings(s.cfg(), s.WorkspaceRoot, s.Project)
 		if len(errs) == 0 {
 			fmt.Fprintln(out, "\n… config_doctor clean — booting services to verify")
@@ -47,6 +48,16 @@ func (s *Server) RunOnboardCLI(branch string, isMain bool, model string, out io.
 		}
 		fmt.Fprintf(out, "\n… %d finding(s) remain — nudging agent (round %d)\n", len(errs), round+1)
 		d.Enqueue(nudgeTurn(errs))
+	}
+}
+
+func (s *Server) reloadConfig() {
+	p, err := config.FindConfigFrom(s.WorkspaceRoot)
+	if err != nil {
+		return
+	}
+	if cfg, err := config.Load(p); err == nil {
+		s.setCfg(cfg)
 	}
 }
 

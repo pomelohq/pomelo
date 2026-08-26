@@ -62,3 +62,27 @@ func TestVerifyBootDetectsCrash(t *testing.T) {
 		t.Fatalf("healthy service should still be alive")
 	}
 }
+
+func TestReloadConfigPicksUpEdits(t *testing.T) {
+	dir := t.TempDir()
+	seed := "session: s\ndefault_branch: main\nrepos:\n  a: {services: {old: {cmd: \"true\"}}}\n"
+	if err := os.WriteFile(filepath.Join(dir, "pom.yml"), []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "pom.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New("", "s", dir, "main", cfg)
+	edited := "session: s\ndefault_branch: main\nrepos:\n  a: {services: {web: {cmd: \"true\"}}}\n"
+	if err := os.WriteFile(filepath.Join(dir, "pom.yml"), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.reloadConfig()
+	if _, ok := s.cfg().Repos["a"].Services["web"]; !ok {
+		t.Fatalf("reload did not pick up the edited service: %+v", s.cfg().Repos["a"].Services)
+	}
+	if _, ok := s.cfg().Repos["a"].Services["old"]; ok {
+		t.Fatalf("stale service still present after reload")
+	}
+}
