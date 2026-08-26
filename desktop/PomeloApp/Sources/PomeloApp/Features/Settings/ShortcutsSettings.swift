@@ -21,6 +21,7 @@ struct ShortcutsSettings: View {
         .init(keys: "⌘1", label: "Services"),
         .init(keys: "⌘2", label: "Pull requests"),
         .init(keys: "⌘3", label: "Jira"),
+        .init(keys: "⌘4", label: "Database"),
         .init(keys: "⌘I", label: "Agent"),
         .init(keys: "⌘W", label: "Close focused terminal tab"),
     ]
