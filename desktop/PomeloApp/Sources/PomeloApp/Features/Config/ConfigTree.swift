@@ -62,14 +62,17 @@ struct ConfigNodeRow: View {
                     Image(systemName: node.isDir ? (expanded ? "chevron.down" : "chevron.right") : "doc.text")
                         .font(.system(size: node.isDir ? 9 : 10)).foregroundStyle(Theme.dim).frame(width: 10)
                     Text(node.name).font(.system(size: 12))
-                        .foregroundStyle(isSelected ? Theme.accent : Theme.fg).lineLimit(1).fixedSize()
+                        .foregroundStyle(isSelected ? Theme.accent : Theme.fg)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
                 }
-                .padding(.vertical, 3).padding(.trailing, 12).padding(.leading, CGFloat(10 + depth * 14))
-                .frame(minWidth: 196, alignment: .leading)
+                .padding(.vertical, 3).padding(.trailing, 10).padding(.leading, CGFloat(10 + depth * 14))
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(isSelected ? Theme.accentSoft : .clear)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(node.name)
             if node.isDir, expanded, let kids = node.children {
                 ForEach(kids) { ConfigNodeRow(node: $0, depth: depth + 1, selected: selected, onSelect: onSelect) }
             }

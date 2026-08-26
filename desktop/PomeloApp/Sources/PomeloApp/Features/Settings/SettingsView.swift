@@ -512,7 +512,7 @@ struct AdvancedSettings: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            ScrollView([.vertical, .horizontal]) {
+            ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     ForEach(nodes) { node in
                         ConfigNodeRow(node: node, depth: 0, selected: path) { p in
@@ -521,6 +521,7 @@ struct AdvancedSettings: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 6)
             }
             Divider().overlay(Theme.borderSoft)
