@@ -31,6 +31,8 @@ make minor / major
 
 `make patch/minor/major` bumps `cmd/pom/root.go` `version` **and** `cmd/libpom/libpom.go` `appVersion` in lockstep (`make version-check` guards drift). Pushing the `v*` tag is the entire release: `.github/workflows/release.yml` → `app-build.yml` (`publish:true`) builds → signs → notarizes → DMG → Sparkle appcast → GitHub Release. **No local publish path.** The app self-updates via Sparkle. Full details + required CI secrets in `RELEASE.md`. Never delete old releases; never regenerate the Sparkle EdDSA key.
 
+Before cutting a release, run the `release-audit` skill (`.claude/skills/release-audit`): CI builds the GitHub Release notes and the Sparkle appcast from the `## [<version>]` block in `CHANGELOG.md`, so that block MUST be curated and committed before the tag is pushed — otherwise notes fall back to an auto PR list.
+
 ## Architecture (big picture)
 
 **One Go core, two front doors.** `internal/core` holds the `Server` + business logic. It is reached two ways, never over HTTP:
