@@ -17,7 +17,11 @@ func onboardSystemPrompt(string) string {
 		"docker-compose service commands — make a pom service for EACH (web, worker, sidekiq, sqs-consumer, scheduler, …), " +
 		"not just one.\n" +
 		"- SETUP: the real install command (bundle install / pnpm install / npm ci / go mod download / pip install), from the " +
-		"lockfile + language.\n" +
+		"lockfile + language. INCLUDE codegen the app needs to boot: e.g. `prisma generate` (a Nest/Prisma app crashes without a " +
+		"generated client), graphql codegen, protobuf. Put these in `setup:` after install.\n" +
+		"- MIGRATIONS: backends usually need their DB schema created before they boot. Set `migrate:` to the real command when " +
+		"the repo uses migrations — rails db:migrate; prisma migrate deploy (or prisma db push); sequel/knex/alembic (alembic " +
+		"upgrade head). Set `seed:` when there's a seed script. Without this a fresh DB throws 'relation/table does not exist'.\n" +
 		"- SHARED SERVICES: read ALL docker-compose files (docker-compose.yml, compose.yml, AND any file referenced via " +
 		"`extends: {file: …}` such as docker-compose-services.yml). Map every infra container (postgres/redis/minio/" +
 		"opensearch/elasticsearch/mysql/mongo/rabbitmq/kafka) to a shared_services entry. `extends`-based services have NO " +

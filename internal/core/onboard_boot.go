@@ -14,11 +14,50 @@ import (
 // command-not-found). Returns {ok, failed:[{id,title,detail}]}.
 func (s *Server) InstallDeps(branch string, isMain bool) map[string]any {
 	errs := s.runSetup(branch, isMain, map[string]bool{})
+	// Bring shared infra + per-branch DBs up so migrations have a database to hit,
+	// then run each repo's migrate (a fresh DB otherwise throws "table not found").
+	if cfg := s.cfg(); cfg != nil && len(cfg.SharedServices) > 0 {
+		s.ensureSharedServices()
+		services.EnsureWorkspaceDatabases(cfg, branch)
+	}
+	errs = append(errs, s.runMigrate(branch, isMain)...)
 	failed := make([]map[string]string, 0, len(errs))
 	for _, f := range errs {
 		failed = append(failed, map[string]string{"id": f.ID, "title": f.Title, "detail": f.Detail})
 	}
 	return map[string]any{"ok": len(errs) == 0, "failed": failed}
+}
+
+// runMigrate runs each repo's migrate (then seed) commands in its worktree with
+// the resolved env, so a backend's schema exists before it boots.
+func (s *Server) runMigrate(branch string, isMain bool) []doctor.Finding {
+	cfg := s.cfg()
+	if cfg == nil {
+		return nil
+	}
+	var errs []doctor.Finding
+	for repoName, repo := range cfg.Repos {
+		cmds := append(append([]string{}, repo.Migrate...), repo.Seed...)
+		if len(cmds) == 0 {
+			continue
+		}
+		wt := services.RepoWorktreePath(s.WorkspaceRoot, repoName, branch, isMain)
+		env := services.ResolveRepoEnv(s.WorkspaceRoot, cfg, branch, repoName)
+		for _, cmd := range cmds {
+			argv := shell.Login(cmd)
+			if out, err := services.RunTimeoutEnv(10*time.Minute, wt, env, argv[0], argv[1:]...); err != nil {
+				errs = append(errs, doctor.Finding{
+					ID:           "migrate." + repoName,
+					Severity:     doctor.SevError,
+					Title:        "migrate failed for " + repoName + ": " + cmd,
+					Detail:       lastLines(string(out), 6),
+					AgentFixable: true,
+				})
+				break
+			}
+		}
+	}
+	return errs
 }
 
 // runSetup runs each repo's setup (install) commands in its worktree so boot

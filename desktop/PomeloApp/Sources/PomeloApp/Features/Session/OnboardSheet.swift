@@ -259,8 +259,8 @@ struct OnboardSheet: View {
         VStack(alignment: .leading, spacing: 5) {
             phaseRow(done: true, active: false, "Scan repos", "cloned")
             phaseRow(done: authorDone, active: model.running, "Author config", model.running ? "writing pom.yml…" : "done")
-            phaseRow(done: authorDone && !installing, active: installing, "Verify & install",
-                     installing ? "installing deps…" : (authorDone ? "done" : "waiting"))
+            phaseRow(done: authorDone && !installing, active: installing, "Install & migrate",
+                     installing ? "installing deps + migrating…" : (authorDone ? "done" : "waiting"))
         }
     }
 
