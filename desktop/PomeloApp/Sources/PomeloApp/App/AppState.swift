@@ -106,6 +106,45 @@ final class AppState: ObservableObject {
     @Published var showPipeline = false
     @Published var updateMainWs: Workspace?
     @Published var fullscreen = false
+
+    @Published var nmBusy = false
+    @Published var nmPhase = ""
+    @Published var nmSummary: String?
+
+    func nmOptimize(reclaim: Bool) {
+        guard !nmBusy else { return }
+        nmBusy = true; nmSummary = nil
+        nmPhase = reclaim ? "Deduping…" : "Optimizing…"
+        let poll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                let p = await Task.detached { PomCore.shared.nmStoreProgress() }.value
+                if let self, self.nmBusy, !p.isEmpty { self.nmPhase = p }
+            }
+        }
+        Task { [weak self] in
+            let data = await Task.detached { reclaim ? PomCore.shared.nmStoreReclaim() : PomCore.shared.nmStoreReconcile() }.value
+            poll.cancel()
+            guard let self else { return }
+            self.nmSummary = AppState.nmSummaryText(reclaim: reclaim, data: data)
+            self.nmPhase = ""; self.nmBusy = false
+        }
+    }
+
+    private static func nmSummaryText(reclaim: Bool, data: Data) -> String {
+        let obj = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:]
+        func size(_ v: Any?) -> String {
+            let n = (v as? NSNumber)?.doubleValue ?? 0
+            return n >= 1_073_741_824 ? String(format: "%.2f GB", n / 1_073_741_824) : String(format: "%.0f MB", n / 1_048_576)
+        }
+        if reclaim {
+            let r = (obj["relinked"] as? NSNumber)?.intValue ?? 0
+            let rec = (obj["reclaimed"] as? NSNumber)?.int64Value ?? 0
+            return rec > 0 ? "Reclaimed \(size(obj["reclaimed"])) (\(r) relinked)" : "Nothing to reclaim"
+        }
+        let a = (obj["added"] as? NSNumber)?.intValue ?? 0
+        return a > 0 ? "Cached \(a) new (\(size(obj["bytes"])))" : "Already optimized"
+    }
     var activityScope: String? = nil
 
     func openActivity(scope: String?) { activityScope = scope; showActivity = true }

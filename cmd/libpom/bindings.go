@@ -100,6 +100,15 @@ func PomNMStoreReclaim() *C.char {
 	return bindingJSON(s.NMStoreReclaim())
 }
 
+//export PomNMStoreProgress
+func PomNMStoreProgress() *C.char {
+	s := server()
+	if s == nil {
+		return C.CString("")
+	}
+	return C.CString(s.NMStoreProgress())
+}
+
 //export PomNMStoreDelete
 func PomNMStoreDelete(repo, hash *C.char) *C.char {
 	s := server()

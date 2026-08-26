@@ -4,6 +4,7 @@ import SwiftUI
 // not a force sim: force turns this bipartite data into crossing spaghetti.
 struct DependencyBoard: View {
     var onClose: () -> Void = {}
+    @EnvironmentObject var state: AppState
     @StateObject private var vm = NMStoreViewModel()
     @State private var zoom: CGFloat = 1
     @GestureState private var pinch: CGFloat = 1
@@ -141,6 +142,7 @@ struct DependencyBoard: View {
         }
         .frame(width: 900, height: 640).background(Theme.bg)
         .task { await vm.load() }
+        .onChange(of: state.nmBusy) { if !state.nmBusy { Task { await vm.load() } } }
     }
 
     private var header: some View {
@@ -151,23 +153,24 @@ struct DependencyBoard: View {
                 Text("node_modules cache - \(vm.human(vm.total)) total").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
             }
             Spacer()
-            if let msg = vm.lastOptimize {
+            if state.nmBusy {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small).scaleEffect(0.6)
+                    Text(state.nmPhase).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted).lineLimit(1)
+                }
+            } else if let msg = state.nmSummary {
                 Text(msg).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
             }
-            Button { Task { await vm.optimize() } } label: {
-                HStack(spacing: 5) {
-                    if vm.optimizing { ProgressView().controlSize(.small).scaleEffect(0.5) }
-                    else { Image(systemName: "wand.and.stars") }
-                    Text("Optimize").font(.system(size: 11, weight: .medium))
-                }
-            }.buttonStyle(.plain).foregroundStyle(Theme.accent).disabled(vm.optimizing)
+            Button { state.nmOptimize(reclaim: false) } label: {
+                Label("Optimize", systemImage: "wand.and.stars").font(.system(size: 11, weight: .medium))
+            }.buttonStyle(.plain).foregroundStyle(Theme.accent).disabled(state.nmBusy)
                 .help("Capture node_modules installed by hand (e.g. npm install in a terminal) into the store")
             Button { confirmDedupe = true } label: {
                 Label("Dedupe", systemImage: "arrow.triangle.merge").font(.system(size: 11, weight: .medium))
-            }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).disabled(vm.optimizing)
+            }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).disabled(state.nmBusy)
                 .help("Reclaim disk: relink duplicate node_modules to a single shared copy (CoW)")
                 .confirmationDialog("Reclaim disk by deduplicating node_modules?", isPresented: $confirmDedupe, titleVisibility: .visible) {
-                    Button("Dedupe") { Task { await vm.reclaim() } }
+                    Button("Dedupe") { state.nmOptimize(reclaim: true) }
                     Button("Cancel", role: .cancel) {}
                 } message: {
                     Text("Rewrites each workspace's node_modules as a shared CoW clone of the store copy (same content). Stop dev servers first to be safe.")

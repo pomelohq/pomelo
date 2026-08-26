@@ -115,6 +115,7 @@ protocol CoreAPI: PomBaseAPI {
     func nmStoreDelete(repo: String, hash: String) -> Data
     func nmStoreReconcile() -> Data
     func nmStoreReclaim() -> Data
+    func nmStoreProgress() -> String
     func syncGetData() -> Data
     func syncSet(refreshMain: Bool, intervalSec: Int) -> Data
     func fetchImageData(url: String) -> Data

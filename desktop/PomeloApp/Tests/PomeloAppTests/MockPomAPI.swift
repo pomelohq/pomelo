@@ -24,6 +24,7 @@ final class MockPomAPI: PomAPI {
     func nmStoreDelete(repo: String, hash: String) -> Data { nmDeleted.append(repo + "/" + hash); return Data(#"{"ok":true}"#.utf8) }
     func nmStoreReconcile() -> Data { Data(#"{"ok":true,"added":0,"bytes":0}"#.utf8) }
     func nmStoreReclaim() -> Data { Data(#"{"ok":true,"relinked":0,"reclaimed":0}"#.utf8) }
+    func nmStoreProgress() -> String { "" }
     func syncGetData() -> Data { Data(syncJSON.utf8) }
     func syncSet(refreshMain: Bool, intervalSec: Int) -> Data { syncSetCalls.append((refreshMain, intervalSec)); return Data(#"{"ok":true}"#.utf8) }
 

@@ -3,9 +3,19 @@ package core
 import (
 	"net/http"
 	"path/filepath"
+	"sync"
 
 	"github.com/pomelohq/pomelo/internal/services"
 )
+
+var (
+	nmProgMu sync.Mutex
+	nmProg   string
+)
+
+func setNMProg(s string) { nmProgMu.Lock(); nmProg = s; nmProgMu.Unlock() }
+
+func (s *Server) NMStoreProgress() string { nmProgMu.Lock(); defer nmProgMu.Unlock(); return nmProg }
 
 func (s *Server) nmStoreRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/nmstore/list", s.handleNMStoreList)
@@ -30,11 +40,13 @@ func (s *Server) NMStoreReclaim() map[string]any {
 	relinked := 0
 	for _, ws := range s.collectWorkspaces(false, true) {
 		for _, r := range ws.Repos {
+			setNMProg("Deduping " + r.Name + " (" + ws.Branch + ")")
 			if ok, _ := services.RelinkNodeModules(r.Name, r.Path); ok {
 				relinked++
 			}
 		}
 	}
+	setNMProg("")
 	reclaimed := services.FreeBytes(s.WorkspaceRoot) - before
 	if reclaimed < 0 {
 		reclaimed = 0
@@ -51,9 +63,11 @@ func (s *Server) NMStoreReconcile() map[string]any {
 	}
 	for _, ws := range s.collectWorkspaces(false, true) {
 		for _, r := range ws.Repos {
+			setNMProg("Caching " + r.Name + " (" + ws.Branch + ")")
 			services.SnapshotNodeModules(r.Name, r.Path)
 		}
 	}
+	setNMProg("")
 	added, addedBytes := 0, int64(0)
 	for _, e := range services.NMStoreEntries() {
 		if !before[e.Repo+"/"+e.Hash] {
