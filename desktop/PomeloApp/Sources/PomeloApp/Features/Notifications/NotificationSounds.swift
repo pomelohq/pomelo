@@ -80,72 +80,64 @@ struct NotificationsSettings: View {
     @State private var sources: [NotifSource] = []
     @State private var notifOK = true
 
+    private func recheck() {
+        Notifier.currentlyAuthorized { notifOK = $0 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { Notifier.currentlyAuthorized { notifOK = $0 } }
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                delivery
-                ForEach(sources) { src in sourceSection(src) }
-                addSoundRow
+        Form {
+            Section {
+                Toggle("Notify on Claude activity", isOn: $state.notifyClaude)
+                    .onChange(of: state.notifyClaude) { if state.notifyClaude { Notifier.promptOrOpenSettings(); recheck() } }
+                Toggle("Alert even while I'm viewing that workspace", isOn: $prefs.whenFocused)
+                if state.notifyClaude && !notifOK {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Theme.warn)
+                        Text("macOS hasn't granted notification permission").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
+                        Spacer()
+                        Button("Grant") { Notifier.promptOrOpenSettings(); recheck() }.controlSize(.small)
+                    }
+                }
+                Button("Send test notification") { Notifier.sendTest(); recheck() }.controlSize(.small)
+            } header: { Text("Delivery") } footer: {
+                Text("Alert-when-viewing is handy when you leave a run going and want to hear it finish. Needs macOS notification permission.")
             }
-            .padding(.vertical, 4)
+
+            ForEach(sources) { src in
+                Section(src.title) {
+                    ForEach(src.events) { ev in
+                        LabeledContent(ev.title) {
+                            HStack(spacing: 8) {
+                                Picker("", selection: binding(src.id, ev.id)) {
+                                    Text("None").tag("")
+                                    ForEach(SoundPrefs.systemSounds, id: \.self) { Text($0).tag("sys:\($0)") }
+                                    ForEach(prefs.customFiles, id: \.self) { Text($0).tag("file:\($0)") }
+                                }
+                                .labelsHidden().frame(width: 150)
+                                Button { prefs.play(prefs.sound(src.id, ev.id)) } label: { Image(systemName: "play.circle") }
+                                    .buttonStyle(.plain).foregroundStyle(prefs.sound(src.id, ev.id).isEmpty ? Theme.dim : Theme.accent)
+                                    .disabled(prefs.sound(src.id, ev.id).isEmpty)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button { pickFile() } label: { Label("Add sound file...", systemImage: "plus") }
+            } footer: {
+                Text("Use your own .wav/.mp3/.aiff — uploaded sounds appear in every dropdown.")
+            }
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .task { await loadAgents() }
-        .onAppear { Notifier.currentlyAuthorized { notifOK = $0 } }
+        .onAppear { recheck() }
     }
 
-    private var delivery: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle("Notify on Claude activity", isOn: $state.notifyClaude)
-                .onChange(of: state.notifyClaude) { if state.notifyClaude { Notifier.promptOrOpenSettings() } }
-            Toggle("Alert even while I'm viewing that workspace", isOn: $prefs.whenFocused)
-            Text("Turn this on when you leave a run going and want to hear it finish.")
-                .font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
-            if state.notifyClaude && !notifOK {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Theme.warn)
-                    Text("macOS hasn't granted notification permission").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
-                    Button("Grant") { Notifier.promptOrOpenSettings() }.buttonStyle(.plain).foregroundStyle(Theme.accent)
-                }
-            }
-            Button { Notifier.sendTest() } label: { Text("Send test notification").font(.system(size: 12)) }
-                .buttonStyle(.plain).foregroundStyle(Theme.accent)
-        }
-    }
-
-    private func sourceSection(_ src: NotifSource) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 7) {
-                Image(systemName: src.icon).font(.system(size: 11)).foregroundStyle(Theme.accent)
-                Text(src.title.uppercased()).font(.system(size: 10.5, weight: .semibold)).kerning(0.5).foregroundStyle(Theme.muted)
-            }
-            ForEach(src.events) { ev in eventRow(src.id, ev) }
-        }
-    }
-
-    private func eventRow(_ source: String, _ ev: NotifEvent) -> some View {
-        let current = prefs.sound(source, ev.id)
-        return HStack(spacing: 10) {
-            Text(ev.title).font(.system(size: 12.5)).foregroundStyle(Theme.fg).frame(width: 150, alignment: .leading)
-            Picker("", selection: Binding(get: { current }, set: { prefs.setSound($0, source: source, event: ev.id) })) {
-                Text("None").tag("")
-                ForEach(SoundPrefs.systemSounds, id: \.self) { Text($0).tag("sys:\($0)") }
-                if !prefs.customFiles.isEmpty {
-                    Divider()
-                    ForEach(prefs.customFiles, id: \.self) { Text($0).tag("file:\($0)") }
-                }
-            }
-            .labelsHidden().frame(width: 180)
-            Button { prefs.play(current) } label: { Image(systemName: "play.circle").font(.system(size: 14)) }
-                .buttonStyle(.plain).foregroundStyle(current.isEmpty ? Theme.dim : Theme.accent)
-                .disabled(current.isEmpty)
-            Spacer()
-        }
-    }
-
-    private var addSoundRow: some View {
-        Button { pickFile() } label: {
-            Label("Add sound file...", systemImage: "plus").font(.system(size: 12))
-        }.buttonStyle(.plain).foregroundStyle(Theme.accent)
+    private func binding(_ source: String, _ event: String) -> Binding<String> {
+        Binding(get: { prefs.sound(source, event) }, set: { prefs.setSound($0, source: source, event: event) })
     }
 
     private func pickFile() {
