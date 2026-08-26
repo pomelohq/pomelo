@@ -92,6 +92,16 @@ struct YAMLEditor: NSViewRepresentable {
             }
             highlightValues(t, base: lineRange.location, end: scanEnd, storage: storage, str: str, num: num)
         }
+        // pom {{...}} template refs are the semantic glue — make them pop; flag
+        // secret refs distinctly so a missing credential is easy to spot.
+        let tmpl = NSColor(Theme.tool), secret = NSColor(Theme.warn)
+        if let re = try? NSRegularExpression(pattern: "\\{\\{[^}]*\\}\\}") {
+            re.enumerateMatches(in: s as String, range: full) { m, _, _ in
+                guard let r = m?.range else { return }
+                let isSecret = s.substring(with: r).contains("secret.")
+                storage.addAttribute(.foregroundColor, value: isSecret ? secret : tmpl, range: r)
+            }
+        }
         storage.endEditing()
     }
 
