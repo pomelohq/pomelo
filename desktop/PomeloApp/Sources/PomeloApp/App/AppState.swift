@@ -246,6 +246,7 @@ final class AppState: ObservableObject {
     var orderedNonMain: [Workspace] { wsvm.orderedNonMain }
     func moveWorkspace(from: IndexSet, to: Int) { wsvm.moveWorkspace(from: from, to: to) }
     func moveWorkspace(_ dragged: String, before target: String) { wsvm.moveWorkspace(dragged, before: target) }
+    func moveWorkspace(_ dragged: String, toIndex t: Int) { wsvm.moveWorkspace(dragged, toIndex: t) }
     var allRepoNames: [String] { wsvm.allRepoNames }
 
     func suggestNameSlug(seed: String, desc: String = "") async -> (name: String, slug: String) {

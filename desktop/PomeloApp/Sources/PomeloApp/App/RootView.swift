@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct RootView: View {
     @EnvironmentObject var state: AppState
@@ -199,7 +198,12 @@ struct WorkspaceSidebar: View {
     @EnvironmentObject var ui: UIStore
 
     @Environment(\.openWindow) private var openWindow
-    @State private var draggingId: String?
+    @State private var dragId: String?
+    @State private var dragTranslation: CGFloat = 0
+    @State private var heights: [String: CGFloat] = [:]
+
+    private let rowSpacing: CGFloat = 2
+    private var items: [Workspace] { state.orderedNonMain.filter { !state.opBranches.contains($0.branch) } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -219,39 +223,82 @@ struct WorkspaceSidebar: View {
             OpsBar()
 
             ScrollView {
-                LazyVStack(spacing: 2) {
+                LazyVStack(spacing: rowSpacing) {
                     ForEach(state.mainWorkspaces) { ws in WsRow(ws: ws) }
-                    ForEach(state.orderedNonMain.filter { !state.opBranches.contains($0.branch) }) { ws in
+                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, ws in
                         WsRow(ws: ws)
-                            .opacity(draggingId == ws.id ? 0.35 : 1)
-                            .scaleEffect(draggingId == ws.id ? 0.97 : 1)
-                            .onDrag {
-                                draggingId = ws.id
-                                return NSItemProvider(object: ws.id as NSString)
-                            } preview: {
-                                WsRow(ws: ws).frame(width: 236).opacity(0.9)
-                            }
-                            .onDrop(of: [.text], delegate: WsReorderDrop(targetId: ws.id, draggingId: $draggingId) { d, t in
-                                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                    state.moveWorkspace(d, before: t)
-                                }
-                            })
+                            .background(HeightReader(id: ws.id))
+                            .offset(y: rowOffset(idx))
+                            .scaleEffect(dragId == ws.id ? 1.03 : 1)
+                            .shadow(color: dragId == ws.id ? .black.opacity(0.28) : .clear,
+                                    radius: dragId == ws.id ? 9 : 0, y: 5)
+                            .opacity(dragId != nil && dragId != ws.id ? 0.85 : 1)
+                            .zIndex(dragId == ws.id ? 2 : 0)
+                            .animation(dragId == ws.id ? nil : .spring(response: 0.26, dampingFraction: 0.82), value: rowOffset(idx))
+                            .animation(.spring(response: 0.24, dampingFraction: 0.8), value: dragId)
+                            .gesture(reorderGesture(idx: idx, ws: ws))
                     }
-                    // Trailing drop zone so a row can be dropped at the very end
-                    // ("before" an unknown target appends).
-                    Color.clear.frame(maxWidth: .infinity, minHeight: 44)
-                        .contentShape(Rectangle())
-                        .onDrop(of: [.text], delegate: WsReorderDrop(targetId: "\u{1}__end", draggingId: $draggingId) { d, t in
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                state.moveWorkspace(d, before: t)
-                            }
-                        })
                 }
                 .padding(.horizontal, 4).padding(.vertical, 4)
-                .animation(.spring(response: 0.28, dampingFraction: 0.82), value: state.orderedNonMain.map(\.id))
+                .onPreferenceChange(RowHeightKey.self) { heights = $0 }
             }
             .scrollContentBackground(.hidden)
         }
+    }
+
+    private func HeightReader(id: String) -> some View {
+        GeometryReader { g in Color.clear.preference(key: RowHeightKey.self, value: [id: g.size.height]) }
+    }
+
+    private var midYs: [CGFloat] {
+        var y: CGFloat = 0
+        return items.map { ws in
+            let h = heights[ws.id] ?? 44
+            defer { y += h + rowSpacing }
+            return y + h / 2
+        }
+    }
+
+    private var targetIndex: Int {
+        guard let dragId, let from = items.firstIndex(where: { $0.id == dragId }) else { return 0 }
+        let mids = midYs
+        guard from < mids.count else { return from }
+        let mid = mids[from] + dragTranslation
+        var t = from
+        while t > 0 && mid < mids[t - 1] { t -= 1 }
+        while t < items.count - 1 && mid > mids[t + 1] { t += 1 }
+        return t
+    }
+
+    private func rowOffset(_ idx: Int) -> CGFloat {
+        guard let dragId, let from = items.firstIndex(where: { $0.id == dragId }) else { return 0 }
+        if idx == from { return dragTranslation }
+        let dh = (heights[dragId] ?? 44) + rowSpacing
+        let to = targetIndex
+        if from < to, idx > from, idx <= to { return -dh }
+        if from > to, idx >= to, idx < from { return dh }
+        return 0
+    }
+
+    private func reorderGesture(idx: Int, ws: Workspace) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { v in
+                if dragId == nil { dragId = ws.id }
+                dragTranslation = v.translation.height
+            }
+            .onEnded { _ in
+                let t = targetIndex
+                state.moveWorkspace(ws.id, toIndex: t)
+                dragId = nil
+                dragTranslation = 0
+            }
+    }
+}
+
+struct RowHeightKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, n in n }
     }
 }
 
@@ -286,22 +333,6 @@ struct KeepAliveWorkspaceHost: View {
         if m.count > cap { m = Array(m.prefix(cap)) }
         mounted = m.filter { id in state.workspaces.contains { $0.id == id } }
     }
-}
-
-// Live reorder: as the dragged row enters another row, move it there immediately
-// (spring-animated by the caller) — the smooth iOS-style reorder, not a snap on
-// drop. Kept minimal; state.moveWorkspace persists the order.
-struct WsReorderDrop: DropDelegate {
-    let targetId: String
-    @Binding var draggingId: String?
-    let move: (String, String) -> Void
-
-    func dropEntered(info: DropInfo) {
-        guard let d = draggingId, d != targetId else { return }
-        move(d, targetId)
-    }
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
-    func performDrop(info: DropInfo) -> Bool { draggingId = nil; return true }
 }
 
 struct WsRow: View {

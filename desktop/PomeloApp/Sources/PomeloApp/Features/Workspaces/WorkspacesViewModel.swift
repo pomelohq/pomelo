@@ -21,6 +21,14 @@ final class WorkspacesViewModel: ObservableObject {
         wsOrder = arr.map(\.id)
     }
 
+    func moveWorkspace(_ dragged: String, toIndex t: Int) {
+        var arr = orderedNonMain.map(\.id)
+        guard let from = arr.firstIndex(of: dragged) else { return }
+        arr.remove(at: from)
+        arr.insert(dragged, at: min(max(t, 0), arr.count))
+        wsOrder = arr
+    }
+
     func moveWorkspace(_ dragged: String, before target: String) {
         var arr = orderedNonMain.map(\.id)
         guard dragged != target, let from = arr.firstIndex(of: dragged) else { return }
