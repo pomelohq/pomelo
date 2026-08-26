@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 
 struct DatabasePane: View {
     let workspace: Workspace
@@ -8,7 +7,10 @@ struct DatabasePane: View {
     @EnvironmentObject var theme: ThemeManager
     @AppStorage("db.treeWidth") private var treeWidth = 250.0
     @AppStorage("db.editorHeight") private var editorHeight = 150.0
-    @State private var dropTarget: String?
+    @State private var dragId: String?
+    @State private var dragTranslation: CGFloat = 0
+    @State private var heights: [String: CGFloat] = [:]
+    private let repoSpacing: CGFloat = 0
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -37,16 +39,26 @@ struct DatabasePane: View {
             Divider().overlay(Theme.borderSoft)
             if let e = vm.error { errorBanner(e) }
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: repoSpacing) {
                     if vm.databases.isEmpty && !vm.loadingDBs {
                         Text("No databases").font(.system(size: 12)).foregroundStyle(Theme.dim)
                             .padding(10)
                     }
-                    ForEach(vm.grouped, id: \.repo) { group in
+                    ForEach(Array(vm.grouped.enumerated()), id: \.element.repo) { idx, group in
                         backendNode(group.repo, group.dbs)
+                            .background(heightReader(id: group.repo))
+                            .offset(y: repoOffset(idx))
+                            .scaleEffect(dragId == group.repo ? 1.02 : 1, anchor: .leading)
+                            .shadow(color: dragId == group.repo ? .black.opacity(0.25) : .clear,
+                                    radius: dragId == group.repo ? 8 : 0, y: 4)
+                            .opacity(dragId != nil && dragId != group.repo ? 0.8 : 1)
+                            .zIndex(dragId == group.repo ? 2 : 0)
+                            .animation(dragId == group.repo ? nil : .spring(response: 0.26, dampingFraction: 0.82), value: repoOffset(idx))
+                            .animation(.spring(response: 0.24, dampingFraction: 0.8), value: dragId)
                     }
                 }
                 .padding(.vertical, 4)
+                .onPreferenceChange(RowHeightKey.self) { heights = $0 }
             }
         }
         .background(Theme.bgSoft)
@@ -56,25 +68,71 @@ struct DatabasePane: View {
         let open = vm.expandedRepos.contains(repo)
         let engine = dbs.first?.engine ?? ""
         return VStack(alignment: .leading, spacing: 0) {
-            row(depth: 0, chevron: open, icon: engine == "redis" ? "server.rack" : "externaldrive.connected.to.line.below",
-                text: repo, trailing: engine, selected: false) { vm.toggleRepo(repo) }
-                .draggable(repo) {
-                    Label(repo, systemImage: "line.3.horizontal").font(.system(size: 11)).padding(4)
-                }
-                .dropDestination(for: String.self) { items, _ in
-                    guard let dragged = items.first else { return false }
-                    vm.moveRepo(dragged, before: repo)
-                    return true
-                } isTargeted: { dropTarget = $0 ? repo : (dropTarget == repo ? nil : dropTarget) }
-                .overlay(alignment: .top) {
-                    if dropTarget == repo {
-                        Rectangle().fill(Theme.accent).frame(height: 2)
-                    }
-                }
+            HStack(spacing: 0) {
+                grip(repo: repo)
+                row(depth: 0, chevron: open, icon: engine == "redis" ? "server.rack" : "externaldrive.connected.to.line.below",
+                    text: repo, trailing: engine, selected: false) { vm.toggleRepo(repo) }
+            }
             if open {
                 ForEach(dbs) { db in databaseNode(db) }
             }
         }
+    }
+
+    private func grip(repo: String) -> some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(dragId == repo ? Theme.accent : Theme.dim.opacity(0.6))
+            .frame(width: 14)
+            .contentShape(Rectangle())
+            .help("Drag to reorder")
+            .gesture(
+                DragGesture(minimumDistance: 4, coordinateSpace: .local)
+                    .onChanged { v in
+                        if dragId == nil { dragId = repo }
+                        dragTranslation = v.translation.height
+                    }
+                    .onEnded { _ in
+                        vm.moveRepo(repo, toIndex: targetIndex())
+                        dragId = nil; dragTranslation = 0
+                    }
+            )
+    }
+
+    private func heightReader(id: String) -> some View {
+        GeometryReader { g in Color.clear.preference(key: RowHeightKey.self, value: [id: g.size.height]) }
+    }
+
+    private var repoIds: [String] { vm.grouped.map(\.repo) }
+
+    private func midYs() -> [CGFloat] {
+        var y: CGFloat = 0
+        return repoIds.map { id in
+            let h = heights[id] ?? 26
+            defer { y += h + repoSpacing }
+            return y + h / 2
+        }
+    }
+
+    private func targetIndex() -> Int {
+        guard let dragId, let from = repoIds.firstIndex(of: dragId) else { return 0 }
+        let mids = midYs()
+        guard from < mids.count else { return from }
+        let mid = mids[from] + dragTranslation
+        var t = from
+        while t > 0 && mid < mids[t - 1] { t -= 1 }
+        while t < repoIds.count - 1 && mid > mids[t + 1] { t += 1 }
+        return t
+    }
+
+    private func repoOffset(_ idx: Int) -> CGFloat {
+        guard let dragId, let from = repoIds.firstIndex(of: dragId) else { return 0 }
+        if idx == from { return dragTranslation }
+        let dh = (heights[dragId] ?? 26) + repoSpacing
+        let to = targetIndex()
+        if from < to, idx > from, idx <= to { return -dh }
+        if from > to, idx >= to, idx < from { return dh }
+        return 0
     }
 
     private func databaseNode(_ db: DatabaseViewModel.DB) -> some View {

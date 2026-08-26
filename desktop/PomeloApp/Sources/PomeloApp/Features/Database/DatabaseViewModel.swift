@@ -137,6 +137,13 @@ final class DatabaseViewModel: ObservableObject {
         order.insert(dragged, at: to)
         repoOrder = order
     }
+    func moveRepo(_ dragged: String, toIndex t: Int) {
+        var order = grouped.map { $0.repo }
+        guard let from = order.firstIndex(of: dragged) else { return }
+        order.remove(at: from)
+        order.insert(dragged, at: min(max(t, 0), order.count))
+        repoOrder = order
+    }
     @Published var expanded: Set<String> = [] {
         didSet { UserDefaults.standard.set(Array(expanded), forKey: "db.expand." + branch) }
     }

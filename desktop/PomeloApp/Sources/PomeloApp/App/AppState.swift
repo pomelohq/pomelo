@@ -240,6 +240,13 @@ final class AppState: ObservableObject {
         arr.insert(dragged, at: to)
         repoOrder = arr
     }
+    func moveRepo(_ dragged: String, toIndex t: Int, in names: [String]) {
+        var arr = names
+        guard let from = arr.firstIndex(of: dragged) else { return }
+        arr.remove(at: from)
+        arr.insert(dragged, at: min(max(t, 0), arr.count))
+        repoOrder = arr
+    }
 
     var mainWorkspaces: [Workspace] { wsvm.mainWorkspaces }
 
