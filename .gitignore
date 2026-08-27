@@ -16,3 +16,4 @@ desktop/poc/*.o
 
 *.profraw
 Makefile.local
+/libpom
