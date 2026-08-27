@@ -27,47 +27,41 @@ struct DiagnosticsSettings: View {
 }
 
 private struct MCPPane: View {
-    @State private var registered = false
-    @State private var connected = false
-    @State private var command = ""
-    @State private var listLine = ""
-    @State private var wrapperOK = false
-    @State private var loading = true
-    @State private var busy = false
+    @StateObject private var vm = MCPViewModel()
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                if loading {
+                if vm.loading {
                     HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Checking claude mcp…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted) }
                 } else {
-                    statusRow("Registered in ~/.claude.json", ok: registered)
-                    statusRow("Wrapper script present", ok: wrapperOK)
-                    statusRow("Connected (claude mcp list)", ok: connected)
-                    if !command.isEmpty {
+                    statusRow("Registered in ~/.claude.json", ok: vm.status.registered)
+                    statusRow("Wrapper script present", ok: vm.status.wrapper_ok)
+                    statusRow("Connected (claude mcp list)", ok: vm.status.connected)
+                    if !vm.status.command.isEmpty {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("COMMAND").font(.system(size: 10, weight: .semibold)).kerning(0.5).foregroundStyle(Theme.muted)
-                            Text(command).font(Theme.mono(11)).foregroundStyle(Theme.fg).textSelection(.enabled)
+                            Text(vm.status.command).font(Theme.mono(11)).foregroundStyle(Theme.fg).textSelection(.enabled)
                         }
                     }
-                    if !listLine.isEmpty {
-                        Text(listLine).font(Theme.mono(10.5)).foregroundStyle(Theme.fgMuted).textSelection(.enabled)
+                    if !vm.status.list_line.isEmpty {
+                        Text(vm.status.list_line).font(Theme.mono(10.5)).foregroundStyle(Theme.fgMuted).textSelection(.enabled)
                     }
                     Text("The pom MCP is registered globally so `claude mcp list` and every Claude session (terminal + the in-app work Claude) can use it, resolving the session from the working directory.")
                         .font(.system(size: 11)).foregroundStyle(Theme.fgMuted).fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 8) {
-                    Button { Task { await load() } } label: { Label("Recheck", systemImage: "arrow.clockwise") }
-                        .buttonStyle(.bordered).controlSize(.small).disabled(busy || loading)
-                    Button { Task { await reinstall() } } label: { Label("Re-register", systemImage: "wrench.and.screwdriver") }
-                        .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small).disabled(busy)
-                    if busy { ProgressView().controlSize(.small) }
+                    Button { Task { await vm.load() } } label: { Label("Recheck", systemImage: "arrow.clockwise") }
+                        .buttonStyle(.bordered).controlSize(.small).disabled(vm.busy || vm.loading)
+                    Button { Task { await vm.reinstall() } } label: { Label("Re-register", systemImage: "wrench.and.screwdriver") }
+                        .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small).disabled(vm.busy)
+                    if vm.busy { ProgressView().controlSize(.small) }
                     Spacer()
                 }
             }
             .padding(24).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .task { await load() }
+        .task { await vm.load() }
     }
 
     private func statusRow(_ label: String, ok: Bool) -> some View {
@@ -76,23 +70,6 @@ private struct MCPPane: View {
                 .foregroundStyle(ok ? Theme.ok : Theme.danger).font(.system(size: 13))
             Text(label).font(.system(size: 12.5)).foregroundStyle(Theme.fg)
         }
-    }
-
-    private func load() async {
-        loading = true
-        let d = await Task.detached { PomCore.shared.mcpStatusData() }.value
-        struct R: Decodable { var registered = false; var connected = false; var command = ""; var wrapper_ok = false; var list_line = "" }
-        if let r = PomJSON.decode(R.self, from: d) {
-            registered = r.registered; connected = r.connected; command = r.command; wrapperOK = r.wrapper_ok; listLine = r.list_line
-        }
-        loading = false
-    }
-
-    private func reinstall() async {
-        busy = true
-        _ = await Task.detached { PomCore.shared.mcpReinstallData() }.value
-        busy = false
-        await load()
     }
 }
 
@@ -152,8 +129,9 @@ private struct AppLogPane: View {
 }
 
 private struct ProxyLogPane: View {
-    @State private var entries: [ProxyLogEntry] = []
+    @StateObject private var vm = ProxyLogViewModel()
     @State private var timer: Timer?
+    private var entries: [ProxyLogEntry] { vm.entries }
 
     var body: some View {
         Group {
@@ -174,8 +152,8 @@ private struct ProxyLogPane: View {
             }
         }
         .onAppear {
-            refresh()
-            timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in refresh() }
+            Task { await vm.refresh() }
+            timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in Task { await vm.refresh() } }
         }
         .onDisappear { timer?.invalidate(); timer = nil }
     }
@@ -196,14 +174,6 @@ private struct ProxyLogPane: View {
             Text("\(e.ms)ms").font(Theme.mono(10)).foregroundStyle(Theme.dim).frame(width: 52, alignment: .trailing)
         }
         .padding(.horizontal, 18).padding(.vertical, 6)
-    }
-
-    private func refresh() {
-        Task {
-            struct R: Decodable { var entries: [ProxyLogEntry] }
-            let data = await Task.detached { PomCore.shared.devProxyLogData(limit: 80) }.value
-            if let r = PomJSON.decode(R.self, from: data) { entries = r.entries }
-        }
     }
 }
 
