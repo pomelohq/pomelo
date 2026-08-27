@@ -61,6 +61,13 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 		return map[string]any{"workspaces": s.CollectLiveness()}
 	case "agent_states":
 		return map[string]any{"states": s.AgentStates()}
+	case "agent_notifications":
+		var p struct {
+			Prev map[string]string `json:"prev"`
+			Next map[string]string `json:"next"`
+		}
+		_ = json.Unmarshal(params, &p)
+		return map[string]any{"notes": AgentNotifications(p.Prev, p.Next)}
 	case "doctor":
 		return s.DoctorReport()
 	case "config_files":
