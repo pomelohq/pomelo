@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -138,6 +139,13 @@ func (s *Server) svcPortsListening(svcKey string) []int {
 func (s *Server) webPort() int {
 	if i := strings.LastIndex(s.Addr, ":"); i >= 0 {
 		if p, err := strconv.Atoi(s.Addr[i+1:]); err == nil {
+			return p
+		}
+	}
+	// Lets a dev build run its dev-proxy/webhook on a different port than an
+	// installed instance, so the two can coexist (paired with a separate state dir).
+	if v := os.Getenv("POM_WEB_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
 			return p
 		}
 	}

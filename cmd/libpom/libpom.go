@@ -63,7 +63,9 @@ func PomInit(cfgPath *C.char) *C.char {
 	srv = s
 	appCfg, appDir = cfg, dir
 	mu.Unlock()
-	if err := claude.InstallGlobalClaudeHook(); err != nil {
+	if os.Getenv("POM_SKIP_GLOBAL_HOOK") != "" {
+		log.Printf("app init: skipping global claude hook (POM_SKIP_GLOBAL_HOOK) — an installed instance owns it")
+	} else if err := claude.InstallGlobalClaudeHook(); err != nil {
 		log.Printf("app init: install global claude hook: %v", err)
 	} else {
 		log.Printf("app init: global claude hook installed")

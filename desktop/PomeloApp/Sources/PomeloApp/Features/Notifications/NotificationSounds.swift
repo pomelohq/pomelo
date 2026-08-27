@@ -139,7 +139,12 @@ final class SoundPrefs: ObservableObject {
             NSSound(contentsOf: soundsDir.appendingPathComponent(String(storage.dropFirst(5))), byReference: true)?.play()
         }
     }
+    // The dev build shares the installed app's project + agent state, so both would
+    // poll the same transition and play — leave sound to the installed instance.
+    private static let silent = Bundle.main.bundleIdentifier == "com.pomelo.app.dev"
+
     func fire(source: String, event: String) {
+        if Self.silent { return }
         let arr = sounds(source, event)
         guard !arr.isEmpty else { return }
         let k = "\(source).\(event)"
