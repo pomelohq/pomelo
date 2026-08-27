@@ -7,7 +7,6 @@ import "C"
 
 import (
 	"encoding/json"
-	"strings"
 
 	"github.com/pomelohq/pomelo/internal/agent/claude"
 	"github.com/pomelohq/pomelo/internal/agent/codeagent"
@@ -48,42 +47,6 @@ func bindingJSON(v any) *C.char {
 
 func bindingBytes(b []byte) *C.char { return C.CString(string(b)) }
 
-//export PomWorkspaces
-func PomWorkspaces(git C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"workspaces":[]}`)
-	}
-	return bindingJSON(map[string]any{"workspaces": s.CollectWorkspaces(git != 0)})
-}
-
-//export PomDoctor
-func PomDoctor() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"findings":[],"errors":0,"warnings":0}`)
-	}
-	return bindingJSON(s.DoctorReport())
-}
-
-//export PomConfigFiles
-func PomConfigFiles() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"files":[]}`)
-	}
-	return bindingJSON(s.ConfigRead())
-}
-
-//export PomNMStoreList
-func PomNMStoreList() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"entries":[],"total":0}`)
-	}
-	return bindingJSON(s.NMStoreList())
-}
-
 //export PomNMStoreProgress
 func PomNMStoreProgress() *C.char {
 	s := server()
@@ -105,24 +68,6 @@ func PomNMStoreDelete(repo, hash *C.char) *C.char {
 	return C.CString(`{"ok":true}`)
 }
 
-//export PomDBExportCSV
-func PomDBExportCSV(branch, db, sql, path *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false,"error":"no server"}`)
-	}
-	return bindingJSON(s.DBExportCSV(C.GoString(branch), C.GoString(db), C.GoString(sql), C.GoString(path)))
-}
-
-//export PomDBConsolesSave
-func PomDBConsolesSave(data *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false,"error":"no server"}`)
-	}
-	return bindingJSON(s.DBConsolesSave(C.GoString(data)))
-}
-
 //export PomOpenEditor
 func PomOpenEditor(branch *C.char, isMain C.int, repo, editor *C.char, resolveOnly C.int) *C.char {
 	s := server()
@@ -130,42 +75,6 @@ func PomOpenEditor(branch *C.char, isMain C.int, repo, editor *C.char, resolveOn
 		return C.CString(`{"ok":false}`)
 	}
 	return bindingJSON(s.EditorOpen(C.GoString(branch), isMain != 0, C.GoString(repo), C.GoString(editor), resolveOnly != 0))
-}
-
-//export PomBundleExport
-func PomBundleExport(includeSecrets C.int, password *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString("{}")
-	}
-	return bindingJSON(s.BundleExport(includeSecrets != 0, C.GoString(password)))
-}
-
-//export PomBundleRead
-func PomBundleRead(dataB64, password *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString("{}")
-	}
-	return bindingJSON(s.BundleRead(C.GoString(dataB64), C.GoString(password)))
-}
-
-//export PomBundleApply
-func PomBundleApply(dataB64, password, yaml *C.char, writeConfig, createSecrets C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.BundleApply(C.GoString(dataB64), C.GoString(password), C.GoString(yaml), writeConfig != 0, createSecrets != 0))
-}
-
-//export PomBundleAdapt
-func PomBundleAdapt(dataB64, password, yaml *C.char, createSecrets C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.BundleAdapt(C.GoString(dataB64), C.GoString(password), C.GoString(yaml), createSecrets != 0))
 }
 
 //export PomShortcutRun
@@ -256,24 +165,6 @@ func PomSecretGet(name *C.char) *C.char {
 //export PomVersion
 func PomVersion() *C.char {
 	return bindingJSON(core.VersionInfo())
-}
-
-//export PomMainPull
-func PomMainPull(branch *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.MainPull(C.GoString(branch)))
-}
-
-//export PomGitPull
-func PomGitPull(branch, repo *C.char, isMain C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.GitPull(C.GoString(branch), C.GoString(repo), isMain != 0))
 }
 
 //export PomPRAll
@@ -372,35 +263,4 @@ func PomJiraTest(site, email, token *C.char) *C.char {
 		return C.CString(`{"ok":false}`)
 	}
 	return bindingJSON(s.JiraTest(C.GoString(site), C.GoString(email), C.GoString(token)))
-}
-
-//export PomSyncGet
-func PomSyncGet() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"refresh_main":false,"refresh_interval_sec":1800}`)
-	}
-	return bindingJSON(s.SyncGet())
-}
-
-//export PomLogs
-func PomLogs() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"lines":[]}`)
-	}
-	return bindingJSON(s.LogsData())
-}
-
-//export PomPeekAll
-func PomPeekAll(windows *C.char, lines C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"windows":{}}`)
-	}
-	var w []string
-	if csv := C.GoString(windows); csv != "" {
-		w = strings.Split(csv, ",")
-	}
-	return bindingJSON(map[string]any{"windows": s.PeekWindows(w, int(lines))})
 }

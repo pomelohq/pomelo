@@ -123,6 +123,8 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 		return map[string]any{"busy": s.PaneBusy(pStr(params, "holder"))}
 	case "claude_terminal":
 		return s.ClaudeTerminal(pStr(params, "branch"), pBool(params, "is_main"))
+	case "peek_all":
+		return map[string]any{"windows": s.PeekWindows(pStrs(params, "windows"), pInt(params, "lines"))}
 	default:
 		return map[string]any{"error": "unknown query domain: " + domain}
 	}
@@ -200,6 +202,31 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 	case "deps":
 		if action == "install" {
 			return s.InstallDeps(pStr(params, "branch"), pBool(params, "is_main"))
+		}
+	case "bundle":
+		switch action {
+		case "export":
+			return s.BundleExport(pBool(params, "include_secrets"), pStr(params, "password"))
+		case "read":
+			return s.BundleRead(pStr(params, "data_b64"), pStr(params, "password"))
+		case "apply":
+			return s.BundleApply(pStr(params, "data_b64"), pStr(params, "password"), pStr(params, "yaml"), pBool(params, "write_config"), pBool(params, "create_secrets"))
+		case "adapt":
+			return s.BundleAdapt(pStr(params, "data_b64"), pStr(params, "password"), pStr(params, "yaml"), pBool(params, "create_secrets"))
+		}
+	case "db":
+		switch action {
+		case "export_csv":
+			return s.DBExportCSV(pStr(params, "branch"), pStr(params, "db"), pStr(params, "sql"), pStr(params, "path"))
+		case "consoles_save":
+			return s.DBConsolesSave(pStr(params, "data"))
+		}
+	case "git":
+		switch action {
+		case "pull":
+			return s.GitPull(pStr(params, "branch"), pStr(params, "repo"), pBool(params, "is_main"))
+		case "main_pull":
+			return s.MainPull(pStr(params, "branch"))
 		}
 	}
 	return map[string]any{"ok": false, "error": "unknown command: " + domain + "." + action}

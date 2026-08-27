@@ -43,11 +43,7 @@ final class PomCore: @unchecked Sendable {
     func updateSession(_ s: String) { session = s }
 
 
-    func workspacesData(git: Bool) -> Data {
-        guard let out = PomWorkspaces(git ? 1 : 0) else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
+    func workspacesData(git: Bool) -> Data { query(domain: "workspaces", params: jp(["git": git])) }
     func livenessData() -> Data { query(domain: "liveness", params: Data("{}".utf8)) }
 
     func query(domain: String, params: Data) -> Data {
@@ -66,31 +62,13 @@ final class PomCore: @unchecked Sendable {
 
     private func jp(_ d: [String: Any]) -> Data { (try? JSONSerialization.data(withJSONObject: d)) ?? Data("{}".utf8) }
 
-    func peekAllData(windows: [String], lines: Int) -> Data {
-        windows.joined(separator: ",").withCString { c in
-            guard let out = PomPeekAll(UnsafeMutablePointer(mutating: c), Int32(lines)) else { return Data() }
-            defer { PomFree(out) }
-            return Data(String(cString: out).utf8)
-        }
-    }
+    func peekAllData(windows: [String], lines: Int) -> Data { query(domain: "peek_all", params: jp(["windows": windows, "lines": lines])) }
 
-    func doctorData() -> Data {
-        guard let out = PomDoctor() else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
+    func doctorData() -> Data { query(domain: "doctor", params: Data("{}".utf8)) }
 
-    func configFilesData() -> Data {
-        guard let out = PomConfigFiles() else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
+    func configFilesData() -> Data { query(domain: "config_files", params: Data("{}".utf8)) }
 
-    func logsData() -> Data {
-        guard let out = PomLogs() else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
+    func logsData() -> Data { query(domain: "logs", params: Data("{}".utf8)) }
 
     func configFileGetData(path: String) -> Data { query(domain: "config_get", params: jp(["path": path])) }
     @discardableResult
@@ -110,11 +88,7 @@ final class PomCore: @unchecked Sendable {
     @discardableResult
     func configReload() -> Data { command(domain: "config", action: "reload", params: Data("{}".utf8)) }
 
-    func nmStoreListData() -> Data {
-        guard let out = PomNMStoreList() else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
+    func nmStoreListData() -> Data { query(domain: "nmstore_list", params: Data("{}".utf8)) }
 
     func nmStoreDelete(repo: String, hash: String) -> Data {
         repo.withCString { r in hash.withCString { h in
@@ -146,11 +120,7 @@ final class PomCore: @unchecked Sendable {
         return Data(String(cString: out).utf8)
     }
 
-    func syncGetData() -> Data {
-        guard let out = PomSyncGet() else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
+    func syncGetData() -> Data { query(domain: "sync_get", params: Data("{}".utf8)) }
 
     @discardableResult
     func syncSet(refreshMain: Bool, intervalSec: Int) -> Data { command(domain: "sync", action: "set", params: jp(["refresh_main": refreshMain, "interval_sec": intervalSec])) }
@@ -165,15 +135,10 @@ final class PomCore: @unchecked Sendable {
     func dbTablesData(branch: String, db: String) -> Data { query(domain: "db_tables", params: jp(["branch": branch, "db": db])) }
     func dbQueryData(branch: String, db: String, sql: String, limit: Int) -> Data { query(domain: "db_query", params: jp(["branch": branch, "db": db, "sql": sql, "limit": limit])) }
     func dbColumnsData(branch: String, db: String) -> Data { query(domain: "db_columns", params: jp(["branch": branch, "db": db])) }
-    func dbExportCSV(branch: String, db: String, sql: String, path: String) -> Data {
-        branch.withCString { b in db.withCString { d in sql.withCString { q in path.withCString { p in
-            cstr(PomDBExportCSV(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: d),
-                                UnsafeMutablePointer(mutating: q), UnsafeMutablePointer(mutating: p)))
-        }}}}
-    }
+    func dbExportCSV(branch: String, db: String, sql: String, path: String) -> Data { command(domain: "db", action: "export_csv", params: jp(["branch": branch, "db": db, "sql": sql, "path": path])) }
     func dbConsolesLoadData() -> Data { query(domain: "db_consoles_load", params: Data("{}".utf8)) }
     @discardableResult
-    func dbConsolesSave(json: String) -> Data { json.withCString { cstr(PomDBConsolesSave(UnsafeMutablePointer(mutating: $0))) } }
+    func dbConsolesSave(json: String) -> Data { command(domain: "db", action: "consoles_save", params: jp(["data": json])) }
     func sharedLogsData(name: String, lines: Int) -> Data { query(domain: "shared_logs", params: jp(["name": name, "lines": String(lines)])) }
     @discardableResult
     func sharedAction(name: String, action: String) -> Data { command(domain: "shared", action: action, params: jp(["name": name])) }
@@ -187,26 +152,12 @@ final class PomCore: @unchecked Sendable {
     }
     @discardableResult
     func claudeTerminal(branch: String, isMain: Bool) -> Data { query(domain: "claude_terminal", params: jp(["branch": branch, "is_main": isMain])) }
-    func bundleExport(includeSecrets: Bool, password: String) -> Data {
-        password.withCString { p in cstr(PomBundleExport(includeSecrets ? 1 : 0, UnsafeMutablePointer(mutating: p))) }
-    }
-    func bundleRead(dataB64: String, password: String) -> Data {
-        dataB64.withCString { d in password.withCString { p in
-            cstr(PomBundleRead(UnsafeMutablePointer(mutating: d), UnsafeMutablePointer(mutating: p)))
-        }}
-    }
+    func bundleExport(includeSecrets: Bool, password: String) -> Data { command(domain: "bundle", action: "export", params: jp(["include_secrets": includeSecrets, "password": password])) }
+    func bundleRead(dataB64: String, password: String) -> Data { command(domain: "bundle", action: "read", params: jp(["data_b64": dataB64, "password": password])) }
     @discardableResult
-    func bundleApply(dataB64: String, password: String, yaml: String, writeConfig: Bool, createSecrets: Bool) -> Data {
-        dataB64.withCString { d in password.withCString { p in yaml.withCString { y in
-            cstr(PomBundleApply(UnsafeMutablePointer(mutating: d), UnsafeMutablePointer(mutating: p), UnsafeMutablePointer(mutating: y), writeConfig ? 1 : 0, createSecrets ? 1 : 0))
-        }}}
-    }
+    func bundleApply(dataB64: String, password: String, yaml: String, writeConfig: Bool, createSecrets: Bool) -> Data { command(domain: "bundle", action: "apply", params: jp(["data_b64": dataB64, "password": password, "yaml": yaml, "write_config": writeConfig, "create_secrets": createSecrets])) }
     @discardableResult
-    func bundleAdapt(dataB64: String, password: String, yaml: String, createSecrets: Bool) -> Data {
-        dataB64.withCString { d in password.withCString { p in yaml.withCString { y in
-            cstr(PomBundleAdapt(UnsafeMutablePointer(mutating: d), UnsafeMutablePointer(mutating: p), UnsafeMutablePointer(mutating: y), createSecrets ? 1 : 0))
-        }}}
-    }
+    func bundleAdapt(dataB64: String, password: String, yaml: String, createSecrets: Bool) -> Data { command(domain: "bundle", action: "adapt", params: jp(["data_b64": dataB64, "password": password, "yaml": yaml, "create_secrets": createSecrets])) }
     func configExplainData(repo: String, branch: String, svc: String, env: String) -> Data { query(domain: "config_explain", params: jp(["repo": repo, "branch": branch, "svc": svc, "env": env])) }
     func environmentsData() -> Data { query(domain: "environments", params: Data("{}".utf8)) }
     func suggestName(branch: String, desc: String) -> Data { query(domain: "suggest_name", params: jp(["branch": branch, "desc": desc])) }
@@ -266,15 +217,9 @@ final class PomCore: @unchecked Sendable {
     func versionData() -> Data { cstr(PomVersion()) }
     func psData() -> Data { query(domain: "ps", params: Data("{}".utf8)) }
     @discardableResult
-    func mainPull(branch: String) -> Data {
-        branch.withCString { b in cstr(PomMainPull(UnsafeMutablePointer(mutating: b))) }
-    }
+    func mainPull(branch: String) -> Data { command(domain: "git", action: "main_pull", params: jp(["branch": branch])) }
     @discardableResult
-    func gitPull(branch: String, repo: String, isMain: Bool) -> Data {
-        branch.withCString { b in repo.withCString { r in
-            cstr(PomGitPull(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: r), isMain ? 1 : 0))
-        }}
-    }
+    func gitPull(branch: String, repo: String, isMain: Bool) -> Data { command(domain: "git", action: "pull", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
     func githubTest(token: String) -> Data {
         token.withCString { t in cstr(PomGithubTest(UnsafeMutablePointer(mutating: t))) }
     }
