@@ -357,7 +357,9 @@ struct DiffFileView: View {
     @EnvironmentObject var theme: ThemeManager
     let file: DiffFile
     @State private var rows: [SplitRow] = []
+    @State private var maxChars: Int = 0
     private let rowH: CGFloat = 17
+    private let charW: CGFloat = 6.7   // SF Mono 11pt advance; over-allocate to avoid clipping
 
     var body: some View {
         Group {
@@ -366,8 +368,11 @@ struct DiffFileView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 GeometryReader { geo in
-                    let sideW = max(160, (geo.size.width - 1) / 2)
-                    ScrollView(.vertical) {
+                    let viewportSide = max(160, (geo.size.width - 1) / 2)
+                    // Grow each side to the longest line so nothing is truncated; the
+                    // pane scrolls horizontally instead (VSCode/Zed behaviour).
+                    let sideW = max(viewportSide, 68 + CGFloat(maxChars) * charW)
+                    ScrollView([.vertical, .horizontal]) {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(rows) { row($0, sideW: sideW) }
                         }
@@ -377,7 +382,9 @@ struct DiffFileView: View {
         }
         .task(id: file.path) {
             let f = file
-            rows = await Task.detached(priority: .userInitiated) { splitRows(f) }.value
+            let built = await Task.detached(priority: .userInitiated) { splitRows(f) }.value
+            rows = built
+            maxChars = built.reduce(0) { max($0, max($1.left?.count ?? 0, $1.right?.count ?? 0)) }
         }
     }
 
@@ -385,7 +392,7 @@ struct DiffFileView: View {
         if let h = r.hunk {
             Text(h).font(Theme.mono(10)).foregroundStyle(Theme.accent).lineLimit(1)
                 .padding(.horizontal, 10)
-                .frame(maxWidth: .infinity, minHeight: rowH, alignment: .leading)
+                .frame(minWidth: sideW * 2 + 1, minHeight: rowH, alignment: .leading)
                 .background(Theme.accent.opacity(0.08))
         } else {
             HStack(spacing: 0) {
@@ -535,10 +542,15 @@ struct NativeDiffView: NSViewRepresentable {
         tv.isRichText = false
         tv.drawsBackground = false
         tv.textContainerInset = NSSize(width: 0, height: 6)
+        // Grow to the widest line instead of tracking the viewport, so long lines
+        // scroll horizontally rather than getting clipped (VSCode/Zed behaviour).
         tv.isHorizontallyResizable = true
+        tv.isVerticallyResizable = true
+        tv.minSize = .zero
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.autoresizingMask = []
         tv.textContainer?.widthTracksTextView = false
         tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        tv.autoresizingMask = [.width, .height]
         context.coordinator.textView = tv
 
         let scroll = NSScrollView()
@@ -625,6 +637,9 @@ final class DiffTextView: NSTextView {
         let delBg = NSColor.systemRed.withAlphaComponent(0.12)
         let hunkBg = NSColor.systemPurple.withAlphaComponent(0.08)
         let inset = textContainerInset
+        // Tint the whole row across the full content width — including past the
+        // viewport — so a long added/deleted line stays highlighted when scrolled.
+        let width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
         let glyphRange = lm.glyphRange(forBoundingRect: rect, in: tc)
         lm.enumerateLineFragments(forGlyphRange: glyphRange) { _, used, _, glyphR, _ in
             let charIdx = lm.characterIndexForGlyph(at: glyphR.location)
@@ -639,9 +654,7 @@ final class DiffTextView: NSTextView {
             }
             guard let color else { return }
             color.setFill()
-            let r = NSRect(x: 0, y: used.origin.y + inset.height,
-                           width: self.bounds.width, height: used.height)
-            r.fill()
+            NSRect(x: 0, y: used.origin.y + inset.height, width: width, height: used.height).fill()
         }
     }
 
