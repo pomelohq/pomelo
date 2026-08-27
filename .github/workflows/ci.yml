@@ -94,19 +94,29 @@ jobs:
             -derivedDataPath .ddata -skipPackagePluginValidation \
             CLANG_ENABLE_CODE_COVERAGE=NO
 
+  lint:
+    name: Lint (ADR conventions)
+    needs: changes
+    if: ${{ needs.changes.outputs.app == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: View-layer FFI boundary (ADR 0001)
+        run: ./scripts/lint-view-ffi.sh
+
   # Single stable required check. Path-gated jobs may be skipped (docs-only PR),
   # and a skipped job never satisfies a branch rule — so gate on this always-run
   # job that passes when the needed jobs each succeeded or were skipped.
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, go, app]
+    needs: [changes, go, app, lint]
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "changes=${{ needs.changes.result }} go=${{ needs.go.result }} app=${{ needs.app.result }}"
+          echo "changes=${{ needs.changes.result }} go=${{ needs.go.result }} app=${{ needs.app.result }} lint=${{ needs.lint.result }}"
           test "${{ needs.changes.result }}" = "success" || exit 1
-          for r in "${{ needs.go.result }}" "${{ needs.app.result }}"; do
+          for r in "${{ needs.go.result }}" "${{ needs.app.result }}" "${{ needs.lint.result }}"; do
             case "$r" in success|skipped) ;; *) echo "dependency failed: $r"; exit 1 ;; esac
           done
           echo "CI gate passed"

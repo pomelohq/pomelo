@@ -97,7 +97,10 @@ main thread. The main-thread constraint lives in one place, not scattered.
 1. This ADR.
 2. Named Go DTOs + golden-fixture contract test in CI Gate (start with the
    surfaces that have drifted; extend mechanically).
-3. Ban `PomCore.shared` in Views (lint); route through Store/VM.
+3. Ban `PomCore.shared` in Views: `scripts/lint-view-ffi.sh` (in CI Gate) fails on
+   any View-layer file not in `scripts/view-ffi-allowlist.txt`. The Store/VM layer
+   (`*Store.swift`, `*ViewModel.swift`, `AppState`, `Core/`) may call the core.
+   Migrate a grandfathered file onto a Store, then delete its allowlist line.
 4. Convert UI polls (usage, agent-states) to subscriptions.
 5. Split god views (RootView) as they are touched.
 6. Later: a second transport adapter (Gio) to validate the contract cross-platform.
