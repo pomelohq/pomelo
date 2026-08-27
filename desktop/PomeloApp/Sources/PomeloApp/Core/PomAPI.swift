@@ -17,7 +17,6 @@ extension PomBaseAPI {
 protocol WorkspaceAPI: PomBaseAPI {
     func workspacesData(git: Bool) -> Data
     func livenessData() -> Data
-    func agentStatesData() -> Data
     func peekAllData(windows: [String], lines: Int) -> Data
     func workspaceRename(branch: String, isMain: Bool, displayName: String) -> Data
     func suggestName(branch: String, desc: String) -> Data

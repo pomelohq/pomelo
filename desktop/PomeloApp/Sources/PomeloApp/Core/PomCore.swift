@@ -50,12 +50,6 @@ final class PomCore: @unchecked Sendable {
     }
     func livenessData() -> Data { cstr(PomLiveness()) }
 
-    func agentStatesData() -> Data {
-        guard let out = PomAgentStates() else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
-
     func query(domain: String, params: Data) -> Data {
         let p = String(decoding: params, as: UTF8.self)
         return domain.withCString { d in p.withCString { pc in

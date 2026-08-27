@@ -68,7 +68,6 @@ final class MockPomAPI: PomAPI {
     func jiraIssuesData(branches: [String]) -> Data { Data(#"{"configured":false}"#.utf8) }
     func workspacesData(git: Bool) -> Data { Data(workspacesJSON.utf8) }
     func livenessData() -> Data { Data(workspacesJSON.utf8) }
-    func agentStatesData() -> Data { Data(agentStatesJSON.utf8) }
     func query(domain: String, params: Data) -> Data {
         switch domain {
         case "workspaces", "liveness": return Data(workspacesJSON.utf8)

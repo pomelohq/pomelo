@@ -66,15 +66,6 @@ func PomLiveness() *C.char {
 	return bindingJSON(map[string]any{"workspaces": s.CollectLiveness()})
 }
 
-//export PomAgentStates
-func PomAgentStates() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"states":{}}`)
-	}
-	return bindingJSON(map[string]any{"states": s.AgentStates()})
-}
-
 //export PomDoctor
 func PomDoctor() *C.char {
 	s := server()
