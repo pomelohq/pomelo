@@ -75,20 +75,22 @@ const (
 )
 
 type PortLease struct {
-	Key     string
-	Port    int
-	Session string
-	State   PortState
-	Since   time.Time
-	seenUp  bool
+	Key       string
+	Port      int
+	Session   string
+	State     PortState
+	Since     time.Time
+	seenUp    bool
+	downSince time.Time // first probe miss after being up; zero = currently reachable
 }
 
 const (
-	portLo      = 10000
-	portHi      = 65535
-	assignGrace = 45 * time.Second
-	leaseMagic  = "pom-port"
-	leaseVer    = "v1"
+	portLo        = 10000
+	portHi        = 65535
+	assignGrace   = 45 * time.Second
+	reapDownGrace = 20 * time.Second
+	leaseMagic    = "pom-port"
+	leaseVer      = "v1"
 )
 
 type portCmd interface{ portCmd() }
@@ -250,12 +252,21 @@ func (m *portManager) reap() {
 	for key, l := range m.leases {
 		switch {
 		case m.isUp(l.Port):
+			l.downSince = time.Time{}
 			if l.State != PortRunning {
 				l.State, l.seenUp, changed = PortRunning, true, true
 				writeLeaseFile(l)
 			}
 		case l.seenUp || l.State == PortRunning:
-			dead = append(dead, key)
+			// A previously-up port that fails one probe is usually a blip (a dev
+			// server restarting on HMR), not a dead service — reclaiming here would
+			// drop the port we authoritatively allocated and force a costly rescan.
+			// Only reap after it stays unreachable for a sustained window.
+			if l.downSince.IsZero() {
+				l.downSince = m.now()
+			} else if m.now().Sub(l.downSince) > reapDownGrace {
+				dead = append(dead, key)
+			}
 		case l.State == PortStarting && m.now().Sub(l.Since) > assignGrace:
 			dead = append(dead, key)
 		}

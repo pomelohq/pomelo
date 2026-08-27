@@ -91,6 +91,8 @@ func TestPortManagerReapReleasesWhenDown(t *testing.T) {
 	up := map[int]bool{}
 	var mu sync.Mutex
 	m.isUp = func(p int) bool { mu.Lock(); defer mu.Unlock(); return up[p] }
+	clock := time.Now()
+	m.now = func() time.Time { return clock }
 
 	key := "ws-c\x1fweb"
 	p := m.Acquire(key)
@@ -103,12 +105,20 @@ func TestPortManagerReapReleasesWhenDown(t *testing.T) {
 		t.Fatalf("after up+reap state=%q want running", s)
 	}
 
+	// A single probe miss (a dev server blip) must NOT reclaim the port.
 	mu.Lock()
 	up[p] = false
 	mu.Unlock()
 	m.Reap()
+	if m.portOf(key) == 0 {
+		t.Fatalf("port reclaimed on a single down probe — a blip should survive")
+	}
+
+	// Only sustained unreachability past the grace window reclaims it.
+	clock = clock.Add(reapDownGrace + time.Second)
+	m.Reap()
 	if m.portOf(key) != 0 {
-		t.Fatalf("port still leased after service went down")
+		t.Fatalf("port still leased after sustained down")
 	}
 }
 
