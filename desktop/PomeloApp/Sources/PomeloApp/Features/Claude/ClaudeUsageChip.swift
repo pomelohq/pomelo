@@ -1,10 +1,13 @@
 import SwiftUI
 
 struct ClaudeUsage: Decodable {
-    struct Win: Decodable { var pct: Double = 0; var resets_at: Int64 = 0 }
-    var ok = false
-    var session = Win()
-    var weekly = Win()
+    // Optionals: absent keys (Go omits `error` on success) would otherwise make
+    // Swift's synthesized Decodable throw and the chip stay stuck on "usage...".
+    struct Win: Decodable { var pct: Double?; var resets_at: Int64? }
+    var ok: Bool?
+    var error: String?
+    var session: Win?
+    var weekly: Win?
 }
 
 // Claude subscription usage (5h session + weekly) shown as a compact meter, polled
@@ -14,16 +17,28 @@ struct ClaudeUsageChip: View {
 
     var body: some View {
         Group {
-            if let u {
+            if let u, u.ok == true {
+                let s = u.session?.pct ?? 0, w = u.weekly?.pct ?? 0
                 HStack(spacing: 6) {
                     Image(systemName: "sparkle").font(.system(size: 10)).foregroundStyle(Theme.accent)
-                    bar(u.session.pct)
-                    Text("\(pct(u.session.pct)) 5h · \(pct(u.weekly.pct)) wk")
-                        .font(Theme.mono(10.5)).foregroundStyle(Theme.fgMuted)
+                    bar(s)
+                    (Text(pct(s)).foregroundColor(Theme.fg)
+                        + Text(" 5h · ").foregroundColor(Theme.muted)
+                        + Text(pct(w)).foregroundColor(Theme.fg)
+                        + Text(" wk").foregroundColor(Theme.muted))
+                        .font(Theme.mono(10.5))
                 }
                 .padding(.horizontal, 7).padding(.vertical, 3)
                 .background(Theme.chip, in: Capsule())
                 .help(tooltip(u))
+            } else {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkle").font(.system(size: 10)).foregroundStyle(Theme.dim)
+                    Text(u == nil ? "usage…" : "usage —").font(Theme.mono(10.5)).foregroundStyle(Theme.dim)
+                }
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(Theme.chip, in: Capsule())
+                .help(u == nil ? "Loading Claude usage…" : "Claude usage unavailable: \(u?.error?.isEmpty == false ? u!.error! : "unknown")")
             }
         }
         .task { await loop() }
@@ -33,7 +48,7 @@ struct ClaudeUsageChip: View {
 
     private func bar(_ p: Double) -> some View {
         ZStack(alignment: .leading) {
-            Capsule().fill(Theme.dim.opacity(0.25)).frame(width: 40, height: 5)
+            Capsule().fill(Theme.dim.opacity(0.5)).frame(width: 40, height: 5)
             Capsule().fill(color(p)).frame(width: 40 * min(1, max(0, p / 100)), height: 5)
         }
     }
@@ -41,7 +56,7 @@ struct ClaudeUsageChip: View {
     private func color(_ p: Double) -> Color { p >= 90 ? Theme.danger : p >= 70 ? Theme.warn : Theme.ok }
 
     private func tooltip(_ u: ClaudeUsage) -> String {
-        "Claude usage\n5h session: \(pct(u.session.pct)) \(resetIn(u.session.resets_at))\nWeekly: \(pct(u.weekly.pct)) \(resetIn(u.weekly.resets_at))"
+        "Claude usage\n5h session: \(pct(u.session?.pct ?? 0)) \(resetIn(u.session?.resets_at ?? 0))\nWeekly: \(pct(u.weekly?.pct ?? 0)) \(resetIn(u.weekly?.resets_at ?? 0))"
     }
 
     private func resetIn(_ unix: Int64) -> String {
@@ -55,7 +70,7 @@ struct ClaudeUsageChip: View {
     private func loop() async {
         while !Task.isCancelled {
             let d = await Task.detached(priority: .utility) { PomCore.shared.claudeUsageData() }.value
-            if let x = PomJSON.decode(ClaudeUsage.self, from: d), x.ok { u = x }
+            if let x = PomJSON.decode(ClaudeUsage.self, from: d) { u = x }
             try? await Task.sleep(nanoseconds: 60_000_000_000)
         }
     }
