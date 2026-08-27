@@ -215,6 +215,15 @@ func (s *Server) handleDevProxy(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "no dev-proxy route for "+host+r.URL.Path, http.StatusNotFound)
 }
 
+// Ticket label only when it routes uniquely; else the full host (two workspaces
+// sharing a ticket prefix collide, so only the full branch host resolves).
+func (s *Server) proxyHostLabel(branch string) string {
+	if wl := services.WorkspaceLabel(branch); s.branchForHostLabel(wl) == branch {
+		return wl
+	}
+	return services.BranchHost(branch)
+}
+
 func (s *Server) devProxyURLFor(cfg *config.Config, branch, alias, svcName string) string {
 	if cfg == nil {
 		return ""
@@ -224,8 +233,7 @@ func (s *Server) devProxyURLFor(cfg *config.Config, branch, alias, svcName strin
 		return ""
 	}
 	const domain = "localhost"
-	label := services.WorkspaceLabel(branch)
-	return fmt.Sprintf("http://%s.%s.%s.%s:%d/", svcName, alias, label, domain, port)
+	return fmt.Sprintf("http://%s.%s.%s.%s:%d/", svcName, alias, s.proxyHostLabel(branch), domain, port)
 }
 
 func controlPortListening(port int) bool {
