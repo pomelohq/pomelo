@@ -5,10 +5,11 @@ struct WsOpStage: Identifiable { let id: Int; var name: String; var status: Stag
 
 struct WsOp: Identifiable {
     let id = UUID()
-    let kind: String          // "create" | "delete"
+    let kind: String          // "create" | "delete" | "add_repo"
     let branch: String
     let displayName: String
     let repos: [String]
+    var isMain = false
     var title: String
     var stages: [WsOpStage] = []
     var current = -1
@@ -19,7 +20,8 @@ struct WsOp: Identifiable {
 
 extension AppState {
     var opBranches: Set<String> {
-        Set(ops.filter { $0.status == .pending || $0.status == .running }.map(\.branch))
+        // add_repo runs against an existing workspace, so it must stay visible.
+        Set(ops.filter { $0.kind != "add_repo" && ($0.status == .pending || $0.status == .running) }.map(\.branch))
     }
 
     private var maxConcurrentOps: Int { 1 }
@@ -29,6 +31,13 @@ extension AppState {
         guard !b.isEmpty else { return }
         ops.append(WsOp(kind: "create", branch: b, displayName: displayName, repos: repos,
                         title: displayName.isEmpty ? b : displayName))
+        pumpOps()
+    }
+
+    func startAddRepo(_ ws: Workspace, repos: [String]) {
+        guard !repos.isEmpty else { return }
+        ops.append(WsOp(kind: "add_repo", branch: ws.branch, displayName: ws.title, repos: repos,
+                        isMain: ws.isMain, title: "Adding to " + ws.title))
         pumpOps()
     }
 
@@ -48,9 +57,12 @@ extension AppState {
         let onFrame: (StreamKind, [UInt8]) -> Void = { [weak self] kind, bytes in
             DispatchQueue.main.async { self?.onOpFrame(opID, kind, bytes) }
         }
-        let sid = op.kind == "create"
-            ? StreamManager.shared.openCreateWorkspace(branch: op.branch, repos: op.repos, onFrame: onFrame)
-            : StreamManager.shared.openDeleteWorkspace(branch: op.branch, onFrame: onFrame)
+        let sid: Int32
+        switch op.kind {
+        case "create": sid = StreamManager.shared.openCreateWorkspace(branch: op.branch, repos: op.repos, onFrame: onFrame)
+        case "add_repo": sid = StreamManager.shared.openAddRepo(branch: op.branch, isMain: op.isMain, repos: op.repos, onFrame: onFrame)
+        default: sid = StreamManager.shared.openDeleteWorkspace(branch: op.branch, onFrame: onFrame)
+        }
         if let j = opIndex(opID) { ops[j].streamID = sid }
         if sid <= 0 { fail(opID, "could not start") }
     }

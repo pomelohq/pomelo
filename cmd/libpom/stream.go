@@ -174,6 +174,25 @@ func PomSubscribe(topic, paramsJSON *C.char) C.int {
 			_ = sink.Close()
 		}()
 		return id
+	case "add_repo":
+		mu.Lock()
+		s := srv
+		mu.Unlock()
+		if s == nil {
+			return -1
+		}
+		id := nextStreamID()
+		sink := cgoSink{id: id}
+		done := make(chan struct{})
+		streamMu.Lock()
+		streams[id] = &streamHandle{done: done}
+		streamMu.Unlock()
+		go func() {
+			defer close(done)
+			s.StreamAddRepo(func(pp map[string]any) { _ = sink.SendJSON(pp) }, str("branch"), flag("is_main"), str("repos"))
+			_ = sink.Close()
+		}()
+		return id
 	}
 	return -1
 }

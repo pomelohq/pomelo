@@ -66,6 +66,13 @@ final class StreamManager {
         return id
     }
 
+    func openAddRepo(branch: String, isMain: Bool, repos: [String], onFrame: @escaping (StreamKind, [UInt8]) -> Void) -> Int32 {
+        ensureCallback()
+        let id = pomSubscribe("add_repo", ["branch": branch, "is_main": isMain, "repos": repos.joined(separator: ",")])
+        if id > 0 { clients[id] = onFrame }
+        return id
+    }
+
     func openDeleteWorkspace(branch: String, onFrame: @escaping (StreamKind, [UInt8]) -> Void) -> Int32 {
         ensureCallback()
         let id = pomSubscribe("delete_workspace", ["branch": branch])

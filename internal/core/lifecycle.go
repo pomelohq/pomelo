@@ -107,6 +107,59 @@ func (s *Server) StreamCreate(send func(map[string]any), gitBranch, combo, repos
 	}
 }
 
+// StreamAddRepo adds repos to an existing workspace by running the create
+// pipeline scoped to just the new repos: their worktrees fork onto the workspace
+// branch and get env/ports/services, while the existing repos are untouched.
+func (s *Server) StreamAddRepo(send func(map[string]any), branch string, isMain bool, repos string) {
+	if s.cfg() == nil {
+		send(map[string]any{"type": "pipeline-failed", "error": "no project config"})
+		return
+	}
+	combo := ""
+	for k := range s.cfg().AllWorkspaces() {
+		combo = k
+		break
+	}
+
+	var selected []services.DirBranch
+	for _, entry := range strings.Split(repos, ",") {
+		name := strings.TrimSpace(entry)
+		if name == "" {
+			continue
+		}
+		if _, ok := s.cfg().Repos[name]; !ok {
+			continue
+		}
+		if services.DirExists(services.RepoWorktreePath(s.WorkspaceRoot, name, branch, isMain)) {
+			continue // already in this workspace
+		}
+		selected = append(selected, services.DirBranch{Name: name, Branch: branch})
+	}
+	if len(selected) == 0 {
+		send(map[string]any{"type": "pipeline-failed", "error": "no new repos to add"})
+		return
+	}
+
+	cfgPath := s.WorkspaceRoot + "/pom.yml"
+	ctx, err := pipeline.FromConfigWithSelection(s.cfg(), cfgPath, combo, branch, selected)
+	if err != nil {
+		send(map[string]any{"type": "pipeline-failed", "error": err.Error()})
+		return
+	}
+
+	ch := make(chan pipeline.Event, 16)
+	go pipeline.RunCreatePipeline(ctx, ch)
+	send(map[string]any{
+		"type": "pipeline-started", "branch": branch, "combo": combo,
+		"total": len(pipeline.AllCreateStages), "stages": createStageLabels(),
+	})
+	for evt := range ch {
+		if p := pipelineEventJSON(evt); p != nil {
+			send(p)
+		}
+	}
+}
+
 func createStageLabels() []string {
 	out := make([]string, len(pipeline.AllCreateStages))
 	for i, st := range pipeline.AllCreateStages {

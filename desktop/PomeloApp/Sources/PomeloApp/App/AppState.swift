@@ -171,6 +171,7 @@ final class AppState: ObservableObject {
     @Published var rowMenu: RowMenu?
     @Published var renamingWs: Workspace?
     @Published var confirmDeleteWs: Workspace?
+    @Published var addRepoWs: Workspace?
 
     @Published var agentModel: AgentStreamModel?
     @Published var showAgentSheet = false

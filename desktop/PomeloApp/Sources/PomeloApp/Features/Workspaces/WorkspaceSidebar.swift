@@ -175,6 +175,7 @@ struct RowContextMenu: View {
         let ws = menu.ws
         VStack(spacing: 1) {
             PopItem("Rename…", icon: "pencil") { dismiss(); state.renamingWs = ws }
+            PopItem("Add repo…", icon: "plus.rectangle.on.folder") { dismiss(); state.addRepoWs = ws }
             PopItem("Open in editor", icon: "square.and.pencil") { dismiss(); state.openEditor(ws) }
             if ws.isMain {
                 PopItem("Update main from origin", icon: "arrow.triangle.2.circlepath") { dismiss(); state.updateMainWs = ws }
@@ -208,6 +209,77 @@ func humanizeBranch(_ b: String) -> String {
     let restCap = rest.isEmpty ? "" : rest.prefix(1).uppercased() + rest.dropFirst()
     if prefix.isEmpty { return restCap.isEmpty ? b : restCap }
     return restCap.isEmpty ? prefix : "\(prefix) \(restCap)"
+}
+
+struct AddRepoSheet: View {
+    @EnvironmentObject var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    let ws: Workspace
+    @State private var picked: Set<String> = []
+
+    private var available: [String] {
+        let have = Set(ws.repos.map(\.name))
+        return state.allRepoNames.filter { !have.contains($0) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.rectangle.on.folder").font(.system(size: 13)).foregroundStyle(Theme.accent)
+                Text("Add repo").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
+            }
+            Text("Fork the selected repos onto this workspace's branch and wire up their env, ports, and services.")
+                .font(.system(size: 11.5)).foregroundStyle(Theme.dim).padding(.top, 4)
+
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 10)).foregroundStyle(Theme.dim)
+                Text(ws.branch).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted).lineLimit(1).truncationMode(.middle)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.bg, in: RoundedRectangle(cornerRadius: 7))
+            .padding(.top, 14)
+
+            if available.isEmpty {
+                Text("Every configured repo is already in this workspace.")
+                    .font(.system(size: 12.5)).foregroundStyle(Theme.fgMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 18)
+            } else {
+                ScrollView {
+                    VStack(spacing: 1) { ForEach(available, id: \.self) { name in repoRow(name) } }
+                }
+                .frame(maxHeight: 220).padding(.top, 10)
+            }
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel") { dismiss() }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") { state.startAddRepo(ws, repos: Array(picked)); dismiss() }
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    .keyboardShortcut(.defaultAction).disabled(picked.isEmpty)
+            }
+            .padding(.top, 16)
+        }
+        .padding(20).frame(width: 420)
+        .background(Theme.panel3, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.borderSoft))
+    }
+
+    private func repoRow(_ name: String) -> some View {
+        Button {
+            if picked.contains(name) { picked.remove(name) } else { picked.insert(name) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: picked.contains(name) ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 13)).foregroundStyle(picked.contains(name) ? Theme.accent : Theme.dim)
+                Text(name).font(.system(size: 12.5)).foregroundStyle(Theme.fg)
+                Spacer()
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 struct RenameSheet: View {

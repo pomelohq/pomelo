@@ -171,6 +171,7 @@ struct RootView: View {
                 }
             }
             .sheet(item: $state.renamingWs) { ws in RenameSheet(ws: ws) }
+            .sheet(item: $state.addRepoWs) { ws in AddRepoSheet(ws: ws) }
             .confirmationDialog("Delete \(state.confirmDeleteWs?.title ?? "")?",
                                 isPresented: Binding(get: { state.confirmDeleteWs != nil },
                                                      set: { if !$0 { state.confirmDeleteWs = nil } }),
