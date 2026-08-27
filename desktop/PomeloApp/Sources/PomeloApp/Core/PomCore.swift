@@ -72,17 +72,9 @@ final class PomCore: @unchecked Sendable {
 
     func configFileGetData(path: String) -> Data { query(domain: "config_get", params: jp(["path": path])) }
     @discardableResult
-    func configFileSet(path: String, yaml: String, dry: Bool) -> Data {
-        path.withCString { p in yaml.withCString { y in
-            cstr(PomConfigFileSet(UnsafeMutablePointer(mutating: p), UnsafeMutablePointer(mutating: y), dry ? 1 : 0))
-        }}
-    }
+    func configFileSet(path: String, yaml: String, dry: Bool) -> Data { command(domain: "config", action: "file_set", params: jp(["path": path, "yaml": yaml, "dry": dry])) }
     @discardableResult
-    func configFileCreate(name: String, yaml: String) -> Data {
-        name.withCString { n in yaml.withCString { y in
-            cstr(PomConfigFileCreate(UnsafeMutablePointer(mutating: n), UnsafeMutablePointer(mutating: y)))
-        }}
-    }
+    func configFileCreate(name: String, yaml: String) -> Data { command(domain: "config", action: "file_create", params: jp(["name": name, "yaml": yaml])) }
     @discardableResult
     func installDeps(branch: String, isMain: Bool) -> Data { command(domain: "deps", action: "install", params: jp(["branch": branch, "is_main": isMain])) }
     @discardableResult
@@ -90,13 +82,7 @@ final class PomCore: @unchecked Sendable {
 
     func nmStoreListData() -> Data { query(domain: "nmstore_list", params: Data("{}".utf8)) }
 
-    func nmStoreDelete(repo: String, hash: String) -> Data {
-        repo.withCString { r in hash.withCString { h in
-            guard let out = PomNMStoreDelete(UnsafeMutablePointer(mutating: r), UnsafeMutablePointer(mutating: h)) else { return Data() }
-            defer { PomFree(out) }
-            return Data(String(cString: out).utf8)
-        }}
-    }
+    func nmStoreDelete(repo: String, hash: String) -> Data { command(domain: "nmstore", action: "delete", params: jp(["repo": repo, "hash": hash])) }
 
     func nmStoreReconcile() -> Data { command(domain: "nmstore", action: "reconcile", params: Data("{}".utf8)) }
 
@@ -145,11 +131,7 @@ final class PomCore: @unchecked Sendable {
     @discardableResult
     func sharedStack(action: String) -> Data { command(domain: "shared_stack", action: action, params: Data("{}".utf8)) }
     @discardableResult
-    func openEditor(branch: String, isMain: Bool, repo: String, editor: String, resolveOnly: Bool) -> Data {
-        branch.withCString { b in repo.withCString { r in editor.withCString { e in
-            cstr(PomOpenEditor(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0, UnsafeMutablePointer(mutating: r), UnsafeMutablePointer(mutating: e), resolveOnly ? 1 : 0))
-        }}}
-    }
+    func openEditor(branch: String, isMain: Bool, repo: String, editor: String, resolveOnly: Bool) -> Data { command(domain: "editor", action: "open", params: jp(["branch": branch, "is_main": isMain, "repo": repo, "editor": editor, "resolve_only": resolveOnly])) }
     @discardableResult
     func claudeTerminal(branch: String, isMain: Bool) -> Data { query(domain: "claude_terminal", params: jp(["branch": branch, "is_main": isMain])) }
     func bundleExport(includeSecrets: Bool, password: String) -> Data { command(domain: "bundle", action: "export", params: jp(["include_secrets": includeSecrets, "password": password])) }
@@ -162,29 +144,13 @@ final class PomCore: @unchecked Sendable {
     func environmentsData() -> Data { query(domain: "environments", params: Data("{}".utf8)) }
     func suggestName(branch: String, desc: String) -> Data { query(domain: "suggest_name", params: jp(["branch": branch, "desc": desc])) }
     @discardableResult
-    func serviceControl(refJSON: String, action: String) -> Data {
-        refJSON.withCString { r in action.withCString { a in
-            cstr(PomServiceControl(UnsafeMutablePointer(mutating: r), UnsafeMutablePointer(mutating: a)))
-        }}
-    }
+    func serviceControl(refJSON: String, action: String) -> Data { command(domain: "service", action: action, params: Data(refJSON.utf8)) }
     @discardableResult
-    func shortcutRun(branch: String, isMain: Bool, repo: String, cmd: String) -> Data {
-        branch.withCString { b in repo.withCString { r in cmd.withCString { c in
-            cstr(PomShortcutRun(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0, UnsafeMutablePointer(mutating: r), UnsafeMutablePointer(mutating: c)))
-        }}}
-    }
+    func shortcutRun(branch: String, isMain: Bool, repo: String, cmd: String) -> Data { command(domain: "shortcut", action: "run", params: jp(["branch": branch, "is_main": isMain, "repo": repo, "cmd": cmd])) }
     @discardableResult
-    func envSet(branch: String, isMain: Bool, repo: String, svc: String, env: String) -> Data {
-        branch.withCString { b in repo.withCString { r in svc.withCString { sv in env.withCString { e in
-            cstr(PomEnvSet(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0, UnsafeMutablePointer(mutating: r), UnsafeMutablePointer(mutating: sv), UnsafeMutablePointer(mutating: e)))
-        }}}}
-    }
+    func envSet(branch: String, isMain: Bool, repo: String, svc: String, env: String) -> Data { command(domain: "service_env", action: "set", params: jp(["branch": branch, "is_main": isMain, "repo": repo, "svc": svc, "env": env])) }
     @discardableResult
-    func serviceMode(repo: String, svc: String, mode: String) -> Data {
-        repo.withCString { r in svc.withCString { sv in mode.withCString { m in
-            cstr(PomServiceMode(UnsafeMutablePointer(mutating: r), UnsafeMutablePointer(mutating: sv), UnsafeMutablePointer(mutating: m)))
-        }}}
-    }
+    func serviceMode(repo: String, svc: String, mode: String) -> Data { command(domain: "service_mode", action: "set", params: jp(["repo": repo, "svc": svc, "mode": mode])) }
     func serviceURL(branch: String, repo: String, svc: String) -> Data { query(domain: "service_url", params: jp(["branch": branch, "repo": repo, "svc": svc])) }
     @discardableResult
     func ptyReap() -> Data { command(domain: "pty", action: "reap", params: Data("{}".utf8)) }
@@ -196,7 +162,7 @@ final class PomCore: @unchecked Sendable {
     func networkData() -> Data { query(domain: "network", params: Data("{}".utf8)) }
     @discardableResult
     func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data { command(domain: "network", action: "set_ports", params: jp(["proxy_port": proxyPort, "webhook_port": webhookPort])) }
-    func devProxyLogData(limit: Int) -> Data { cstr(PomDevProxyLog(Int32(limit))) }
+    func devProxyLogData(limit: Int) -> Data { query(domain: "devproxy_log", params: jp(["limit": limit])) }
     func paneBusyData(holder: String) -> Data { query(domain: "pane_busy", params: jp(["holder": holder])) }
     func sessionListData() -> Data { query(domain: "session_list", params: Data("{}".utf8)) }
     @discardableResult
@@ -207,22 +173,18 @@ final class PomCore: @unchecked Sendable {
     func sessionCreate(json: String) -> Data { json.withCString { cstr(PomSessionCreate(UnsafeMutablePointer(mutating: $0))) } }
     func integrationsStatusData() -> Data { query(domain: "integrations_status", params: Data("{}".utf8)) }
     func secretNamesData() -> Data { query(domain: "secret_names", params: Data("{}".utf8)) }
-    func secretGet(name: String) -> Data {
-        name.withCString { n in cstr(PomSecretGet(UnsafeMutablePointer(mutating: n))) }
-    }
+    func secretGet(name: String) -> Data { query(domain: "secret_get", params: jp(["name": name])) }
     @discardableResult
     func secretSet(name: String, value: String) -> Data { command(domain: "secret", action: "set", params: jp(["name": name, "value": value])) }
     @discardableResult
     func jiraSet(site: String, email: String, token: String) -> Data { command(domain: "jira", action: "set", params: jp(["site": site, "email": email, "token": token])) }
-    func versionData() -> Data { cstr(PomVersion()) }
+    func versionData() -> Data { query(domain: "version", params: Data("{}".utf8)) }
     func psData() -> Data { query(domain: "ps", params: Data("{}".utf8)) }
     @discardableResult
     func mainPull(branch: String) -> Data { command(domain: "git", action: "main_pull", params: jp(["branch": branch])) }
     @discardableResult
     func gitPull(branch: String, repo: String, isMain: Bool) -> Data { command(domain: "git", action: "pull", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
-    func githubTest(token: String) -> Data {
-        token.withCString { t in cstr(PomGithubTest(UnsafeMutablePointer(mutating: t))) }
-    }
+    func githubTest(token: String) -> Data { command(domain: "github", action: "test", params: jp(["token": token])) }
     func prAllData() -> Data { cstr(PomPRAll()) }
     func prWorkspaceData(branch: String, isMain: Bool) -> Data {
         branch.withCString { b in cstr(PomPRWorkspace(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0)) }
@@ -255,11 +217,7 @@ final class PomCore: @unchecked Sendable {
             cstr(PomLocalDiff(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: r), isMain ? 1 : 0))
         }}
     }
-    func jiraTest(site: String, email: String, token: String) -> Data {
-        site.withCString { s in email.withCString { e in token.withCString { t in
-            cstr(PomJiraTest(UnsafeMutablePointer(mutating: s), UnsafeMutablePointer(mutating: e), UnsafeMutablePointer(mutating: t)))
-        }}}
-    }
+    func jiraTest(site: String, email: String, token: String) -> Data { command(domain: "jira", action: "test", params: jp(["site": site, "email": email, "token": token])) }
     func jiraBoardsData() -> Data { query(domain: "jira_boards", params: Data("{}".utf8)) }
     func jiraSprintData(board: Int) -> Data { query(domain: "jira_sprint", params: jp(["board": board])) }
     func jiraIssueData(key: String) -> Data { query(domain: "jira_issue", params: jp(["key": key])) }

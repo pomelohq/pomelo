@@ -56,72 +56,6 @@ func PomNMStoreProgress() *C.char {
 	return C.CString(s.NMStoreProgress())
 }
 
-//export PomNMStoreDelete
-func PomNMStoreDelete(repo, hash *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	if err := s.NMStoreDelete(C.GoString(repo), C.GoString(hash)); err != nil {
-		return bindingJSON(map[string]any{"ok": false, "error": err.Error()})
-	}
-	return C.CString(`{"ok":true}`)
-}
-
-//export PomOpenEditor
-func PomOpenEditor(branch *C.char, isMain C.int, repo, editor *C.char, resolveOnly C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.EditorOpen(C.GoString(branch), isMain != 0, C.GoString(repo), C.GoString(editor), resolveOnly != 0))
-}
-
-//export PomShortcutRun
-func PomShortcutRun(branch *C.char, isMain C.int, repo, cmd *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.ShortcutRun(C.GoString(branch), isMain != 0, C.GoString(repo), C.GoString(cmd)))
-}
-
-//export PomEnvSet
-func PomEnvSet(branch *C.char, isMain C.int, repo, svc, env *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.EnvSet(C.GoString(branch), isMain != 0, C.GoString(repo), C.GoString(svc), C.GoString(env)))
-}
-
-//export PomServiceMode
-func PomServiceMode(repo, svc, mode *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.ServiceMode(C.GoString(repo), C.GoString(svc), C.GoString(mode)))
-}
-
-//export PomServiceControl
-func PomServiceControl(refJSON, action *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.ServiceControlJSON(C.GoString(refJSON), C.GoString(action)))
-}
-
-//export PomDevProxyLog
-func PomDevProxyLog(limit C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"entries":[]}`)
-	}
-	return bindingJSON(s.DevProxyLog(int(limit)))
-}
-
 //export PomSessionCreate
 func PomSessionCreate(reqJSON *C.char) *C.char {
 	var req core.CreateSessionReq
@@ -133,38 +67,6 @@ func PomSessionCreate(reqJSON *C.char) *C.char {
 		return bindingJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
 	return bindingJSON(map[string]any{"ok": true, "name": req.Name, "path": dir})
-}
-
-//export PomConfigFileSet
-func PomConfigFileSet(path, yaml *C.char, dry C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.ConfigFileSet(C.GoString(path), C.GoString(yaml), dry != 0))
-}
-
-//export PomConfigFileCreate
-func PomConfigFileCreate(name, yaml *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.ConfigFileCreate(C.GoString(name), C.GoString(yaml)))
-}
-
-//export PomSecretGet
-func PomSecretGet(name *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"value":""}`)
-	}
-	return bindingJSON(map[string]any{"name": C.GoString(name), "value": s.SecretGet(C.GoString(name))})
-}
-
-//export PomVersion
-func PomVersion() *C.char {
-	return bindingJSON(core.VersionInfo())
 }
 
 //export PomPRAll
@@ -245,22 +147,4 @@ func PomLocalDiff(branch, repo *C.char, isMain C.int) *C.char {
 		return C.CString("")
 	}
 	return bindingBytes(out)
-}
-
-//export PomGithubTest
-func PomGithubTest(token *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.GithubTest(C.GoString(token)))
-}
-
-//export PomJiraTest
-func PomJiraTest(site, email, token *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.JiraTest(C.GoString(site), C.GoString(email), C.GoString(token)))
 }

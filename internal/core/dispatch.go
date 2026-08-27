@@ -125,6 +125,13 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 		return s.ClaudeTerminal(pStr(params, "branch"), pBool(params, "is_main"))
 	case "peek_all":
 		return map[string]any{"windows": s.PeekWindows(pStrs(params, "windows"), pInt(params, "lines"))}
+	case "version":
+		return VersionInfo()
+	case "secret_get":
+		name := pStr(params, "name")
+		return map[string]any{"name": name, "value": s.SecretGet(name)}
+	case "devproxy_log":
+		return s.DevProxyLog(pInt(params, "limit"))
 	default:
 		return map[string]any{"error": "unknown query domain: " + domain}
 	}
@@ -146,8 +153,29 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 		// action is start|stop|restart; params is the service ref JSON.
 		return s.ServiceControlJSON(string(params), action)
 	case "config":
-		if action == "reload" {
+		switch action {
+		case "reload":
 			return s.ConfigReload()
+		case "file_set":
+			return s.ConfigFileSet(pStr(params, "path"), pStr(params, "yaml"), pBool(params, "dry"))
+		case "file_create":
+			return s.ConfigFileCreate(pStr(params, "name"), pStr(params, "yaml"))
+		}
+	case "service_mode":
+		return s.ServiceMode(pStr(params, "repo"), pStr(params, "svc"), pStr(params, "mode"))
+	case "service_env":
+		return s.EnvSet(pStr(params, "branch"), pBool(params, "is_main"), pStr(params, "repo"), pStr(params, "svc"), pStr(params, "env"))
+	case "shortcut":
+		if action == "run" {
+			return s.ShortcutRun(pStr(params, "branch"), pBool(params, "is_main"), pStr(params, "repo"), pStr(params, "cmd"))
+		}
+	case "editor":
+		if action == "open" {
+			return s.EditorOpen(pStr(params, "branch"), pBool(params, "is_main"), pStr(params, "repo"), pStr(params, "editor"), pBool(params, "resolve_only"))
+		}
+	case "github":
+		if action == "test" {
+			return s.GithubTest(pStr(params, "token"))
 		}
 	case "mcp":
 		if action == "reinstall" {
@@ -159,6 +187,8 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 			return s.NMStoreReconcile()
 		case "reclaim":
 			return s.NMStoreReclaim()
+		case "delete":
+			return okErr(s.NMStoreDelete(pStr(params, "repo"), pStr(params, "hash")))
 		}
 	case "pty":
 		if action == "reap" {
@@ -192,8 +222,11 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 			return okErr(s.SecretSet(pStr(params, "name"), pStr(params, "value")))
 		}
 	case "jira":
-		if action == "set" {
+		switch action {
+		case "set":
 			return okErr(s.JiraConfigSet(pStr(params, "site"), pStr(params, "email"), pStr(params, "token")))
+		case "test":
+			return s.JiraTest(pStr(params, "site"), pStr(params, "email"), pStr(params, "token"))
 		}
 	case "workspace":
 		if action == "rename" {
