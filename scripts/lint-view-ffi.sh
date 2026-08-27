@@ -13,8 +13,11 @@ offenders=()
 while IFS= read -r f; do
   rel=${f#"$BASE"/}
   case "$rel" in App/main.swift|App/AppState.swift|*Store.swift|*ViewModel.swift) continue;; esac
-  # a real call is `PomCore.shared.<member>`; the bare `= PomCore.shared` VM-default has no trailing dot
-  if grep -q "PomCore\.shared\." "$f"; then
+  # A real call is `PomCore.shared.<member>` (fetch/decode/command). The bare
+  # `= PomCore.shared` VM-default has no trailing dot; `.session` is a synchronous
+  # identity constant, not data traffic, so it is exempt.
+  calls=$(grep -oE "PomCore\.shared\.[A-Za-z_][A-Za-z0-9_]*" "$f" | sort -u | grep -vx "PomCore.shared.session" || true)
+  if [ -n "$calls" ]; then
     offenders+=("$rel")
   fi
 done < <(grep -rl "PomCore\.shared\." "$BASE/Features" "$BASE/Components" "$BASE/App" 2>/dev/null)

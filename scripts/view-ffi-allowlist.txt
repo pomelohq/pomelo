@@ -1,11 +1,6 @@
-App/TopBar.swift
-Components/Markdown.swift
 Features/Activity/ActivityView.swift
-Features/Claude/ClaudeTerminal.swift
 Features/Config/ConfigBundleSheets.swift
-Features/Config/SessionPanel.swift
 Features/Integrations/IntegrationsSettings.swift
-Features/Integrations/JiraPane.swift
 Features/Notifications/NotificationSounds.swift
 Features/Onboarding/SetupWizard.swift
 Features/Session/OnboardSheet.swift

@@ -7,6 +7,7 @@ struct ClaudeTerminal: View {
     let wsKey: String
     var onClose: () -> Void = {}
 
+    @StateObject private var vm = ClaudeTerminalViewModel()
     @State private var holder: String?
     @AppStorage("claudeFontSize") private var fontSize: Double = 12
     @State private var failed = false
@@ -112,17 +113,12 @@ struct ClaudeTerminal: View {
     private func growFont() { fontSize = min(22, fontSize + 1) }
 
     private func closeSession() {
-        if let h = holder { Task.detached { _ = PomCore.shared.paneKill(paneID: h) } }
+        if let h = holder { vm.kill(paneID: h) }
         onClose()
     }
 
     private func resolve() async {
-        let b = branch, m = isMain
-        let win = await Task.detached(priority: .userInitiated) { () -> String? in
-            let d = PomCore.shared.claudeTerminal(branch: b, isMain: m)
-            struct R: Decodable { var window: String? }
-            return PomJSON.decode(R.self, from: d)?.window
-        }.value
+        let win = await vm.resolveWindow(branch: branch, isMain: isMain)
         if let win, !win.isEmpty { openedAt = Date(); holder = win } else { failed = true }
     }
 }

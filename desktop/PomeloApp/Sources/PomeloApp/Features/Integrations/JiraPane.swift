@@ -40,8 +40,7 @@ struct JiraPane: View {
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
 
-    @State private var detail: JiraDetail?
-    @State private var loading = true
+    @StateObject private var vm = JiraPaneViewModel()
     @State private var showComments = true
     @State private var collapsedComments: Set<String> = []
 
@@ -52,7 +51,7 @@ struct JiraPane: View {
         Group {
             if key == nil {
                 empty("No Jira ticket", "This branch name has no ABC-123 key.")
-            } else if let d = detail {
+            } else if let d = vm.detail {
                 if !d.configured {
                     empty("Jira not configured", "Add a jira: block + token to pom.yml.")
                 } else if d.error != nil || d.key.isEmpty {
@@ -60,7 +59,7 @@ struct JiraPane: View {
                 } else {
                     content(d)
                 }
-            } else if loading {
+            } else if vm.loading {
                 VStack(spacing: 8) { ProgressView().controlSize(.small); Text("loading ticket…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted) }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -68,7 +67,7 @@ struct JiraPane: View {
             }
         }
         .background(Theme.bg)
-        .task(id: workspace.id) { await load() }
+        .task(id: workspace.id) { await vm.load(key: key) }
     }
 
     private func content(_ d: JiraDetail) -> some View {
@@ -258,15 +257,4 @@ struct JiraPane: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func load() async {
-        detail = nil
-        loading = true
-        guard let k = key else { loading = false; return }
-        let fresh = await Task.detached(priority: .userInitiated) { () -> JiraDetail? in
-            let d = PomCore.shared.jiraIssueData(key: k)
-            return PomJSON.decode(JiraDetail.self, from: d)
-        }.value
-        loading = false
-        detail = fresh
-    }
 }
