@@ -83,6 +83,33 @@ The transport adapter and Store run off the main thread. Decode and reduce happe
 in the background; only the final reduced delta is applied to `@Published` on the
 main thread. The main-thread constraint lives in one place, not scattered.
 
+## Where logic lives (domain vs UI/UX)
+
+The core owns **domain logic**; the frontend owns **UI/UX logic**. Both are
+genuinely complex — just on different axes. The core carries business
+correctness; the frontend carries experience. The frontend is not a dumb pipe.
+
+**Core (Go) decides — every adapter shares it:**
+- Domain state and its derivation: service status, which workspaces are
+  unoptimized, PR health, DB results.
+- Classification / state machines: agent-state meaning, PR-state -> severity,
+  sort order, filters, derived flags.
+- **View-ready DTOs**: the core hands back what the UI renders, including a
+  semantic status token (`ok` / `warn` / `danger`), never a color value.
+
+**Frontend renders and interacts — its own real complexity:**
+- Layout, sizing, animation, gestures/reorder, scroll, focus, keyboard, 120fps.
+- Theme mapping: token `danger` -> the platform color for the active theme. This
+  is rendering, not a decision.
+- Ephemeral interaction state: selected tab, drawer open/height, hover, scroll
+  position, window layout. This is inherently per-UI and stays in the frontend.
+
+The rule: **the core decides, the frontend presents and interacts.** A new
+adapter reimplements presentation + interaction, never domain logic. Concretely,
+move derivation/classification out of view models into the core's DTOs (e.g. the
+core returns `entry.orphan`, a sorted list, or `pr.severity`); the view model
+reduces deltas and the view binds DTO -> widget and token -> color.
+
 ## Consequences
 
 - The whole Decodable bug class is eliminated at the generator + contract test.
