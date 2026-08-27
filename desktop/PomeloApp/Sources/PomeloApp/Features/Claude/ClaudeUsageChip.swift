@@ -13,10 +13,12 @@ struct ClaudeUsage: Decodable {
 // Claude subscription usage (5h session + weekly) shown as a compact meter, polled
 // from the same OAuth usage endpoint Claude Code reads for its status line.
 struct ClaudeUsageChip: View {
+    @EnvironmentObject private var theme: ThemeManager
     @State private var u: ClaudeUsage?
 
     var body: some View {
-        Group {
+        let _ = theme.mode
+        return Group {
             if let u, u.ok == true {
                 let s = u.session?.pct ?? 0, w = u.weekly?.pct ?? 0
                 HStack(spacing: 6) {

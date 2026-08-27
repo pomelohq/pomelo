@@ -183,7 +183,7 @@ struct HeaderTrailing: View {
     @EnvironmentObject var theme: ThemeManager
     @EnvironmentObject var state: AppState
     private var icon: String {
-        switch theme.mode { case .dark: return "moon.fill"; case .light: return "sun.max.fill"; case .sepia: return "book.fill" }
+        switch theme.mode { case .dark: return "moon.fill"; case .light: return "sun.max.fill"; case .sepia: return "sun.haze.fill" }
     }
     var body: some View {
         HStack(spacing: 12) {
