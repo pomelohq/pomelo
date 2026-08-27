@@ -44,12 +44,8 @@ final class StreamManager {
     func openPTY(name: String, wsKey: String, cols: Int32, rows: Int32,
                  onFrame: @escaping (StreamKind, [UInt8]) -> Void) async -> Int32 {
         ensureCallback()
-        let id = await Task.detached(priority: .userInitiated) { () -> Int32 in
-            name.withCString { n in
-                wsKey.withCString { w in
-                    PomStreamPTY(UnsafeMutablePointer(mutating: n), UnsafeMutablePointer(mutating: w), cols, rows)
-                }
-            }
+        let id = await Task.detached(priority: .userInitiated) {
+            pomSubscribe("pty", ["name": name, "ws_key": wsKey, "cols": Int(cols), "rows": Int(rows)])
         }.value
         if id > 0 { clients[id] = onFrame; activeStreamID = id }
         return id
@@ -58,35 +54,28 @@ final class StreamManager {
     func openClaude(branch: String, isMain: Bool, mode: String, model: String, role: String,
                     onFrame: @escaping (StreamKind, [UInt8]) -> Void) -> Int32 {
         ensureCallback()
-        let id = branch.withCString { b in mode.withCString { m in model.withCString { mo in role.withCString { r in
-            PomStreamClaude(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0,
-                            UnsafeMutablePointer(mutating: m), UnsafeMutablePointer(mutating: mo),
-                            UnsafeMutablePointer(mutating: r))
-        }}}}
+        let id = pomSubscribe("claude", ["branch": branch, "is_main": isMain, "mode": mode, "model": model, "role": role])
         if id > 0 { clients[id] = onFrame }
         return id
     }
 
     func openCreateWorkspace(branch: String, repos: [String], onFrame: @escaping (StreamKind, [UInt8]) -> Void) -> Int32 {
         ensureCallback()
-        let r = repos.joined(separator: ",")
-        let id = branch.withCString { b in r.withCString { rr in
-            PomStreamCreateWorkspace(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: rr))
-        }}
+        let id = pomSubscribe("create_workspace", ["branch": branch, "repos": repos.joined(separator: ",")])
         if id > 0 { clients[id] = onFrame }
         return id
     }
 
     func openDeleteWorkspace(branch: String, onFrame: @escaping (StreamKind, [UInt8]) -> Void) -> Int32 {
         ensureCallback()
-        let id = branch.withCString { b in PomStreamDeleteWorkspace(UnsafeMutablePointer(mutating: b)) }
+        let id = pomSubscribe("delete_workspace", ["branch": branch])
         if id > 0 { clients[id] = onFrame }
         return id
     }
 
     func openPrepareMain(skipSeed: Bool, onFrame: @escaping (StreamKind, [UInt8]) -> Void) -> Int32 {
         ensureCallback()
-        let id = PomStreamPrepareMain(skipSeed ? 1 : 0)
+        let id = pomSubscribe("prepare_main", ["skip_seed": skipSeed])
         if id > 0 { clients[id] = onFrame }
         return id
     }
@@ -116,6 +105,14 @@ final class StreamManager {
     fileprivate func dispatch(id: Int32, kind: StreamKind, bytes: [UInt8]) {
         clients[id]?(kind, bytes)
     }
+}
+
+private func pomSubscribe(_ topic: String, _ params: [String: Any]) -> Int32 {
+    let data = (try? JSONSerialization.data(withJSONObject: params)) ?? Data("{}".utf8)
+    let json = String(decoding: data, as: UTF8.self)
+    return topic.withCString { t in json.withCString { p in
+        PomSubscribe(UnsafeMutablePointer(mutating: t), UnsafeMutablePointer(mutating: p))
+    }}
 }
 
 private func pomStreamTrampoline(_ id: Int32, _ kind: Int32, _ data: UnsafeMutableRawPointer?, _ len: Int32) {

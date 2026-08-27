@@ -60,135 +60,122 @@ var (
 //export PomSetStreamCallback
 func PomSetStreamCallback(cb C.pom_stream_cb) { C.pom_set_cb(cb) }
 
-//export PomStreamPTY
-func PomStreamPTY(name, wsKey *C.char, cols, rows C.int) C.int {
-	mu.Lock()
-	s := srv
-	mu.Unlock()
-	if s == nil {
-		return -1
-	}
+func nextStreamID() C.int {
 	streamMu.Lock()
 	streamNext++
 	id := streamNext
-	streamMu.Unlock()
-
-	done := make(chan struct{})
-	input, err := s.OpenPTYStream(cgoSink{id: id}, C.GoString(name), C.GoString(wsKey), int(cols), int(rows), done)
-	if err != nil {
-		close(done)
-		return -1
-	}
-	streamMu.Lock()
-	streams[id] = &streamHandle{done: done, feed: input.Feed}
 	streamMu.Unlock()
 	return id
 }
 
-//export PomStreamClaude
-func PomStreamClaude(branch *C.char, isMain C.int, mode, model, role *C.char) C.int {
-	mu.Lock()
-	s := srv
-	mu.Unlock()
-	if s == nil {
-		return -1
+// PomSubscribe opens a live stream routed by topic (the streaming analog of
+// PomQuery/PomCommand): one export instead of one per stream kind. Params carry
+// the topic's args as JSON. Frames arrive via the registered stream callback.
+//
+//export PomSubscribe
+func PomSubscribe(topic, paramsJSON *C.char) C.int {
+	var p map[string]any
+	_ = json.Unmarshal([]byte(C.GoString(paramsJSON)), &p)
+	str := func(k string) string { s, _ := p[k].(string); return s }
+	flag := func(k string) bool { b, _ := p[k].(bool); return b }
+	num := func(k string) int { f, _ := p[k].(float64); return int(f) }
+
+	switch C.GoString(topic) {
+	case "pty":
+		mu.Lock()
+		s := srv
+		mu.Unlock()
+		if s == nil {
+			return -1
+		}
+		id := nextStreamID()
+		done := make(chan struct{})
+		input, err := s.OpenPTYStream(cgoSink{id: id}, str("name"), str("ws_key"), num("cols"), num("rows"), done)
+		if err != nil {
+			close(done)
+			return -1
+		}
+		streamMu.Lock()
+		streams[id] = &streamHandle{done: done, feed: input.Feed}
+		streamMu.Unlock()
+		return id
+	case "claude":
+		mu.Lock()
+		s := srv
+		mu.Unlock()
+		if s == nil {
+			return -1
+		}
+		id := nextStreamID()
+		done := make(chan struct{})
+		input := s.OpenClaudeStream(cgoSink{id: id}, done, str("branch"), flag("is_main"), str("mode"), str("model"), str("role"))
+		streamMu.Lock()
+		streams[id] = &streamHandle{done: done, feed: func(b []byte) { input.Send(string(b)) }, stop: input.Stop}
+		streamMu.Unlock()
+		return id
+	case "prepare_main":
+		mu.Lock()
+		cfg, dir := appCfg, appDir
+		mu.Unlock()
+		if cfg == nil {
+			return -1
+		}
+		id := nextStreamID()
+		sink := cgoSink{id: id}
+		done := make(chan struct{})
+		streamMu.Lock()
+		streams[id] = &streamHandle{done: done}
+		streamMu.Unlock()
+		go func() {
+			defer close(done)
+			_ = commands.PrepareMainOpts(cfg, dir, commands.PrepareOpts{
+				SkipSeed: flag("skip_seed"),
+				Emit:     func(ev commands.PrepareEvent) { _ = sink.SendJSON(ev) },
+			})
+			_ = sink.Close()
+		}()
+		return id
+	case "create_workspace":
+		mu.Lock()
+		s := srv
+		mu.Unlock()
+		if s == nil {
+			return -1
+		}
+		id := nextStreamID()
+		sink := cgoSink{id: id}
+		done := make(chan struct{})
+		streamMu.Lock()
+		streams[id] = &streamHandle{done: done}
+		streamMu.Unlock()
+		go func() {
+			defer close(done)
+			s.StreamCreate(func(pp map[string]any) { _ = sink.SendJSON(pp) },
+				str("branch"), "", str("repos"), "", "", "")
+			_ = sink.Close()
+		}()
+		return id
+	case "delete_workspace":
+		mu.Lock()
+		s := srv
+		mu.Unlock()
+		if s == nil {
+			return -1
+		}
+		id := nextStreamID()
+		sink := cgoSink{id: id}
+		done := make(chan struct{})
+		streamMu.Lock()
+		streams[id] = &streamHandle{done: done}
+		streamMu.Unlock()
+		go func() {
+			defer close(done)
+			s.StreamDelete(func(pp map[string]any) { _ = sink.SendJSON(pp) }, str("branch"))
+			_ = sink.Close()
+		}()
+		return id
 	}
-	streamMu.Lock()
-	streamNext++
-	id := streamNext
-	streamMu.Unlock()
-
-	done := make(chan struct{})
-	input := s.OpenClaudeStream(cgoSink{id: id}, done, C.GoString(branch), isMain != 0, C.GoString(mode), C.GoString(model), C.GoString(role))
-	streamMu.Lock()
-	streams[id] = &streamHandle{done: done, feed: func(b []byte) { input.Send(string(b)) }, stop: input.Stop}
-	streamMu.Unlock()
-	return id
-}
-
-//export PomStreamPrepareMain
-func PomStreamPrepareMain(skipSeed C.int) C.int {
-	mu.Lock()
-	cfg, dir := appCfg, appDir
-	mu.Unlock()
-	if cfg == nil {
-		return -1
-	}
-	streamMu.Lock()
-	streamNext++
-	id := streamNext
-	streamMu.Unlock()
-
-	sink := cgoSink{id: id}
-	done := make(chan struct{})
-	streamMu.Lock()
-	streams[id] = &streamHandle{done: done}
-	streamMu.Unlock()
-
-	go func() {
-		defer close(done)
-		_ = commands.PrepareMainOpts(cfg, dir, commands.PrepareOpts{
-			SkipSeed: skipSeed != 0,
-			Emit:     func(ev commands.PrepareEvent) { _ = sink.SendJSON(ev) },
-		})
-		_ = sink.Close()
-	}()
-	return id
-}
-
-//export PomStreamCreateWorkspace
-func PomStreamCreateWorkspace(branch, repos *C.char) C.int {
-	mu.Lock()
-	s := srv
-	mu.Unlock()
-	if s == nil {
-		return -1
-	}
-	streamMu.Lock()
-	streamNext++
-	id := streamNext
-	streamMu.Unlock()
-
-	sink := cgoSink{id: id}
-	done := make(chan struct{})
-	streamMu.Lock()
-	streams[id] = &streamHandle{done: done}
-	streamMu.Unlock()
-
-	go func() {
-		defer close(done)
-		s.StreamCreate(func(p map[string]any) { _ = sink.SendJSON(p) },
-			C.GoString(branch), "", C.GoString(repos), "", "", "")
-		_ = sink.Close()
-	}()
-	return id
-}
-
-//export PomStreamDeleteWorkspace
-func PomStreamDeleteWorkspace(branch *C.char) C.int {
-	mu.Lock()
-	s := srv
-	mu.Unlock()
-	if s == nil {
-		return -1
-	}
-	streamMu.Lock()
-	streamNext++
-	id := streamNext
-	streamMu.Unlock()
-
-	sink := cgoSink{id: id}
-	done := make(chan struct{})
-	streamMu.Lock()
-	streams[id] = &streamHandle{done: done}
-	streamMu.Unlock()
-
-	go func() {
-		defer close(done)
-		s.StreamDelete(func(p map[string]any) { _ = sink.SendJSON(p) }, C.GoString(branch))
-		_ = sink.Close()
-	}()
-	return id
+	return -1
 }
 
 //export PomStreamStop
