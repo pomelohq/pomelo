@@ -85,6 +85,22 @@ func (s *Server) handleNMStoreList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) NMStoreList() map[string]any {
 	entries := services.NMStoreEntries()
+	// The nm-store is global (keyed by repo name), so it holds caches from every
+	// project. Scope the board to the current project's repos, else another
+	// project's repos (e.g. web/jobs) show up here as "unused" and could be reclaimed.
+	if cfg := s.cfg(); cfg != nil && len(cfg.Repos) > 0 {
+		mine := map[string]bool{}
+		for name := range cfg.Repos {
+			mine[name] = true
+		}
+		kept := entries[:0]
+		for _, e := range entries {
+			if mine[e.Repo] {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
+	}
 	inStore := map[string]bool{}
 	for _, e := range entries {
 		inStore[e.Repo+"/"+e.Hash] = true
