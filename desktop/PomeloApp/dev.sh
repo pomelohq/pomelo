@@ -9,7 +9,9 @@ PRODUCTS="$here/.ddata/Build/Products/Debug"
 BIN="$PRODUCTS/PomeloApp"
 FW="$PRODUCTS/Sparkle.framework"
 APP="/tmp/Pomelo Dev.app"
-pkill -9 -x Pomelo 2>/dev/null || true; sleep 0.5
+# Kill only this dev build by its path; both apps share the executable name
+# "Pomelo", so `pkill -x Pomelo` would also nuke the installed production app.
+pkill -9 -f "$APP/Contents/MacOS/Pomelo" 2>/dev/null || true; sleep 0.5
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN" "$APP/Contents/MacOS/Pomelo"
