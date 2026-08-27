@@ -50,7 +50,10 @@ func TestVerifyBootDetectsCrash(t *testing.T) {
 		}
 	})
 
-	errs := s.verifyBoot("main", true, 3*time.Second)
+	// Grace must outlast the crasher's cold start: the holder re-execs a freshly
+	// built pom binary + PTY + login shell, which can take a couple seconds under
+	// parallel test load, so a tight window flakes before "bad" runs its exit 1.
+	errs := s.verifyBoot("main", true, 8*time.Second)
 
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 boot failure, got %d: %+v", len(errs), errs)

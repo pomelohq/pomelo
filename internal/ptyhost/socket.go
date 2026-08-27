@@ -111,7 +111,12 @@ func holderAlive(pid int) bool {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	if err != nil && err != syscall.EPERM {
+		return false
+	}
+	// kill(pid, 0) also succeeds for a zombie (exited, not yet reaped); a zombie
+	// holder is dead, so a just-crashed service isn't reported as still running.
+	return !isZombie(pid)
 }
 
 func KillHolder(name string) error {
@@ -424,6 +429,7 @@ func ListenAndServe(name string, o StartOpts) (*Session, net.Listener, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	_ = os.Remove(crashPath(name)) // fresh holder starts with no stale crash record
 	o.OnExit = func(scrollback []byte, exitErr error) { writeCrashLog(name, scrollback, exitErr) }
 	s, err := Serve(ln, o)
 	if err != nil {

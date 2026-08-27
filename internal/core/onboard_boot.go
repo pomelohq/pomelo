@@ -138,11 +138,14 @@ func (s *Server) verifyBoot(branch string, isMain bool, grace time.Duration) []d
 
 	var errs []doctor.Finding
 	for _, t := range targets {
-		if ptyhost.HolderAlive(t.window) {
+		// A crash is recorded even if the holder process lingers a moment past the
+		// grace window, so check both: healthy means alive AND no recorded crash.
+		crashed, log := serviceCrash(t.window)
+		if !crashed && ptyhost.HolderAlive(t.window) {
 			continue
 		}
 		detail := "exited within " + grace.String() + " of starting"
-		if crashed, log := serviceCrash(t.window); crashed && log != "" {
+		if crashed && log != "" {
 			detail = log
 		}
 		errs = append(errs, doctor.Finding{
