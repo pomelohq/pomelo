@@ -134,7 +134,7 @@ struct IntegrationsSettings: View {
         ghTest = ""
         let t = ghToken
         Task {
-            _ = await Task.detached { PomCore.shared.secretSet(name: "github", value: t) }.value
+            await IntegrationsStore.setGithub(t)
             ghSaved = true
             ghToken = ""
             refresh()
@@ -146,7 +146,7 @@ struct IntegrationsSettings: View {
         ghSaved = false
         let t = ghToken
         Task {
-            let d = await Task.detached { PomCore.shared.githubTest(token: t) }.value
+            let d = await IntegrationsStore.testGithub(t)
             struct R: Decodable {
                 var ok = false
                 var user: String?
@@ -162,7 +162,7 @@ struct IntegrationsSettings: View {
 
     private func refresh() {
         Task {
-            let d = await Task.detached { PomCore.shared.integrationsStatusData() }.value
+            let d = await IntegrationsStore.status()
             if let r = PomJSON.decode(IntegrationsResponse.self, from: d) {
                 data = r; site = r.jira.site; email = r.jira.email
             }
@@ -174,7 +174,7 @@ struct IntegrationsSettings: View {
         jiraSaved = false; jiraTest = ""
         let s = site, e = email, t = token
         Task {
-            _ = await Task.detached { PomCore.shared.jiraSet(site: s, email: e, token: t) }.value
+            await IntegrationsStore.setJira(site: s, email: e, token: t)
             jiraSaved = true; token = ""; refresh()
         }
     }
@@ -183,7 +183,7 @@ struct IntegrationsSettings: View {
         jiraTest = "testing…"
         let (s, e, t) = (site, email, token)
         Task {
-            let d = await Task.detached { PomCore.shared.jiraTest(site: s, email: e, token: t) }.value
+            let d = await IntegrationsStore.testJira(site: s, email: e, token: t)
             struct R: Decodable { var ok = false; var error: String? }
             if let r = PomJSON.decode(R.self, from: d) {
                 jiraTest = r.ok ? "OK" : ((r.error ?? "").isEmpty ? "failed" : r.error!)

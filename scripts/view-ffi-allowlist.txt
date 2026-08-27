@@ -1,6 +1,4 @@
 Features/Activity/ActivityView.swift
-Features/Config/ConfigBundleSheets.swift
-Features/Integrations/IntegrationsSettings.swift
 Features/Session/OnboardSheet.swift
 Features/Session/SessionActions.swift
 Features/Settings/SettingsView.swift

@@ -53,7 +53,7 @@ struct ExportBundleSheet: View {
         .padding(18).frame(width: 460)
         .background(Theme.bgSoft)
         .onAppear { Task {
-            let d = await Task.detached { PomCore.shared.secretNamesData() }.value
+            let d = await BundleStore.secretNames()
             struct R: Decodable { var names: [String]? }
             secretCount = (PomJSON.decode(R.self, from: d))?.names?.count ?? 0
         } }
@@ -63,7 +63,7 @@ struct ExportBundleSheet: View {
         status = "exporting…"
         let inc = includeSecrets, pw = password
         Task {
-            let d = await Task.detached { PomCore.shared.bundleExport(includeSecrets: inc, password: pw) }.value
+            let d = await BundleStore.export(includeSecrets: inc, password: pw)
             struct R: Decodable { var filename = ""; var data = "" }
             guard let r = PomJSON.decode(R.self, from: d), let bytes = Data(base64Encoded: r.data) else { status = "export failed"; return }
             let panel = NSSavePanel(); panel.nameFieldStringValue = r.filename
@@ -205,7 +205,7 @@ struct ImportBundleSheet: View {
         status = ""; isError = false
         let dta = dataB64, pw = password
         Task {
-            let d = await Task.detached { PomCore.shared.bundleRead(dataB64: dta, password: pw) }.value
+            let d = await BundleStore.read(dataB64: dta, password: pw)
             guard !d.isEmpty else { status = "no response from the core — is a project open?"; isError = true; return }
             struct R: Decodable { var encrypted: Bool?; var need_password: Bool?; var yaml: String?; var secret_names: [String]?; var error: String? }
             guard let r = PomJSON.decode(R.self, from: d) else {
@@ -220,7 +220,7 @@ struct ImportBundleSheet: View {
     private func apply() {
         let dta = dataB64, pw = password, y = yaml, wc = writeConfig, cs = createSecrets
         Task {
-            let d = await Task.detached { PomCore.shared.bundleApply(dataB64: dta, password: pw, yaml: y, writeConfig: wc, createSecrets: cs) }.value
+            let d = await BundleStore.apply(dataB64: dta, password: pw, yaml: y, writeConfig: wc, createSecrets: cs)
             struct R: Decodable { var ok: Bool?; var secrets_created: Int?; var split: Bool?; var error: String? }
             if let r = PomJSON.decode(R.self, from: d), r.ok == true {
                 let n = r.secrets_created ?? 0
@@ -236,7 +236,7 @@ struct ImportBundleSheet: View {
     private func adapt() {
         let dta = dataB64, pw = password, y = yaml, cs = createSecrets
         Task {
-            let d = await Task.detached { PomCore.shared.bundleAdapt(dataB64: dta, password: pw, yaml: y, createSecrets: cs) }.value
+            let d = await BundleStore.adapt(dataB64: dta, password: pw, yaml: y, createSecrets: cs)
             struct R: Decodable { var ok: Bool?; var prompt: String?; var error: String? }
             guard let r = PomJSON.decode(R.self, from: d), r.ok == true, let p = r.prompt, !p.isEmpty else {
                 status = "adapt failed: \(String(decoding: d.prefix(140), as: UTF8.self))"; isError = true; return
