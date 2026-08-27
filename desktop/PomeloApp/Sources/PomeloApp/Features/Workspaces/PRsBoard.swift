@@ -44,7 +44,7 @@ struct PRInfo: Decodable, Equatable {
     struct ReviewRequest: Decodable, Equatable { var login: String?; var name: String?; var slug: String? }
 
     struct Reviewer: Decodable, Identifiable, Equatable { var name = ""; var state = ""; var id: String { name } }
-    var reviewers: [Reviewer] = []   // deduped + ordered by the core (ADR 0001)
+    var reviewers: [Reviewer] = []
     struct Label: Decodable, Equatable, Identifiable { var name: String?; var color: String?; var id: String { name ?? "" } }
 
     struct Check: Decodable, Equatable, Identifiable {
@@ -56,7 +56,7 @@ struct PRInfo: Decodable, Equatable {
         var detailsUrl: String?
         var targetUrl: String?
         var workflowName: String?
-        var result: ChecksStatus = .none   // classified by the core (ADR 0001)
+        var result: ChecksStatus = .none
         var id: String { (name ?? context ?? "check") + (conclusion ?? state ?? status ?? "") }
         var label: String { name ?? context ?? "check" }
         var link: String? { detailsUrl ?? targetUrl }
@@ -78,7 +78,6 @@ struct PRInfo: Decodable, Equatable {
     enum ChecksStatus: String, Decodable { case pass, fail, pending, none }
     enum ReviewDecision: String, Decodable { case approved, changes, review, none }
 
-    // Status tokens the core derives from raw GitHub state (ADR 0001).
     var checks: ChecksStatus = .none
     var review: ReviewDecision = .none
     var conflict: Bool = false

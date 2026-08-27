@@ -8,7 +8,8 @@ struct WorkspaceSidebar: View {
     @Environment(\.openWindow) private var openWindow
     @State private var dragId: String?
     @State private var dragTranslation: CGFloat = 0
-    @State private var heights: [String: CGFloat] = [:]
+    @State private var heightStore = HeightStore()
+    private var heights: [String: CGFloat] { heightStore.h }
 
     private let rowSpacing: CGFloat = 2
     private var items: [Workspace] { state.orderedNonMain.filter { !state.opBranches.contains($0.branch) } }
@@ -31,7 +32,8 @@ struct WorkspaceSidebar: View {
             OpsBar()
 
             ScrollView {
-                LazyVStack(spacing: rowSpacing) {
+                // Not Lazy: LazyVStack's height estimate drifts on fast flicks (blank gaps).
+                VStack(spacing: rowSpacing) {
                     ForEach(state.mainWorkspaces) { ws in WsRow(ws: ws) }
                     ForEach(Array(items.enumerated()), id: \.element.id) { idx, ws in
                         WsRow(ws: ws)
@@ -48,7 +50,7 @@ struct WorkspaceSidebar: View {
                     }
                 }
                 .padding(.horizontal, 4).padding(.vertical, 4)
-                .onPreferenceChange(RowHeightKey.self) { heights = $0 }
+                .onPreferenceChange(RowHeightKey.self) { heightStore.h = $0 }
             }
             .scrollContentBackground(.hidden)
         }
@@ -102,6 +104,8 @@ struct WorkspaceSidebar: View {
             }
     }
 }
+
+final class HeightStore { var h: [String: CGFloat] = [:] }
 
 struct RowHeightKey: PreferenceKey {
     static let defaultValue: [String: CGFloat] = [:]

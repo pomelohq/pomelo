@@ -369,8 +369,6 @@ struct DiffFileView: View {
             } else {
                 GeometryReader { geo in
                     let viewportSide = max(160, (geo.size.width - 1) / 2)
-                    // Grow each side to the longest line so nothing is truncated; the
-                    // pane scrolls horizontally instead (VSCode/Zed behaviour).
                     let sideW = max(viewportSide, 68 + CGFloat(maxChars) * charW)
                     ScrollView([.vertical, .horizontal]) {
                         LazyVStack(alignment: .leading, spacing: 0) {
@@ -542,8 +540,7 @@ struct NativeDiffView: NSViewRepresentable {
         tv.isRichText = false
         tv.drawsBackground = false
         tv.textContainerInset = NSSize(width: 0, height: 6)
-        // Grow to the widest line instead of tracking the viewport, so long lines
-        // scroll horizontally rather than getting clipped (VSCode/Zed behaviour).
+        // Grow to the widest line, not the viewport, so long lines scroll instead of clip.
         tv.isHorizontallyResizable = true
         tv.isVerticallyResizable = true
         tv.minSize = .zero
@@ -637,8 +634,6 @@ final class DiffTextView: NSTextView {
         let delBg = NSColor.systemRed.withAlphaComponent(0.12)
         let hunkBg = NSColor.systemPurple.withAlphaComponent(0.08)
         let inset = textContainerInset
-        // Tint the whole row across the full content width — including past the
-        // viewport — so a long added/deleted line stays highlighted when scrolled.
         let width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
         let glyphRange = lm.glyphRange(forBoundingRect: rect, in: tc)
         lm.enumerateLineFragments(forGlyphRange: glyphRange) { _, used, _, glyphR, _ in

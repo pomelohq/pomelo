@@ -65,8 +65,6 @@ struct WsCard: View {
     private var orbActive: Bool { agent == "thinking" || agent == "tool_use" || agent == "compacting" || agent == "awaiting_input" }
 
     private var openPRs: [WorkspacePR] { prs.filter { $0.pr != nil } }
-    // The core aggregates the workspace's PRs into one severity token (ADR 0001);
-    // the card just maps token -> colour.
     private var prColor: Color {
         switch severity {
         case "danger": return Theme.danger
@@ -144,7 +142,8 @@ struct WsCard: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .anchorPreference(key: PRPeekAnchorKey.self, value: .bounds) { [ws.id: $0] }
+        // Only the hovered row publishes its anchor; a .bounds anchor on every row stutters scroll.
+        .anchorPreference(key: PRPeekAnchorKey.self, value: .bounds) { hoverPill ? [ws.id: $0] : [:] }
         .onHover { h in
             hoverPill = h
             if h { DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { if hoverPill { onPeekEnter() } } }
