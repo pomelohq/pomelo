@@ -105,33 +105,6 @@ func PomNMStoreDelete(repo, hash *C.char) *C.char {
 	return C.CString(`{"ok":true}`)
 }
 
-//export PomSharedStats
-func PomSharedStats(name *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"running":false}`)
-	}
-	return bindingJSON(s.SharedStats(C.GoString(name)))
-}
-
-//export PomDBList
-func PomDBList(branch *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false,"error":"no server"}`)
-	}
-	return bindingJSON(s.DBList(C.GoString(branch)))
-}
-
-//export PomDBTables
-func PomDBTables(branch, db *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false,"error":"no server"}`)
-	}
-	return bindingJSON(s.DBTables(C.GoString(branch), C.GoString(db)))
-}
-
 //export PomDBExportCSV
 func PomDBExportCSV(branch, db, sql, path *C.char) *C.char {
 	s := server()
@@ -139,24 +112,6 @@ func PomDBExportCSV(branch, db, sql, path *C.char) *C.char {
 		return C.CString(`{"ok":false,"error":"no server"}`)
 	}
 	return bindingJSON(s.DBExportCSV(C.GoString(branch), C.GoString(db), C.GoString(sql), C.GoString(path)))
-}
-
-//export PomDBColumns
-func PomDBColumns(branch, db *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false,"error":"no server"}`)
-	}
-	return bindingJSON(s.DBColumns(C.GoString(branch), C.GoString(db)))
-}
-
-//export PomDBQuery
-func PomDBQuery(branch, db, sql *C.char, limit C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false,"error":"no server"}`)
-	}
-	return bindingJSON(s.DBQuery(C.GoString(branch), C.GoString(db), C.GoString(sql), int(limit)))
 }
 
 //export PomDBConsolesSave
@@ -168,33 +123,6 @@ func PomDBConsolesSave(data *C.char) *C.char {
 	return bindingJSON(s.DBConsolesSave(C.GoString(data)))
 }
 
-//export PomFetchImage
-func PomFetchImage(rawURL *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false,"error":"no server"}`)
-	}
-	return bindingJSON(s.FetchImageB64(C.GoString(rawURL)))
-}
-
-//export PomSharedInspect
-func PomSharedInspect(name *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString("{}")
-	}
-	return bindingJSON(s.SharedInspect(C.GoString(name)))
-}
-
-//export PomSharedLogs
-func PomSharedLogs(name, lines *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"running":false,"lines":[]}`)
-	}
-	return bindingJSON(s.SharedLogs(C.GoString(name), C.GoString(lines)))
-}
-
 //export PomOpenEditor
 func PomOpenEditor(branch *C.char, isMain C.int, repo, editor *C.char, resolveOnly C.int) *C.char {
 	s := server()
@@ -202,15 +130,6 @@ func PomOpenEditor(branch *C.char, isMain C.int, repo, editor *C.char, resolveOn
 		return C.CString(`{"ok":false}`)
 	}
 	return bindingJSON(s.EditorOpen(C.GoString(branch), isMain != 0, C.GoString(repo), C.GoString(editor), resolveOnly != 0))
-}
-
-//export PomClaudeTerminal
-func PomClaudeTerminal(branch *C.char, isMain C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"error":"not initialized"}`)
-	}
-	return bindingJSON(s.ClaudeTerminal(C.GoString(branch), isMain != 0))
 }
 
 //export PomBundleExport
@@ -249,24 +168,6 @@ func PomBundleAdapt(dataB64, password, yaml *C.char, createSecrets C.int) *C.cha
 	return bindingJSON(s.BundleAdapt(C.GoString(dataB64), C.GoString(password), C.GoString(yaml), createSecrets != 0))
 }
 
-//export PomConfigExplain
-func PomConfigExplain(repo, branch, svc, env *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"repos":[]}`)
-	}
-	return bindingJSON(s.ConfigExplain(C.GoString(repo), C.GoString(branch), C.GoString(svc), C.GoString(env)))
-}
-
-//export PomSuggestName
-func PomSuggestName(branch, desc *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"name":"","slug":""}`)
-	}
-	return bindingJSON(s.SuggestName(C.GoString(branch), C.GoString(desc)))
-}
-
 //export PomShortcutRun
 func PomShortcutRun(branch *C.char, isMain C.int, repo, cmd *C.char) *C.char {
 	s := server()
@@ -294,15 +195,6 @@ func PomServiceMode(repo, svc, mode *C.char) *C.char {
 	return bindingJSON(s.ServiceMode(C.GoString(repo), C.GoString(svc), C.GoString(mode)))
 }
 
-//export PomServiceURL
-func PomServiceURL(branch, repo, svc *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString("{}")
-	}
-	return bindingJSON(s.ServiceURL(C.GoString(branch), C.GoString(repo), C.GoString(svc)))
-}
-
 //export PomServiceControl
 func PomServiceControl(refJSON, action *C.char) *C.char {
 	s := server()
@@ -321,15 +213,6 @@ func PomDevProxyLog(limit C.int) *C.char {
 	return bindingJSON(s.DevProxyLog(int(limit)))
 }
 
-//export PomPaneBusy
-func PomPaneBusy(holder *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"busy":false}`)
-	}
-	return bindingJSON(map[string]any{"busy": s.PaneBusy(C.GoString(holder))})
-}
-
 //export PomSessionCreate
 func PomSessionCreate(reqJSON *C.char) *C.char {
 	var req core.CreateSessionReq
@@ -341,15 +224,6 @@ func PomSessionCreate(reqJSON *C.char) *C.char {
 		return bindingJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
 	return bindingJSON(map[string]any{"ok": true, "name": req.Name, "path": dir})
-}
-
-//export PomConfigFileGet
-func PomConfigFileGet(path *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString("{}")
-	}
-	return bindingJSON(s.ConfigFileGet(C.GoString(path)))
 }
 
 //export PomConfigFileSet
@@ -498,37 +372,6 @@ func PomJiraTest(site, email, token *C.char) *C.char {
 		return C.CString(`{"ok":false}`)
 	}
 	return bindingJSON(s.JiraTest(C.GoString(site), C.GoString(email), C.GoString(token)))
-}
-
-//export PomJiraSprint
-func PomJiraSprint(board C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"configured":false}`)
-	}
-	return bindingJSON(s.JiraSprint(int(board)))
-}
-
-//export PomJiraIssue
-func PomJiraIssue(key *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"configured":false}`)
-	}
-	return bindingJSON(s.JiraIssue(C.GoString(key)))
-}
-
-//export PomJiraIssues
-func PomJiraIssues(branchesCSV *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"configured":false}`)
-	}
-	var branches []string
-	if csv := C.GoString(branchesCSV); csv != "" {
-		branches = strings.Split(csv, ",")
-	}
-	return bindingJSON(s.JiraIssues(branches))
 }
 
 //export PomSyncGet

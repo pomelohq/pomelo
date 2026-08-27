@@ -7,6 +7,44 @@ import "encoding/json"
 // instead of a new FFI export. Returns `any` so each domain can hand back its own
 // shape (map, struct, slice) and bindingJSON marshals it.
 
+func pStr(params json.RawMessage, key string) string {
+	var m map[string]any
+	_ = json.Unmarshal(params, &m)
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func pBool(params json.RawMessage, key string) bool {
+	var m map[string]any
+	_ = json.Unmarshal(params, &m)
+	v, _ := m[key].(bool)
+	return v
+}
+
+func pInt(params json.RawMessage, key string) int {
+	var m map[string]any
+	_ = json.Unmarshal(params, &m)
+	if v, ok := m[key].(float64); ok {
+		return int(v)
+	}
+	return 0
+}
+
+func pStrs(params json.RawMessage, key string) []string {
+	var m map[string]any
+	_ = json.Unmarshal(params, &m)
+	arr, _ := m[key].([]any)
+	out := make([]string, 0, len(arr))
+	for _, v := range arr {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // Query reads a snapshot for a domain. params is the domain's request DTO as JSON.
 func (s *Server) Query(domain string, params json.RawMessage) any {
 	if s == nil {
@@ -14,11 +52,7 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 	}
 	switch domain {
 	case "workspaces":
-		var p struct {
-			Git bool `json:"git"`
-		}
-		_ = json.Unmarshal(params, &p)
-		return map[string]any{"workspaces": s.CollectWorkspaces(p.Git)}
+		return map[string]any{"workspaces": s.CollectWorkspaces(pBool(params, "git"))}
 	case "liveness":
 		return map[string]any{"workspaces": s.CollectLiveness()}
 	case "agent_states":
@@ -55,6 +89,40 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 		return s.JiraBoards()
 	case "secret_names":
 		return map[string]any{"names": s.SecretNames()}
+	case "db_list":
+		return s.DBList(pStr(params, "branch"))
+	case "db_tables":
+		return s.DBTables(pStr(params, "branch"), pStr(params, "db"))
+	case "db_columns":
+		return s.DBColumns(pStr(params, "branch"), pStr(params, "db"))
+	case "db_query":
+		return s.DBQuery(pStr(params, "branch"), pStr(params, "db"), pStr(params, "sql"), pInt(params, "limit"))
+	case "shared_stats":
+		return s.SharedStats(pStr(params, "name"))
+	case "shared_inspect":
+		return s.SharedInspect(pStr(params, "name"))
+	case "shared_logs":
+		return s.SharedLogs(pStr(params, "name"), pStr(params, "lines"))
+	case "config_get":
+		return s.ConfigFileGet(pStr(params, "path"))
+	case "config_explain":
+		return s.ConfigExplain(pStr(params, "repo"), pStr(params, "branch"), pStr(params, "svc"), pStr(params, "env"))
+	case "fetch_image":
+		return s.FetchImageB64(pStr(params, "url"))
+	case "suggest_name":
+		return s.SuggestName(pStr(params, "branch"), pStr(params, "desc"))
+	case "jira_sprint":
+		return s.JiraSprint(pInt(params, "board"))
+	case "jira_issue":
+		return s.JiraIssue(pStr(params, "key"))
+	case "jira_issues":
+		return s.JiraIssues(pStrs(params, "branches"))
+	case "service_url":
+		return s.ServiceURL(pStr(params, "branch"), pStr(params, "repo"), pStr(params, "svc"))
+	case "pane_busy":
+		return map[string]any{"busy": s.PaneBusy(pStr(params, "holder"))}
+	case "claude_terminal":
+		return s.ClaudeTerminal(pStr(params, "branch"), pBool(params, "is_main"))
 	default:
 		return map[string]any{"error": "unknown query domain: " + domain}
 	}
@@ -70,28 +138,6 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 			return map[string]any{"ok": false, "error": err.Error()}
 		}
 		return map[string]any{"ok": true}
-	}
-	arg := func(key string) string {
-		var m map[string]any
-		_ = json.Unmarshal(params, &m)
-		if v, ok := m[key].(string); ok {
-			return v
-		}
-		return ""
-	}
-	flag := func(key string) bool {
-		var m map[string]any
-		_ = json.Unmarshal(params, &m)
-		v, _ := m[key].(bool)
-		return v
-	}
-	num := func(key string) int {
-		var m map[string]any
-		_ = json.Unmarshal(params, &m)
-		if v, ok := m[key].(float64); ok {
-			return int(v)
-		}
-		return 0
 	}
 	switch domain {
 	case "service":
@@ -118,42 +164,42 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 		}
 	case "pane":
 		if action == "kill" {
-			return s.PaneKill(arg("pane_id"))
+			return s.PaneKill(pStr(params, "pane_id"))
 		}
 	case "shared":
-		return s.SharedAction(arg("name"), action)
+		return s.SharedAction(pStr(params, "name"), action)
 	case "shared_stack":
 		return s.SharedStack(action)
 	case "session":
 		switch action {
 		case "switch":
-			return s.SessionSwitch(arg("name"))
+			return s.SessionSwitch(pStr(params, "name"))
 		case "delete":
-			return s.SessionDelete(arg("name"), flag("purge"))
+			return s.SessionDelete(pStr(params, "name"), pBool(params, "purge"))
 		}
 	case "network":
 		if action == "set_ports" {
-			return s.NetworkSetPorts(num("proxy_port"), num("webhook_port"))
+			return s.NetworkSetPorts(pInt(params, "proxy_port"), pInt(params, "webhook_port"))
 		}
 	case "sync":
 		if action == "set" {
-			return okErr(s.SyncSet(flag("refresh_main"), num("interval_sec")))
+			return okErr(s.SyncSet(pBool(params, "refresh_main"), pInt(params, "interval_sec")))
 		}
 	case "secret":
 		if action == "set" {
-			return okErr(s.SecretSet(arg("name"), arg("value")))
+			return okErr(s.SecretSet(pStr(params, "name"), pStr(params, "value")))
 		}
 	case "jira":
 		if action == "set" {
-			return okErr(s.JiraConfigSet(arg("site"), arg("email"), arg("token")))
+			return okErr(s.JiraConfigSet(pStr(params, "site"), pStr(params, "email"), pStr(params, "token")))
 		}
 	case "workspace":
 		if action == "rename" {
-			return s.WorkspaceRename(arg("branch"), flag("is_main"), arg("display_name"))
+			return s.WorkspaceRename(pStr(params, "branch"), pBool(params, "is_main"), pStr(params, "display_name"))
 		}
 	case "deps":
 		if action == "install" {
-			return s.InstallDeps(arg("branch"), flag("is_main"))
+			return s.InstallDeps(pStr(params, "branch"), pBool(params, "is_main"))
 		}
 	}
 	return map[string]any{"ok": false, "error": "unknown command: " + domain + "." + action}
