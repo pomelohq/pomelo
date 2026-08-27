@@ -132,6 +132,8 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 		return map[string]any{"name": name, "value": s.SecretGet(name)}
 	case "devproxy_log":
 		return s.DevProxyLog(pInt(params, "limit"))
+	case "pr_commits":
+		return s.PRCommits(pStr(params, "branch"), pStr(params, "repo"), pStr(params, "base"), pBool(params, "is_main"))
 	default:
 		return map[string]any{"error": "unknown query domain: " + domain}
 	}
@@ -208,6 +210,16 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 			return s.SessionSwitch(pStr(params, "name"))
 		case "delete":
 			return s.SessionDelete(pStr(params, "name"), pBool(params, "purge"))
+		case "create":
+			var req CreateSessionReq
+			if json.Unmarshal(params, &req) != nil {
+				return map[string]any{"ok": false, "error": "bad json"}
+			}
+			dir, err := ScaffoldSession(req)
+			if err != nil {
+				return map[string]any{"ok": false, "error": err.Error()}
+			}
+			return map[string]any{"ok": true, "name": req.Name, "path": dir}
 		}
 	case "network":
 		if action == "set_ports" {
@@ -263,4 +275,41 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 		}
 	}
 	return map[string]any{"ok": false, "error": "unknown command: " + domain + "." + action}
+}
+
+// Fetch reads a domain that returns raw bytes (diffs, JSON blobs) rather than a
+// value to marshal. Same routing idea as Query/Command, third shape for raw output.
+func (s *Server) Fetch(domain string, params json.RawMessage) []byte {
+	if s == nil {
+		return nil
+	}
+	branch, repo, isMain := pStr(params, "branch"), pStr(params, "repo"), pBool(params, "is_main")
+	switch domain {
+	case "pr_all":
+		return s.PRAllPRs()
+	case "pr_workspace":
+		return s.PRWorkspacePRs(branch, isMain)
+	case "pr_detail":
+		return s.PRDetail(branch, repo, isMain)
+	case "pr_comments":
+		return s.PRComments(branch, repo, isMain)
+	case "pr_diff":
+		out, err := s.PRDiff(branch, repo, isMain)
+		if err != nil {
+			return nil
+		}
+		return out
+	case "local_changes":
+		return s.WorkspaceLocalChanges(branch, isMain)
+	case "local_diff":
+		out, err := s.LocalDiff(branch, repo, isMain)
+		if err != nil {
+			return nil
+		}
+		return out
+	case "nmstore_progress":
+		return []byte(s.NMStoreProgress())
+	default:
+		return nil
+	}
 }

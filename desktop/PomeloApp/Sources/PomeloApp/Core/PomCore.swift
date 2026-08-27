@@ -62,6 +62,13 @@ final class PomCore: @unchecked Sendable {
 
     private func jp(_ d: [String: Any]) -> Data { (try? JSONSerialization.data(withJSONObject: d)) ?? Data("{}".utf8) }
 
+    func fetch(domain: String, params: Data) -> Data {
+        let p = String(decoding: params, as: UTF8.self)
+        return domain.withCString { d in p.withCString { pc in
+            cstr(PomFetch(UnsafeMutablePointer(mutating: d), UnsafeMutablePointer(mutating: pc)))
+        }}
+    }
+
     func peekAllData(windows: [String], lines: Int) -> Data { query(domain: "peek_all", params: jp(["windows": windows, "lines": lines])) }
 
     func doctorData() -> Data { query(domain: "doctor", params: Data("{}".utf8)) }
@@ -88,11 +95,7 @@ final class PomCore: @unchecked Sendable {
 
     func nmStoreReclaim() -> Data { command(domain: "nmstore", action: "reclaim", params: Data("{}".utf8)) }
 
-    func nmStoreProgress() -> String {
-        guard let out = PomNMStoreProgress() else { return "" }
-        defer { PomFree(out) }
-        return String(cString: out)
-    }
+    func nmStoreProgress() -> String { String(decoding: fetch(domain: "nmstore_progress", params: Data("{}".utf8)), as: UTF8.self) }
 
     func codeAgentsData() -> Data {
         guard let out = PomCodeAgents() else { return Data() }
@@ -170,7 +173,7 @@ final class PomCore: @unchecked Sendable {
     @discardableResult
     func sessionDelete(name: String, purge: Bool) -> Data { command(domain: "session", action: "delete", params: jp(["name": name, "purge": purge])) }
     @discardableResult
-    func sessionCreate(json: String) -> Data { json.withCString { cstr(PomSessionCreate(UnsafeMutablePointer(mutating: $0))) } }
+    func sessionCreate(json: String) -> Data { command(domain: "session", action: "create", params: Data(json.utf8)) }
     func integrationsStatusData() -> Data { query(domain: "integrations_status", params: Data("{}".utf8)) }
     func secretNamesData() -> Data { query(domain: "secret_names", params: Data("{}".utf8)) }
     func secretGet(name: String) -> Data { query(domain: "secret_get", params: jp(["name": name])) }
@@ -185,37 +188,14 @@ final class PomCore: @unchecked Sendable {
     @discardableResult
     func gitPull(branch: String, repo: String, isMain: Bool) -> Data { command(domain: "git", action: "pull", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
     func githubTest(token: String) -> Data { command(domain: "github", action: "test", params: jp(["token": token])) }
-    func prAllData() -> Data { cstr(PomPRAll()) }
-    func prWorkspaceData(branch: String, isMain: Bool) -> Data {
-        branch.withCString { b in cstr(PomPRWorkspace(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0)) }
-    }
-    func prDetailData(branch: String, repo: String, isMain: Bool) -> Data {
-        branch.withCString { b in repo.withCString { r in
-            cstr(PomPRDetail(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: r), isMain ? 1 : 0))
-        }}
-    }
-    func prCommentsData(branch: String, repo: String, isMain: Bool) -> Data {
-        branch.withCString { b in repo.withCString { r in
-            cstr(PomPRComments(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: r), isMain ? 1 : 0))
-        }}
-    }
-    func prCommitsData(branch: String, repo: String, base: String, isMain: Bool) -> Data {
-        branch.withCString { b in repo.withCString { r in base.withCString { ba in
-            cstr(PomPRCommits(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: r), UnsafeMutablePointer(mutating: ba), isMain ? 1 : 0))
-        }}}
-    }
-    func prDiffData(branch: String, repo: String, isMain: Bool) -> Data {
-        branch.withCString { b in repo.withCString { r in
-            cstr(PomPRDiff(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: r), isMain ? 1 : 0))
-        }}
-    }
-    func localChangesData(branch: String, isMain: Bool) -> Data {
-        branch.withCString { b in cstr(PomWorkspaceLocalChanges(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0)) }
-    }
-    func localDiffData(branch: String, repo: String, isMain: Bool) -> Data {
-        branch.withCString { b in repo.withCString { r in
-            cstr(PomLocalDiff(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: r), isMain ? 1 : 0))
-        }}
+    func prAllData() -> Data { fetch(domain: "pr_all", params: Data("{}".utf8)) }
+    func prWorkspaceData(branch: String, isMain: Bool) -> Data { fetch(domain: "pr_workspace", params: jp(["branch": branch, "is_main": isMain])) }
+    func prDetailData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "pr_detail", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
+    func prCommentsData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "pr_comments", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
+    func prCommitsData(branch: String, repo: String, base: String, isMain: Bool) -> Data { query(domain: "pr_commits", params: jp(["branch": branch, "repo": repo, "base": base, "is_main": isMain])) }
+    func prDiffData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "pr_diff", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
+    func localChangesData(branch: String, isMain: Bool) -> Data { fetch(domain: "local_changes", params: jp(["branch": branch, "is_main": isMain])) }
+    func localDiffData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "local_diff", params: jp(["branch": branch, "repo": repo, "is_main": isMain]))
     }
     func jiraTest(site: String, email: String, token: String) -> Data { command(domain: "jira", action: "test", params: jp(["site": site, "email": email, "token": token])) }
     func jiraBoardsData() -> Data { query(domain: "jira_boards", params: Data("{}".utf8)) }

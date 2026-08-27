@@ -27,3 +27,12 @@ func PomCommand(domain, action, params *C.char) *C.char {
 	}
 	return bindingJSON(s.Command(C.GoString(domain), C.GoString(action), json.RawMessage(C.GoString(params))))
 }
+
+//export PomFetch
+func PomFetch(domain, params *C.char) *C.char {
+	s := server()
+	if s == nil {
+		return C.CString("")
+	}
+	return bindingBytes(s.Fetch(C.GoString(domain), json.RawMessage(C.GoString(params))))
+}
