@@ -55,8 +55,10 @@ func (s *Server) refreshMain() {
 			continue
 		}
 		before, _ := services.RunTimeout(10*time.Second, wt, "git", "rev-parse", "HEAD")
-		if _, err := services.RunTimeout(90*time.Second, wt, "git", "pull", "--ff-only"); err != nil {
-			log.Printf("refresh_main: %s pull --ff-only failed (diverged?) — skipped", repo)
+		// Same path as the manual "Update main from origin": mirror origin (handles a
+		// diverged main), not a plain ff-only pull that skips on divergence.
+		if err := services.ResetToDefaultAndPull(wt, defBranch); err != nil {
+			log.Printf("refresh_main: %s sync failed — skipped: %v", repo, err)
 			continue
 		}
 		after, _ := services.RunTimeout(10*time.Second, wt, "git", "rev-parse", "HEAD")

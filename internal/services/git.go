@@ -251,8 +251,11 @@ func ResetToDefaultAndPull(dir, defaultBranch string) error {
 	if out, err := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", defaultBranch).CombinedOutput(); err != nil {
 		return fmt.Errorf("git fetch origin %s: %s (%w)", defaultBranch, strings.TrimSpace(string(out)), err)
 	}
-	if out, err := exec.Command("git", "-C", dir, "merge", "--ff-only", "FETCH_HEAD").CombinedOutput(); err != nil {
-		return fmt.Errorf("git merge --ff-only origin/%s: %s (%w)", defaultBranch, strings.TrimSpace(string(out)), err)
+	// Golden source mirrors origin: hard-reset onto the fetched head so a diverged
+	// main (upstream rebase/force-push, stray local commits) resolves instead of
+	// dying on ff-only. Working tree was already reset+cleaned above.
+	if out, err := exec.Command("git", "-C", dir, "reset", "--hard", "FETCH_HEAD").CombinedOutput(); err != nil {
+		return fmt.Errorf("git reset --hard origin/%s: %s (%w)", defaultBranch, strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }
