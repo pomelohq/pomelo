@@ -10,7 +10,7 @@ final class AgentsViewModel: ObservableObject {
     func refresh(notify: Bool, whenFocused: Bool, activeSelection: String?, appActive: Bool, onNote: (_ title: String, _ event: String, _ wsKey: String) -> Void) async {
         let fresh = await Task.detached(priority: .utility) { [api] in
             struct R: Decodable { let states: [String: String] }
-            return PomJSON.decode(R.self, from: api.agentStatesData())?.states
+            return PomJSON.decode(R.self, from: api.query(domain: "agent_states", params: Data("{}".utf8)))?.states
         }.value
         guard let fresh, fresh != states else { return }
         if notify {

@@ -69,6 +69,14 @@ final class MockPomAPI: PomAPI {
     func workspacesData(git: Bool) -> Data { Data(workspacesJSON.utf8) }
     func livenessData() -> Data { Data(workspacesJSON.utf8) }
     func agentStatesData() -> Data { Data(agentStatesJSON.utf8) }
+    func query(domain: String, params: Data) -> Data {
+        switch domain {
+        case "workspaces", "liveness": return Data(workspacesJSON.utf8)
+        case "agent_states": return Data(agentStatesJSON.utf8)
+        default: return Data("{}".utf8)
+        }
+    }
+    func command(domain: String, action: String, params: Data) -> Data { Data(#"{"ok":true}"#.utf8) }
     func peekAllData(windows: [String], lines: Int) -> Data { Data(peekAllJSON.utf8) }
     func configFilesData() -> Data { Data(configFilesJSON.utf8) }
     func openEditor(branch: String, isMain: Bool, repo: String, editor: String, resolveOnly: Bool) -> Data { Data(#"{"ok":true}"#.utf8) }

@@ -56,6 +56,20 @@ final class PomCore: @unchecked Sendable {
         return Data(String(cString: out).utf8)
     }
 
+    func query(domain: String, params: Data) -> Data {
+        let p = String(decoding: params, as: UTF8.self)
+        return domain.withCString { d in p.withCString { pc in
+            cstr(PomQuery(UnsafeMutablePointer(mutating: d), UnsafeMutablePointer(mutating: pc)))
+        }}
+    }
+
+    func command(domain: String, action: String, params: Data) -> Data {
+        let p = String(decoding: params, as: UTF8.self)
+        return domain.withCString { d in action.withCString { a in p.withCString { pc in
+            cstr(PomCommand(UnsafeMutablePointer(mutating: d), UnsafeMutablePointer(mutating: a), UnsafeMutablePointer(mutating: pc)))
+        }}}
+    }
+
     func peekAllData(windows: [String], lines: Int) -> Data {
         windows.joined(separator: ",").withCString { c in
             guard let out = PomPeekAll(UnsafeMutablePointer(mutating: c), Int32(lines)) else { return Data() }

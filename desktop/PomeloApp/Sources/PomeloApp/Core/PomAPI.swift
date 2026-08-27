@@ -1,7 +1,12 @@
 import Foundation
 
 
-protocol PomBaseAPI: AnyObject {}
+protocol PomBaseAPI: AnyObject {
+    // Data-routed verbs (ADR 0001). New endpoints migrate onto these; the typed
+    // per-feature methods below are removed as their callers move over.
+    func query(domain: String, params: Data) -> Data
+    func command(domain: String, action: String, params: Data) -> Data
+}
 
 extension PomBaseAPI {
     func call(_ work: @escaping (Self) -> Data) async -> Data {
