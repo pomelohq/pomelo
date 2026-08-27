@@ -79,7 +79,37 @@ func (s *Server) devProxy() *httputil.ReverseProxy {
 	return s.dp
 }
 
+type proxyPortEntry struct {
+	port int
+	at   time.Time
+}
+
+// resolveProxyPort caches port resolution briefly: a dev server (e.g. Vite)
+// fires hundreds of module requests per page load, and resolving live can shell
+// out to list a process's listening sockets — doing that per request pegs the CPU.
 func (s *Server) resolveProxyPort(branchLabel, target string) int {
+	key := branchLabel + "\x00" + target
+	now := time.Now()
+	s.ppMu.Lock()
+	if s.ppCache == nil {
+		s.ppCache = map[string]proxyPortEntry{}
+	}
+	if e, ok := s.ppCache[key]; ok && e.port != 0 && now.Sub(e.at) < 3*time.Second {
+		s.ppMu.Unlock()
+		return e.port
+	}
+	s.ppMu.Unlock()
+
+	port := s.resolveProxyPortUncached(branchLabel, target)
+	if port != 0 {
+		s.ppMu.Lock()
+		s.ppCache[key] = proxyPortEntry{port: port, at: now}
+		s.ppMu.Unlock()
+	}
+	return port
+}
+
+func (s *Server) resolveProxyPortUncached(branchLabel, target string) int {
 	branch := s.branchForHostLabel(branchLabel)
 	if branch == "" {
 		return 0

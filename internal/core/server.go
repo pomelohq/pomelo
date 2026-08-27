@@ -43,6 +43,9 @@ type Server struct {
 	epOnce sync.Once
 	ep     *httputil.ReverseProxy
 
+	ppMu    sync.Mutex
+	ppCache map[string]proxyPortEntry
+
 	bcMu  sync.Mutex
 	bcMap map[string]string
 	bcAt  time.Time
@@ -297,7 +300,7 @@ func parseAckControl(data []byte) (int, bool) {
 	}
 	var msg struct {
 		Ctrl string `json:"__pom"`
-		N     int    `json:"n"`
+		N    int    `json:"n"`
 	}
 	if json.Unmarshal(data, &msg) != nil || msg.Ctrl != "ack" || msg.N <= 0 {
 		return 0, false
@@ -312,8 +315,8 @@ func parseResizeControl(data []byte) (struct{ Cols, Rows string }, bool) {
 	}
 	var msg struct {
 		Ctrl string `json:"__pom"`
-		Cols  int    `json:"cols"`
-		Rows  int    `json:"rows"`
+		Cols int    `json:"cols"`
+		Rows int    `json:"rows"`
 	}
 	if json.Unmarshal(data, &msg) != nil || msg.Ctrl != "resize" || msg.Cols <= 0 || msg.Rows <= 0 {
 		return out, false
