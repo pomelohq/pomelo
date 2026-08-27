@@ -84,24 +84,6 @@ func PomNMStoreList() *C.char {
 	return bindingJSON(s.NMStoreList())
 }
 
-//export PomNMStoreReconcile
-func PomNMStoreReconcile() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.NMStoreReconcile())
-}
-
-//export PomNMStoreReclaim
-func PomNMStoreReclaim() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.NMStoreReclaim())
-}
-
 //export PomNMStoreProgress
 func PomNMStoreProgress() *C.char {
 	s := server()
@@ -184,15 +166,6 @@ func PomDBConsolesSave(data *C.char) *C.char {
 		return C.CString(`{"ok":false,"error":"no server"}`)
 	}
 	return bindingJSON(s.DBConsolesSave(C.GoString(data)))
-}
-
-//export PomMCPReinstall
-func PomMCPReinstall() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false,"error":"no server"}`)
-	}
-	return bindingJSON(s.MCPGlobalReinstall())
 }
 
 //export PomFetchImage
@@ -339,42 +312,6 @@ func PomServiceControl(refJSON, action *C.char) *C.char {
 	return bindingJSON(s.ServiceControlJSON(C.GoString(refJSON), C.GoString(action)))
 }
 
-//export PomPtyReap
-func PomPtyReap() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"reaped":0}`)
-	}
-	return bindingJSON(s.PtyReap())
-}
-
-//export PomPaneKill
-func PomPaneKill(paneID *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.PaneKill(C.GoString(paneID)))
-}
-
-//export PomWorkspaceRename
-func PomWorkspaceRename(branch *C.char, isMain C.int, displayName *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.WorkspaceRename(C.GoString(branch), isMain != 0, C.GoString(displayName)))
-}
-
-//export PomNetworkSetPorts
-func PomNetworkSetPorts(proxyPort, webhookPort C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.NetworkSetPorts(int(proxyPort), int(webhookPort)))
-}
-
 //export PomDevProxyLog
 func PomDevProxyLog(limit C.int) *C.char {
 	s := server()
@@ -391,24 +328,6 @@ func PomPaneBusy(holder *C.char) *C.char {
 		return C.CString(`{"busy":false}`)
 	}
 	return bindingJSON(map[string]any{"busy": s.PaneBusy(C.GoString(holder))})
-}
-
-//export PomSessionSwitch
-func PomSessionSwitch(name *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.SessionSwitch(C.GoString(name)))
-}
-
-//export PomSessionDelete
-func PomSessionDelete(name *C.char, purge C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.SessionDelete(C.GoString(name), purge != 0))
 }
 
 //export PomSessionCreate
@@ -451,42 +370,6 @@ func PomConfigFileCreate(name, yaml *C.char) *C.char {
 	return bindingJSON(s.ConfigFileCreate(C.GoString(name), C.GoString(yaml)))
 }
 
-//export PomInstallDeps
-func PomInstallDeps(branch *C.char, isMain C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.InstallDeps(C.GoString(branch), isMain != 0))
-}
-
-//export PomConfigReload
-func PomConfigReload() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"error":"not initialized"}`)
-	}
-	return bindingJSON(s.ConfigReload())
-}
-
-//export PomSharedAction
-func PomSharedAction(name, action *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.SharedAction(C.GoString(name), C.GoString(action)))
-}
-
-//export PomSharedStack
-func PomSharedStack(action *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	return bindingJSON(s.SharedStack(C.GoString(action)))
-}
-
 //export PomSecretGet
 func PomSecretGet(name *C.char) *C.char {
 	s := server()
@@ -494,30 +377,6 @@ func PomSecretGet(name *C.char) *C.char {
 		return C.CString(`{"value":""}`)
 	}
 	return bindingJSON(map[string]any{"name": C.GoString(name), "value": s.SecretGet(C.GoString(name))})
-}
-
-//export PomSecretSet
-func PomSecretSet(name, value *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	if err := s.SecretSet(C.GoString(name), C.GoString(value)); err != nil {
-		return bindingJSON(map[string]any{"ok": false, "error": err.Error()})
-	}
-	return C.CString(`{"ok":true}`)
-}
-
-//export PomJiraSet
-func PomJiraSet(site, email, token *C.char) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	if err := s.JiraConfigSet(C.GoString(site), C.GoString(email), C.GoString(token)); err != nil {
-		return bindingJSON(map[string]any{"ok": false, "error": err.Error()})
-	}
-	return C.CString(`{"ok":true}`)
 }
 
 //export PomVersion
@@ -679,18 +538,6 @@ func PomSyncGet() *C.char {
 		return C.CString(`{"refresh_main":false,"refresh_interval_sec":1800}`)
 	}
 	return bindingJSON(s.SyncGet())
-}
-
-//export PomSyncSet
-func PomSyncSet(refreshMain C.int, intervalSec C.int) *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":false}`)
-	}
-	if err := s.SyncSet(refreshMain != 0, int(intervalSec)); err != nil {
-		return bindingJSON(map[string]any{"ok": false, "error": err.Error()})
-	}
-	return C.CString(`{"ok":true}`)
 }
 
 //export PomLogs

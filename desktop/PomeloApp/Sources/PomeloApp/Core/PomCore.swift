@@ -64,6 +64,8 @@ final class PomCore: @unchecked Sendable {
         }}}
     }
 
+    private func jp(_ d: [String: Any]) -> Data { (try? JSONSerialization.data(withJSONObject: d)) ?? Data("{}".utf8) }
+
     func peekAllData(windows: [String], lines: Int) -> Data {
         windows.joined(separator: ",").withCString { c in
             guard let out = PomPeekAll(UnsafeMutablePointer(mutating: c), Int32(lines)) else { return Data() }
@@ -104,11 +106,9 @@ final class PomCore: @unchecked Sendable {
         }}
     }
     @discardableResult
-    func installDeps(branch: String, isMain: Bool) -> Data {
-        branch.withCString { b in cstr(PomInstallDeps(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0)) }
-    }
+    func installDeps(branch: String, isMain: Bool) -> Data { command(domain: "deps", action: "install", params: jp(["branch": branch, "is_main": isMain])) }
     @discardableResult
-    func configReload() -> Data { cstr(PomConfigReload()) }
+    func configReload() -> Data { command(domain: "config", action: "reload", params: Data("{}".utf8)) }
 
     func nmStoreListData() -> Data {
         guard let out = PomNMStoreList() else { return Data() }
@@ -124,17 +124,9 @@ final class PomCore: @unchecked Sendable {
         }}
     }
 
-    func nmStoreReconcile() -> Data {
-        guard let out = PomNMStoreReconcile() else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
+    func nmStoreReconcile() -> Data { command(domain: "nmstore", action: "reconcile", params: Data("{}".utf8)) }
 
-    func nmStoreReclaim() -> Data {
-        guard let out = PomNMStoreReclaim() else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
+    func nmStoreReclaim() -> Data { command(domain: "nmstore", action: "reclaim", params: Data("{}".utf8)) }
 
     func nmStoreProgress() -> String {
         guard let out = PomNMStoreProgress() else { return "" }
@@ -161,15 +153,11 @@ final class PomCore: @unchecked Sendable {
     }
 
     @discardableResult
-    func syncSet(refreshMain: Bool, intervalSec: Int) -> Data {
-        guard let out = PomSyncSet(refreshMain ? 1 : 0, Int32(intervalSec)) else { return Data() }
-        defer { PomFree(out) }
-        return Data(String(cString: out).utf8)
-    }
+    func syncSet(refreshMain: Bool, intervalSec: Int) -> Data { command(domain: "sync", action: "set", params: jp(["refresh_main": refreshMain, "interval_sec": intervalSec])) }
 
     func sharedStatusData() -> Data { query(domain: "shared_status", params: Data("{}".utf8)) }
     func mcpStatusData() -> Data { query(domain: "mcp_status", params: Data("{}".utf8)) }
-    func mcpReinstallData() -> Data { cstr(PomMCPReinstall()) }
+    func mcpReinstallData() -> Data { command(domain: "mcp", action: "reinstall", params: Data("{}".utf8)) }
     func fetchImageData(url: String) -> Data { url.withCString { cstr(PomFetchImage(UnsafeMutablePointer(mutating: $0))) } }
     func sharedStatsData(name: String) -> Data { name.withCString { cstr(PomSharedStats(UnsafeMutablePointer(mutating: $0))) } }
     func sharedInspectData(name: String) -> Data { name.withCString { cstr(PomSharedInspect(UnsafeMutablePointer(mutating: $0))) } }
@@ -204,13 +192,9 @@ final class PomCore: @unchecked Sendable {
         }}
     }
     @discardableResult
-    func sharedAction(name: String, action: String) -> Data {
-        name.withCString { n in action.withCString { a in
-            cstr(PomSharedAction(UnsafeMutablePointer(mutating: n), UnsafeMutablePointer(mutating: a)))
-        }}
-    }
+    func sharedAction(name: String, action: String) -> Data { command(domain: "shared", action: action, params: jp(["name": name])) }
     @discardableResult
-    func sharedStack(action: String) -> Data { action.withCString { cstr(PomSharedStack(UnsafeMutablePointer(mutating: $0))) } }
+    func sharedStack(action: String) -> Data { command(domain: "shared_stack", action: action, params: Data("{}".utf8)) }
     @discardableResult
     func openEditor(branch: String, isMain: Bool, repo: String, editor: String, resolveOnly: Bool) -> Data {
         branch.withCString { b in repo.withCString { r in editor.withCString { e in
@@ -282,26 +266,22 @@ final class PomCore: @unchecked Sendable {
         }}}
     }
     @discardableResult
-    func ptyReap() -> Data { cstr(PomPtyReap()) }
+    func ptyReap() -> Data { command(domain: "pty", action: "reap", params: Data("{}".utf8)) }
     @discardableResult
-    func paneKill(paneID: String) -> Data { paneID.withCString { cstr(PomPaneKill(UnsafeMutablePointer(mutating: $0))) } }
+    func paneKill(paneID: String) -> Data { command(domain: "pane", action: "kill", params: jp(["pane_id": paneID])) }
     @discardableResult
-    func workspaceRename(branch: String, isMain: Bool, displayName: String) -> Data {
-        branch.withCString { b in displayName.withCString { d in
-            cstr(PomWorkspaceRename(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0, UnsafeMutablePointer(mutating: d)))
-        }}
-    }
+    func workspaceRename(branch: String, isMain: Bool, displayName: String) -> Data { command(domain: "workspace", action: "rename", params: jp(["branch": branch, "is_main": isMain, "display_name": displayName])) }
     func editorsData() -> Data { query(domain: "editors", params: Data("{}".utf8)) }
     func networkData() -> Data { query(domain: "network", params: Data("{}".utf8)) }
     @discardableResult
-    func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data { cstr(PomNetworkSetPorts(Int32(proxyPort), Int32(webhookPort))) }
+    func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data { command(domain: "network", action: "set_ports", params: jp(["proxy_port": proxyPort, "webhook_port": webhookPort])) }
     func devProxyLogData(limit: Int) -> Data { cstr(PomDevProxyLog(Int32(limit))) }
     func paneBusyData(holder: String) -> Data { holder.withCString { cstr(PomPaneBusy(UnsafeMutablePointer(mutating: $0))) } }
     func sessionListData() -> Data { query(domain: "session_list", params: Data("{}".utf8)) }
     @discardableResult
-    func sessionSwitch(name: String) -> Data { name.withCString { cstr(PomSessionSwitch(UnsafeMutablePointer(mutating: $0))) } }
+    func sessionSwitch(name: String) -> Data { command(domain: "session", action: "switch", params: jp(["name": name])) }
     @discardableResult
-    func sessionDelete(name: String, purge: Bool) -> Data { name.withCString { cstr(PomSessionDelete(UnsafeMutablePointer(mutating: $0), purge ? 1 : 0)) } }
+    func sessionDelete(name: String, purge: Bool) -> Data { command(domain: "session", action: "delete", params: jp(["name": name, "purge": purge])) }
     @discardableResult
     func sessionCreate(json: String) -> Data { json.withCString { cstr(PomSessionCreate(UnsafeMutablePointer(mutating: $0))) } }
     func integrationsStatusData() -> Data { query(domain: "integrations_status", params: Data("{}".utf8)) }
@@ -310,17 +290,9 @@ final class PomCore: @unchecked Sendable {
         name.withCString { n in cstr(PomSecretGet(UnsafeMutablePointer(mutating: n))) }
     }
     @discardableResult
-    func secretSet(name: String, value: String) -> Data {
-        name.withCString { n in value.withCString { v in
-            cstr(PomSecretSet(UnsafeMutablePointer(mutating: n), UnsafeMutablePointer(mutating: v)))
-        }}
-    }
+    func secretSet(name: String, value: String) -> Data { command(domain: "secret", action: "set", params: jp(["name": name, "value": value])) }
     @discardableResult
-    func jiraSet(site: String, email: String, token: String) -> Data {
-        site.withCString { s in email.withCString { e in token.withCString { t in
-            cstr(PomJiraSet(UnsafeMutablePointer(mutating: s), UnsafeMutablePointer(mutating: e), UnsafeMutablePointer(mutating: t)))
-        }}}
-    }
+    func jiraSet(site: String, email: String, token: String) -> Data { command(domain: "jira", action: "set", params: jp(["site": site, "email": email, "token": token])) }
     func versionData() -> Data { cstr(PomVersion()) }
     func psData() -> Data { query(domain: "ps", params: Data("{}".utf8)) }
     @discardableResult
