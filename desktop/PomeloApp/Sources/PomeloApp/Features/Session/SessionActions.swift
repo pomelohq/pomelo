@@ -25,7 +25,7 @@ extension AppState {
 
     func deleteSession(_ name: String) {
         Task {
-            _ = await Task.detached { PomCore.shared.sessionDelete(name: name, purge: false) }.value
+            await SessionStore.delete(name: name, purge: false)
             await loadSessions()
         }
     }
@@ -196,7 +196,7 @@ struct CreateSessionSheet: View {
         let reposJSON = repos.map { "{\"path\":\"\($0.path)\",\"alias\":\"\($0.alias)\"}" }.joined(separator: ",")
         let body = "{\"name\":\"\(name)\",\"default_branch\":\"\(defaultBranch)\",\"repos\":[\(reposJSON)]}"
         Task {
-            let d = await Task.detached { PomCore.shared.sessionCreate(json: body) }.value
+            let d = await SessionStore.create(json: body)
             let ok = String(decoding: d, as: UTF8.self).contains("\"ok\":true") || String(decoding: d, as: UTF8.self).contains(name)
             busy = false
             if ok {

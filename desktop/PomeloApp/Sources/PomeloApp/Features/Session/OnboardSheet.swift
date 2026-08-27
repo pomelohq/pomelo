@@ -202,7 +202,7 @@ struct OnboardSheet: View {
 
     private func verifyAndInstall() async {
         installing = true
-        let d = await Task.detached { PomCore.shared.installDeps(branch: branch, isMain: true) }.value
+        let d = await SessionStore.installDeps(branch: branch, isMain: true)
         struct Fail: Decodable { var id = ""; var title = ""; var detail = "" }
         struct R: Decodable { var ok = false; var failed: [Fail] = [] }
         let failed = PomJSON.decode(R.self, from: d)?.failed ?? []
@@ -306,7 +306,7 @@ struct OnboardSheet: View {
     }
 
     private func loadFindings(extraSetup: [(String, String, String)] = []) async {
-        let d = await Task.detached { PomCore.shared.doctorData() }.value
+        let d = await SessionStore.doctor()
         let report = PomJSON.decode(DoctorViewModel.Report.self, from: d)
         var all = (report?.findings ?? []).filter { $0.severity != "ok" }
         for (id, title, detail) in extraSetup {

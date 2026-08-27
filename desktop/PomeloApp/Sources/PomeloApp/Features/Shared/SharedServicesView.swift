@@ -138,7 +138,7 @@ struct SharedServicesView: View {
     }
 
     private func load() async {
-        let d = await Task.detached { PomCore.shared.sharedStatusData() }.value
+        let d = await SharedServicesStore.status()
         if let r = PomJSON.decode(SharedResp.self, from: d) {
             services = r.services
             if selected == nil { selected = r.services.first(where: \.running)?.name ?? r.services.first?.name }
@@ -147,18 +147,18 @@ struct SharedServicesView: View {
 
     private func act(_ name: String, _ action: String) async {
         busy = true; defer { busy = false }
-        _ = await Task.detached { PomCore.shared.sharedAction(name: name, action: action) }.value
+        await SharedServicesStore.action(name: name, action: action)
         await load()
     }
 
     private func stack(_ action: String) async {
         busy = true; defer { busy = false }
-        _ = await Task.detached { PomCore.shared.sharedStack(action: action) }.value
+        await SharedServicesStore.stack(action: action)
         await load()
     }
 
     private func loadTotal() async {
-        let d = await Task.detached { PomCore.shared.sharedStatsData(name: "") }.value
+        let d = await SharedServicesStore.stats(name: "")
         struct T: Decodable { var cpu = ""; var mem = "" }
         if let r = PomJSON.decode(T.self, from: d) { totalCPU = r.cpu; totalMem = r.mem }
     }
@@ -348,17 +348,17 @@ private struct DetailPane: View {
 
     private func refresh() async {
         let n = name
-        let d = await Task.detached { PomCore.shared.sharedInspectData(name: n) }.value
+        let d = await SharedServicesStore.inspect(name: n)
         if let r = PomJSON.decode(SharedInspect.self, from: d) { info = r }
         guard tab == .logs else { return }
-        let l = await Task.detached { PomCore.shared.sharedLogsData(name: n, lines: 300) }.value
+        let l = await SharedServicesStore.logs(name: n, lines: 300)
         if let r = PomJSON.decode(SharedLogs.self, from: l) { logs = r.lines }
     }
 
     private func refreshStats() async {
         struct S: Decodable { var running = false; var cpu = ""; var mem = ""; var net = ""; var disk = "" }
         let n = name
-        let d = await Task.detached { PomCore.shared.sharedStatsData(name: n) }.value
+        let d = await SharedServicesStore.stats(name: n)
         guard let r = PomJSON.decode(S.self, from: d), r.running else { return }
         info.cpu = r.cpu; info.mem = r.mem; info.net = r.net; info.disk = r.disk
         if let c = parsePct(r.cpu) { cpu = Array((cpu + [c]).suffix(40)) }

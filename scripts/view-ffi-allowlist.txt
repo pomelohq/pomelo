@@ -1,8 +1,4 @@
-Features/Activity/ActivityView.swift
-Features/Session/OnboardSheet.swift
-Features/Session/SessionActions.swift
 Features/Settings/SettingsView.swift
-Features/Shared/SharedServicesView.swift
 Features/Workspaces/PRsBoard.swift
 Features/Workspaces/ServicesHome.swift
 Features/Workspaces/UpdateMainSheet.swift

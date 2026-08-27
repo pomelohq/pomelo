@@ -188,13 +188,13 @@ struct ActivityView: View {
             let ref: [String: Any] = ["branch": p.branch, "is_main": isMain, "repo": p.repo, "svc": p.svc]
             let body = (try? JSONSerialization.data(withJSONObject: ref)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
             Task {
-                _ = await Task.detached { PomCore.shared.serviceControl(refJSON: body, action: "stop") }.value
+                await ActivityStore.serviceStop(refJSON: body)
                 await load()
             }
         } else if !p.label.isEmpty {
             let holder = p.label
             Task {
-                _ = await Task.detached { PomCore.shared.paneKill(paneID: "pty:" + holder) }.value
+                await ActivityStore.paneKill(paneID: "pty:" + holder)
                 await load()
             }
         }
@@ -207,10 +207,8 @@ struct ActivityView: View {
     private func cpuColor(_ c: Double) -> Color { c > 80 ? Theme.danger : c > 30 ? Theme.warn : Theme.fgMuted }
 
     private func load() async {
-        let fresh = await Task.detached(priority: .utility) { () -> PsResponse? in
-            let d = PomCore.shared.psData()
-            return PomJSON.decode(PsResponse.self, from: d)
-        }.value
+        let d = await ActivityStore.ps()
+        let fresh = PomJSON.decode(PsResponse.self, from: d)
         if let fresh {
             procs = fresh.processes; total = fresh.total
             let t = scopedTotal
