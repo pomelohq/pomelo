@@ -1,6 +1,10 @@
 package core
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/pomelohq/pomelo/internal/diffparse"
+)
 
 // Data-routed verbs (ADR 0001 target shape): one entry point per interaction kind,
 // routed by a domain/action string, so a new endpoint is a case here plus a DTO
@@ -298,7 +302,7 @@ func (s *Server) Fetch(domain string, params json.RawMessage) []byte {
 		if err != nil {
 			return nil
 		}
-		return out
+		return diffparse.ParseJSON(out)
 	case "local_changes":
 		return s.WorkspaceLocalChanges(branch, isMain)
 	case "local_diff":
@@ -306,7 +310,7 @@ func (s *Server) Fetch(domain string, params json.RawMessage) []byte {
 		if err != nil {
 			return nil
 		}
-		return out
+		return diffparse.ParseJSON(out)
 	case "nmstore_progress":
 		return []byte(s.NMStoreProgress())
 	default:

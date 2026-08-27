@@ -479,8 +479,7 @@ struct LocalChangesDetail: View {
         guard diffFiles == nil else { return }
         let repo = item.repo
         let files = await Task.detached(priority: .userInitiated) { () -> [DiffFile] in
-            let text = String(decoding: PRStore.localDiff(branch: branch, repo: repo, isMain: isMain), as: UTF8.self)
-            return DiffParser.parse(text)
+            PomJSON.decode([DiffFile].self, from: PRStore.localDiff(branch: branch, repo: repo, isMain: isMain)) ?? []
         }.value
         diffFiles = files
         if selFile == nil { selFile = files.first?.path }
@@ -869,8 +868,7 @@ struct PRDetail: View {
         guard diffFiles == nil else { return }
         let repo = item.repo
         let files = await Task.detached(priority: .userInitiated) { () -> [DiffFile] in
-            let text = String(decoding: PRStore.diff(branch: branch, repo: repo, isMain: isMain), as: UTF8.self)
-            return DiffParser.parse(text)
+            PomJSON.decode([DiffFile].self, from: PRStore.diff(branch: branch, repo: repo, isMain: isMain)) ?? []
         }.value
         diffFiles = files
         if selFile == nil { selFile = files.first?.path }

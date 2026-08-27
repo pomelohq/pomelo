@@ -1,16 +1,17 @@
 import SwiftUI
 
 
-struct DiffLine: Identifiable, Sendable {
-    enum Kind: Sendable { case context, add, del, hunk }
+struct DiffLine: Identifiable, Sendable, Decodable {
+    enum Kind: String, Sendable, Decodable { case context, add, del, hunk }
     let id: Int
     let kind: Kind
     let oldN: Int?
     let newN: Int?
     let text: String
+    enum CodingKeys: String, CodingKey { case id, kind, text, oldN = "old_n", newN = "new_n" }
 }
 
-struct DiffFile: Identifiable, Sendable {
+struct DiffFile: Identifiable, Sendable, Decodable {
     var path: String
     var oldPath: String?
     var status: String
@@ -20,6 +21,11 @@ struct DiffFile: Identifiable, Sendable {
     var lines: [DiffLine] = []
     var headerOldPath: String = ""
     var id: String { path }
+
+    enum CodingKeys: String, CodingKey {
+        case path, status, adds, dels, binary, lines
+        case oldPath = "old_path", headerOldPath = "header_old_path"
+    }
 
     var isRename: Bool { status == "R" || status == "C" }
 
@@ -33,99 +39,6 @@ struct DiffFile: Identifiable, Sendable {
         while i < a.count - 1 && i < b.count - 1 && a[i] == b[i] { i += 1 }
         let prefix = i == 0 ? "" : a[0..<i].joined(separator: "/") + "/"
         return (prefix, a[i...].joined(separator: "/"), b[i...].joined(separator: "/"))
-    }
-}
-
-/// Splits a `diff --git a/x b/y` header. Cannot split on spaces — paths may
-/// contain them — so the boundary is the last " b/" leaving a well-formed `a/`.
-func gitHeaderPaths(_ body: String) -> (String, String) {
-    let s = Array(body)
-    var candidates: [Int] = []
-    if s.count > 3 {
-        for i in 0...(s.count - 3) where s[i] == " " && s[i + 1] == "b" && s[i + 2] == "/" {
-            candidates.append(i)
-        }
-    }
-    for i in candidates.reversed() {
-        let left = String(s[0..<i]), right = String(s[(i + 1)...])
-        if left.hasPrefix("a/") && right.hasPrefix("b/") {
-            return (String(left.dropFirst(2)), String(right.dropFirst(2)))
-        }
-    }
-    return ("", "")
-}
-
-enum DiffParser {
-    static func parse(_ text: String) -> [DiffFile] {
-        var files: [DiffFile] = []
-        var cur: DiffFile?
-        var oldN = 0, newN = 0
-        var lid = 0
-        let flush = { if let c = cur { files.append(c) }; cur = nil }
-
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
-            if raw.hasPrefix("diff --git ") {
-                flush()
-                let (a, b) = gitHeaderPaths(String(raw.dropFirst("diff --git ".count)))
-                cur = DiffFile(path: b, oldPath: nil, status: "M")
-                cur?.headerOldPath = a
-                oldN = 0; newN = 0
-                continue
-            }
-            guard cur != nil else { continue }
-            if raw.hasPrefix("new file") { cur?.status = "A"; continue }
-            if raw.hasPrefix("deleted file") {
-                cur?.status = "D"
-                if let h = cur?.headerOldPath, !h.isEmpty { cur?.path = h }
-                continue
-            }
-            if raw.hasPrefix("rename from ") { cur?.oldPath = String(raw.dropFirst("rename from ".count)); cur?.status = "R"; continue }
-            if raw.hasPrefix("rename to ") { cur?.path = String(raw.dropFirst("rename to ".count)); cur?.status = "R"; continue }
-            if raw.hasPrefix("copy from ") { cur?.oldPath = String(raw.dropFirst("copy from ".count)); cur?.status = "C"; continue }
-            if raw.hasPrefix("copy to ") { cur?.path = String(raw.dropFirst("copy to ".count)); cur?.status = "C"; continue }
-            if raw.hasPrefix("Binary files") { cur?.binary = true; continue }
-            if raw.hasPrefix("--- ") { continue }
-            if raw.hasPrefix("+++ ") {
-                let p = String(raw.dropFirst(4))
-                if p != "/dev/null" { cur?.path = p.hasPrefix("b/") ? String(p.dropFirst(2)) : p }
-                continue
-            }
-            if raw.hasPrefix("index ") || raw.hasPrefix("similarity ") || raw.hasPrefix("\\ ") { continue }
-            if raw.hasPrefix("@@") {
-                (oldN, newN) = hunkStart(raw)
-                lid += 1
-                cur?.lines.append(DiffLine(id: lid, kind: .hunk, oldN: nil, newN: nil, text: raw))
-                continue
-            }
-            // Trailing blank from the final newline, before any hunk: not a context line.
-            if raw.isEmpty, cur?.lines.isEmpty ?? true { continue }
-            let first = raw.first
-            lid += 1
-            switch first {
-            case "+":
-                cur?.lines.append(DiffLine(id: lid, kind: .add, oldN: nil, newN: newN, text: String(raw.dropFirst())))
-                cur?.adds += 1; newN += 1
-            case "-":
-                cur?.lines.append(DiffLine(id: lid, kind: .del, oldN: oldN, newN: nil, text: String(raw.dropFirst())))
-                cur?.dels += 1; oldN += 1
-            default:
-                let t = raw.hasPrefix(" ") ? String(raw.dropFirst()) : raw
-                cur?.lines.append(DiffLine(id: lid, kind: .context, oldN: oldN, newN: newN, text: t))
-                oldN += 1; newN += 1
-            }
-        }
-        flush()
-        return files
-    }
-
-    private static func hunkStart(_ s: String) -> (Int, Int) {
-        var old = 0, new = 0
-        let body = s.dropFirst(2)
-        for tok in body.split(separator: " ") {
-            if tok.hasPrefix("-") { old = Int(tok.dropFirst().split(separator: ",").first ?? "0") ?? 0 }
-            if tok.hasPrefix("+") { new = Int(tok.dropFirst().split(separator: ",").first ?? "0") ?? 0; break }
-        }
-        return (old, new)
     }
 }
 

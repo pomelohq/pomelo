@@ -1,41 +1,22 @@
 import XCTest
 @testable import PomeloApp
 
-final class DiffParserTests: XCTestCase {
-    func testPureRenameKeepsBothPaths() {
-        let d = """
-        diff --git a/a/old.ts b/a/new.ts
-        similarity index 100%
-        rename from a/old.ts
-        rename to a/new.ts
-        """
-        let f = DiffParser.parse(d)
-        XCTAssertEqual(f.count, 1)
-        XCTAssertEqual(f[0].status, "R")
-        XCTAssertEqual(f[0].path, "a/new.ts")
-        XCTAssertEqual(f[0].oldPath, "a/old.ts")
-        XCTAssertTrue(f[0].lines.isEmpty, "pure rename has no content lines")
-    }
-
-    func testRenameWithEditsCountsHunks() {
-        let d = """
-        diff --git a/src/old.ts b/src/new.ts
-        similarity index 84%
-        rename from src/old.ts
-        rename to src/new.ts
-        index e4aade4..b4d15c1 100644
-        --- a/src/old.ts
-        +++ b/src/new.ts
-        @@ -1,2 +1,3 @@
-         hello
-         world
-        +extra
-        """
-        let f = DiffParser.parse(d)
-        XCTAssertEqual(f[0].status, "R")
-        XCTAssertEqual(f[0].oldPath, "src/old.ts")
-        XCTAssertEqual(f[0].path, "src/new.ts")
-        XCTAssertEqual(f[0].adds, 1)
+// Diff PARSING now lives in Go (internal/diffparse) — see its _test.go for the
+// format cases. These cover the rename-display derivation that stays FE (ADR 0001:
+// how to present a rename compactly is UI/UX) and decoding the Go payload.
+final class DiffModelTests: XCTestCase {
+    func testDecodesGoPayload() {
+        let json = #"[{"path":"src/new.ts","old_path":"src/old.ts","status":"R","adds":1,"dels":0,"binary":false,"header_old_path":"src/old.ts","lines":[{"id":1,"kind":"hunk","text":"@@ -1,2 +1,3 @@"},{"id":2,"kind":"add","new_n":3,"text":"extra"}]}]"#
+        let files = PomJSON.decode([DiffFile].self, from: Data(json.utf8))
+        XCTAssertEqual(files?.count, 1)
+        let f = files?[0]
+        XCTAssertEqual(f?.status, "R")
+        XCTAssertEqual(f?.path, "src/new.ts")
+        XCTAssertEqual(f?.oldPath, "src/old.ts")
+        XCTAssertEqual(f?.adds, 1)
+        XCTAssertEqual(f?.lines.count, 2)
+        XCTAssertEqual(f?.lines.first?.kind, .hunk)
+        XCTAssertEqual(f?.lines.last?.newN, 3)
     }
 
     func testRenamePartsSharesCommonPrefix() {
@@ -56,45 +37,9 @@ final class DiffParserTests: XCTestCase {
         XCTAssertEqual(r.to, "hooks/use-copy.ts")
     }
 
-    func testHeaderPathsWithSpaces() {
-        let (old, new) = gitHeaderPaths("a/a/with space.ts b/a/final.ts")
-        XCTAssertEqual(old, "a/with space.ts")
-        XCTAssertEqual(new, "a/final.ts")
-    }
-
-    func testDeletedFileWithSpaceKeepsPath() {
-        let d = """
-        diff --git a/a/gone file.ts b/a/gone file.ts
-        deleted file mode 100644
-        index 3b18e51..0000000
-        --- a/a/gone file.ts
-        +++ /dev/null
-        @@ -1 +0,0 @@
-        -hello world
-        """
-        let f = DiffParser.parse(d)
-        XCTAssertEqual(f[0].status, "D")
-        XCTAssertEqual(f[0].path, "a/gone file.ts")
-        XCTAssertEqual(f[0].dels, 1)
-    }
-
-    func testPlainModificationIsUnaffected() {
-        let d = """
-        diff --git a/x.ts b/x.ts
-        index 111..222 100644
-        --- a/x.ts
-        +++ b/x.ts
-        @@ -1,1 +1,1 @@
-        -old
-        +new
-        """
-        let f = DiffParser.parse(d)
-        XCTAssertEqual(f[0].status, "M")
-        XCTAssertEqual(f[0].path, "x.ts")
-        XCTAssertNil(f[0].oldPath)
-        XCTAssertNil(f[0].renameParts)
-        XCTAssertEqual(f[0].adds, 1)
-        XCTAssertEqual(f[0].dels, 1)
+    func testPlainModificationHasNoRenameParts() {
+        let f = DiffFile(path: "x.ts", oldPath: nil, status: "M")
+        XCTAssertNil(f.renameParts)
     }
 }
 
