@@ -83,6 +83,15 @@ func (c ResolveCtx) slotIndex(name string) string {
 	return "0"
 }
 
+func (c ResolveCtx) sharedInstance(name string) int {
+	if svc, ok := LoadSlotAllocations()[name]; ok {
+		if a, ok := svc.Slots[c.WsKey]; ok {
+			return a.Instance
+		}
+	}
+	return 0
+}
+
 func (c ResolveCtx) resolveDB(name, field string) (string, bool) {
 	dbName := c.DBNames[name]
 	if field != "url" {
@@ -111,7 +120,10 @@ func (c ResolveCtx) resolveShared(name, field string) (string, bool) {
 	if pass == "" {
 		pass = "postgres"
 	}
-	port := SharedPort(name)
+	// A capacity>1 shared service runs one container per instance at base+instance
+	// (see AllocateSlot / GenerateSharedCompose). Resolve the port of THIS
+	// workspace's assigned instance, not always instance 0.
+	port := SharedPort(name) + c.sharedInstance(name)
 	switch field {
 	case "host":
 		return "localhost", true

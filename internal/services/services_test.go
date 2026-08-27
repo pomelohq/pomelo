@@ -1,10 +1,42 @@
 package services
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/pomelohq/pomelo/internal/config"
 )
+
+func TestResolveSharedInstanceAware(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	projectDir := t.TempDir()
+	cfg := &config.Config{
+		Session:        t.Name(),
+		SharedServices: map[string]*config.SharedServiceDef{"redis": {Ports: []string{"6379"}}},
+	}
+	InitNetwork(projectDir, cfg.Session, cfg)
+	base := SharedPort("redis")
+
+	// capacity 1 slot/instance -> two workspaces spread onto instances 0 and 1.
+	AllocateSlot("redis", "ws-a", 1, uint16(base))
+	AllocateSlot("redis", "ws-b", 1, uint16(base))
+
+	sawInst1 := false
+	for _, ws := range []string{"ws-a", "ws-b"} {
+		c := ResolveCtx{Cfg: cfg, WsKey: ws}
+		inst := c.sharedInstance("redis")
+		if inst == 1 {
+			sawInst1 = true
+		}
+		got, _ := c.resolveShared("redis", "port")
+		if want := fmt.Sprintf("%d", base+inst); got != want {
+			t.Errorf("%s: resolveShared port = %s, want base+instance = %s", ws, got, want)
+		}
+	}
+	if !sawInst1 {
+		t.Fatal("a workspace must resolve to instance 1's port, not always instance 0")
+	}
+}
 
 func TestBranchSafe(t *testing.T) {
 	tests := []struct {
