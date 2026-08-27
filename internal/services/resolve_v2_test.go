@@ -29,7 +29,7 @@ func TestResolveTokensV2(t *testing.T) {
 		{"{{api.server.ws}}", "ws://server.api.proj-1147.localhost:8767"},
 		{"{{shared.postgres.user}}", "acme"},
 		{"{{shared.postgres.pass}}", "pw"},
-		{"{{shared.postgres.host}}", "localhost"},
+		{"{{shared.postgres.host}}", "127.0.0.1"},
 		{"{{db.main}}", "acme_proj_1147_add_log"},
 		{"DB={{db.main}}?x=1", "DB=acme_proj_1147_add_log?x=1"},
 		{"{{nope.x.y}}", "{{nope.x.y}}"},

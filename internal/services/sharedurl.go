@@ -27,7 +27,7 @@ func SharedServiceURL(session, service string) (string, error) {
 	}
 	host := cfg.SharedHost(service)
 	if host == "" {
-		host = "localhost"
+		host = BindIP() // explicit IPv4 loopback; see resolveShared
 	}
 	port := SharedPort(service)
 	if port == 0 {

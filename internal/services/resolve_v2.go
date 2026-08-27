@@ -124,9 +124,13 @@ func (c ResolveCtx) resolveShared(name, field string) (string, bool) {
 	// (see AllocateSlot / GenerateSharedCompose). Resolve the port of THIS
 	// workspace's assigned instance, not always instance 0.
 	port := SharedPort(name) + c.sharedInstance(name)
+	// Use the explicit IPv4 loopback, not "localhost": Docker publishes the port on
+	// 0.0.0.0, but clients that resolve "localhost" to IPv6 ::1 can fail to connect
+	// on Docker Desktop even though other clients (resolving IPv4) succeed.
+	host := BindIP()
 	switch field {
 	case "host":
-		return "localhost", true
+		return host, true
 	case "port":
 		return fmt.Sprintf("%d", port), true
 	case "user":
@@ -139,7 +143,7 @@ func (c ResolveCtx) resolveShared(name, field string) (string, bool) {
 		if port == 0 {
 			port = 5432
 		}
-		return fmt.Sprintf("%s:%s@localhost:%d", user, pass, port), true
+		return fmt.Sprintf("%s:%s@%s:%d", user, pass, host, port), true
 	}
 	return "", false
 }
