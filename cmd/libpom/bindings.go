@@ -57,15 +57,6 @@ func PomWorkspaces(git C.int) *C.char {
 	return bindingJSON(map[string]any{"workspaces": s.CollectWorkspaces(git != 0)})
 }
 
-//export PomLiveness
-func PomLiveness() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"workspaces":[]}`)
-	}
-	return bindingJSON(map[string]any{"workspaces": s.CollectLiveness()})
-}
-
 //export PomDoctor
 func PomDoctor() *C.char {
 	s := server()
@@ -132,15 +123,6 @@ func PomNMStoreDelete(repo, hash *C.char) *C.char {
 	return C.CString(`{"ok":true}`)
 }
 
-//export PomSharedStatus
-func PomSharedStatus() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"running":{},"urls":{},"services":[]}`)
-	}
-	return bindingJSON(s.SharedStatus())
-}
-
 //export PomSharedStats
 func PomSharedStats(name *C.char) *C.char {
 	s := server()
@@ -195,15 +177,6 @@ func PomDBQuery(branch, db, sql *C.char, limit C.int) *C.char {
 	return bindingJSON(s.DBQuery(C.GoString(branch), C.GoString(db), C.GoString(sql), int(limit)))
 }
 
-//export PomDBConsolesLoad
-func PomDBConsolesLoad() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"ok":true,"consoles":[]}`)
-	}
-	return bindingJSON(s.DBConsolesLoad())
-}
-
 //export PomDBConsolesSave
 func PomDBConsolesSave(data *C.char) *C.char {
 	s := server()
@@ -211,15 +184,6 @@ func PomDBConsolesSave(data *C.char) *C.char {
 		return C.CString(`{"ok":false,"error":"no server"}`)
 	}
 	return bindingJSON(s.DBConsolesSave(C.GoString(data)))
-}
-
-//export PomMCPStatus
-func PomMCPStatus() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"registered":false,"connected":false}`)
-	}
-	return bindingJSON(s.MCPGlobalStatus())
 }
 
 //export PomMCPReinstall
@@ -321,15 +285,6 @@ func PomConfigExplain(repo, branch, svc, env *C.char) *C.char {
 	return bindingJSON(s.ConfigExplain(C.GoString(repo), C.GoString(branch), C.GoString(svc), C.GoString(env)))
 }
 
-//export PomEnvironments
-func PomEnvironments() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"environments":[]}`)
-	}
-	return bindingJSON(s.Environments())
-}
-
 //export PomSuggestName
 func PomSuggestName(branch, desc *C.char) *C.char {
 	s := server()
@@ -411,15 +366,6 @@ func PomWorkspaceRename(branch *C.char, isMain C.int, displayName *C.char) *C.ch
 	return bindingJSON(s.WorkspaceRename(C.GoString(branch), isMain != 0, C.GoString(displayName)))
 }
 
-//export PomEditors
-func PomEditors() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"installed":[],"configured":""}`)
-	}
-	return bindingJSON(s.Editors())
-}
-
 //export PomNetworkSetPorts
 func PomNetworkSetPorts(proxyPort, webhookPort C.int) *C.char {
 	s := server()
@@ -427,15 +373,6 @@ func PomNetworkSetPorts(proxyPort, webhookPort C.int) *C.char {
 		return C.CString(`{"ok":false}`)
 	}
 	return bindingJSON(s.NetworkSetPorts(int(proxyPort), int(webhookPort)))
-}
-
-//export PomNetwork
-func PomNetwork() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString("{}")
-	}
-	return bindingJSON(s.NetworkInfo())
 }
 
 //export PomDevProxyLog
@@ -454,15 +391,6 @@ func PomPaneBusy(holder *C.char) *C.char {
 		return C.CString(`{"busy":false}`)
 	}
 	return bindingJSON(map[string]any{"busy": s.PaneBusy(C.GoString(holder))})
-}
-
-//export PomSessionList
-func PomSessionList() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"sessions":[]}`)
-	}
-	return bindingJSON(s.SessionList())
 }
 
 //export PomSessionSwitch
@@ -559,24 +487,6 @@ func PomSharedStack(action *C.char) *C.char {
 	return bindingJSON(s.SharedStack(C.GoString(action)))
 }
 
-//export PomIntegrationsStatus
-func PomIntegrationsStatus() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString("{}")
-	}
-	return bindingJSON(s.IntegrationsStatus())
-}
-
-//export PomSecretNames
-func PomSecretNames() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"names":[]}`)
-	}
-	return bindingJSON(map[string]any{"names": s.SecretNames()})
-}
-
 //export PomSecretGet
 func PomSecretGet(name *C.char) *C.char {
 	s := server()
@@ -613,15 +523,6 @@ func PomJiraSet(site, email, token *C.char) *C.char {
 //export PomVersion
 func PomVersion() *C.char {
 	return bindingJSON(core.VersionInfo())
-}
-
-//export PomPs
-func PomPs() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"processes":[],"total":{"cpu":0,"ram_mb":0,"procs":0}}`)
-	}
-	return bindingJSON(s.PsData())
 }
 
 //export PomMainPull
@@ -738,15 +639,6 @@ func PomJiraTest(site, email, token *C.char) *C.char {
 		return C.CString(`{"ok":false}`)
 	}
 	return bindingJSON(s.JiraTest(C.GoString(site), C.GoString(email), C.GoString(token)))
-}
-
-//export PomJiraBoards
-func PomJiraBoards() *C.char {
-	s := server()
-	if s == nil {
-		return C.CString(`{"configured":false}`)
-	}
-	return bindingJSON(s.JiraBoards())
 }
 
 //export PomJiraSprint

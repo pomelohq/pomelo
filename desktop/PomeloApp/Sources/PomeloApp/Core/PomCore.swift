@@ -48,7 +48,7 @@ final class PomCore: @unchecked Sendable {
         defer { PomFree(out) }
         return Data(String(cString: out).utf8)
     }
-    func livenessData() -> Data { cstr(PomLiveness()) }
+    func livenessData() -> Data { query(domain: "liveness", params: Data("{}".utf8)) }
 
     func query(domain: String, params: Data) -> Data {
         let p = String(decoding: params, as: UTF8.self)
@@ -167,8 +167,8 @@ final class PomCore: @unchecked Sendable {
         return Data(String(cString: out).utf8)
     }
 
-    func sharedStatusData() -> Data { cstr(PomSharedStatus()) }
-    func mcpStatusData() -> Data { cstr(PomMCPStatus()) }
+    func sharedStatusData() -> Data { query(domain: "shared_status", params: Data("{}".utf8)) }
+    func mcpStatusData() -> Data { query(domain: "mcp_status", params: Data("{}".utf8)) }
     func mcpReinstallData() -> Data { cstr(PomMCPReinstall()) }
     func fetchImageData(url: String) -> Data { url.withCString { cstr(PomFetchImage(UnsafeMutablePointer(mutating: $0))) } }
     func sharedStatsData(name: String) -> Data { name.withCString { cstr(PomSharedStats(UnsafeMutablePointer(mutating: $0))) } }
@@ -195,7 +195,7 @@ final class PomCore: @unchecked Sendable {
                                 UnsafeMutablePointer(mutating: q), UnsafeMutablePointer(mutating: p)))
         }}}}
     }
-    func dbConsolesLoadData() -> Data { cstr(PomDBConsolesLoad()) }
+    func dbConsolesLoadData() -> Data { query(domain: "db_consoles_load", params: Data("{}".utf8)) }
     @discardableResult
     func dbConsolesSave(json: String) -> Data { json.withCString { cstr(PomDBConsolesSave(UnsafeMutablePointer(mutating: $0))) } }
     func sharedLogsData(name: String, lines: Int) -> Data {
@@ -246,7 +246,7 @@ final class PomCore: @unchecked Sendable {
             cstr(PomConfigExplain(UnsafeMutablePointer(mutating: r), UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: sv), UnsafeMutablePointer(mutating: e)))
         }}}}
     }
-    func environmentsData() -> Data { cstr(PomEnvironments()) }
+    func environmentsData() -> Data { query(domain: "environments", params: Data("{}".utf8)) }
     func suggestName(branch: String, desc: String) -> Data {
         branch.withCString { b in desc.withCString { d in
             cstr(PomSuggestName(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: d)))
@@ -291,21 +291,21 @@ final class PomCore: @unchecked Sendable {
             cstr(PomWorkspaceRename(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0, UnsafeMutablePointer(mutating: d)))
         }}
     }
-    func editorsData() -> Data { cstr(PomEditors()) }
-    func networkData() -> Data { cstr(PomNetwork()) }
+    func editorsData() -> Data { query(domain: "editors", params: Data("{}".utf8)) }
+    func networkData() -> Data { query(domain: "network", params: Data("{}".utf8)) }
     @discardableResult
     func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data { cstr(PomNetworkSetPorts(Int32(proxyPort), Int32(webhookPort))) }
     func devProxyLogData(limit: Int) -> Data { cstr(PomDevProxyLog(Int32(limit))) }
     func paneBusyData(holder: String) -> Data { holder.withCString { cstr(PomPaneBusy(UnsafeMutablePointer(mutating: $0))) } }
-    func sessionListData() -> Data { cstr(PomSessionList()) }
+    func sessionListData() -> Data { query(domain: "session_list", params: Data("{}".utf8)) }
     @discardableResult
     func sessionSwitch(name: String) -> Data { name.withCString { cstr(PomSessionSwitch(UnsafeMutablePointer(mutating: $0))) } }
     @discardableResult
     func sessionDelete(name: String, purge: Bool) -> Data { name.withCString { cstr(PomSessionDelete(UnsafeMutablePointer(mutating: $0), purge ? 1 : 0)) } }
     @discardableResult
     func sessionCreate(json: String) -> Data { json.withCString { cstr(PomSessionCreate(UnsafeMutablePointer(mutating: $0))) } }
-    func integrationsStatusData() -> Data { cstr(PomIntegrationsStatus()) }
-    func secretNamesData() -> Data { cstr(PomSecretNames()) }
+    func integrationsStatusData() -> Data { query(domain: "integrations_status", params: Data("{}".utf8)) }
+    func secretNamesData() -> Data { query(domain: "secret_names", params: Data("{}".utf8)) }
     func secretGet(name: String) -> Data {
         name.withCString { n in cstr(PomSecretGet(UnsafeMutablePointer(mutating: n))) }
     }
@@ -322,7 +322,7 @@ final class PomCore: @unchecked Sendable {
         }}}
     }
     func versionData() -> Data { cstr(PomVersion()) }
-    func psData() -> Data { cstr(PomPs()) }
+    func psData() -> Data { query(domain: "ps", params: Data("{}".utf8)) }
     @discardableResult
     func mainPull(branch: String) -> Data {
         branch.withCString { b in cstr(PomMainPull(UnsafeMutablePointer(mutating: b))) }
@@ -373,7 +373,7 @@ final class PomCore: @unchecked Sendable {
             cstr(PomJiraTest(UnsafeMutablePointer(mutating: s), UnsafeMutablePointer(mutating: e), UnsafeMutablePointer(mutating: t)))
         }}}
     }
-    func jiraBoardsData() -> Data { cstr(PomJiraBoards()) }
+    func jiraBoardsData() -> Data { query(domain: "jira_boards", params: Data("{}".utf8)) }
     func jiraSprintData(board: Int) -> Data { cstr(PomJiraSprint(Int32(board))) }
     func jiraIssueData(key: String) -> Data {
         key.withCString { k in cstr(PomJiraIssue(UnsafeMutablePointer(mutating: k))) }
