@@ -180,10 +180,10 @@ private struct GeneralSettings: View {
 
     private func load() async {
         struct Editors: Decodable { var installed: [String] = [] }
-        let ed = await Task.detached { PomCore.shared.editorsData() }.value
+        let ed = await SettingsStore.editors()
         if let d = PomJSON.decode(Editors.self, from: ed) { editors = d.installed }
         struct V: Decodable { var version = ""; var releases_url = "" }
-        let d = await Task.detached { PomCore.shared.versionData() }.value
+        let d = await SettingsStore.version()
         if let v = PomJSON.decode(V.self, from: d) {
             version = v.version
             if !v.releases_url.isEmpty { releasesURL = v.releases_url }
@@ -255,7 +255,7 @@ private struct NetworkSettings: View {
     }
 
     private func load() async {
-        let d = await Task.detached { PomCore.shared.networkData() }.value
+        let d = await SettingsStore.network()
         if let r = PomJSON.decode(CfgNetwork.self, from: d) {
             net = r
             if r.proxy_port > 0 { proxyPort = r.proxy_port; origProxy = r.proxy_port }
@@ -266,7 +266,7 @@ private struct NetworkSettings: View {
     private func applyRestart() async {
         busy = true
         let pp = proxyPort, wp = webhookPort
-        _ = await Task.detached { PomCore.shared.networkSetPorts(proxyPort: pp, webhookPort: wp) }.value
+        await SettingsStore.setPorts(proxyPort: pp, webhookPort: wp)
         let url = Bundle.main.bundleURL
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/open"); p.arguments = ["-n", url.path]
         try? p.run()
@@ -418,10 +418,10 @@ struct EnvInspector: View {
 
     private func boot() async {
         if branch.isEmpty { branch = state.workspaces.first(where: { $0.isMain })?.branch ?? state.workspaces.first?.branch ?? "main" }
-        let envs = PomCore.shared.environmentsData()
+        let envs = SettingsStore.environments()
         struct E: Decodable { var environments: [String] = [] }
         if let d = PomJSON.decode(E.self, from: envs) { profiles = d.environments.sorted() }
-        let resp = PomCore.shared.configExplainData(repo: "", branch: "", svc: "", env: "")
+        let resp = SettingsStore.configExplain(repo: "", branch: "", svc: "", env: "")
         if let d = PomJSON.decode(CfgExplainResp.self, from: resp) {
             repos = d.repos
             if repo.isEmpty { repo = repos.first?.repo ?? "" }
@@ -434,7 +434,7 @@ struct EnvInspector: View {
         guard !repo.isEmpty else { return }
         loading = true
         defer { loading = false }
-        let resp = PomCore.shared.configExplainData(repo: repo, branch: branch, svc: svc, env: profile)
+        let resp = SettingsStore.configExplain(repo: repo, branch: branch, svc: svc, env: profile)
         if let d = PomJSON.decode(CfgExplainResp.self, from: resp) {
             if !d.repos.isEmpty { repos = d.repos }
             explain = d.explain
@@ -566,7 +566,7 @@ struct AdvancedSettings: View {
     }
 
     private func load() async {
-        let d = await Task.detached { PomCore.shared.configFilesData() }.value
+        let d = await SettingsStore.configFiles()
         if let r = PomJSON.decode(CfgFilesResp.self, from: d) {
             files = r.files
             nodes = ConfigTree.build(r.files.map { .init(rel: $0.name, path: $0.path) })
@@ -581,13 +581,13 @@ struct AdvancedSettings: View {
         guard !path.isEmpty else { return }
         struct Doc: Decodable { var path = ""; var yaml = "" }
         let p = path
-        let d = await Task.detached { PomCore.shared.configFileGetData(path: p) }.value
+        let d = await SettingsStore.configFileGet(path: p)
         if let r = PomJSON.decode(Doc.self, from: d) { text = r.yaml; original = r.yaml; status = "" }
     }
 
     private func createFile() async {
         let name = newName.trimmingCharacters(in: .whitespaces)
-        let d = await Task.detached { PomCore.shared.configFileCreate(name: name, yaml: "") }.value
+        let d = await SettingsStore.configFileCreate(name: name)
         struct R: Decodable { var ok = false; var error = ""; var path = "" }
         let r = PomJSON.decode(R.self, from: d)
         guard let r, r.ok else { newError = r?.error ?? "create failed"; return }
@@ -600,7 +600,7 @@ struct AdvancedSettings: View {
     private func save() async {
         busy = true; defer { busy = false }
         let p = path, y = text
-        let d = await Task.detached { PomCore.shared.configFileSet(path: p, yaml: y, dry: false) }.value
+        let d = await SettingsStore.configFileSet(path: p, yaml: y)
         struct R: Decodable { var ok = false; var error = ""; var note = "" }
         let r = PomJSON.decode(R.self, from: d)
         if let r, !r.ok {
@@ -609,7 +609,7 @@ struct AdvancedSettings: View {
         }
         original = text
         status = (r?.note.isEmpty ?? true) ? "Saved." : r!.note
-        _ = await Task.detached { PomCore.shared.configReload() }.value
+        await SettingsStore.configReload()
         await doctor.load()
         await state.refreshConfigHealth()
     }

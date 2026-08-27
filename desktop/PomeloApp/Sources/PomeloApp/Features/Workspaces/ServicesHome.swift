@@ -224,7 +224,7 @@ struct RepoColumn: View {
 
     private func openEditor() {
         let b = branch, m = isMain, rp = repo.name, ed = state.editorPref
-        Task.detached(priority: .userInitiated) { PomCore.shared.openEditor(branch: b, isMain: m, repo: rp, editor: ed, resolveOnly: false) }
+        ServicesStore.openEditor(branch: b, isMain: m, repo: rp, editor: ed)
     }
 
     private func openRepoTerminal() {
@@ -232,7 +232,7 @@ struct RepoColumn: View {
         Task {
             let holder = await Task.detached(priority: .userInitiated) { () -> String? in
                 struct R: Decodable { var window: String? }
-                let d = PomCore.shared.shortcutRun(branch: b, isMain: m, repo: rp, cmd: "exec zsh")
+                let d = ServicesStore.shortcutRun(branch: b, isMain: m, repo: rp, cmd: "exec zsh")
                 return PomJSON.decode(R.self, from: d)?.window
             }.value
             if let holder, !holder.isEmpty { openTerminal(holder) }
@@ -244,7 +244,7 @@ struct RepoColumn: View {
         Task {
             let holder = await Task.detached(priority: .userInitiated) { () -> String? in
                 struct R: Decodable { var window: String? }
-                let d = PomCore.shared.shortcutRun(branch: b, isMain: m, repo: rp, cmd: c)
+                let d = ServicesStore.shortcutRun(branch: b, isMain: m, repo: rp, cmd: c)
                 return PomJSON.decode(R.self, from: d)?.window
             }.value
             if let holder, !holder.isEmpty { openTerminal(holder) }
@@ -263,7 +263,7 @@ struct RepoColumn: View {
                 for svc in targets {
                     let ref: [String: Any] = ["branch": branch, "is_main": isMain, "repo": repo.name, "svc": svc.name]
                     let body = (try? JSONSerialization.data(withJSONObject: ref)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-                    group.addTask { _ = await Task.detached(priority: .userInitiated) { PomCore.shared.serviceControl(refJSON: body, action: action) }.value }
+                    group.addTask { _ = await ServicesStore.control(refJSON: body, action: action) }
                 }
             }
             await state.refresh()
@@ -499,7 +499,7 @@ struct SvcCard: View {
 
     private func setMode(_ mode: String) {
         let r = repoName, sv = service.name
-        Task.detached(priority: .userInitiated) { PomCore.shared.serviceMode(repo: r, svc: sv, mode: mode) }
+        ServicesStore.serviceMode(repo: r, svc: sv, mode: mode)
     }
 
     private func setEnv(_ env: String) {
@@ -509,11 +509,11 @@ struct SvcCard: View {
         busyLabel = wasRunning ? "switching to \(env)…" : "saving \(env)…"
         let b = branch, m = isMain, r = repoName, sv = service.name
         Task {
-            _ = await Task.detached { PomCore.shared.envSet(branch: b, isMain: m, repo: r, svc: sv, env: env) }.value
+            await ServicesStore.envSet(branch: b, isMain: m, repo: r, svc: sv, env: env)
             if wasRunning {
                 let ref: [String: Any] = ["branch": b, "is_main": m, "repo": r, "svc": sv]
                 let body = (try? JSONSerialization.data(withJSONObject: ref)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-                _ = await Task.detached { PomCore.shared.serviceControl(refJSON: body, action: "restart") }.value
+                _ = await ServicesStore.control(refJSON: body, action: "restart")
             }
             try? await Task.sleep(nanoseconds: 300_000_000)
             await state.refreshWorkspaces()
@@ -531,7 +531,7 @@ struct SvcCard: View {
         if action == "start" || action == "restart" { ref["auto_relocate"] = state.autoPickPort }
         let body = (try? JSONSerialization.data(withJSONObject: ref)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         Task {
-            let data = await Task.detached { PomCore.shared.serviceControl(refJSON: body, action: action) }.value
+            let data = await ServicesStore.control(refJSON: body, action: action)
             if let msg = SvcCard.actionError(data) { startError = msg; busy = false; return }
             try? await Task.sleep(nanoseconds: 300_000_000)
             await state.refreshWorkspaces()
@@ -565,7 +565,7 @@ struct SvcCard: View {
             Task {
                 let url = await Task.detached(priority: .userInitiated) { () -> String? in
                     struct R: Decodable { var url = "" }
-                    let d = PomCore.shared.serviceURL(branch: b, repo: r, svc: sv)
+                    let d = ServicesStore.serviceURL(branch: b, repo: r, svc: sv)
                     return PomJSON.decode(R.self, from: d)?.url
                 }.value
                 if let url, let u = URL(string: url) { NSWorkspace.shared.open(u) }

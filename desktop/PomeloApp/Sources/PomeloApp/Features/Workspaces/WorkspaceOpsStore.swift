@@ -7,4 +7,8 @@ enum WorkspaceOpsStore {
             PomCore.shared.workspaceRename(branch: branch, isMain: isMain, displayName: displayName)
         }.value
     }
+
+    static func mainPull(branch: String) async -> Data {
+        await Task.detached(priority: .userInitiated) { PomCore.shared.mainPull(branch: branch) }.value
+    }
 }

@@ -117,7 +117,7 @@ struct UpdateMainSheet: View {
     private func run() async {
         running = true
         let branch = ws.branch
-        let data = await Task.detached(priority: .userInitiated) { PomCore.shared.mainPull(branch: branch) }.value
+        let data = await WorkspaceOpsStore.mainPull(branch: branch)
         if let p = PomJSON.decode(Payload.self, from: data) {
             results = p.results ?? []; ok = p.ok; rawError = p.error ?? ""
         } else {

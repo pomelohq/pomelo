@@ -1,5 +1,0 @@
-Features/Settings/SettingsView.swift
-Features/Workspaces/PRsBoard.swift
-Features/Workspaces/ServicesHome.swift
-Features/Workspaces/UpdateMainSheet.swift
-Features/Workspaces/WorkspacePane.swift

@@ -50,7 +50,7 @@ final class PaneState: ObservableObject {
         let killable = t.holder.hasPrefix("appsh-") || t.holder.hasPrefix("sh-") || t.holder.hasPrefix("reposh-")
         if killable {
             let h = t.holder
-            Task.detached(priority: .userInitiated) { PomCore.shared.paneKill(paneID: "pty:" + h) }
+            PaneStore.kill(paneID: "pty:" + h)
         }
         terms.removeAll { $0.id == id }
         selTerm = terms.last?.id
@@ -348,14 +348,14 @@ struct TerminalDrawer: View {
     private func busy(_ holder: String) async -> Bool {
         await Task.detached(priority: .userInitiated) { () -> Bool in
             struct R: Decodable { var busy = false }
-            let d = PomCore.shared.paneBusyData(holder: holder)
+            let d = PaneStore.busy(holder: holder)
             return (PomJSON.decode(R.self, from: d)?.busy) ?? false
         }.value
     }
 
     private func killAndClose(_ t: TermTab) {
         let h = t.holder
-        Task.detached(priority: .userInitiated) { PomCore.shared.paneKill(paneID: "pty:" + h) }
+        PaneStore.kill(paneID: "pty:" + h)
         removeTab(t)
     }
 

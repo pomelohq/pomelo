@@ -291,12 +291,12 @@ struct PRsBoard: View {
     private func load() async {
         let branch = workspace.branch, isMain = workspace.isMain
         async let prsFetch: [WorkspacePR]? = Task.detached(priority: .userInitiated) {
-            let d = PomCore.shared.prWorkspaceData(branch: branch, isMain: isMain)
+            let d = PRStore.workspace(branch: branch, isMain: isMain)
             struct R: Decodable { let prs: [WorkspacePR]? }
             return (PomJSON.decode(R.self, from: d))?.prs
         }.value
         async let localFetch: [LocalChangeRepo]? = Task.detached(priority: .userInitiated) {
-            let d = PomCore.shared.localChangesData(branch: branch, isMain: isMain)
+            let d = PRStore.localChanges(branch: branch, isMain: isMain)
             struct R: Decodable { let repos: [LocalChangeRepo]? }
             return (PomJSON.decode(R.self, from: d))?.repos
         }.value
@@ -468,7 +468,7 @@ struct LocalChangesDetail: View {
         guard diffFiles == nil else { return }
         let repo = item.repo
         let files = await Task.detached(priority: .userInitiated) { () -> [DiffFile] in
-            let text = String(decoding: PomCore.shared.localDiffData(branch: branch, repo: repo, isMain: isMain), as: UTF8.self)
+            let text = String(decoding: PRStore.localDiff(branch: branch, repo: repo, isMain: isMain), as: UTF8.self)
             return DiffParser.parse(text)
         }.value
         diffFiles = files
@@ -824,7 +824,7 @@ struct PRDetail: View {
         loadingDetail = true
         let repo = item.repo
         let fresh = await Task.detached(priority: .userInitiated) { () -> PRInfo? in
-            let d = PomCore.shared.prDetailData(branch: branch, repo: repo, isMain: isMain)
+            let d = PRStore.detail(branch: branch, repo: repo, isMain: isMain)
             struct R: Decodable { let pr: PRInfo? }
             return (PomJSON.decode(R.self, from: d))?.pr
         }.value
@@ -836,7 +836,7 @@ struct PRDetail: View {
         guard reviewComments == nil else { return }
         let repo = item.repo
         let fresh = await Task.detached(priority: .utility) { () -> [PRReviewComment] in
-            let d = PomCore.shared.prCommentsData(branch: branch, repo: repo, isMain: isMain)
+            let d = PRStore.comments(branch: branch, repo: repo, isMain: isMain)
             struct R: Decodable { let comments: [PRReviewComment]? }
             return (PomJSON.decode(R.self, from: d))?.comments ?? []
         }.value
@@ -847,7 +847,7 @@ struct PRDetail: View {
         guard commits == nil else { return }
         let repo = item.repo
         let fresh = await Task.detached(priority: .userInitiated) { () -> [PRCommit] in
-            let d = PomCore.shared.prCommitsData(branch: branch, repo: repo, base: "", isMain: isMain)
+            let d = PRStore.commits(branch: branch, repo: repo, isMain: isMain)
             struct R: Decodable { let commits: [PRCommit]? }
             return (PomJSON.decode(R.self, from: d))?.commits ?? []
         }.value
@@ -858,7 +858,7 @@ struct PRDetail: View {
         guard diffFiles == nil else { return }
         let repo = item.repo
         let files = await Task.detached(priority: .userInitiated) { () -> [DiffFile] in
-            let text = String(decoding: PomCore.shared.prDiffData(branch: branch, repo: repo, isMain: isMain), as: UTF8.self)
+            let text = String(decoding: PRStore.diff(branch: branch, repo: repo, isMain: isMain), as: UTF8.self)
             return DiffParser.parse(text)
         }.value
         diffFiles = files
