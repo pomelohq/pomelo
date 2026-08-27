@@ -2,22 +2,29 @@ import SwiftUI
 
 @MainActor
 final class PRsViewModel: ObservableObject {
+    struct Group: Decodable, Equatable { var prs: [WorkspacePR] = []; var severity = "ok" }
+
     @Published var wsPRs: [String: [WorkspacePR]] = [:]
+    @Published var wsSeverity: [String: String] = [:]
     @Published var loading = true
 
     private let api: PRAPI
     init(api: PRAPI = PomCore.shared) { self.api = api }
 
     func prsFor(_ id: String) -> [WorkspacePR] { wsPRs[id] ?? [] }
+    func severityFor(_ id: String) -> String { wsSeverity[id] ?? "ok" }
 
     @discardableResult
     func refresh() async -> Bool {
         let map = await Task.detached(priority: .utility) { [api] in
-            PomJSON.decode([String: [WorkspacePR]].self, from: api.prAllData())
+            PomJSON.decode([String: Group].self, from: api.prAllData())
         }.value
         loading = false
-        guard let map, map != wsPRs else { return false }
-        withAnimation(.easeInOut(duration: 0.35)) { wsPRs = map }
+        guard let map else { return false }
+        let prs = map.mapValues(\.prs)
+        let sev = map.mapValues(\.severity)
+        guard prs != wsPRs || sev != wsSeverity else { return false }
+        withAnimation(.easeInOut(duration: 0.35)) { wsPRs = prs; wsSeverity = sev }
         return true
     }
 }

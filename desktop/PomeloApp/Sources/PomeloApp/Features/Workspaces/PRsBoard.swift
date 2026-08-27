@@ -43,25 +43,8 @@ struct PRInfo: Decodable, Equatable {
     struct Author: Decodable, Equatable { var login: String? }
     struct ReviewRequest: Decodable, Equatable { var login: String?; var name: String?; var slug: String? }
 
-    struct Reviewer: Identifiable, Equatable { let name: String; let state: String; var id: String { name } }
-    var reviewers: [Reviewer] {
-        var latest: [String: String] = [:]
-        for r in reviews ?? [] {
-            guard let who = r.author?.login, !who.isEmpty else { continue }
-            latest[who] = (r.state ?? "").uppercased()
-        }
-        var out: [Reviewer] = []
-        for (who, st) in latest {
-            let s = st == "APPROVED" ? "approved" : st == "CHANGES_REQUESTED" ? "changes" : "commented"
-            out.append(Reviewer(name: who, state: s))
-        }
-        let done = Set(latest.keys)
-        for rr in reviewRequests ?? [] {
-            let who = rr.login ?? rr.name ?? ""
-            if !who.isEmpty && !done.contains(who) { out.append(Reviewer(name: who, state: "pending")) }
-        }
-        return out.sorted { $0.name < $1.name }
-    }
+    struct Reviewer: Decodable, Identifiable, Equatable { var name = ""; var state = ""; var id: String { name } }
+    var reviewers: [Reviewer] = []   // deduped + ordered by the core (ADR 0001)
     struct Label: Decodable, Equatable, Identifiable { var name: String?; var color: String?; var id: String { name ?? "" } }
 
     struct Check: Decodable, Equatable, Identifiable {
@@ -73,17 +56,10 @@ struct PRInfo: Decodable, Equatable {
         var detailsUrl: String?
         var targetUrl: String?
         var workflowName: String?
+        var result: ChecksStatus = .none   // classified by the core (ADR 0001)
         var id: String { (name ?? context ?? "check") + (conclusion ?? state ?? status ?? "") }
         var label: String { name ?? context ?? "check" }
         var link: String? { detailsUrl ?? targetUrl }
-        var result: ChecksStatus {
-            let v = (conclusion ?? state ?? "").uppercased()
-            let s = (status ?? "").uppercased()
-            if v == "FAILURE" || v == "ERROR" || v == "TIMED_OUT" || v == "CANCELLED" { return .fail }
-            if v == "PENDING" || s == "IN_PROGRESS" || s == "QUEUED" || s == "PENDING" { return .pending }
-            if v == "SUCCESS" { return .pass }
-            return .none
-        }
     }
     struct Review: Decodable, Equatable, Identifiable {
         var author: Author?
@@ -99,43 +75,13 @@ struct PRInfo: Decodable, Equatable {
         var id: String { (author?.login ?? "?") + String((body ?? "").prefix(24)) }
     }
 
-    enum ChecksStatus { case pass, fail, pending, none }
-    var checks: ChecksStatus {
-        guard let c = statusCheckRollup, !c.isEmpty else { return .none }
-        var pending = false, pass = false
-        for x in c {
-            switch x.result {
-            case .fail: return .fail
-            case .pending: pending = true
-            case .pass: pass = true
-            case .none: break
-            }
-        }
-        if pending { return .pending }
-        return pass ? .pass : .none
-    }
+    enum ChecksStatus: String, Decodable { case pass, fail, pending, none }
+    enum ReviewDecision: String, Decodable { case approved, changes, review, none }
 
-    enum ReviewDecision { case approved, changes, review, none }
-    var review: ReviewDecision {
-        switch (reviewDecision ?? "").uppercased() {
-        case "APPROVED": return .approved
-        case "CHANGES_REQUESTED": return .changes
-        case "REVIEW_REQUIRED": return .review
-        default: break
-        }
-        guard let r = reviews, !r.isEmpty else { return .none }
-        var approved = false
-        for x in r {
-            switch (x.state ?? "").uppercased() {
-            case "CHANGES_REQUESTED": return .changes
-            case "APPROVED": approved = true
-            default: break
-            }
-        }
-        return approved ? .approved : .review
-    }
-
-    var conflict: Bool { (mergeable ?? "").uppercased() == "CONFLICTING" }
+    // Status tokens the core derives from raw GitHub state (ADR 0001).
+    var checks: ChecksStatus = .none
+    var review: ReviewDecision = .none
+    var conflict: Bool = false
 }
 
 typealias PRCheck = PRInfo.Check

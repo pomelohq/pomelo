@@ -262,6 +262,7 @@ final class AppState: ObservableObject {
     var jiraConfigured: Bool { get { jiravm.configured } set { jiravm.configured = newValue } }
 
     func prsFor(_ id: String) -> [WorkspacePR] { prsvm.prsFor(id) }
+    func prSeverityFor(_ id: String) -> String { prsvm.severityFor(id) }
     func jiraFor(_ branch: String) -> JiraIssue? { jiravm.issueFor(branch) }
     var wsOrder: [String] { get { wsvm.wsOrder } set { wsvm.wsOrder = newValue } }
     @Published var repoOrder: [String] = (UserDefaults.standard.array(forKey: "repoOrder") as? [String]) ?? [] {

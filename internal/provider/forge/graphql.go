@@ -271,6 +271,7 @@ type ghCheck struct {
 	DetailsURL   string `json:"detailsUrl,omitempty"`
 	StartedAt    string `json:"startedAt,omitempty"`
 	WorkflowName string `json:"workflowName,omitempty"`
+	Result       string `json:"result"`
 }
 type ghLabel struct {
 	Name  string `json:"name"`
@@ -309,6 +310,13 @@ type ghPR struct {
 	Labels            []ghLabel     `json:"labels,omitempty"`
 	ReviewRequests    []ghReviewReq `json:"reviewRequests,omitempty"`
 	Comments          []ghComment   `json:"comments,omitempty"`
+
+	// Semantic tokens the core derives (ADR 0001) so the UI only maps token -> colour.
+	// Always emitted (no omitempty): the Swift decoder needs the keys present.
+	Checks    string       `json:"checks"`
+	Review    string       `json:"review"`
+	Conflict  bool         `json:"conflict"`
+	Reviewers []ghReviewer `json:"reviewers"`
 }
 
 func (p gqlPR) toGH() ghPR {
@@ -384,5 +392,6 @@ func (p gqlPR) toGH() ghPR {
 			}
 		}
 	}
+	out.classify()
 	return out
 }

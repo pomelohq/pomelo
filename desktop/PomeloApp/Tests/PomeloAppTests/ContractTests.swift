@@ -45,6 +45,35 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(p?.total, 10)
     }
 
+    // PR status tokens are decided by the core; the UI decodes them directly. Go
+    // always emits checks/review/conflict/reviewers (no omitempty) — the synthesized
+    // Decodable throws on an absent non-optional key, so the contract is "always present".
+    func testPRInfoDecodesCoreTokens() {
+        let json = #"{"number":7,"title":"t","state":"OPEN","url":"u","isDraft":false,"checks":"fail","review":"changes","conflict":true,"reviewers":[{"name":"bob","state":"approved"}],"statusCheckRollup":[{"name":"build","result":"fail"}]}"#
+        let pr = decode(PRInfo.self, json)
+        XCTAssertEqual(pr?.checks, .fail)
+        XCTAssertEqual(pr?.review, .changes)
+        XCTAssertEqual(pr?.conflict, true)
+        XCTAssertEqual(pr?.reviewers.first?.state, "approved")
+        XCTAssertEqual(pr?.statusCheckRollup?.first?.result, .fail)
+    }
+
+    // The clean case: none/none/false and an empty reviewers array still decode.
+    func testPRInfoCleanTokens() {
+        let json = #"{"number":1,"title":"t","state":"OPEN","url":"u","isDraft":false,"checks":"none","review":"none","conflict":false,"reviewers":[]}"#
+        let pr = decode(PRInfo.self, json)
+        XCTAssertEqual(pr?.checks, PRInfo.ChecksStatus.none)
+        XCTAssertEqual(pr?.conflict, false)
+        XCTAssertEqual(pr?.reviewers.count, 0)
+    }
+
+    func testAllPRsGroupEnvelope() {
+        let g = decode(PRsViewModel.Group.self,
+            #"{"prs":[{"repo":"api","alias":"api","behind":0,"ahead":0,"pr":null}],"severity":"danger"}"#)
+        XCTAssertEqual(g?.severity, "danger")
+        XCTAssertEqual(g?.prs.first?.repo, "api")
+    }
+
     func testSessionsResponseOptionalCurrent() {
         let r = decode(SessionsResponse.self,
             #"{"sessions":[{"name":"demo","current":true,"running":true}]}"#)

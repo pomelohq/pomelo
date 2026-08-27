@@ -40,6 +40,7 @@ struct WsCard: View {
     var selected: Bool = false
     var agent: String? = nil
     var prs: [WorkspacePR] = []
+    var severity: String = "ok"
     var prsLoading = false
     var jira: JiraIssue? = nil
     var onOpenPRs: () -> Void = {}
@@ -64,17 +65,15 @@ struct WsCard: View {
     private var orbActive: Bool { agent == "thinking" || agent == "tool_use" || agent == "compacting" || agent == "awaiting_input" }
 
     private var openPRs: [WorkspacePR] { prs.filter { $0.pr != nil } }
+    // The core aggregates the workspace's PRs into one severity token (ADR 0001);
+    // the card just maps token -> colour.
     private var prColor: Color {
-        var anyMerged = false, worst = 0
-        for p in openPRs {
-            guard let pr = p.pr else { continue }
-            if pr.state == "MERGED" { anyMerged = true; continue }
-            if pr.conflict || pr.checks == .fail || pr.review == .changes { worst = max(worst, 2) }
-            else if pr.checks == .pending || pr.review == .review { worst = max(worst, 1) }
+        switch severity {
+        case "danger": return Theme.danger
+        case "merged": return Color(hex: 0xa371f7)
+        case "warn":   return Theme.warn
+        default:       return Theme.ok
         }
-        if worst == 2 { return Theme.danger }
-        if anyMerged { return Color(hex: 0xa371f7) }
-        return worst == 1 ? Theme.warn : Theme.ok
     }
 
 

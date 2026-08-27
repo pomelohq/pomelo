@@ -382,7 +382,11 @@ func (s *Feature) AllPRs() []byte {
 	_ = anyCold
 	go warmPRs(pairs)
 
-	out := map[string][]repoPR{}
+	type wsGroup struct {
+		Prs      []repoPR `json:"prs"`
+		Severity string   `json:"severity"`
+	}
+	out := map[string]wsGroup{}
 	for _, ws := range workspaces {
 		key := "ws:" + ws.Branch
 		if ws.IsMain {
@@ -412,7 +416,11 @@ func (s *Feature) AllPRs() []byte {
 			}
 		}
 		if len(list) > 0 {
-			out[key] = list
+			blobs := make([]json.RawMessage, len(list))
+			for i, r := range list {
+				blobs[i] = r.PR
+			}
+			out[key] = wsGroup{Prs: list, Severity: prSeverity(blobs)}
 		}
 	}
 	b, _ := json.Marshal(out)
@@ -481,7 +489,11 @@ func (s *Feature) WorkspacePRs(branch string, isMain bool) []byte {
 			out = append(out, repoPR{Repo: it.pair.repo, Alias: it.alias, PR: pr, Behind: behind, Ahead: ahead})
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"prs": out})
+	blobs := make([]json.RawMessage, len(out))
+	for i, r := range out {
+		blobs[i] = r.PR
+	}
+	b, _ := json.Marshal(map[string]any{"prs": out, "severity": prSeverity(blobs)})
 	return b
 }
 

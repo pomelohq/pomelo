@@ -149,7 +149,7 @@ struct WsRow: View {
     let ws: Workspace
     var body: some View {
         WsCard(ws: ws, selected: state.selection == ws.id, agent: state.agentStates[ws.id] ?? ws.claudeAgentState,
-               prs: state.prsFor(ws.id), prsLoading: state.prsLoading, jira: state.jiraFor(ws.branch),
+               prs: state.prsFor(ws.id), severity: state.prSeverityFor(ws.id), prsLoading: state.prsLoading, jira: state.jiraFor(ws.branch),
                onOpenPRs: { state.selection = ws.id; ui.state(for: ws.id).pane = .prs },
                onOpenJira: { state.selection = ws.id; ui.state(for: ws.id).pane = .jira },
                onPeekEnter: { state.prPeekEnter(ws.id) }, onPeekLeave: { state.prPeekLeave() })
