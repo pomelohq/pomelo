@@ -21,9 +21,23 @@ func InitNetwork(projectDir, session string, cfg *config.Config) {
 	currentSession = session
 	RegisterProject(session, projectDir)
 
+	ReserveSharedPorts(cfg.SharedServices)
+}
+
+// ReserveSharedPorts assigns a stable, persisted port lease to every shared
+// service port. Both the compose generator and the template resolver must call
+// this before reading SharedPort, else one falls back to the StableSharedPort
+// hash while the other uses the lease and the container ends up on a port the
+// generated URLs never point at.
+func ReserveSharedPorts(shared map[string]*config.SharedServiceDef) {
 	m := mgr()
-	for _, name := range sortedSharedNames(cfg) {
-		svc := cfg.SharedServices[name]
+	names := make([]string, 0, len(shared))
+	for name := range shared {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		svc := shared[name]
 		n := len(svc.Ports)
 		if n == 0 {
 			n = 1
@@ -44,15 +58,6 @@ func parsePortBase(ports []string, i int) int {
 	}
 	n, _ := strconv.Atoi(strings.TrimSpace(s))
 	return n
-}
-
-func sortedSharedNames(cfg *config.Config) []string {
-	names := make([]string, 0, len(cfg.SharedServices))
-	for name := range cfg.SharedServices {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 func Port(projectDir, wsKey, svcKey string) int {

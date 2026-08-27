@@ -2,10 +2,34 @@ package services
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/pomelohq/pomelo/internal/config"
 )
+
+func TestSharedComposePortMatchesResolve(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+	session := t.Name()
+	shared := map[string]*config.SharedServiceDef{
+		"redis": {Image: "redis:7-alpine", Ports: []string{"6379"}},
+	}
+	InitNetwork(dir, session, &config.Config{Session: session, SharedServices: shared})
+
+	path := GenerateSharedCompose(dir, session, shared)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read compose: %v", err)
+	}
+	// Compose must publish redis on the same port the template resolver hands out;
+	// otherwise the container listens where generated URLs never point.
+	want := fmt.Sprintf("\"%d:6379\"", SharedPort("redis"))
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("compose must publish redis on the resolved port %s\n%s", want, data)
+	}
+}
 
 func TestResolveSharedInstanceAware(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
