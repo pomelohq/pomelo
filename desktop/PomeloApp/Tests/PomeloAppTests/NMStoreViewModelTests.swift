@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor
 final class NMStoreViewModelTests: XCTestCase {
-    private let json = #"{"entries":[{"repo":"api","hash":"aaa","bytes":1073741824,"current":true,"consumers":[{"branch":"main","is_main":true}]},{"repo":"api","hash":"bbb","bytes":536870912,"current":false,"consumers":[]},{"repo":"web","hash":"ccc","bytes":104857600,"current":false,"consumers":[]}],"total":1715470336,"unoptimized":[]}"#
+    private let json = #"{"entries":[{"repo":"api","hash":"aaa","bytes":1073741824,"current":true,"orphan":false,"consumers":[{"branch":"main","is_main":true}]},{"repo":"api","hash":"bbb","bytes":536870912,"current":false,"orphan":true,"consumers":[]},{"repo":"web","hash":"ccc","bytes":104857600,"current":false,"orphan":true,"consumers":[]}],"total":1715470336,"unoptimized":[]}"#
 
     func testStaleAndHuman() async {
         let mock = MockPomAPI(); mock.nmStoreJSON = json

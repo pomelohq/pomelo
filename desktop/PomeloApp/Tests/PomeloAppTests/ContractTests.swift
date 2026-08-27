@@ -39,7 +39,7 @@ final class ContractTests: XCTestCase {
     // keys are always present.
     func testNMStorePayload() {
         let p = decode(NMStoreViewModel.Payload.self,
-            #"{"entries":[{"repo":"web","hash":"abc","bytes":10,"current":true,"consumers":[]}],"total":10,"unoptimized":[]}"#)
+            #"{"entries":[{"repo":"web","hash":"abc","bytes":10,"current":false,"orphan":true,"consumers":[]}],"total":10,"unoptimized":[]}"#)
         XCTAssertEqual(p?.entries.first?.repo, "web")
         XCTAssertTrue(p?.entries.first?.orphan == true)
         XCTAssertEqual(p?.total, 10)

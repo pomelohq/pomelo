@@ -3,6 +3,7 @@ package core
 import (
 	"net/http"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/pomelohq/pomelo/internal/services"
@@ -121,6 +122,7 @@ func (s *Server) NMStoreList() map[string]any {
 	type row struct {
 		services.NMStoreEntry
 		Current   bool       `json:"current"`
+		Orphan    bool       `json:"orphan"`
 		Consumers []consumer `json:"consumers"`
 	}
 	out := make([]row, 0, len(entries))
@@ -137,8 +139,15 @@ func (s *Server) NMStoreList() map[string]any {
 				cur = true
 			}
 		}
-		out = append(out, row{NMStoreEntry: e, Current: cur, Consumers: cs})
+		out = append(out, row{NMStoreEntry: e, Current: cur, Orphan: len(cs) == 0, Consumers: cs})
 	}
+	// Core owns ordering (ADR 0001): in-use first, then largest — the UI just renders.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Current != out[j].Current {
+			return out[i].Current
+		}
+		return out[i].Bytes > out[j].Bytes
+	})
 	if unoptimized == nil {
 		unoptimized = []unopt{}
 	}

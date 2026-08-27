@@ -5,9 +5,9 @@ final class NMStoreViewModel: ObservableObject {
     struct Consumer: Decodable, Hashable { var branch = ""; var is_main = false }
     struct Entry: Decodable, Identifiable {
         var repo = ""; var hash = ""; var bytes: Int64 = 0; var current = false
+        var orphan = false            // decided by the core (ADR 0001), not derived here
         var consumers: [Consumer] = []
         var id: String { repo + "/" + hash }
-        var orphan: Bool { consumers.isEmpty }
     }
     struct Unopt: Decodable, Identifiable { var branch = ""; var is_main = false; var repo = ""; var hash = ""; var id: String { branch + "/" + repo + "/" + hash } }
     struct Payload: Decodable { var entries: [Entry] = []; var total: Int64 = 0; var unoptimized: [Unopt] = [] }
@@ -22,9 +22,7 @@ final class NMStoreViewModel: ObservableObject {
 
     var stale: [Entry] { entries.filter { $0.orphan } }
     var staleBytes: Int64 { stale.reduce(0) { $0 + $1.bytes } }
-    var sorted: [Entry] {
-        entries.sorted { ($0.current ? 1 : 0, $0.bytes) > ($1.current ? 1 : 0, $1.bytes) }
-    }
+    var sorted: [Entry] { entries }   // core already orders in-use-first, largest-first
 
     func human(_ b: Int64) -> String {
         let g = Double(b) / 1_073_741_824, m = Double(b) / 1_048_576
