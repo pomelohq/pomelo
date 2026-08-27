@@ -11,16 +11,24 @@ final class MCPViewModel: ObservableObject {
     @Published private(set) var loading = true
     @Published private(set) var busy = false
 
+    // Stateless FFI wrappers, reused by other MCP-status views (e.g. SetupWizard).
+    static func fetchStatus() async -> Status {
+        let d = await Task.detached(priority: .utility) { PomCore.shared.mcpStatusData() }.value
+        return PomJSON.decode(Status.self, from: d) ?? Status()
+    }
+    static func doReinstall() async {
+        _ = await Task.detached(priority: .utility) { PomCore.shared.mcpReinstallData() }.value
+    }
+
     func load() async {
         loading = true
-        let d = await Task.detached(priority: .utility) { PomCore.shared.mcpStatusData() }.value
-        if let s = PomJSON.decode(Status.self, from: d) { status = s }
+        status = await Self.fetchStatus()
         loading = false
     }
 
     func reinstall() async {
         busy = true
-        _ = await Task.detached(priority: .utility) { PomCore.shared.mcpReinstallData() }.value
+        await Self.doReinstall()
         busy = false
         await load()
     }

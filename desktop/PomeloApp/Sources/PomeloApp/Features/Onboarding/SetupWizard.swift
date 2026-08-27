@@ -109,16 +109,13 @@ struct SetupWizard: View {
 
     private func refresh() async {
         Notifier.currentlyAuthorized { notifOK = $0 }
-        let d = await Task.detached { PomCore.shared.mcpStatusData() }.value
-        struct R: Decodable { var registered = false; var connected = false; var wrapper_ok = false }
-        if let r = PomJSON.decode(R.self, from: d) {
-            mcpRegistered = r.registered; mcpConnected = r.connected; mcpWrapper = r.wrapper_ok
-        }
+        let r = await MCPViewModel.fetchStatus()
+        mcpRegistered = r.registered; mcpConnected = r.connected; mcpWrapper = r.wrapper_ok
     }
 
     private func reregister() async {
         busy = true
-        _ = await Task.detached { PomCore.shared.mcpReinstallData() }.value
+        await MCPViewModel.doReinstall()
         busy = false
         await refresh()
     }

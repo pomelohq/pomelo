@@ -250,9 +250,7 @@ struct NotificationsSettings: View {
     }
 
     private func loadAgents() async {
-        struct A: Decodable { var id = ""; var name = "" }
-        let d = await Task.detached { PomCore.shared.codeAgentsData() }.value
-        let agents = (PomJSON.decode([A].self, from: d) ?? []).map { (id: $0.id, name: $0.name) }
+        let agents = await CodeAgentsStore.load()
         sources = NotifCatalog.sources(agents: agents.isEmpty ? [("claude", "Claude Code")] : agents)
     }
 }

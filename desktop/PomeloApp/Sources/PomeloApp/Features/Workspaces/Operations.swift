@@ -114,8 +114,7 @@ extension AppState {
         let op = ops[i]
         Task { @MainActor in
             if op.kind == "create", !op.displayName.trimmingCharacters(in: .whitespaces).isEmpty {
-                let b = op.branch, dn = op.displayName
-                _ = await Task.detached { PomCore.shared.workspaceRename(branch: b, isMain: false, displayName: dn) }.value
+                await WorkspaceOpsStore.rename(branch: op.branch, isMain: false, displayName: op.displayName)
             }
             await refresh()
             if op.kind == "create" { selection = "ws:" + op.branch }

@@ -1,13 +1,10 @@
 Features/Activity/ActivityView.swift
 Features/Config/ConfigBundleSheets.swift
 Features/Integrations/IntegrationsSettings.swift
-Features/Notifications/NotificationSounds.swift
-Features/Onboarding/SetupWizard.swift
 Features/Session/OnboardSheet.swift
 Features/Session/SessionActions.swift
 Features/Settings/SettingsView.swift
 Features/Shared/SharedServicesView.swift
-Features/Workspaces/Operations.swift
 Features/Workspaces/PRsBoard.swift
 Features/Workspaces/ServicesHome.swift
 Features/Workspaces/UpdateMainSheet.swift
