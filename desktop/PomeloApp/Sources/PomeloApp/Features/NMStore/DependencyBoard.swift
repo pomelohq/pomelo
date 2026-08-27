@@ -205,26 +205,40 @@ struct DependencyBoard: View {
     }
 
     private var board: some View {
-        let l = build()
-        let s = zoom * pinch
-        let active = activeIDs(l)
-        return canvas(l, active: active)
-            .scaleEffect(s, anchor: .topLeading)
-            .frame(width: l.size.width * s, height: l.size.height * s, alignment: .topLeading)
-            .offset(x: pan.width + dragPan.width, y: pan.height + dragPan.height)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(16)
-            .contentShape(Rectangle())
-            .clipped()
-            .gesture(
-                DragGesture(minimumDistance: 2)
-                    .updating($dragPan) { v, st, _ in st = v.translation }
-                    .onEnded { v in pan.width += v.translation.width; pan.height += v.translation.height }
-            )
-            .simultaneousGesture(
-                MagnificationGesture().updating($pinch) { v, st, _ in st = v }
-                    .onEnded { v in zoom = min(2, max(0.4, zoom * v)) }
-            )
+        GeometryReader { geo in
+            let l = build()
+            let s = zoom * pinch
+            let active = activeIDs(l)
+            canvas(l, active: active)
+                .scaleEffect(s, anchor: .topLeading)
+                .frame(width: l.size.width * s, height: l.size.height * s, alignment: .topLeading)
+                .offset(x: pan.width + dragPan.width, y: pan.height + dragPan.height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(16)
+                .contentShape(Rectangle())
+                .clipped()
+                .gesture(
+                    DragGesture(minimumDistance: 2)
+                        .updating($dragPan) { v, st, _ in st = v.translation }
+                        .onEnded { v in pan.width += v.translation.width; pan.height += v.translation.height }
+                )
+                .simultaneousGesture(
+                    MagnificationGesture().updating($pinch) { v, st, _ in st = v }
+                        .onEnded { v in zoom = min(2, max(0.4, zoom * v)) }
+                )
+                .onAppear { autofit(content: l.size, avail: geo.size) }
+                .onChange(of: vm.entries.count) { _ in autofit(content: l.size, avail: geo.size) }
+        }
+    }
+
+    // Fit the whole graph in view when it opens (or after data loads), so it never
+    // opens overflowing at 100%. UI concern, stays in the frontend (ADR 0001).
+    private func autofit(content: CGSize, avail: CGSize) {
+        guard content.width > 1, avail.width > 1 else { return }
+        let pad: CGFloat = 48
+        let fit = min(1, (avail.width - pad) / content.width, (avail.height - pad) / content.height)
+        zoom = max(0.4, fit)
+        pan = .zero
     }
 
     private func canvas(_ l: Layout, active: Set<String>) -> some View {
