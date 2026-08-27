@@ -145,6 +145,11 @@ func FromConfigWithSelection(cfg *config.Config, configPath, wsName, branch stri
 			filteredDirs = append(filteredDirs, d)
 		}
 	}
+	// Fail loudly instead of provisioning an empty 0/0 workspace: an empty (or
+	// non-matching) selection would otherwise "succeed" with no worktrees.
+	if len(filteredDirs) == 0 {
+		return nil, fmt.Errorf("no repos selected for workspace '%s'", wsName)
+	}
 	ctx.UniqueDirs = filteredDirs
 
 	var filteredPaths []services.DirMapping
