@@ -1,20 +1,11 @@
 import SwiftUI
 
-struct ClaudeUsage: Decodable {
-    // Optionals: absent keys (Go omits `error` on success) would otherwise make
-    // Swift's synthesized Decodable throw and the chip stay stuck on "usage...".
-    struct Win: Decodable { var pct: Double?; var resets_at: Int64? }
-    var ok: Bool?
-    var error: String?
-    var session: Win?
-    var weekly: Win?
-}
-
-// Claude subscription usage (5h session + weekly) shown as a compact meter, polled
-// from the same OAuth usage endpoint Claude Code reads for its status line.
+// Claude subscription usage (5h session + weekly) as a compact meter. State is owned
+// by UsageStore (one poller, off-main, delta-guarded); the chip only renders it.
 struct ClaudeUsageChip: View {
     @EnvironmentObject private var theme: ThemeManager
-    @State private var u: ClaudeUsage?
+    @StateObject private var store = UsageStore.shared
+    private var u: ClaudeUsage? { store.usage }
 
     var body: some View {
         let _ = theme.mode
@@ -43,7 +34,7 @@ struct ClaudeUsageChip: View {
                 .help(u == nil ? "Loading Claude usage…" : "Claude usage unavailable: \(u?.error?.isEmpty == false ? u!.error! : "unknown")")
             }
         }
-        .task { await loop() }
+        .task { store.start() }
     }
 
     private func pct(_ p: Double) -> String { "\(Int(p.rounded()))%" }
@@ -67,13 +58,5 @@ struct ClaudeUsageChip: View {
         if secs <= 0 { return "(resetting)" }
         let h = secs / 3600, m = (secs % 3600) / 60
         return h > 0 ? "(resets in \(h)h \(m)m)" : "(resets in \(m)m)"
-    }
-
-    private func loop() async {
-        while !Task.isCancelled {
-            let d = await Task.detached(priority: .utility) { PomCore.shared.claudeUsageData() }.value
-            if let x = PomJSON.decode(ClaudeUsage.self, from: d) { u = x }
-            try? await Task.sleep(nanoseconds: 60_000_000_000)
-        }
     }
 }
