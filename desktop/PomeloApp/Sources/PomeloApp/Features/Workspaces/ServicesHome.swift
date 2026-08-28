@@ -46,10 +46,10 @@ struct ServicesBoard: View {
         let names = repos.map(\.name)
         return ScrollView(.vertical) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 360, maximum: 560), spacing: colSpacing, alignment: .top)],
-                      alignment: .leading, spacing: 16) {
+                      alignment: .center, spacing: 16) {
                 ForEach(repos, id: \.id) { repo in
                     RepoColumn(repo: repo, branch: workspace.branch, isMain: workspace.isMain, openPane: openPane, openTerminal: openTerminal)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .frame(maxWidth: .infinity, alignment: .top)
                         .opacity(dragging == repo.name ? 0.35 : 1)
                         .onDrag {
                             dragging = repo.name
@@ -146,7 +146,7 @@ struct RepoColumn: View {
                 }
             }
         } label: {
-            Image(systemName: "bolt").font(.system(size: 12)).foregroundStyle(Theme.dim)
+            Image(systemName: "bolt").font(.system(size: 12, weight: .light)).foregroundStyle(Theme.dim.opacity(0.75))
                 .frame(width: 24, height: 22)
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()

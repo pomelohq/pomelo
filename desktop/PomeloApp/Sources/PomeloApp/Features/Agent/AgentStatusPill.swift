@@ -3,6 +3,7 @@ import SwiftUI
 struct AgentStatusPill: View {
     @EnvironmentObject var state: AppState
     @State private var open = false
+    @State private var hovered: String?
 
     private static let priority = ["awaiting_input", "thinking", "tool_use", "compacting", "idle"]
 
@@ -71,9 +72,11 @@ struct AgentStatusPill: View {
                     }
                     .padding(.horizontal, 8).padding(.vertical, 5)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(hovered == item.ws.id ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 6))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { hovered = $0 ? item.ws.id : (hovered == item.ws.id ? nil : hovered) }
             }
         }
         .padding(4).frame(width: 260)
