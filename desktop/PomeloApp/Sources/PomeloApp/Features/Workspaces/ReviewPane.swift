@@ -440,7 +440,7 @@ struct CodePeekPane: View {
             .background(Theme.bgSoft)
             Divider().overlay(Theme.borderSoft)
             if let content {
-                CodePeekTextView(content: content, lang: CodeLang.detect(path: target.path),
+                CodeView(content: content, lang: CodeLang.detect(path: target.path),
                                  start: target.start, end: target.end, isDark: theme.mode.isDark,
                                  onSelectLines: { sel in withAnimation(.easeInOut(duration: 0.12)) { selLines = sel } })
                     .id(target.id)
@@ -666,160 +666,6 @@ struct ReviewThreadsView: View {
     }
 }
 
-// Native NSTextView peek: one text storage, GPU-backed scrolling (SwiftUI per-row
-// Text + textSelection janks on long files). Mirrors NativeDiffView.
-struct CodePeekTextView: NSViewRepresentable {
-    let content: String
-    let lang: CodeLang
-    let start: Int
-    let end: Int
-    var isDark: Bool
-    var onSelectLines: (ClosedRange<Int>?) -> Void = { _ in }
-
-    func makeCoordinator() -> Coord { Coord() }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let tv = PeekTextView()
-        tv.isEditable = false
-        tv.isSelectable = true
-        tv.isRichText = false
-        tv.drawsBackground = false
-        tv.textContainerInset = NSSize(width: 4, height: 8)
-        tv.isHorizontallyResizable = true
-        tv.isVerticallyResizable = true
-        tv.minSize = .zero
-        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        tv.autoresizingMask = []
-        tv.textContainer?.widthTracksTextView = false
-        tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        tv.textContainer?.lineFragmentPadding = 0
-        context.coordinator.textView = tv
-        tv.delegate = context.coordinator
-
-        let scroll = NSScrollView()
-        scroll.documentView = tv
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = true
-        scroll.drawsBackground = false
-        return scroll
-    }
-
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        scroll.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
-        guard let tv = context.coordinator.textView else { return }
-        context.coordinator.onSelectLines = onSelectLines
-        let key = "\(content.count):\(start):\(end)"
-        if context.coordinator.key == key { return }
-        context.coordinator.key = key
-        let built = PeekTextView.build(content, lang: lang, start: start, end: end)
-        tv.hitLo = built.hitLo
-        tv.hitHi = built.hitHi
-        tv.lineStarts = built.starts
-        tv.textStorage?.setAttributedString(built.string)
-        if let tc = tv.textContainer { tv.layoutManager?.ensureLayout(for: tc) }
-        tv.needsDisplay = true
-        DispatchQueue.main.async { scrollToTarget(tv) }
-    }
-
-    // AppKit handles clip-view/frame timing; a manual boundingRect scroll landed at
-    // top before layout settled. Double-scroll pins the anchor near the top with context.
-    private func scrollToTarget(_ tv: PeekTextView) {
-        guard start > 1, start - 1 < tv.lineStarts.count else { return }
-        let below = min(tv.hitHi + 10, tv.lineStarts.count - 1)
-        tv.scrollRangeToVisible(NSRange(location: tv.lineStarts[below], length: 0))
-        tv.scrollRangeToVisible(NSRange(location: tv.lineStarts[start - 1], length: 0))
-    }
-
-    final class Coord: NSObject, NSTextViewDelegate {
-        var textView: PeekTextView?
-        var key = ""
-        var onSelectLines: (ClosedRange<Int>?) -> Void = { _ in }
-        func textViewDidChangeSelection(_ notification: Notification) {
-            guard let tv = textView, !tv.lineStarts.isEmpty else { return }
-            let sel = tv.selectedRange()
-            if sel.length == 0 { onSelectLines(nil); return }
-            let lo = tv.lineIndex(forChar: sel.location) + 1
-            let hi = tv.lineIndex(forChar: max(sel.location, sel.location + sel.length - 1)) + 1
-            onSelectLines(lo...hi)
-        }
-    }
-}
-
-final class PeekTextView: NSTextView {
-    var hitLo = -1   // 0-based first highlighted line (inclusive)
-    var hitHi = -1   // 0-based last highlighted line (inclusive)
-    var lineStarts: [Int] = []
-
-    private static let mono = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-    private static let para: NSParagraphStyle = {
-        let p = NSMutableParagraphStyle()
-        p.lineSpacing = 4
-        return p
-    }()
-    private static func synColor(_ k: SynKind) -> NSColor {
-        switch k {
-        case .keyword:  return NSColor.systemBlue
-        case .string:   return NSColor.systemGreen
-        case .number:   return NSColor.systemOrange
-        case .comment:  return NSColor.tertiaryLabelColor
-        case .type:     return NSColor.systemTeal
-        case .function: return NSColor.systemPurple
-        case .plain:    return NSColor.labelColor
-        }
-    }
-
-    static func build(_ content: String, lang: CodeLang, start: Int, end: Int)
-        -> (string: NSAttributedString, starts: [Int], hitLo: Int, hitHi: Int) {
-        let lines = content.components(separatedBy: "\n")
-        let spansPerLine = Syntax.tokenize(content, lang: lang)
-        let gutterW = max(3, String(lines.count).count)
-        let dim = NSColor.tertiaryLabelColor, code = NSColor.labelColor
-        let out = NSMutableAttributedString()
-        var starts: [Int] = []
-        let hitLo = start > 0 ? min(start, lines.count) - 1 : -1
-        let hitHi = start > 0 ? min(max(start, end), lines.count) - 1 : -1
-        for (i, line) in lines.enumerated() {
-            starts.append(out.length)
-            let num = String(i + 1)
-            let pad = String(repeating: " ", count: max(0, gutterW - num.count))
-            out.append(NSAttributedString(string: pad + num + "  ", attributes: [.font: mono, .foregroundColor: dim, .paragraphStyle: para]))
-            let a = NSMutableAttributedString(string: line + "\n", attributes: [.font: mono, .foregroundColor: code, .paragraphStyle: para])
-            let spans = i < spansPerLine.count ? spansPerLine[i] : []
-            for sp in spans where sp.kind != .plain {
-                guard let l = line.index(line.startIndex, offsetBy: sp.lo, limitedBy: line.endIndex),
-                      let h = line.index(line.startIndex, offsetBy: sp.hi, limitedBy: line.endIndex), l < h else { continue }
-                a.addAttribute(.foregroundColor, value: synColor(sp.kind), range: NSRange(l..<h, in: line))
-            }
-            out.append(a)
-        }
-        return (out, starts, hitLo, hitHi)
-    }
-
-    override func drawBackground(in rect: NSRect) {
-        super.drawBackground(in: rect)
-        guard hitLo >= 0, hitLo < lineStarts.count, let lm = layoutManager, let tc = textContainer,
-              let storage = textStorage else { return }
-        let firstChar = lineStarts[hitLo]
-        let lastChar = hitHi + 1 < lineStarts.count ? lineStarts[hitHi + 1] : storage.length
-        let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: firstChar, length: max(0, lastChar - firstChar)),
-                                       actualCharacterRange: nil)
-        var r = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
-        r.origin.y += textContainerInset.height
-        r.origin.x = 0
-        r.size.width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
-        NSColor.controlAccentColor.withAlphaComponent(0.16).setFill()
-        r.fill()
-    }
-
-    func lineIndex(forChar c: Int) -> Int {
-        var lo = 0, hi = lineStarts.count - 1, ans = 0
-        while lo <= hi {
-            let mid = (lo + hi) / 2
-            if lineStarts[mid] <= c { ans = mid; lo = mid + 1 } else { hi = mid - 1 }
-        }
-        return ans
-    }
-}
 
 // Sequence diagram of the change: participant columns (repos/services) with lifelines,
 // one numbered arrow per call. Clicking a step opens its code anchor in the peek.
@@ -1195,28 +1041,8 @@ struct FlowTourPanel: View {
         diagram.participants.first { $0.id == id }?.label ?? id
     }
 
-    private func synColor(_ k: SynKind) -> Color {
-        switch k {
-        case .keyword:  return Theme.accent
-        case .string:   return Theme.ok
-        case .number:   return Theme.warn
-        case .comment:  return Theme.dim
-        case .type:     return Theme.tool
-        case .function: return Theme.wsAccent
-        case .plain:    return Theme.fgSoft
-        }
-    }
-
     private func highlighted(_ text: String, spans: [SynSpan]) -> Text {
-        guard !text.isEmpty else { return Text(" ").font(Theme.mono(10.5)) }
-        var a = AttributedString(text)
-        a.foregroundColor = Theme.fgSoft
-        let n = text.count
-        func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
-        for sp in spans where sp.kind != .plain {
-            a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = synColor(sp.kind)
-        }
-        return Text(a).font(Theme.mono(10.5))
+        SyntaxStyle.text(text, spans: spans, size: 10.5)
     }
 
     private func loadFiles() async {

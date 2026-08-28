@@ -193,7 +193,7 @@ struct DiffFilesView: View {
                                 } else if splitDiff {
                                     DiffFileView(file: f)
                                 } else {
-                                    NativeDiffView(file: f, isDark: theme.mode.isDark)
+                                    CodeDiffView(file: f, isDark: theme.mode.isDark)
                                 }
                             } else {
                                 centered("Select a file")
@@ -395,17 +395,7 @@ struct DiffFileView: View {
         .background(text == nil ? Theme.dim.opacity(0.05) : (tint?.opacity(0.12) ?? .clear))
     }
 
-    private func synColor(_ k: SynKind) -> Color {
-        switch k {
-        case .keyword:  return Theme.accent
-        case .string:   return Theme.ok
-        case .number:   return Theme.warn
-        case .comment:  return Theme.dim
-        case .type:     return Theme.tool
-        case .function: return Theme.wsAccent
-        case .plain:    return Theme.fgSoft
-        }
-    }
+    private func synColor(_ k: SynKind) -> Color { SyntaxStyle.color(k) }
 
     private func code(_ text: String?, hi: Range<Int>?, spans: [SynSpan], tint: Color?) -> Text {
         guard let text, !text.isEmpty else { return Text(" ").font(Theme.mono(11)) }
@@ -499,16 +489,7 @@ struct DiffUnifiedView: View {
         let n = text.count
         func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
         for sp in spans where sp.kind != .plain {
-            let c: Color
-            switch sp.kind {
-            case .keyword:  c = Theme.accent
-            case .string:   c = Theme.ok
-            case .number:   c = Theme.warn
-            case .type:     c = Theme.tool
-            case .function: c = Theme.wsAccent
-            default:        c = Theme.dim
-            }
-            a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = c
+            a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = SyntaxStyle.color(sp.kind)
         }
         return Text(a).font(Theme.mono(11))
     }
@@ -517,7 +498,7 @@ struct DiffUnifiedView: View {
 
 import AppKit
 
-struct NativeDiffView: NSViewRepresentable {
+struct CodeDiffView: NSViewRepresentable {
     let file: DiffFile
     var isDark: Bool
 
@@ -525,27 +506,9 @@ struct NativeDiffView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let tv = DiffTextView()
-        tv.isEditable = false
-        tv.isSelectable = true
-        tv.isRichText = false
-        tv.drawsBackground = false
-        tv.textContainerInset = NSSize(width: 0, height: 6)
-        // Grow to the widest line, not the viewport, so long lines scroll instead of clip.
-        tv.isHorizontallyResizable = true
-        tv.isVerticallyResizable = true
-        tv.minSize = .zero
-        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        tv.autoresizingMask = []
-        tv.textContainer?.widthTracksTextView = false
-        tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.configureReadOnly(inset: NSSize(width: 0, height: 6))
         context.coordinator.textView = tv
-
-        let scroll = NSScrollView()
-        scroll.documentView = tv
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = true
-        scroll.drawsBackground = false
-        return scroll
+        return CodeTextViewBase.makeScroll(tv)
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -564,22 +527,11 @@ struct NativeDiffView: NSViewRepresentable {
     final class Coord { var textView: DiffTextView?; var path = "" }
 }
 
-final class DiffTextView: NSTextView {
+final class DiffTextView: CodeTextViewBase {
     var lineKinds: [DiffLine.Kind] = []
-    var lineStarts: [Int] = []
 
     private static let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-    private static func synColor(_ k: SynKind) -> NSColor {
-        switch k {
-        case .keyword:  return .systemPurple
-        case .string:   return .systemTeal
-        case .number:   return .systemOrange
-        case .comment:  return .tertiaryLabelColor
-        case .type:     return .systemCyan
-        case .function: return .systemPink
-        case .plain:    return .labelColor
-        }
-    }
+    private static let para = CodeTextViewBase.paragraph(lineHeight: 19)
     private static func gutter(_ n: Int?) -> String {
         let s = n.map(String.init) ?? ""
         return String(repeating: " ", count: max(0, 5 - s.count)) + s
@@ -593,16 +545,10 @@ final class DiffTextView: NSTextView {
         let addC = NSColor.systemGreen, delC = NSColor.systemRed, hunkC = NSColor.systemPurple
 
         func append(_ s: String, _ color: NSColor) {
-            out.append(NSAttributedString(string: s, attributes: [.font: mono, .foregroundColor: color]))
+            out.append(NSAttributedString(string: s, attributes: [.font: mono, .foregroundColor: color, .paragraphStyle: para]))
         }
         func appendCode(_ text: String) {
-            let a = NSMutableAttributedString(string: text + "\n", attributes: [.font: mono, .foregroundColor: code])
-            for sp in Syntax.spans(text) where sp.kind != .plain {
-                guard let lo = text.index(text.startIndex, offsetBy: sp.lo, limitedBy: text.endIndex),
-                      let hi = text.index(text.startIndex, offsetBy: sp.hi, limitedBy: text.endIndex), lo < hi else { continue }
-                a.addAttribute(.foregroundColor, value: synColor(sp.kind), range: NSRange(lo..<hi, in: text))
-            }
-            out.append(a)
+            out.append(CodeTextViewBase.attributedLine(text + "\n", spans: Syntax.spans(text), font: mono, base: code, paragraph: para))
         }
         for l in file.lines {
             starts.append(out.length)
@@ -619,38 +565,49 @@ final class DiffTextView: NSTextView {
         return (out, kinds, starts)
     }
 
-    override func drawBackground(in rect: NSRect) {
-        super.drawBackground(in: rect)
-        guard let lm = layoutManager, let tc = textContainer, !lineStarts.isEmpty else { return }
-        let addBg = NSColor.systemGreen.withAlphaComponent(0.12)
-        let delBg = NSColor.systemRed.withAlphaComponent(0.12)
-        let hunkBg = NSColor.systemPurple.withAlphaComponent(0.08)
-        let inset = textContainerInset
-        let width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
-        let glyphRange = lm.glyphRange(forBoundingRect: rect, in: tc)
-        lm.enumerateLineFragments(forGlyphRange: glyphRange) { _, used, _, glyphR, _ in
-            let charIdx = lm.characterIndexForGlyph(at: glyphR.location)
-            let line = self.lineIndex(forChar: charIdx)
-            guard line < self.lineKinds.count else { return }
-            let color: NSColor?
-            switch self.lineKinds[line] {
-            case .add: color = addBg
-            case .del: color = delBg
-            case .hunk: color = hunkBg
-            case .context: color = nil
-            }
-            guard let color else { return }
-            color.setFill()
-            NSRect(x: 0, y: used.origin.y + inset.height, width: width, height: used.height).fill()
-        }
+    // Blend a tint onto the opaque editor background so runs can overlap (aligned
+    // outward) without alpha doubling into stripes.
+    private func opaque(_ tint: NSColor, _ a: CGFloat) -> NSColor {
+        let base = (NSColor(Theme.bg).usingColorSpace(.sRGB)) ?? .black
+        let t = tint.usingColorSpace(.sRGB) ?? tint
+        return NSColor(srgbRed: base.redComponent * (1 - a) + t.redComponent * a,
+                       green: base.greenComponent * (1 - a) + t.greenComponent * a,
+                       blue: base.blueComponent * (1 - a) + t.blueComponent * a, alpha: 1)
     }
 
-    private func lineIndex(forChar c: Int) -> Int {
-        var lo = 0, hi = lineStarts.count - 1, ans = 0
-        while lo <= hi {
-            let mid = (lo + hi) / 2
-            if lineStarts[mid] <= c { ans = mid; lo = mid + 1 } else { hi = mid - 1 }
+    // Fill ONE rect per contiguous same-kind run, computed from the run's character
+    // range (not the dirty rect). Per-band fills round differently at band edges and
+    // leave hairline seams — invisible on a dark bg, white stripes on a light one.
+    // The context clips this to the dirty area; the aligned rect is identical each
+    // pass, so adjacent bands rejoin seamlessly.
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        guard let lm = layoutManager, let tc = textContainer, let storage = textStorage,
+              !lineStarts.isEmpty else { return }
+        let addBg = opaque(.systemGreen, 0.16), delBg = opaque(.systemRed, 0.16), hunkBg = opaque(.systemPurple, 0.10)
+        func bg(_ k: DiffLine.Kind) -> NSColor? {
+            switch k { case .add: return addBg; case .del: return delBg; case .hunk: return hunkBg; case .context: return nil }
         }
-        return ans
+        NSGraphicsContext.current?.shouldAntialias = false
+        defer { NSGraphicsContext.current?.shouldAntialias = true }
+        let inset = textContainerInset.height
+        let width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
+        var i = 0
+        while i < lineKinds.count {
+            guard let color = bg(lineKinds[i]) else { i += 1; continue }
+            var j = i
+            while j + 1 < lineKinds.count, bg(lineKinds[j + 1]) == color { j += 1 }
+            let firstChar = lineStarts[i]
+            let lastChar = j + 1 < lineStarts.count ? lineStarts[j + 1] : storage.length
+            let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: firstChar, length: max(0, lastChar - firstChar)),
+                                           actualCharacterRange: nil)
+            var r = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+            r.origin.y += inset
+            r.origin.x = 0
+            r.size.width = width
+            color.setFill()
+            backingAlignedRect(r, options: .alignAllEdgesOutward).fill()
+            i = j + 1
+        }
     }
 }
