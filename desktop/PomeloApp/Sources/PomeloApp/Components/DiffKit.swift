@@ -338,9 +338,6 @@ func splitRows(_ file: DiffFile) -> [SplitRow] {
 
 import AppKit
 
-// PR unified diff: an old/new line-number gutter + a +/- sign, then the code, with each
-// line tinted by its diff kind. Same renderer as the review peek (CodeTextView) — only
-// the gutter text and per-line backgrounds differ, both produced by CodeTextView.diff.
 struct CodeDiffView: NSViewRepresentable {
     let file: DiffFile
     var isDark: Bool

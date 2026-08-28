@@ -1,19 +1,15 @@
 import SwiftUI
 import AppKit
 
-// One read-only code renderer for every code surface (review peek, PR unified diff).
-// The layout logic is identical — a monospace attributed string of `gutter + syntax-
-// highlighted code`, fixed line height, GPU-backed scrolling, per-line background fills.
-// Surfaces differ only in two pieces of DATA: what the gutter says and which lines get
-// which background tint. Both are baked into `CodeModel` by a builder; the view is generic.
+// One renderer for every read-only code surface (peek, unified + split diff). The view
+// is generic; a builder bakes the two things that differ — gutter text and per-line
+// background — into a CodeModel.
 struct CodeModel {
     let string: NSAttributedString
-    let starts: [Int]        // character offset of each line
-    let lineBg: [NSColor?]   // per-line background fill (nil = none)
+    let starts: [Int]
+    let lineBg: [NSColor?]
 }
 
-// Review peek: line numbers + a tinted anchor range, with select-to-report and
-// scroll-to-anchor.
 struct CodeView: NSViewRepresentable {
     let content: String
     let lang: CodeLang
@@ -49,9 +45,8 @@ struct CodeView: NSViewRepresentable {
         DispatchQueue.main.async { scrollToTarget(tv) }
     }
 
-    // AppKit settles clip-view/frame timing after this pass; a single scroll landed at
-    // the top before layout finished. Scroll below the anchor first, then to it, so the
-    // anchor sits near the top with context.
+    // Scroll below the anchor first, then to it, so it lands near the top with context;
+    // a single scroll fires before AppKit settles layout and stops at the top.
     private func scrollToTarget(_ tv: CodeTextView) {
         guard start > 1, start - 1 < tv.lineStarts.count else { return }
         let hitHi = min(max(start, end), tv.lineStarts.count) - 1
@@ -128,8 +123,6 @@ final class CodeTextView: NSTextView {
         return p
     }
 
-    // One syntax-highlighted code line — the shared core; each builder supplies its own
-    // font/base/paragraph and its own gutter/backdrop.
     static func attributedLine(_ text: String, spans: [SynSpan], font: NSFont, base: NSColor,
                                paragraph: NSParagraphStyle) -> NSMutableAttributedString {
         let a = NSMutableAttributedString(string: text,
@@ -142,10 +135,8 @@ final class CodeTextView: NSTextView {
         return a
     }
 
-    // Fill ONE rect per contiguous same-colour run, from the run's character range (not
-    // the dirty rect). Per-band fills round differently at band edges and leave hairline
-    // seams; the context clips this, and the aligned rect is identical each pass, so
-    // adjacent bands rejoin seamlessly.
+    // Fill one rect per contiguous same-colour run from its character range, not per
+    // dirty band — per-band fills round differently at band edges and leave hairline seams.
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
         guard let lm = layoutManager, let tc = textContainer, let storage = textStorage,
@@ -211,8 +202,8 @@ extension CodeTextView {
 
     enum Side { case left, right }
 
-    // One column of a side-by-side diff. Rows are paired upstream (splitRows) so both
-    // columns have the same line count and align; a padded cell is a blank row.
+    // Rows are paired upstream (splitRows) so both columns align line-for-line; a nil
+    // cell renders as a blank padded row.
     static func splitSide(_ rows: [SplitRow], side: Side) -> CodeModel {
         let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         let para = paragraph(lineHeight: 18)
@@ -255,8 +246,6 @@ extension CodeTextView {
     }
 }
 
-// Side-by-side diff: two CodeTextView columns sharing the one renderer, a hairline
-// divider, and synced vertical scrolling (horizontal stays independent per side).
 struct CodeSplitView: NSViewRepresentable {
     let file: DiffFile
     var isDark: Bool
@@ -291,9 +280,8 @@ struct CodeSplitView: NSViewRepresentable {
         return container
     }
 
-    // Fill the space SwiftUI offers. Without this the container reports its subviews'
-    // (content-sized, huge) fitting width, so the two columns sum widths and the whole
-    // block overflows instead of splitting the pane.
+    // Fill the offered space; otherwise the container reports its content-sized subviews'
+    // width and the two columns sum widths and overflow instead of splitting the pane.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
         proposal.replacingUnspecifiedDimensions(by: CGSize(width: 400, height: 300))
     }
