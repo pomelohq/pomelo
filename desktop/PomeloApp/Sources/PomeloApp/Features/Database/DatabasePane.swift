@@ -37,7 +37,7 @@ struct DatabasePane: View {
             if vm.databases.isEmpty && !vm.loadingDBs {
                 EmptyStateView(icon: "cylinder.split.1x2", title: "No databases")
             } else {
-                DBTree(vm: vm)
+                DBTree(vm: vm, theme: theme)
             }
         }
         .background(Theme.bgSoft)

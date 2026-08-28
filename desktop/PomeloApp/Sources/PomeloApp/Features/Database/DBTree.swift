@@ -19,8 +19,9 @@ final class DBItem: NSObject {
 
 struct DBTree: NSViewRepresentable {
     @ObservedObject var vm: DatabaseViewModel
+    @ObservedObject var theme: ThemeManager
 
-    func makeCoordinator() -> Coordinator { Coordinator(vm: vm) }
+    func makeCoordinator() -> Coordinator { Coordinator(vm: vm, theme: theme) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let outline = NSOutlineView()
@@ -47,6 +48,7 @@ struct DBTree: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = true
         scroll.backgroundColor = NSColor(Theme.bgSoft)
+        context.coordinator.scroll = scroll
         context.coordinator.observe()
         return scroll
     }
@@ -58,12 +60,22 @@ struct DBTree: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
         var vm: DatabaseViewModel
+        let theme: ThemeManager
         weak var outline: NSOutlineView?
+        weak var scroll: NSScrollView?
         private var cache: [String: DBItem] = [:]
         private var bag = Set<AnyCancellable>()
         private var applyingExpansion = false
 
-        init(vm: DatabaseViewModel) { self.vm = vm }
+        init(vm: DatabaseViewModel, theme: ThemeManager) { self.vm = vm; self.theme = theme }
+
+        // Native cells capture NSColor(Theme.x) at render, so a theme switch needs an
+        // explicit repaint of the backgrounds + a reload to recolor every cell.
+        func applyTheme() {
+            outline?.backgroundColor = NSColor(Theme.bgSoft)
+            scroll?.backgroundColor = NSColor(Theme.bgSoft)
+            outline?.reloadData()
+        }
 
         private func item(_ key: String, _ kind: DBItem.Kind) -> DBItem {
             if let c = cache[key] { return c }
@@ -112,6 +124,10 @@ struct DBTree: NSViewRepresentable {
 
             vm.$selectedTableID.receive(on: RunLoop.main)
                 .sink { [weak self] _ in self?.syncSelection() }
+                .store(in: &bag)
+
+            theme.$mode.dropFirst().receive(on: RunLoop.main)
+                .sink { [weak self] _ in self?.applyTheme() }
                 .store(in: &bag)
         }
 

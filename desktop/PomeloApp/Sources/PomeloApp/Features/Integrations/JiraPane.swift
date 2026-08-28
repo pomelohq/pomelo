@@ -9,6 +9,13 @@ struct JiraComment: Decodable, Equatable, Identifiable {
         let s = created.replacingOccurrences(of: "T", with: " ")
         return String(s.prefix(16))
     }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        author = try c.decodeIfPresent(String.self, forKey: .author) ?? ""
+        created = try c.decodeIfPresent(String.self, forKey: .created) ?? ""
+        body = try c.decodeIfPresent(String.self, forKey: .body) ?? ""
+    }
+    enum K: String, CodingKey { case author, created, body }
 }
 
 struct JiraWebLink: Decodable, Equatable, Identifiable {
@@ -16,6 +23,13 @@ struct JiraWebLink: Decodable, Equatable, Identifiable {
     var url = ""
     var icon = ""
     var id: String { url }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? ""
+    }
+    enum K: String, CodingKey { case title, url, icon }
 }
 
 struct JiraDetail: Decodable, Equatable {
@@ -28,6 +42,19 @@ struct JiraDetail: Decodable, Equatable {
     var comments: [JiraComment] = []
     var webLinks: [JiraWebLink] = []
     var error: String?
+
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        configured = try c.decodeIfPresent(Bool.self, forKey: .configured) ?? false
+        key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        comments = try c.decodeIfPresent([JiraComment].self, forKey: .comments) ?? []
+        webLinks = try c.decodeIfPresent([JiraWebLink].self, forKey: .webLinks) ?? []
+        error = try c.decodeIfPresent(String.self, forKey: .error)
+    }
 
     enum CodingKeys: String, CodingKey {
         case configured, key, summary, status, url, description, comments, error

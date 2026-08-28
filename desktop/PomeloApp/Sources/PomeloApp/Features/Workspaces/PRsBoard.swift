@@ -7,6 +7,15 @@ struct WorkspacePR: Decodable, Identifiable, Equatable {
     var ahead: Int = 0
     let pr: PRInfo?
     var id: String { repo }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        repo = try c.decode(String.self, forKey: .repo)
+        alias = try c.decode(String.self, forKey: .alias)
+        behind = try c.decodeIfPresent(Int.self, forKey: .behind) ?? 0
+        ahead = try c.decodeIfPresent(Int.self, forKey: .ahead) ?? 0
+        pr = try c.decodeIfPresent(PRInfo.self, forKey: .pr)
+    }
+    enum K: String, CodingKey { case repo, alias, behind, ahead, pr }
 }
 
 struct LocalChangeRepo: Decodable, Identifiable, Equatable {
@@ -17,6 +26,16 @@ struct LocalChangeRepo: Decodable, Identifiable, Equatable {
     var deletions: Int = 0
     var behind: Int = 0
     var id: String { repo }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        repo = try c.decode(String.self, forKey: .repo)
+        alias = try c.decode(String.self, forKey: .alias)
+        files = try c.decodeIfPresent(Int.self, forKey: .files) ?? 0
+        insertions = try c.decodeIfPresent(Int.self, forKey: .insertions) ?? 0
+        deletions = try c.decodeIfPresent(Int.self, forKey: .deletions) ?? 0
+        behind = try c.decodeIfPresent(Int.self, forKey: .behind) ?? 0
+    }
+    enum K: String, CodingKey { case repo, alias, files, insertions, deletions, behind }
 }
 
 struct PRInfo: Decodable, Equatable {
@@ -44,7 +63,15 @@ struct PRInfo: Decodable, Equatable {
     struct Author: Decodable, Equatable { var login: String?; var avatarUrl: String? }
     struct ReviewRequest: Decodable, Equatable { var login: String?; var name: String?; var slug: String? }
 
-    struct Reviewer: Decodable, Identifiable, Equatable { var name = ""; var state = ""; var id: String { name } }
+    struct Reviewer: Decodable, Identifiable, Equatable {
+        var name = ""; var state = ""; var id: String { name }
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+            state = try c.decodeIfPresent(String.self, forKey: .state) ?? ""
+        }
+        enum K: String, CodingKey { case name, state }
+    }
     var reviewers: [Reviewer] = []
     struct Label: Decodable, Equatable, Identifiable { var name: String?; var color: String?; var id: String { name ?? "" } }
 
@@ -61,6 +88,21 @@ struct PRInfo: Decodable, Equatable {
         var id: String { (name ?? context ?? "check") + (conclusion ?? state ?? status ?? "") }
         var label: String { name ?? context ?? "check" }
         var link: String? { detailsUrl ?? targetUrl }
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            name = try c.decodeIfPresent(String.self, forKey: .name)
+            context = try c.decodeIfPresent(String.self, forKey: .context)
+            conclusion = try c.decodeIfPresent(String.self, forKey: .conclusion)
+            state = try c.decodeIfPresent(String.self, forKey: .state)
+            status = try c.decodeIfPresent(String.self, forKey: .status)
+            detailsUrl = try c.decodeIfPresent(String.self, forKey: .detailsUrl)
+            targetUrl = try c.decodeIfPresent(String.self, forKey: .targetUrl)
+            workflowName = try c.decodeIfPresent(String.self, forKey: .workflowName)
+            result = try c.decodeIfPresent(ChecksStatus.self, forKey: .result) ?? .none
+        }
+        enum K: String, CodingKey {
+            case name, context, conclusion, state, status, detailsUrl, targetUrl, workflowName, result
+        }
     }
     struct Review: Decodable, Equatable, Identifiable {
         var author: Author?
@@ -89,6 +131,40 @@ struct PRInfo: Decodable, Equatable {
     var checks: ChecksStatus = .none
     var review: ReviewDecision = .none
     var conflict: Bool = false
+
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        number = try c.decode(Int.self, forKey: .number)
+        title = try c.decode(String.self, forKey: .title)
+        state = try c.decode(String.self, forKey: .state)
+        url = try c.decode(String.self, forKey: .url)
+        isDraft = try c.decodeIfPresent(Bool.self, forKey: .isDraft) ?? false
+        mergeable = try c.decodeIfPresent(String.self, forKey: .mergeable)
+        reviewDecision = try c.decodeIfPresent(String.self, forKey: .reviewDecision)
+        body = try c.decodeIfPresent(String.self, forKey: .body)
+        headRefName = try c.decodeIfPresent(String.self, forKey: .headRefName)
+        baseRefName = try c.decodeIfPresent(String.self, forKey: .baseRefName)
+        additions = try c.decodeIfPresent(Int.self, forKey: .additions)
+        deletions = try c.decodeIfPresent(Int.self, forKey: .deletions)
+        changedFiles = try c.decodeIfPresent(Int.self, forKey: .changedFiles)
+        author = try c.decodeIfPresent(Author.self, forKey: .author)
+        reviews = try c.decodeIfPresent([Review].self, forKey: .reviews)
+        reviewLog = try c.decodeIfPresent([ReviewEntry].self, forKey: .reviewLog)
+        reviewRequests = try c.decodeIfPresent([ReviewRequest].self, forKey: .reviewRequests)
+        comments = try c.decodeIfPresent([Comment].self, forKey: .comments)
+        labels = try c.decodeIfPresent([Label].self, forKey: .labels)
+        statusCheckRollup = try c.decodeIfPresent([Check].self, forKey: .statusCheckRollup)
+        reviewers = try c.decodeIfPresent([Reviewer].self, forKey: .reviewers) ?? []
+        checks = try c.decodeIfPresent(ChecksStatus.self, forKey: .checks) ?? .none
+        review = try c.decodeIfPresent(ReviewDecision.self, forKey: .review) ?? .none
+        conflict = try c.decodeIfPresent(Bool.self, forKey: .conflict) ?? false
+    }
+    enum K: String, CodingKey {
+        case number, title, state, url, isDraft, mergeable, reviewDecision, body,
+             headRefName, baseRefName, additions, deletions, changedFiles, author,
+             reviews, reviewLog, reviewRequests, comments, labels, statusCheckRollup,
+             reviewers, checks, review, conflict
+    }
 }
 
 typealias PRCheck = PRInfo.Check
@@ -98,6 +174,14 @@ struct PRCommit: Decodable, Identifiable, Equatable {
     let hash: String; let subject: String
     var author: String = ""; var date: String = ""
     var id: String { hash }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        hash = try c.decode(String.self, forKey: .hash)
+        subject = try c.decode(String.self, forKey: .subject)
+        author = try c.decodeIfPresent(String.self, forKey: .author) ?? ""
+        date = try c.decodeIfPresent(String.self, forKey: .date) ?? ""
+    }
+    enum K: String, CodingKey { case hash, subject, author, date }
 }
 
 struct PRReviewComment: Decodable, Identifiable, Equatable {

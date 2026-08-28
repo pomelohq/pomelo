@@ -238,11 +238,30 @@ func (s *Feature) handleDiff(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out)
 }
 
+var (
+	headFetchMu sync.Mutex
+	headFetchAt = map[string]time.Time{}
+)
+
+// fetchPRHead refreshes origin/<head> in the background (throttled) so the next
+// Files/Commits open reflects newly-pushed commits without blocking this one.
+func fetchPRHead(wt, head string) {
+	headFetchMu.Lock()
+	if time.Since(headFetchAt[wt]) < 45*time.Second {
+		headFetchMu.Unlock()
+		return
+	}
+	headFetchAt[wt] = time.Now()
+	headFetchMu.Unlock()
+	go func() { _, _ = services.RunTimeout(8*time.Second, wt, "git", "fetch", "origin", head) }()
+}
+
 // prHeadRef returns the pushed PR head (origin/<branch>) so Files/Commits match
 // the PR on GitHub even when the local worktree is behind the pushed branch.
 // Local-only work belongs to the "Local changes" view instead.
 func prHeadRef(wt string) string {
 	if head := services.CurrentBranch(wt); head != "" {
+		fetchPRHead(wt, head)
 		if exec.Command("git", "-C", wt, "rev-parse", "--verify", "--quiet", "origin/"+head).Run() == nil {
 			return "origin/" + head
 		}

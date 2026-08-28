@@ -27,6 +27,8 @@ final class AgentsViewModel: ObservableObject {
                 onNote(n.title, n.event, n.ws)
             }
         }
-        states = result.states
+        // Guard: an equal @Published assignment still fires objectWillChange, which
+        // AppState fans out to the whole UI every agent poll.
+        if states != result.states { states = result.states }
     }
 }

@@ -186,10 +186,30 @@ private struct GeneralSettings: View {
     }
 }
 
-private struct CfgWebhook: Decodable { var configured = false; var enabled = false; var listen_port = 0 }
+private struct CfgWebhook: Decodable {
+    var configured = false; var enabled = false; var listen_port = 0
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        configured = try c.decodeIfPresent(Bool.self, forKey: .configured) ?? false
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        listen_port = try c.decodeIfPresent(Int.self, forKey: .listen_port) ?? 0
+    }
+    enum K: String, CodingKey { case configured, enabled, listen_port }
+}
 private struct CfgNetwork: Decodable {
     var bind_ip = "127.0.0.1"; var domain = "localhost"; var proxy_port = 0; var proxy_url = ""
     var webhook = CfgWebhook()
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        bind_ip = try c.decodeIfPresent(String.self, forKey: .bind_ip) ?? "127.0.0.1"
+        domain = try c.decodeIfPresent(String.self, forKey: .domain) ?? "localhost"
+        proxy_port = try c.decodeIfPresent(Int.self, forKey: .proxy_port) ?? 0
+        proxy_url = try c.decodeIfPresent(String.self, forKey: .proxy_url) ?? ""
+        webhook = try c.decodeIfPresent(CfgWebhook.self, forKey: .webhook) ?? CfgWebhook()
+    }
+    enum K: String, CodingKey { case bind_ip, domain, proxy_port, proxy_url, webhook }
 }
 
 private struct NetworkSettings: View {
@@ -270,13 +290,51 @@ private struct NetworkSettings: View {
 }
 
 
-private struct CfgSvcRef: Decodable, Hashable { var repo = ""; var alias = ""; var services: [String] = [] }
-private struct CfgEnvPair: Decodable, Identifiable { var key = ""; var value = ""; var source = ""; var secret = false; var id: String { key } }
+private struct CfgSvcRef: Decodable, Hashable {
+    var repo = ""; var alias = ""; var services: [String] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
+        alias = try c.decodeIfPresent(String.self, forKey: .alias) ?? ""
+        services = try c.decodeIfPresent([String].self, forKey: .services) ?? []
+    }
+    enum K: String, CodingKey { case repo, alias, services }
+}
+private struct CfgEnvPair: Decodable, Identifiable {
+    var key = ""; var value = ""; var source = ""; var secret = false; var id: String { key }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
+        value = try c.decodeIfPresent(String.self, forKey: .value) ?? ""
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
+        secret = try c.decodeIfPresent(Bool.self, forKey: .secret) ?? false
+    }
+    enum K: String, CodingKey { case key, value, source, secret }
+}
 private struct CfgExplain: Decodable {
     var repo = ""; var alias = ""; var service = ""; var cmd = ""; var port = 0
     var databases: [String: String] = [:]; var env: [CfgEnvPair] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
+        alias = try c.decodeIfPresent(String.self, forKey: .alias) ?? ""
+        service = try c.decodeIfPresent(String.self, forKey: .service) ?? ""
+        cmd = try c.decodeIfPresent(String.self, forKey: .cmd) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
+        databases = try c.decodeIfPresent([String: String].self, forKey: .databases) ?? [:]
+        env = try c.decodeIfPresent([CfgEnvPair].self, forKey: .env) ?? []
+    }
+    enum K: String, CodingKey { case repo, alias, service, cmd, port, databases, env }
 }
-private struct CfgExplainResp: Decodable { var repos: [CfgSvcRef] = []; var explain: CfgExplain? }
+private struct CfgExplainResp: Decodable {
+    var repos: [CfgSvcRef] = []; var explain: CfgExplain?
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        repos = try c.decodeIfPresent([CfgSvcRef].self, forKey: .repos) ?? []
+        explain = try c.decodeIfPresent(CfgExplain.self, forKey: .explain)
+    }
+    enum K: String, CodingKey { case repos, explain }
+}
 
 struct EnvInspector: View {
     @EnvironmentObject var state: AppState
@@ -442,8 +500,24 @@ struct EnvInspector: View {
 }
 
 
-private struct CfgFile: Decodable, Hashable { var name = ""; var path = ""; var root = false }
-private struct CfgFilesResp: Decodable { var files: [CfgFile] = [] }
+private struct CfgFile: Decodable, Hashable {
+    var name = ""; var path = ""; var root = false
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        root = try c.decodeIfPresent(Bool.self, forKey: .root) ?? false
+    }
+    enum K: String, CodingKey { case name, path, root }
+}
+private struct CfgFilesResp: Decodable {
+    var files: [CfgFile] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        files = try c.decodeIfPresent([CfgFile].self, forKey: .files) ?? []
+    }
+    enum K: String, CodingKey { case files }
+}
 
 struct AdvancedSettings: View {
     @EnvironmentObject var state: AppState

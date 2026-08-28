@@ -3,13 +3,55 @@ import SwiftUI
 private struct SharedSvc: Decodable, Identifiable {
     var name = ""; var type = ""; var image = ""; var port = 0; var running = false; var url = ""
     var id: String { name }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        type = try c.decodeIfPresent(String.self, forKey: .type) ?? ""
+        image = try c.decodeIfPresent(String.self, forKey: .image) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+    }
+    enum K: String, CodingKey { case name, type, image, port, running, url }
 }
-private struct SharedResp: Decodable { var services: [SharedSvc] = [] }
+private struct SharedResp: Decodable {
+    var services: [SharedSvc] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        services = try c.decodeIfPresent([SharedSvc].self, forKey: .services) ?? []
+    }
+    enum K: String, CodingKey { case services }
+}
 
 private struct SharedInspect: Decodable {
-    struct Mount: Decodable, Hashable { var src = ""; var dst = "" }
-    struct Port: Decodable, Hashable { var host = ""; var container = ""; var proto = "" }
-    struct Label: Decodable, Hashable { var key = ""; var value = "" }
+    struct Mount: Decodable, Hashable {
+        var src = ""; var dst = ""
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            src = try c.decodeIfPresent(String.self, forKey: .src) ?? ""
+            dst = try c.decodeIfPresent(String.self, forKey: .dst) ?? ""
+        }
+        enum K: String, CodingKey { case src, dst }
+    }
+    struct Port: Decodable, Hashable {
+        var host = ""; var container = ""; var proto = ""
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
+            container = try c.decodeIfPresent(String.self, forKey: .container) ?? ""
+            proto = try c.decodeIfPresent(String.self, forKey: .proto) ?? ""
+        }
+        enum K: String, CodingKey { case host, container, proto }
+    }
+    struct Label: Decodable, Hashable {
+        var key = ""; var value = ""
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
+            value = try c.decodeIfPresent(String.self, forKey: .value) ?? ""
+        }
+        enum K: String, CodingKey { case key, value }
+    }
     var name = "", image = "", id = "", status = "", started_at = "", ip = "", url = ""
     var cpu = "", mem = "", net = "", disk = ""
     var port = 0
@@ -17,8 +59,41 @@ private struct SharedInspect: Decodable {
     var ports: [Port] = []
     var mounts: [Mount] = []
     var labels: [Label] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        image = try c.decodeIfPresent(String.self, forKey: .image) ?? ""
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        started_at = try c.decodeIfPresent(String.self, forKey: .started_at) ?? ""
+        ip = try c.decodeIfPresent(String.self, forKey: .ip) ?? ""
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        cpu = try c.decodeIfPresent(String.self, forKey: .cpu) ?? ""
+        mem = try c.decodeIfPresent(String.self, forKey: .mem) ?? ""
+        net = try c.decodeIfPresent(String.self, forKey: .net) ?? ""
+        disk = try c.decodeIfPresent(String.self, forKey: .disk) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+        ports = try c.decodeIfPresent([Port].self, forKey: .ports) ?? []
+        mounts = try c.decodeIfPresent([Mount].self, forKey: .mounts) ?? []
+        labels = try c.decodeIfPresent([Label].self, forKey: .labels) ?? []
+    }
+    init(name: String = "", image: String = "", url: String = "", port: Int = 0, running: Bool = false) {
+        self.name = name; self.image = image; self.url = url; self.port = port; self.running = running
+    }
+    enum K: String, CodingKey {
+        case name, image, id, status, started_at, ip, url, cpu, mem, net, disk, port, running, ports, mounts, labels
+    }
 }
-private struct SharedLogs: Decodable { var running = false; var lines: [String] = [] }
+private struct SharedLogs: Decodable {
+    var running = false; var lines: [String] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+        lines = try c.decodeIfPresent([String].self, forKey: .lines) ?? []
+    }
+    enum K: String, CodingKey { case running, lines }
+}
 
 private enum DetailTab: String, CaseIterable { case info = "Info", stats = "Stats", logs = "Logs" }
 

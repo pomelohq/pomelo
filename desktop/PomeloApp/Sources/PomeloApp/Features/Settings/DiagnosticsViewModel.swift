@@ -6,6 +6,16 @@ final class MCPViewModel: ObservableObject {
     struct Status: Decodable {
         var registered = false, connected = false, wrapper_ok = false
         var command = "", list_line = ""
+        init() {}
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            registered = try c.decodeIfPresent(Bool.self, forKey: .registered) ?? false
+            connected = try c.decodeIfPresent(Bool.self, forKey: .connected) ?? false
+            wrapper_ok = try c.decodeIfPresent(Bool.self, forKey: .wrapper_ok) ?? false
+            command = try c.decodeIfPresent(String.self, forKey: .command) ?? ""
+            list_line = try c.decodeIfPresent(String.self, forKey: .list_line) ?? ""
+        }
+        enum K: String, CodingKey { case registered, connected, wrapper_ok, command, list_line }
     }
     @Published private(set) var status = Status()
     @Published private(set) var loading = true

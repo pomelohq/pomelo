@@ -4,8 +4,27 @@ import Foundation
 final class DoctorViewModel: ObservableObject {
     struct Finding: Decodable, Identifiable {
         var id = ""; var severity = ""; var title = ""; var detail = ""; var fix = ""
+        init() {}
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+            severity = try c.decodeIfPresent(String.self, forKey: .severity) ?? ""
+            title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+            detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? ""
+            fix = try c.decodeIfPresent(String.self, forKey: .fix) ?? ""
+        }
+        enum K: String, CodingKey { case id, severity, title, detail, fix }
     }
-    struct Report: Decodable { var findings: [Finding] = []; var errors = 0; var warnings = 0 }
+    struct Report: Decodable {
+        var findings: [Finding] = []; var errors = 0; var warnings = 0
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            findings = try c.decodeIfPresent([Finding].self, forKey: .findings) ?? []
+            errors = try c.decodeIfPresent(Int.self, forKey: .errors) ?? 0
+            warnings = try c.decodeIfPresent(Int.self, forKey: .warnings) ?? 0
+        }
+        enum K: String, CodingKey { case findings, errors, warnings }
+    }
 
     @Published private(set) var findings: [Finding] = []
     @Published private(set) var errors = 0

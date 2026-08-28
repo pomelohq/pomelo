@@ -12,9 +12,41 @@ struct ProcInfo: Decodable, Identifiable, Equatable {
     var cpu = 0.0
     var ram_mb = 0.0
     var id: Int { pid }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        pid = try c.decodeIfPresent(Int.self, forKey: .pid) ?? 0
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        ws_key = try c.decodeIfPresent(String.self, forKey: .ws_key) ?? ""
+        branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
+        repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
+        svc = try c.decodeIfPresent(String.self, forKey: .svc) ?? ""
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        cpu = try c.decodeIfPresent(Double.self, forKey: .cpu) ?? 0.0
+        ram_mb = try c.decodeIfPresent(Double.self, forKey: .ram_mb) ?? 0.0
+    }
+    enum K: String, CodingKey { case pid, label, name, ws_key, branch, repo, svc, kind, cpu, ram_mb }
 }
-struct PsTotal: Decodable, Equatable { var cpu = 0.0; var ram_mb = 0.0; var procs = 0 }
-struct PsResponse: Decodable { var processes: [ProcInfo] = []; var total = PsTotal() }
+struct PsTotal: Decodable, Equatable {
+    var cpu = 0.0; var ram_mb = 0.0; var procs = 0
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        cpu = try c.decodeIfPresent(Double.self, forKey: .cpu) ?? 0.0
+        ram_mb = try c.decodeIfPresent(Double.self, forKey: .ram_mb) ?? 0.0
+        procs = try c.decodeIfPresent(Int.self, forKey: .procs) ?? 0
+    }
+    enum K: String, CodingKey { case cpu, ram_mb, procs }
+}
+struct PsResponse: Decodable {
+    var processes: [ProcInfo] = []; var total = PsTotal()
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        processes = try c.decodeIfPresent([ProcInfo].self, forKey: .processes) ?? []
+        total = try c.decodeIfPresent(PsTotal.self, forKey: .total) ?? PsTotal()
+    }
+    enum K: String, CodingKey { case processes, total }
+}
 
 struct ActivityView: View {
     @EnvironmentObject var state: AppState
@@ -74,9 +106,8 @@ struct ActivityView: View {
                 Text(String(format: "CPU %.0f%%", scopedTotal.cpu)).font(Theme.mono(11)).foregroundStyle(cpuColor(scopedTotal.cpu))
                 Text(String(format: "· %.0f MB", scopedTotal.ram)).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted)
                 Text("· \(shown.count)").font(Theme.mono(11)).foregroundStyle(Theme.dim)
-                Picker("", selection: $sortMode) {
-                    ForEach(SortMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 150).controlSize(.small).padding(.leading, 8)
+                SegmentedTabs(tabs: SortMode.allCases, selection: $sortMode, label: { $0.rawValue }, accent: false)
+                    .padding(.leading, 8)
                 IconButton("xmark", size: 11, action: onClose).padding(.leading, 6)
             }
             .padding(.horizontal, 16).padding(.vertical, 12)

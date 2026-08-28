@@ -17,7 +17,7 @@ final class JiraViewModel: ObservableObject {
             PomJSON.decode(R.self, from: api.jiraIssuesData(branches: branches))
         }.value
         guard let r else { return }
-        configured = r.configured
+        if configured != r.configured { configured = r.configured }
         let iss = r.issues ?? [:]
         if iss != issues { withAnimation(.easeInOut(duration: 0.35)) { issues = iss } }
     }

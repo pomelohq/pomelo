@@ -1,6 +1,16 @@
 import SwiftUI
 
-struct PrepareEvent: Decodable { var stage = ""; var status = ""; var detail = ""; var ms: Int = 0 }
+struct PrepareEvent: Decodable {
+    var stage = ""; var status = ""; var detail = ""; var ms: Int = 0
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        stage = try c.decodeIfPresent(String.self, forKey: .stage) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        ms = try c.decodeIfPresent(Int.self, forKey: .ms) ?? 0
+    }
+    enum K: String, CodingKey { case stage, status, detail, ms }
+}
 
 enum StageStatus: String { case pending, running, ok, failed, skipped }
 

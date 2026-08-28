@@ -4,6 +4,14 @@ import Foundation
 final class LogsViewModel: ObservableObject {
     struct Payload: Decodable {
         var version = ""; var session = ""; var logfile = ""; var lines: [String] = []
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
+            session = try c.decodeIfPresent(String.self, forKey: .session) ?? ""
+            logfile = try c.decodeIfPresent(String.self, forKey: .logfile) ?? ""
+            lines = try c.decodeIfPresent([String].self, forKey: .lines) ?? []
+        }
+        enum K: String, CodingKey { case version, session, logfile, lines }
     }
 
     @Published private(set) var lines: [String] = []

@@ -2,7 +2,15 @@ import SwiftUI
 
 @MainActor
 final class PRsViewModel: ObservableObject {
-    struct Group: Decodable, Equatable { var prs: [WorkspacePR] = []; var severity = "ok" }
+    struct Group: Decodable, Equatable {
+        var prs: [WorkspacePR] = []; var severity = "ok"
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            prs = try c.decodeIfPresent([WorkspacePR].self, forKey: .prs) ?? []
+            severity = try c.decodeIfPresent(String.self, forKey: .severity) ?? "ok"
+        }
+        enum K: String, CodingKey { case prs, severity }
+    }
 
     @Published var wsPRs: [String: [WorkspacePR]] = [:]
     @Published var wsSeverity: [String: String] = [:]
@@ -19,7 +27,7 @@ final class PRsViewModel: ObservableObject {
         let map = await Task.detached(priority: .utility) { [api] in
             PomJSON.decode([String: Group].self, from: api.prAllData())
         }.value
-        loading = false
+        if loading { loading = false }
         guard let map else { return false }
         let prs = map.mapValues(\.prs)
         let sev = map.mapValues(\.severity)

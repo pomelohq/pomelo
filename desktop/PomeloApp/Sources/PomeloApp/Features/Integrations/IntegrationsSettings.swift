@@ -6,15 +6,39 @@ private struct JiraStatus: Decodable {
     var site = ""
     var email = ""
     var token_set = false
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        configured = try c.decodeIfPresent(Bool.self, forKey: .configured) ?? false
+        site = try c.decodeIfPresent(String.self, forKey: .site) ?? ""
+        email = try c.decodeIfPresent(String.self, forKey: .email) ?? ""
+        token_set = try c.decodeIfPresent(Bool.self, forKey: .token_set) ?? false
+    }
+    enum K: String, CodingKey { case configured, site, email, token_set }
 }
 private struct GithubStatus: Decodable {
     var installed = false
     var authed = false
     var account = ""
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        installed = try c.decodeIfPresent(Bool.self, forKey: .installed) ?? false
+        authed = try c.decodeIfPresent(Bool.self, forKey: .authed) ?? false
+        account = try c.decodeIfPresent(String.self, forKey: .account) ?? ""
+    }
+    enum K: String, CodingKey { case installed, authed, account }
 }
 private struct IntegrationsResponse: Decodable {
     var jira = JiraStatus()
     var github = GithubStatus()
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        jira = try c.decodeIfPresent(JiraStatus.self, forKey: .jira) ?? JiraStatus()
+        github = try c.decodeIfPresent(GithubStatus.self, forKey: .github) ?? GithubStatus()
+    }
+    enum K: String, CodingKey { case jira, github }
 }
 
 struct IntegrationsSettings: View {
@@ -47,7 +71,7 @@ struct IntegrationsSettings: View {
                     if !jiraTest.isEmpty { Text(jiraTest).font(.system(size: 11)).foregroundStyle(Theme.fgMuted) }
                 }
                 Toggle("Only show my tickets", isOn: $state.jiraOnlyMine)
-            } header: { Text("Tracker · Jira") } footer: {
+            } header: { HStack(spacing: 6) { Text("Tracker · Jira"); if loading { Spinner(size: 10) } } } footer: {
                 Text("Stored app-local: site/email in plain config, the token encrypted (AES-GCM). Nothing goes into the shareable pom.yml. \"Only show my tickets\" filters the New workspace ticket picker to issues assigned to you.")
             }
 
