@@ -18,17 +18,25 @@ prose + a couple of anchors. Pomelo hides any view you leave empty.
 
 ## Where to write
 
-The artifact is one JSON file at the workspace/project root:
+The artifact is one JSON file at the project root:
 
 ```
-<project-root>/.pom/reviews/<branch>.json
+<project-root>/.pom/reviews/<name>.json
 ```
 
-Find `<project-root>`: from any repo in the workspace, run `git rev-parse --show-toplevel`
-to get the repo dir, then walk up until you find the directory that contains `.pom/`
-(that is the project root; the repos sit under it or under `workspace--<branch>/`).
-`<branch>` is the workspace branch — `git rev-parse --abbrev-ref HEAD` in any repo.
-Create `.pom/reviews/` if missing.
+`<name>` MUST be the workspace name, which can differ from the git branch — the app
+reads the file by workspace name, so a branch-named file will not show up. The repos
+sit under `<project-root>/workspace--<name>/<repo>`, so derive both from any repo:
+
+```
+repo_top=$(git -C <repo> rev-parse --show-toplevel)   # .../workspace--<name>/<repo>
+ws_dir=$(dirname "$repo_top")                          # .../workspace--<name>
+name=$(basename "$ws_dir"); name=${name#workspace--}   # <name>
+root=$(dirname "$ws_dir")                               # <project-root>
+mkdir -p "$root/.pom/reviews"                           # write $root/.pom/reviews/$name.json
+```
+
+Do not name the file from `git rev-parse --abbrev-ref HEAD`.
 
 ## What to inspect
 
@@ -142,7 +150,7 @@ column or index, confirm it landed with `db_columns`/`db_query`.
   range is within the file. Read the file to confirm, do not guess line numbers.
 - Repo-qualified always — never emit an anchor without a `repo`.
 - Plain ASCII, no emoji.
-- Overwrite the file if it already exists (a review is regenerated per branch).
+- Overwrite the file if it already exists (a review is regenerated per workspace).
 
 ## After writing
 

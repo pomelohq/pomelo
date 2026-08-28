@@ -110,7 +110,7 @@ struct WorkspacePaneInner: View {
                 // workspace switches instead of reloading.
                 ZStack {
                     ForEach(PaneKind.allCases) { kind in
-                        if opened.contains(kind), kind != .claude || !workspace.isMain {
+                        if opened.contains(kind), !(workspace.isMain && (kind == .claude || kind == .review)) {
                             paneView(kind, active: active == kind)
                                 .frame(width: geo.size.width, height: contentH, alignment: .top)
                                 .opacity(active == kind ? 1 : 0)
@@ -203,7 +203,7 @@ struct WorkspacePaneInner: View {
     }
 
     private func navDisabled(_ kind: PaneKind) -> Bool {
-        workspace.isMain && (kind == .claude || kind == .prs || kind == .jira)
+        workspace.isMain && (kind == .claude || kind == .prs || kind == .jira || kind == .review)
     }
 
     private func navBtn(_ kind: PaneKind, _ key: KeyEquivalent, _ name: String) -> some View {
