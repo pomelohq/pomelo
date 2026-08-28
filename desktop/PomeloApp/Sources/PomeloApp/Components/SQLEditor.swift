@@ -11,8 +11,38 @@ struct SQLEditor: View {
     var tables: [String] = []
     var columns: [String] = []
     var onRun: () -> Void
-    @State private var state = SourceEditorState()
+    @Binding var state: SourceEditorState
     @State private var provider = SQLCompletionProvider()
+
+    // What ⌘Return should execute: the selection if any, else the single statement the
+    // cursor sits in (split on top-level ';'), else the whole buffer.
+    static func effectiveSQL(text: String, state: SourceEditorState) -> String {
+        let ns = text as NSString
+        if let r = state.cursorPositions?.first?.range {
+            if r.length > 0, r.location + r.length <= ns.length {
+                let s = ns.substring(with: r).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !s.isEmpty { return s }
+            }
+            return statementAt(ns, loc: min(max(0, r.location), ns.length))
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func statementAt(_ ns: NSString, loc: Int) -> String {
+        var start = 0
+        var i = 0
+        while i < ns.length {
+            if ns.character(at: i) == 59 {   // ';'
+                if loc <= i {
+                    return ns.substring(with: NSRange(location: start, length: i - start))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                start = i + 1
+            }
+            i += 1
+        }
+        return ns.substring(from: start).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         SourceEditor(
@@ -82,23 +112,25 @@ struct SQLEditor: View {
         comments: .init(color: rgb(0, 128, 0))
     )
 
+    // Dark-warm to match the app's sepia palette (bg 0x201b14, fg 0xf0e6d2) — the old
+    // light-cream sepia clashed with the rest of the sepia (dark) UI.
     static let sepia = EditorTheme(
-        text: .init(color: rgb(91, 70, 54)),
-        insertionPoint: rgb(91, 70, 54),
-        invisibles: .init(color: rgb(190, 175, 150)),
-        background: rgb(244, 236, 216),
-        lineHighlight: rgb(235, 225, 200),
-        selection: rgb(214, 197, 158),
-        keywords: .init(color: rgb(140, 60, 140), bold: true),
-        commands: .init(color: rgb(40, 90, 150)),
-        types: .init(color: rgb(28, 120, 130)),
-        attributes: .init(color: rgb(28, 120, 130)),
-        variables: .init(color: rgb(91, 70, 54)),
-        values: .init(color: rgb(150, 90, 30)),
-        numbers: .init(color: rgb(150, 90, 30)),
-        strings: .init(color: rgb(150, 40, 30)),
-        characters: .init(color: rgb(150, 40, 30)),
-        comments: .init(color: rgb(120, 110, 80))
+        text: .init(color: rgb(240, 230, 210)),
+        insertionPoint: rgb(240, 230, 210),
+        invisibles: .init(color: rgb(120, 108, 88)),
+        background: rgb(32, 27, 20),
+        lineHighlight: rgb(42, 36, 27),
+        selection: rgb(80, 62, 40),
+        keywords: .init(color: rgb(200, 140, 200), bold: true),
+        commands: .init(color: rgb(123, 176, 184)),
+        types: .init(color: rgb(123, 176, 184)),
+        attributes: .init(color: rgb(123, 176, 184)),
+        variables: .init(color: rgb(240, 230, 210)),
+        values: .init(color: rgb(217, 154, 59)),
+        numbers: .init(color: rgb(217, 154, 59)),
+        strings: .init(color: rgb(210, 150, 120)),
+        characters: .init(color: rgb(210, 150, 120)),
+        comments: .init(color: rgb(150, 140, 115))
     )
 }
 
@@ -140,7 +172,7 @@ final class SQLCompletionProvider: CodeSuggestionDelegate {
         guard !textView.textView.hasMarkedText() else { return nil }
         let live = textView.cursorPositions.first ?? cursorPosition
         let (start, partial) = wordAt(textView.text, live.range.location)
-        let items = filtered(partial, context: prevToken(textView.text, start))
+        let items = filtered(partial, context: prevToken(textView.text, start), manual: isManualTrigger)
         if items.isEmpty { return nil }
         return (live, items)
     }
@@ -162,21 +194,37 @@ final class SQLCompletionProvider: CodeSuggestionDelegate {
         textView.textView.replaceCharacters(in: [NSRange(location: start, length: partial.count)], with: item.label)
     }
 
-    private func filtered(_ partial: String, context prev: String) -> [CodeSuggestionEntry] {
-        guard !partial.isEmpty else { return [] }
+    private func filtered(_ partial: String, context prev: String, manual: Bool = false) -> [CodeSuggestionEntry] {
         let q = partial.lowercased()
-        func match(_ xs: [String], _ k: SQLCompletionKind) -> [SQLCompletionItem] {
-            xs.filter { $0.lowercased().hasPrefix(q) && $0.lowercased() != q }
-              .map { SQLCompletionItem(label: $0, kind: k) }
+        let ctx = prev.uppercased()
+        let tablesFirst = ["FROM", "JOIN", "INTO", "UPDATE", "TABLE"].contains(ctx)
+        let colsFirst = ctx == "." || ["SELECT", "WHERE", "AND", "OR", "ON", "BY", "SET", "HAVING", ","].contains(ctx)
+
+        // Prefix beats substring beats subsequence (fuzzy). Empty query keeps only the
+        // context-relevant identifiers so `FROM `/`table.` pop the right list — unless
+        // the window was opened manually (Esc / ⌃Space), which shows everything.
+        func rank(_ xs: [String], _ k: SQLCompletionKind, boost: Int) -> [(Int, SQLCompletionItem)] {
+            xs.compactMap { name in
+                let low = name.lowercased()
+                let base: Int
+                if q.isEmpty { base = 0 }
+                else if low == q { base = 4000 }               // exact match stays on top
+                else if low.hasPrefix(q) { base = 3000 - name.count }
+                else if low.contains(q) { base = 2000 - name.count }
+                else if let f = Fuzzy.score(q, low) { base = 1000 + f }
+                else { return nil }
+                return (base + boost, SQLCompletionItem(label: name, kind: k))
+            }
         }
-        let t = match(tables, .table), c = match(columns, .column), k = match(keywords, .keyword)
-        let order: [[SQLCompletionItem]]
-        switch prev.uppercased() {
-        case "FROM", "JOIN", "INTO", "UPDATE", "TABLE": order = [t, k, c]
-        case "SELECT", "WHERE", "AND", "OR", "ON", "BY", "SET", "HAVING", ",": order = [c, t, k]
-        default: order = [k, t, c]
+
+        if q.isEmpty && !tablesFirst && !colsFirst && !manual { return [] }
+
+        var out = rank(tables, .table, boost: tablesFirst ? 300 : (colsFirst ? -200 : 0))
+            + rank(columns, .column, boost: colsFirst ? 300 : (tablesFirst ? -100 : 0))
+        if !q.isEmpty || manual {   // keywords when typing or on a manual trigger
+            out += rank(keywords, .keyword, boost: (tablesFirst || colsFirst) ? -400 : 200)
         }
-        return Array(order.flatMap { $0 }.prefix(60))
+        return out.sorted { $0.0 > $1.0 }.prefix(60).map { $0.1 }
     }
 
     private func prevToken(_ text: String, _ wordStart: Int) -> String {

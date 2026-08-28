@@ -236,6 +236,14 @@ public final class SuggestionController: NSWindowController {
             close()
         }
 
+        // If the window is closed but a trigger asked to present (e.g. typing after
+        // deleting back to nothing), reopen via a full request — cursorsUpdated only
+        // *updates* an already-visible window and would otherwise leave it hidden.
+        if presentIfNot && !isVisible {
+            showCompletions(textView: textView, delegate: delegate, cursorPosition: position, asPopover: asPopover)
+            return
+        }
+
         model.cursorsUpdated(textView: textView, delegate: delegate, position: position) {
             close()
 
@@ -248,6 +256,23 @@ public final class SuggestionController: NSWindowController {
                 )
             }
         }
+
+        // Keep an open window pinned to the caret as it moves (typing / holding delete),
+        // instead of leaving it where it first opened.
+        if !asPopover, isVisible {
+            repositionWindow(textView: textView, to: position)
+        }
+    }
+
+    private func repositionWindow(textView: TextViewController, to position: CursorPosition) {
+        guard let window = textView.view.window,
+              let resolved = textView.resolveCursorPosition(position),
+              let cursorRect = textView.textView.layoutManager.rectForOffset(resolved.range.location) else {
+            return
+        }
+        let screenCursorRect = window.convertToScreen(textView.textView.convert(cursorRect, to: nil))
+        let editorFrame = window.convertToScreen(textView.view.convert(textView.view.bounds, to: nil))
+        constrainWindowToScreenEdges(cursorRect: screenCursorRect, font: textView.font, editorFrame: editorFrame)
     }
 
     // MARK: - Keyboard Event Monitoring

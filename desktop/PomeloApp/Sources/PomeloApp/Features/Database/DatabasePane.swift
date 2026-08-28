@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CodeEditSourceEditor
 
 struct DatabasePane: View {
     let workspace: Workspace
@@ -7,6 +8,10 @@ struct DatabasePane: View {
     @EnvironmentObject var theme: ThemeManager
     @AppStorage("db.treeWidth") private var treeWidth = 250.0
     @AppStorage("db.editorHeight") private var editorHeight = 150.0
+    @State private var editorState = SourceEditorState()
+
+    // ⌘Return runs the selection / statement at the cursor; ⌘⇧Return runs everything.
+    private func runCurrent() { Task { await vm.runSQL(SQLEditor.effectiveSQL(text: vm.activeSQLGet(), state: editorState)) } }
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -65,7 +70,7 @@ struct DatabasePane: View {
             } else {
                 consoleToolbar
                 Divider().overlay(Theme.borderSoft)
-                sqlEditor.frame(height: editorHeight)
+                sqlEditor.frame(height: editorHeight).clipped().id(theme.mode)
                 SplitHandle(axis: .vertical, value: $editorHeight, min: 60, max: 480)
                 resultsArea
             }
@@ -200,7 +205,7 @@ struct DatabasePane: View {
             Spacer()
             pageSizeMenu
             if vm.running { Spinner(size: 12) }
-            Button { Task { await vm.run() } } label: {
+            Button { runCurrent() } label: {
                 Label("Run", systemImage: "play.fill").font(.system(size: 11, weight: .medium))
                     .padding(.horizontal, 10).padding(.vertical, 4)
             }
@@ -208,6 +213,10 @@ struct DatabasePane: View {
             .background(Theme.accent, in: RoundedRectangle(cornerRadius: 6))
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(vm.running || vm.selectedDB == nil)
+            .help("Run selection or statement at cursor  (⌘⇧⏎ runs all)")
+            Button { Task { await vm.run() } } label: { EmptyView() }
+                .keyboardShortcut(.return, modifiers: [.command, .shift]).opacity(0).frame(width: 0)
+                .disabled(vm.running || vm.selectedDB == nil)
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(Theme.bgSoft)
@@ -219,7 +228,8 @@ struct DatabasePane: View {
                   keywords: DatabaseViewModel.sqlKeywords,
                   tables: vm.completionTables,
                   columns: vm.completionColumns,
-                  onRun: { Task { await vm.run() } })
+                  onRun: { runCurrent() },
+                  state: $editorState)
             .background(Theme.bg)
             .id(vm.activeID)
     }

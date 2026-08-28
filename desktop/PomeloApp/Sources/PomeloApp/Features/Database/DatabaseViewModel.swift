@@ -304,6 +304,21 @@ final class DatabaseViewModel: ObservableObject {
     func prevPage() { guard let id = activeID, let c = activeConsole else { return }; pageOffset[id] = Swift.max(0, (pageOffset[id] ?? 0) - c.limit); Task { await run() } }
     func firstPage() { guard let id = activeID else { return }; pageOffset[id] = 0; Task { await run() } }
 
+    // Run an explicit statement (selection / statement-at-cursor from the editor)
+    // against the active console's database.
+    func runSQL(_ sql: String) async {
+        guard let id = activeID, let c = activeConsole, !c.dbID.isEmpty else { return }
+        let q = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        running = true; error = nil
+        let db = c.dbID, lim = c.limit
+        let d = await api.call { [branch] in $0.dbQueryData(branch: branch, db: db, sql: q, limit: lim) }
+        running = false
+        guard let r = PomJSON.decode(QueryResult.self, from: d) else { error = "decode failed"; return }
+        if !r.ok { error = r.error.isEmpty ? "query failed" : r.error; return }
+        results[id] = Grid(columns: r.columns, rows: r.rows, truncated: r.truncated, rowsAffected: r.rows_affected)
+    }
+
     func run() async {
         guard let id = activeID, let c = activeConsole, !c.dbID.isEmpty else { return }
         let q = queryFor(c)
