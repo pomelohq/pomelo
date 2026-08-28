@@ -45,7 +45,7 @@ struct ServicesBoard: View {
         let repos = state.orderedRepos(workspace.repos)
         let names = repos.map(\.name)
         return ScrollView(.vertical) {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 340, maximum: 560), spacing: colSpacing, alignment: .top)],
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 360, maximum: 560), spacing: colSpacing, alignment: .top)],
                       alignment: .leading, spacing: 16) {
                 ForEach(repos, id: \.id) { repo in
                     RepoColumn(repo: repo, branch: workspace.branch, isMain: workspace.isMain, openPane: openPane, openTerminal: openTerminal)
