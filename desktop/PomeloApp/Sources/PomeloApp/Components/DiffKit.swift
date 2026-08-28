@@ -190,8 +190,10 @@ struct DiffFilesView: View {
                             if let f = files.first(where: { $0.path == selFile }) {
                                 if f.lines.isEmpty && !f.binary {
                                     renamedPlaceholder(f)
+                                } else if f.binary {
+                                    centered("Binary file — no textual diff")
                                 } else if splitDiff {
-                                    DiffFileView(file: f)
+                                    CodeSplitView(file: f, isDark: theme.mode.isDark)
                                 } else {
                                     CodeDiffView(file: f, isDark: theme.mode.isDark)
                                 }
@@ -333,171 +335,12 @@ func splitRows(_ file: DiffFile) -> [SplitRow] {
     return rows
 }
 
-struct DiffFileView: View {
-    @EnvironmentObject var theme: ThemeManager
-    let file: DiffFile
-    @State private var rows: [SplitRow] = []
-    @State private var maxChars: Int = 0
-    private let rowH: CGFloat = 17
-    private let charW: CGFloat = 6.7   // SF Mono 11pt advance; over-allocate to avoid clipping
-
-    var body: some View {
-        Group {
-            if file.binary {
-                Text("Binary file — no textual diff").font(.system(size: 12)).foregroundStyle(Theme.dim)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                GeometryReader { geo in
-                    let viewportSide = max(160, (geo.size.width - 1) / 2)
-                    let sideW = max(viewportSide, 68 + CGFloat(maxChars) * charW)
-                    ScrollView([.vertical, .horizontal]) {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(rows) { row($0, sideW: sideW) }
-                        }
-                    }
-                }
-            }
-        }
-        .task(id: file.path) {
-            let f = file
-            let built = await Task.detached(priority: .userInitiated) { splitRows(f) }.value
-            rows = built
-            maxChars = built.reduce(0) { max($0, max($1.left?.count ?? 0, $1.right?.count ?? 0)) }
-        }
-    }
-
-    @ViewBuilder private func row(_ r: SplitRow, sideW: CGFloat) -> some View {
-        if let h = r.hunk {
-            Text(h).font(Theme.mono(10)).foregroundStyle(Theme.accent).lineLimit(1)
-                .padding(.horizontal, 10)
-                .frame(minWidth: sideW * 2 + 1, minHeight: rowH, alignment: .leading)
-                .background(Theme.accent.opacity(0.08))
-        } else {
-            HStack(spacing: 0) {
-                side(num: r.leftN, text: r.left, hi: r.leftHi, spans: r.leftSpans, w: sideW, tint: r.changed ? Theme.danger : nil)
-                Rectangle().fill(Theme.borderSoft).frame(width: 1, height: rowH)
-                side(num: r.rightN, text: r.right, hi: r.rightHi, spans: r.rightSpans, w: sideW, tint: r.changed ? Theme.ok : nil)
-            }
-            .frame(height: rowH)
-        }
-    }
-
-    private func side(num: Int?, text: String?, hi: Range<Int>?, spans: [SynSpan], w: CGFloat, tint: Color?) -> some View {
-        HStack(spacing: 0) {
-            Text(num.map(String.init) ?? "").font(Theme.mono(9.5)).foregroundStyle(Theme.dim)
-                .frame(width: 38, alignment: .trailing).padding(.trailing, 6)
-            code(text, hi: hi, spans: spans, tint: tint)
-                .lineLimit(1).truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 4)
-        }
-        .frame(width: w, height: rowH, alignment: .leading)
-        .background(text == nil ? Theme.dim.opacity(0.05) : (tint?.opacity(0.12) ?? .clear))
-    }
-
-    private func synColor(_ k: SynKind) -> Color { SyntaxStyle.color(k) }
-
-    private func code(_ text: String?, hi: Range<Int>?, spans: [SynSpan], tint: Color?) -> Text {
-        guard let text, !text.isEmpty else { return Text(" ").font(Theme.mono(11)) }
-        var a = AttributedString(text)
-        a.foregroundColor = Theme.fgSoft
-        let n = text.count
-        func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
-        for sp in spans where sp.kind != .plain {
-            a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = synColor(sp.kind)
-        }
-        if let hi, let tint, !hi.isEmpty {
-            a[idx(hi.lowerBound)..<idx(hi.upperBound)].backgroundColor = tint.opacity(0.35)
-        }
-        return Text(a).font(Theme.mono(11))
-    }
-}
-
-struct UnifiedRow: Identifiable, Sendable {
-    let id: Int
-    var hunk: String? = nil
-    var oldN: Int? = nil
-    var newN: Int? = nil
-    var kind: DiffLine.Kind = .context
-    var text: String = ""
-    var spans: [SynSpan] = []
-}
-
-func unifiedRows(_ file: DiffFile) -> [UnifiedRow] {
-    file.lines.map { l in
-        UnifiedRow(id: l.id, hunk: l.kind == .hunk ? l.text : nil,
-                   oldN: l.oldN, newN: l.newN, kind: l.kind, text: l.text,
-                   spans: l.kind == .hunk ? [] : Syntax.spans(l.text))
-    }
-}
-
-struct DiffUnifiedView: View {
-    @EnvironmentObject var theme: ThemeManager
-    let file: DiffFile
-    @State private var rows: [UnifiedRow] = []
-    private let rowH: CGFloat = 17
-
-    var body: some View {
-        Group {
-            if file.binary {
-                Text("Binary file — no textual diff").font(.system(size: 12)).foregroundStyle(Theme.dim)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(rows) { row($0) }
-                    }
-                }
-            }
-        }
-        .task(id: file.path) {
-            let f = file
-            rows = await Task.detached(priority: .userInitiated) { unifiedRows(f) }.value
-        }
-    }
-
-    @ViewBuilder private func row(_ r: UnifiedRow) -> some View {
-        if let h = r.hunk {
-            Text(h).font(Theme.mono(10)).foregroundStyle(Theme.accent).lineLimit(1)
-                .padding(.horizontal, 10)
-                .frame(maxWidth: .infinity, minHeight: rowH, alignment: .leading)
-                .background(Theme.accent.opacity(0.08))
-        } else {
-            HStack(spacing: 0) {
-                gutter(r.oldN); gutter(r.newN)
-                Text(r.kind == .add ? "+" : r.kind == .del ? "-" : " ")
-                    .font(Theme.mono(11)).foregroundStyle(r.kind == .add ? Theme.ok : r.kind == .del ? Theme.danger : Theme.dim)
-                    .frame(width: 14, alignment: .center)
-                code(r.text, spans: r.spans)
-                    .lineLimit(1).truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 2)
-            }
-            .frame(height: rowH)
-            .background(r.kind == .add ? Theme.ok.opacity(0.10) : r.kind == .del ? Theme.danger.opacity(0.10) : .clear)
-        }
-    }
-
-    private func gutter(_ n: Int?) -> some View {
-        Text(n.map(String.init) ?? "").font(Theme.mono(9.5)).foregroundStyle(Theme.dim)
-            .frame(width: 40, alignment: .trailing).padding(.trailing, 6)
-    }
-
-    private func code(_ text: String, spans: [SynSpan]) -> Text {
-        guard !text.isEmpty else { return Text(" ").font(Theme.mono(11)) }
-        var a = AttributedString(text)
-        a.foregroundColor = Theme.fgSoft
-        let n = text.count
-        func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
-        for sp in spans where sp.kind != .plain {
-            a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = SyntaxStyle.color(sp.kind)
-        }
-        return Text(a).font(Theme.mono(11))
-    }
-}
-
 
 import AppKit
 
+// PR unified diff: an old/new line-number gutter + a +/- sign, then the code, with each
+// line tinted by its diff kind. Same renderer as the review peek (CodeTextView) — only
+// the gutter text and per-line backgrounds differ, both produced by CodeTextView.diff.
 struct CodeDiffView: NSViewRepresentable {
     let file: DiffFile
     var isDark: Bool
@@ -505,10 +348,10 @@ struct CodeDiffView: NSViewRepresentable {
     func makeCoordinator() -> Coord { Coord() }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tv = DiffTextView()
+        let tv = CodeTextView()
         tv.configureReadOnly(inset: NSSize(width: 0, height: 6))
         context.coordinator.textView = tv
-        return CodeTextViewBase.makeScroll(tv)
+        return CodeTextView.makeScroll(tv)
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -516,103 +359,47 @@ struct CodeDiffView: NSViewRepresentable {
         scroll.appearance = ap
         guard let tv = context.coordinator.textView else { return }
         tv.appearance = ap
-        // Theme-derived colours are baked into the attributed string at build time, so a
-        // theme switch must rebuild — keying on path alone froze them.
+        // Theme-derived colours are baked into the string at build time, so a theme
+        // switch must rebuild — hence isDark in the key.
         let key = "\(file.path):\(isDark)"
-        if context.coordinator.path == key { return }
-        context.coordinator.path = key
-        let built = DiffTextView.build(file)
-        tv.lineKinds = built.kinds
-        tv.lineStarts = built.starts
-        tv.textStorage?.setAttributedString(built.string)
-        if let tc = tv.textContainer { tv.layoutManager?.ensureLayout(for: tc) }
-        tv.needsDisplay = true
+        if context.coordinator.key == key { return }
+        context.coordinator.key = key
+        tv.apply(CodeTextView.diff(file))
     }
 
-    final class Coord { var textView: DiffTextView?; var path = "" }
+    final class Coord { var textView: CodeTextView?; var key = "" }
 }
 
-final class DiffTextView: CodeTextViewBase {
-    var lineKinds: [DiffLine.Kind] = []
-
-    private static let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-    private static let para = CodeTextViewBase.paragraph(lineHeight: 19)
-    private static func gutter(_ n: Int?) -> String {
-        let s = n.map(String.init) ?? ""
-        return String(repeating: " ", count: max(0, 5 - s.count)) + s
-    }
-
-    static func build(_ file: DiffFile) -> (string: NSAttributedString, kinds: [DiffLine.Kind], starts: [Int]) {
-        let out = NSMutableAttributedString()
-        var kinds: [DiffLine.Kind] = []
-        var starts: [Int] = []
+extension CodeTextView {
+    static func diff(_ file: DiffFile) -> CodeModel {
+        let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let para = paragraph(lineHeight: 19)
         let dim = NSColor.tertiaryLabelColor, code = NSColor.labelColor
         let addC = NSColor.systemGreen, delC = NSColor.systemRed, hunkC = NSColor.systemPurple
-
+        let addBg = opaque(.systemGreen, 0.16), delBg = opaque(.systemRed, 0.16), hunkBg = opaque(.systemPurple, 0.10)
+        func num(_ n: Int?) -> String {
+            let s = n.map(String.init) ?? ""
+            return String(repeating: " ", count: max(0, 5 - s.count)) + s
+        }
+        let out = NSMutableAttributedString()
+        var starts: [Int] = [], bg: [NSColor?] = []
         func append(_ s: String, _ color: NSColor) {
             out.append(NSAttributedString(string: s, attributes: [.font: mono, .foregroundColor: color, .paragraphStyle: para]))
         }
-        func appendCode(_ text: String) {
-            out.append(CodeTextViewBase.attributedLine(text + "\n", spans: Syntax.spans(text), font: mono, base: code, paragraph: para))
-        }
         for l in file.lines {
             starts.append(out.length)
-            kinds.append(l.kind)
-            if l.kind == .hunk {
+            switch l.kind {
+            case .hunk:
+                bg.append(hunkBg)
                 append(l.text + "\n", hunkC)
-                continue
+            default:
+                bg.append(l.kind == .add ? addBg : l.kind == .del ? delBg : nil)
+                append(num(l.oldN) + " " + num(l.newN) + " ", dim)
+                let sign = l.kind == .add ? "+" : l.kind == .del ? "-" : " "
+                append(sign + " ", l.kind == .add ? addC : l.kind == .del ? delC : dim)
+                out.append(attributedLine(l.text + "\n", spans: Syntax.spans(l.text), font: mono, base: code, paragraph: para))
             }
-            append(gutter(l.oldN) + " " + gutter(l.newN) + " ", dim)
-            let sign = l.kind == .add ? "+" : l.kind == .del ? "-" : " "
-            append(sign + " ", l.kind == .add ? addC : l.kind == .del ? delC : dim)
-            appendCode(l.text)
         }
-        return (out, kinds, starts)
-    }
-
-    // Blend a tint onto the opaque editor background so runs can overlap (aligned
-    // outward) without alpha doubling into stripes.
-    private func opaque(_ tint: NSColor, _ a: CGFloat) -> NSColor {
-        let base = (NSColor(Theme.bg).usingColorSpace(.sRGB)) ?? .black
-        let t = tint.usingColorSpace(.sRGB) ?? tint
-        return NSColor(srgbRed: base.redComponent * (1 - a) + t.redComponent * a,
-                       green: base.greenComponent * (1 - a) + t.greenComponent * a,
-                       blue: base.blueComponent * (1 - a) + t.blueComponent * a, alpha: 1)
-    }
-
-    // Fill ONE rect per contiguous same-kind run, computed from the run's character
-    // range (not the dirty rect). Per-band fills round differently at band edges and
-    // leave hairline seams — invisible on a dark bg, white stripes on a light one.
-    // The context clips this to the dirty area; the aligned rect is identical each
-    // pass, so adjacent bands rejoin seamlessly.
-    override func drawBackground(in rect: NSRect) {
-        super.drawBackground(in: rect)
-        guard let lm = layoutManager, let tc = textContainer, let storage = textStorage,
-              !lineStarts.isEmpty else { return }
-        let addBg = opaque(.systemGreen, 0.16), delBg = opaque(.systemRed, 0.16), hunkBg = opaque(.systemPurple, 0.10)
-        func bg(_ k: DiffLine.Kind) -> NSColor? {
-            switch k { case .add: return addBg; case .del: return delBg; case .hunk: return hunkBg; case .context: return nil }
-        }
-        NSGraphicsContext.current?.shouldAntialias = false
-        defer { NSGraphicsContext.current?.shouldAntialias = true }
-        let inset = textContainerInset.height
-        let width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
-        var i = 0
-        while i < lineKinds.count {
-            guard let color = bg(lineKinds[i]) else { i += 1; continue }
-            var j = i
-            while j + 1 < lineKinds.count, bg(lineKinds[j + 1]) == color { j += 1 }
-            let firstChar = lineStarts[i]
-            let lastChar = j + 1 < lineStarts.count ? lineStarts[j + 1] : storage.length
-            let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: firstChar, length: max(0, lastChar - firstChar)),
-                                           actualCharacterRange: nil)
-            var r = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
-            r.origin.y += inset
-            r.origin.x = 0
-            r.size.width = width
-            color.setFill()
-            backingAlignedRect(r, options: .alignAllEdgesOutward).fill()
-            i = j + 1
-        }
+        return CodeModel(string: out, starts: starts, lineBg: bg)
     }
 }
