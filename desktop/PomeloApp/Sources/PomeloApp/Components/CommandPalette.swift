@@ -5,12 +5,12 @@ struct CommandPalette: View {
     @Binding var show: Bool
     @State private var query = ""
     @State private var index = 0
+    @State private var results: [Workspace] = []
     @FocusState private var focused: Bool
 
-    private var results: [Workspace] {
+    private func computeResults() -> [Workspace] {
         var seen = Set<String>()
         let all = (state.mainWorkspaces + state.orderedNonMain).filter { seen.insert($0.id).inserted }
-
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return all }
         let scored: [(ws: Workspace, score: Int)] = all.compactMap { w in
@@ -23,6 +23,8 @@ struct CommandPalette: View {
                    : $0.ws.branch < $1.ws.branch)
         }.map(\.ws)
     }
+
+    private func reload() { results = computeResults(); index = 0 }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -47,6 +49,7 @@ struct CommandPalette: View {
                         LazyVStack(spacing: 1) {
                             ForEach(Array(results.enumerated()), id: \.element.id) { i, ws in
                                 row(ws, active: i == index).id(ws.id)
+                                    .onHover { if $0 { index = i } }
                                     .onTapGesture { index = i; choose() }
                             }
                             if results.isEmpty {
@@ -69,21 +72,56 @@ struct CommandPalette: View {
             .padding(.top, 120)
         }
         .onAppear {
-            index = 0
+            reload()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
         }
-        .onChange(of: query) { _, _ in index = 0 }
+        .onChange(of: query) { _, _ in reload() }
         .onKeyPress(.downArrow) { index = min(index + 1, max(0, results.count - 1)); return .handled }
         .onKeyPress(.upArrow) { index = max(index - 1, 0); return .handled }
         .onKeyPress(.escape) { show = false; return .handled }
     }
 
+    private func agentState(_ ws: Workspace) -> String? { state.agentStates[ws.id] ?? ws.claudeAgentState }
+    private func orbColor(_ s: String?) -> Color {
+        switch s {
+        case "idle":           return Theme.ok
+        case "thinking":       return Theme.warn
+        case "tool_use":       return Theme.tool
+        case "compacting":     return Theme.wsAccent
+        case "awaiting_input": return Theme.danger
+        default:               return Theme.dim
+        }
+    }
+    private func busy(_ s: String?) -> Bool { s == "thinking" || s == "tool_use" || s == "compacting" || s == "awaiting_input" }
+    private func label(_ s: String?) -> String? {
+        switch s {
+        case "thinking":       return "thinking"
+        case "tool_use":       return "tools"
+        case "compacting":     return "compacting"
+        case "awaiting_input": return "awaiting"
+        default:               return nil
+        }
+    }
+
     private func row(_ ws: Workspace, active: Bool) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: ws.isMain ? "house.fill" : "arrow.triangle.branch")
-                .font(.system(size: 12)).foregroundStyle(active ? Theme.accent : Theme.fgMuted).frame(width: 16)
+        let st = agentState(ws)
+        return HStack(spacing: 10) {
+            Group {
+                if ws.isMain {
+                    Image(systemName: "house.fill").font(.system(size: 12))
+                        .foregroundStyle(active ? Theme.accent : Theme.fgMuted)
+                } else {
+                    AgentOrb(color: orbColor(st), active: busy(st))
+                }
+            }
+            .frame(width: 16)
             Text(ws.title).font(.system(size: 13)).foregroundStyle(Theme.fg).lineLimit(1)
             Spacer()
+            if let l = label(st) {
+                Text(l).font(Theme.mono(9.5)).foregroundStyle(orbColor(st))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(orbColor(st).opacity(0.14), in: Capsule())
+            }
             Text("\(ws.running)/\(ws.total)").font(Theme.mono(10.5)).foregroundStyle(Theme.dim)
         }
         .padding(.horizontal, 10).padding(.vertical, 7)

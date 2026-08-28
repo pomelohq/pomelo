@@ -33,30 +33,27 @@ final class AppState: ObservableObject {
             }
             let shift = e.modifierFlags.contains(.shift)
             let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
-            // Global app toggles must fire even while a text field / SQL editor has
-            // focus — they use ⇧⌘ (or ⌘,) so they never collide with text editing.
             if ch == "," { self.showSettings = true; return nil }
             if shift && (ch == "0" || ch == ")") { self.openActivity(scope: nil); return nil }
             if shift && ch == "s" { self.showShared = true; return nil }
-            if shift && ch == "d" { self.showDependencies = true; return nil }    // ⌘⇧D — Dependency store
-            if shift && ch == "p" { self.showSessionPanel = true; return nil }   // ⌘⇧P — Project (config editor + ENV)
-            if shift && ch == "t" { self.themeManager?.cycle(); return nil }      // ⌘⇧T — cycle theme
-            if shift && ch == "n" { self.showCreateSession = true; return nil }   // ⌘⇧N — new session
-            // Below here shortcuts may collide with typing, so defer to a focused text view.
+            if shift && ch == "d" { self.showDependencies = true; return nil }
+            if shift && ch == "p" { self.showSessionPanel = true; return nil }
+            if shift && ch == "t" { self.themeManager?.cycle(); return nil }
+            if shift && ch == "n" { self.showCreateSession = true; return nil }
             if NSApp.keyWindow?.firstResponder is NSTextView { return e }
             if ch == "n" { self.openCreateWorkspace = true; return nil }
             guard let ws = self.selectedWorkspace, let ui = self.uiStore else { return e }
             let ps = ui.state(for: ws.id)
             switch e.charactersIgnoringModifiers ?? "" {
-            case "t": ps.newTerminal(); return nil   // ⌘T — new terminal in this workspace
-            case "1": ps.pane = .services; return nil
-            case "2": if !ws.isMain { ps.pane = .prs }; return nil
-            case "3": if !ws.isMain { ps.pane = .jira }; return nil
-            case "4": ps.pane = .database; return nil   // Database — valid on main too
-            case "5": ps.pane = .review; return nil
+            case "t": ps.newTerminal(); return nil
+            case "1": ps.selectFunc(.services); return nil
+            case "2": if !ws.isMain { ps.selectFunc(.prs) }; return nil
+            case "3": if !ws.isMain { ps.selectFunc(.jira) }; return nil
+            case "4": ps.selectFunc(.database); return nil
+            case "5": if !ws.isMain { ps.selectFunc(.review) }; return nil
 
             case "0": self.openActivity(scope: ws.id); return nil
-            case "i": if !ws.isMain { ps.pane = .claude }; return nil
+            case "i": withAnimation(.easeInOut(duration: 0.16)) { ps.toggleAgent() }; return nil
             case "e": self.openEditor(ws); return nil
             case "j": withAnimation(.easeInOut(duration: 0.16)) { ps.toggleDrawer() }; return nil
             case "b": self.toggleSidebar(); return nil
@@ -94,7 +91,9 @@ final class AppState: ObservableObject {
     }
     @Published var needsProject = false
     @Published var loading = false
-    @Published var sidebarCollapsed = false
+    @Published var sidebarCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") {
+        didSet { UserDefaults.standard.set(sidebarCollapsed, forKey: "sidebarCollapsed") }
+    }
     @Published var railCollapsed = false
 
     private var sidebarToggleAt = Date.distantPast
@@ -117,25 +116,17 @@ final class AppState: ObservableObject {
     @Published var syncOn = false
     @Published var syncIntervalSec = 1800
     @Published var syncPulling = false
-    @Published var syncPulledAt: Date?   // set the moment a pull finishes; drives a brief "updated" tick
+    @Published var syncPulledAt: Date?
     @Published var syncProgress: [RepoPull] = []
 
     func refreshSync() async {
         struct R: Decodable { var refresh_main = false; var refresh_interval_sec = 1800; var pulling = false; var last_pull_at: Int64 = 0; var progress: [RepoPull] = [] }
         let d = await Task.detached { PomCore.shared.syncGetData() }.value
         guard let r = PomJSON.decode(R.self, from: d) else { return }
-        // Use the backend timestamp (not Date()) so "synced Xm ago" is accurate and a
-        // pull that finished before the app launched shows immediately. Guard the write:
-        // an equal @Published assignment still fires objectWillChange (this polls 1s).
         if r.last_pull_at > 0 {
             let at = Date(timeIntervalSince1970: TimeInterval(r.last_pull_at))
             if syncPulledAt != at { syncPulledAt = at }
         }
-        // Only publish when something changed. Assigning an equal value to an
-        // @Published still fires objectWillChange, and this polls every 1s — an
-        // unconditional write re-renders the whole app (janky PR/diff scrolling).
-        // The countdown itself is computed on the FE from the interval, so it never
-        // depends on this poll staying fresh (no more stuck 0:00).
         let pulling = r.refresh_main && r.pulling
         guard r.refresh_main != syncOn || r.refresh_interval_sec != syncIntervalSec || pulling != syncPulling || r.progress != syncProgress else { return }
         withAnimation(.easeInOut(duration: 0.25)) {
@@ -152,11 +143,7 @@ final class AppState: ObservableObject {
         syncPollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                // Not gated on appActive: the countdown must keep advancing to the next
-                // boundary even when unfocused, else it sticks at 0:00. The guard in
-                // refreshSync makes an unchanged poll a no-op, so this stays cheap.
                 await self.refreshSync()
-                // poll fast only while a pull is running (to catch completion), else slow
                 try? await Task.sleep(nanoseconds: (self.syncPulling ? 1 : 3) * 1_000_000_000 * self.powerMult)
             }
         }
@@ -269,8 +256,6 @@ final class AppState: ObservableObject {
     func reopenAgent() { if agentModel != nil { showAgentSheet = true } }
     func backgroundAgent() { showAgentSheet = false }
 
-    // Onboarding lives here (not in the sheet) so "Run in background" keeps it
-    // alive and a TopBar chip can reopen it.
     @Published var onboardModel: AgentStreamModel?
     @Published var onboardStartAt: Date?
     private(set) var onboardBranchName = "main"
@@ -457,7 +442,7 @@ final class AppState: ObservableObject {
             Notifier.onOpenWorkspace = { [weak self] wsKey in
                 guard let self else { return }
                 self.selection = wsKey
-                if !wsKey.hasPrefix("main:") { self.uiStore?.state(for: wsKey).pane = .claude }
+                if !wsKey.hasPrefix("main:") { self.uiStore?.state(for: wsKey).agentOpen = true }
             }
             await refresh()
             loading = false

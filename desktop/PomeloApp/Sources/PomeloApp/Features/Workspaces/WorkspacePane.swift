@@ -24,12 +24,47 @@ struct TermTab: Identifiable, Equatable {
 
 @MainActor
 final class PaneState: ObservableObject {
-    @Published var pane: PaneKind = .services
+    @Published var pane: PaneKind = .services { didSet { persist() } }
     @Published var terms: [TermTab] = []
     @Published var selTerm: UUID?
     @Published var drawerOpen = false
     @Published var drawerHeight: CGFloat = 300
-    var wsKey = ""   // set by UIStore so ⌘J can create a terminal with the right holder name
+    @Published var agentOpen = false { didSet { persist() } }
+    @Published var funcVisible = true { didSet { persist() } }
+    @Published var agentWidth: Double = 480 { didSet { persist() } }
+
+    private var loaded = false
+
+    private func persist() {
+        guard loaded, !wsKey.isEmpty else { return }
+        UserDefaults.standard.set(["pane": pane.rawValue, "agent": agentOpen, "func": funcVisible, "w": agentWidth],
+                                  forKey: "paneState.\(wsKey)")
+    }
+
+    func loadPersisted() {
+        defer { loaded = true }
+        guard let d = UserDefaults.standard.dictionary(forKey: "paneState.\(wsKey)") else { return }
+        if let p = d["pane"] as? String, let k = PaneKind(rawValue: p) { pane = k }
+        if let a = d["agent"] as? Bool { agentOpen = a }
+        if let f = d["func"] as? Bool { funcVisible = f }
+        if let w = d["w"] as? Double { agentWidth = w }
+    }
+
+    func toggleAgent() {
+        agentOpen.toggle()
+        ensureOneVisible()
+    }
+
+    func selectFunc(_ kind: PaneKind) {
+        if funcVisible && pane == kind { funcVisible = false }
+        else { pane = kind; funcVisible = true }
+        ensureOneVisible()
+    }
+
+    private func ensureOneVisible() {
+        if !funcVisible && !agentOpen { funcVisible = true }
+    }
+    var wsKey = ""
     private var termSeq = 0
 
     private var safeWs: String {
@@ -73,7 +108,7 @@ final class UIStore: ObservableObject {
     private var map: [String: PaneState] = [:]
     func state(for id: String) -> PaneState {
         if let s = map[id] { return s }
-        let s = PaneState(); s.wsKey = id; map[id] = s; return s
+        let s = PaneState(); s.wsKey = id; s.loadPersisted(); map[id] = s; return s
     }
 }
 
@@ -89,8 +124,6 @@ struct WorkspacePaneInner: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var theme: ThemeManager
 
-    // Panes stay mounted once visited (opacity toggle) so switching panes/workspaces
-    // preserves their state instead of remounting — same idea as the workspace sidebar.
     @State private var opened: Set<PaneKind> = []
 
     private var safeWs: String {
@@ -105,23 +138,11 @@ struct WorkspacePaneInner: View {
             let contentH = max(0, geo.size.height - drawerH - footerH)
             let active = effectivePane
             VStack(spacing: 0) {
-                // Every visited pane stays mounted (opacity toggle) so its state — the
-                // Review tab, the flow focus, terminal scrollback — survives pane and
-                // workspace switches instead of reloading.
-                ZStack {
-                    ForEach(PaneKind.allCases) { kind in
-                        if opened.contains(kind), !(workspace.isMain && kind == .review) {
-                            paneView(kind, active: active == kind)
-                                .frame(width: geo.size.width, height: contentH, alignment: .top)
-                                .opacity(active == kind ? 1 : 0)
-                                .allowsHitTesting(active == kind)
-                                .zIndex(active == kind ? 1 : 0)
-                        }
-                    }
-                }
-                .frame(width: geo.size.width, height: contentH).clipped()
-                .onAppear { opened.insert(active) }
-                .onChange(of: ps.pane) { opened.insert(active) }
+                splitArea(width: geo.size.width, height: contentH, active: active)
+                    .frame(width: geo.size.width, height: contentH)
+                    .onAppear { opened.insert(active) }
+                    .onChange(of: ps.pane) { opened.insert(active) }
+                    .onChange(of: ps.agentOpen) { if ps.agentOpen { opened.insert(.claude) } }
                 if !ps.terms.isEmpty {
                     TerminalDrawer(terms: $ps.terms, selected: $ps.selTerm, height: $ps.drawerHeight,
                                    maxHeight: maxDrawer, wsKey: workspace.id,
@@ -140,11 +161,57 @@ struct WorkspacePaneInner: View {
         navDisabled(ps.pane) ? .services : ps.pane
     }
 
+    private var functionKinds: [PaneKind] { PaneKind.allCases.filter { $0 != .claude } }
+
+    private func clampAgent(_ w: Double, _ total: CGFloat) -> CGFloat {
+        CGFloat(min(max(320, w), max(320, Double(total) - 320)))
+    }
+
+    @ViewBuilder private func splitArea(width: CGFloat, height: CGFloat, active: PaneKind) -> some View {
+        let showAgent = ps.agentOpen
+        let showFunc = ps.funcVisible || !ps.agentOpen
+        HStack(spacing: 0) {
+            if showFunc {
+                functionArea(active: active).frame(maxWidth: .infinity)
+            }
+            if showAgent && showFunc {
+                SplitHandle(axis: .horizontal, value: $ps.agentWidth, min: 320, max: max(320, Double(width) - 320), invert: true)
+            }
+            if showAgent {
+                agentArea().frame(width: showFunc ? clampAgent(ps.agentWidth, width) : width)
+            }
+        }
+        .frame(width: width, height: height, alignment: .topLeading)
+        .clipped()
+    }
+
+    @ViewBuilder private func functionArea(active: PaneKind) -> some View {
+        ZStack {
+            ForEach(functionKinds) { kind in
+                if opened.contains(kind), !(workspace.isMain && kind == .review) {
+                    paneView(kind, active: active == kind)
+                        .opacity(active == kind ? 1 : 0)
+                        .allowsHitTesting(active == kind)
+                        .zIndex(active == kind ? 1 : 0)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .clipped()
+    }
+
+    private func agentArea() -> some View {
+        paneView(.claude, active: true)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .clipped()
+    }
+
     @ViewBuilder private func paneView(_ kind: PaneKind, active: Bool) -> some View {
         switch kind {
         case .claude:
             AgentTerminal(branch: workspace.branch, isMain: workspace.isMain, wsKey: workspace.id,
-                          onClose: { ps.pane = .services }).id("claude-\(safeWs)")
+                          onClose: { withAnimation(.easeInOut(duration: 0.16)) { ps.agentOpen = false; ps.funcVisible = true } })
+                .id("claude-\(safeWs)")
         case .services:
             ServicesBoard(workspace: workspace, openPane: { ps.pane = $0 }, openTerminal: attachLog,
                           onPrepareMain: { state.showPipeline = true })
@@ -155,7 +222,7 @@ struct WorkspacePaneInner: View {
             ReviewPane(workspace: workspace, isActive: active, onAskAgent: { text in
                 opened.insert(.claude)
                 StreamManager.shared.askClaude(wsKey: workspace.id, text: text)
-                withAnimation(.easeInOut(duration: 0.16)) { ps.pane = .claude }
+                withAnimation(.easeInOut(duration: 0.16)) { ps.agentOpen = true; ps.funcVisible = true }
             })
         }
     }
@@ -189,17 +256,31 @@ struct WorkspacePaneInner: View {
             .buttonStyle(.plain)
             .tooltip("Activity (this workspace)", shortcut: "⌘0", align: .topLeading)
             Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
-            navBtn(.claude, "i", "Agent")
-            if spread { Spacer(minLength: 8) } else { Spacer().frame(width: 10) }
             navBtn(.services, "1", "Services")
             navBtn(.prs, "2", "PRs")
             navBtn(.jira, "3", "Jira")
             navBtn(.database, "4", "Database")
             navBtn(.review, "5", "Review")
             editorBtn
+            if spread { Spacer(minLength: 8) } else { Spacer().frame(width: 10) }
+            agentToggle
             Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
             terminalToggle
         }
+    }
+
+    private var agentToggle: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.16)) { ps.toggleAgent(); if ps.agentOpen { opened.insert(.claude) } }
+        } label: {
+            Image(systemName: PaneKind.claude.icon).font(.system(size: 11))
+                .foregroundStyle(ps.agentOpen ? Theme.accent : Theme.fgMuted)
+                .frame(width: 24, height: 18)
+                .background(ps.agentOpen ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .tooltip("Agent", shortcut: "⌘I", align: .topTrailing)
     }
 
     private func navDisabled(_ kind: PaneKind) -> Bool {
@@ -208,11 +289,12 @@ struct WorkspacePaneInner: View {
 
     private func navBtn(_ kind: PaneKind, _ key: KeyEquivalent, _ name: String) -> some View {
         let off = navDisabled(kind)
-        return Button { if !off { ps.pane = kind } } label: {
+        let on = ps.pane == kind && ps.funcVisible
+        return Button { if !off { withAnimation(.easeInOut(duration: 0.16)) { ps.selectFunc(kind) } } } label: {
             Image(systemName: kind.icon).font(.system(size: 11))
-                .foregroundStyle(off ? Theme.dim.opacity(0.4) : (ps.pane == kind ? Theme.accent : Theme.fgMuted))
+                .foregroundStyle(off ? Theme.dim.opacity(0.4) : (on ? Theme.accent : Theme.fgMuted))
                 .frame(width: 24, height: 18)
-                .background(ps.pane == kind && !off ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .background(on && !off ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 5))
                 .contentShape(Rectangle())
                 .overlay(alignment: .topTrailing) {
                     if kind == .services, workspace.running > 0 {

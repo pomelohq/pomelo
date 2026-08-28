@@ -8,9 +8,12 @@ struct CustomHeader: View {
         ZStack {
             WindowDragArea()
             if let ws = state.selectedWorkspace {
-                Text(ws.title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.fgMuted)
-                    .lineLimit(1).allowsHitTesting(false)
-                    .padding(.horizontal, 260)
+                HStack(spacing: 8) {
+                    Text(ws.title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.fgMuted)
+                        .lineLimit(1).allowsHitTesting(false)
+                    AgentStatusPill()
+                }
+                .padding(.horizontal, 260)
             }
             HStack(spacing: 8) {
                 HeaderLeading()

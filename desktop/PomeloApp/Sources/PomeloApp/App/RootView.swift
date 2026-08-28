@@ -5,6 +5,8 @@ struct RootView: View {
     @EnvironmentObject var theme: ThemeManager
     @Environment(\.openWindow) private var openWindow
     @State private var prPeekHeight: CGFloat = 0
+    @State private var sidebarPeek = false
+    @State private var peekWork: DispatchWorkItem?
 
     var body: some View {
         _ = theme.mode
@@ -33,7 +35,7 @@ struct RootView: View {
             .overlay(TooltipOverlay().zIndex(2000))
             .animation(.easeOut(duration: 0.14), value: state.prPeek)
             .background(
-                Button("") { StreamManager.shared.clearActive() }   // ⌘K clears the active terminal
+                Button("") { StreamManager.shared.clearActive() }
                     .keyboardShortcut("k", modifiers: .command).hidden()
             )
             .overlay {
@@ -133,6 +135,7 @@ struct RootView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .overlay(alignment: .topLeading) { sidebarPeekLayer }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .allowsHitTesting(!state.showSessions)
@@ -193,6 +196,34 @@ struct RootView: View {
                 Button("Choose another…") { state.openExistingSession() }
                 Button("Cancel", role: .cancel) {}
             } message: { Text(state.openError ?? "") }
+        }
+    }
+
+    @ViewBuilder private var sidebarPeekLayer: some View {
+        if state.sidebarCollapsed {
+            HStack(spacing: 0) {
+                if sidebarPeek {
+                    WorkspaceSidebar().frame(width: 270)
+                    Divider().overlay(Theme.borderSoft)
+                } else {
+                    Color.clear.frame(width: 8)
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(sidebarPeek ? Theme.bg : .clear)
+            .shadow(color: sidebarPeek ? .black.opacity(0.35) : .clear, radius: 12, x: 4)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                peekWork?.cancel()
+                if hovering {
+                    let w = DispatchWorkItem { withAnimation(.easeInOut(duration: 0.16)) { sidebarPeek = true } }
+                    peekWork = w
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: w)
+                } else {
+                    withAnimation(.easeInOut(duration: 0.16)) { sidebarPeek = false }
+                }
+            }
+            .transition(.identity)
         }
     }
 }
