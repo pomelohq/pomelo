@@ -59,3 +59,19 @@ func TestDevProxyURLForNotListening(t *testing.T) {
 		t.Errorf("proxy not listening must return empty, got %q", got)
 	}
 }
+
+func TestPickProxyPort(t *testing.T) {
+	// Allocated port wins and the live scan is never consulted — a service is told to
+	// bind exactly its allocated port, so a transient build socket must not override it.
+	scanned := false
+	if got := pickProxyPort(59851, func() int { scanned = true; return 3000 }); got != 59851 {
+		t.Errorf("allocated port: got %d want 59851", got)
+	}
+	if scanned {
+		t.Error("live scan ran while an allocated port was available")
+	}
+	// No lease → fall back to the live scan.
+	if got := pickProxyPort(0, func() int { return 4000 }); got != 4000 {
+		t.Errorf("no lease: got %d want 4000 (live scan)", got)
+	}
+}

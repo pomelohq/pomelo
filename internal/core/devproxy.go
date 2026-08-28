@@ -118,14 +118,18 @@ func (s *Server) resolveProxyPortUncached(branchLabel, target string) int {
 	if !ok {
 		return 0
 	}
-	port := services.Port(s.WorkspaceRoot, services.PortWsKey(branch), svcKey)
-	if port > 0 && !services.IsPortFree(port) {
-		return port
+	allocated := services.Port(s.WorkspaceRoot, services.PortWsKey(branch), svcKey)
+	return pickProxyPort(allocated, func() int { return s.liveServicePort(branch, svcKey) })
+}
+
+// pickProxyPort prefers the allocated port: the service is told to bind exactly it, so
+// live-scanning the process tree while it builds can latch onto a transient bundler/HMR
+// socket and route there. Only scan when there is no lease at all.
+func pickProxyPort(allocated int, liveScan func() int) int {
+	if allocated > 0 {
+		return allocated
 	}
-	if live := s.liveServicePort(branch, svcKey); live > 0 {
-		return live
-	}
-	return port
+	return liveScan()
 }
 
 func (s *Server) liveServicePort(branch, svcKey string) int {
