@@ -24,10 +24,12 @@ struct CodeView: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        scroll.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        let ap = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        scroll.appearance = ap
         guard let tv = context.coordinator.textView else { return }
+        tv.appearance = ap
         context.coordinator.onSelectLines = onSelectLines
-        let key = "\(content.count):\(start):\(end)"
+        let key = "\(content.count):\(start):\(end):\(isDark)"
         if context.coordinator.key == key { return }
         context.coordinator.key = key
         let built = CodeTextView.build(content, lang: lang, start: start, end: end)

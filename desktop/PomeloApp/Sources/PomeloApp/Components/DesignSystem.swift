@@ -67,6 +67,9 @@ struct Card<Content: View>: View {
 
 // Uppercase kerned section label used across headers.
 struct SectionLabel: View {
+    // Reads Theme.* statically; observe the theme so a switch invalidates this view
+    // even though `text` is unchanged (else SwiftUI reuses the stale body + old palette).
+    @EnvironmentObject var theme: ThemeManager
     let text: String
     var size: CGFloat = 10.5
     var body: some View {
@@ -76,6 +79,7 @@ struct SectionLabel: View {
 
 // Collapsible section header: chevron + label + optional count + optional trailing.
 struct SectionHeader<Trailing: View>: View {
+    @EnvironmentObject var theme: ThemeManager
     let title: String
     @Binding var expanded: Bool
     var count: Int? = nil

@@ -512,10 +512,15 @@ struct CodeDiffView: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        scroll.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        let ap = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        scroll.appearance = ap
         guard let tv = context.coordinator.textView else { return }
-        if context.coordinator.path == file.path { return }
-        context.coordinator.path = file.path
+        tv.appearance = ap
+        // Theme-derived colours are baked into the attributed string at build time, so a
+        // theme switch must rebuild — keying on path alone froze them.
+        let key = "\(file.path):\(isDark)"
+        if context.coordinator.path == key { return }
+        context.coordinator.path = key
         let built = DiffTextView.build(file)
         tv.lineKinds = built.kinds
         tv.lineStarts = built.starts
