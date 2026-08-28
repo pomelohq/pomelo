@@ -38,6 +38,7 @@ final class AppState: ObservableObject {
             if ch == "," { self.showSettings = true; return nil }
             if shift && (ch == "0" || ch == ")") { self.openActivity(scope: nil); return nil }
             if shift && ch == "s" { self.showShared = true; return nil }
+            if shift && ch == "d" { self.showDependencies = true; return nil }    // ⌘⇧D — Dependency store
             if shift && ch == "p" { self.showSessionPanel = true; return nil }   // ⌘⇧P — Project (config editor + ENV)
             if shift && ch == "t" { self.themeManager?.cycle(); return nil }      // ⌘⇧T — cycle theme
             if shift && ch == "n" { self.showCreateSession = true; return nil }   // ⌘⇧N — new session

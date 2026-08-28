@@ -24,8 +24,8 @@ extension View {
     func dropdownMenu<M: View>(isPresented: Binding<Bool>, alignment: Alignment = .topLeading,
                                drop: CGFloat = 28, @ViewBuilder menu: @escaping () -> M) -> some View {
         overlay(alignment: alignment) {
-            if isPresented.wrappedValue {
-                ZStack(alignment: alignment) {
+            ZStack(alignment: alignment) {
+                if isPresented.wrappedValue {
                     Color.black.opacity(0.001)
                         .frame(width: 6000, height: 6000)
                         .contentShape(Rectangle())
@@ -33,8 +33,10 @@ extension View {
                     menu().fixedSize()
                         .padding(.top, drop)
                         .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
                 }
             }
+            .animation(.spring(response: 0.24, dampingFraction: 0.82), value: isPresented.wrappedValue)
         }
         .zIndex(isPresented.wrappedValue ? 100 : 0)
     }

@@ -16,11 +16,49 @@ type UsageWindow struct {
 	ResetsAt int64   `json:"resets_at"`
 }
 
+type Account struct {
+	Email string `json:"email,omitempty"`
+	Plan  string `json:"plan,omitempty"`
+	Org   string `json:"org,omitempty"`
+}
+
 type Usage struct {
 	OK      bool        `json:"ok"`
 	Error   string      `json:"error,omitempty"`
 	Session UsageWindow `json:"session"`
 	Weekly  UsageWindow `json:"weekly"`
+	Account Account     `json:"account"`
+}
+
+// claudeAccount reads the signed-in account (email/org from ~/.claude.json, plan from
+// the credentials file) — the same files Claude Code writes. Best-effort: any missing
+// piece is left blank.
+func claudeAccount() Account {
+	home, _ := os.UserHomeDir()
+	var a Account
+	if data, err := os.ReadFile(filepath.Join(home, ".claude.json")); err == nil {
+		var c struct {
+			OauthAccount struct {
+				EmailAddress     string `json:"emailAddress"`
+				OrganizationName string `json:"organizationName"`
+			} `json:"oauthAccount"`
+		}
+		if json.Unmarshal(data, &c) == nil {
+			a.Email = c.OauthAccount.EmailAddress
+			a.Org = c.OauthAccount.OrganizationName
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json")); err == nil {
+		var c struct {
+			ClaudeAiOauth struct {
+				SubscriptionType string `json:"subscriptionType"`
+			} `json:"claudeAiOauth"`
+		}
+		if json.Unmarshal(data, &c) == nil {
+			a.Plan = c.ClaudeAiOauth.SubscriptionType
+		}
+	}
+	return a
 }
 
 // claudeToken reads the Claude Code OAuth access token, file first then the macOS
@@ -122,5 +160,5 @@ func FetchUsage() Usage {
 	if json.NewDecoder(resp.Body).Decode(&body) != nil {
 		return Usage{Error: "decode failed"}
 	}
-	return Usage{OK: true, Session: body.FiveHour.mapped(), Weekly: body.SevenDay.mapped()}
+	return Usage{OK: true, Session: body.FiveHour.mapped(), Weekly: body.SevenDay.mapped(), Account: claudeAccount()}
 }

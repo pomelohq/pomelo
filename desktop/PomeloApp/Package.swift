@@ -24,6 +24,7 @@ let package = Package(
                            .product(name: "CodeEditSourceEditor", package: "CodeEditSourceEditor"),
                            .product(name: "CodeEditLanguages", package: "CodeEditLanguages"),
                            .product(name: "CodeEditTextView", package: "CodeEditTextView")],
+            resources: [.process("Resources/Assets.xcassets")],
             linkerSettings: [
                 .unsafeFlags([
                     "-LVendor", "-lpom",
