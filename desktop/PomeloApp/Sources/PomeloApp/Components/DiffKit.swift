@@ -129,35 +129,15 @@ struct DiffFileList: View {
 
     @ViewBuilder private func row(_ node: FileTreeNode, depth: Int) -> some View {
         if let f = node.file {
-            Button { selected = f.path } label: {
-                HStack(spacing: 7) {
-                    Text(f.status).font(Theme.mono(9.5, .bold)).foregroundStyle(statusColor(f.status))
-                        .frame(width: 12)
-                    Text(node.name).font(.system(size: 11.5)).foregroundStyle(Theme.fg)
-                        .lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 4)
-                }
-                .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
-                .background(selected == f.path ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
-                .tooltip(leafTooltip(f, label: node.name))
-            }.buttonStyle(.plain)
+            TreeRow(depth: depth, indent: indent, isDir: false, expanded: false, name: node.name,
+                    leadingSymbol: nil, marker: (f.status, statusColor(f.status)),
+                    selected: selected == f.path, selectionColor: Theme.sel, nameColor: Theme.fg,
+                    nameWeight: .regular, tooltip: leafTooltip(f, label: node.name)) { selected = f.path }
         } else {
             let isCollapsed = collapsed.contains(node.id)
-            Button { toggle(node.id) } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.dim)
-                        .frame(width: 10)
-                    Image(systemName: "folder.fill").font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
-                    Text(node.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.fgMuted)
-                        .lineLimit(1).truncationMode(.head).layoutPriority(1)
-                    Spacer(minLength: 4)
-                }
-                .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
-                .contentShape(Rectangle())
-                .tooltip(node.name)
-            }.buttonStyle(.plain)
+            TreeRow(depth: depth, indent: indent, isDir: true, expanded: !isCollapsed, name: node.name,
+                    leadingSymbol: "folder.fill", marker: nil, selected: false, selectionColor: Theme.sel,
+                    nameColor: Theme.fgMuted, nameWeight: .medium, tooltip: node.name) { toggle(node.id) }
         }
     }
 
@@ -197,7 +177,7 @@ struct DiffFilesView: View {
         Group {
             if let files {
                 if files.isEmpty {
-                    centered(emptyLabel)
+                    EmptyStateView(icon: "doc.text", title: emptyLabel)
                 } else {
                     HStack(spacing: 0) {
                         if filesTreeVisible {
@@ -222,7 +202,7 @@ struct DiffFilesView: View {
                     }
                 }
             } else {
-                centered(loadingLabel)
+                LoadingView(text: loadingLabel)
             }
         }
     }

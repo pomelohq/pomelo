@@ -20,10 +20,8 @@ struct WorkspaceSidebar: View {
                 Text("WORKSPACES").font(.system(size: 11, weight: .semibold)).kerning(0.8)
                     .foregroundStyle(Theme.muted)
                 Spacer()
-                if state.creating { ProgressView().controlSize(.mini) }
-                Button { openWindow(id: "create-workspace") } label: { Image(systemName: "plus").font(.system(size: 12)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
-                    .help("New workspace  ⌘N")
+                if state.creating { Spinner(size: 11) }
+                IconButton("plus", size: 12, tip: "New workspace  ⌘N") { openWindow(id: "create-workspace") }
                     .keyboardShortcut("n", modifiers: .command)
             }
             .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
@@ -37,7 +35,9 @@ struct WorkspaceSidebar: View {
                     ForEach(state.mainWorkspaces) { ws in WsRow(ws: ws) }
                     ForEach(Array(items.enumerated()), id: \.element.id) { idx, ws in
                         WsRow(ws: ws)
-                            .background(HeightReader(id: ws.id))
+                            // Measure only while dragging — a GeometryReader on every row
+                            // re-measures on every layout pass and janks idle scrolling.
+                            .background { if dragId != nil { HeightReader(id: ws.id) } }
                             .offset(y: rowOffset(idx))
                             .scaleEffect(dragId == ws.id ? 1.03 : 1)
                             .shadow(color: dragId == ws.id ? .black.opacity(0.28) : .clear,
@@ -150,13 +150,18 @@ struct KeepAliveWorkspaceHost: View {
 struct WsRow: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var ui: UIStore
+    @EnvironmentObject var theme: ThemeManager
     let ws: Workspace
     var body: some View {
         WsCard(ws: ws, selected: state.selection == ws.id, agent: state.agentStates[ws.id] ?? ws.claudeAgentState,
-               prs: state.prsFor(ws.id), severity: state.prSeverityFor(ws.id), prsLoading: state.prsLoading, jira: state.jiraFor(ws.branch),
+               prs: state.prsFor(ws.id), severity: state.prSeverityFor(ws.id), prsLoading: state.prsLoading,
+               pullOn: ws.isMain && state.syncOn, pullIntervalSec: state.syncIntervalSec, pulling: ws.isMain && state.syncPulling,
+               pulledAt: ws.isMain ? state.syncPulledAt : nil, pullProgress: ws.isMain ? state.syncProgress : [],
+               jira: state.jiraFor(ws.branch), themeMode: theme.mode,
                onOpenPRs: { state.selection = ws.id; ui.state(for: ws.id).pane = .prs },
                onOpenJira: { state.selection = ws.id; ui.state(for: ws.id).pane = .jira },
                onPeekEnter: { state.prPeekEnter(ws.id) }, onPeekLeave: { state.prPeekLeave() })
+            .equatable()
             .contentShape(Rectangle())
             .onTapGesture { state.selection = ws.id }
             .overlay(RightClickCatcher { pt in

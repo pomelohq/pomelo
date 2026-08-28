@@ -80,7 +80,7 @@ struct SetupWizard: View {
                     .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small).disabled(busy)
                 Button { Task { await refresh() } } label: { Label("Recheck", systemImage: "arrow.clockwise") }
                     .buttonStyle(.bordered).controlSize(.small).disabled(busy)
-                if busy { ProgressView().controlSize(.small) }
+                if busy { Spinner() }
             }
         }
     }

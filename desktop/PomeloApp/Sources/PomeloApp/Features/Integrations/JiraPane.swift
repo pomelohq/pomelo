@@ -60,7 +60,7 @@ struct JiraPane: View {
                     content(d)
                 }
             } else if vm.loading {
-                VStack(spacing: 8) { ProgressView().controlSize(.small); Text("loading ticket…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted) }
+                VStack(spacing: 8) { Spinner(size: 14); Text("loading ticket…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted) }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 empty("Jira", "—")
@@ -74,8 +74,7 @@ struct JiraPane: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Text(d.key).font(Theme.mono(12, .semibold)).foregroundStyle(catColor)
-                Text(d.status).font(.system(size: 10.5, weight: .medium)).foregroundStyle(catColor)
-                    .padding(.horizontal, 7).padding(.vertical, 2).background(catColor.opacity(0.15), in: Capsule())
+                StatusPill(text: d.status, color: catColor)
                 Spacer()
                 if !d.comments.isEmpty {
                     Button { withAnimation(.easeInOut(duration: 0.15)) { showComments.toggle() } } label: {
@@ -86,6 +85,12 @@ struct JiraPane: View {
                     }.buttonStyle(.plain).help(showComments ? "Hide comments (⌘⇧C)" : "Show comments (⌘⇧C)")
                         .keyboardShortcut("c", modifiers: [.command, .shift])
                 }
+                Button { Task { await vm.reload(key: key) } } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 12))
+                        .foregroundStyle(Theme.fgMuted)
+                        .rotationEffect(.degrees(vm.reloading ? 360 : 0))
+                        .animation(vm.reloading ? .linear(duration: 0.7).repeatForever(autoreverses: false) : .default, value: vm.reloading)
+                }.buttonStyle(.plain).help("Reload from Jira").disabled(vm.reloading)
                 Button { if let u = URL(string: d.url) { NSWorkspace.shared.open(u) } } label: {
                     HStack(spacing: 4) { Image(systemName: "arrow.up.forward.square"); Text("Open").font(.system(size: 12)) }
                         .foregroundStyle(Theme.fgMuted)
@@ -121,30 +126,30 @@ struct JiraPane: View {
 
     private func webLinksSection(_ links: [JiraWebLink]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("WEB LINKS").font(.system(size: 10.5, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
-            VStack(spacing: 0) {
-                ForEach(links) { link in
-                    Button {
-                        if let u = URL(string: link.url) { NSWorkspace.shared.open(u) }
-                    } label: {
-                        HStack(spacing: 8) {
-                            webLinkIcon(link.icon)
-                            Text(link.title.isEmpty ? link.url : link.title)
-                                .font(.system(size: 12.5)).foregroundStyle(Theme.fg).lineLimit(1)
-                            Spacer()
-                            Image(systemName: "arrow.up.forward.square").font(.system(size: 10.5)).foregroundStyle(Theme.dim)
+            SectionLabel(text: "WEB LINKS")
+            Card(cornerRadius: 6, background: Theme.bgSoft) {
+                VStack(spacing: 0) {
+                    ForEach(links) { link in
+                        Button {
+                            if let u = URL(string: link.url) { NSWorkspace.shared.open(u) }
+                        } label: {
+                            HStack(spacing: 8) {
+                                webLinkIcon(link.icon)
+                                Text(link.title.isEmpty ? link.url : link.title)
+                                    .font(.system(size: 12.5)).foregroundStyle(Theme.fg).lineLimit(1)
+                                Spacer()
+                                Image(systemName: "arrow.up.forward.square").font(.system(size: 10.5)).foregroundStyle(Theme.dim)
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 10).padding(.vertical, 8)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    if link.id != links.last?.id {
-                        Divider().overlay(Theme.borderSoft)
+                        .buttonStyle(.plain)
+                        if link.id != links.last?.id {
+                            Divider().overlay(Theme.borderSoft)
+                        }
                     }
                 }
             }
-            .background(Theme.bgSoft, in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderSoft, lineWidth: 1))
         }
     }
 
@@ -168,7 +173,7 @@ struct JiraPane: View {
     private func commentsPane(_ comments: [JiraComment]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("COMMENTS").font(.system(size: 10.5, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
+                SectionLabel(text: "COMMENTS")
                 Text("\(comments.count)").font(Theme.mono(10.5)).foregroundStyle(Theme.dim)
                 Spacer()
             }

@@ -74,16 +74,16 @@ struct ChipSelect: View {
 
     var body: some View {
         Button { open.toggle() } label: {
-            HStack(spacing: 3) {
-                Text(text).font(Theme.mono(11)).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 6, weight: .bold)).opacity(0.7)
+            HStack(spacing: 4) {
+                Circle().fill(color).frame(width: 5, height: 5)
+                Text(text).font(Theme.mono(11)).foregroundStyle(Theme.fg).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(Theme.dim)
             }
-            .foregroundStyle(color)
-            .padding(.horizontal, 8).padding(.vertical, 2.5)
-            .background(color.opacity(hover ? 0.18 : 0.10), in: Capsule())
-            .overlay(Capsule().strokeBorder(color.opacity(0.35)))
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(hover || open ? Theme.hover : Theme.bgSoft, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.borderSoft))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plain).fixedSize()
         .onHover { hover = $0 }
         .popover(isPresented: $open, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 1) {

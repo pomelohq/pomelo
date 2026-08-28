@@ -124,7 +124,7 @@ struct AgentSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                if model.running { ProgressView().controlSize(.small) }
+                if model.running { Spinner() }
                 Text(model.running ? runningLabel : title + " done")
                     .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.fg)
                 Spacer()
@@ -214,7 +214,7 @@ struct OnboardSheet: View {
     private var onboardingBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                if model.running { ProgressView().controlSize(.small).scaleEffect(0.8) }
+                if model.running { Spinner() }
                 Text("Onboarding · \(PomCore.shared.session)")
                     .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.fg)
                 Spacer()

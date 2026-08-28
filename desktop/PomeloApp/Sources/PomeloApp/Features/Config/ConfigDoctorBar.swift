@@ -23,7 +23,7 @@ struct ConfigDoctorBar: View {
     private var statusRow: some View {
         HStack(spacing: 9) {
             if vm.loading {
-                ProgressView().controlSize(.small).scaleEffect(0.7)
+                Spinner(size: 12)
                 Text("diagnosing…").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
             } else {
                 icon
@@ -45,8 +45,7 @@ struct ConfigDoctorBar: View {
                     .background(Theme.accentSoft, in: Capsule())
                 }.buttonStyle(.plain).disabled(state.agentRunning)
             }
-            Button { Task { await vm.load() } } label: { Image(systemName: "arrow.clockwise").font(.system(size: 11)) }
-                .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Re-run doctor")
+            IconButton("arrow.clockwise", tip: "Re-run doctor") { Task { await vm.load() } }
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
         .background(Theme.bgSoft)
@@ -77,18 +76,18 @@ struct ConfigDoctorBar: View {
     }
 
     private func finding(_ f: DoctorViewModel.Finding) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            findingIcon(f.severity).frame(width: 14)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(f.title).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.fg)
-                if !f.detail.isEmpty { Text(f.detail).font(Theme.mono(10)).foregroundStyle(Theme.dim).textSelection(.enabled) }
-                if !f.fix.isEmpty { Text("→ \(f.fix)").font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted) }
+        Card {
+            HStack(alignment: .top, spacing: 9) {
+                findingIcon(f.severity).frame(width: 14)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(f.title).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.fg)
+                    if !f.detail.isEmpty { Text(f.detail).font(Theme.mono(10)).foregroundStyle(Theme.dim).textSelection(.enabled) }
+                    if !f.fix.isEmpty { Text("→ \(f.fix)").font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted) }
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .padding(9).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(9).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
     }
 
     @ViewBuilder private func findingIcon(_ sev: String) -> some View {

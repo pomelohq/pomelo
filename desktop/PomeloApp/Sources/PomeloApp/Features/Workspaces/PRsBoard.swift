@@ -117,6 +117,7 @@ struct PRsBoard: View {
     @State private var localChanges: [LocalChangeRepo] = []
     @State private var selection: Selection?
     @State private var loading = true
+    @State private var refreshing = false
     @State private var pollTask: Task<Void, Never>?
     @AppStorage("prs.masterWidth") private var masterWidth = 320.0
     @AppStorage("prs.sectionExpanded") private var sectionExpanded = true
@@ -156,22 +157,7 @@ struct PRsBoard: View {
     }
 
     @ViewBuilder private var localChangesSection: some View {
-        Button { withAnimation(.easeInOut(duration: 0.14)) { localSectionExpanded.toggle() } } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Theme.muted)
-                    .rotationEffect(.degrees(localSectionExpanded ? 90 : 0))
-                Text("LOCAL CHANGES").font(.system(size: 10.5, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
-                if !localChanges.isEmpty {
-                    Text("\(localChanges.count)").font(Theme.mono(9.5)).foregroundStyle(Theme.fgMuted)
-                        .padding(.horizontal, 5).padding(.vertical, 1).background(Theme.dim.opacity(0.15), in: Capsule())
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 14).padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }.buttonStyle(.plain)
-        .background(Theme.bgSoft)
+        SectionHeader(title: "LOCAL CHANGES", expanded: $localSectionExpanded, count: localChanges.isEmpty ? nil : localChanges.count)
         Divider().overlay(Theme.borderSoft)
 
         if localSectionExpanded {
@@ -193,30 +179,17 @@ struct PRsBoard: View {
 
     private var prSection: some View {
         VStack(spacing: 0) {
-            Button { withAnimation(.easeInOut(duration: 0.14)) { sectionExpanded.toggle() } } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Theme.muted)
-                        .rotationEffect(.degrees(sectionExpanded ? 90 : 0))
-                    Text("PULL REQUESTS").font(.system(size: 10.5, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
-                    if loading { ProgressView().controlSize(.mini) }
-                    Spacer()
-                    Button { Task { await load() } } label: {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
-                    }.buttonStyle(.plain).help("Refresh")
-                }
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                .contentShape(Rectangle())
-            }.buttonStyle(.plain)
-            .background(Theme.bgSoft)
+            SectionHeader(title: "PULL REQUESTS", expanded: $sectionExpanded, loading: loading) {
+                if refreshing { Spinner(size: 11).frame(width: 16, height: 14) }
+                else { IconButton("arrow.clockwise", size: 11, tip: "Refresh") { refresh() } }
+            }
             Divider().overlay(Theme.borderSoft)
 
             if sectionExpanded {
-                if prs.isEmpty && !loading {
-                    VStack(spacing: 8) {
-                        Image(systemName: "arrow.triangle.pull").font(.system(size: 26)).foregroundStyle(Theme.dim)
-                        Text("No pull requests").font(.system(size: 12.5)).foregroundStyle(Theme.fgMuted)
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                if prs.isEmpty && loading {
+                    LoadingView(text: "loading pull requests…")
+                } else if prs.isEmpty {
+                    EmptyStateView(icon: "arrow.triangle.pull", title: "No pull requests")
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 4) {
@@ -240,6 +213,17 @@ struct PRsBoard: View {
             Image(systemName: "sidebar.right").font(.system(size: 30)).foregroundStyle(Theme.dim)
             Text("Select a pull request").font(.system(size: 13)).foregroundStyle(Theme.fgMuted)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func refresh() {
+        guard !refreshing else { return }
+        refreshing = true
+        let branch = workspace.branch, isMain = workspace.isMain
+        Task {
+            await Task.detached(priority: .userInitiated) { _ = PRStore.refresh(branch: branch, isMain: isMain) }.value
+            await load()
+            refreshing = false
+        }
     }
 
     private func load() async {
@@ -340,13 +324,7 @@ struct PRRow: View {
         }
     }
     private func mini(_ icon: String, _ text: String, _ c: Color) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: icon).font(.system(size: 8.5))
-            Text(text).font(.system(size: 9.5, weight: .medium))
-        }
-        .foregroundStyle(c)
-        .padding(.horizontal, 5).padding(.vertical, 1)
-        .background(c.opacity(0.13), in: Capsule())
+        Badge(icon: icon, text: text, color: c)
     }
 
     private var statusDot: some View {
@@ -418,8 +396,7 @@ struct LocalChangesDetail: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("local").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.warn)
-                .padding(.horizontal, 7).padding(.vertical, 2).background(Theme.warn.opacity(0.15), in: Capsule())
+            StatusPill(text: "local", color: Theme.warn)
             Text(item.alias).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
             Spacer()
             Text("+\(item.insertions)").font(Theme.mono(11)).foregroundStyle(Theme.ok)
@@ -453,7 +430,8 @@ struct PRDetail: View {
     @State private var splitDiff = false
     @AppStorage("prs.filesTreeVisible") private var filesTreeVisible = true
     @State private var commits: [PRCommit]?
-    @State private var reviewComments: [PRReviewComment]?
+    @State private var timelineItems: [PRTimelineItem] = []
+    @State private var timelineLoaded = false
     @State private var loadingDetail = true
 
     private var pr: PRInfo? { detail ?? item.pr }
@@ -503,14 +481,7 @@ struct PRDetail: View {
 
     private var tabBar: some View {
         HStack(spacing: 2) {
-            ForEach(Tab.allCases, id: \.self) { t in
-                Button { tab = t } label: {
-                    Text(t.rawValue).font(.system(size: 12, weight: tab == t ? .semibold : .regular))
-                        .foregroundStyle(tab == t ? Theme.accent : Theme.fgMuted)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(tab == t ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
-                }.buttonStyle(.plain)
-            }
+            SegmentedTabs(tabs: Tab.allCases.map { $0 }, selection: $tab, label: { $0.rawValue }, accent: true)
             Spacer()
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
@@ -530,7 +501,7 @@ struct PRDetail: View {
     @ViewBuilder private var commitsTab: some View {
         Group {
             if let commits {
-                if commits.isEmpty { centered("No commits since base") }
+                if commits.isEmpty { EmptyStateView(icon: "circle.dashed", title: "No commits since base") }
                 else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
@@ -540,7 +511,7 @@ struct PRDetail: View {
                         }.padding(.vertical, 8).readingColumn()
                     }
                 }
-            } else { centered("loading commits…") }
+            } else { LoadingView(text: "loading commits…") }
         }
         .task(id: item.repo) { await loadCommits() }
     }
@@ -599,8 +570,7 @@ struct PRDetail: View {
                     Image(systemName: reviewerIcon(r.state)).font(.system(size: 12)).foregroundStyle(reviewerColor(r.state)).frame(width: 16)
                     Text(r.name).font(.system(size: 12.5)).foregroundStyle(Theme.fg)
                     Spacer()
-                    Text(r.state).font(.system(size: 10, weight: .semibold)).foregroundStyle(reviewerColor(r.state))
-                        .padding(.horizontal, 6).padding(.vertical, 1).background(reviewerColor(r.state).opacity(0.15), in: Capsule())
+                    StatusPill(text: r.state, color: reviewerColor(r.state), uppercase: true)
                 }
             }
         }
@@ -627,25 +597,28 @@ struct PRDetail: View {
                     ForEach(checks) { c in checkRow(c) }
                 }.padding(12).readingColumn()
             }
-        } else { centered("No checks") }
+        } else if loadingDetail && detail == nil {
+            LoadingView(text: "loading checks…")
+        } else { EmptyStateView(icon: "checklist", title: "No checks") }
     }
 
     @ViewBuilder private var conversationTab: some View {
-        let items = pr.map { PRTimeline.build(pr: $0, reviewComments: reviewComments ?? []) } ?? []
         Group {
-            if items.isEmpty {
-                centered(loadingDetail ? "loading…" : "No conversation")
+            if timelineItems.isEmpty {
+                if timelineLoaded { EmptyStateView(icon: "bubble.left.and.bubble.right", title: "No conversation") }
+                else { LoadingView(text: "loading conversation…") }
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(items) { timelineRow($0) }
+                        ForEach(timelineItems) { timelineRow($0) }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 12)
                     .readingColumn(940)
                 }
             }
         }
-        .task(id: item.repo) { await loadReviewComments() }
+        .task(id: item.repo) { await loadTimeline() }
+        .onChange(of: detail) { Task { await loadTimeline() } }
     }
 
     private let railWidth: CGFloat = 28
@@ -660,20 +633,20 @@ struct PRDetail: View {
                 .background(alignment: .top) { Rectangle().fill(Theme.borderSoft).frame(width: 2) }
             VStack(alignment: .leading, spacing: 8) {
                 switch it.kind {
-                case .description:
+                case "description":
                     commentCard(author: it.author, avatar: it.avatar, headline: "opened this pull request", body: it.body)
-                case .comment:
+                case "comment":
                     commentCard(author: it.author, avatar: it.avatar, headline: "commented", body: it.body)
-                case .review(let state, let inline):
+                case "review":
                     HStack(spacing: 6) {
                         Text(it.author ?? "someone").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.fg)
-                        Text(reviewVerb(state)).font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
+                        Text(reviewVerb(it.state)).font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
                         Spacer()
                     }.frame(height: avatarSize)
                     if !it.body.isEmpty { commentCard(author: it.author, avatar: it.avatar, headline: "left a comment", body: it.body) }
-                    ForEach(inline) { rc in inlineCard(rc).padding(.leading, 24) }
-                case .inline(let rc):
-                    inlineCard(rc)
+                    ForEach(it.inline) { rc in inlineCard(rc).padding(.leading, 24) }
+                default:
+                    if let rc = it.inline.first { inlineCard(rc) }
                 }
             }
             .padding(.bottom, 16)
@@ -682,23 +655,23 @@ struct PRDetail: View {
 
     @ViewBuilder private func timelineNode(_ it: PRTimelineItem) -> some View {
         switch it.kind {
-        case .description, .comment: Color.clear.frame(height: 1)
-        default: timelineIcon(it.kind).frame(height: avatarSize)
+        case "description", "comment": Color.clear.frame(height: 1)
+        default: timelineIcon(it).frame(height: avatarSize)
         }
     }
 
-    @ViewBuilder private func timelineIcon(_ kind: PRTimelineItem.Kind) -> some View {
+    @ViewBuilder private func timelineIcon(_ it: PRTimelineItem) -> some View {
         let (icon, col): (String, Color) = {
-            switch kind {
-            case .review(let state, _):
-                switch state {
+            switch it.kind {
+            case "review":
+                switch it.state {
                 case "APPROVED": return ("checkmark", Theme.ok)
                 case "CHANGES_REQUESTED": return ("xmark", Theme.danger)
                 default: return ("eye", Theme.fgMuted)
                 }
-            case .inline: return ("text.bubble", Theme.fgMuted)
-            case .comment: return ("bubble.left", Theme.fgMuted)
-            case .description: return ("arrow.triangle.pull", Theme.accent)
+            case "comment": return ("bubble.left", Theme.fgMuted)
+            case "description": return ("arrow.triangle.pull", Theme.accent)
+            default: return ("text.bubble", Theme.fgMuted)
             }
         }()
         Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
@@ -717,50 +690,48 @@ struct PRDetail: View {
     }
 
     private func commentCard(author: String?, avatar: String? = nil, headline: String, body: String) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Avatar(url: avatar, name: author, size: 20)
-                Text(author ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
-                Text(headline).font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
-                Spacer()
+        Card {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    Avatar(url: avatar, name: author, size: 20)
+                    Text(author ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
+                    Text(headline).font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
+                    Spacer()
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Theme.panel3)
+                Divider().overlay(Theme.borderSoft)
+                MarkdownText(body).padding(12)
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(Theme.panel3)
-            Divider().overlay(Theme.borderSoft)
-            MarkdownText(body).padding(12)
         }
-        .background(Theme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
     }
 
     private func inlineCard(_ rc: PRReviewComment) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(Theme.fgMuted)
-                Text(rc.path.map { "\($0)\(rc.line.map { ":\($0)" } ?? "")" } ?? "")
-                    .font(Theme.mono(10.5)).foregroundStyle(Theme.fg).lineLimit(1).truncationMode(.middle)
-                Spacer()
-            }
-            .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(Theme.panel3)
-            if let lines = rc.hunkLines, !lines.isEmpty {
-                Divider().overlay(Theme.borderSoft)
-                hunkSnippet(lines)
-            }
-            Divider().overlay(Theme.borderSoft)
-            VStack(alignment: .leading, spacing: 6) {
+        Card {
+            VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 6) {
-                    Avatar(url: rc.avatarUrl, name: rc.user, size: 24)
-                    Text(rc.user ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
+                    Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(Theme.fgMuted)
+                    Text(rc.path.map { "\($0)\(rc.line.map { ":\($0)" } ?? "")" } ?? "")
+                        .font(Theme.mono(10.5)).foregroundStyle(Theme.fg).lineLimit(1).truncationMode(.middle)
+                    Spacer()
                 }
-                MarkdownText(rc.body ?? "")
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Theme.panel3)
+                if let lines = rc.hunkLines, !lines.isEmpty {
+                    Divider().overlay(Theme.borderSoft)
+                    hunkSnippet(lines)
+                }
+                Divider().overlay(Theme.borderSoft)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Avatar(url: rc.avatarUrl, name: rc.user, size: 24)
+                        Text(rc.user ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
+                    }
+                    MarkdownText(rc.body ?? "")
+                }
+                .padding(12)
             }
-            .padding(12)
         }
-        .background(Theme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
     }
 
     private func checkRow(_ c: PRCheck) -> some View {
@@ -773,15 +744,15 @@ struct PRDetail: View {
             }
         }()
         return Button { if let l = c.link, let u = URL(string: l) { NSWorkspace.shared.open(u) } } label: {
-            HStack(spacing: 8) {
-                Image(systemName: icon).font(.system(size: 12)).foregroundStyle(col)
-                Text(c.label).font(.system(size: 12)).foregroundStyle(Theme.fg).lineLimit(1)
-                Spacer()
-                if c.link != nil { Image(systemName: "arrow.up.forward").font(.system(size: 9)).foregroundStyle(Theme.dim) }
+            Card {
+                HStack(spacing: 8) {
+                    Image(systemName: icon).font(.system(size: 12)).foregroundStyle(col)
+                    Text(c.label).font(.system(size: 12)).foregroundStyle(Theme.fg).lineLimit(1)
+                    Spacer()
+                    if c.link != nil { Image(systemName: "arrow.up.forward").font(.system(size: 9)).foregroundStyle(Theme.dim) }
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
             }
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
             .contentShape(Rectangle())
         }.buttonStyle(.plain)
     }
@@ -822,8 +793,7 @@ struct PRDetail: View {
             : pr.state == "MERGED" ? ("merged", Color(hex: 0xa371f7))
             : pr.state == "CLOSED" ? ("closed", Theme.danger)
             : ("open", Theme.ok)
-        return Text(txt).font(.system(size: 10, weight: .semibold)).foregroundStyle(col)
-            .padding(.horizontal, 7).padding(.vertical, 2).background(col.opacity(0.15), in: Capsule())
+        return StatusPill(text: txt, color: col)
     }
 
     private func centered(_ s: String) -> some View {
@@ -843,15 +813,15 @@ struct PRDetail: View {
         if let fresh { detail = fresh }
     }
 
-    private func loadReviewComments() async {
-        guard reviewComments == nil else { return }
+    private func loadTimeline() async {
         let repo = item.repo
-        let fresh = await Task.detached(priority: .utility) { () -> [PRReviewComment] in
-            let d = PRStore.comments(branch: branch, repo: repo, isMain: isMain)
-            struct R: Decodable { let comments: [PRReviewComment]? }
-            return (PomJSON.decode(R.self, from: d))?.comments ?? []
+        let fresh = await Task.detached(priority: .utility) { () -> [PRTimelineItem] in
+            let d = PRStore.timeline(branch: branch, repo: repo, isMain: isMain)
+            struct R: Decodable { let items: [PRTimelineItem]? }
+            return (PomJSON.decode(R.self, from: d))?.items ?? []
         }.value
-        reviewComments = fresh
+        if fresh != timelineItems { timelineItems = fresh }
+        timelineLoaded = true
     }
 
     private func loadCommits() async {

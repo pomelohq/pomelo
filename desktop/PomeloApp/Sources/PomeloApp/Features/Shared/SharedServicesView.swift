@@ -64,7 +64,7 @@ struct SharedServicesView: View {
                     .font(.system(size: 11)).foregroundStyle(Theme.dim)
             }
             Spacer()
-            if busy { ProgressView().controlSize(.small) }
+            if busy { Spinner(size: 12) }
             Button { Task { await stack("up") } } label: { Text("Start all").font(.system(size: 12)) }
                 .buttonStyle(.plain).foregroundStyle(Theme.accent).disabled(busy)
             Button { Task { await stack("stop") } } label: { Text("Stop all").font(.system(size: 12)) }
@@ -191,14 +191,11 @@ private struct DetailPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
-                ForEach(DetailTab.allCases, id: \.self) { t in
-                    Button { tab = t; if t == .stats { Task { await refreshStats() } } else if t == .logs { Task { await refresh() } } } label: {
-                        Text(t.rawValue).font(.system(size: 12, weight: tab == t ? .semibold : .regular))
-                            .foregroundStyle(tab == t ? Theme.fg : Theme.fgMuted)
-                            .padding(.horizontal, 12).padding(.vertical, 5)
-                            .background(tab == t ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
-                    }.buttonStyle(.plain)
-                }
+                SegmentedTabs(tabs: DetailTab.allCases, selection: $tab, label: \.rawValue, accent: false)
+                    .onChange(of: tab) {
+                        if tab == .stats { Task { await refreshStats() } }
+                        else if tab == .logs { Task { await refresh() } }
+                    }
                 Spacer()
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
@@ -261,10 +258,8 @@ private struct DetailPane: View {
         return "\(s/86400)d"
     }
 
-    private func card<C: View>(@ViewBuilder _ rows: () -> C) -> some View {
-        VStack(spacing: 0) { rows() }
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.borderSoft))
+    private func card<C: View>(@ViewBuilder _ rows: @escaping () -> C) -> some View {
+        Card(cornerRadius: 12) { VStack(spacing: 0) { rows() } }
     }
 
     private func tableSection(_ title: String, cols: [String], rows: [[String]]) -> some View {

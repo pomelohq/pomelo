@@ -199,7 +199,7 @@ struct RepoColumn: View {
                 }
             }
         } label: {
-            Image(systemName: "bolt.fill").font(.system(size: 11)).foregroundStyle(Theme.accent)
+            Image(systemName: "bolt").font(.system(size: 12)).foregroundStyle(Theme.dim)
                 .frame(width: 24, height: 22)
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
@@ -207,19 +207,7 @@ struct RepoColumn: View {
     }
 
     private var repoMenu: some View {
-        Menu {
-            if running < services.count { Button("Start all") { runAll("start") } }
-            if running > 0 {
-                Button("Stop all") { runAll("stop") }
-                Button("Restart all") { runAll("restart") }
-            }
-            Divider()
-            Button("Open in editor") { openEditor() }
-        } label: {
-            Image(systemName: "ellipsis").font(.system(size: 12)).foregroundStyle(Theme.dim)
-                .frame(width: 24, height: 22)
-        }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        IconButton("square.and.pencil", tip: "Open in editor") { openEditor() }
     }
 
     private func openEditor() {
@@ -279,26 +267,7 @@ struct RepoWidthKey: PreferenceKey {
     }
 }
 
-struct IconButton: View {
-    let systemName: String
-    let tip: String
-    let action: () -> Void
-    @State private var hover = false
-    init(_ systemName: String, tip: String, action: @escaping () -> Void) {
-        self.systemName = systemName; self.tip = tip; self.action = action
-    }
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemName).font(.system(size: 12))
-                .foregroundStyle(hover ? Theme.fg : Theme.dim)
-                .frame(width: 24, height: 22)
-                .background(hover ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 5))
-        }
-        .buttonStyle(.plain)
-        .onHover { hover = $0 }
-        .help(tip)
-    }
-}
+
 
 struct SvcCard: View {
     @EnvironmentObject var state: AppState
@@ -321,151 +290,142 @@ struct SvcCard: View {
     private var pendingLabel: String? { state.pendingSvc[myKey] }
     private var isBusy: Bool { busy || pendingLabel != nil }
 
+    private var crashMsg: String? { (service.crashed == true) ? (service.crashLog ?? "") : nil }
+    private var errText: String? {
+        if let e = startError, !e.isEmpty { return e }
+        if let c = crashMsg, !c.isEmpty { return c }
+        return nil
+    }
+    private var expands: Bool {
+        if service.running, let win = service.tmuxWindow, let l = peek.lines[win], !l.isEmpty { return true }
+        return !service.running && errText != nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            head
-            Divider().overlay(Theme.borderSoft)
-            body(for: service)
-                .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12))
-        }
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(alignment: .leading) {
-            if service.running {
-                RoundedRectangle(cornerRadius: 1).fill(Theme.ok).frame(width: 2).padding(.vertical, 8)
+            headRow
+            if expands {
+                Divider().overlay(Theme.borderSoft)
+                expansion
+                    .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10))
             }
         }
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.borderSoft))
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(service.running ? Theme.ok.opacity(0.3) : Theme.borderSoft))
         .animation(.easeInOut(duration: 0.22), value: service.running)
         .animation(.easeInOut(duration: 0.18), value: isBusy)
     }
 
-    private var head: some View {
+    private var headRow: some View {
         HStack(spacing: 9) {
-            Circle().fill(service.running ? Theme.ok : (service.crashed == true ? Theme.danger : Theme.dim)).frame(width: 8, height: 8)
-                .help(service.running ? (service.port.map { "port :\($0)" } ?? "running") : (service.crashed == true ? "crashed" : "stopped"))
-            Text(service.name).font(Theme.mono(13, .medium)).foregroundStyle(Theme.fg).lineLimit(1)
+            Circle().fill(service.running ? Theme.ok : (service.crashed == true ? Theme.danger : Theme.dim)).frame(width: 7, height: 7).fixedSize()
+            Text(service.name).font(Theme.mono(13, .medium)).foregroundStyle(Theme.fg)
+                .lineLimit(1).truncationMode(.tail).layoutPriority(-1)
+            statusLabel.fixedSize()
             Spacer(minLength: 6)
             if let modes = service.modes, modes.count > 0 {
-                ChipSelect(text: service.mode ?? "mode", color: Theme.wsAccent, options: modes,
-                           current: service.mode) { setMode($0) }
+                ChipSelect(text: service.mode ?? "mode", color: Theme.wsAccent, options: modes, current: service.mode) { setMode($0) }
             }
             if let profiles = service.profiles, profiles.count > 1 {
-                ChipSelect(text: curEnv, color: envIsRemote ? Theme.warn : Theme.ok,
-                           options: profiles, current: curEnv) { setEnv($0) }
+                ChipSelect(text: curEnv, color: envIsRemote ? Theme.warn : Theme.ok, options: profiles, current: curEnv) { setEnv($0) }
             } else if envIsRemote {
                 chipStatic(service.env ?? "", color: Theme.warn)
             }
-            if service.running {
-                IconButton("arrow.clockwise", tip: "Restart") { act("restart") }
-                if (service.port ?? 0) > 0 || peekURL != nil {
-                    IconButton("arrow.up.forward.app", tip: "Open in browser") { openInBrowser() }
-                }
-                IconButton("stop.fill", tip: "Stop") { act("stop") }
-            }
+            rightControls
         }
-        .padding(.horizontal, 14).padding(.vertical, 11)
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .contentShape(Rectangle())
+        .onTapGesture { if service.running, let win = service.tmuxWindow { openTerminal(win) } }
     }
 
-    @ViewBuilder private func body(for svc: Service) -> some View {
+    @ViewBuilder private var statusLabel: some View {
         if isBusy {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small).scaleEffect(0.7)
-                Text(busy ? busyLabel : (pendingLabel ?? "…")).font(.system(size: 11.5)).foregroundStyle(Theme.accent)
-                Spacer()
-            }
-            .padding(.horizontal, 14).padding(.vertical, 9)
-            .transition(.opacity)
-        } else if svc.running {
-            if let win = svc.tmuxWindow, let lines = peek.lines[win], !lines.isEmpty {
-                SvcPeekView(lines: lines).onTapGesture { openTerminal(win) }
-                    .help("Open terminal / view log")
-            } else {
-                HStack(spacing: 6) {
-                    Text("running").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
-                    if let p = svc.port, p > 0 {
-                        Text(":\(p)").font(Theme.mono(11)).foregroundStyle(Theme.dim)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .contentShape(Rectangle())
-                .onTapGesture { if let win = svc.tmuxWindow { openTerminal(win) } }
-                .help("Open terminal / view log")
-            }
+            EmptyView()
+        } else if service.running {
+            if let p = service.port, p > 0 { Text(":\(p)").font(Theme.mono(11)).foregroundStyle(Theme.dim) }
         } else {
-            let crashMsg = (service.crashed == true) ? (service.crashLog ?? "") : nil
-            VStack(spacing: 0) {
-                if let err = startError ?? crashMsg, !err.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9)).foregroundStyle(Theme.danger)
-                            Text(err).font(Theme.mono(10)).foregroundStyle(Theme.danger)
-                                .lineLimit(4).truncationMode(.tail).textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Spacer(minLength: 0)
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture { showLogModal = true }
-                        HStack(spacing: 6) {
-                            Button { showLogModal = true } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "doc.plaintext").font(.system(size: 9))
-                                    Text("View log").font(.system(size: 10.5, weight: .semibold))
-                                }
-                                .foregroundStyle(Theme.fgMuted)
-                                .padding(.horizontal, 8).padding(.vertical, 2)
-                                .background(Theme.chip, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            if err.contains("port") {
-                                Button { act("start", relocate: true) } label: {
-                                    Text("Use a new port").font(.system(size: 10.5, weight: .semibold))
-                                        .foregroundStyle(Theme.accent)
-                                        .padding(.horizontal, 8).padding(.vertical, 2)
-                                        .background(Theme.accent.opacity(0.15), in: Capsule())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            Button { fixingThis ? state.reopenAgent() : fixWithClaude(err) } label: {
-                                HStack(spacing: 4) {
-                                    if fixingThis { ProgressView().controlSize(.small).scaleEffect(0.5) }
-                                    else { Image(systemName: "sparkles").font(.system(size: 9)) }
-                                    Text(fixingThis ? "Fixing…" : "Fix with Claude").font(.system(size: 10.5, weight: .semibold))
-                                }
-                                .foregroundStyle(Theme.wsAccent)
-                                .padding(.horizontal, 8).padding(.vertical, 2)
-                                .background(Theme.wsAccent.opacity(0.15), in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.danger.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.danger.opacity(0.22)))
-                    .padding(.horizontal, 10).padding(.top, 10)
-                    .help("Click to view the full log")
-                    .sheet(isPresented: $showLogModal) { CrashLogSheet(title: "\(repoName) · \(service.name)", log: err) }
-                }
-                Button { act("start") } label: {
-                    HStack {
-                        Text(crashMsg != nil ? "crashed" : "stopped").font(.system(size: 11.5))
-                            .foregroundStyle(crashMsg != nil ? Theme.danger : Theme.fgMuted)
-                        Spacer()
-                        HStack(spacing: 4) {
-                            Image(systemName: "play.fill").font(.system(size: 9))
-                            Text("start").font(.system(size: 11.5, weight: .semibold))
-                        }
-                        .foregroundStyle(Theme.ok)
-                        .padding(.horizontal, 9).padding(.vertical, 2)
-                        .background(Theme.ok.opacity(0.15), in: Capsule())
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+            Text(crashMsg != nil ? "crashed" : "stopped")
+                .font(Theme.mono(9.5)).textCase(.uppercase).kerning(0.5)
+                .foregroundStyle(crashMsg != nil ? Theme.danger : Theme.dim)
+        }
+    }
+
+    @ViewBuilder private var rightControls: some View {
+        if isBusy {
+            HStack(spacing: 6) {
+                Spinner(size: 12)
+                Text(busy ? busyLabel : (pendingLabel ?? "…")).font(Theme.mono(10.5)).foregroundStyle(Theme.accent).lineLimit(1)
             }
+        } else if service.running {
+            IconButton("arrow.clockwise", tip: "Restart") { act("restart") }
+            if (service.port ?? 0) > 0 || peekURL != nil {
+                IconButton("arrow.up.forward.app", tip: "Open in browser") { openInBrowser() }
+            }
+            IconButton("stop.fill", tip: "Stop") { act("stop") }
+        } else {
+            Button { act("start") } label: {
+                Image(systemName: "play.fill").font(.system(size: 10))
+                    .foregroundStyle(Theme.ok)
+                    .frame(width: 26, height: 22)
+                    .background(Theme.ok.opacity(0.14), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.ok.opacity(0.25)))
+            }
+            .buttonStyle(.plain).fixedSize()
+            .help("Start")
+        }
+    }
+
+    @ViewBuilder private var expansion: some View {
+        if service.running, let win = service.tmuxWindow, let lines = peek.lines[win], !lines.isEmpty {
+            SvcPeekView(lines: lines).onTapGesture { openTerminal(win) }.help("Open terminal / view log")
+        } else if let err = errText {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9)).foregroundStyle(Theme.danger)
+                    Text(err).font(Theme.mono(10)).foregroundStyle(Theme.danger)
+                        .lineLimit(4).truncationMode(.tail).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { showLogModal = true }
+                HStack(spacing: 6) {
+                    Button { showLogModal = true } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.plaintext").font(.system(size: 9))
+                            Text("View log").font(.system(size: 10.5, weight: .semibold))
+                        }
+                        .foregroundStyle(Theme.fgMuted)
+                        .padding(.horizontal, 8).padding(.vertical, 2)
+                        .background(Theme.chip, in: RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                    if err.contains("port") {
+                        Button { act("start", relocate: true) } label: {
+                            Text("Use a new port").font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                                .padding(.horizontal, 8).padding(.vertical, 2)
+                                .background(Theme.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 5))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Button { fixingThis ? state.reopenAgent() : fixWithClaude(err) } label: {
+                        HStack(spacing: 4) {
+                            if fixingThis { Spinner(size: 10) }
+                            else { Image(systemName: "sparkles").font(.system(size: 9)) }
+                            Text(fixingThis ? "Fixing…" : "Fix with Claude").font(.system(size: 10.5, weight: .semibold))
+                        }
+                        .foregroundStyle(Theme.wsAccent)
+                        .padding(.horizontal, 8).padding(.vertical, 2)
+                        .background(Theme.wsAccent.opacity(0.15), in: RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help("Click to view the full log")
+            .sheet(isPresented: $showLogModal) { CrashLogSheet(title: "\(repoName) · \(service.name)", log: err) }
         }
     }
 
@@ -528,7 +488,7 @@ struct SvcCard: View {
         startError = nil
         var ref: [String: Any] = ["branch": branch, "is_main": isMain, "repo": repoName, "svc": service.name]
         if relocate { ref["relocate"] = true }
-        if action == "start" || action == "restart" { ref["auto_relocate"] = state.autoPickPort }
+        if action == "start" || action == "restart" { ref["auto_relocate"] = true }
         let body = (try? JSONSerialization.data(withJSONObject: ref)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         Task {
             let data = await ServicesStore.control(refJSON: body, action: action)
@@ -598,9 +558,11 @@ struct CrashLogSheet: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
             Divider().overlay(Theme.borderSoft)
-            ScrollView([.vertical, .horizontal]) {
+            ScrollView(.vertical) {
                 Text(log.isEmpty ? "(no output)" : log).font(Theme.mono(11.5)).foregroundStyle(Theme.fg)
-                    .textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
             }
             .background(Theme.bg)
         }

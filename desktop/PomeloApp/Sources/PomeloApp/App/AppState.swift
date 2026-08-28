@@ -31,15 +31,19 @@ final class AppState: ObservableObject {
             if (e.charactersIgnoringModifiers ?? "").lowercased() == "q" && !e.modifierFlags.contains(.shift) {
                 NSApp.terminate(nil); return nil
             }
-            if NSApp.keyWindow?.firstResponder is NSTextView { return e }
-            if (e.charactersIgnoringModifiers ?? "") == "," { self.showSettings = true; return nil }  // ⌘, — works without a selection
             let shift = e.modifierFlags.contains(.shift)
             let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
+            // Global app toggles must fire even while a text field / SQL editor has
+            // focus — they use ⇧⌘ (or ⌘,) so they never collide with text editing.
+            if ch == "," { self.showSettings = true; return nil }
             if shift && (ch == "0" || ch == ")") { self.openActivity(scope: nil); return nil }
             if shift && ch == "s" { self.showShared = true; return nil }
             if shift && ch == "p" { self.showSessionPanel = true; return nil }   // ⌘⇧P — Project (config editor + ENV)
             if shift && ch == "t" { self.themeManager?.cycle(); return nil }      // ⌘⇧T — cycle theme
-            if ch == "n" { if shift { self.showCreateSession = true } else { self.openCreateWorkspace = true }; return nil }
+            if shift && ch == "n" { self.showCreateSession = true; return nil }   // ⌘⇧N — new session
+            // Below here shortcuts may collide with typing, so defer to a focused text view.
+            if NSApp.keyWindow?.firstResponder is NSTextView { return e }
+            if ch == "n" { self.openCreateWorkspace = true; return nil }
             guard let ws = self.selectedWorkspace, let ui = self.uiStore else { return e }
             let ps = ui.state(for: ws.id)
             switch e.charactersIgnoringModifiers ?? "" {
@@ -106,6 +110,55 @@ final class AppState: ObservableObject {
     @Published var showPipeline = false
     @Published var updateMainWs: Workspace?
     @Published var fullscreen = false
+
+    struct RepoPull: Decodable, Identifiable, Equatable { var repo = ""; var state = ""; var detail = ""; var id: String { repo } }
+    @Published var syncOn = false
+    @Published var syncIntervalSec = 1800
+    @Published var syncPulling = false
+    @Published var syncPulledAt: Date?   // set the moment a pull finishes; drives a brief "updated" tick
+    @Published var syncProgress: [RepoPull] = []
+
+    func refreshSync() async {
+        struct R: Decodable { var refresh_main = false; var refresh_interval_sec = 1800; var pulling = false; var last_pull_at: Int64 = 0; var progress: [RepoPull] = [] }
+        let d = await Task.detached { PomCore.shared.syncGetData() }.value
+        guard let r = PomJSON.decode(R.self, from: d) else { return }
+        // Use the backend timestamp (not Date()) so "synced Xm ago" is accurate and a
+        // pull that finished before the app launched shows immediately. Guard the write:
+        // an equal @Published assignment still fires objectWillChange (this polls 1s).
+        if r.last_pull_at > 0 {
+            let at = Date(timeIntervalSince1970: TimeInterval(r.last_pull_at))
+            if syncPulledAt != at { syncPulledAt = at }
+        }
+        // Only publish when something changed. Assigning an equal value to an
+        // @Published still fires objectWillChange, and this polls every 1s — an
+        // unconditional write re-renders the whole app (janky PR/diff scrolling).
+        // The countdown itself is computed on the FE from the interval, so it never
+        // depends on this poll staying fresh (no more stuck 0:00).
+        let pulling = r.refresh_main && r.pulling
+        guard r.refresh_main != syncOn || r.refresh_interval_sec != syncIntervalSec || pulling != syncPulling || r.progress != syncProgress else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            syncOn = r.refresh_main
+            syncIntervalSec = r.refresh_interval_sec
+            syncPulling = pulling
+            syncProgress = r.progress
+        }
+    }
+
+    private var syncPollTask: Task<Void, Never>?
+    private func startSyncPolling() {
+        syncPollTask?.cancel()
+        syncPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                // Not gated on appActive: the countdown must keep advancing to the next
+                // boundary even when unfocused, else it sticks at 0:00. The guard in
+                // refreshSync makes an unchanged poll a no-op, so this stays cheap.
+                await self.refreshSync()
+                // poll fast only while a pull is running (to catch completion), else slow
+                try? await Task.sleep(nanoseconds: (self.syncPulling ? 1 : 3) * 1_000_000_000 * self.powerMult)
+            }
+        }
+    }
 
     @Published var nmBusy = false
     @Published var nmPhase = ""
@@ -246,9 +299,6 @@ final class AppState: ObservableObject {
     }
     @Published var editorPref = UserDefaults.standard.string(forKey: "editorPref") ?? "" {
         didSet { UserDefaults.standard.set(editorPref, forKey: "editorPref") }
-    }
-    @Published var autoPickPort = UserDefaults.standard.object(forKey: "autoPickPort") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(autoPickPort, forKey: "autoPickPort") }
     }
     @Published var notifyClaude = UserDefaults.standard.object(forKey: "notifyClaude") as? Bool ?? true {
         didSet { UserDefaults.standard.set(notifyClaude, forKey: "notifyClaude") }
@@ -417,6 +467,7 @@ final class AppState: ObservableObject {
             startPolling()
             Task { await loadSessions() }
             startPRPolling()
+            startSyncPolling()
         }
     }
 
@@ -472,6 +523,7 @@ final class AppState: ObservableObject {
     func refresh() async {
         await refreshWorkspaces()
         await refreshAgents()
+        await refreshSync()
     }
 
     func refreshWorkspaces() async {

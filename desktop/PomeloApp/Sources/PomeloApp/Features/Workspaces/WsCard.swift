@@ -34,6 +34,19 @@ extension RootView {
     }
 }
 
+// Equatable over just the render-affecting inputs (closures ignored) so an
+// `.equatable()` wrapper skips re-rendering rows whose data did not change on a
+// global AppState tick — keeps the non-lazy sidebar smooth while scrolling.
+extension WsCard: Equatable {
+    static func == (l: WsCard, r: WsCard) -> Bool {
+        l.ws == r.ws && l.selected == r.selected && l.agent == r.agent &&
+        l.prs == r.prs && l.severity == r.severity && l.prsLoading == r.prsLoading &&
+        l.pullOn == r.pullOn && l.pullIntervalSec == r.pullIntervalSec && l.pulling == r.pulling &&
+        l.pulledAt == r.pulledAt && l.pullProgress == r.pullProgress && l.jira == r.jira &&
+        l.themeMode == r.themeMode
+    }
+}
+
 struct WsCard: View {
     @EnvironmentObject var theme: ThemeManager
     let ws: Workspace
@@ -42,7 +55,14 @@ struct WsCard: View {
     var prs: [WorkspacePR] = []
     var severity: String = "ok"
     var prsLoading = false
+    var pullOn = false
+    var pullIntervalSec = 1800
+    var pulling = false
+    var pulledAt: Date? = nil
+    var pullProgress: [AppState.RepoPull] = []
     var jira: JiraIssue? = nil
+    var themeMode: ThemeMode = .dark   // in equality so `.equatable()` still re-colors on theme switch
+    @State private var showPullDetail = false
     var onOpenPRs: () -> Void = {}
     var onOpenJira: () -> Void = {}
     var onPeekEnter: () -> Void = {}
@@ -97,6 +117,7 @@ struct WsCard: View {
                     }
                     Spacer(minLength: 6)
                     VStack(alignment: .trailing, spacing: 3) {
+                        if ws.isMain, pullOn || pulling { pullStatus }
                         if !ws.isMain {
                             if !openPRs.isEmpty { prPill.transition(.opacity.combined(with: .scale(scale: 0.8))) }
                             else if prsLoading { Capsule().fill(Theme.dim.opacity(0.12)).frame(width: 24, height: 14) }
@@ -112,6 +133,53 @@ struct WsCard: View {
                     in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+    }
+
+    // Next wall-clock boundary, cron `*/N` style — computed locally so the countdown
+    // never depends on a fresh poll (no stuck 0:00).
+    private func nextBoundary(_ now: Date) -> Date { pullNextBoundary(now, pullIntervalSec) }
+
+    private var failedCount: Int { pullProgress.filter { $0.state == "failed" }.count }
+    private var updatedCount: Int { pullProgress.filter { $0.state == "updated" || $0.state == "migrating" }.count }
+
+    // The sync status shown on the main row: an at-a-glance answer to "did it fetch,
+    // and how fresh is it" — like a git client's "Last fetched Xm ago". The countdown
+    // to the next run moves into the popover; a bare timer told the user nothing.
+    private func syncStatus(_ now: Date) -> (icon: String, text: String, color: Color, spin: Bool) {
+        if pulling { return ("", "syncing…", Theme.dim, true) }
+        if failedCount > 0 {
+            let rel = pulledAt.map { " · " + relTime($0, now) } ?? ""
+            return ("exclamationmark.triangle.fill", "\(failedCount) failed\(rel)", Theme.danger, false)
+        }
+        guard let at = pulledAt else {
+            let secs = max(0, Int(nextBoundary(now).timeIntervalSince(now)))
+            return ("clock", String(format: "in %d:%02d", secs / 60, secs % 60), Theme.dim, false)
+        }
+        if now.timeIntervalSince(at) < 6 && updatedCount > 0 {
+            return ("checkmark.circle.fill", "\(updatedCount) updated", Theme.ok, false)
+        }
+        return ("checkmark", "synced " + relTime(at, now), Theme.dim, false)
+    }
+
+    @ViewBuilder private var pullStatus: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            let s = syncStatus(ctx.date)
+            HStack(spacing: 4) {
+                if s.spin { Spinner(size: 9, lineWidth: 1.6) }
+                else { Image(systemName: s.icon).font(.system(size: 8.5, weight: .bold)).foregroundStyle(s.color) }
+                Text(s.text).font(Theme.mono(10)).monospacedDigit().foregroundStyle(s.color)
+            }
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 0.35), value: s.text)
+        }
+        .padding(.horizontal, 5).padding(.vertical, 2)
+        .background(showPullDetail ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 5))
+        .contentShape(Rectangle())
+        .help("Keep main fresh — click for per-repo status")
+        .highPriorityGesture(TapGesture().onEnded { showPullDetail.toggle() })
+        .popover(isPresented: $showPullDetail, arrowEdge: .bottom) {
+            PullDetail(repos: pullProgress, intervalSec: pullIntervalSec, lastPull: pulledAt)
+        }
     }
 
     private func jiraChip(_ j: JiraIssue) -> some View {
@@ -190,5 +258,118 @@ struct PRPopRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct PullTick: View {
+    @State private var draw: CGFloat = 0
+    var body: some View {
+        ZStack {
+            Circle().fill(Theme.ok)
+            CheckShape().trim(from: 0, to: draw)
+                .stroke(Color.white, style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+                .padding(2.6)
+        }
+        .frame(width: 11, height: 11)
+        .onAppear { withAnimation(.easeOut(duration: 0.3)) { draw = 1 } }
+    }
+}
+
+private struct CheckShape: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.midY))
+        p.addLine(to: CGPoint(x: r.minX + r.width * 0.38, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
+        return p
+    }
+}
+
+private func relTime(_ d: Date, _ now: Date) -> String {
+    let s = Int(now.timeIntervalSince(d))
+    if s < 5 { return "just now" }
+    if s < 60 { return "\(s)s ago" }
+    if s < 3600 { return "\(s / 60)m ago" }
+    return "\(s / 3600)h ago"
+}
+
+private func pullNextBoundary(_ now: Date, _ intervalSec: Int) -> Date {
+    let n = max(1, intervalSec / 60)
+    let cal = Calendar.current
+    let hourStart = cal.dateInterval(of: .hour, for: now)?.start ?? now
+    let minsPast = Int(now.timeIntervalSince(hourStart) / 60)
+    let k = minsPast / n + 1
+    let mins = k * n >= 60 ? 60 : k * n
+    return hourStart.addingTimeInterval(TimeInterval(mins * 60))
+}
+
+private struct PullDetail: View {
+    let repos: [AppState.RepoPull]
+    var intervalSec: Int = 1800
+    var lastPull: Date? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            header
+                .padding(.horizontal, 8).padding(.top, 6).padding(.bottom, 4)
+            Divider().overlay(Theme.borderSoft)
+            if repos.isEmpty {
+                Text("No sync yet — waiting for the first run.").font(.system(size: 11)).foregroundStyle(Theme.dim)
+                    .padding(.horizontal, 8).padding(.vertical, 8)
+            }
+            ForEach(repos) { r in
+                HStack(spacing: 8) {
+                    icon(r.state).frame(width: 12)
+                    Text(r.repo).font(Theme.mono(11.5)).foregroundStyle(Theme.fg).lineLimit(1)
+                    Spacer(minLength: 10)
+                    Text(label(r.state)).font(Theme.mono(10)).foregroundStyle(r.state == "failed" ? Theme.danger : Theme.dim)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .help(r.state == "failed" && !r.detail.isEmpty ? r.detail : label(r.state))
+            }
+        }
+        .padding(4).frame(width: 250)
+        .background(Theme.panel3)
+    }
+
+    private var header: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            let secs = max(0, Int(pullNextBoundary(ctx.date, intervalSec).timeIntervalSince(ctx.date)))
+            let failed = repos.filter { $0.state == "failed" }.count
+            HStack(spacing: 6) {
+                Text("Keep main fresh").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.fgMuted)
+                Spacer()
+                if failed > 0 {
+                    Text("\(failed) failed").font(Theme.mono(9.5)).foregroundStyle(Theme.danger)
+                } else if let d = lastPull {
+                    Text(relTime(d, ctx.date)).font(Theme.mono(9.5)).foregroundStyle(Theme.dim)
+                }
+                Text(String(format: "next %d:%02d", secs / 60, secs % 60)).font(Theme.mono(9.5)).monospacedDigit().foregroundStyle(Theme.dim)
+            }
+        }
+    }
+
+    @ViewBuilder private func icon(_ s: String) -> some View {
+        switch s {
+        case "pulling", "migrating": Spinner(size: 9, lineWidth: 1.6)
+        case "updated": PullTick()
+        case "failed": Image(systemName: "xmark.circle.fill").font(.system(size: 10)).foregroundStyle(Theme.danger)
+        case "skipped": Image(systemName: "minus.circle").font(.system(size: 10)).foregroundStyle(Theme.dim)
+        case "nochange": Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.dim)
+        default: Circle().stroke(Theme.dim.opacity(0.4), lineWidth: 1).frame(width: 8, height: 8)
+        }
+    }
+
+    private func label(_ s: String) -> String {
+        switch s {
+        case "pulling": return "pulling"
+        case "migrating": return "migrating"
+        case "updated": return "updated"
+        case "nochange": return "up to date"
+        case "skipped": return "local changes"
+        case "failed": return "failed"
+        default: return "waiting"
+        }
     }
 }

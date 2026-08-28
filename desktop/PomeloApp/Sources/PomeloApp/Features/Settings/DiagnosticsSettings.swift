@@ -33,14 +33,14 @@ private struct MCPPane: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 if vm.loading {
-                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Checking claude mcp…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted) }
+                    HStack(spacing: 8) { Spinner(); Text("Checking claude mcp…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted) }
                 } else {
                     statusRow("Registered in ~/.claude.json", ok: vm.status.registered)
                     statusRow("Wrapper script present", ok: vm.status.wrapper_ok)
                     statusRow("Connected (claude mcp list)", ok: vm.status.connected)
                     if !vm.status.command.isEmpty {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("COMMAND").font(.system(size: 10, weight: .semibold)).kerning(0.5).foregroundStyle(Theme.muted)
+                            SectionLabel(text: "COMMAND", size: 10)
                             Text(vm.status.command).font(Theme.mono(11)).foregroundStyle(Theme.fg).textSelection(.enabled)
                         }
                     }
@@ -55,7 +55,7 @@ private struct MCPPane: View {
                         .buttonStyle(.bordered).controlSize(.small).disabled(vm.busy || vm.loading)
                     Button { Task { await vm.reinstall() } } label: { Label("Re-register", systemImage: "wrench.and.screwdriver") }
                         .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small).disabled(vm.busy)
-                    if vm.busy { ProgressView().controlSize(.small) }
+                    if vm.busy { Spinner() }
                     Spacer()
                 }
             }
@@ -101,8 +101,7 @@ private struct AppLogPane: View {
                 Text(vm.loading ? "…" : "Pomelo \(vm.version) · \(vm.session)")
                     .font(.system(size: 11)).foregroundStyle(Theme.dim).lineLimit(1)
                 Spacer()
-                Button { Task { await vm.load() } } label: { Image(systemName: "arrow.clockwise").font(.system(size: 12)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Refresh")
+                IconButton("arrow.clockwise", tip: "Refresh") { Task { await vm.load() } }
                 if !vm.logfile.isEmpty {
                     Button { NSWorkspace.shared.selectFile(vm.logfile, inFileViewerRootedAtPath: "") } label: {
                         Label("Reveal app.log", systemImage: "folder").font(.system(size: 12))
@@ -178,8 +177,7 @@ private struct ProxyLogPane: View {
 }
 
 private func spinner(_ label: String) -> some View {
-    VStack(spacing: 8) { ProgressView().controlSize(.small); Text(label).font(.system(size: 12)).foregroundStyle(Theme.fgMuted) }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    LoadingView(text: label)
 }
 private func empty(_ icon: String, _ label: String) -> some View {
     VStack(spacing: 8) {

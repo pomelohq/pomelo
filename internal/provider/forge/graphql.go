@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pomelohq/pomelo/internal/diskcache"
 	"github.com/pomelohq/pomelo/internal/services"
 )
 
@@ -28,7 +29,38 @@ var (
 
 func prHeadKey(repo, head string) string { return repo + "\x00" + head }
 
+var prHydrateOnce sync.Once
+
+func hydratePR() {
+	prHydrateOnce.Do(func() {
+		m, ok := diskcache.Load[map[string]json.RawMessage]("pr")
+		if !ok {
+			return
+		}
+		prHeadMu.Lock()
+		for k, raw := range m {
+			if _, exists := prHeadCache[k]; !exists {
+				prHeadCache[k] = prHeadEntry{pr: raw} // at zero -> refreshed in the background
+			}
+		}
+		prHeadMu.Unlock()
+	})
+}
+
+func savePR() {
+	prHeadMu.Lock()
+	m := make(map[string]json.RawMessage, len(prHeadCache))
+	for k, e := range prHeadCache {
+		if len(e.pr) > 0 {
+			m[k] = e.pr
+		}
+	}
+	prHeadMu.Unlock()
+	diskcache.Save("pr", m)
+}
+
 func cachedPR(repo, head string) (raw json.RawMessage, known bool) {
+	hydratePR()
 	prHeadMu.Lock()
 	defer prHeadMu.Unlock()
 	e, ok := prHeadCache[prHeadKey(repo, head)]
@@ -131,6 +163,7 @@ func warmPRs(pairs []prPair) {
 			prHeadCache[prHeadKey(p.repo, p.head)] = prHeadEntry{pr: raw, at: now}
 		}
 		prHeadMu.Unlock()
+		savePR()
 	}
 	if failed {
 		prHeadMu.Lock()

@@ -208,7 +208,7 @@ struct HeaderTrailing: View {
 
     private var onboardChip: some View {
         HStack(spacing: 5) {
-            if state.onboardRunning { ProgressView().controlSize(.small).scaleEffect(0.55) }
+            if state.onboardRunning { Spinner(size: 11) }
             else { Image(systemName: "checkmark.seal.fill").font(.system(size: 10)).foregroundStyle(Theme.ok) }
             Text(state.onboardRunning ? "Onboarding…" : "Onboarding done")
                 .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.fg).lineLimit(1)
@@ -225,7 +225,7 @@ struct HeaderTrailing: View {
 
     private var agentChip: some View {
         HStack(spacing: 5) {
-            if state.agentRunning { ProgressView().controlSize(.small).scaleEffect(0.55) }
+            if state.agentRunning { Spinner(size: 11) }
             else { Image(systemName: "checkmark.seal.fill").font(.system(size: 10)).foregroundStyle(Theme.ok) }
             Text(state.agentRunning ? state.agentTitle + "…" : state.agentTitle + " done")
                 .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.fg).lineLimit(1)

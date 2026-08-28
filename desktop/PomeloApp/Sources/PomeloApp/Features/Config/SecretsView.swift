@@ -4,6 +4,7 @@ import AppKit
 @MainActor
 final class SecretsViewModel: ObservableObject {
     @Published private(set) var names: [String] = []
+    @Published private(set) var loaded = false
     @Published private(set) var revealed: [String: String] = [:]
     @Published var newName = ""
     @Published var newValue = ""
@@ -21,6 +22,7 @@ final class SecretsViewModel: ObservableObject {
         let d = await api.call { $0.secretNamesData() }
         struct R: Decodable { var names: [String]? }
         names = (PomJSON.decode(R.self, from: d)?.names ?? []).sorted()
+        loaded = true
     }
 
     func add() async {
@@ -59,7 +61,8 @@ struct SecretsView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if vm.names.isEmpty {
-                        Text("No secrets yet.").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
+                        Text(vm.loaded ? "No secrets yet." : "loading secrets…")
+                            .font(.system(size: 12)).foregroundStyle(vm.loaded ? Theme.fgMuted : Theme.dim)
                             .padding(.horizontal, 16).padding(.vertical, 12)
                     }
                     ForEach(Array(vm.names.enumerated()), id: \.element) { idx, name in

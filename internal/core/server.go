@@ -58,6 +58,18 @@ type Server struct {
 
 	resMu   sync.Mutex
 	resStat commands.ResourceStat
+
+	syncNextAt   atomic.Int64  // unix seconds of the next scheduled main refresh; 0 = none
+	syncPulling  atomic.Bool   // a refresh is running right now
+	syncLastPull atomic.Int64  // unix seconds when the last refresh finished
+	syncProg     atomic.Pointer[[]RepoPull]
+	syncReset    chan struct{} // poked by SyncSet to reschedule immediately
+}
+
+type RepoPull struct {
+	Repo   string `json:"repo"`
+	State  string `json:"state"` // pulling | migrating | updated | nochange | skipped | failed
+	Detail string `json:"detail,omitempty"`
 }
 
 func New(addr, project, workspaceRoot, defaultBranch string, cfg *config.Config) *Server {
@@ -65,6 +77,7 @@ func New(addr, project, workspaceRoot, defaultBranch string, cfg *config.Config)
 		Addr: addr, Project: project, WorkspaceRoot: workspaceRoot,
 		DefaultBranch: defaultBranch,
 		modeOverrides: map[string]string{},
+		syncReset:     make(chan struct{}, 1),
 	}
 	if cfg != nil {
 		s.cfgv.Store(cfg)
@@ -144,9 +157,7 @@ func (s *Server) startBackground() {
 	}
 	go s.reapPortsLoop()
 	go s.autoPushLoop()
-	if rm, _ := s.effectiveSync(); rm {
-		go s.refreshMainLoop()
-	}
+	go s.refreshScheduler()
 }
 
 func (s *Server) watchConfigFiles() {

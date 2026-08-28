@@ -20,18 +20,59 @@ func (s *Server) effectiveSync() (refreshMain bool, intervalSec int) {
 	return false, 0
 }
 
-func (s *Server) refreshMainLoop() {
-	_, intervalSec := s.effectiveSync()
-	interval := 1800
-	if intervalSec > 0 {
-		interval = intervalSec
-	}
-	t := time.NewTicker(time.Duration(interval) * time.Second)
-	defer t.Stop()
-	s.refreshMain()
-	for range t.C {
+// refreshScheduler runs the golden-source pull on a cron-aligned cadence; SyncSet
+// pokes syncReset to reschedule without an app restart.
+func (s *Server) refreshScheduler() {
+	pull := func() {
+		s.syncPulling.Store(true)
 		s.refreshMain()
+		s.syncPulling.Store(false)
+		s.syncLastPull.Store(time.Now().Unix())
 	}
+	firstRun := true
+	for {
+		rm, intervalSec := s.effectiveSync()
+		if !rm {
+			s.syncNextAt.Store(0)
+			firstRun = true
+			<-s.syncReset
+			continue
+		}
+		interval := 1800
+		if intervalSec > 0 {
+			interval = intervalSec
+		}
+		// Pull once on startup / when sync is enabled so the user sees it work now and
+		// main lands on its default branch immediately, instead of waiting a full cycle.
+		if firstRun {
+			firstRun = false
+			pull()
+		}
+		next := nextAlignedRun(time.Now(), interval)
+		s.syncNextAt.Store(next.Unix())
+		select {
+		case <-time.After(time.Until(next)):
+			pull()
+		case <-s.syncReset:
+		}
+	}
+}
+
+// nextAlignedRun picks the next wall-clock boundary within the hour, like cron `*/N`.
+func nextAlignedRun(now time.Time, intervalSec int) time.Time {
+	n := intervalSec / 60
+	if n < 1 {
+		n = 1
+	}
+	hourStart := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
+	if n >= 60 {
+		return hourStart.Add(time.Hour)
+	}
+	k := int(now.Sub(hourStart).Minutes())/n + 1
+	if k*n >= 60 {
+		return hourStart.Add(time.Hour)
+	}
+	return hourStart.Add(time.Duration(k*n) * time.Minute)
 }
 
 func (s *Server) refreshMain() {
@@ -40,37 +81,80 @@ func (s *Server) refreshMain() {
 	if cfg == nil || !refreshMain || s.WorkspaceRoot == "" {
 		return
 	}
-	defBranch := cfg.GlobalDefaultBranch()
+	// Each repo resolves its own default branch (a multi-repo project mixes main and
+	// master); origin/HEAD is the source of truth, config is the fallback.
+	repoDefault := func(repo, wt string) string {
+		if db := services.OriginDefaultBranch(wt); db != "" {
+			return db
+		}
+		return cfg.DefaultBranchFor(repo)
+	}
+
+	var prog []RepoPull
+	idx := map[string]int{}
+	for _, repo := range cfg.RepoOrder {
+		if dir := cfg.Repos[repo]; dir != nil && dirExists(repoWorktreePath(s.WorkspaceRoot, repo, "", true)) {
+			idx[repo] = len(prog)
+			prog = append(prog, RepoPull{Repo: repo, State: "pending"})
+		}
+	}
+	publish := func() { cp := append([]RepoPull(nil), prog...); s.syncProg.Store(&cp) }
+	set := func(repo, state string) {
+		if i, ok := idx[repo]; ok {
+			prog[i].State = state
+			prog[i].Detail = ""
+			publish()
+		}
+	}
+	fail := func(repo, detail string) {
+		if i, ok := idx[repo]; ok {
+			prog[i].State = "failed"
+			prog[i].Detail = detail
+			publish()
+		}
+	}
+	publish()
+
 	for _, repo := range cfg.RepoOrder {
 		dir := cfg.Repos[repo]
 		if dir == nil {
 			continue
 		}
-		wt := repoWorktreePath(s.WorkspaceRoot, repo, defBranch, true)
+		wt := repoWorktreePath(s.WorkspaceRoot, repo, "", true)
 		if !dirExists(wt) {
 			continue
 		}
-		if out, _ := services.RunTimeout(10*time.Second, wt, "git", "status", "--porcelain"); len(strings.TrimSpace(string(out))) > 0 {
-			log.Printf("refresh_main: %s has local changes — skipped", repo)
+		defBranch := repoDefault(repo, wt)
+		set(repo, "pulling")
+		// The main workspace must keep every repo on its default branch. Respect local
+		// WIP (skip) only when already on default; a repo parked on a feature branch is
+		// forced back regardless.
+		onDefault := services.CurrentBranch(wt) == defBranch
+		dirty := func() bool {
+			out, _ := services.RunTimeout(10*time.Second, wt, "git", "status", "--porcelain")
+			return len(strings.TrimSpace(string(out))) > 0
+		}()
+		if onDefault && dirty {
+			set(repo, "skipped")
 			continue
 		}
 		before, _ := services.RunTimeout(10*time.Second, wt, "git", "rev-parse", "HEAD")
 		// Same path as the manual "Update main from origin": mirror origin (handles a
 		// diverged main), not a plain ff-only pull that skips on divergence.
 		if err := services.ResetToDefaultAndPull(wt, defBranch); err != nil {
-			log.Printf("refresh_main: %s sync failed — skipped: %v", repo, err)
+			fail(repo, lastLines(err.Error(), 3))
 			continue
 		}
 		after, _ := services.RunTimeout(10*time.Second, wt, "git", "rev-parse", "HEAD")
 		if strings.TrimSpace(string(before)) == strings.TrimSpace(string(after)) {
+			set(repo, "nochange")
 			continue
 		}
-		mig := dir.EffectiveMigrate()
-		if len(mig) == 0 {
-			log.Printf("refresh_main: %s updated (no migrate command — pull only)", repo)
-			continue
+		if mig := dir.EffectiveMigrate(); len(mig) > 0 {
+			set(repo, "migrating")
+			s.runMainMigrate(defBranch, repo, wt, mig)
 		}
-		s.runMainMigrate(defBranch, repo, wt, mig)
+		set(repo, "updated")
 	}
 }
 

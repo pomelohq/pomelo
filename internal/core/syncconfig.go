@@ -2,6 +2,7 @@ package core
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/pomelohq/pomelo/internal/appstate"
 )
@@ -35,11 +36,29 @@ func (s *Server) SyncGet() map[string]any {
 	if iv == 0 {
 		iv = 1800
 	}
-	return map[string]any{"refresh_main": rm, "refresh_interval_sec": iv}
+	// Compute the next boundary deterministically each call rather than reading the
+	// scheduler's stored time, so the countdown never sticks (works even for a
+	// non-primary instance whose scheduler doesn't run).
+	next := int64(0)
+	if rm && !s.syncPulling.Load() {
+		next = nextAlignedRun(time.Now(), iv).Unix()
+	}
+	prog := []RepoPull{}
+	if p := s.syncProg.Load(); p != nil {
+		prog = *p
+	}
+	return map[string]any{"refresh_main": rm, "refresh_interval_sec": iv, "next_run_at": next, "pulling": s.syncPulling.Load(), "last_pull_at": s.syncLastPull.Load(), "progress": prog}
 }
 
 func (s *Server) SyncSet(refreshMain bool, intervalSec int) error {
 	st := appstate.Load(s.session())
 	st.Sync = appstate.SyncConfig{Configured: true, RefreshMain: refreshMain, RefreshIntervalSec: intervalSec}
-	return appstate.Save(s.session(), st)
+	if err := appstate.Save(s.session(), st); err != nil {
+		return err
+	}
+	select {
+	case s.syncReset <- struct{}{}: // reschedule at once
+	default:
+	}
+	return nil
 }

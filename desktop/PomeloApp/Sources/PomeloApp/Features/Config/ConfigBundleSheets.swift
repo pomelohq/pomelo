@@ -28,20 +28,20 @@ struct ExportBundleSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SheetHeader(icon: "square.and.arrow.up", title: "Export config") { dismiss() }
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle("Include secrets (\(secretCount))", isOn: $includeSecrets).disabled(secretCount == 0)
-                if includeSecrets {
-                    SecureField("Encryption password", text: $password).textFieldStyle(.roundedBorder)
-                    Text("Secrets are AES-256-GCM encrypted into a .pombundle. Share the password separately.")
-                        .font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
-                } else {
-                    Text("Exports the merged config as plain YAML (no secrets).")
-                        .font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+            Card(background: Theme.bg) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Include secrets (\(secretCount))", isOn: $includeSecrets).disabled(secretCount == 0)
+                    if includeSecrets {
+                        SecureField("Encryption password", text: $password).textFieldStyle(.roundedBorder)
+                        Text("Secrets are AES-256-GCM encrypted into a .pombundle. Share the password separately.")
+                            .font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+                    } else {
+                        Text("Exports the merged config as plain YAML (no secrets).")
+                            .font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+                    }
                 }
+                .padding(12)
             }
-            .padding(12)
-            .background(Theme.bg, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
             HStack {
                 if !status.isEmpty { Text(status).font(.system(size: 11)).foregroundStyle(Theme.fgMuted) }
                 Spacer()
@@ -136,7 +136,7 @@ struct ImportBundleSheet: View {
                     }
                 }
                 Spacer()
-                if picking { ProgressView().controlSize(.small) }
+                if picking { Spinner(size: 12) }
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -155,10 +155,11 @@ struct ImportBundleSheet: View {
                     Button("Change") { resetToPick() }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Theme.accent)
                 }
             }
-            ScrollView { Text(yaml).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(8) }
-                .frame(height: 220).background(Theme.bg, in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
+            Card(background: Theme.bg) {
+                ScrollView { Text(yaml).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(8) }
+                    .frame(height: 220)
+            }
             if !secretNames.isEmpty {
                 Text("Secrets: \(secretNames.joined(separator: ", "))").font(.system(size: 11)).foregroundStyle(Theme.fgMuted).lineLimit(2)
                 Toggle("Recreate secrets", isOn: $createSecrets)

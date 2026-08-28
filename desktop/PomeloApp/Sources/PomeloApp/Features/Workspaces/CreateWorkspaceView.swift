@@ -73,9 +73,10 @@ struct CreateWorkspaceView: View {
     @State private var preview: JiraDetail?
     @State private var previewLoading = false
     @State private var refined = false
+    @State private var useJira = false
     @FocusState private var ticketFocused: Bool
 
-    private var autoSlug: String { [slugify(ticket), slugify(desc)].filter { !$0.isEmpty }.joined(separator: "-") }
+    private var autoSlug: String { slugify(jiraOn ? ticket : name) }
     private var slug: String { slugOverride.isEmpty ? autoSlug : slugOverride }
 
     private var suggestions: [SprintIssue] {
@@ -90,7 +91,8 @@ struct CreateWorkspaceView: View {
                     .resizable().frame(width: 22, height: 22)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Create workspace").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
-                    Text("Pick a sprint ticket or describe the work").font(.system(size: 11)).foregroundStyle(Theme.dim)
+                    Text(jiraOn ? "Pick a sprint ticket or describe the work" : "Describe the work")
+                        .font(.system(size: 11)).foregroundStyle(Theme.dim)
                 }
                 Spacer()
             }
@@ -114,7 +116,7 @@ struct CreateWorkspaceView: View {
                     .keyboardShortcut(.cancelAction)
                 Button { create() } label: { Text(busy ? "Creating…" : "Create") }
                     .buttonStyle(.borderedProminent).tint(Theme.accent)
-                    .disabled(slug.isEmpty || busy || !refined)
+                    .disabled(slug.isEmpty || busy)
                     .rainbowShimmer(active: busy, cornerRadius: 6)
             }
             .padding(.horizontal, 20).padding(.vertical, 12)
@@ -125,15 +127,32 @@ struct CreateWorkspaceView: View {
         .onChange(of: board) { Task { await loadSprint() } }
         .onChange(of: ticketFocused) { _, f in showSuggest = f && !justPicked }
         .onChange(of: ticket) { if !justPicked { showSuggest = true }; schedulePreview(); refined = false; name = ""; slugOverride = "" }
-        .onChange(of: desc) { refined = false }
+    }
+
+    private var jiraOn: Bool { state.jiraConfigured && useJira }
+
+    private var trackerPicker: some View {
+        HStack(spacing: 6) {
+            trackerChip("No ticket", on: !useJira) { useJira = false }
+            trackerChip("Jira", on: useJira) { useJira = true }
+            Spacer()
+        }
+    }
+
+    private func trackerChip(_ label: String, on: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            Text(label).font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(on ? Theme.accent : Theme.fgMuted)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(on ? Theme.accent.opacity(0.5) : Theme.borderSoft))
+        }.buttonStyle(.plain)
     }
 
     private var inputColumn: some View {
         VStack(alignment: .leading, spacing: 16) {
-            jiraSection.zIndex(1)
-            field("Description", hint: "optional — used alone if no ticket") {
-                inputField("add login", $desc)
-            }
+            if state.jiraConfigured { trackerPicker }
+            if jiraOn { jiraSection.zIndex(1) }
             field("Repos", hint: "empty = default combo") {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
@@ -150,6 +169,18 @@ struct CreateWorkspaceView: View {
     }
 
     private var previewColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !jiraOn {
+                nameSlugSection
+                Spacer(minLength: 0)
+            } else {
+                jiraPreviewColumn
+            }
+        }
+        .padding(18)
+    }
+
+    private var jiraPreviewColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let p = preview {
                 HStack(spacing: 8) {
@@ -177,7 +208,6 @@ struct CreateWorkspaceView: View {
             Divider().overlay(Theme.borderSoft).padding(.vertical, 10)
             nameSlugSection
         }
-        .padding(18)
     }
 
     private var nameSlugSection: some View {
@@ -193,17 +223,20 @@ struct CreateWorkspaceView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.border))
                 .rainbowShimmer(active: suggesting, cornerRadius: 8)
             }
-            field("Slug", hint: "git branch · read-only — refined by Claude") {
+            field("Slug", hint: "git branch · edit or refine with Claude") {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.triangle.branch").font(.system(size: 10)).foregroundStyle(Theme.dim)
-                    Text(slug.isEmpty ? "—" : slug).font(Theme.mono(12)).foregroundStyle(slug.isEmpty ? Theme.dim : Theme.accent)
-                        .lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 0)
+                    TextField("—", text: Binding(
+                        get: { slug },
+                        set: { slugOverride = slugify($0); refined = true }
+                    ))
+                    .textFieldStyle(.plain).font(Theme.mono(12)).foregroundStyle(Theme.accent)
+                    .disabled(suggesting)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.bg.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
+                .background(Theme.bg, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.border))
                 .rainbowShimmer(active: suggesting, cornerRadius: 8)
             }
             Button(action: refine) {
@@ -314,7 +347,7 @@ struct CreateWorkspaceView: View {
     private func refine() {
         suggesting = true
         Task {
-            let r = await state.suggestNameSlug(seed: autoSlug, desc: desc)
+            let r = await state.suggestNameSlug(seed: autoSlug, desc: jiraOn ? desc : name)
             withAnimation(.easeOut(duration: 0.2)) { name = r.name; slugOverride = r.slug; suggesting = false; refined = true }
         }
     }

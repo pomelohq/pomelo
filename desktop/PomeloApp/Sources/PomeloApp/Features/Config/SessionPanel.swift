@@ -34,11 +34,8 @@ struct SessionPanel: View {
                         .font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
                 }
                 Spacer()
-                Picker("", selection: $tab) {
-                    ForEach(Tab.allCases) { t in Label(t.title, systemImage: t.icon).tag(t) }
-                }.pickerStyle(.segmented).fixedSize()
-                Button { onClose() } label: { Image(systemName: "xmark").font(.system(size: 12)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).padding(.leading, 6)
+                SegmentedTabs(tabs: Tab.allCases, selection: $tab, label: { $0.title })
+                IconButton("xmark", tip: "Close", action: onClose).padding(.leading, 6)
             }
             .padding(.horizontal, 18).padding(.vertical, 12)
             Divider().overlay(Theme.borderSoft)

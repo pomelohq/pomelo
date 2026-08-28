@@ -105,47 +105,38 @@ func (s *Feature) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Feature) PRDetail(branch, repo string, isMain bool) []byte {
 	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
-	key := "detail:" + wt
-	prCacheMu.Lock()
-	if hit, ok := prCache[key]; ok && time.Since(hit.at) < 30*time.Second {
-		body := hit.body
-		prCacheMu.Unlock()
-		return body
-	}
-	prCacheMu.Unlock()
+	return cachedConv("detail:"+wt, func() []byte { return fetchPRDetail(wt) })
+}
 
+func fetchPRDetail(wt string) []byte {
 	owner, name, ok := ownerRepo(wt)
 	head := services.CurrentBranch(wt)
-	var body []byte
 	if !ok || head == "" {
-		body, _ = json.Marshal(map[string]any{"pr": nil})
-	} else {
-		q := fmt.Sprintf(`query { repository(owner: %q, name: %q) { pullRequests(headRefName: %q, first: 1, states: [OPEN, MERGED, CLOSED], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes {
+		body, _ := json.Marshal(map[string]any{"pr": nil})
+		return body
+	}
+	q := fmt.Sprintf(`query { repository(owner: %q, name: %q) { pullRequests(headRefName: %q, first: 1, states: [OPEN, MERGED, CLOSED], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes {
 %s      body
         labels(first: 20) { nodes { name color } }
         reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
         comments(first: 50) { nodes { author { login avatarUrl } body createdAt } }
         reviews(first: 50) { nodes { databaseId state body submittedAt author { login avatarUrl } } }
       } } } }`, owner, name, head, prNodeFields)
-		out, err := gqlQuery(context.Background(), q)
-		var r struct {
-			Data struct {
-				Repository *struct {
-					PullRequests struct {
-						Nodes []gqlPR `json:"nodes"`
-					} `json:"pullRequests"`
-				} `json:"repository"`
-			} `json:"data"`
-		}
-		if err == nil && json.Unmarshal(out, &r) == nil && r.Data.Repository != nil && len(r.Data.Repository.PullRequests.Nodes) > 0 {
-			body, _ = json.Marshal(map[string]any{"pr": r.Data.Repository.PullRequests.Nodes[0].toGH()})
-		} else {
-			body, _ = json.Marshal(map[string]any{"pr": nil})
-		}
+	out, err := gqlQuery(context.Background(), q)
+	var r struct {
+		Data struct {
+			Repository *struct {
+				PullRequests struct {
+					Nodes []gqlPR `json:"nodes"`
+				} `json:"pullRequests"`
+			} `json:"repository"`
+		} `json:"data"`
 	}
-	prCacheMu.Lock()
-	prCache[key] = prCacheEntry{body: body, at: time.Now()}
-	prCacheMu.Unlock()
+	if err == nil && json.Unmarshal(out, &r) == nil && r.Data.Repository != nil && len(r.Data.Repository.PullRequests.Nodes) > 0 {
+		body, _ := json.Marshal(map[string]any{"pr": r.Data.Repository.PullRequests.Nodes[0].toGH()})
+		return body
+	}
+	body, _ := json.Marshal(map[string]any{"pr": nil})
 	return body
 }
 
@@ -161,8 +152,12 @@ func (s *Feature) handlePRReviewComments(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Feature) PRComments(branch, repo string, isMain bool) []byte {
-	empty := []byte(`{"comments":[]}`)
 	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+	return cachedConv("comments:"+wt, func() []byte { return fetchPRComments(wt) })
+}
+
+func fetchPRComments(wt string) []byte {
+	empty := []byte(`{"comments":[]}`)
 	owner, name, ok := ownerRepo(wt)
 	if !ok {
 		return empty
@@ -243,10 +238,22 @@ func (s *Feature) handleDiff(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out)
 }
 
+// prHeadRef returns the pushed PR head (origin/<branch>) so Files/Commits match
+// the PR on GitHub even when the local worktree is behind the pushed branch.
+// Local-only work belongs to the "Local changes" view instead.
+func prHeadRef(wt string) string {
+	if head := services.CurrentBranch(wt); head != "" {
+		if exec.Command("git", "-C", wt, "rev-parse", "--verify", "--quiet", "origin/"+head).Run() == nil {
+			return "origin/" + head
+		}
+	}
+	return "HEAD"
+}
+
 func (s *Feature) Diff(branch, repo string, isMain bool) ([]byte, error) {
 	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
 	base := services.BaseRef(defBranch(s.cfg(), repo), wt)
-	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", "-M", base+"...HEAD")
+	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", "-M", base+"..."+prHeadRef(wt))
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +334,7 @@ func (s *Feature) RepoCommits(branch, repo, baseOverride string, isMain bool) ma
 		base = "origin/" + baseOverride
 	}
 	out, err := services.RunTimeout(6*time.Second, wt, "git", "log",
-		base+"..HEAD", "--format=%h%x1f%s%x1f%an%x1f%cr", "-n", "100")
+		base+".."+prHeadRef(wt), "--format=%h%x1f%s%x1f%an%x1f%cr", "-n", "100")
 	commits := []map[string]string{}
 	if err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {

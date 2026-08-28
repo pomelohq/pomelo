@@ -131,7 +131,7 @@ struct DependencyBoard: View {
             header
             Divider().overlay(Theme.borderSoft)
             if vm.loading {
-                VStack(spacing: 8) { ProgressView().controlSize(.small); Text("scanning…").foregroundStyle(Theme.fgMuted) }
+                VStack(spacing: 8) { Spinner(size: 12); Text("scanning…").foregroundStyle(Theme.fgMuted) }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if vm.entries.isEmpty && vm.unoptimized.isEmpty {
                 Text("No cached node_modules yet.").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
@@ -157,7 +157,7 @@ struct DependencyBoard: View {
             Spacer()
             if state.nmBusy {
                 HStack(spacing: 6) {
-                    ProgressView().controlSize(.small).scaleEffect(0.6)
+                    Spinner(size: 11)
                     Text(state.nmPhase).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted).lineLimit(1)
                 }
             } else if let msg = state.nmSummary {

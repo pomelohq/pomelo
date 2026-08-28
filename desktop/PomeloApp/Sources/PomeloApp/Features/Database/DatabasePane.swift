@@ -7,10 +7,6 @@ struct DatabasePane: View {
     @EnvironmentObject var theme: ThemeManager
     @AppStorage("db.treeWidth") private var treeWidth = 250.0
     @AppStorage("db.editorHeight") private var editorHeight = 150.0
-    @State private var dragId: String?
-    @State private var dragTranslation: CGFloat = 0
-    @State private var heights: [String: CGFloat] = [:]
-    private let repoSpacing: CGFloat = 0
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -33,162 +29,18 @@ struct DatabasePane: View {
             HStack(spacing: 5) {
                 Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(Theme.dim)
                 TextField("Filter tables", text: $vm.filter).textFieldStyle(.plain).font(.system(size: 12))
-                if vm.loadingDBs { ProgressView().controlSize(.mini) }
+                if vm.loadingDBs { Spinner(size: 12) }
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             Divider().overlay(Theme.borderSoft)
             if let e = vm.error { errorBanner(e) }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: repoSpacing) {
-                    if vm.databases.isEmpty && !vm.loadingDBs {
-                        Text("No databases").font(.system(size: 12)).foregroundStyle(Theme.dim)
-                            .padding(10)
-                    }
-                    ForEach(Array(vm.grouped.enumerated()), id: \.element.repo) { idx, group in
-                        backendNode(group.repo, group.dbs)
-                            .background(heightReader(id: group.repo))
-                            .offset(y: repoOffset(idx))
-                            .scaleEffect(dragId == group.repo ? 1.02 : 1, anchor: .leading)
-                            .shadow(color: dragId == group.repo ? .black.opacity(0.25) : .clear,
-                                    radius: dragId == group.repo ? 8 : 0, y: 4)
-                            .opacity(dragId != nil && dragId != group.repo ? 0.8 : 1)
-                            .zIndex(dragId == group.repo ? 2 : 0)
-                            .animation(dragId == group.repo ? nil : .spring(response: 0.26, dampingFraction: 0.82), value: repoOffset(idx))
-                            .animation(.spring(response: 0.24, dampingFraction: 0.8), value: dragId)
-                    }
-                }
-                .padding(.vertical, 4)
-                .onPreferenceChange(RowHeightKey.self) { heights = $0 }
+            if vm.databases.isEmpty && !vm.loadingDBs {
+                EmptyStateView(icon: "cylinder.split.1x2", title: "No databases")
+            } else {
+                DBTree(vm: vm)
             }
         }
         .background(Theme.bgSoft)
-    }
-
-    private func backendNode(_ repo: String, _ dbs: [DatabaseViewModel.DB]) -> some View {
-        let open = vm.expandedRepos.contains(repo)
-        let engine = dbs.first?.engine ?? ""
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                grip(repo: repo)
-                row(depth: 0, chevron: open, icon: engine == "redis" ? "server.rack" : "externaldrive.connected.to.line.below",
-                    text: repo, trailing: engine, selected: false) { vm.toggleRepo(repo) }
-            }
-            if open {
-                ForEach(dbs) { db in databaseNode(db) }
-            }
-        }
-    }
-
-    private func grip(repo: String) -> some View {
-        Image(systemName: "line.3.horizontal")
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(dragId == repo ? Theme.accent : Theme.dim.opacity(0.6))
-            .frame(width: 14)
-            .contentShape(Rectangle())
-            .help("Drag to reorder")
-            .gesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .global)
-                    .onChanged { v in
-                        if dragId == nil { dragId = repo }
-                        dragTranslation = v.translation.height
-                    }
-                    .onEnded { _ in
-                        vm.moveRepo(repo, toIndex: targetIndex())
-                        dragId = nil; dragTranslation = 0
-                    }
-            )
-    }
-
-    private func heightReader(id: String) -> some View {
-        GeometryReader { g in Color.clear.preference(key: RowHeightKey.self, value: [id: g.size.height]) }
-    }
-
-    private var repoIds: [String] { vm.grouped.map(\.repo) }
-
-    private func midYs() -> [CGFloat] {
-        var y: CGFloat = 0
-        return repoIds.map { id in
-            let h = heights[id] ?? 26
-            defer { y += h + repoSpacing }
-            return y + h / 2
-        }
-    }
-
-    private func targetIndex() -> Int {
-        guard let dragId, let from = repoIds.firstIndex(of: dragId) else { return 0 }
-        let mids = midYs()
-        guard from < mids.count else { return from }
-        let mid = mids[from] + dragTranslation
-        var t = from
-        while t > 0 && mid < mids[t - 1] { t -= 1 }
-        while t < repoIds.count - 1 && mid > mids[t + 1] { t += 1 }
-        return t
-    }
-
-    private func repoOffset(_ idx: Int) -> CGFloat {
-        guard let dragId, let from = repoIds.firstIndex(of: dragId) else { return 0 }
-        if idx == from { return dragTranslation }
-        let dh = (heights[dragId] ?? 26) + repoSpacing
-        let to = targetIndex()
-        if from < to, idx > from, idx <= to { return -dh }
-        if from > to, idx >= to, idx < from { return dh }
-        return 0
-    }
-
-    private func databaseNode(_ db: DatabaseViewModel.DB) -> some View {
-        let open = vm.expanded.contains(db.id)
-        return VStack(alignment: .leading, spacing: 0) {
-            row(depth: 1, chevron: open, icon: "cylinder.split.1x2", text: db.display,
-                trailing: vm.loadingTables.contains(db.id) ? "…" : nil, selected: false) {
-                Task { await vm.toggleDB(db) }
-            }
-            if open {
-                let tables = vm.filteredTables(db.id)
-                if tables.isEmpty && !vm.loadingTables.contains(db.id) {
-                    Text(vm.filter.isEmpty ? "(empty)" : "(no match)")
-                        .font(.system(size: 11)).foregroundStyle(Theme.dim)
-                        .padding(.leading, 44).padding(.vertical, 3)
-                }
-                ForEach(tables) { t in
-                    row(depth: 2,
-                        chevron: nil,
-                        icon: t.type == "keyspace" ? "key" : (t.type == "view" ? "eye" : "tablecells"),
-                        text: t.qualified,
-                        trailing: nil,
-                        selected: vm.selectedTableID == db.id + "/" + t.id) {
-                        Task { await vm.openTable(db, t) }
-                    }
-                }
-            }
-        }
-    }
-
-    private func row(depth: Int, chevron: Bool?, icon: String, text: String, trailing: String?,
-                     selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                if let c = chevron {
-                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(Theme.dim).rotationEffect(.degrees(c ? 90 : 0))
-                        .frame(width: 10)
-                } else {
-                    Spacer().frame(width: 10)
-                }
-                Image(systemName: icon).font(.system(size: 11)).foregroundStyle(depth == 2 ? Theme.dim : Theme.accent)
-                    .frame(width: 15)
-                Text(text).font(.system(size: 12, weight: depth == 0 ? .semibold : .regular)).lineLimit(1)
-                Spacer(minLength: 4)
-                if let tr = trailing, !tr.isEmpty {
-                    Text(tr).font(.system(size: 9)).foregroundStyle(Theme.dim)
-                }
-            }
-            .foregroundStyle(selected ? Theme.fg : Theme.fgMuted)
-            .padding(.leading, CGFloat(depth) * 14 + 6).padding(.trailing, 8).padding(.vertical, 3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Theme.sel : .clear)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     private func errorBanner(_ e: String) -> some View {
@@ -228,7 +80,7 @@ struct DatabasePane: View {
                 if let repo = vm.selected?.repo { Text(repo).font(.system(size: 10)).foregroundStyle(Theme.dim) }
                 Spacer()
                 pageSizeMenu
-                if vm.running { ProgressView().controlSize(.small) }
+                if vm.running { Spinner(size: 12) }
                 Button { Task { await vm.run() } } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
                         .frame(width: 24, height: 20).contentShape(Rectangle())
@@ -347,7 +199,7 @@ struct DatabasePane: View {
             }
             Spacer()
             pageSizeMenu
-            if vm.running { ProgressView().controlSize(.small) }
+            if vm.running { Spinner(size: 12) }
             Button { Task { await vm.run() } } label: {
                 Label("Run", systemImage: "play.fill").font(.system(size: 11, weight: .medium))
                     .padding(.horizontal, 10).padding(.vertical, 4)
@@ -453,7 +305,7 @@ struct DatabasePane: View {
             }
             if let m = vm.exportMsg { Text("· \(m)").font(.system(size: 10)).foregroundStyle(Theme.ok).lineLimit(1) }
             Spacer()
-            if vm.exporting { ProgressView().controlSize(.mini) }
+            if vm.exporting { Spinner(size: 12) }
             Button { vm.showRecord.toggle() } label: {
                 Image(systemName: "sidebar.right").font(.system(size: 10))
                     .foregroundStyle(vm.showRecord ? Theme.accent : Theme.fgMuted)

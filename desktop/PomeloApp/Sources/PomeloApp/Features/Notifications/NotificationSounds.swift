@@ -292,15 +292,14 @@ private struct EventSoundPicker: View {
 
     var body: some View {
         Button { open.toggle() } label: {
-            HStack(spacing: 3) {
-                Text(clip(summary)).font(Theme.mono(11)).lineLimit(1).truncationMode(.middle)
-                    .frame(width: 92, alignment: .leading)
-                Image(systemName: "chevron.down").font(.system(size: 6, weight: .bold)).opacity(0.7)
+            HStack(spacing: 4) {
+                Text(clip(summary)).font(Theme.mono(11)).foregroundStyle(selected.isEmpty ? Theme.fgMuted : Theme.fg)
+                    .lineLimit(1).truncationMode(.middle).frame(width: 92, alignment: .leading)
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(Theme.dim)
             }
-            .foregroundStyle(selected.isEmpty ? Theme.fgMuted : Theme.accent)
-            .padding(.horizontal, 8).padding(.vertical, 2.5)
-            .background((selected.isEmpty ? Theme.fgMuted : Theme.accent).opacity(0.12), in: Capsule())
-            .overlay(Capsule().strokeBorder((selected.isEmpty ? Theme.fgMuted : Theme.accent).opacity(0.35)))
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(open ? Theme.hover : Theme.bgSoft, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.borderSoft))
         }
         .buttonStyle(.plain)
         .popover(isPresented: $open, arrowEdge: .bottom) {

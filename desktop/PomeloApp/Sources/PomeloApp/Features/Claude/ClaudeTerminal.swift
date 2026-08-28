@@ -64,7 +64,7 @@ struct ClaudeTerminal: View {
                 // a few ms, so don't flash "starting claude…" on every workspace switch.
                 VStack(spacing: 8) {
                     if slowStart {
-                        ProgressView().controlSize(.small)
+                        Spinner()
                         Text("starting claude…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
                     }
                 }

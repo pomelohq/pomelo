@@ -60,11 +60,13 @@ final class MockPomAPI: PomAPI {
     func prWorkspaceData(branch: String, isMain: Bool) -> Data { Data(#"{"prs":[]}"#.utf8) }
     func prDetailData(branch: String, repo: String, isMain: Bool) -> Data { Data(#"{"pr":null}"#.utf8) }
     func prCommentsData(branch: String, repo: String, isMain: Bool) -> Data { Data(#"{"comments":[]}"#.utf8) }
+    func prTimelineData(branch: String, repo: String, isMain: Bool) -> Data { Data(#"{"items":[]}"#.utf8) }
+    func prRefresh() -> Data { Data(#"{"ok":true}"#.utf8) }
     func prCommitsData(branch: String, repo: String, base: String, isMain: Bool) -> Data { Data(#"{"commits":[]}"#.utf8) }
     func prDiffData(branch: String, repo: String, isMain: Bool) -> Data { Data() }
     func jiraBoardsData() -> Data { Data(#"{"configured":false}"#.utf8) }
     func jiraSprintData(board: Int) -> Data { Data(#"{"configured":false}"#.utf8) }
-    func jiraIssueData(key: String) -> Data { Data(#"{"configured":false}"#.utf8) }
+    func jiraIssueData(key: String, force: Bool) -> Data { Data(#"{"configured":false}"#.utf8) }
     func jiraIssuesData(branches: [String]) -> Data { Data(#"{"configured":false}"#.utf8) }
     func workspacesData(git: Bool) -> Data { Data(workspacesJSON.utf8) }
     func livenessData() -> Data { Data(workspacesJSON.utf8) }

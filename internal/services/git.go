@@ -10,16 +10,21 @@ import (
 	"time"
 )
 
+// OriginDefaultBranch returns the repo's default branch bare name from origin/HEAD,
+// or "" when it can't be resolved (no remote HEAD ref).
+func OriginDefaultBranch(wtPath string) string {
+	out, err := exec.Command("git", "-C", wtPath, "symbolic-ref",
+		"--short", "refs/remotes/origin/HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
+}
+
 func BaseRef(defaultBranch, wtPath string) string {
 	branch := defaultBranch
 	if branch == "" {
-		if out, err := exec.Command("git", "-C", wtPath, "symbolic-ref",
-			"--short", "refs/remotes/origin/HEAD").Output(); err == nil {
-			s := strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
-			if s != "" {
-				branch = s
-			}
-		}
+		branch = OriginDefaultBranch(wtPath)
 	}
 	if branch == "" {
 		branch = "main"

@@ -75,7 +75,7 @@ struct CreateSessionSheet: View {
 
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text("REPOSITORIES").font(.system(size: 10, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
+                    SectionLabel(text: "REPOSITORIES", size: 10)
                     if !repos.isEmpty {
                         Text("\(repos.count)").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.fgMuted)
                             .padding(.horizontal, 5).padding(.vertical, 1).background(Theme.sel, in: Capsule())

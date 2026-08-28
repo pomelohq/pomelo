@@ -88,6 +88,8 @@ protocol PRAPI: PomBaseAPI {
     func prWorkspaceData(branch: String, isMain: Bool) -> Data
     func prDetailData(branch: String, repo: String, isMain: Bool) -> Data
     func prCommentsData(branch: String, repo: String, isMain: Bool) -> Data
+    func prTimelineData(branch: String, repo: String, isMain: Bool) -> Data
+    func prRefresh() -> Data
     func prCommitsData(branch: String, repo: String, base: String, isMain: Bool) -> Data
     func prDiffData(branch: String, repo: String, isMain: Bool) -> Data
 }
@@ -95,7 +97,7 @@ protocol PRAPI: PomBaseAPI {
 protocol JiraAPI: PomBaseAPI {
     func jiraBoardsData() -> Data
     func jiraSprintData(board: Int) -> Data
-    func jiraIssueData(key: String) -> Data
+    func jiraIssueData(key: String, force: Bool) -> Data
     func jiraIssuesData(branches: [String]) -> Data
 }
 

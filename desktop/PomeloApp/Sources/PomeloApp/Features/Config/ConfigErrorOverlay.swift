@@ -13,14 +13,14 @@ struct ConfigErrorOverlay: View {
             Text("Pomelo is running — fix the config to use this session, or switch to another from the header.")
                 .font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
                 .multilineTextAlignment(.center).frame(maxWidth: 420)
-            ScrollView {
-                Text(message)
-                    .font(Theme.mono(11)).foregroundStyle(Theme.danger)
-                    .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).padding(10)
+            Card(background: Theme.bg) {
+                ScrollView {
+                    Text(message)
+                        .font(Theme.mono(11)).foregroundStyle(Theme.danger)
+                        .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).padding(10)
+                }
+                .frame(maxWidth: 560, maxHeight: 240)
             }
-            .frame(maxWidth: 560, maxHeight: 240)
-            .background(Theme.bg, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
             Button { onOpenConfig() } label: {
                 HStack(spacing: 6) { Image(systemName: "chevron.left.forwardslash.chevron.right"); Text("Open config") }
                     .font(.system(size: 12.5, weight: .medium))

@@ -125,7 +125,7 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 	case "jira_sprint":
 		return s.JiraSprint(pInt(params, "board"))
 	case "jira_issue":
-		return s.JiraIssue(pStr(params, "key"))
+		return s.JiraIssue(pStr(params, "key"), pBool(params, "force"))
 	case "jira_issues":
 		return s.JiraIssues(pStrs(params, "branches"))
 	case "service_url":
@@ -185,6 +185,10 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 	case "editor":
 		if action == "open" {
 			return s.EditorOpen(pStr(params, "branch"), pBool(params, "is_main"), pStr(params, "repo"), pStr(params, "editor"), pBool(params, "resolve_only"))
+		}
+	case "pr":
+		if action == "refresh" {
+			return s.PRRefresh()
 		}
 	case "github":
 		if action == "test" {
@@ -304,6 +308,8 @@ func (s *Server) Fetch(domain string, params json.RawMessage) []byte {
 		return s.PRDetail(branch, repo, isMain)
 	case "pr_comments":
 		return s.PRComments(branch, repo, isMain)
+	case "pr_timeline":
+		return s.PRTimeline(branch, repo, isMain)
 	case "pr_diff":
 		out, err := s.PRDiff(branch, repo, isMain)
 		if err != nil {

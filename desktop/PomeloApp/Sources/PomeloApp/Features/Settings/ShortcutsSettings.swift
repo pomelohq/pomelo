@@ -41,10 +41,10 @@ struct ShortcutsSettings: View {
 
     private func row(_ s: Shortcut) -> some View {
         LabeledContent(s.label) {
-            Text(s.keys).font(Theme.mono(12)).foregroundStyle(Theme.fgMuted)
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(Theme.panel3, in: RoundedRectangle(cornerRadius: 5))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.borderSoft))
+            Card(cornerRadius: 5, background: Theme.panel3) {
+                Text(s.keys).font(Theme.mono(12)).foregroundStyle(Theme.fgMuted)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+            }
         }
     }
 }

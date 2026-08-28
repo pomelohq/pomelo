@@ -10,6 +10,7 @@ import (
 
 	"github.com/pomelohq/pomelo/internal/config"
 	"github.com/pomelohq/pomelo/internal/httpx"
+	"github.com/pomelohq/pomelo/internal/diskcache"
 	"github.com/pomelohq/pomelo/internal/jira"
 	"github.com/pomelohq/pomelo/internal/plugin"
 	"github.com/pomelohq/pomelo/internal/secrets"
@@ -18,13 +19,58 @@ import (
 type Jira struct {
 	cfg func() *config.Config
 
-	mu     sync.Mutex
-	cache  map[string]jira.Issue
-	cached map[string]time.Time
+	mu       sync.Mutex
+	cache    map[string]jira.Issue
+	cached   map[string]time.Time
+	detail   map[string]map[string]any
+	hydrated bool
 }
 
 func NewJira(cfg func() *config.Config) *Jira {
-	return &Jira{cfg: cfg, cache: map[string]jira.Issue{}, cached: map[string]time.Time{}}
+	return &Jira{cfg: cfg, cache: map[string]jira.Issue{}, cached: map[string]time.Time{}, detail: map[string]map[string]any{}}
+}
+
+func (f *Jira) session() string {
+	if c := f.cfg(); c != nil {
+		return c.Session
+	}
+	return ""
+}
+
+type jiraDisk struct {
+	Issues map[string]jira.Issue     `json:"issues"`
+	Detail map[string]map[string]any `json:"detail"`
+}
+
+func (f *Jira) ensureHydrated() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.hydrated {
+		return
+	}
+	f.hydrated = true
+	if d, ok := diskcache.Load[jiraDisk]("jira-" + f.session()); ok {
+		for k, v := range d.Issues {
+			f.cache[k] = v // cached time stays zero -> refreshed in the background
+		}
+		for k, v := range d.Detail {
+			f.detail[k] = v
+		}
+	}
+}
+
+func (f *Jira) persist() {
+	f.mu.Lock()
+	snap := jiraDisk{Issues: map[string]jira.Issue{}, Detail: map[string]map[string]any{}}
+	for k, v := range f.cache {
+		snap.Issues[k] = v
+	}
+	for k, v := range f.detail {
+		snap.Detail[k] = v
+	}
+	sess := f.session()
+	f.mu.Unlock()
+	diskcache.Save("jira-"+sess, snap)
 }
 
 func (*Jira) Name() string { return "jira" }
@@ -93,23 +139,46 @@ func (f *Jira) handleIssue(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusBadRequest, "missing key")
 		return
 	}
-	httpx.Write(w, f.Issue(key))
+	httpx.Write(w, f.Issue(key, r.URL.Query().Get("force") == "true"))
 }
 
-func (f *Jira) Issue(key string) map[string]any {
+func (f *Jira) Issue(key string, force bool) map[string]any {
 	jc := jira.Resolve(f.cfg())
 	if jc == nil {
 		return map[string]any{"configured": false}
 	}
+	f.ensureHydrated()
+	f.mu.Lock()
+	cached, ok := f.detail[key]
+	f.mu.Unlock()
+	if ok && !force {
+		go f.fetchDetail(jc, key) // serve cached instantly, refresh in the background
+		return cached
+	}
+	if m := f.fetchDetail(jc, key); m != nil {
+		return m
+	}
+	if ok {
+		return cached
+	}
+	return map[string]any{"configured": true, "key": key, "error": "not found"}
+}
+
+func (f *Jira) fetchDetail(jc *jira.Client, key string) map[string]any {
 	d, err := jc.IssueWithDescription(key)
 	if err != nil || d == nil {
-		return map[string]any{"configured": true, "key": key, "error": "not found"}
+		return nil
 	}
-	return map[string]any{
+	m := map[string]any{
 		"configured": true, "key": d.Key, "summary": d.Summary,
 		"status": d.Status, "url": d.URL, "description": d.Description,
 		"comments": d.Comments, "web_links": d.WebLinks,
 	}
+	f.mu.Lock()
+	f.detail[key] = m
+	f.mu.Unlock()
+	f.persist()
+	return m
 }
 
 const jiraTTL = 60 * time.Second
@@ -130,6 +199,7 @@ func (f *Jira) Issues(branches []string) map[string]any {
 	if jc == nil {
 		return map[string]any{"configured": false}
 	}
+	f.ensureHydrated()
 	keys := map[string]bool{}
 	for _, b := range branches {
 		if k := jira.KeyForBranch(b); k != "" {
@@ -175,6 +245,9 @@ func (f *Jira) warm(jc *jira.Client, keys map[string]bool) {
 	for _, iss := range issues {
 		f.cache[iss.Key] = iss
 	}
+	f.mu.Unlock()
+	f.persist()
+	f.mu.Lock()
 }
 
 func (f *Jira) handleTest(w http.ResponseWriter, r *http.Request) {

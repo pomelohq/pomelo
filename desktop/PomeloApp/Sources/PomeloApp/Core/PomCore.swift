@@ -192,6 +192,8 @@ final class PomCore: @unchecked Sendable {
     func prWorkspaceData(branch: String, isMain: Bool) -> Data { fetch(domain: "pr_workspace", params: jp(["branch": branch, "is_main": isMain])) }
     func prDetailData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "pr_detail", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
     func prCommentsData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "pr_comments", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
+    func prTimelineData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "pr_timeline", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
+    func prRefresh() -> Data { command(domain: "pr", action: "refresh", params: Data("{}".utf8)) }
     func prCommitsData(branch: String, repo: String, base: String, isMain: Bool) -> Data { query(domain: "pr_commits", params: jp(["branch": branch, "repo": repo, "base": base, "is_main": isMain])) }
     func prDiffData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "pr_diff", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
     func localChangesData(branch: String, isMain: Bool) -> Data { fetch(domain: "local_changes", params: jp(["branch": branch, "is_main": isMain])) }
@@ -200,7 +202,7 @@ final class PomCore: @unchecked Sendable {
     func jiraTest(site: String, email: String, token: String) -> Data { command(domain: "jira", action: "test", params: jp(["site": site, "email": email, "token": token])) }
     func jiraBoardsData() -> Data { query(domain: "jira_boards", params: Data("{}".utf8)) }
     func jiraSprintData(board: Int) -> Data { query(domain: "jira_sprint", params: jp(["board": board])) }
-    func jiraIssueData(key: String) -> Data { query(domain: "jira_issue", params: jp(["key": key])) }
+    func jiraIssueData(key: String, force: Bool = false) -> Data { query(domain: "jira_issue", params: jp(["key": key, "force": force])) }
     func jiraIssuesData(branches: [String]) -> Data { query(domain: "jira_issues", params: jp(["branches": branches])) }
 
     private func cstr(_ out: UnsafeMutablePointer<CChar>?) -> Data {

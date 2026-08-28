@@ -151,11 +151,6 @@ private struct GeneralSettings: View {
                 Text("Step through the essentials — notifications and the Claude MCP.")
             }
             Section {
-                Toggle("Auto-pick a new port if taken", isOn: $state.autoPickPort)
-            } header: { Text("Services") } footer: {
-                Text("When a service's port is already in use, grab a fresh free port instead of failing to start.")
-            }
-            Section {
                 LabeledContent("Version") {
                     Text(version.isEmpty ? "…" : version).monospaced().foregroundStyle(Theme.fgMuted)
                 }
@@ -244,7 +239,7 @@ private struct NetworkSettings: View {
             Divider().overlay(Theme.borderSoft)
             HStack {
                 Spacer()
-                if busy { ProgressView().controlSize(.small) }
+                if busy { Spinner() }
                 Button("Apply and Restart") { Task { await applyRestart() } }
                     .buttonStyle(.borderedProminent).tint(Theme.accent)
                     .disabled(!dirty || busy)
@@ -321,7 +316,7 @@ struct EnvInspector: View {
             picker("Branch", $branch, branches, width: 190)
             picker("Profile", $profile, [""] + profiles, labels: ["": "local"])
             Spacer(minLength: 0)
-            if loading { ProgressView().controlSize(.small) }
+            if loading { Spinner() }
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
         .task { await boot() }
@@ -532,15 +527,14 @@ struct AdvancedSettings: View {
 
     private var agentBanner: some View {
         HStack(spacing: 8) {
-            if state.agentRunning { ProgressView().controlSize(.small).scaleEffect(0.7) }
+            if state.agentRunning { Spinner(size: 11) }
             else { Image(systemName: "checkmark.seal.fill").font(.system(size: 11)).foregroundStyle(Theme.ok) }
             Text(state.agentRunning ? "\(state.agentTitle) running…" : "\(state.agentTitle) finished")
                 .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.fg)
             Spacer()
             Button("View") { state.reopenAgent() }.buttonStyle(.plain).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.accent)
             if !state.agentRunning {
-                Button { state.endAgent() } label: { Image(systemName: "xmark").font(.system(size: 10)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
+                IconButton("xmark", size: 10) { state.endAgent() }
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 7).background(Theme.accentSoft)
@@ -552,7 +546,7 @@ struct AdvancedSettings: View {
                 .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.fg).lineLimit(1)
             if !status.isEmpty { Text(status).font(.system(size: 11)).foregroundStyle(Theme.fgMuted).lineLimit(1) }
             Spacer()
-            if busy { ProgressView().controlSize(.small) }
+            if busy { Spinner() }
             Button { showImport = true } label: { Label("Import", systemImage: "square.and.arrow.down") }
                 .buttonStyle(.bordered).controlSize(.small).disabled(busy || state.agentRunning)
                 .help(state.agentRunning ? "An agent is running — open it from the banner and wait for it to finish" : "Import a config")
