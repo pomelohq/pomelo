@@ -106,10 +106,8 @@ struct WsCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(alignment: .top, spacing: 8) {
                     HStack(spacing: 5) {
-                        Circle().fill(ws.running > 0 ? Theme.ok : Theme.muted).frame(width: 6, height: 6)
-                        (Text("\(ws.running)").foregroundStyle(Theme.fgMuted)
-                            + Text("/\(ws.total)").foregroundStyle(Theme.dim))
-                            .font(Theme.mono(11))
+                        Circle().fill(ws.running == 0 ? Theme.muted : (ws.running >= ws.total ? Theme.ok : Theme.warn))
+                            .frame(width: 6, height: 6)
                         if dirty > 0 {
                             Circle().fill(Theme.warn).frame(width: 5, height: 5)
                                 .help("\(dirty) repo\(dirty == 1 ? "" : "s") with uncommitted changes")

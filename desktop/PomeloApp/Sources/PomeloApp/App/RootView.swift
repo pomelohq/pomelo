@@ -112,10 +112,8 @@ struct RootView: View {
                 Divider().overlay(Theme.borderSoft)
                 HStack(spacing: 0) {
                     if !state.sidebarCollapsed {
-                        WorkspaceSidebar().frame(width: 270)
-                            .zIndex(1)
-                            .transition(.move(edge: .leading))
-                        Divider().overlay(Theme.borderSoft)
+                        Color.clear.frame(width: 271)
+                            .transaction { $0.animation = nil }
                     }
                     Group {
                         if let err = state.configError {
@@ -134,7 +132,9 @@ struct RootView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transaction { $0.animation = nil }
                 }
+                .overlay(alignment: .topLeading) { sidebarSlideLayer }
                 .overlay(alignment: .topLeading) { sidebarPeekLayer }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -196,6 +196,19 @@ struct RootView: View {
                 Button("Choose another…") { state.openExistingSession() }
                 Button("Cancel", role: .cancel) {}
             } message: { Text(state.openError ?? "") }
+        }
+    }
+
+    @ViewBuilder private var sidebarSlideLayer: some View {
+        if !state.sidebarCollapsed {
+            HStack(spacing: 0) {
+                WorkspaceSidebar().frame(width: 270)
+                Divider().overlay(Theme.borderSoft)
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(Theme.bg)
+            .transition(.move(edge: .leading))
+            .zIndex(2)
         }
     }
 

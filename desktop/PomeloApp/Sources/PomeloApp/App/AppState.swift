@@ -101,7 +101,7 @@ final class AppState: ObservableObject {
         let now = Date()
         guard now.timeIntervalSince(sidebarToggleAt) > 0.2 else { return }
         sidebarToggleAt = now
-        withAnimation(.easeInOut(duration: 0.16)) { sidebarCollapsed.toggle() }
+        withAnimation(.easeInOut(duration: 0.18)) { sidebarCollapsed.toggle() }
     }
     var sessions: [SessionItem] { get { sessionsvm.sessions } set { sessionsvm.sessions = newValue } }
     @Published var creating = false

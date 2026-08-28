@@ -6,6 +6,7 @@ struct CommandPalette: View {
     @State private var query = ""
     @State private var index = 0
     @State private var results: [Workspace] = []
+    @State private var hoverSuppressScroll = false
     @FocusState private var focused: Bool
 
     private func computeResults() -> [Workspace] {
@@ -49,7 +50,7 @@ struct CommandPalette: View {
                         LazyVStack(spacing: 1) {
                             ForEach(Array(results.enumerated()), id: \.element.id) { i, ws in
                                 row(ws, active: i == index).id(ws.id)
-                                    .onHover { if $0 { index = i } }
+                                    .onHover { if $0 { hoverSuppressScroll = true; index = i } }
                                     .onTapGesture { index = i; choose() }
                             }
                             if results.isEmpty {
@@ -60,6 +61,7 @@ struct CommandPalette: View {
                     }
                     .frame(maxHeight: 340)
                     .onChange(of: index) { _, i in
+                        if hoverSuppressScroll { hoverSuppressScroll = false; return }
                         guard i >= 0, i < results.count else { return }
                         withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(results[i].id, anchor: .center) }
                     }
@@ -122,11 +124,38 @@ struct CommandPalette: View {
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(orbColor(st).opacity(0.14), in: Capsule())
             }
-            Text("\(ws.running)/\(ws.total)").font(Theme.mono(10.5)).foregroundStyle(Theme.dim)
+            if !ws.isMain, let j = state.jiraFor(ws.branch), !j.status.isEmpty {
+                Text(j.status).font(Theme.mono(9.5, .semibold)).foregroundStyle(j.color).lineLimit(1)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(j.color.opacity(0.14), in: Capsule())
+            }
+            let prCount = state.prsFor(ws.id).filter { $0.pr != nil }.count
+            if prCount > 0 {
+                let c = prColor(state.prSeverityFor(ws.id))
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.triangle.pull").font(.system(size: 8.5))
+                    Text("\(prCount)").font(Theme.mono(9.5, .semibold))
+                }
+                .foregroundStyle(c).padding(.horizontal, 5).padding(.vertical, 1)
+                .background(c.opacity(0.16), in: Capsule())
+            }
+            if ws.running > 0 {
+                Circle().fill(ws.running >= ws.total ? Theme.ok : Theme.warn)
+                    .frame(width: 6, height: 6)
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(active ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 7))
         .contentShape(Rectangle())
+    }
+
+    private func prColor(_ severity: String) -> Color {
+        switch severity {
+        case "danger": return Theme.danger
+        case "merged": return Color(hex: 0xa371f7)
+        case "warn":   return Theme.warn
+        default:       return Theme.ok
+        }
     }
 
     private func choose() {
