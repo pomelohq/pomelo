@@ -25,6 +25,19 @@ func AcquirePrimary(session string) (release func(), ok bool) {
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, true
 }
 
+func TryAcquire(session, service string) (release func(), ok bool) {
+	EnsureDir()
+	f, err := os.OpenFile(lockPath(session, service), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return func() {}, false
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return func() {}, false
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, true
+}
+
 func lockPath(session, service string) string {
 	return filepath.Join(lockDir, fmt.Sprintf("%s_%s.lock", session, service))
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pomelohq/pomelo/internal/appstate"
+	"github.com/pomelohq/pomelo/internal/lock"
 	"github.com/pomelohq/pomelo/internal/services"
 )
 
@@ -81,6 +82,11 @@ func (s *Server) refreshMain() {
 	if cfg == nil || !refreshMain || s.WorkspaceRoot == "" {
 		return
 	}
+	release, ok := lock.TryAcquire(s.session(), "refresh-main")
+	if !ok {
+		return
+	}
+	defer release()
 	// Each repo resolves its own default branch (a multi-repo project mixes main and
 	// master); origin/HEAD is the source of truth, config is the fallback.
 	repoDefault := func(repo, wt string) string {

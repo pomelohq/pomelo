@@ -316,18 +316,24 @@ private struct PullDetail: View {
                     .padding(.horizontal, 8).padding(.vertical, 8)
             }
             ForEach(repos) { r in
-                HStack(spacing: 8) {
-                    icon(r.state).frame(width: 12)
-                    Text(r.repo).font(Theme.mono(11.5)).foregroundStyle(Theme.fg).lineLimit(1)
-                    Spacer(minLength: 10)
-                    Text(label(r.state)).font(Theme.mono(10)).foregroundStyle(r.state == "failed" ? Theme.danger : Theme.dim)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        icon(r.state).frame(width: 12)
+                        Text(r.repo).font(Theme.mono(11.5)).foregroundStyle(Theme.fg).lineLimit(1)
+                        Spacer(minLength: 10)
+                        Text(label(r.state)).font(Theme.mono(10)).foregroundStyle(r.state == "failed" ? Theme.danger : Theme.dim)
+                    }
+                    if r.state == "failed", !r.detail.isEmpty {
+                        Text(r.detail).font(Theme.mono(9.5)).foregroundStyle(Theme.danger.opacity(0.85))
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            .padding(.leading, 20)
+                    }
                 }
                 .padding(.horizontal, 8).padding(.vertical, 4)
                 .contentShape(Rectangle())
-                .help(r.state == "failed" && !r.detail.isEmpty ? r.detail : label(r.state))
             }
         }
-        .padding(4).frame(width: 250)
+        .padding(4).frame(width: 320)
         .background(Theme.panel3)
     }
 
