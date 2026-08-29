@@ -5,16 +5,29 @@ description: Author a Pomelo multi-repo review for the current workspace — a n
 
 # pom-review
 
-Write a review artifact that Pomelo's Review tab renders: concise prose about intent,
-architecture, data flow, and risk, with every claim linked to real code via repo-
-qualified anchors. A Pomelo workspace spans several repos on one branch, so anchors
+Write a review artifact that Pomelo's Review tab renders. Split the work by what each
+surface does best, and never say the same thing twice:
+
+- The **narrative** (`doc`) carries only what a picture cannot — the intent, the one key
+  modelling decision, the trade-offs, and the risks a reviewer must check.
+- The **diagram** carries the flow and the structure (who calls whom, in what order).
+- The **anchors** link every claim to the real code.
+
+Do NOT restate in prose what a diagram or an anchor already shows. If you catch yourself
+narrating the call sequence step by step, stop — that is the sequence diagram's job (its
+per-step notes explain each call); the prose then only says why the flow is shaped that way
+and where it can break. A Pomelo workspace spans several repos on one branch, so anchors
 must name the repo.
 
 Author ONLY the views this change actually needs — do not fill in everything. Read the
-diff first, then decide: the narrative + anchors are the backbone (always); the sequence
-diagram, its scopes, and DB grounding are added only when the change has a real
-multi-step flow / lock / transaction / schema touch. A small one-file change is just
-prose + a couple of anchors. Pomelo hides any view you leave empty.
+diff first, then decide: the narrative + anchors are the backbone (always); a diagram is
+added only when the change has a real multi-step flow / lock / transaction / schema touch.
+A small one-file change is just prose + a couple of anchors. Pomelo hides any view you
+leave empty.
+
+Keep it tight. The narrative is a few short sections of 2-4 sentences or bullets, not an
+essay — aim well under a screenful. Cut any sentence that re-describes a diagram step or an
+anchored line; link the phrase to the code instead of paraphrasing it.
 
 ## Where to write
 
@@ -80,6 +93,23 @@ another) via `git -C <repo> symbolic-ref --short refs/remotes/origin/HEAD`.
     "scopes": [
       { "kind": "critical", "label": "<lock key or transaction>", "from": 3, "to": 9 }
     ]
+  },
+  "model": {
+    "title": "<one line, e.g. 'Order data model'>",
+    "entities": [
+      { "id": "order", "label": "Order", "repo": "<repo>", "path": "<path>", "start": <n>, "end": <m>,
+        "changed": true, "note": "<why this entity matters>",
+        "fields": [
+          { "name": "id", "type": "uuid", "key": "pk" },
+          { "name": "customer_id", "type": "uuid", "key": "fk" },
+          { "name": "status", "type": "enum", "changed": true, "note": "<what changed>" }
+        ] },
+      { "id": "item", "label": "OrderItem", "repo": "<repo>", "path": "<path>", "start": <n>, "end": <m>,
+        "fields": [ { "name": "order_id", "type": "uuid", "key": "fk" }, { "name": "sku", "type": "text" } ] }
+    ],
+    "relations": [
+      { "from": "item", "to": "order", "kind": "n-1", "label": "<verb, e.g. belongs to>" }
+    ]
   }
 }
 ```
@@ -89,8 +119,11 @@ another) via `git -C <repo> symbolic-ref --short refs/remotes/origin/HEAD`.
   The `repo`/`path`/`start`/`end` MUST match an entry in `anchors`.
 - `repo` is the repo's directory name as it appears in the workspace (e.g. `api`,
   `web`, `worker`) — the same name Pomelo shows. `path` is relative to that repo.
-- Prefer a handful of high-signal anchors over many. Keep the prose tight: what the
-  change does, why, the data flow across repos, and the risks a reviewer should check.
+- Prefer a handful of high-signal anchors over many. The prose covers intent, the key
+  modelling decision, and the risks — NOT a step-by-step of the flow (the diagram carries
+  that). Link to code with the anchor URL; link to the flow with `pom://flow` (jumps to the
+  Flow tab) or `pom://flow?step=<n>` (opens the diagram focused on that step) instead of
+  re-narrating it.
 - `anchors` ORDER is the guided-tour order: Pomelo lets a reviewer step prev/next
   through the stops. Order them as a reading path through the change (entry point
   first, then the flow, then the risky bits). `note` is the short caption shown at
@@ -130,6 +163,35 @@ to check the control flow of a change that hops across repos/services.
   the boundary is real and load-bearing for correctness.
 - Trace the flow by READING the code (entry point -> each call), don't invent it. Only
   emit `diagram` when there is a real multi-step flow; skip it for trivial changes.
+
+## Data-model (ER) diagram (optional — for schema / data-model / mapping changes)
+
+`model` renders as an entity-relationship diagram in the Review's "Model" tab — boxes of
+entities with their fields, joined by relationship edges. Use it whenever the change is
+about the SHAPE of data (a new table/column, a new mapping/source dimension, a foreign
+key, a record embedded on another) — that shape is far clearer as a picture than as prose,
+so let the diagram carry it and keep the narrative to why the shape changed.
+
+- `entities` are the records/tables the change touches — NOT the whole schema. Give each a
+  stable `id`, a `label`, and (when it lives in code) `repo`/`path`/`start`/`end` so a click
+  peeks the definition. Set `changed: true` on an entity the branch adds or alters.
+- `fields` are the columns/attributes that matter for this change (skip the noise). Each has
+  a `name`, optional `type`, optional `key` (`pk` or `fk`), and `changed: true` for a field
+  the branch adds or alters. A one-line `note` explains a non-obvious field.
+- `relations` are the edges: `from`/`to` are entity `id`s, `kind` is the cardinality
+  (`1-1` | `1-n` | `n-n`), `label` is the verb (e.g. "maps to", "owns").
+- Emit `model` only when the data shape is a real part of the change; a pure control-flow or
+  UI change does not need it. A change can have both a sequence diagram and a model diagram.
+
+## Which view carries what
+
+- Sequence diagram (`diagram`): control flow — who calls whom across repos/services, locks,
+  transactions. Reach for it on multi-step / concurrency / cross-repo changes.
+- Data-model diagram (`model`): data shape — entities, fields, foreign keys, cardinality.
+  Reach for it on schema / migration / mapping / new-source changes.
+- Narrative (`doc`): only the reasoning neither picture shows — intent, the key decision,
+  trade-offs, risks. Link `pom://flow` / `pom://flow?step=<n>` / `pom://model` from the prose
+  to send the reader to the right diagram instead of describing it in words.
 
 ## Ground DB / schema claims via the pom MCP
 

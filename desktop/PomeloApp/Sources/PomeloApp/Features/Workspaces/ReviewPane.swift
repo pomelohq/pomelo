@@ -11,6 +11,7 @@ struct Review: Decodable {
     var doc = ""
     var anchors: [ReviewAnchor] = []
     var diagram: ReviewDiagram?
+    var model: ReviewModel?
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         exists = try c.decodeIfPresent(Bool.self, forKey: .exists) ?? false
@@ -19,9 +20,83 @@ struct Review: Decodable {
         doc = try c.decodeIfPresent(String.self, forKey: .doc) ?? ""
         anchors = try c.decodeIfPresent([ReviewAnchor].self, forKey: .anchors) ?? []
         diagram = try c.decodeIfPresent(ReviewDiagram.self, forKey: .diagram)
+        model = try c.decodeIfPresent(ReviewModel.self, forKey: .model)
         if !doc.isEmpty { exists = true }
     }
-    enum K: String, CodingKey { case exists, id, title, doc, anchors, diagram }
+    enum K: String, CodingKey { case exists, id, title, doc, anchors, diagram, model }
+}
+
+struct ReviewModel: Decodable {
+    var title = ""
+    var entities: [ModelEntity] = []
+    var relations: [ModelRelation] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        entities = try c.decodeIfPresent([ModelEntity].self, forKey: .entities) ?? []
+        relations = try c.decodeIfPresent([ModelRelation].self, forKey: .relations) ?? []
+    }
+    enum K: String, CodingKey { case title, entities, relations }
+    var hasContent: Bool { !entities.isEmpty }
+}
+
+struct ModelEntity: Decodable, Identifiable {
+    var id = ""
+    var label = ""
+    var repo = ""
+    var path = ""
+    var start = 0
+    var end = 0
+    var note = ""
+    var changed = false
+    var fields: [ModelField] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        start = try c.decodeIfPresent(Int.self, forKey: .start) ?? 0
+        end = try c.decodeIfPresent(Int.self, forKey: .end) ?? 0
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        changed = try c.decodeIfPresent(Bool.self, forKey: .changed) ?? false
+        fields = try c.decodeIfPresent([ModelField].self, forKey: .fields) ?? []
+    }
+    enum K: String, CodingKey { case id, label, repo, path, start, end, note, changed, fields }
+    var hasCode: Bool { !path.isEmpty }
+}
+
+struct ModelField: Decodable, Identifiable {
+    var name = ""
+    var type = ""
+    var key = ""
+    var note = ""
+    var changed = false
+    var id: String { name }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        type = try c.decodeIfPresent(String.self, forKey: .type) ?? ""
+        key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        changed = try c.decodeIfPresent(Bool.self, forKey: .changed) ?? false
+    }
+    enum K: String, CodingKey { case name, type, key, note, changed }
+}
+
+struct ModelRelation: Decodable {
+    var from = ""
+    var to = ""
+    var label = ""
+    var kind = ""
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        from = try c.decodeIfPresent(String.self, forKey: .from) ?? ""
+        to = try c.decodeIfPresent(String.self, forKey: .to) ?? ""
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+    }
+    enum K: String, CodingKey { case from, to, label, kind }
 }
 
 // Agent-authored sequence diagram: participants are repos/services, steps are calls
@@ -178,13 +253,15 @@ struct ReviewPane: View {
 
     @State private var review: Review?
     @State private var loaded = false
+    @State private var lastRaw: Data?
+    @State private var watchTask: Task<Void, Never>?
     @State private var peek: CodePeekTarget?
     @State private var tourIndex: Int?
     @State private var docTab: DocTab = .doc
     @State private var focusedStep: Int?
     @AppStorage("review.previewWidth") private var previewWidth = 520.0
 
-    private enum DocTab { case doc, diagram }
+    private enum DocTab { case doc, diagram, model }
 
     // The agent runs per-workspace (Cmd-I); main has none, so Ask is hidden there.
     private var canAsk: Bool { !workspace.isMain }
@@ -197,11 +274,26 @@ struct ReviewPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
-        .task(id: workspace.id) { await load() }
-        // Reload only while still empty (waiting on generation); once a review exists,
-        // leave it so the timeline scroll position survives switching away and back.
-        .onChange(of: isActive) {
-            if isActive, !(review?.exists ?? false) { Task { await load() } }
+        .task(id: workspace.id) { await load(); startWatch() }
+        .onChange(of: isActive) { startWatch() }
+        .onDisappear { watchTask?.cancel() }
+    }
+
+    private func startWatch() {
+        watchTask?.cancel()
+        guard isActive else { return }
+        let branch = workspace.branch, isMain = workspace.isMain
+        watchTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled else { return }
+                let raw = await Task.detached(priority: .utility) { ReviewStore.get(branch: branch, isMain: isMain) }.value
+                if raw != lastRaw {
+                    lastRaw = raw
+                    review = PomJSON.decode(Review.self, from: raw)
+                    loaded = true
+                }
+            }
         }
     }
 
@@ -237,8 +329,10 @@ struct ReviewPane: View {
     @ViewBuilder private var docPane: some View {
         if let r = review, r.exists {
             VStack(spacing: 0) {
-                if r.diagram?.hasContent == true { docTabBar }
-                if docTab == .diagram, let dg = r.diagram, dg.hasContent {
+                if r.diagram?.hasContent == true || r.model?.hasContent == true { docTabBar }
+                if docTab == .model, let m = r.model, m.hasContent {
+                    ERDiagramView(model: m, onOpenEntity: openEntity)
+                } else if docTab == .diagram, let dg = r.diagram, dg.hasContent {
                     DiagramView(diagram: dg, focused: focusedStep, onSelectStep: { focusedStep = $0 })
                 } else {
                     ScrollView {
@@ -246,7 +340,7 @@ struct ReviewPane: View {
                             if !r.title.isEmpty {
                                 Text(r.title).font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.fg)
                             }
-                            MarkdownText(r.doc, reading: true)
+                            NarrativeText(text: r.doc, isDark: theme.mode.isDark, onLink: { _ = handleLink($0) })
                         }
                         .padding(.horizontal, 28).padding(.vertical, 24).readingColumn(760)
                     }
@@ -332,7 +426,8 @@ struct ReviewPane: View {
     private var docTabBar: some View {
         HStack(spacing: 6) {
             docTabBtn("Narrative", "doc.text", .doc)
-            docTabBtn("Flow", "arrow.triangle.branch", .diagram)
+            if review?.diagram?.hasContent == true { docTabBtn("Flow", "arrow.triangle.branch", .diagram) }
+            if review?.model?.hasContent == true { docTabBtn("Model", "tablecells", .model) }
             Spacer()
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
@@ -355,6 +450,13 @@ struct ReviewPane: View {
         }.buttonStyle(.plain)
     }
 
+    private func openEntity(_ e: ModelEntity) {
+        guard e.hasCode else { return }
+        withAnimation(.easeInOut(duration: 0.16)) {
+            peek = CodePeekTarget(repo: e.repo, path: e.path, start: e.start, end: e.end)
+        }
+    }
+
     private func openAnchor(_ id: String) {
         guard let a = review?.anchors.first(where: { $0.id == id }) else { return }
         withAnimation(.easeInOut(duration: 0.16)) {
@@ -375,25 +477,41 @@ struct ReviewPane: View {
     }
 
     private func handleLink(_ url: URL) -> OpenURLAction.Result {
-        guard url.scheme == "pom", url.host == "code",
-              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+        guard url.scheme == "pom", let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             NSWorkspace.shared.open(url)
             return .handled
         }
         let q = Dictionary(comps.queryItems?.map { ($0.name, $0.value ?? "") } ?? [], uniquingKeysWith: { a, _ in a })
-        guard let repo = q["repo"], let path = q["path"], !repo.isEmpty, !path.isEmpty else { return .handled }
-        withAnimation(.easeInOut(duration: 0.16)) {
-            peek = CodePeekTarget(repo: repo, path: path, start: Int(q["start"] ?? "") ?? 0, end: Int(q["end"] ?? "") ?? 0)
+        switch url.host {
+        case "flow":
+            guard review?.diagram?.hasContent == true else { return .handled }
+            withAnimation(.easeInOut(duration: 0.16)) {
+                docTab = .diagram
+                if let s = Int(q["step"] ?? ""), s > 0 { focusedStep = s - 1 }
+                else if focusedStep == nil { focusedStep = 0 }
+            }
+            return .handled
+        case "model":
+            guard review?.model?.hasContent == true else { return .handled }
+            withAnimation(.easeInOut(duration: 0.16)) { docTab = .model }
+            return .handled
+        case "code":
+            guard let repo = q["repo"], let path = q["path"], !repo.isEmpty, !path.isEmpty else { return .handled }
+            withAnimation(.easeInOut(duration: 0.16)) {
+                peek = CodePeekTarget(repo: repo, path: path, start: Int(q["start"] ?? "") ?? 0, end: Int(q["end"] ?? "") ?? 0)
+            }
+            return .handled
+        default:
+            NSWorkspace.shared.open(url)
+            return .handled
         }
-        return .handled
     }
 
     private func load() async {
         let branch = workspace.branch, isMain = workspace.isMain
-        let r = await Task.detached(priority: .userInitiated) { () -> Review? in
-            PomJSON.decode(Review.self, from: ReviewStore.get(branch: branch, isMain: isMain))
-        }.value
-        review = r
+        let raw = await Task.detached(priority: .userInitiated) { ReviewStore.get(branch: branch, isMain: isMain) }.value
+        lastRaw = raw
+        review = PomJSON.decode(Review.self, from: raw)
         loaded = true
     }
 }
@@ -877,6 +995,11 @@ struct DiagramView: View {
     }
 }
 
+@MainActor final class FlowFileCache {
+    static let shared = FlowFileCache()
+    var files: [String: [(text: String, spans: [SynSpan])]] = [:]
+}
+
 // The Flow "preview": a vertical timeline of EVERY step (not one peek). Each stop
 // shows its precise code slice; selecting a step in the diagram scrolls here.
 struct FlowTourPanel: View {
@@ -1060,6 +1183,8 @@ struct FlowTourPanel: View {
         for u in uniq {
             let k = u.repo + "/" + u.path
             if files[k] != nil { continue }
+            let ck = branch + "|" + k
+            if let cached = FlowFileCache.shared.files[ck] { files[k] = cached; continue }
             let rows = await Task.detached(priority: .userInitiated) { () -> [(String, [SynSpan])]? in
                 struct R: Decodable { var content: String?; var error: String? }
                 guard let r = PomJSON.decode(R.self, from: ReviewStore.peek(branch: branch, repo: u.repo, path: u.path, isMain: isMain)),
@@ -1069,7 +1194,7 @@ struct FlowTourPanel: View {
                 let sp = Syntax.tokenize(c, lang: lang)
                 return Array(zip(ls, sp)).map { ($0.0, $0.1) }
             }.value
-            if let rows { files[k] = rows }
+            if let rows { files[k] = rows; FlowFileCache.shared.files[ck] = rows }
         }
     }
 }

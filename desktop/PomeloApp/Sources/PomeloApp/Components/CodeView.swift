@@ -145,6 +145,7 @@ final class CodeTextView: NSTextView {
         isSelectable = true
         isRichText = false
         drawsBackground = false
+        selectedTextAttributes = [.backgroundColor: NSColor(Theme.sel)]
         // Keep the margin a previous apply() reserved: this runs on every update,
         // while apply() is skipped when the cache key is unchanged.
         textContainerInset = NSSize(width: max(inset.width, gutterWidth), height: inset.height)
