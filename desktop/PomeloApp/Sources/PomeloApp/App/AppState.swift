@@ -462,11 +462,11 @@ final class AppState: ObservableObject {
     private func startPRPolling() {
         prPollTask?.cancel()
         prPollTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if let self, self.appActive { await self.refreshPRs(); await self.refreshJira() }
             for _ in 0..<8 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let self, !Task.isCancelled else { return }
                 if self.appActive { await self.refreshPRs(); await self.refreshJira() }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
             var interval: UInt64 = 45
             while !Task.isCancelled {

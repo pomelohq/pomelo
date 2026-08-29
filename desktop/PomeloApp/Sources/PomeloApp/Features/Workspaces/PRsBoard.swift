@@ -228,7 +228,16 @@ struct PRsBoard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Theme.bg)
-        .task(id: workspace.id) { await load(); startPolling() }
+        .task(id: workspace.id) {
+            if prs.isEmpty {
+                let cached = state.prsFor(workspace.id)
+                if !cached.isEmpty {
+                    prs = cached; loading = false
+                    if selection == nil { selection = .pr(cached[0].repo) }
+                }
+            }
+            await load(); startPolling()
+        }
         .onDisappear { pollTask?.cancel() }
     }
 
