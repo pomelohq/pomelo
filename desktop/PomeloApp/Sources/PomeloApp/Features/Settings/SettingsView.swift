@@ -142,6 +142,15 @@ private struct GeneralSettings: View {
                         HelpHint("Applies to diffs and file previews — anywhere code is shown but not edited. Wrap keeps a long line on screen by breaking it across rows; Scroll keeps it on one row, which is what holds the side-by-side diff aligned line-for-line.")
                     }
                 }
+                LabeledContent {
+                    Picker("", selection: $codeDisplay.defaultSplit) {
+                        Text("Unified").tag(false)
+                        Text("Split").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden()
+                } label: {
+                    Text("Default diff view")
+                }
             } header: { Text("Appearance") }
             Section {
                 Picker("Open with (⌘E)", selection: $state.editorPref) {

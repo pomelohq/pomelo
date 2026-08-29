@@ -194,7 +194,7 @@ struct DiffFilesView: View {
                                 } else if f.binary {
                                     centered("Binary file — no textual diff")
                                 } else if splitDiff {
-                                    CodeSplitView(file: f, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode)
+                                    SplitDiffRibbon(file: f, isDark: theme.mode.isDark)
                                 } else {
                                     CodeDiffView(file: f, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode)
                                 }

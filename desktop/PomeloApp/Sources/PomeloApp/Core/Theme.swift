@@ -38,6 +38,9 @@ final class CodeDisplayManager: ObservableObject {
             UserDefaults.standard.set(wrapMode.rawValue, forKey: "codeWrapMode")
         }
     }
+    @Published var defaultSplit: Bool = UserDefaults.standard.bool(forKey: "diffDefaultSplit") {
+        didSet { UserDefaults.standard.set(defaultSplit, forKey: "diffDefaultSplit") }
+    }
 }
 
 struct Palette {

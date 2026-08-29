@@ -465,7 +465,7 @@ struct LocalChangesDetail: View {
 
     @State private var diffFiles: [DiffFile]?
     @State private var selFile: String?
-    @State private var splitDiff = false
+    @State private var splitDiff = CodeDisplayManager.shared.defaultSplit
     @AppStorage("prs.filesTreeVisible") private var filesTreeVisible = true
 
     var body: some View {
@@ -511,7 +511,7 @@ struct PRDetail: View {
     @State private var detail: PRInfo?
     @State private var diffFiles: [DiffFile]?
     @State private var selFile: String?
-    @State private var splitDiff = false
+    @State private var splitDiff = CodeDisplayManager.shared.defaultSplit
     @AppStorage("prs.filesTreeVisible") private var filesTreeVisible = true
     @State private var commits: [PRCommit]?
     @State private var selCommit: String?
