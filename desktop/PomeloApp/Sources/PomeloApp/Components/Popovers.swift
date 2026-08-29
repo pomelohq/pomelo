@@ -161,6 +161,30 @@ struct PopItem: View {
     }
 }
 
+struct PopoverMenu<Content: View>: View {
+    var systemImage = "ellipsis"
+    @ViewBuilder let content: (_ close: @escaping () -> Void) -> Content
+    @State private var open = false
+    @State private var hover = false
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            Image(systemName: systemImage).font(.system(size: 12))
+                .foregroundStyle(hover || open ? Theme.fg : Theme.dim)
+                .frame(width: 24, height: 22)
+                .background(hover || open ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).fixedSize()
+        .onHover { hover = $0 }
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            VStack(spacing: 1) { content { open = false } }
+                .padding(5).frame(minWidth: 200, maxWidth: 340)
+                .background(Theme.panel3)
+        }
+    }
+}
+
 struct PopMenu<Content: View>: View {
     var systemImage = "ellipsis"
     @ViewBuilder let content: (_ close: @escaping () -> Void) -> Content

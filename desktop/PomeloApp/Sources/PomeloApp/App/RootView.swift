@@ -113,7 +113,6 @@ struct RootView: View {
                 HStack(spacing: 0) {
                     if !state.sidebarCollapsed {
                         Color.clear.frame(width: 271)
-                            .transaction { $0.animation = nil }
                     }
                     Group {
                         if let err = state.configError {
@@ -132,10 +131,9 @@ struct RootView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transaction { $0.animation = nil }
                 }
                 .overlay(alignment: .topLeading) { sidebarSlideLayer }
-                .overlay(alignment: .topLeading) { sidebarPeekLayer }
+                .overlay(alignment: .topLeading) { sidebarPeekTrigger }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .allowsHitTesting(!state.showSessions)
@@ -199,44 +197,39 @@ struct RootView: View {
         }
     }
 
+    private var sidebarShown: Bool { !state.sidebarCollapsed || sidebarPeek }
+
     @ViewBuilder private var sidebarSlideLayer: some View {
-        if !state.sidebarCollapsed {
-            HStack(spacing: 0) {
-                WorkspaceSidebar().frame(width: 270)
-                Divider().overlay(Theme.borderSoft)
-            }
-            .frame(maxHeight: .infinity, alignment: .top)
-            .background(Theme.bg)
-            .transition(.move(edge: .leading))
-            .zIndex(2)
+        HStack(spacing: 0) {
+            WorkspaceSidebar().frame(width: 270)
+            Divider().overlay(Theme.borderSoft)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.bg)
+        .shadow(color: (state.sidebarCollapsed && sidebarPeek) ? .black.opacity(0.35) : .clear, radius: 12, x: 4)
+        .offset(x: sidebarShown ? 0 : -271)
+        .allowsHitTesting(sidebarShown)
+        .zIndex(2)
+        .animation(.easeInOut(duration: 0.18), value: state.sidebarCollapsed)
+        .animation(.easeInOut(duration: 0.16), value: sidebarPeek)
+        .onHover { hovering in
+            guard state.sidebarCollapsed else { return }
+            peekWork?.cancel()
+            if !hovering { sidebarPeek = false }
         }
     }
 
-    @ViewBuilder private var sidebarPeekLayer: some View {
+    @ViewBuilder private var sidebarPeekTrigger: some View {
         if state.sidebarCollapsed {
-            HStack(spacing: 0) {
-                if sidebarPeek {
-                    WorkspaceSidebar().frame(width: 270)
-                    Divider().overlay(Theme.borderSoft)
-                } else {
-                    Color.clear.frame(width: 8)
-                }
-            }
-            .frame(maxHeight: .infinity, alignment: .top)
-            .background(sidebarPeek ? Theme.bg : .clear)
-            .shadow(color: sidebarPeek ? .black.opacity(0.35) : .clear, radius: 12, x: 4)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                peekWork?.cancel()
-                if hovering {
-                    let w = DispatchWorkItem { withAnimation(.easeInOut(duration: 0.16)) { sidebarPeek = true } }
+            Color.clear.frame(width: 8).frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    peekWork?.cancel()
+                    guard hovering else { return }
+                    let w = DispatchWorkItem { sidebarPeek = true }
                     peekWork = w
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: w)
-                } else {
-                    withAnimation(.easeInOut(duration: 0.16)) { sidebarPeek = false }
                 }
-            }
-            .transition(.identity)
         }
     }
 }

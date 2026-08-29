@@ -7,6 +7,8 @@ struct CommandPalette: View {
     @State private var index = 0
     @State private var results: [Workspace] = []
     @State private var hoverSuppressScroll = false
+    @State private var kbNav = false
+    @State private var lastMouse: CGPoint = .zero
     @FocusState private var focused: Bool
 
     private func computeResults() -> [Workspace] {
@@ -50,7 +52,7 @@ struct CommandPalette: View {
                         LazyVStack(spacing: 1) {
                             ForEach(Array(results.enumerated()), id: \.element.id) { i, ws in
                                 row(ws, active: i == index).id(ws.id)
-                                    .onHover { if $0 { hoverSuppressScroll = true; index = i } }
+                                    .onHover { if $0, !kbNav { hoverSuppressScroll = true; index = i } }
                                     .onTapGesture { index = i; choose() }
                             }
                             if results.isEmpty {
@@ -60,6 +62,9 @@ struct CommandPalette: View {
                         .padding(6)
                     }
                     .frame(maxHeight: 340)
+                    .onContinuousHover { phase in
+                        if case .active(let p) = phase, p != lastMouse { lastMouse = p; kbNav = false }
+                    }
                     .onChange(of: index) { _, i in
                         if hoverSuppressScroll { hoverSuppressScroll = false; return }
                         guard i >= 0, i < results.count else { return }
@@ -78,8 +83,8 @@ struct CommandPalette: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
         }
         .onChange(of: query) { _, _ in reload() }
-        .onKeyPress(.downArrow) { index = min(index + 1, max(0, results.count - 1)); return .handled }
-        .onKeyPress(.upArrow) { index = max(index - 1, 0); return .handled }
+        .onKeyPress(.downArrow) { kbNav = true; index = min(index + 1, max(0, results.count - 1)); return .handled }
+        .onKeyPress(.upArrow) { kbNav = true; index = max(index - 1, 0); return .handled }
         .onKeyPress(.escape) { show = false; return .handled }
     }
 

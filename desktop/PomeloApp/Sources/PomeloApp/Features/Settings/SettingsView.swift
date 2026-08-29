@@ -212,6 +212,7 @@ private struct CfgWebhook: Decodable {
 private struct CfgNetwork: Decodable {
     var bind_ip = "127.0.0.1"; var domain = "localhost"; var proxy_port = 0; var proxy_url = ""
     var webhook = CfgWebhook()
+    var proxy_running = false; var webhook_running = false
     init() {}
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
@@ -220,8 +221,10 @@ private struct CfgNetwork: Decodable {
         proxy_port = try c.decodeIfPresent(Int.self, forKey: .proxy_port) ?? 0
         proxy_url = try c.decodeIfPresent(String.self, forKey: .proxy_url) ?? ""
         webhook = try c.decodeIfPresent(CfgWebhook.self, forKey: .webhook) ?? CfgWebhook()
+        proxy_running = try c.decodeIfPresent(Bool.self, forKey: .proxy_running) ?? false
+        webhook_running = try c.decodeIfPresent(Bool.self, forKey: .webhook_running) ?? false
     }
-    enum K: String, CodingKey { case bind_ip, domain, proxy_port, proxy_url, webhook }
+    enum K: String, CodingKey { case bind_ip, domain, proxy_port, proxy_url, webhook, proxy_running, webhook_running }
 }
 
 private struct NetworkSettings: View {
@@ -238,6 +241,7 @@ private struct NetworkSettings: View {
         VStack(spacing: 0) {
             Form {
                 Section {
+                    LabeledContent("Status") { statusChip(net.proxy_running) }
                     LabeledContent("From the frontend") {
                         Text("/_pom_dev/<repo>/<service>").monospaced().foregroundStyle(Theme.accent).textSelection(.enabled)
                     }
@@ -254,6 +258,7 @@ private struct NetworkSettings: View {
                     Text("Point your frontend's backend base URL at /_pom_dev/<repo>/<service> — same-origin (cookies like prod), auto-mapped, no config. Switching environment retargets it; the frontend URL never changes.")
                 }
                 Section {
+                    LabeledContent("Status") { statusChip(net.webhook_running) }
                     LabeledContent("Listen port") {
                         TextField("", value: $webhookPort, format: .number.grouping(.never))
                             .frame(width: 80).multilineTextAlignment(.trailing).monospaced()
@@ -270,6 +275,10 @@ private struct NetworkSettings: View {
             .scrollContentBackground(.hidden)
             Divider().overlay(Theme.borderSoft)
             HStack {
+                if !net.proxy_running || !net.webhook_running {
+                    Button("Start servers") { Task { await startServers() } }
+                        .buttonStyle(.bordered).disabled(busy)
+                }
                 Spacer()
                 if busy { Spinner() }
                 Button("Apply and Restart") { Task { await applyRestart() } }
@@ -279,6 +288,21 @@ private struct NetworkSettings: View {
             .padding(.horizontal, 20).padding(.vertical, 12)
         }
         .task { await load() }
+    }
+
+    private func statusChip(_ running: Bool) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(running ? Theme.ok : Theme.danger).frame(width: 7, height: 7)
+            Text(running ? "Running" : "Stopped").font(.system(size: 11, weight: .medium))
+                .foregroundStyle(running ? Theme.ok : Theme.danger)
+        }
+    }
+
+    private func startServers() async {
+        busy = true
+        _ = await SettingsStore.networkStart()
+        await load()
+        busy = false
     }
 
     private func load() async {

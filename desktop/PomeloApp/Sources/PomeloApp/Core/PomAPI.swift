@@ -51,6 +51,7 @@ protocol ConfigAPI: PomBaseAPI {
     func environmentsData() -> Data
     func networkData() -> Data
     func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data
+    func networkStart() -> Data
     func devProxyLogData(limit: Int) -> Data
 }
 

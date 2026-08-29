@@ -119,6 +119,7 @@ struct RepoColumn: View {
                     IconButton("stop", tip: "Stop all") { runAll("stop") }
                 }
                 IconButton("terminal", tip: "Open terminal in \(repo.alias ?? repo.name)") { openRepoTerminal() }
+                if services.contains(where: { ($0.port ?? 0) > 0 }) { portMenu }
                 if let scs = repo.shortcuts, !scs.isEmpty { shortcutMenu(scs) }
                 repoMenu
             }
@@ -136,21 +137,28 @@ struct RepoColumn: View {
     }
 
     private func shortcutMenu(_ scs: [Shortcut]) -> some View {
-        Menu {
+        PopoverMenu(systemImage: "bolt") { close in
             ForEach(scs) { sc in
-                Button {
-                    runShortcut(sc)
-                } label: {
-                    Text(sc.desc.isEmpty ? sc.cmd : sc.desc)
-                    if !sc.desc.isEmpty { Text(sc.cmd) }
+                PopItem(sc.desc.isEmpty ? sc.cmd : sc.desc, icon: "bolt") { runShortcut(sc); close() }
+            }
+        }
+        .help("Shortcuts — \(scs.count) command\(scs.count == 1 ? "" : "s")")
+    }
+
+    private var portMenu: some View {
+        PopoverMenu(systemImage: "number") { close in
+            ForEach(services.filter { ($0.port ?? 0) > 0 }) { svc in
+                PopItem("\(svc.name)   :\(svc.port ?? 0)", icon: "doc.on.doc") {
+                    copyPort("127.0.0.1:\(svc.port ?? 0)"); close()
                 }
             }
-        } label: {
-            Image(systemName: "bolt").font(.system(size: 12, weight: .light)).foregroundStyle(Theme.dim.opacity(0.75))
-                .frame(width: 24, height: 22)
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help("Shortcuts — \(scs.count) command\(scs.count == 1 ? "" : "s")")
+        .help("Copy service port")
+    }
+
+    private func copyPort(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
     }
 
     private var repoMenu: some View {
@@ -248,6 +256,7 @@ struct SvcCard: View {
                     .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(service.running ? Theme.ok.opacity(0.3) : Theme.borderSoft))
         .animation(.easeInOut(duration: 0.22), value: service.running)
@@ -258,7 +267,7 @@ struct SvcCard: View {
         HStack(spacing: 9) {
             Circle().fill(service.running ? Theme.ok : (service.crashed == true ? Theme.danger : Theme.dim)).frame(width: 7, height: 7).fixedSize()
             Text(service.name).font(Theme.mono(13, .medium)).foregroundStyle(Theme.fg)
-                .lineLimit(1).truncationMode(.tail).layoutPriority(-1)
+                .lineLimit(1).truncationMode(.tail).layoutPriority(1)
             statusLabel.fixedSize()
             Spacer(minLength: 6)
             if let modes = service.modes, modes.count > 0 {
@@ -280,7 +289,7 @@ struct SvcCard: View {
         if isBusy {
             EmptyView()
         } else if service.running {
-            if let p = service.port, p > 0 { Text(":\(p)").font(Theme.mono(11)).foregroundStyle(Theme.dim) }
+            EmptyView()
         } else {
             Text(crashMsg != nil ? "crashed" : "stopped")
                 .font(Theme.mono(9.5)).textCase(.uppercase).kerning(0.5)

@@ -11,6 +11,7 @@ enum SettingsStore {
     static func version() async -> Data { await off { PomCore.shared.versionData() } }
     static func network() async -> Data { await off { PomCore.shared.networkData() } }
     static func setPorts(proxyPort: Int, webhookPort: Int) async { _ = await off { PomCore.shared.networkSetPorts(proxyPort: proxyPort, webhookPort: webhookPort) } }
+    static func networkStart() async -> Data { await off { PomCore.shared.networkStart() } }
     static func configFiles() async -> Data { await off { PomCore.shared.configFilesData() } }
     static func configFileGet(path: String) async -> Data { await off { PomCore.shared.configFileGetData(path: path) } }
     static func configFileCreate(name: String) async -> Data { await off { PomCore.shared.configFileCreate(name: name, yaml: "") } }

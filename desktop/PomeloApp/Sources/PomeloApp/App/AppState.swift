@@ -53,7 +53,7 @@ final class AppState: ObservableObject {
             case "5": if !ws.isMain { ps.selectFunc(.review) }; return nil
 
             case "0": self.openActivity(scope: ws.id); return nil
-            case "i": withAnimation(.easeInOut(duration: 0.16)) { ps.toggleAgent() }; return nil
+            case "i": ps.toggleAgent(); return nil
             case "e": self.openEditor(ws); return nil
             case "j": withAnimation(.easeInOut(duration: 0.16)) { ps.toggleDrawer() }; return nil
             case "b": self.toggleSidebar(); return nil
@@ -101,7 +101,7 @@ final class AppState: ObservableObject {
         let now = Date()
         guard now.timeIntervalSince(sidebarToggleAt) > 0.2 else { return }
         sidebarToggleAt = now
-        withAnimation(.easeInOut(duration: 0.18)) { sidebarCollapsed.toggle() }
+        sidebarCollapsed.toggle()
     }
     var sessions: [SessionItem] { get { sessionsvm.sessions } set { sessionsvm.sessions = newValue } }
     @Published var creating = false

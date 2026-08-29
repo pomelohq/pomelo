@@ -385,9 +385,9 @@ struct CodeSplitView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let c = context.coordinator
-        let left = CodeTextView(); left.configureReadOnly(inset: NSSize(width: 0, height: 6))
-        let right = CodeTextView(); right.configureReadOnly(inset: NSSize(width: 0, height: 6))
-        let ls = CodeTextView.makeScroll(left), rs = CodeTextView.makeScroll(right)
+        let left = CodeTextView(); left.configureReadOnly(inset: NSSize(width: 0, height: 6), wraps: false)
+        let right = CodeTextView(); right.configureReadOnly(inset: NSSize(width: 0, height: 6), wraps: false)
+        let ls = CodeTextView.makeScroll(left, wraps: false), rs = CodeTextView.makeScroll(right, wraps: false)
         let divider = NSView(); divider.wantsLayer = true
         for v in [ls, rs, divider] { v.translatesAutoresizingMaskIntoConstraints = false }
         let container = NSView()
@@ -421,12 +421,12 @@ struct CodeSplitView: NSViewRepresentable {
         nsView.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
         let c = context.coordinator
         c.divider?.layer?.backgroundColor = NSColor(Theme.borderSoft).cgColor
-        let key = "\(file.path):\(isDark):\(wrapMode.rawValue)"
+        let key = "\(file.path):\(isDark)"
         if c.key == key { return }
         c.key = key
         for tv in [c.left, c.right] {
-            tv?.configureReadOnly(inset: NSSize(width: 0, height: 6), wraps: wrapMode.wraps)
-            tv?.enclosingScrollView?.hasHorizontalScroller = !wrapMode.wraps
+            tv?.configureReadOnly(inset: NSSize(width: 0, height: 6), wraps: false)
+            tv?.enclosingScrollView?.hasHorizontalScroller = true
         }
         let rows = splitRows(file)
         c.left?.apply(CodeTextView.splitSide(rows, side: .left))

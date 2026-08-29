@@ -106,6 +106,7 @@ final class MockPomAPI: PomAPI {
     func editorsData() -> Data { Data(#"{"installed":[],"configured":""}"#.utf8) }
     func networkData() -> Data { Data("{}".utf8) }
     func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data { Data(#"{"ok":true}"#.utf8) }
+    func networkStart() -> Data { Data("{}".utf8) }
     func devProxyLogData(limit: Int) -> Data { Data(#"{"entries":[]}"#.utf8) }
     func paneBusyData(holder: String) -> Data { Data(#"{"busy":false}"#.utf8) }
     var sessionListJSON = #"{"sessions":[]}"#

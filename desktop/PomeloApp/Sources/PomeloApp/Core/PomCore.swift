@@ -165,6 +165,8 @@ final class PomCore: @unchecked Sendable {
     func networkData() -> Data { query(domain: "network", params: Data("{}".utf8)) }
     @discardableResult
     func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data { command(domain: "network", action: "set_ports", params: jp(["proxy_port": proxyPort, "webhook_port": webhookPort])) }
+    @discardableResult
+    func networkStart() -> Data { command(domain: "network", action: "start", params: Data("{}".utf8)) }
     func devProxyLogData(limit: Int) -> Data { query(domain: "devproxy_log", params: jp(["limit": limit])) }
     func paneBusyData(holder: String) -> Data { query(domain: "pane_busy", params: jp(["holder": holder])) }
     func sessionListData() -> Data { query(domain: "session_list", params: Data("{}".utf8)) }

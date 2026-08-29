@@ -253,6 +253,9 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 		if action == "set_ports" {
 			return s.NetworkSetPorts(pInt(params, "proxy_port"), pInt(params, "webhook_port"))
 		}
+		if action == "start" {
+			return s.NetworkStart()
+		}
 	case "sync":
 		if action == "set" {
 			return okErr(s.SyncSet(pBool(params, "refresh_main"), pInt(params, "interval_sec")))

@@ -140,7 +140,7 @@ struct WorkspacePaneInner: View {
             VStack(spacing: 0) {
                 splitArea(width: geo.size.width, height: contentH, active: active)
                     .frame(width: geo.size.width, height: contentH)
-                    .onAppear { opened.insert(active) }
+                    .onAppear { opened.insert(active); if ps.agentOpen { opened.insert(.claude) } }
                     .onChange(of: ps.pane) { opened.insert(active) }
                     .onChange(of: ps.agentOpen) { if ps.agentOpen { opened.insert(.claude) } }
                 if !ps.terms.isEmpty {
@@ -170,15 +170,23 @@ struct WorkspacePaneInner: View {
     @ViewBuilder private func splitArea(width: CGFloat, height: CGFloat, active: PaneKind) -> some View {
         let showAgent = ps.agentOpen
         let showFunc = ps.funcVisible || !ps.agentOpen
-        HStack(spacing: 0) {
+        let handleW: CGFloat = 6
+        let agentW = showFunc ? clampAgent(ps.agentWidth, width) : width
+        let funcW = showFunc ? (showAgent ? max(0, width - agentW - handleW) : width) : 0
+        ZStack(alignment: .topLeading) {
             if showFunc {
-                functionArea(active: active).frame(maxWidth: .infinity)
+                functionArea(active: active).frame(width: funcW)
             }
             if showAgent && showFunc {
                 SplitHandle(axis: .horizontal, value: $ps.agentWidth, min: 320, max: max(320, Double(width) - 320), invert: true)
+                    .offset(x: funcW)
             }
-            if showAgent {
-                agentArea().frame(width: showFunc ? clampAgent(ps.agentWidth, width) : width)
+            if opened.contains(.claude) {
+                agentArea()
+                    .frame(width: agentW)
+                    .offset(x: showAgent ? (showFunc ? funcW + handleW : 0) : width)
+                    .allowsHitTesting(showAgent)
+                    .animation(.easeInOut(duration: 0.18), value: ps.agentOpen)
             }
         }
         .frame(width: width, height: height, alignment: .topLeading)
@@ -210,7 +218,7 @@ struct WorkspacePaneInner: View {
         switch kind {
         case .claude:
             AgentTerminal(branch: workspace.branch, isMain: workspace.isMain, wsKey: workspace.id,
-                          onClose: { withAnimation(.easeInOut(duration: 0.16)) { ps.agentOpen = false; ps.funcVisible = true } })
+                          onClose: { ps.agentOpen = false; ps.funcVisible = true })
                 .id("claude-\(safeWs)")
         case .services:
             ServicesBoard(workspace: workspace, openPane: { ps.pane = $0 }, openTerminal: attachLog,
@@ -222,7 +230,7 @@ struct WorkspacePaneInner: View {
             ReviewPane(workspace: workspace, isActive: active, onAskAgent: { text in
                 opened.insert(.claude)
                 StreamManager.shared.askClaude(wsKey: workspace.id, text: text)
-                withAnimation(.easeInOut(duration: 0.16)) { ps.agentOpen = true; ps.funcVisible = true }
+                ps.agentOpen = true; ps.funcVisible = true
             })
         }
     }
@@ -271,7 +279,7 @@ struct WorkspacePaneInner: View {
 
     private var agentToggle: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.16)) { ps.toggleAgent(); if ps.agentOpen { opened.insert(.claude) } }
+            ps.toggleAgent(); if ps.agentOpen { opened.insert(.claude) }
         } label: {
             Image(systemName: PaneKind.claude.icon).font(.system(size: 11))
                 .foregroundStyle(ps.agentOpen ? Theme.accent : Theme.fgMuted)
