@@ -3,11 +3,11 @@ import AppKit
 
 private enum RibbonKind { case insert, delete, modify, hunk }
 
+private struct RibbonMarker { let line: Int; let color: Color }
+
 private struct RLine {
     let n: Int?
-    let text: String
-    let spans: [SynSpan]
-    let wordHi: Range<Int>?
+    let attr: AttributedString
     let kind: RibbonKind?
 }
 
@@ -21,6 +21,8 @@ private struct RibbonModel {
     var left: [RLine] = []
     var right: [RLine] = []
     var blocks: [RibbonBlock] = []
+    var leftMarkers: [RibbonMarker] = []
+    var rightMarkers: [RibbonMarker] = []
     var maxLeftChars = 0
     var maxRightChars = 0
 }
@@ -93,9 +95,33 @@ private func ribbonSimilarity(_ a: String, _ b: String) -> Double {
     return maxLen == 0 ? 1 : Double(p + s) / Double(maxLen)
 }
 
+private func ribbonAttr(_ text: String, spans: [SynSpan], wordHi: Range<Int>?, kind: RibbonKind?) -> AttributedString {
+    var a = AttributedString(text)
+    a.foregroundColor = kind == .hunk ? Theme.wsAccent : Theme.fgSoft
+    let n = text.count
+    guard n > 0 else { return a }
+    func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
+    for sp in spans where sp.kind != .plain {
+        a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = SyntaxStyle.color(sp.kind)
+    }
+    if let w = wordHi, !w.isEmpty {
+        a[idx(w.lowerBound)..<idx(w.upperBound)].backgroundColor = RibbonPalette.word(kind)
+    }
+    return a
+}
+
 private func buildRibbonModel(_ file: DiffFile) -> RibbonModel {
     var m = RibbonModel()
     var dels: [DiffLine] = [], adds: [DiffLine] = []
+
+    func addLeft(_ n: Int?, _ text: String, _ spans: [SynSpan], _ wordHi: Range<Int>?, _ kind: RibbonKind?) {
+        m.maxLeftChars = max(m.maxLeftChars, text.count)
+        m.left.append(RLine(n: n, attr: ribbonAttr(text, spans: spans, wordHi: wordHi, kind: kind), kind: kind))
+    }
+    func addRight(_ n: Int?, _ text: String, _ spans: [SynSpan], _ wordHi: Range<Int>?, _ kind: RibbonKind?) {
+        m.maxRightChars = max(m.maxRightChars, text.count)
+        m.right.append(RLine(n: n, attr: ribbonAttr(text, spans: spans, wordHi: wordHi, kind: kind), kind: kind))
+    }
 
     func flush() {
         guard !dels.isEmpty || !adds.isEmpty else { return }
@@ -122,9 +148,9 @@ private func buildRibbonModel(_ file: DiffFile) -> RibbonModel {
                 if d.text != adds[j].text, d.text.count < 400, adds[j].text.count < 400 {
                     wr = ribbonMiddleDiff(d.text, adds[j].text).0
                 }
-                m.left.append(RLine(n: d.oldN, text: d.text, spans: Syntax.spans(d.text), wordHi: wr, kind: .modify))
+                addLeft(d.oldN, d.text, Syntax.spans(d.text), wr, .modify)
             } else {
-                m.left.append(RLine(n: d.oldN, text: d.text, spans: Syntax.spans(d.text), wordHi: nil, kind: .delete))
+                addLeft(d.oldN, d.text, Syntax.spans(d.text), nil, .delete)
             }
         }
         for (j, a) in adds.enumerated() {
@@ -133,9 +159,9 @@ private func buildRibbonModel(_ file: DiffFile) -> RibbonModel {
                 if a.text != dels[i].text, a.text.count < 400, dels[i].text.count < 400 {
                     wr = ribbonMiddleDiff(dels[i].text, a.text).1
                 }
-                m.right.append(RLine(n: a.newN, text: a.text, spans: Syntax.spans(a.text), wordHi: wr, kind: .modify))
+                addRight(a.newN, a.text, Syntax.spans(a.text), wr, .modify)
             } else {
-                m.right.append(RLine(n: a.newN, text: a.text, spans: Syntax.spans(a.text), wordHi: nil, kind: .insert))
+                addRight(a.newN, a.text, Syntax.spans(a.text), nil, .insert)
             }
         }
         m.blocks.append(RibbonBlock(kind: blockKind, left: lStart..<m.left.count, right: rStart..<m.right.count))
@@ -146,20 +172,24 @@ private func buildRibbonModel(_ file: DiffFile) -> RibbonModel {
         switch l.kind {
         case .hunk:
             flush()
-            m.left.append(RLine(n: nil, text: l.text, spans: [], wordHi: nil, kind: .hunk))
-            m.right.append(RLine(n: nil, text: "", spans: [], wordHi: nil, kind: .hunk))
+            addLeft(nil, l.text, [], nil, .hunk)
+            addRight(nil, "", [], nil, .hunk)
         case .del: dels.append(l)
         case .add: adds.append(l)
         case .context:
             flush()
             let sp = Syntax.spans(l.text)
-            m.left.append(RLine(n: l.oldN, text: l.text, spans: sp, wordHi: nil, kind: nil))
-            m.right.append(RLine(n: l.newN, text: l.text, spans: sp, wordHi: nil, kind: nil))
+            addLeft(l.oldN, l.text, sp, nil, nil)
+            addRight(l.newN, l.text, sp, nil, nil)
         }
     }
     flush()
-    m.maxLeftChars = m.left.map { $0.text.count }.max() ?? 0
-    m.maxRightChars = m.right.map { $0.text.count }.max() ?? 0
+    for b in m.blocks where b.left.isEmpty {
+        m.leftMarkers.append(RibbonMarker(line: b.left.lowerBound, color: RibbonPalette.ribbon(b.kind)))
+    }
+    for b in m.blocks where b.right.isEmpty {
+        m.rightMarkers.append(RibbonMarker(line: b.right.lowerBound, color: RibbonPalette.ribbon(b.kind)))
+    }
     return m
 }
 
@@ -190,28 +220,13 @@ private let ribbonGutterWidth: CGFloat = 44
 private let ribbonTopBuffer: CGFloat = ribbonLineHeight * 2
 private let ribbonCharWidth: CGFloat = 6.62
 
-private func ribbonStyled(_ l: RLine) -> Text {
-    guard !l.text.isEmpty else { return Text(" ").font(Theme.mono(11)) }
-    var a = AttributedString(l.text)
-    a.foregroundColor = l.kind == .hunk ? Theme.wsAccent : Theme.fgSoft
-    let n = l.text.count
-    func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
-    for sp in l.spans where sp.kind != .plain {
-        a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = SyntaxStyle.color(sp.kind)
-    }
-    if let w = l.wordHi, !w.isEmpty {
-        a[idx(w.lowerBound)..<idx(w.upperBound)].backgroundColor = RibbonPalette.word(l.kind)
-    }
-    return Text(a).font(Theme.mono(11))
-}
-
 private func ribbonRow(_ l: RLine, hOffset: CGFloat, codeWidth: CGFloat) -> some View {
     HStack(spacing: 0) {
         Text(l.n.map(String.init) ?? "")
             .font(Theme.mono(10)).foregroundStyle(Theme.dim)
             .frame(width: ribbonNumberWidth, alignment: .trailing)
             .padding(.trailing, 6)
-        ribbonStyled(l)
+        Text(l.attr).font(Theme.mono(11))
             .lineLimit(1).fixedSize(horizontal: true, vertical: false)
             .padding(.trailing, 8)
             .offset(x: -hOffset)
@@ -222,8 +237,6 @@ private func ribbonRow(_ l: RLine, hOffset: CGFloat, codeWidth: CGFloat) -> some
     .frame(maxWidth: .infinity, minHeight: ribbonLineHeight, maxHeight: ribbonLineHeight, alignment: .leading)
     .background(RibbonPalette.rowBg(l.kind))
 }
-
-private struct RibbonMarker { let line: Int; let color: Color }
 
 private struct RibbonPane: View {
     let lines: [RLine]
@@ -317,16 +330,9 @@ struct SplitDiffRibbon: View {
 
     @State private var model = RibbonModel()
     @State private var map = AlignmentMap()
-    @State private var builtPath = ""
+    @State private var builtKey = ""
     @State private var unified: CGFloat = 0
     @State private var hScroll: CGFloat = 0
-
-    private var leftMarkers: [RibbonMarker] {
-        model.blocks.filter { $0.left.isEmpty }.map { RibbonMarker(line: $0.left.lowerBound, color: RibbonPalette.ribbon($0.kind)) }
-    }
-    private var rightMarkers: [RibbonMarker] {
-        model.blocks.filter { $0.right.isEmpty }.map { RibbonMarker(line: $0.right.lowerBound, color: RibbonPalette.ribbon($0.kind)) }
-    }
 
     var body: some View {
         GeometryReader { geo in
@@ -337,13 +343,13 @@ struct SplitDiffRibbon: View {
             let maxH = max(0, CGFloat(max(model.maxLeftChars, model.maxRightChars)) * ribbonCharWidth - codeW + 24)
             HStack(alignment: .top, spacing: 0) {
                 RibbonPane(lines: model.left, topLine: tops.left, viewportH: vh, paneWidth: paneW,
-                           hOffset: hScroll, markers: leftMarkers)
+                           hOffset: hScroll, markers: model.leftMarkers)
                     .frame(width: paneW)
                 RibbonGutter(blocks: model.blocks, leftTop: tops.left, rightTop: tops.right, viewportH: vh)
                     .overlay(Rectangle().fill(Theme.borderSoft).frame(width: 1), alignment: .leading)
                     .overlay(Rectangle().fill(Theme.borderSoft).frame(width: 1), alignment: .trailing)
                 RibbonPane(lines: model.right, topLine: tops.right, viewportH: vh, paneWidth: paneW,
-                           hOffset: hScroll, markers: rightMarkers)
+                           hOffset: hScroll, markers: model.rightMarkers)
                     .frame(width: paneW)
             }
             .frame(width: geo.size.width, height: vh, alignment: .topLeading)
@@ -360,14 +366,17 @@ struct SplitDiffRibbon: View {
         .background(Theme.bg)
         .onAppear { rebuild() }
         .onChange(of: file.path) { rebuild() }
+        .onChange(of: isDark) { rebuild(force: true) }
     }
 
-    private func rebuild() {
-        guard builtPath != file.path else { return }
-        builtPath = file.path
+    private func rebuild(force: Bool = false) {
+        let key = "\(file.path)|\(isDark)"
+        guard force || builtKey != key else { return }
+        let samePath = builtKey.hasPrefix(file.path + "|")
+        builtKey = key
         let m = buildRibbonModel(file)
         model = m
         map = AlignmentMap(blocks: m.blocks, leftCount: m.left.count, rightCount: m.right.count)
-        unified = 0; hScroll = 0
+        if !samePath { unified = 0; hScroll = 0 }
     }
 }
