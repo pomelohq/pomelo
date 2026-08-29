@@ -1,23 +1,23 @@
 import SwiftUI
 import AppKit
 
-private enum RibbonKind { case insert, delete, modify, hunk }
+private enum RibbonKind: Sendable { case insert, delete, modify, hunk }
 
-private struct RibbonMarker { let line: Int; let color: Color }
+private struct RibbonMarker: Sendable { let line: Int; let color: Color }
 
-private struct RLine {
+private struct RLine: Sendable {
     let n: Int?
     let attr: AttributedString
     let kind: RibbonKind?
 }
 
-private struct RibbonBlock {
+private struct RibbonBlock: Sendable {
     let kind: RibbonKind
     let left: Range<Int>
     let right: Range<Int>
 }
 
-private struct RibbonModel {
+private struct RibbonModel: Sendable {
     var left: [RLine] = []
     var right: [RLine] = []
     var blocks: [RibbonBlock] = []
@@ -27,8 +27,8 @@ private struct RibbonModel {
     var maxRightChars = 0
 }
 
-private struct AlignmentMap {
-    struct Segment {
+private struct AlignmentMap: Sendable {
+    struct Segment: Sendable {
         let uStart: CGFloat, uLen: CGFloat
         let lStart: CGFloat, lLen: CGFloat
         let rStart: CGFloat, rLen: CGFloat
@@ -374,9 +374,14 @@ struct SplitDiffRibbon: View {
         guard force || builtKey != key else { return }
         let samePath = builtKey.hasPrefix(file.path + "|")
         builtKey = key
-        let m = buildRibbonModel(file)
-        model = m
-        map = AlignmentMap(blocks: m.blocks, leftCount: m.left.count, rightCount: m.right.count)
-        if !samePath { unified = 0; hScroll = 0 }
+        if !samePath { unified = 0; hScroll = 0; model = RibbonModel(); map = AlignmentMap() }
+        let f = file
+        Task {
+            let built = await Task.detached(priority: .userInitiated) { () -> (RibbonModel, AlignmentMap) in
+                let m = buildRibbonModel(f)
+                return (m, AlignmentMap(blocks: m.blocks, leftCount: m.left.count, rightCount: m.right.count))
+            }.value
+            if builtKey == key { model = built.0; map = built.1 }
+        }
     }
 }
