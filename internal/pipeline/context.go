@@ -78,6 +78,18 @@ func FromConfig(cfg *config.Config, configPath, wsName, branch string, skipStage
 			uniqueDirs = append(uniqueDirs, d)
 		}
 	}
+	// A derived workspace (no explicit workspaces/combinations) is "all my repos";
+	// service-less repos never appear in the service-derived entries, so add them
+	// here — they get a worktree and sync main, just with nothing to run.
+	if len(cfg.Workspaces) == 0 && len(cfg.Combinations) == 0 {
+		for _, d := range cfg.RepoOrder {
+			dir := cfg.Repos[d]
+			if dir != nil && len(dir.ServiceOrder) == 0 && !seen[d] {
+				seen[d] = true
+				uniqueDirs = append(uniqueDirs, d)
+			}
+		}
+	}
 	if len(uniqueDirs) == 0 {
 		return nil, fmt.Errorf("no dirs found in workspace '%s'", wsName)
 	}
