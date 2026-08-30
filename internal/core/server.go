@@ -106,10 +106,10 @@ func (s *Server) features() []plugin.Feature {
 
 func (s *Server) setCfg(cfg *config.Config) { s.cfgv.Store(cfg) }
 
+// Handler starts no listeners: pom mcp runs one server per agent window, and
+// starting the dev proxy there lets a stale MCP squat the port the app needs.
 func (s *Server) Handler() http.Handler {
-	mux := s.buildMux()
-	s.startBackground()
-	return recoverPanics(mux)
+	return recoverPanics(s.buildMux())
 }
 
 func (s *Server) StartApp() { s.startBackground() }

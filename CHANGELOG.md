@@ -6,6 +6,9 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Service URLs route again after Pomelo restarts while an agent window is still open. Each `pom mcp` server was claiming the dev-proxy and webhook-relay ports, so an MCP process that outlived the app kept them and every workspace service answered "no dev-proxy route" — the MCP server no longer starts those listeners. The app also logs when the dev-proxy port is already taken instead of failing silently.
+
 ## [0.4.3] - 2026-08-30
 
 ### Fixed

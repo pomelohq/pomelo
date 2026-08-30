@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -184,12 +185,17 @@ func (s *Server) startDevProxy() {
 		return
 	}
 	handler := http.HandlerFunc(s.handleDevProxy)
+	bound := false
 	for _, host := range []string{"127.0.0.1", "[::1]"} {
 		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
 		if err != nil {
 			continue
 		}
+		bound = true
 		go func() { _ = http.Serve(ln, handler) }()
+	}
+	if !bound {
+		log.Printf("dev proxy: port %d already in use — skipping (another pom owns it); service URLs will not route", port)
 	}
 }
 

@@ -75,3 +75,28 @@ func TestPickProxyPort(t *testing.T) {
 		t.Errorf("no lease: got %d want 4000 (live scan)", got)
 	}
 }
+
+// pom mcp runs one Server per agent window; if Handler started the dev proxy,
+// a stale MCP would hold the port and the app would silently route nothing.
+func TestHandlerStartsNoListeners(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	s := New("", "sess", t.TempDir(), "main", proxyTestCfg())
+	s.Addr = fmt.Sprintf(":%d", port)
+	if h := s.Handler(); h == nil {
+		t.Fatal("Handler returned nil")
+	}
+
+	for _, p := range []int{port + 1, port + 2} {
+		probe, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			t.Fatalf("Handler bound port %d; it must start no listeners", p)
+		}
+		_ = probe.Close()
+	}
+}
