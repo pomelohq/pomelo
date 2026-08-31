@@ -749,7 +749,9 @@ struct PRDetail: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(timelineItems) { timelineRow($0) }
+                        ForEach(Array(timelineItems.enumerated()), id: \.element.id) { i, it in
+                            timelineRow(it, isLast: i == timelineItems.count - 1)
+                        }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 12)
                     .readingColumn(940)
@@ -763,13 +765,17 @@ struct PRDetail: View {
     private let railWidth: CGFloat = 28
     private let avatarSize: CGFloat = 36
 
-    @ViewBuilder private func timelineRow(_ it: PRTimelineItem) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Avatar(url: it.avatar, name: it.author, size: avatarSize)
-            timelineNode(it)
-                .frame(width: railWidth)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .background(alignment: .top) { Rectangle().fill(Theme.borderSoft).frame(width: 2) }
+    @ViewBuilder private func timelineRow(_ it: PRTimelineItem, isLast: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ZStack(alignment: .top) {
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: avatarSize)
+                    if !isLast { Rectangle().fill(Theme.borderSoft).frame(width: 2).frame(maxHeight: .infinity) }
+                }
+                avatarBadge(it)
+            }
+            .frame(width: avatarSize)
+            .frame(maxHeight: .infinity, alignment: .top)
             VStack(alignment: .leading, spacing: 8) {
                 switch it.kind {
                 case "description":
@@ -792,31 +798,26 @@ struct PRDetail: View {
         }
     }
 
-    @ViewBuilder private func timelineNode(_ it: PRTimelineItem) -> some View {
-        switch it.kind {
-        case "description", "comment": Color.clear.frame(height: 1)
-        default: timelineIcon(it).frame(height: avatarSize)
+    // Avatar sits on the thread rail; review state shows as a small corner badge.
+    @ViewBuilder private func avatarBadge(_ it: PRTimelineItem) -> some View {
+        ZStack(alignment: .bottomTrailing) {
+            Avatar(url: it.avatar, name: it.author, size: avatarSize)
+            if it.kind == "review" || it.kind == "inline" {
+                let (icon, col) = reviewBadge(it.state)
+                Image(systemName: icon).font(.system(size: 9, weight: .bold)).foregroundStyle(col)
+                    .padding(3).background(Theme.bg, in: Circle())
+                    .overlay(Circle().strokeBorder(Theme.bg, lineWidth: 1.5))
+                    .offset(x: 3, y: 3)
+            }
         }
     }
 
-    @ViewBuilder private func timelineIcon(_ it: PRTimelineItem) -> some View {
-        let (icon, col): (String, Color) = {
-            switch it.kind {
-            case "review":
-                switch it.state {
-                case "APPROVED": return ("checkmark", Theme.ok)
-                case "CHANGES_REQUESTED": return ("xmark", Theme.danger)
-                default: return ("eye", Theme.fgMuted)
-                }
-            case "comment": return ("bubble.left", Theme.fgMuted)
-            case "description": return ("arrow.triangle.pull", Theme.accent)
-            default: return ("text.bubble", Theme.fgMuted)
-            }
-        }()
-        Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
-            .frame(width: 22, height: 22)
-            .background(Theme.bg, in: Circle())
-            .overlay(Circle().strokeBorder(col.opacity(0.5), lineWidth: 1.5))
+    private func reviewBadge(_ state: String) -> (String, Color) {
+        switch state {
+        case "APPROVED": return ("checkmark", Theme.ok)
+        case "CHANGES_REQUESTED": return ("xmark", Theme.danger)
+        default: return ("eye", Theme.fgMuted)
+        }
     }
 
     private func reviewVerb(_ state: String) -> String {

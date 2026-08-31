@@ -32,8 +32,15 @@ final class UsageStore: ObservableObject {
     private func loop() async {
         while !Task.isCancelled {
             let d = await Task.detached(priority: .utility) { PomCore.shared.claudeUsageData() }.value
-            if let next = PomJSON.decode(ClaudeUsage.self, from: d), next != usage {
-                usage = next
+            if let next = PomJSON.decode(ClaudeUsage.self, from: d) {
+                if next != usage { usage = next }
+                // Mirror into the core so the remote (phone) serves this cached value
+                // instead of calling the rate-limited upstream itself.
+                if next.ok == true {
+                    await Task.detached(priority: .utility) {
+                        _ = PomCore.shared.command(domain: "claude", action: "usage_set", params: d)
+                    }.value
+                }
             }
             try? await Task.sleep(nanoseconds: 60_000_000_000)
         }

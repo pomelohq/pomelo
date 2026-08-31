@@ -17,6 +17,7 @@ import (
 	"github.com/pomelohq/pomelo/internal/commands"
 	"github.com/pomelohq/pomelo/internal/config"
 	"github.com/pomelohq/pomelo/internal/lock"
+	"github.com/pomelohq/pomelo/internal/remote"
 	"github.com/pomelohq/pomelo/internal/plugin"
 	"github.com/pomelohq/pomelo/internal/provider/forge"
 	"github.com/pomelohq/pomelo/internal/provider/tracker"
@@ -59,11 +60,22 @@ type Server struct {
 	resMu   sync.Mutex
 	resStat commands.ResourceStat
 
+	wsOrderMu sync.Mutex
+	wsOrder   []string // desktop drag-order (workspace ids), pushed by the app so the remote mirrors it
+
+	usageMu      sync.Mutex
+	usageVal     claude.Usage
+	usageAt      time.Time // when usageVal was last a good value
+	usageAttempt time.Time // last upstream fetch attempt (backoff even on failure)
+
 	syncNextAt   atomic.Int64  // unix seconds of the next scheduled main refresh; 0 = none
 	syncPulling  atomic.Bool   // a refresh is running right now
 	syncLastPull atomic.Int64  // unix seconds when the last refresh finished
 	syncProg     atomic.Pointer[[]RepoPull]
 	syncReset    chan struct{} // poked by SyncSet to reschedule immediately
+
+	remoteMu  sync.Mutex
+	remoteSrv *remote.Server
 }
 
 type RepoPull struct {
@@ -151,6 +163,7 @@ func (s *Server) startBackground() {
 	go s.pr.WarmLoop()
 	go s.startWebhookRelay()
 	go s.startDevProxy()
+	go s.startRemote()
 	if _, ok := lock.AcquirePrimary(s.session()); !ok {
 		log.Printf("pom: another runtime already owns %q — coexisting (skipping refresh-main / auto-push / port reaper)", s.session())
 		return

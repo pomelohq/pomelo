@@ -1,0 +1,493 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		BF00000000000000000001 /* PomeloRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000001 /* PomeloRemoteApp.swift */; };
+		BF00000000000000000002 /* PairedDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000002 /* PairedDevice.swift */; };
+		BF00000000000000000003 /* RemoteClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000003 /* RemoteClient.swift */; };
+		BF00000000000000000004 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000004 /* Models.swift */; };
+		BF00000000000000000005 /* DashboardViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000005 /* DashboardViewModel.swift */; };
+		BF00000000000000000006 /* AgentViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000006 /* AgentViewModel.swift */; };
+		BF00000000000000000007 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000007 /* RootView.swift */; };
+		BF00000000000000000008 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000008 /* PairingView.swift */; };
+		BF00000000000000000009 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000009 /* DashboardView.swift */; };
+		BF00000000000000000010 /* AgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000010 /* AgentView.swift */; };
+		BF00000000000000000011 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000011 /* Theme.swift */; };
+		BF00000000000000000012 /* TerminalMirror.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000012 /* TerminalMirror.swift */; };
+		BF00000000000000000013 /* AgentOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000013 /* AgentOrb.swift */; };
+		BF00000000000000000014 /* WorkspaceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000014 /* WorkspaceDetailView.swift */; };
+		BF000000000000000000A1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = PD000000000000000000A1 /* SwiftTerm */; };
+		BF00000000000000000015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000015 /* Assets.xcassets */; };
+		BF00000000000000000016 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000016 /* WidgetShared.swift */; };
+		BF00000000000000000020 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000020 /* LiveActivityController.swift */; };
+		BF00000000000000000117 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000016 /* WidgetShared.swift */; };
+		BF00000000000000000118 /* PomeloWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000017 /* PomeloWidgetBundle.swift */; };
+		BF00000000000000000119 /* PomeloAgentWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000018 /* PomeloAgentWidget.swift */; };
+		BF00000000000000000120 /* PomeloLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000019 /* PomeloLiveActivity.swift */; };
+		BF000000000000000000E1 /* PomeloWidgetExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = FR000000000000000000FD /* PomeloWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		CI00000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = PJ00000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = TG00000000000000000002;
+			remoteInfo = PomeloWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		CF00000000000000000001 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				BF000000000000000000E1 /* PomeloWidgetExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		FR00000000000000000001 /* PomeloRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/PomeloRemoteApp.swift; sourceTree = "<group>"; };
+		FR00000000000000000002 /* PairedDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/PairedDevice.swift; sourceTree = "<group>"; };
+		FR00000000000000000003 /* RemoteClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/RemoteClient.swift; sourceTree = "<group>"; };
+		FR00000000000000000004 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/Models.swift; sourceTree = "<group>"; };
+		FR00000000000000000005 /* DashboardViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/DashboardViewModel.swift; sourceTree = "<group>"; };
+		FR00000000000000000006 /* AgentViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/AgentViewModel.swift; sourceTree = "<group>"; };
+		FR00000000000000000007 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/RootView.swift; sourceTree = "<group>"; };
+		FR00000000000000000008 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/PairingView.swift; sourceTree = "<group>"; };
+		FR00000000000000000009 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/DashboardView.swift; sourceTree = "<group>"; };
+		FR00000000000000000010 /* AgentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/AgentView.swift; sourceTree = "<group>"; };
+		FR00000000000000000011 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/Theme.swift; sourceTree = "<group>"; };
+		FR00000000000000000012 /* TerminalMirror.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/TerminalMirror.swift; sourceTree = "<group>"; };
+		FR00000000000000000013 /* AgentOrb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/AgentOrb.swift; sourceTree = "<group>"; };
+		FR00000000000000000014 /* WorkspaceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/WorkspaceDetailView.swift; sourceTree = "<group>"; };
+		FR000000000000000000FF /* PomeloRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PomeloRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FR00000000000000000015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		FR00000000000000000016 /* WidgetShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/WidgetShared.swift; sourceTree = "<group>"; };
+		FR00000000000000000017 /* PomeloWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Widget/PomeloWidgetBundle.swift; sourceTree = "<group>"; };
+		FR00000000000000000018 /* PomeloAgentWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Widget/PomeloAgentWidget.swift; sourceTree = "<group>"; };
+		FR00000000000000000019 /* PomeloLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Widget/PomeloLiveActivity.swift; sourceTree = "<group>"; };
+		FR00000000000000000020 /* LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/PomeloRemoteKit/LiveActivityController.swift; sourceTree = "<group>"; };
+		FR00000000000000000021 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Widget/Info.plist; sourceTree = "<group>"; };
+		FR00000000000000000022 /* PomeloWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Widget/PomeloWidget.entitlements; sourceTree = "<group>"; };
+		FR00000000000000000023 /* PomeloRemote.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App/PomeloRemote.entitlements; sourceTree = "<group>"; };
+		FR000000000000000000FD /* PomeloWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PomeloWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FW00000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BF000000000000000000A1 /* SwiftTerm in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FW00000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		GR00000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				GR00000000000000000002 /* PomeloRemote */,
+				GR000000000000000000FE /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		GR00000000000000000002 /* PomeloRemote */ = {
+			isa = PBXGroup;
+			children = (
+				FR00000000000000000001 /* PomeloRemoteApp.swift */,
+				FR00000000000000000023 /* PomeloRemote.entitlements */,
+				FR00000000000000000002 /* PairedDevice.swift */,
+				FR00000000000000000003 /* RemoteClient.swift */,
+				FR00000000000000000004 /* Models.swift */,
+				FR00000000000000000005 /* DashboardViewModel.swift */,
+				FR00000000000000000006 /* AgentViewModel.swift */,
+				FR00000000000000000007 /* RootView.swift */,
+				FR00000000000000000008 /* PairingView.swift */,
+				FR00000000000000000009 /* DashboardView.swift */,
+				FR00000000000000000010 /* AgentView.swift */,
+				FR00000000000000000011 /* Theme.swift */,
+				FR00000000000000000012 /* TerminalMirror.swift */,
+				FR00000000000000000013 /* AgentOrb.swift */,
+				FR00000000000000000014 /* WorkspaceDetailView.swift */,
+				FR00000000000000000020 /* LiveActivityController.swift */,
+				FR00000000000000000016 /* WidgetShared.swift */,
+				GR00000000000000000003 /* Widget */,
+				FR00000000000000000015 /* Assets.xcassets */,
+			);
+			name = PomeloRemote;
+			sourceTree = "<group>";
+		};
+		GR00000000000000000003 /* Widget */ = {
+			isa = PBXGroup;
+			children = (
+				FR00000000000000000017 /* PomeloWidgetBundle.swift */,
+				FR00000000000000000018 /* PomeloAgentWidget.swift */,
+				FR00000000000000000019 /* PomeloLiveActivity.swift */,
+				FR00000000000000000021 /* Info.plist */,
+				FR00000000000000000022 /* PomeloWidget.entitlements */,
+			);
+			name = Widget;
+			sourceTree = "<group>";
+		};
+		GR000000000000000000FE /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FR000000000000000000FF /* PomeloRemote.app */,
+				FR000000000000000000FD /* PomeloWidgetExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		TG00000000000000000001 /* PomeloRemote */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CT00000000000000000001 /* Build configuration list for PBXNativeTarget "PomeloRemote" */;
+			buildPhases = (
+				SR00000000000000000001 /* Sources */,
+				FW00000000000000000001 /* Frameworks */,
+				RS00000000000000000001 /* Resources */,
+				CF00000000000000000001 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				TD00000000000000000001 /* PBXTargetDependency */,
+			);
+			name = PomeloRemote;
+			packageProductDependencies = (
+				PD000000000000000000A1 /* SwiftTerm */,
+			);
+			productName = PomeloRemote;
+			productReference = FR000000000000000000FF /* PomeloRemote.app */;
+			productType = "com.apple.product-type.application";
+		};
+		TG00000000000000000002 /* PomeloWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CT00000000000000000002 /* Build configuration list for PBXNativeTarget "PomeloWidgetExtension" */;
+			buildPhases = (
+				SR00000000000000000002 /* Sources */,
+				FW00000000000000000002 /* Frameworks */,
+				RS00000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PomeloWidgetExtension;
+			productName = PomeloWidgetExtension;
+			productReference = FR000000000000000000FD /* PomeloWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		PJ00000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					TG00000000000000000001 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					TG00000000000000000002 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = CP00000000000000000001 /* Build configuration list for PBXProject "PomeloRemote" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = GR00000000000000000001;
+			packageReferences = (
+				PR000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+			);
+			productRefGroup = GR000000000000000000FE /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				TG00000000000000000001 /* PomeloRemote */,
+				TG00000000000000000002 /* PomeloWidgetExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		RS00000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BF00000000000000000015 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		RS00000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		SR00000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BF00000000000000000001 /* PomeloRemoteApp.swift in Sources */,
+				BF00000000000000000002 /* PairedDevice.swift in Sources */,
+				BF00000000000000000003 /* RemoteClient.swift in Sources */,
+				BF00000000000000000004 /* Models.swift in Sources */,
+				BF00000000000000000005 /* DashboardViewModel.swift in Sources */,
+				BF00000000000000000006 /* AgentViewModel.swift in Sources */,
+				BF00000000000000000007 /* RootView.swift in Sources */,
+				BF00000000000000000008 /* PairingView.swift in Sources */,
+				BF00000000000000000009 /* DashboardView.swift in Sources */,
+				BF00000000000000000010 /* AgentView.swift in Sources */,
+				BF00000000000000000011 /* Theme.swift in Sources */,
+				BF00000000000000000012 /* TerminalMirror.swift in Sources */,
+				BF00000000000000000013 /* AgentOrb.swift in Sources */,
+				BF00000000000000000014 /* WorkspaceDetailView.swift in Sources */,
+				BF00000000000000000020 /* LiveActivityController.swift in Sources */,
+				BF00000000000000000016 /* WidgetShared.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		SR00000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BF00000000000000000118 /* PomeloWidgetBundle.swift in Sources */,
+				BF00000000000000000119 /* PomeloAgentWidget.swift in Sources */,
+				BF00000000000000000120 /* PomeloLiveActivity.swift in Sources */,
+				BF00000000000000000117 /* WidgetShared.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		TD00000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = TG00000000000000000002 /* PomeloWidgetExtension */;
+			targetProxy = CI00000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		CP0000000000000000000D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		CP0000000000000000000R /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		CT0000000000000000000D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				INFOPLIST_KEY_CFBundleDisplayName = Pomelo;
+				CODE_SIGN_ENTITLEMENTS = App/PomeloRemote.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = D97BTN4C2U;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR shown in Pomelo on your Mac.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				MARKETING_VERSION = 0.4.3;
+				PRODUCT_BUNDLE_IDENTIFIER = app.pomelo.remote;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		CT0000000000000000000R /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				INFOPLIST_KEY_CFBundleDisplayName = Pomelo;
+				CODE_SIGN_ENTITLEMENTS = App/PomeloRemote.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = D97BTN4C2U;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR shown in Pomelo on your Mac.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				MARKETING_VERSION = 0.4.3;
+				PRODUCT_BUNDLE_IDENTIFIER = app.pomelo.remote;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		CT0000000000000000010D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Widget/PomeloWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = D97BTN4C2U;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Widget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.4.3;
+				PRODUCT_BUNDLE_IDENTIFIER = app.pomelo.remote.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		CT0000000000000000010R /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Widget/PomeloWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = D97BTN4C2U;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Widget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.4.3;
+				PRODUCT_BUNDLE_IDENTIFIER = app.pomelo.remote.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		CP00000000000000000001 /* Build configuration list for PBXProject "PomeloRemote" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CP0000000000000000000D /* Debug */,
+				CP0000000000000000000R /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CT00000000000000000001 /* Build configuration list for PBXNativeTarget "PomeloRemote" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CT0000000000000000000D /* Debug */,
+				CT0000000000000000000R /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CT00000000000000000002 /* Build configuration list for PBXNativeTarget "PomeloWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CT0000000000000000010D /* Debug */,
+				CT0000000000000000010R /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		PR000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.2.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		PD000000000000000000A1 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PR000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = PJ00000000000000000001 /* Project object */;
+}

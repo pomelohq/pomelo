@@ -15,6 +15,7 @@ SIGN_ID ?= -
 export SIGN_ID NOTARY_PROFILE GH_USER_PUBLISH GH_USER_BACK RELEASE_REPO
 
 APP_VERSION = $(shell grep '^const appVersion' cmd/libpom/libpom.go | cut -d'"' -f2)
+IOS_VERSION = $(shell grep -m1 'MARKETING_VERSION' ios/PomeloRemote/PomeloRemote.xcodeproj/project.pbxproj | sed 's/[^0-9.]//g')
 
 .PHONY: build dev app app-run release install clean test vet check check-strict patch minor major version-check dmg
 
@@ -68,6 +69,7 @@ install: release
 # Fail loudly if the two version constants ever drift (a bump touched only one).
 version-check:
 	@[ "$(VERSION)" = "$(APP_VERSION)" ] || { echo "version drift: pom=$(VERSION) libpom=$(APP_VERSION)"; exit 1; }
+	@[ "$(VERSION)" = "$(IOS_VERSION)" ] || { echo "version drift: pom=$(VERSION) ios=$(IOS_VERSION)"; exit 1; }
 
 patch:
 	$(eval NEW_VERSION := $(MAJOR).$(MINOR).$(shell echo $$(($(PATCH)+1))))
@@ -86,7 +88,8 @@ _release: version-check
 	sed -i '' 's/const version = "$(VERSION)"/const version = "$(NEW_VERSION)"/' cmd/pom/root.go
 	sed -i '' 's/const appVersion = "$(VERSION)"/const appVersion = "$(NEW_VERSION)"/' cmd/libpom/libpom.go
 	@grep -q 'appVersion = "$(NEW_VERSION)"' cmd/libpom/libpom.go || { echo "libpom appVersion not bumped"; exit 1; }
-	git add cmd/pom/root.go cmd/libpom/libpom.go
+	sed -i '' 's/MARKETING_VERSION = $(VERSION);/MARKETING_VERSION = $(NEW_VERSION);/' ios/PomeloRemote/PomeloRemote.xcodeproj/project.pbxproj
+	git add cmd/pom/root.go cmd/libpom/libpom.go ios/PomeloRemote/PomeloRemote.xcodeproj/project.pbxproj
 	git commit -m "release: v$(NEW_VERSION)"
 	git tag v$(NEW_VERSION)
 	git push origin main v$(NEW_VERSION)

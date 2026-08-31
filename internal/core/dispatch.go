@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/pomelohq/pomelo/internal/diffparse"
 )
@@ -59,6 +60,22 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 		return map[string]any{"workspaces": s.CollectWorkspaces(pBool(params, "git"))}
 	case "liveness":
 		return map[string]any{"workspaces": s.CollectLiveness()}
+	case "claude_usage":
+		return s.CachedClaudeUsage()
+	case "ws_order":
+		return map[string]any{"order": s.WsOrder()}
+	case "repos":
+		names := []string{}
+		if c := s.cfg(); c != nil {
+			if len(c.RepoOrder) > 0 {
+				names = append(names, c.RepoOrder...)
+			} else {
+				for n := range c.Repos {
+					names = append(names, n)
+				}
+			}
+		}
+		return map[string]any{"repos": names}
 	case "agent_states":
 		return map[string]any{"states": s.AgentStates()}
 	case "agent_notifications":
@@ -145,6 +162,10 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 		return s.DevProxyLog(pInt(params, "limit"))
 	case "pr_commits":
 		return s.PRCommits(pStr(params, "branch"), pStr(params, "repo"), pStr(params, "base"), pBool(params, "is_main"))
+	case "git_status":
+		return s.GitWorkspaceStatus(pStr(params, "branch"), pBool(params, "is_main"))
+	case "remote_info":
+		return s.RemoteInfo()
 	default:
 		return map[string]any{"error": "unknown query domain: " + domain}
 	}
@@ -185,6 +206,24 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 	case "editor":
 		if action == "open" {
 			return s.EditorOpen(pStr(params, "branch"), pBool(params, "is_main"), pStr(params, "repo"), pStr(params, "editor"), pBool(params, "resolve_only"))
+		}
+	case "ws":
+		if action == "order_set" {
+			s.SetWsOrder(pStrs(params, "order"))
+			return map[string]any{"ok": true}
+		}
+	case "claude":
+		if action == "usage_set" {
+			s.SetClaudeUsageJSON(params)
+			return map[string]any{"ok": true}
+		}
+	case "agent":
+		if action == "close" {
+			w := pStr(params, "window")
+			if !strings.Contains(w, "claude-raw") {
+				return map[string]any{"ok": false, "error": "not an agent window"}
+			}
+			return s.PaneKill(w)
 		}
 	case "pr":
 		if action == "refresh" {
@@ -260,6 +299,10 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 		if action == "set" {
 			return okErr(s.SyncSet(pBool(params, "refresh_main"), pInt(params, "interval_sec")))
 		}
+	case "remote":
+		if action == "set" {
+			return s.RemoteSet(pBool(params, "enabled"))
+		}
 	case "secret":
 		if action == "set" {
 			return okErr(s.SecretSet(pStr(params, "name"), pStr(params, "value")))
@@ -272,8 +315,11 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 			return s.JiraTest(pStr(params, "site"), pStr(params, "email"), pStr(params, "token"))
 		}
 	case "workspace":
-		if action == "rename" {
+		switch action {
+		case "rename":
 			return s.WorkspaceRename(pStr(params, "branch"), pBool(params, "is_main"), pStr(params, "display_name"))
+		case "create":
+			return s.CreateWorkspaceRemote(pStr(params, "branch"), pStrs(params, "repos"), pStr(params, "display_name"))
 		}
 	case "deps":
 		if action == "install" {
@@ -303,6 +349,16 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 			return s.GitPull(pStr(params, "branch"), pStr(params, "repo"), pBool(params, "is_main"))
 		case "main_pull":
 			return s.MainPull(pStr(params, "branch"))
+		case "stage":
+			return s.GitStage(pStr(params, "branch"), pStr(params, "repo"), pBool(params, "is_main"), pStrs(params, "paths"))
+		case "unstage":
+			return s.GitUnstage(pStr(params, "branch"), pStr(params, "repo"), pBool(params, "is_main"), pStrs(params, "paths"))
+		case "discard":
+			return s.GitDiscard(pStr(params, "branch"), pStr(params, "repo"), pBool(params, "is_main"), pStrs(params, "paths"))
+		case "commit":
+			return s.GitCommit(pStr(params, "branch"), pStr(params, "repo"), pBool(params, "is_main"), pStr(params, "message"))
+		case "push":
+			return s.GitPush(pStr(params, "branch"), pStr(params, "repo"), pBool(params, "is_main"))
 		}
 	}
 	return map[string]any{"ok": false, "error": "unknown command: " + domain + "." + action}

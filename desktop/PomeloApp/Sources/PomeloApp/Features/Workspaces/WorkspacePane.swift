@@ -1,13 +1,14 @@
 import SwiftUI
 
 enum PaneKind: String, CaseIterable, Identifiable {
-    case claude = "Claude", services = "Services", prs = "PRs", jira = "Jira", database = "Database", review = "Review"
+    case claude = "Claude", services = "Services", prs = "PRs", git = "Git", jira = "Jira", database = "Database", review = "Review"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .claude:   return "sparkles"
         case .services: return "square.grid.2x2"
         case .prs:      return "arrow.triangle.pull"
+        case .git:      return "arrow.triangle.branch"
         case .jira:     return "ticket"
         case .database: return "cylinder.split.1x2"
         case .review:   return "doc.text.magnifyingglass"
@@ -224,6 +225,7 @@ struct WorkspacePaneInner: View {
             ServicesBoard(workspace: workspace, openPane: { ps.pane = $0 }, openTerminal: attachLog,
                           onPrepareMain: { state.showPipeline = true })
         case .prs:    PRsBoard(workspace: workspace)
+        case .git:    GitPanel(workspace: workspace).id("git-\(safeWs)")
         case .jira:   JiraPane(workspace: workspace)
         case .database: DatabasePane(workspace: workspace).id("db-\(safeWs)")
         case .review:
@@ -266,9 +268,10 @@ struct WorkspacePaneInner: View {
             Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
             navBtn(.services, "1", "Services")
             navBtn(.prs, "2", "PRs")
-            navBtn(.jira, "3", "Jira")
-            navBtn(.database, "4", "Database")
-            navBtn(.review, "5", "Review")
+            navBtn(.git, "3", "Git")
+            navBtn(.jira, "4", "Jira")
+            navBtn(.database, "5", "Database")
+            navBtn(.review, "6", "Review")
             editorBtn
             if spread { Spacer(minLength: 8) } else { Spacer().frame(width: 10) }
             agentToggle

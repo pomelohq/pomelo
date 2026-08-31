@@ -167,6 +167,8 @@ final class PomCore: @unchecked Sendable {
     func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data { command(domain: "network", action: "set_ports", params: jp(["proxy_port": proxyPort, "webhook_port": webhookPort])) }
     @discardableResult
     func networkStart() -> Data { command(domain: "network", action: "start", params: Data("{}".utf8)) }
+    func remoteInfoData() -> Data { query(domain: "remote_info", params: Data("{}".utf8)) }
+    func remoteSet(enabled: Bool) -> Data { command(domain: "remote", action: "set", params: jp(["enabled": enabled])) }
     func devProxyLogData(limit: Int) -> Data { query(domain: "devproxy_log", params: jp(["limit": limit])) }
     func paneBusyData(holder: String) -> Data { query(domain: "pane_busy", params: jp(["holder": holder])) }
     func sessionListData() -> Data { query(domain: "session_list", params: Data("{}".utf8)) }
@@ -190,6 +192,17 @@ final class PomCore: @unchecked Sendable {
     @discardableResult
     func gitPull(branch: String, repo: String, isMain: Bool) -> Data { command(domain: "git", action: "pull", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
     func githubTest(token: String) -> Data { command(domain: "github", action: "test", params: jp(["token": token])) }
+    func gitStatusData(branch: String, isMain: Bool) -> Data { query(domain: "git_status", params: jp(["branch": branch, "is_main": isMain])) }
+    @discardableResult
+    func gitStage(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data { command(domain: "git", action: "stage", params: jp(["branch": branch, "repo": repo, "is_main": isMain, "paths": paths])) }
+    @discardableResult
+    func gitUnstage(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data { command(domain: "git", action: "unstage", params: jp(["branch": branch, "repo": repo, "is_main": isMain, "paths": paths])) }
+    @discardableResult
+    func gitDiscard(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data { command(domain: "git", action: "discard", params: jp(["branch": branch, "repo": repo, "is_main": isMain, "paths": paths])) }
+    @discardableResult
+    func gitCommit(branch: String, repo: String, isMain: Bool, message: String) -> Data { command(domain: "git", action: "commit", params: jp(["branch": branch, "repo": repo, "is_main": isMain, "message": message])) }
+    @discardableResult
+    func gitPush(branch: String, repo: String, isMain: Bool) -> Data { command(domain: "git", action: "push", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
     func prAllData() -> Data { fetch(domain: "pr_all", params: Data("{}".utf8)) }
     func prWorkspaceData(branch: String, isMain: Bool) -> Data { fetch(domain: "pr_workspace", params: jp(["branch": branch, "is_main": isMain])) }
     func prDetailData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "pr_detail", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }

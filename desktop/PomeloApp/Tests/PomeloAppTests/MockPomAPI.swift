@@ -107,6 +107,10 @@ final class MockPomAPI: PomAPI {
     func networkData() -> Data { Data("{}".utf8) }
     func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data { Data(#"{"ok":true}"#.utf8) }
     func networkStart() -> Data { Data("{}".utf8) }
+    var remoteInfoJSON = #"{"enabled":false,"host":"192.168.1.5"}"#
+    private(set) var remoteSetCalls: [Bool] = []
+    func remoteInfoData() -> Data { Data(remoteInfoJSON.utf8) }
+    func remoteSet(enabled: Bool) -> Data { remoteSetCalls.append(enabled); return Data(#"{"ok":true,"enabled":\#(enabled)}"#.utf8) }
     func devProxyLogData(limit: Int) -> Data { Data(#"{"entries":[]}"#.utf8) }
     func paneBusyData(holder: String) -> Data { Data(#"{"busy":false}"#.utf8) }
     var sessionListJSON = #"{"sessions":[]}"#
@@ -115,4 +119,13 @@ final class MockPomAPI: PomAPI {
     func sessionDelete(name: String, purge: Bool) -> Data { Data(#"{"ok":true}"#.utf8) }
     func sessionCreate(json: String) -> Data { Data(#"{"ok":true}"#.utf8) }
 
+    var gitStatusJSON = #"{"repos":[]}"#
+    private(set) var gitCalls: [(String, String, [String])] = []   // (action, repo, paths)
+    private(set) var gitCommitCalls: [(String, String)] = []       // (repo, message)
+    func gitStatusData(branch: String, isMain: Bool) -> Data { Data(gitStatusJSON.utf8) }
+    func gitStage(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data { gitCalls.append(("stage", repo, paths)); return Data(#"{"ok":true}"#.utf8) }
+    func gitUnstage(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data { gitCalls.append(("unstage", repo, paths)); return Data(#"{"ok":true}"#.utf8) }
+    func gitDiscard(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data { gitCalls.append(("discard", repo, paths)); return Data(#"{"ok":true}"#.utf8) }
+    func gitCommit(branch: String, repo: String, isMain: Bool, message: String) -> Data { gitCommitCalls.append((repo, message)); return Data(#"{"ok":true}"#.utf8) }
+    func gitPush(branch: String, repo: String, isMain: Bool) -> Data { gitCalls.append(("push", repo, [])); return Data(#"{"ok":true}"#.utf8) }
 }

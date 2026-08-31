@@ -1,0 +1,11 @@
+build/
+.ddata/
+.xbuild/
+.build/
+.spm/
+DerivedData/
+*.xcarchive
+*.ipa
+default.profraw
+xcuserdata/
+Makefile.local

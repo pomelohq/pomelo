@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -9,6 +10,38 @@ import (
 	"github.com/pomelohq/pomelo/internal/pipeline"
 	"github.com/pomelohq/pomelo/internal/services"
 )
+
+// CreateWorkspaceRemote kicks off a workspace create for the remote (phone). It
+// runs the pipeline in the background and returns immediately; the phone polls
+// the workspace list to see it appear (create can take minutes).
+func (s *Server) CreateWorkspaceRemote(branch string, repos []string, displayName string) map[string]any {
+	if s.cfg() == nil {
+		return map[string]any{"ok": false, "error": "no project config"}
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return map[string]any{"ok": false, "error": "branch required"}
+	}
+	combo := ""
+	for k := range s.cfg().AllWorkspaces() {
+		combo = k
+		break
+	}
+	cfgPath := s.WorkspaceRoot + "/pom.yml"
+	cfg := s.cfg()
+	reposCSV := strings.Join(repos, ",")
+	dn := strings.TrimSpace(displayName)
+	go func() {
+		if err := commands.WorkspaceCreate(cfg, cfgPath, combo, branch, 0, reposCSV, "", false); err != nil {
+			log.Printf("remote create workspace %q: %v", branch, err)
+			return
+		}
+		if dn != "" {
+			s.WorkspaceRename(branch, false, dn)
+		}
+	}()
+	return map[string]any{"ok": true, "branch": branch}
+}
 
 type createReq struct {
 	Combo  string   `json:"combo"`

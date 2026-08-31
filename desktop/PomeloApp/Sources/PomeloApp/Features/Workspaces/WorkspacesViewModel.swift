@@ -2,14 +2,26 @@ import Foundation
 
 @MainActor
 final class WorkspacesViewModel: ObservableObject {
-    @Published var workspaces: [Workspace] = []
+    @Published var workspaces: [Workspace] = [] {
+        didSet { if oldValue.isEmpty && !workspaces.isEmpty { pushOrder() } } // first load = core is ready
+    }
     @Published var selection: String?
     @Published var wsOrder: [String] = (UserDefaults.standard.array(forKey: "wsOrder") as? [String]) ?? [] {
-        didSet { UserDefaults.standard.set(wsOrder, forKey: "wsOrder") }
+        didSet { UserDefaults.standard.set(wsOrder, forKey: "wsOrder"); pushOrder() }
     }
 
     private let api: WorkspaceAPI
-    init(api: WorkspaceAPI = PomCore.shared) { self.api = api }
+    init(api: WorkspaceAPI = PomCore.shared) { self.api = api; pushOrder() }
+
+    // Mirror the drag-order into the core so the remote (phone) shows the same order.
+    private func pushOrder() {
+        let ids = wsOrder
+        Task.detached {
+            if let data = try? JSONSerialization.data(withJSONObject: ["order": ids]) {
+                _ = PomCore.shared.command(domain: "ws", action: "order_set", params: data)
+            }
+        }
+    }
 
     var mainWorkspaces: [Workspace] { WorkspacesVM.mainWorkspaces(workspaces) }
     var orderedNonMain: [Workspace] { WorkspacesVM.orderedNonMain(workspaces, order: wsOrder) }

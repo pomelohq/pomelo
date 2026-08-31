@@ -53,6 +53,8 @@ protocol ConfigAPI: PomBaseAPI {
     func networkSetPorts(proxyPort: Int, webhookPort: Int) -> Data
     func networkStart() -> Data
     func devProxyLogData(limit: Int) -> Data
+    func remoteInfoData() -> Data
+    func remoteSet(enabled: Bool) -> Data
 }
 
 protocol DBAPI: PomBaseAPI {
@@ -101,6 +103,15 @@ protocol PRAPI: PomBaseAPI {
     func reviewThreadResolve(branch: String, isMain: Bool, id: String, resolved: Bool) -> Data
 }
 
+protocol GitAPI: PomBaseAPI {
+    func gitStatusData(branch: String, isMain: Bool) -> Data
+    func gitStage(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data
+    func gitUnstage(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data
+    func gitDiscard(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data
+    func gitCommit(branch: String, repo: String, isMain: Bool, message: String) -> Data
+    func gitPush(branch: String, repo: String, isMain: Bool) -> Data
+}
+
 protocol JiraAPI: PomBaseAPI {
     func jiraBoardsData() -> Data
     func jiraSprintData(board: Int) -> Data
@@ -137,6 +148,6 @@ protocol CoreAPI: PomBaseAPI {
 }
 
 protocol PomAPI: WorkspaceAPI, TerminalAPI, ServiceAPI, ConfigAPI, DBAPI,
-    SharedServiceAPI, SecretsAPI, PRAPI, JiraAPI, SessionAPI, BundleAPI, CoreAPI {}
+    SharedServiceAPI, SecretsAPI, PRAPI, GitAPI, JiraAPI, SessionAPI, BundleAPI, CoreAPI {}
 
 extension PomCore: PomAPI {}

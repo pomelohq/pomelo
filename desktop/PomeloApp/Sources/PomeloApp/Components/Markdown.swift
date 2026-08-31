@@ -244,10 +244,14 @@ struct MarkdownText: View {
                 .tint(Theme.accent).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         case .code(let s):
-            Text(s).font(Theme.mono(11.5)).foregroundStyle(Theme.fg)
-                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10).background(Theme.panel3, in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
+            ScrollView(.horizontal, showsIndicators: true) {
+                Text(s).font(Theme.mono(11.5)).foregroundStyle(Theme.fg)
+                    .textSelection(.enabled).fixedSize(horizontal: true, vertical: false)
+                    .padding(10)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.panel3, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
         case .list(let items):
             VStack(alignment: .leading, spacing: reading ? 6 : 4) {
                 ForEach(Array(markers(items).enumerated()), id: \.offset) { _, row in

@@ -1,10 +1,12 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -77,11 +79,45 @@ func FetchUpstream(wt string) {
 }
 
 func LocalChangeStat(base, wt string) (files, insertions, deletions int) {
-	out, err := exec.Command("git", "-C", wt, "diff", "--shortstat", base).Output()
-	if err != nil {
-		return 0, 0, 0
+	if out, err := exec.Command("git", "-C", wt, "diff", "--shortstat", base).Output(); err == nil {
+		files, insertions, deletions = parseShortstat(string(out))
 	}
-	return parseShortstat(string(out))
+	uf, ul := untrackedStat(wt)
+	files += uf
+	insertions += ul
+	return
+}
+
+func UntrackedFiles(wt string) []string {
+	out, err := exec.Command("git", "-C", wt, "ls-files", "--others", "--exclude-standard", "-z").Output()
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, name := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func untrackedStat(wt string) (files, lines int) {
+	for _, name := range UntrackedFiles(wt) {
+		files++
+		p := filepath.Join(wt, name)
+		info, err := os.Stat(p)
+		if err != nil || info.Size() > 2<<20 {
+			continue
+		}
+		if data, err := os.ReadFile(p); err == nil {
+			lines += bytes.Count(data, []byte{'\n'})
+			if len(data) > 0 && data[len(data)-1] != '\n' {
+				lines++
+			}
+		}
+	}
+	return
 }
 
 func parseShortstat(s string) (files, insertions, deletions int) {

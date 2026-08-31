@@ -279,6 +279,7 @@ private struct NetworkSettings: View {
                 } header: { Text("Webhook fan-out") } footer: {
                     Text("Point an external webhook (Stripe, Twilio, …) at /<repo>/<service> on this port — it fans out to every workspace running that service. Auto-mapped — no config.")
                 }
+                RemoteControlSettings()
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)

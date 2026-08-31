@@ -637,6 +637,10 @@ func (s *Feature) LocalDiff(branch, repo string, isMain bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, name := range services.UntrackedFiles(wt) {
+		d, _ := services.RunTimeout(10*time.Second, wt, "git", "diff", "--no-index", "--", "/dev/null", name)
+		out = append(out, d...)
+	}
 	if len(out) > maxDiffBytes {
 		return append(out[:maxDiffBytes], []byte("\n… diff truncated (too large)\n")...), nil
 	}

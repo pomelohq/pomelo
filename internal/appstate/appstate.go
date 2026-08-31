@@ -21,9 +21,16 @@ type SyncConfig struct {
 	RefreshIntervalSec int  `json:"refresh_interval_sec,omitempty"`
 }
 
+type RemoteConfig struct {
+	Enabled bool   `json:"enabled"`
+	Token   string `json:"token,omitempty"`
+	Port    int    `json:"port,omitempty"`
+}
+
 type State struct {
-	Jira JiraConfig `json:"jira"`
-	Sync SyncConfig `json:"sync"`
+	Jira   JiraConfig   `json:"jira"`
+	Sync   SyncConfig   `json:"sync"`
+	Remote RemoteConfig `json:"remote"`
 }
 
 var mu sync.Mutex
