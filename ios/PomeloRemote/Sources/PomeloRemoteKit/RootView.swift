@@ -278,22 +278,38 @@ public struct RootView: View {
         }
     }
 
+    private struct DeviceResult { let id: String; let ok: Bool; let stat: DeviceStat?; let usage: ClaudeUsage? }
+
     private func refreshOnce() async {
-        for d in store.devices {
-            let client = RemoteClient(device: d)
-            let ok = (try? await client.ping()) ?? false
-            reachable[d.id] = ok
-            if ok, let data = try? await client.query("workspaces", ["git": false]),
-               let p = PomJSON.decode(WorkspacesPayload.self, from: data) {
-                let ws = p.workspaces
-                stats[d.id] = DeviceStat(ws: ws.count,
-                                         running: ws.filter { $0.running > 0 }.count,
-                                         agents: ws.filter { $0.agents.contains { agentOrbActive($0.state) } }.count)
+        let results = await withTaskGroup(of: DeviceResult.self) { group -> [DeviceResult] in
+            for d in store.devices {
+                group.addTask {
+                    let client = RemoteClient(device: d)
+                    let ok = (try? await client.ping()) ?? false
+                    guard ok else { return DeviceResult(id: d.id, ok: false, stat: nil, usage: nil) }
+                    var stat: DeviceStat?
+                    if let data = try? await client.query("workspaces", ["git": false]),
+                       let p = PomJSON.decode(WorkspacesPayload.self, from: data) {
+                        let ws = p.workspaces
+                        stat = DeviceStat(ws: ws.count,
+                                          running: ws.filter { $0.running > 0 }.count,
+                                          agents: ws.filter { $0.agents.contains { agentOrbActive($0.state) } }.count)
+                    }
+                    var usage: ClaudeUsage?
+                    if let u = try? await client.claudeUsage(), let cu = PomJSON.decode(ClaudeUsage.self, from: u) {
+                        usage = cu
+                    }
+                    return DeviceResult(id: d.id, ok: true, stat: stat, usage: usage)
+                }
             }
-            if ok, let u = try? await client.claudeUsage(),
-               let cu = PomJSON.decode(ClaudeUsage.self, from: u) {
-                usage[d.id] = cu
-            }
+            var out: [DeviceResult] = []
+            for await r in group { out.append(r) }
+            return out
+        }
+        for r in results {
+            reachable[r.id] = r.ok
+            if let s = r.stat { stats[r.id] = s }
+            if let u = r.usage { usage[r.id] = u }
         }
     }
 }

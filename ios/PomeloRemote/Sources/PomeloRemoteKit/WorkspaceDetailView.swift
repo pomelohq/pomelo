@@ -22,10 +22,12 @@ struct WorkspaceDetailView: View {
                 .background(Theme.bgSoft)
             }
 
-            switch tab {
-            case .agent: AgentView(client: client, workspace: workspace)
-            case .jira: JiraTab(client: client, workspace: workspace)
-            case .prs: PRsTab(client: client, workspace: workspace)
+            ZStack {
+                AgentView(client: client, workspace: workspace)
+                    .opacity(tab == .agent ? 1 : 0)
+                    .allowsHitTesting(tab == .agent)
+                if tab == .jira { JiraTab(client: client, workspace: workspace) }
+                if tab == .prs { PRsTab(client: client, workspace: workspace) }
             }
         }
         .background(Theme.bg.ignoresSafeArea())

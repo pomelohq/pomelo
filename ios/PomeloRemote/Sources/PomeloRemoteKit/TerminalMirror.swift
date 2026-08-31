@@ -20,23 +20,43 @@ final class TerminalController: ObservableObject {
         start()
     }
 
+    private var userClosed = false
+    private var failures = 0
+
     func start() {
         guard task == nil, let client, !window.isEmpty else { return }
         ended = false
+        userClosed = false
+        let startedAt = Date()
         task = Task { [weak self] in
             do {
                 for try await frame in client.ptyStream(window: self?.window ?? "", cols: 0, rows: 0) {
                     if case .output(let bytes) = frame { self?.view?.feed(byteArray: bytes[...]) }
                 }
             } catch {}
-            if !Task.isCancelled { self?.ended = true }
-            self?.task = nil
+            guard let self else { return }
+            self.task = nil
+            if Task.isCancelled || self.userClosed { return }
+            self.failures = Date().timeIntervalSince(startedAt) > 1.5 ? 0 : self.failures + 1
+            if self.failures >= 4 { self.ended = true; return }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                guard let self, self.task == nil, !self.userClosed else { return }
+                self.start()
+            }
         }
+    }
+
+    func resumeIfDropped() {
+        guard task == nil, !userClosed, !ended else { return }
+        failures = 0
+        start()
     }
 
     func close() {
         guard let client, !window.isEmpty else { return }
         let w = window
+        userClosed = true
         Task { await client.closeAgent(window: w) }
         task?.cancel(); task = nil
         ended = true
@@ -49,6 +69,14 @@ final class TerminalController: ObservableObject {
 
     func input(_ bytes: [UInt8]) {
         guard let client, !window.isEmpty else { return }
+        Task { await client.ptyInput(window: window, data: bytes) }
+    }
+
+    func wheel(up: Bool, count: Int) {
+        guard let client, !window.isEmpty, count > 0 else { return }
+        let cb = up ? 64 : 65
+        var bytes: [UInt8] = []
+        for _ in 0..<min(count, 6) { bytes += Array("\u{1b}[<\(cb);1;1M".utf8) }
         Task { await client.ptyInput(window: window, data: bytes) }
     }
 

@@ -8,7 +8,6 @@ final class RemoteClient: NSObject, URLSessionDelegate {
     private lazy var session: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 20
-        cfg.waitsForConnectivity = true
         return URLSession(configuration: cfg, delegate: self, delegateQueue: nil)
     }()
 
@@ -139,7 +138,9 @@ final class RemoteClient: NSObject, URLSessionDelegate {
 
     func ping() async throws -> Bool {
         guard let url = device.baseURL?.appendingPathComponent("ping") else { throw RemoteError.badURL }
-        let (_, resp) = try await session.data(from: url)
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 5
+        let (_, resp) = try await session.data(for: req)
         return (resp as? HTTPURLResponse)?.statusCode == 200
     }
 

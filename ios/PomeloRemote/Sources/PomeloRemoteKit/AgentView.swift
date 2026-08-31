@@ -13,7 +13,9 @@ struct AgentView: View {
     @State private var loadError = ""
     @State private var kbHeight: CGFloat = 0
     @State private var restartToken = 0
+    @State private var scrollTicks = 0
     @FocusState private var inputFocused: Bool
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("claudeFontSize") private var fontSize: Double = 12
 
     var body: some View {
@@ -38,6 +40,17 @@ struct AgentView: View {
                             .id(restartToken)
                             .contentShape(Rectangle())
                             .onTapGesture { inputFocused = false }
+                            .gesture(
+                                DragGesture(minimumDistance: 12)
+                                    .onChanged { v in
+                                        let ticks = Int(v.translation.height / 24)
+                                        if ticks != scrollTicks {
+                                            ctl.wheel(up: ticks > scrollTicks, count: abs(ticks - scrollTicks))
+                                            scrollTicks = ticks
+                                        }
+                                    }
+                                    .onEnded { _ in scrollTicks = 0 }
+                            )
                         keyBar
                         messageBar
                     }
@@ -49,6 +62,7 @@ struct AgentView: View {
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .task { await resolve() }
         .onDisappear { ctl.stop() }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { ctl.resumeIfDropped() } }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { n in
             guard let f = n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
             kbHeight = max(0, UIScreen.main.bounds.height - f.origin.y)
