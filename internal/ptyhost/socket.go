@@ -24,7 +24,45 @@ const (
 	frameInput   = 0x00
 	frameResize  = 0x01
 	framePrimary = 0x02
+	frameResume  = 0x03
 )
+
+// Holder -> client output frames. The snapshot (scrollback replay) is framed so a
+// reconnecting client can reset before it and resume from a byte offset, instead of
+// interleaving the replay with its stale screen. After OutSnapEnd the rest of the
+// connection is raw live output.
+const (
+	OutMeta    = 0x10 // payload: 8-byte big-endian end sequence (offset after snapshot)
+	OutSnap    = 0x11 // payload: a chunk of scrollback
+	OutSnapEnd = 0x12 // zero-length: snapshot done, raw live output follows
+)
+
+type OutFrame struct {
+	Type    byte
+	Payload []byte
+}
+
+// ReadOutFrame reads one framed output message (OutMeta/OutSnap/OutSnapEnd).
+func ReadOutFrame(r *bufio.Reader) (OutFrame, error) {
+	hdr := make([]byte, 3)
+	if _, err := io.ReadFull(r, hdr); err != nil {
+		return OutFrame{}, err
+	}
+	n := int(binary.BigEndian.Uint16(hdr[1:3]))
+	payload := make([]byte, n)
+	if n > 0 {
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return OutFrame{}, err
+		}
+	}
+	return OutFrame{Type: hdr[0], Payload: payload}, nil
+}
+
+func WriteResume(w io.Writer, since uint64) error {
+	p := make([]byte, 8)
+	binary.BigEndian.PutUint64(p, since)
+	return writeFrame(w, frameResume, p)
+}
 
 func ptySockDir() string {
 	if d := os.Getenv("POM_PTY_SOCK_DIR"); d != "" {
@@ -386,15 +424,18 @@ func Snapshot(name string, timeout time.Duration) []byte {
 		return nil
 	}
 	defer c.Close()
+	_ = WriteResume(c, 0)
 	_ = c.SetReadDeadline(time.Now().Add(timeout))
+	r := bufio.NewReader(c)
 	var buf []byte
-	tmp := make([]byte, 32*1024)
 	for len(buf) < ringCap {
-		n, err := c.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
+		fr, err := ReadOutFrame(r)
 		if err != nil {
+			break
+		}
+		if fr.Type == OutSnap {
+			buf = append(buf, fr.Payload...)
+		} else if fr.Type == OutSnapEnd {
 			break
 		}
 	}
@@ -538,18 +579,40 @@ func csiIsQuery(seq []byte) bool {
 
 func serveConn(s *Session, conn net.Conn) {
 	defer conn.Close()
-	snap, out, cancel := s.Subscribe()
+	r := bufio.NewReader(conn)
+
+	since, pending := readLeadingResume(r, conn)
+
+	snap, endSeq, out, cancel := s.SubscribeSince(since)
 	defer cancel()
 
 	clientID := s.AddClient()
 	defer s.RemoveClient(clientID)
 
-	if _, err := conn.Write(stripDeviceQueries(snap)); err != nil {
+	seqBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(seqBuf, endSeq)
+	if writeFrame(conn, OutMeta, seqBuf) != nil {
+		return
+	}
+	strip := stripDeviceQueries(snap)
+	for len(strip) > 0 {
+		n := len(strip)
+		if n > 32*1024 {
+			n = 32 * 1024
+		}
+		if writeFrame(conn, OutSnap, strip[:n]) != nil {
+			return
+		}
+		strip = strip[n:]
+	}
+	if writeFrame(conn, OutSnapEnd, nil) != nil {
 		return
 	}
 
 	go func() {
-		r := bufio.NewReader(conn)
+		if pending != nil {
+			applyInputFrame(s, clientID, pending.Type, pending.Payload)
+		}
 		hdr := make([]byte, 3)
 		for {
 			if _, err := io.ReadFull(r, hdr); err != nil {
@@ -560,17 +623,7 @@ func serveConn(s *Session, conn net.Conn) {
 			if _, err := io.ReadFull(r, payload); err != nil {
 				return
 			}
-			switch hdr[0] {
-			case frameInput:
-				_, _ = s.Write(payload)
-			case frameResize:
-				if len(payload) == 4 {
-					s.ClientSize(clientID, int(binary.BigEndian.Uint16(payload[0:2])),
-						int(binary.BigEndian.Uint16(payload[2:4])))
-				}
-			case framePrimary:
-				s.SetClientPrimary(clientID)
-			}
+			applyInputFrame(s, clientID, hdr[0], payload)
 		}
 	}()
 
@@ -578,6 +631,44 @@ func serveConn(s *Session, conn net.Conn) {
 		if _, err := conn.Write(chunk); err != nil {
 			return
 		}
+	}
+}
+
+// readLeadingResume reads the client's optional resume offset (sent first). Callers
+// that send no frame promptly (e.g. a one-shot Snapshot reader) fall through after a
+// short wait and get the full snapshot; a non-resume first frame is handed back so
+// the input loop still applies it.
+func readLeadingResume(r *bufio.Reader, conn net.Conn) (since uint64, pending *OutFrame) {
+	_ = conn.SetReadDeadline(time.Now().Add(40 * time.Millisecond))
+	defer conn.SetReadDeadline(time.Time{})
+	hdr := make([]byte, 3)
+	if _, err := io.ReadFull(r, hdr); err != nil {
+		return 0, nil
+	}
+	n := int(binary.BigEndian.Uint16(hdr[1:3]))
+	payload := make([]byte, n)
+	if n > 0 {
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return 0, nil
+		}
+	}
+	if hdr[0] == frameResume && len(payload) == 8 {
+		return binary.BigEndian.Uint64(payload), nil
+	}
+	return 0, &OutFrame{Type: hdr[0], Payload: payload}
+}
+
+func applyInputFrame(s *Session, clientID uint64, typ byte, payload []byte) {
+	switch typ {
+	case frameInput:
+		_, _ = s.Write(payload)
+	case frameResize:
+		if len(payload) == 4 {
+			s.ClientSize(clientID, int(binary.BigEndian.Uint16(payload[0:2])),
+				int(binary.BigEndian.Uint16(payload[2:4])))
+		}
+	case framePrimary:
+		s.SetClientPrimary(clientID)
 	}
 }
 

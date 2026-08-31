@@ -19,7 +19,7 @@ type PTYFeeder interface{ Feed(data []byte) }
 // PTYStreamer mirrors an interactive terminal holder (the Claude Code TUI the
 // desktop shows) to the phone: snapshot scrollback plus live output.
 type PTYStreamer interface {
-	OpenPTY(sink stream.Sink, done <-chan struct{}, name, wsKey string, cols, rows int) (PTYFeeder, error)
+	OpenPTY(sink stream.Sink, done <-chan struct{}, name, wsKey string, cols, rows int, since uint64) (PTYFeeder, error)
 }
 
 func (s *Server) SetPTYStreamer(p PTYStreamer) { s.pty = p }
@@ -71,6 +71,7 @@ func (s *Server) handlePTYStream(w http.ResponseWriter, r *http.Request) {
 	}
 	cols, _ := strconv.Atoi(q.Get("cols"))
 	rows, _ := strconv.Atoi(q.Get("rows"))
+	since, _ := strconv.ParseUint(q.Get("since"), 10, 64)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -79,7 +80,7 @@ func (s *Server) handlePTYStream(w http.ResponseWriter, r *http.Request) {
 	f.Flush()
 
 	done := make(chan struct{})
-	feeder, err := s.pty.OpenPTY(&ptySSESink{w: w, f: f, ctx: r.Context()}, done, window, q.Get("ws_key"), cols, rows)
+	feeder, err := s.pty.OpenPTY(&ptySSESink{w: w, f: f, ctx: r.Context()}, done, window, q.Get("ws_key"), cols, rows, since)
 	if err != nil {
 		close(done)
 		return

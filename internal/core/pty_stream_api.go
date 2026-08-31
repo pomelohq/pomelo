@@ -27,7 +27,7 @@ func (p PtyInput) Feed(data []byte) {
 	_ = ptyhost.WriteInput(p.sock, data)
 }
 
-func (s *Server) OpenPTYStream(sink stream.Sink, name, wsKey string, cols, rows int, done <-chan struct{}) (PtyInput, error) {
+func (s *Server) OpenPTYStream(sink stream.Sink, name, wsKey string, cols, rows int, since uint64, done <-chan struct{}) (PtyInput, error) {
 	if name == "" {
 		name = "shell"
 	}
@@ -35,6 +35,7 @@ func (s *Server) OpenPTYStream(sink stream.Sink, name, wsKey string, cols, rows 
 	if err != nil {
 		return PtyInput{}, err
 	}
+	_ = ptyhost.WriteResume(sock, since)
 	_ = ptyhost.WritePrimary(sock)
 	if cols > 0 && rows > 0 {
 		_ = ptyhost.WriteResize(sock, cols, rows)

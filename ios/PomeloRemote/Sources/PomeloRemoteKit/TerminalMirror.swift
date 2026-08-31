@@ -65,6 +65,7 @@ final class TerminalController: ObservableObject {
 
     private var userClosed = false
     private var failures = 0
+    private var offset: UInt64 = 0
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
 
     // Hold a background assertion so a brief app switch doesn't suspend the app and
@@ -92,19 +93,27 @@ final class TerminalController: ObservableObject {
         if reconnect { container?.showFreeze() }
         let startedAt = Date()
         task = Task { [weak self] in
-            var frozen = reconnect
+            let since = self?.offset ?? 0
             do {
-                for try await frame in client.ptyStream(window: self?.window ?? "", cols: 0, rows: 0) {
-                    if case .output(let bytes) = frame {
-                        self?.view?.feed(byteArray: bytes[...])
-                        if frozen {
-                            frozen = false
-                            let c = self?.container
-                            Task { @MainActor in
-                                try? await Task.sleep(nanoseconds: 180_000_000)
-                                c?.hideFreeze()
-                            }
+                for try await frame in client.ptyStream(window: self?.window ?? "", cols: 0, rows: 0, since: since) {
+                    guard let self else { break }
+                    switch frame {
+                    case .reset:
+                        // Server sends this before a scrollback replay so the buffer
+                        // rebuilds clean instead of interleaving with the stale screen.
+                        self.view?.feed(byteArray: Array("\u{1b}c".utf8)[...])
+                    case .output(let bytes):
+                        self.view?.feed(byteArray: bytes[...])
+                        self.offset += UInt64(bytes.count)
+                    case .synced(let seq):
+                        self.offset = seq
+                        let c = self.container
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 120_000_000)
+                            c?.hideFreeze()
                         }
+                    case .control:
+                        break
                     }
                 }
             } catch {}

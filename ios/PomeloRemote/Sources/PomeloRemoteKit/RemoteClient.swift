@@ -45,9 +45,9 @@ final class RemoteClient: NSObject, URLSessionDelegate {
         _ = try? await rpc("/rpc/pty/resize", ["window": window, "cols": cols, "rows": rows])
     }
 
-    enum PTYFrame { case output([UInt8]); case control(String) }
+    enum PTYFrame { case output([UInt8]); case control(String); case reset; case synced(UInt64) }
 
-    func ptyStream(window: String, cols: Int, rows: Int) -> AsyncThrowingStream<PTYFrame, Error> {
+    func ptyStream(window: String, cols: Int, rows: Int, since: UInt64) -> AsyncThrowingStream<PTYFrame, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -58,6 +58,7 @@ final class RemoteClient: NSObject, URLSessionDelegate {
                         .init(name: "window", value: window),
                         .init(name: "cols", value: String(cols)),
                         .init(name: "rows", value: String(rows)),
+                        .init(name: "since", value: String(since)),
                     ]
                     guard let url = comps.url else { throw RemoteError.badURL }
                     let (bytes, resp) = try await session.bytes(for: URLRequest(url: url))
@@ -73,7 +74,14 @@ final class RemoteClient: NSObject, URLSessionDelegate {
                         if tag == "b", let d = Data(base64Encoded: rest) {
                             continuation.yield(.output([UInt8](d)))
                         } else if tag == "c" {
-                            continuation.yield(.control(rest))
+                            if rest.contains("\"reset\"") {
+                                continuation.yield(.reset)
+                            } else if rest.contains("\"synced\""),
+                                      let seq = Self.parseSyncedSeq(rest) {
+                                continuation.yield(.synced(seq))
+                            } else {
+                                continuation.yield(.control(rest))
+                            }
                         }
                     }
                     continuation.finish()
@@ -83,6 +91,12 @@ final class RemoteClient: NSObject, URLSessionDelegate {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private static func parseSyncedSeq(_ s: String) -> UInt64? {
+        guard let r = s.range(of: "\"seq\":") else { return nil }
+        let digits = s[r.upperBound...].prefix { $0.isNumber }
+        return UInt64(digits)
     }
 
     func jiraIssues(branches: [String]) async throws -> Data {

@@ -90,7 +90,7 @@ func PomSubscribe(topic, paramsJSON *C.char) C.int {
 		}
 		id := nextStreamID()
 		done := make(chan struct{})
-		input, err := s.OpenPTYStream(cgoSink{id: id}, str("name"), str("ws_key"), num("cols"), num("rows"), done)
+		input, err := s.OpenPTYStream(cgoSink{id: id}, str("name"), str("ws_key"), num("cols"), num("rows"), uint64(num("since")), done)
 		if err != nil {
 			close(done)
 			return -1

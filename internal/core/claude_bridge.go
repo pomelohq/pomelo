@@ -39,8 +39,8 @@ func (s *Server) AgentSend(branch string, isMain bool, mode, model, text string)
 
 // OpenPTY satisfies remote.PTYStreamer, mirroring an interactive terminal holder
 // (e.g. the Claude Code TUI) to a paired phone with its scrollback and live output.
-func (s *Server) OpenPTY(sink stream.Sink, done <-chan struct{}, name, wsKey string, cols, rows int) (remote.PTYFeeder, error) {
-	return s.OpenPTYStream(sink, name, wsKey, cols, rows, done)
+func (s *Server) OpenPTY(sink stream.Sink, done <-chan struct{}, name, wsKey string, cols, rows int, since uint64) (remote.PTYFeeder, error) {
+	return s.OpenPTYStream(sink, name, wsKey, cols, rows, since, done)
 }
 
 func (s *Server) OpenClaudeStream(sink stream.Sink, done <-chan struct{}, branch string, isMain bool, mode, model, role string) ClaudeInput {

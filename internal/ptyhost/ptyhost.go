@@ -23,9 +23,10 @@ type Session struct {
 	pty pty.Pty
 	cmd *pty.Cmd
 
-	mu   sync.Mutex
-	ring []byte
-	subs map[chan []byte]struct{}
+	mu    sync.Mutex
+	ring  []byte
+	total uint64
+	subs  map[chan []byte]struct{}
 
 	szMu           sync.Mutex
 	szCols, szRows int
@@ -172,6 +173,7 @@ func hasCSIFinal(b []byte) bool {
 func (s *Session) publish(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.total += uint64(len(chunk))
 	s.ring = append(s.ring, chunk...)
 	if len(s.ring) > ringCap {
 		s.ring = append(s.ring[:0], s.ring[len(s.ring)-ringCap:]...)
@@ -228,10 +230,23 @@ func ensureTerm(env []string) []string {
 }
 
 func (s *Session) Subscribe() (snapshot []byte, out <-chan []byte, cancel func()) {
+	snap, _, out, cancel := s.SubscribeSince(0)
+	return snap, out, cancel
+}
+
+// SubscribeSince returns the scrollback tail after the given byte offset (the full
+// ring when the offset is stale or zero) plus endSeq, the absolute offset of the end
+// of that snapshot, so the caller can resume from endSeq on its next connect.
+func (s *Session) SubscribeSince(since uint64) (snapshot []byte, endSeq uint64, out <-chan []byte, cancel func()) {
 	ch := make(chan []byte, 256)
 	s.mu.Lock()
-	snap := make([]byte, len(s.ring))
-	copy(snap, s.ring)
+	endSeq = s.total
+	baseSeq := s.total - uint64(len(s.ring))
+	if since > baseSeq && since <= s.total {
+		snapshot = append([]byte(nil), s.ring[since-baseSeq:]...)
+	} else {
+		snapshot = append([]byte(nil), s.ring...)
+	}
 	s.subs[ch] = struct{}{}
 	s.mu.Unlock()
 
@@ -243,7 +258,7 @@ func (s *Session) Subscribe() (snapshot []byte, out <-chan []byte, cancel func()
 		}
 		s.mu.Unlock()
 	}
-	return snap, ch, cancel
+	return snapshot, endSeq, ch, cancel
 }
 
 func (s *Session) Scrollback() []byte {
