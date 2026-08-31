@@ -175,42 +175,75 @@ struct DiffFilesView: View {
     let emptyLabel: String
 
     var body: some View {
-        Group {
-            if let files {
-                if files.isEmpty {
-                    EmptyStateView(icon: "doc.text", title: emptyLabel)
-                } else {
-                    HStack(spacing: 0) {
-                        if filesTreeVisible {
-                            DiffFileList(files: files, selected: $selFile).frame(width: 260)
-                            Divider().overlay(Theme.borderSoft)
+        GeometryReader { geo in
+            // A 260pt column leaves nothing for the diff in a narrow pane, so below the
+            // threshold the tree floats over it and dismisses once a file is picked.
+            let overlayTree = geo.size.width < PaneMetrics.diffTreeOverlayWidth
+            Group {
+                if let files {
+                    if files.isEmpty {
+                        EmptyStateView(icon: "doc.text", title: emptyLabel)
+                    } else {
+                        HStack(spacing: 0) {
+                            if filesTreeVisible && !overlayTree {
+                                DiffFileList(files: files, selected: $selFile)
+                                    .frame(width: min(260, geo.size.width * 0.4))
+                                Divider().overlay(Theme.borderSoft)
+                            }
+                            VStack(spacing: 0) {
+                                diffModeBar(path: selFile, compact: overlayTree)
+                                Divider().overlay(Theme.borderSoft)
+                                diffBody(files)
+                            }
                         }
-                        VStack(spacing: 0) {
-                            diffModeBar(path: selFile)
-                            Divider().overlay(Theme.borderSoft)
-                            if let f = files.first(where: { $0.path == selFile }) {
-                                if f.lines.isEmpty && !f.binary {
-                                    renamedPlaceholder(f)
-                                } else if f.binary {
-                                    centered("Binary file — no textual diff")
-                                } else if splitDiff {
-                                    SplitDiffRibbon(file: f, isDark: theme.mode.isDark)
-                                } else {
-                                    CodeDiffView(file: f, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode)
-                                }
-                            } else {
-                                centered("Select a file")
+                        .overlay(alignment: .leading) {
+                            if filesTreeVisible && overlayTree {
+                                floatingTree(files, width: min(260, geo.size.width * 0.8))
                             }
                         }
                     }
+                } else {
+                    LoadingView(text: loadingLabel)
                 }
-            } else {
-                LoadingView(text: loadingLabel)
             }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
     }
 
-    private func diffModeBar(path: String?) -> some View {
+    @ViewBuilder private func diffBody(_ files: [DiffFile]) -> some View {
+        if let f = files.first(where: { $0.path == selFile }) {
+            if f.lines.isEmpty && !f.binary {
+                renamedPlaceholder(f)
+            } else if f.binary {
+                centered("Binary file — no textual diff")
+            } else if splitDiff {
+                SplitDiffRibbon(file: f, isDark: theme.mode.isDark)
+            } else {
+                CodeDiffView(file: f, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode)
+            }
+        } else {
+            centered("Select a file")
+        }
+    }
+
+    private func floatingTree(_ files: [DiffFile], width: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            DiffFileList(files: files, selected: Binding(
+                get: { selFile },
+                set: { selFile = $0; withAnimation(.easeInOut(duration: 0.14)) { filesTreeVisible = false } }
+            ))
+            .frame(width: width)
+            .background(Theme.bgSoft)
+            .overlay(alignment: .trailing) { Rectangle().fill(Theme.border).frame(width: 1) }
+            .shadow(color: .black.opacity(0.28), radius: 12, x: 4)
+            Color.black.opacity(0.001)
+                .contentShape(Rectangle())
+                .onTapGesture { withAnimation(.easeInOut(duration: 0.14)) { filesTreeVisible = false } }
+        }
+        .transition(.move(edge: .leading))
+    }
+
+    private func diffModeBar(path: String?, compact: Bool) -> some View {
         let file = files?.first { $0.path == path }
         return HStack(spacing: 4) {
             Button { withAnimation(.easeInOut(duration: 0.14)) { filesTreeVisible.toggle() } } label: {
@@ -235,8 +268,14 @@ struct DiffFilesView: View {
                 .font(Theme.mono(10.5)).lineLimit(1).fixedSize()
                 .padding(.trailing, 4)
             }
-            modeBtn("Unified", "list.bullet", on: !splitDiff) { splitDiff = false }
-            modeBtn("Split", "rectangle.split.2x1", on: splitDiff) { splitDiff = true }
+            // Narrow: one toggle instead of a labelled pair — split diff is unreadable
+            // at this width anyway, so the button says what tapping it switches to.
+            if compact {
+                modeBtn(nil, splitDiff ? "rectangle.split.2x1" : "list.bullet", on: false) { splitDiff.toggle() }
+            } else {
+                modeBtn("Unified", "list.bullet", on: !splitDiff) { splitDiff = false }
+                modeBtn("Split", "rectangle.split.2x1", on: splitDiff) { splitDiff = true }
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(Theme.bgSoft)
@@ -250,13 +289,18 @@ struct DiffFilesView: View {
         }
     }
 
-    private func modeBtn(_ label: String, _ icon: String, on: Bool, _ act: @escaping () -> Void) -> some View {
+    private func modeBtn(_ label: String?, _ icon: String, on: Bool, _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
-            HStack(spacing: 4) { Image(systemName: icon).font(.system(size: 10)); Text(label).font(.system(size: 11)) }
-                .foregroundStyle(on ? Theme.accent : Theme.fgMuted)
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
-        }.buttonStyle(.plain)
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 10))
+                if let label { Text(label).font(.system(size: 11)) }
+            }
+            .foregroundStyle(on ? Theme.accent : Theme.fgMuted)
+            .padding(.horizontal, label == nil ? 6 : 8).padding(.vertical, 3)
+            .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .help(label ?? (splitDiff ? "Switch to unified diff" : "Switch to split diff"))
     }
 
     @ViewBuilder private func renamedPlaceholder(_ f: DiffFile) -> some View {

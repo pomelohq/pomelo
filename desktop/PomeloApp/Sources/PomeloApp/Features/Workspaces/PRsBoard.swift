@@ -200,6 +200,8 @@ struct PRsBoard: View {
     @State private var prs: [WorkspacePR] = []
     @State private var localChanges: [LocalChangeRepo] = []
     @State private var selection: Selection?
+    // Narrow layout only: whether the detail column is showing instead of the list.
+    @State private var drilled = false
     @State private var loading = true
     @State private var refreshing = false
     @State private var pollTask: Task<Void, Never>?
@@ -208,24 +210,13 @@ struct PRsBoard: View {
     @AppStorage("prs.localSectionExpanded") private var localSectionExpanded = true
 
     var body: some View {
-        HStack(spacing: 0) {
-            master.frame(width: masterWidth)
-            SplitHandle(axis: .horizontal, value: $masterWidth, min: 220, max: 640)
+        GeometryReader { geo in
+            let narrow = geo.size.width < PaneMetrics.stackWidth
             Group {
-                switch selection {
-                case .pr(let repo):
-                    if let it = prs.first(where: { $0.repo == repo }) {
-                        PRDetail(item: it, branch: workspace.branch, isMain: workspace.isMain).id("pr:\(it.repo)")
-                    } else { emptyDetail }
-                case .local(let repo):
-                    if let it = localChanges.first(where: { $0.repo == repo }) {
-                        LocalChangesDetail(item: it, branch: workspace.branch, isMain: workspace.isMain).id("local:\(it.repo)")
-                    } else { emptyDetail }
-                case nil:
-                    emptyDetail
-                }
+                if narrow { stacked } else { sideBySide(total: geo.size.width) }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .environment(\.paneNarrow, narrow)
         }
         .background(Theme.bg)
         .task(id: workspace.id) {
@@ -239,6 +230,60 @@ struct PRsBoard: View {
             await load(); startPolling()
         }
         .onDisappear { pollTask?.cancel() }
+    }
+
+    // Wide: master list beside the detail, user-resizable. The master is clamped
+    // against the real width so a dragged-narrow agent split can't starve the detail.
+    private func sideBySide(total: CGFloat) -> some View {
+        let w = min(masterWidth, Swift.max(220, Double(total) - PaneMetrics.minDetail))
+        return HStack(spacing: 0) {
+            master.frame(width: w)
+            SplitHandle(axis: .horizontal, value: $masterWidth, min: 220,
+                        max: Swift.max(220, Double(total) - PaneMetrics.minDetail))
+            detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    // Narrow: one column at a time. The list drills into the detail, which gets a
+    // back button — same idiom as the commit-diff drill-down inside PRDetail.
+    @ViewBuilder private var stacked: some View {
+        if drilled, selection != nil {
+            VStack(spacing: 0) {
+                BackBar(title: selectionTitle) { drilled = false }
+                Divider().overlay(Theme.borderSoft)
+                detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        } else {
+            master.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder private var detail: some View {
+        switch selection {
+        case .pr(let repo):
+            if let it = prs.first(where: { $0.repo == repo }) {
+                PRDetail(item: it, branch: workspace.branch, isMain: workspace.isMain).id("pr:\(it.repo)")
+            } else { emptyDetail }
+        case .local(let repo):
+            if let it = localChanges.first(where: { $0.repo == repo }) {
+                LocalChangesDetail(item: it, branch: workspace.branch, isMain: workspace.isMain).id("local:\(it.repo)")
+            } else { emptyDetail }
+        case nil:
+            emptyDetail
+        }
+    }
+
+    private var selectionTitle: String {
+        switch selection {
+        case .pr(let repo):    return prs.first { $0.repo == repo }?.alias ?? repo
+        case .local(let repo): return localChanges.first { $0.repo == repo }?.alias ?? repo
+        case nil:              return ""
+        }
+    }
+
+    private func select(_ s: Selection) {
+        selection = s
+        drilled = true
     }
 
     private var master: some View {
@@ -262,7 +307,7 @@ struct PRsBoard: View {
                     ForEach(localChanges) { item in
                         LocalChangeRow(item: item, active: selection == .local(item.repo))
                             .contentShape(Rectangle())
-                            .onTapGesture { selection = .local(item.repo) }
+                            .onTapGesture { select(.local(item.repo)) }
                     }
                 }
                 .padding(8)
@@ -289,7 +334,7 @@ struct PRsBoard: View {
                             ForEach(prs) { item in
                                 PRRow(item: item, active: selection == .pr(item.repo))
                                     .contentShape(Rectangle())
-                                    .onTapGesture { selection = .pr(item.repo) }
+                                    .onTapGesture { select(.pr(item.repo)) }
                             }
                         }
                         .padding(8)
@@ -383,18 +428,18 @@ struct PRRow: View {
         .background(active ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 7))
     }
 
+    // Wrapped, not clipped: a narrow master column can't fit draft+CI+review+conflict on one line.
     @ViewBuilder private func badges(_ pr: PRInfo) -> some View {
-        HStack(spacing: 5) {
+        WrapHStack(spacing: 5) {
             if pr.state == "MERGED" {
                 mini("arrow.triangle.merge", "merged", Color(hex: 0xa371f7))   // terminal — CI/review no longer relevant
-                Spacer(minLength: 0)
             } else if pr.state == "CLOSED" {
                 mini("xmark", "closed", Theme.dim)
-                Spacer(minLength: 0)
             } else {
                 openBadges(pr)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder private func openBadges(_ pr: PRInfo) -> some View {
@@ -413,7 +458,6 @@ struct PRRow: View {
             case .none:     EmptyView()
             }
             if pr.conflict { mini("arrow.triangle.merge", "conflict", Theme.danger) }
-            Spacer(minLength: 0)
         }
     }
     private func mini(_ icon: String, _ text: String, _ c: Color) -> some View {
@@ -468,6 +512,7 @@ struct LocalChangeRow: View {
 
 struct LocalChangesDetail: View {
     @EnvironmentObject var theme: ThemeManager
+    @Environment(\.paneNarrow) private var narrow
     let item: LocalChangeRepo
     let branch: String
     let isMain: Bool
@@ -511,6 +556,7 @@ struct LocalChangesDetail: View {
 
 struct PRDetail: View {
     @EnvironmentObject var theme: ThemeManager
+    @Environment(\.paneNarrow) private var narrow
     let item: WorkspacePR
     let branch: String
     let isMain: Bool
@@ -556,31 +602,38 @@ struct PRDetail: View {
                     }.buttonStyle(.plain).help("Open on GitHub")
                 }
                 Text(pr.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg).lineLimit(2)
-                HStack(spacing: 8) {
+                // Author / refs / counts wrap rather than squeezing the branch pair to ellipsis.
+                WrapHStack(spacing: 8, lineSpacing: 3) {
                     if let a = pr.author?.login { Label(a, systemImage: "person.crop.circle").labelStyle(.titleAndIcon).font(.system(size: 11)).foregroundStyle(Theme.fgMuted) }
                     if let h = pr.headRefName, let b = pr.baseRefName {
                         Text("\(h) → \(b)").font(Theme.mono(10.5)).foregroundStyle(Theme.dim).lineLimit(1)
                     }
-                    Spacer()
                     if let a = pr.additions, let d = pr.deletions {
                         Text("+\(a)").font(Theme.mono(11)).foregroundStyle(Theme.ok)
                         Text("-\(d)").font(Theme.mono(11)).foregroundStyle(Theme.danger)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
+            .padding(.horizontal, narrow ? 12 : 16).padding(.vertical, 12)
         } else {
             Text(loadingDetail ? "loading…" : "no open PR").font(.system(size: 13)).foregroundStyle(Theme.fgMuted)
                 .padding(16)
         }
     }
 
+    // Five tabs don't fit a narrow detail column, so let them scroll instead of clip.
     private var tabBar: some View {
-        HStack(spacing: 2) {
-            SegmentedTabs(tabs: Tab.allCases.map { $0 }, selection: $tab, label: { $0.rawValue }, accent: true)
-            Spacer()
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 2) {
+                SegmentedTabs(tabs: Tab.allCases.map { $0 }, selection: $tab, label: { $0.rawValue }, accent: true)
+                Spacer()
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                SegmentedTabs(tabs: Tab.allCases.map { $0 }, selection: $tab, label: { $0.rawValue }, accent: true)
+            }
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
+        .padding(.horizontal, narrow ? 8 : 12).padding(.vertical, 6)
         .background(Theme.bgSoft)
     }
 
@@ -753,7 +806,7 @@ struct PRDetail: View {
                             timelineRow(it, isLast: i == timelineItems.count - 1)
                         }
                     }
-                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .padding(.horizontal, narrow ? 10 : 14).padding(.vertical, 12)
                     .readingColumn(940)
                 }
             }
@@ -762,8 +815,10 @@ struct PRDetail: View {
         .onChange(of: detail) { Task { await loadTimeline() } }
     }
 
-    private let railWidth: CGFloat = 28
-    private let avatarSize: CGFloat = 36
+    // Avatar + rail is 72pt of chrome before a single word of comment; narrow drops
+    // the rail and shrinks the avatar so the text keeps a readable measure.
+    private var railWidth: CGFloat { narrow ? 0 : 28 }
+    private var avatarSize: CGFloat { narrow ? 24 : 36 }
 
     @ViewBuilder private func timelineRow(_ it: PRTimelineItem, isLast: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
@@ -789,7 +844,7 @@ struct PRDetail: View {
                         Spacer()
                     }.frame(height: avatarSize)
                     if !it.body.isEmpty { commentCard(author: it.author, avatar: it.avatar, headline: "left a comment", body: it.body) }
-                    ForEach(it.inline) { rc in inlineCard(rc).padding(.leading, 24) }
+                    ForEach(it.inline) { rc in inlineCard(rc).padding(.leading, narrow ? 0 : 24) }
                 default:
                     if let rc = it.inline.first { inlineCard(rc) }
                 }

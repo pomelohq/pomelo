@@ -10,13 +10,25 @@ final class AppState: ObservableObject {
     weak var uiStore: UIStore?
     weak var themeManager: ThemeManager?
 
+    // A TextField's field editor is an NSTextView, so typing must keep its keys.
+    // The app's own NSTextViews (code diff, narrative) are read-only-but-selectable:
+    // clicking one makes it first responder without any text entry, so matching on
+    // the class alone silently swallowed every app shortcut until focus moved.
+    static func isTextEntry(_ responder: NSResponder?) -> Bool {
+        (responder as? NSTextView)?.isEditable ?? false
+    }
+
+    private var isTextEntryFocused: Bool {
+        Self.isTextEntry(NSApp.keyWindow?.firstResponder)
+    }
+
     func installGlobalKeys() {
         guard !keysInstalled else { return }
         keysInstalled = true
         NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] e in
             guard let self, e.keyCode == 56 || e.keyCode == 60 else { return e }
             if e.modifierFlags.contains(.shift) {
-                let editing = NSApp.keyWindow?.firstResponder is NSTextView
+                let editing = self.isTextEntryFocused
                 if !editing, e.timestamp - self.lastShift < 0.35 {
                     self.showPalette = true; self.lastShift = 0
                 } else {
@@ -40,7 +52,7 @@ final class AppState: ObservableObject {
             if shift && ch == "p" { self.showSessionPanel = true; return nil }
             if shift && ch == "t" { self.themeManager?.cycle(); return nil }
             if shift && ch == "n" { self.showCreateSession = true; return nil }
-            if NSApp.keyWindow?.firstResponder is NSTextView { return e }
+            if self.isTextEntryFocused { return e }
             if ch == "n" { self.openCreateWorkspace = true; return nil }
             guard let ws = self.selectedWorkspace, let ui = self.uiStore else { return e }
             let ps = ui.state(for: ws.id)
