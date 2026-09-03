@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pomelohq/pomelo/internal/diffparse"
 	"github.com/pomelohq/pomelo/internal/diskcache"
 	"github.com/pomelohq/pomelo/internal/services"
 )
@@ -301,6 +302,24 @@ type gqlPR struct {
 			CreatedAt string                             `json:"createdAt"`
 		} `json:"nodes"`
 	} `json:"comments"`
+	ReviewThreads struct {
+		Nodes []struct {
+			IsResolved bool `json:"isResolved"`
+			Comments   struct {
+				Nodes []struct {
+					Body              string                             `json:"body"`
+					Path              string                             `json:"path"`
+					Line              *int                               `json:"line"`
+					DiffHunk          string                             `json:"diffHunk"`
+					CreatedAt         string                             `json:"createdAt"`
+					Author            *struct{ Login, AvatarURL string } `json:"author"`
+					PullRequestReview *struct {
+						DatabaseID int64 `json:"databaseId"`
+					} `json:"pullRequestReview"`
+				} `json:"nodes"`
+			} `json:"comments"`
+		} `json:"nodes"`
+	} `json:"reviewThreads"`
 }
 
 type ghActor struct {
@@ -342,6 +361,24 @@ type ghComment struct {
 	Body      string   `json:"body"`
 	CreatedAt string   `json:"createdAt,omitempty"`
 }
+type ghThreadComment struct {
+	User      string           `json:"user"`
+	AvatarURL string           `json:"avatarUrl,omitempty"`
+	Body      string           `json:"body"`
+	Path      string           `json:"path"`
+	Line      *int             `json:"line"`
+	DiffHunk  string           `json:"diffHunk"`
+	HunkLines []diffparse.Line `json:"hunkLines"`
+	CreatedAt string           `json:"createdAt"`
+}
+type ghReviewThread struct {
+	Resolved bool              `json:"resolved"`
+	ReviewID int64             `json:"reviewId,omitempty"`
+	Path     string            `json:"path"`
+	Line     *int              `json:"line"`
+	At       string            `json:"at"`
+	Comments []ghThreadComment `json:"comments"`
+}
 type ghPR struct {
 	Number            int             `json:"number"`
 	Title             string          `json:"title"`
@@ -365,7 +402,8 @@ type ghPR struct {
 	Labels            []ghLabel       `json:"labels,omitempty"`
 	ReviewRequests    []ghReviewReq   `json:"reviewRequests,omitempty"`
 	Comments          []ghComment     `json:"comments,omitempty"`
-	ReviewLog         []ghReviewEntry `json:"reviewLog,omitempty"`
+	ReviewLog         []ghReviewEntry  `json:"reviewLog,omitempty"`
+	ReviewThreads     []ghReviewThread `json:"reviewThreads,omitempty"`
 
 	// Semantic tokens the core derives (ADR 0001) so the UI only maps token -> colour.
 	// Always emitted (no omitempty): the Swift decoder needs the keys present.
@@ -425,6 +463,26 @@ func (p gqlPR) toGH() ghPR {
 			cm.Author = &ghActor{Login: c.Author.Login, AvatarURL: c.Author.AvatarURL}
 		}
 		out.Comments = append(out.Comments, cm)
+	}
+	for _, t := range p.ReviewThreads.Nodes {
+		th := ghReviewThread{Resolved: t.IsResolved}
+		for _, c := range t.Comments.Nodes {
+			tc := ghThreadComment{Body: c.Body, Path: c.Path, Line: c.Line, DiffHunk: c.DiffHunk,
+				HunkLines: diffparse.ParseHunk(c.DiffHunk), CreatedAt: c.CreatedAt}
+			if c.Author != nil {
+				tc.User, tc.AvatarURL = c.Author.Login, c.Author.AvatarURL
+			}
+			th.Comments = append(th.Comments, tc)
+		}
+		if len(th.Comments) == 0 {
+			continue
+		}
+		root := t.Comments.Nodes[0]
+		th.Path, th.Line, th.At = root.Path, root.Line, root.CreatedAt
+		if root.PullRequestReview != nil {
+			th.ReviewID = root.PullRequestReview.DatabaseID
+		}
+		out.ReviewThreads = append(out.ReviewThreads, th)
 	}
 	if len(p.Commits.Nodes) > 0 {
 		roll := p.Commits.Nodes[0].Commit.StatusCheckRollup

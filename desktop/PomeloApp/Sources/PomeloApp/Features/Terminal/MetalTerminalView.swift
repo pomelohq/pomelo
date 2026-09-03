@@ -46,20 +46,29 @@ struct MetalTerminalToggle: View {
     var body: some View { Toggle("Use Metal Terminal (experimental)", isOn: $on) }
 }
 
+struct MetalTermStatsToggle: View {
+    @AppStorage(MetalTerminalView.statsKey) private var on = false
+    var body: some View { Toggle("Show Terminal Render Stats", isOn: $on) }
+}
+
 // Wires a real PTY holder stream to the Metal renderer (output + keyboard input).
 // A drop-in for SwiftTerm's TerminalPane behind the experimental flag.
 struct MetalTerminalPane: NSViewRepresentable {
     let holderName: String
     let wsKey: String
     var autorun: String? = nil
+    var fontSize: CGFloat = 12
+    var themeMode: ThemeMode = activeThemeMode
     var onClosed: () -> Void = {}
     func makeCoordinator() -> Coord { Coord() }
     func makeNSView(context: Context) -> MetalTerminalView {
         let v = MetalTerminalView(frame: .zero)
+        v.setFontSize(fontSize)
+        v.applyTheme(themeMode)
         context.coordinator.attach(view: v, name: holderName, wsKey: wsKey, autorun: autorun, onClosed: onClosed)
         return v
     }
-    func updateNSView(_ nsView: MetalTerminalView, context: Context) {}
+    func updateNSView(_ nsView: MetalTerminalView, context: Context) { nsView.setFontSize(fontSize); nsView.applyTheme(themeMode) }
     static func dismantleNSView(_ nsView: MetalTerminalView, coordinator: Coord) { coordinator.detach() }
 
     final class Coord {
@@ -122,6 +131,7 @@ struct CellDesc {
     var fg: SIMD4<Float> = .zero
     var bg: SIMD4<Float> = .zero
     var ch: Character? = nil
+    var style: Int = 0   // 0 regular, |1 bold, |2 italic
 }
 
 // One tile per unique scalar, cell-sized, so the fragment shader samples a glyph by
@@ -131,13 +141,15 @@ final class GlyphAtlas {
     let tilePx: SIMD2<Int>
     private let cols: Int
     private var next = 0
-    private var map: [Character: SIMD2<Float>] = [:]
+    private var map: [String: SIMD2<Float>] = [:]
     let uvSize: SIMD2<Float>
     private let font: CTFont
+    private let boldFont: CTFont
     private let descent: CGFloat
 
     init?(device: MTLDevice, font: CTFont, cellW: Int, cellH: Int, atlasSide: Int = 4096) {
         self.font = font
+        self.boldFont = CTFontCreateCopyWithSymbolicTraits(font, CTFontGetSize(font), nil, .boldTrait, .boldTrait) ?? font
         self.descent = CTFontGetDescent(font)
         self.tilePx = SIMD2(cellW, cellH)
         self.cols = max(1, atlasSide / cellW)
@@ -148,18 +160,20 @@ final class GlyphAtlas {
         self.texture = tex
     }
 
-    func uvOrigin(for ch: Character) -> SIMD2<Float> {
-        if let uv = map[ch] { return uv }
+    func uvOrigin(for ch: Character, bold: Bool = false) -> SIMD2<Float> {
+        let key = (bold ? "\u{1}" : "") + String(ch)
+        if let uv = map[key] { return uv }
+        PerfHUD.shared.tick("term:raster")
         let slot = next; next += 1
         let cx = slot % cols, cy = slot / cols
         let px = cx * tilePx.x, py = cy * tilePx.y
-        rasterize(ch, intoTileAt: px, py)
+        rasterize(ch, bold: bold, intoTileAt: px, py)
         let uv = SIMD2(Float(px) / Float(texture.width), Float(py) / Float(texture.height))
-        map[ch] = uv
+        map[key] = uv
         return uv
     }
 
-    private func rasterize(_ ch: Character, intoTileAt px: Int, _ py: Int) {
+    private func rasterize(_ ch: Character, bold: Bool, intoTileAt px: Int, _ py: Int) {
         let w = tilePx.x, h = tilePx.y
         // CTLine (which shapes the whole grapheme, incl. Vietnamese/combining marks)
         // needs a color context; it does not draw in a gray-only one. Rasterize white
@@ -168,7 +182,7 @@ final class GlyphAtlas {
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
         ctx.setFillColor(red: 0, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-        let attrs = [kCTFontAttributeName: font,
+        let attrs = [kCTFontAttributeName: bold ? boldFont : font,
                      kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
         if let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) {
             let line = CTLineCreateWithAttributedString(astr)
@@ -186,7 +200,27 @@ final class GlyphAtlas {
 }
 
 final class MetalTerminalView: NSView {
-    private let device = MTLCreateSystemDefaultDevice()!
+    // Device + shader library + pipeline are identical for every terminal and the
+    // shader compile (makeLibrary from source) costs ~1s on the main thread, so a new
+    // terminal per workspace switch would re-pay it. Compile once, share across views.
+    private static let sharedDevice = MTLCreateSystemDefaultDevice()!
+    private static let sharedPipeline: MTLRenderPipelineState = {
+        let lib = try! sharedDevice.makeLibrary(source: MetalTerminalView.shaderSource, options: nil)
+        let desc = MTLRenderPipelineDescriptor()
+        desc.vertexFunction = lib.makeFunction(name: "term_vertex")
+        desc.fragmentFunction = lib.makeFunction(name: "term_fragment")
+        desc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        desc.colorAttachments[0].isBlendingEnabled = true
+        desc.colorAttachments[0].rgbBlendOperation = .add
+        desc.colorAttachments[0].alphaBlendOperation = .add
+        desc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        desc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        desc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        desc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        return try! sharedDevice.makeRenderPipelineState(descriptor: desc)
+    }()
+
+    private let device = MetalTerminalView.sharedDevice
     private let queue: MTLCommandQueue
     private let metalLayer = CAMetalLayer()
     private var pipeline: MTLRenderPipelineState!
@@ -215,6 +249,13 @@ final class MetalTerminalView: NSView {
     var onResize: ((Int, Int) -> Void)?
     var onInput: ([UInt8]) -> Void = { _ in }
 
+    // Default fg/bg follow the app theme (matches SwiftTerm's nativeForeground/Background).
+    // defFg/defBg are read on parseQueue (fillRows); clearColor on main (uploadAndRender).
+    private var defFg = SIMD4<Float>(0.85, 0.85, 0.85, 1)
+    private var defBg = SIMD4<Float>(0.08, 0.08, 0.09, 1)
+    private var clearColor = MTLClearColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1)
+    private let themeDelegate: HeadlessTerminalDelegate
+
     // Meter: main-thread ms/frame is what "smoothness" actually costs; parse ms is the
     // work now off the main thread. FPS = present rate.
     private let statsLabel = NSTextField(labelWithString: "")
@@ -227,9 +268,11 @@ final class MetalTerminalView: NSView {
         queue = device.makeCommandQueue()!
         palette = Self.ansi256Palette()
         let delegate = HeadlessTerminalDelegate()
+        themeDelegate = delegate
         terminal = Terminal(delegate: delegate)
         super.init(frame: frameRect)
         delegate.onChange = {}   // feed() drives the rebuild + present
+        applyTheme(activeThemeMode)
         wantsLayer = true
         layer = metalLayer
         metalLayer.device = device
@@ -243,26 +286,50 @@ final class MetalTerminalView: NSView {
         setupPipeline()
         statsLabel.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
         statsLabel.textColor = .systemGreen
-        statsLabel.backgroundColor = NSColor.black.withAlphaComponent(0.5)
+        statsLabel.backgroundColor = NSColor.black.withAlphaComponent(0.85)
         statsLabel.drawsBackground = true
         statsLabel.frame = NSRect(x: 8, y: 8, width: 620, height: 18)
+        statsLabel.isHidden = !UserDefaults.standard.bool(forKey: Self.statsKey)
         addSubview(statsLabel)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    // Match the SwiftTerm pane: SF Mono at the configured size, not a hardcoded Menlo.
+    private var fontSize: CGFloat = 12
+
+    func setFontSize(_ s: CGFloat) {
+        guard abs(fontSize - s) > 0.1 else { return }
+        fontSize = s
+        setupFontAndAtlas()
+        lastYDisp = -1
+        needsLayout = true
+    }
+
     private func setupFontAndAtlas() {
-        let font = CTFontCreateWithName("Menlo" as CFString, 13, nil)
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular) as CTFont
         let advance = self.advanceWidth(font)
         let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font), leading = CTFontGetLeading(font)
         let scale = Float(window?.backingScaleFactor ?? 2)
         let cw = Int((advance * CGFloat(scale)).rounded(.up))
         let ch = Int(((ascent + descent + leading) * CGFloat(scale)).rounded(.up))
         cellPx = SIMD2(Float(cw), Float(ch))
-        let scaledFont = CTFontCreateWithName("Menlo" as CFString, 13 * CGFloat(scale), nil)
-        atlas = GlyphAtlas(device: device, font: scaledFont, cellW: cw, cellH: ch)
+        let scaledFont = NSFont.monospacedSystemFont(ofSize: fontSize * CGFloat(scale), weight: .regular) as CTFont
+        // Shared per (cellW,cellH): every terminal has the same font/scale, so a new
+        // terminal (workspace switch) or a burst of varied text reuses already-
+        // rasterized glyphs instead of re-paying ~1-2ms of CTLine draw each on main.
+        atlas = Self.sharedAtlas(font: scaledFont, cellW: cw, cellH: ch)
         // Pre-rasterize printable ASCII so the parse queue never writes the atlas
-        // texture mid-frame while the GPU samples it.
+        // texture mid-frame while the GPU samples it (no-op once the shared atlas is warm).
         for u in 32...126 { if let s = UnicodeScalar(u) { _ = atlas.uvOrigin(for: Character(s)) } }
+    }
+
+    private static var atlasCache: [String: GlyphAtlas] = [:]
+    private static func sharedAtlas(font: CTFont, cellW: Int, cellH: Int) -> GlyphAtlas {
+        let key = "\(cellW)x\(cellH)"
+        if let a = atlasCache[key] { return a }
+        let a = GlyphAtlas(device: sharedDevice, font: font, cellW: cellW, cellH: cellH)!
+        atlasCache[key] = a
+        return a
     }
 
     private func advanceWidth(_ font: CTFont) -> CGFloat {
@@ -274,20 +341,7 @@ final class MetalTerminalView: NSView {
     }
 
     private func setupPipeline() {
-        let lib = try! device.makeLibrary(source: Self.shaderSource, options: nil)
-        let desc = MTLRenderPipelineDescriptor()
-        desc.vertexFunction = lib.makeFunction(name: "term_vertex")
-        desc.fragmentFunction = lib.makeFunction(name: "term_fragment")
-        desc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        // Alpha blend so a translucent cursor (and later, selection) overlays the cell.
-        desc.colorAttachments[0].isBlendingEnabled = true
-        desc.colorAttachments[0].rgbBlendOperation = .add
-        desc.colorAttachments[0].alphaBlendOperation = .add
-        desc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        desc.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        desc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        desc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        pipeline = try! device.makeRenderPipelineState(descriptor: desc)
+        pipeline = Self.sharedPipeline   // compiled once (static); see sharedPipeline
     }
 
     func feed(_ bytes: [UInt8]) {
@@ -295,10 +349,14 @@ final class MetalTerminalView: NSView {
         parseQueue.async { [weak self] in
             guard let self else { return }
             self.terminal.feed(byteArray: bytes)
+            // Output snaps the viewport back to the live bottom (SwiftTerm's userScrolling
+            // is module-internal, so we can't hold position across output); capture it.
+            self.scrollBottomYDisp = self.terminal.buffer.yDisp
             let t0 = CACurrentMediaTime()
             let descs = self.buildDescs()
+            let yd = self.terminal.buffer.yDisp
             self.lastParseMs = (CACurrentMediaTime() - t0) * 1000
-            DispatchQueue.main.async { self.latestDescs = descs; self.needsPresent = true }
+            DispatchQueue.main.async { self.latestDescs = descs; self.viewYDisp = yd; self.needsPresent = true }
         }
     }
 
@@ -310,12 +368,14 @@ final class MetalTerminalView: NSView {
             displayLink = link
         } else if window == nil {
             displayLink?.invalidate(); displayLink = nil
+            setAutoscroll(0)
         }
     }
 
     @objc private func onDisplayLink(_ link: CADisplayLink) {
         guard needsPresent, let descs = latestDescs else { return }
         needsPresent = false
+        PerfHUD.shared.tick("term:present")
         applyDescs(descs)
         uploadAndRender()
     }
@@ -335,23 +395,70 @@ final class MetalTerminalView: NSView {
         if mouseModeOn && !event.modifierFlags.contains(.option) {
             dragKind = .app; sendMouseSGR(event, code: 0, press: true)
         } else {
-            dragKind = .select; let c = cell(at: event); selStart = c; selEnd = c; needsPresent = true
+            dragKind = .select; let c = selCell(at: event); selStart = c; selEnd = c; needsPresent = true
         }
+    }
+    // Absolute buffer cell (screen row offset by the current viewport) so a selection
+    // sticks to its text while the viewport scrolls.
+    private func selCell(at event: NSEvent) -> (col: Int, row: Int) {
+        let c = cell(at: event); return (c.0, c.1 + viewYDisp)
     }
     override func mouseDragged(with event: NSEvent) {
         switch dragKind {
         case .app: sendMouseSGR(event, code: 32, press: true)
-        case .select: selEnd = cell(at: event); needsPresent = true
+        case .select:
+            let loc = convert(event.locationInWindow, from: nil)
+            let scale = window?.backingScaleFactor ?? 2
+            lastDragCol = min(max(0, Int(loc.x * scale / CGFloat(cellPx.x))), max(0, termCols - 1))
+            // Dragging past the top/bottom edge auto-scrolls so the selection can
+            // extend beyond what's on screen (older lines above, newer below).
+            if loc.y > bounds.height { setAutoscroll(-1) }
+            else if loc.y < 0 { setAutoscroll(1) }
+            else { setAutoscroll(0); selEnd = selCell(at: event); needsPresent = true }
         case .none: break
         }
     }
     override func mouseUp(with event: NSEvent) {
+        setAutoscroll(0)
         switch dragKind {
         case .app: sendMouseSGR(event, code: 0, press: false)
         case .select: if let s = selStart, let e = selEnd, s == e { selStart = nil; selEnd = nil; needsPresent = true }
         case .none: break
         }
         dragKind = .none
+    }
+
+    private var autoscrollTimer: Timer?
+    private var autoscrollDir = 0
+    private var lastDragCol = 0
+
+    private func setAutoscroll(_ dir: Int) {
+        if dir == 0 {
+            autoscrollTimer?.invalidate(); autoscrollTimer = nil; autoscrollDir = 0; return
+        }
+        if autoscrollDir == dir, autoscrollTimer != nil { return }
+        autoscrollDir = dir
+        autoscrollTimer?.invalidate()
+        let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in self?.autoscrollStep(dir) }
+        RunLoop.main.add(t, forMode: .common)
+        autoscrollTimer = t
+    }
+
+    private func autoscrollStep(_ dir: Int) {
+        parseQueue.async { [weak self] in
+            guard let self else { return }
+            let cur = self.terminal.buffer.yDisp
+            let target = max(0, min(cur + dir, self.scrollBottomYDisp))
+            guard target != cur else { return }
+            self.terminal.buffer.yDisp = target
+            let descs = self.buildDescs()
+            DispatchQueue.main.async {
+                self.viewYDisp = target
+                let edgeRow = dir < 0 ? 0 : max(0, self.termRows - 1)
+                self.selEnd = (self.lastDragCol, edgeRow + target)
+                self.latestDescs = descs; self.needsPresent = true
+            }
+        }
     }
 
     private func sendMouseSGR(_ event: NSEvent, code: Int, press: Bool) {
@@ -365,6 +472,7 @@ final class MetalTerminalView: NSView {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "c": if selStart != nil { copySelection() }; return
             case "v": if let s = NSPasteboard.general.string(forType: .string) { onInput(Array(s.utf8)) }; return
+            case "k": onInput([0x0c]); return   // clear, like the SwiftTerm panes
             default: return   // don't forward other Cmd shortcuts to the pty
             }
         }
@@ -394,6 +502,15 @@ final class MetalTerminalView: NSView {
     }
 
     private var scrollAccum: CGFloat = 0
+    // The live bottom (== buffer.yBase, which isn't public) captured after each feed;
+    // scrollback clamps between 0 and this. lastYDisp forces a full refill on a move.
+    private var scrollBottomYDisp = 0
+    private var lastYDisp = -1
+    // yDisp of the currently-presented frame, mirrored on the main thread so mouse
+    // events and selection hit-testing agree with what's on screen.
+    private var viewYDisp = 0
+    // Selection anchors are absolute buffer rows (screen row + yDisp), so the highlight
+    // sticks to the text as the viewport scrolls instead of to fixed screen rows.
     private var selStart: (col: Int, row: Int)?
     private var selEnd: (col: Int, row: Int)?
 
@@ -409,37 +526,57 @@ final class MetalTerminalView: NSView {
 
     private func selectionContains(_ col: Int, _ row: Int) -> Bool {
         guard let s = selStart, let e = selEnd, s != e else { return false }
+        let p = (col, row + viewYDisp)   // screen row -> absolute buffer row
         let a = le(s, e) ? s : e, b = le(s, e) ? e : s
-        return le(a, (col, row)) && le((col, row), b)
+        return le(a, p) && le(p, b)
     }
 
     override func scrollWheel(with event: NSEvent) {
-        // A full-screen TUI (Claude) turns on mouse reporting and scrolls itself, so
-        // forward wheel ticks as SGR mouse events. (Plain-shell scrollback is TBD.)
         let wantsMouse: Bool
         switch terminal.mouseMode { case .off: wantsMouse = false; default: wantsMouse = true }
-        guard wantsMouse else { return }
         let dy = event.scrollingDeltaY
         guard dy != 0 else { return }
         if (dy > 0) != (scrollAccum > 0) { scrollAccum = 0 }   // direction flip: reset
         scrollAccum += dy
-        // One tick per few points so a momentum flick keeps producing ticks instead
-        // of being clamped to a small fixed count.
-        let threshold: CGFloat = 3
-        var ticks = 0
-        while abs(scrollAccum) >= threshold, ticks < 24 {
-            ticks += 1
+
+        // A full-screen TUI (Claude) owns the mouse: forward wheel ticks as SGR events.
+        if wantsMouse {
+            let threshold: CGFloat = 3
+            var ticks = 0
+            while abs(scrollAccum) >= threshold, ticks < 24 {
+                ticks += 1
+                scrollAccum += scrollAccum > 0 ? -threshold : threshold
+            }
+            guard ticks > 0 else { return }
+            let scale = window?.backingScaleFactor ?? 2
+            let loc = convert(event.locationInWindow, from: nil)
+            let col = min(max(1, Int(loc.x * scale / CGFloat(cellPx.x)) + 1), termCols)
+            let row = min(max(1, Int((bounds.height - loc.y) * scale / CGFloat(cellPx.y)) + 1), termRows)
+            let b = dy > 0 ? 64 : 65
+            var bytes: [UInt8] = []
+            for _ in 0..<ticks { bytes += Array("\u{1b}[<\(b);\(col);\(row)M".utf8) }
+            onInput(bytes)
+            return
+        }
+
+        // Plain shell: move the viewport through scrollback. Wheel up (dy > 0) shows
+        // older lines (smaller yDisp).
+        let threshold: CGFloat = 4
+        var lines = 0
+        while abs(scrollAccum) >= threshold, abs(lines) < 24 {
+            lines += dy > 0 ? 1 : -1
             scrollAccum += scrollAccum > 0 ? -threshold : threshold
         }
-        guard ticks > 0 else { return }
-        let scale = window?.backingScaleFactor ?? 2
-        let loc = convert(event.locationInWindow, from: nil)
-        let col = min(max(1, Int(loc.x * scale / CGFloat(cellPx.x)) + 1), termCols)
-        let row = min(max(1, Int((bounds.height - loc.y) * scale / CGFloat(cellPx.y)) + 1), termRows)
-        let b = dy > 0 ? 64 : 65
-        var bytes: [UInt8] = []
-        for _ in 0..<ticks { bytes += Array("\u{1b}[<\(b);\(col);\(row)M".utf8) }
-        onInput(bytes)
+        guard lines != 0 else { return }
+        parseQueue.async { [weak self] in
+            guard let self else { return }
+            let cur = self.terminal.buffer.yDisp
+            let target = max(0, min(cur - lines, self.scrollBottomYDisp))
+            guard target != cur else { return }
+            self.terminal.buffer.yDisp = target
+            let descs = self.buildDescs()
+            DispatchQueue.main.async { self.latestDescs = descs; self.viewYDisp = target; self.needsPresent = true }
+        }
     }
 
     static func encodeKey(_ e: NSEvent) -> [UInt8] {
@@ -486,30 +623,42 @@ final class MetalTerminalView: NSView {
     // snapshots it (+ the cursor). Touches only the terminal engine, never the atlas.
     private func buildDescs() -> [CellDesc] {
         let cols = terminal.cols, rows = terminal.rows
-        if gridCols != cols || gridRows != rows || grid.count != cols * rows {
+        let yd = terminal.buffer.yDisp
+        let sizeChanged = gridCols != cols || gridRows != rows || grid.count != cols * rows
+        if sizeChanged {
             grid = Array(repeating: CellDesc(), count: cols * rows)
             gridCols = cols; gridRows = rows
+        }
+        // A viewport move (scrollback or a feed snapping back to the bottom) changes
+        // every row, so refill the whole grid — the incremental range won't cover it.
+        if sizeChanged || yd != lastYDisp {
+            lastYDisp = yd
             fillRows(0, rows - 1)
         } else if let r = terminal.getUpdateRange() {
             fillRows(max(0, r.startY), min(rows - 1, r.endY))
         }
         terminal.clearUpdateRange()
         var out = grid
-        out.append(cursorDesc(cols: cols, rows: rows))
+        if yd == scrollBottomYDisp { out.append(cursorDesc(cols: cols, rows: rows)) }
         return out
     }
 
     private func fillRows(_ a: Int, _ b: Int) {
         guard a <= b, gridCols > 0 else { return }
         let cols = gridCols
-        let defFg = SIMD4<Float>(0.85, 0.85, 0.85, 1), defBg = SIMD4<Float>(0.08, 0.08, 0.09, 1)
+        let defFg = self.defFg, defBg = self.defBg
         for row in a...b {
             for col in 0..<cols {
                 var d = CellDesc()
                 d.gridPos = SIMD2(Float(col), Float(row))
                 if let cd = terminal.getCharData(col: col, row: row) {
-                    d.fg = color(cd.attribute.fg, def: defFg)
-                    d.bg = color(cd.attribute.bg, def: defBg)
+                    let st = cd.attribute.style
+                    var fg = color(cd.attribute.fg, def: defFg)
+                    var bg = color(cd.attribute.bg, def: defBg)
+                    if st.contains(.inverse) { swap(&fg, &bg) }
+                    if st.contains(.dim) { fg = SIMD4(fg.x * 0.6, fg.y * 0.6, fg.z * 0.6, fg.w) }
+                    d.fg = fg; d.bg = bg
+                    if st.contains(.bold) { d.style |= 1 }
                     let ch = cd.getCharacter()
                     if ch != " ", let scalar = ch.unicodeScalars.first, scalar.value != 0 { d.ch = ch }
                 } else {
@@ -536,7 +685,7 @@ final class MetalTerminalView: NSView {
             var i = CellInstance()
             i.gridPos = d.gridPos; i.fg = d.fg; i.bg = d.bg
             if hasSel, selectionContains(Int(d.gridPos.x), Int(d.gridPos.y)) { i.bg = SIMD4(0.20, 0.35, 0.60, 1) }
-            if let ch = d.ch { i.uvOrigin = atlas.uvOrigin(for: ch); i.uvSize = atlas.uvSize }
+            if let ch = d.ch { i.uvOrigin = atlas.uvOrigin(for: ch, bold: d.style & 1 != 0); i.uvSize = atlas.uvSize }
             return i
         }
     }
@@ -549,11 +698,45 @@ final class MetalTerminalView: NSView {
         }
     }
 
+    // Re-tint the default fg/bg to the app theme and rebuild every cell (default-colored
+    // cells cache the resolved color in the grid, so a theme flip needs a full refill).
+    private var appliedThemeMode: ThemeMode?
+    func applyTheme(_ mode: ThemeMode) {
+        guard appliedThemeMode != mode else { return }
+        appliedThemeMode = mode
+        applyThemeColors(Self.themeColors(mode))
+    }
+
+    private func applyThemeColors(_ c: (fg: SIMD4<Float>, bg: SIMD4<Float>)) {
+        clearColor = MTLClearColor(red: Double(c.bg.x), green: Double(c.bg.y), blue: Double(c.bg.z), alpha: 1)
+        themeDelegate.fg = SwiftTerm.Color(red8: UInt16(c.fg.x * 255), green8: UInt16(c.fg.y * 255), blue8: UInt16(c.fg.z * 255))
+        themeDelegate.bg = SwiftTerm.Color(red8: UInt16(c.bg.x * 255), green8: UInt16(c.bg.y * 255), blue8: UInt16(c.bg.z * 255))
+        parseQueue.async { [weak self] in
+            guard let self else { return }
+            self.defFg = c.fg; self.defBg = c.bg
+            self.gridCols = 0   // force full rebuild
+            let descs = self.buildDescs()
+            DispatchQueue.main.async { self.latestDescs = descs; self.needsPresent = true }
+        }
+    }
+
+    static func themeColors(_ mode: ThemeMode) -> (fg: SIMD4<Float>, bg: SIMD4<Float>) {
+        let pal: Palette = mode == .light ? Theme.light : (mode == .sepia ? Theme.sepia : Theme.dark)
+        return (simd4(pal.fg), simd4(pal.bg))
+    }
+
+    private static func simd4(_ color: SwiftUI.Color) -> SIMD4<Float> {
+        let ns = NSColor(color).usingColorSpace(.sRGB) ?? .black
+        return SIMD4(Float(ns.redComponent), Float(ns.greenComponent), Float(ns.blueComponent), 1)
+    }
+
     // Main thread only: copy the prepared instances into a reused GPU buffer and present.
     private func uploadAndRender() {
         let t0 = CACurrentMediaTime()
         guard metalLayer.drawableSize.width > 0, metalLayer.drawableSize.height > 0 else { return }
+        let dt0 = CACurrentMediaTime()
         guard let drawable = metalLayer.nextDrawable() else { return }
+        if (CACurrentMediaTime() - dt0) > 0.05 { PerfHUD.shared.tick("term:drawable-wait") }
         let n = instances.count
         if n > 0 {
             let need = MemoryLayout<CellInstance>.stride * n
@@ -567,7 +750,7 @@ final class MetalTerminalView: NSView {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
         pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1)
+        pass.colorAttachments[0].clearColor = clearColor
         pass.colorAttachments[0].storeAction = .store
         guard let cb = queue.makeCommandBuffer(), let enc = cb.makeRenderCommandEncoder(descriptor: pass) else { return }
         if let buf = instanceBuf, n > 0 {
@@ -583,7 +766,12 @@ final class MetalTerminalView: NSView {
         updateStats(mainMs: (CACurrentMediaTime() - t0) * 1000)
     }
 
+    static let statsKey = "metalTermStats"
+
     private func updateStats(mainMs: Double) {
+        let show = UserDefaults.standard.bool(forKey: Self.statsKey)
+        if statsLabel.isHidden != !show { statsLabel.isHidden = !show }
+        guard show else { return }
         frameCount += 1
         let now = CACurrentMediaTime()
         let dt = now - lastStatsAt
@@ -643,6 +831,8 @@ final class MetalTerminalView: NSView {
 
 final class HeadlessTerminalDelegate: TerminalDelegate {
     var onChange: () -> Void = {}
+    var fg = SwiftTerm.Color(red8: 0xd0, green8: 0xd0, blue8: 0xd0)
+    var bg = SwiftTerm.Color(red8: 0x14, green8: 0x14, blue8: 0x17)
     func send(source: Terminal, data: ArraySlice<UInt8>) {}
     func scrolled(source: Terminal, yDisp: Int) { onChange() }
     func linefeed(source: Terminal) {}
@@ -661,7 +851,7 @@ final class HeadlessTerminalDelegate: TerminalDelegate {
     func setBackgroundColor(source: Terminal, color: SwiftTerm.Color) {}
     func setCursorColor(source: Terminal, color: SwiftTerm.Color?) {}
     func getColors(source: Terminal) -> (foreground: SwiftTerm.Color, background: SwiftTerm.Color) {
-        (SwiftTerm.Color(red8: 0xd0, green8: 0xd0, blue8: 0xd0), SwiftTerm.Color(red8: 0x14, green8: 0x14, blue8: 0x17))
+        (fg, bg)
     }
     func colorChanged(source: Terminal, idx: Int?) {}
     func hostCurrentDirectoryUpdated(source: Terminal) {}

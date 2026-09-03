@@ -7,6 +7,17 @@ struct MarkdownText: View {
     var reading = false
     init(_ text: String, reading: Bool = false) { self.text = text; self.reading = reading }
 
+    // Both the block split and AttributedString(markdown:) are pure functions of the
+    // text (inline also of the theme) and were re-run on every body eval; under a
+    // conversation scroll + a streaming agent that re-parsed the same comments dozens
+    // of times, stacking into multi-second main-thread stalls. Cache by input.
+    private static var blockCache: [String: [Block]] = [:]
+    private static var inlineCache: [String: AttributedString] = [:]
+    private static func evictIfNeeded() {
+        if blockCache.count > 400 { blockCache.removeAll(keepingCapacity: true) }
+        if inlineCache.count > 800 { inlineCache.removeAll(keepingCapacity: true) }
+    }
+
     private var bodySize: CGFloat { reading ? 14 : 12.5 }
     private var lineGap: CGFloat { reading ? 6 : 2 }
 
@@ -34,6 +45,8 @@ struct MarkdownText: View {
     }
 
     private var blocks: [Block] {
+        if let c = Self.blockCache[text] { return c }
+        PerfHUD.shared.tick("md:parse")
         var out: [Block] = []
         let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var i = 0
@@ -101,6 +114,8 @@ struct MarkdownText: View {
             para.append(l); i += 1
         }
         flushPara(&para)
+        Self.evictIfNeeded()
+        Self.blockCache[text] = out
         return out
     }
 
@@ -177,6 +192,9 @@ struct MarkdownText: View {
     }
 
     private func inline(_ s: String) -> AttributedString {
+        let key = "\(activeThemeMode.rawValue)\u{0}\(s)"
+        if let c = Self.inlineCache[key] { return c }
+        PerfHUD.shared.tick("md:inline")
         guard var a = try? AttributedString(markdown: s, options: .init(
             allowsExtendedAttributes: true,
             interpretedSyntax: .inlineOnlyPreservingWhitespace,
@@ -186,6 +204,8 @@ struct MarkdownText: View {
             a[run.range].backgroundColor = Theme.chip
             a[run.range].foregroundColor = Theme.fg
         }
+        Self.evictIfNeeded()
+        Self.inlineCache[key] = a
         return a
     }
 

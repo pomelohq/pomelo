@@ -24,7 +24,7 @@ final class PeekStore: ObservableObject {
                         return PomJSON.decode(PeekAllResponse.self, from: d)?.windows
                     }.value
                     if Task.isCancelled { break }
-                    if let fresh, fresh != self?.lines { self?.lines = fresh }
+                    if let fresh, fresh != self?.lines { PerfHUD.shared.tick("peek:pub"); self?.lines = fresh }
                 }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }

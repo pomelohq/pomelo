@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AgentTerminal: View {
     @Environment(AppState.self) var state
+    @EnvironmentObject var theme: ThemeManager
     let branch: String
     let isMain: Bool
     let wsKey: String
@@ -56,7 +57,7 @@ struct AgentTerminal: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
             } else if let h = holder {
                 if metalTerminal {
-                    MetalTerminalPane(holderName: h, wsKey: wsKey).id(h)
+                    MetalTerminalPane(holderName: h, wsKey: wsKey, fontSize: CGFloat(fontSize), themeMode: theme.mode).id(h)
                 } else {
                     TerminalPane(holderName: h, wsKey: wsKey, agentWsKey: wsKey, fontSize: CGFloat(fontSize),
                                  onClosed: { onHolderClosed() }).id(h)

@@ -15,22 +15,22 @@ struct Avatar: View {
         return c.url
     }
 
+    // The URL actually fetched: Jira as-is; others (GitHub) size-tagged. Both resolve
+    // through MarkdownImageCache so an avatar is fetched+decoded once and reused.
+    // SwiftUI's AsyncImage caches neither, so a conversation scroll used to re-fetch
+    // and re-decode every avatar on each pass — the scroll freeze.
+    private var fetchURL: String? { viaCore ? url : sized?.absoluteString }
+
     var body: some View {
         Group {
-            if viaCore {
-                if let img = coreImage { Image(nsImage: img).resizable().scaledToFill() } else { fallback }
-            } else if let u = sized {
-                AsyncImage(url: u) { phase in
-                    if let img = phase.image { img.resizable().scaledToFill() } else { fallback }
-                }
-            } else { fallback }
+            if let img = coreImage { Image(nsImage: img).resizable().scaledToFill() } else { fallback }
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
         .overlay(Circle().strokeBorder(Theme.borderSoft))
-        .task(id: url) {
-            guard viaCore, let url, !url.isEmpty else { return }
-            coreImage = await MarkdownImageCache.shared.image(for: url)
+        .task(id: fetchURL) {
+            guard let u = fetchURL, !u.isEmpty else { return }
+            coreImage = await MarkdownImageCache.shared.image(for: u)
         }
     }
 

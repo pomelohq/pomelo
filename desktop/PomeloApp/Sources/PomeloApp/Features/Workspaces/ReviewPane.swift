@@ -277,6 +277,7 @@ struct ReviewPane: View {
         .task(id: workspace.id) { await load(); startWatch() }
         .onChange(of: isActive) { startWatch() }
         .onDisappear { watchTask?.cancel() }
+        .perfTag("ReviewPane")
     }
 
     private func startWatch() {
@@ -643,6 +644,10 @@ struct ReviewThreadsView: View {
     @State private var replyTo: String?
     @State private var replyDraft = ""
     @State private var error = ""
+    @State private var collapsed: Set<String> = []
+    @State private var showAllComments: Set<String> = []
+
+    private static let commentPeek = 4
 
     var body: some View {
         if compact {
@@ -655,7 +660,7 @@ struct ReviewThreadsView: View {
     private var fullList: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 10) {
                     if threads.isEmpty {
                         Text("No notes yet. Select lines in the code, then note what to check.")
                             .font(.system(size: 11.5)).foregroundStyle(Theme.dim).padding(.top, 4)
@@ -668,43 +673,88 @@ struct ReviewThreadsView: View {
             composer
         }
         .background(Theme.bg)
+        .task(id: threadSeed) { collapsed = Set(threads.filter(\.resolved).map(\.id)) }
     }
 
+    // Resolved threads start collapsed; re-seed when the set or a resolved-state flips.
+    private var threadSeed: String { threads.map { "\($0.id):\($0.resolved)" }.joined(separator: ",") }
+
     private func threadCard(_ t: ReviewThread) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let isCollapsed = collapsed.contains(t.id)
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        if isCollapsed { collapsed.remove(t.id) } else { collapsed.insert(t.id) }
+                    }
+                } label: {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.dim).frame(width: 12)
+                }.buttonStyle(.plain).help(isCollapsed ? "Expand thread" : "Collapse thread")
                 Image(systemName: "text.bubble").font(.system(size: 9)).foregroundStyle(Theme.accent)
                 Text("L\(t.start)\(t.end > t.start ? "-\(t.end)" : "")").font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                if t.comments.count > 1 {
+                    Text("\(t.comments.count)").font(.system(size: 9.5, weight: .semibold)).monospacedDigit()
+                        .foregroundStyle(Theme.dim).padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Theme.bg, in: Capsule())
+                }
                 if t.resolved { StatusPill(text: "resolved", color: Theme.ok) }
                 Spacer()
                 Button(t.resolved ? "Reopen" : "Resolve") { Task { await resolve(t, !t.resolved) } }
                     .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(Theme.fgMuted)
             }
-            ForEach(Array(t.comments.enumerated()), id: \.offset) { _, c in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(c.author).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.fgMuted)
-                    Text(c.body).font(.system(size: 12)).foregroundStyle(Theme.fgSoft)
-                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                }
-            }
-            if replyTo == t.id {
-                HStack(spacing: 6) {
-                    TextField("Reply…", text: $replyDraft, axis: .vertical).textFieldStyle(.plain)
-                        .font(.system(size: 12)).padding(6)
-                        .background(Theme.bg, in: RoundedRectangle(cornerRadius: 6))
-                    Button("Send") { Task { await reply(t) } }.buttonStyle(.plain)
-                        .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
-                        .disabled(replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if isCollapsed {
+                if let first = t.comments.first {
+                    Text(first.body).font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
+                        .lineLimit(1).truncationMode(.tail)
                 }
             } else {
-                Button("Reply") { replyTo = t.id; replyDraft = "" }.buttonStyle(.plain)
-                    .font(.system(size: 10.5)).foregroundStyle(Theme.accent)
+                commentList(t)
+                replyControls(t)
             }
         }
         .padding(10)
         .background(Theme.bgSoft, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
         .opacity(t.resolved ? 0.65 : 1)
+    }
+
+    @ViewBuilder private func commentList(_ t: ReviewThread) -> some View {
+        let comments = t.comments
+        if comments.count <= Self.commentPeek || showAllComments.contains(t.id) {
+            ForEach(Array(comments.enumerated()), id: \.offset) { _, c in commentRow(c) }
+        } else {
+            commentRow(comments[0])
+            Button { withAnimation(.easeInOut(duration: 0.12)) { _ = showAllComments.insert(t.id) } } label: {
+                Text("Show \(comments.count - Self.commentPeek) earlier replies")
+                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.accent)
+            }.buttonStyle(.plain)
+            ForEach(Array(comments.suffix(Self.commentPeek - 1).enumerated()), id: \.offset) { _, c in commentRow(c) }
+        }
+    }
+
+    private func commentRow(_ c: ReviewComment) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(c.author).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.fgMuted)
+            Text(c.body).font(.system(size: 12)).foregroundStyle(Theme.fgSoft)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder private func replyControls(_ t: ReviewThread) -> some View {
+        if replyTo == t.id {
+            HStack(spacing: 6) {
+                TextField("Reply...", text: $replyDraft, axis: .vertical).textFieldStyle(.plain)
+                    .font(.system(size: 12)).padding(6)
+                    .background(Theme.bg, in: RoundedRectangle(cornerRadius: 6))
+                Button("Send") { Task { await reply(t) } }.buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
+                    .disabled(replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        } else {
+            Button("Reply") { replyTo = t.id; replyDraft = "" }.buttonStyle(.plain)
+                .font(.system(size: 10.5)).foregroundStyle(Theme.accent)
+        }
     }
 
     private var composer: some View {

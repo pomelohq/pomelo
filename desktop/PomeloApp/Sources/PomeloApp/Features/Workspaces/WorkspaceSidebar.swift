@@ -54,6 +54,7 @@ struct WorkspaceSidebar: View {
             }
             .scrollContentBackground(.hidden)
         }
+        .perfTag("Sidebar")
     }
 
     private func HeightReader(id: String) -> some View {
@@ -168,6 +169,7 @@ struct WsRow: View {
                 state.selection = ws.id
                 state.rowMenu = AppState.RowMenu(ws: ws, at: pt)
             })
+            .perfTag("WsRow")
     }
 }
 

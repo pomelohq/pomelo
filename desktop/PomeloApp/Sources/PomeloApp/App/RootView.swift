@@ -12,6 +12,7 @@ struct RootView: View {
         @Bindable var state = state
         _ = theme.mode
         return content
+            .perfTag("RootView")
             .overlayPreferenceValue(PRPeekAnchorKey.self) { anchors in
                 GeometryReader { proxy in
                     if let id = state.prPeek, let a = anchors[id] {

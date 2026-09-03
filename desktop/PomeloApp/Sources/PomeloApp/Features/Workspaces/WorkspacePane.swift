@@ -156,6 +156,7 @@ struct WorkspacePaneInner: View {
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
         }
+        .perfTag("WorkspacePane")
     }
 
     private var effectivePane: PaneKind {
@@ -425,7 +426,7 @@ struct TerminalDrawer: View {
             if let sel = selected, let t = terms.first(where: { $0.id == sel }) {
                 if metalTerminal {
                     MetalTerminalPane(holderName: t.holder, wsKey: wsKey, autorun: t.autorun,
-                                      onClosed: { removeTab(t) }).id(t.holder)
+                                      themeMode: theme.mode, onClosed: { removeTab(t) }).id(t.holder)
                 } else {
                     TerminalPane(holderName: t.holder, wsKey: wsKey, autorun: t.autorun, themeMode: theme.mode,
                                  onClosed: { removeTab(t) }).id(t.holder)

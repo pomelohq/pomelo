@@ -131,6 +131,7 @@ struct WsCard: View {
                     in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .perfTag("WsCard")
     }
 
     // Next wall-clock boundary, cron `*/N` style — computed locally so the countdown

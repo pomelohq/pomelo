@@ -230,6 +230,7 @@ struct PRsBoard: View {
             await load(); startPolling()
         }
         .onDisappear { pollTask?.cancel() }
+        .perfTag("PRsBoard")
     }
 
     // Wide: master list beside the detail, user-resizable. The master is clamped
@@ -577,6 +578,7 @@ struct PRDetail: View {
     @State private var loadingDetail = true
 
     private var pr: PRInfo? { detail ?? item.pr }
+    private var prAuthorLogin: String { pr?.author?.login ?? "" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -811,7 +813,13 @@ struct PRDetail: View {
                 }
             }
         }
-        .task(id: item.repo) { await loadTimeline() }
+        .task(id: item.repo) {
+            await loadTimeline()
+            // First read may serve a stale cache blob (pre-reviewThreads shape); the core
+            // refetches in the background, so reload once it lands to pick up grouping+resolved.
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            await loadTimeline()
+        }
         .onChange(of: detail) { Task { await loadTimeline() } }
     }
 
@@ -834,19 +842,24 @@ struct PRDetail: View {
             VStack(alignment: .leading, spacing: 8) {
                 switch it.kind {
                 case "description":
-                    commentCard(author: it.author, avatar: it.avatar, headline: "opened this pull request", body: it.body)
+                    commentCard(author: it.author, avatar: it.avatar, headline: "opened this pull request", body: it.body, at: it.at)
                 case "comment":
-                    commentCard(author: it.author, avatar: it.avatar, headline: "commented", body: it.body)
+                    commentCard(author: it.author, avatar: it.avatar, headline: "commented", body: it.body, at: it.at)
                 case "review":
-                    HStack(spacing: 6) {
-                        Text(it.author ?? "someone").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.fg)
-                        Text(reviewVerb(it.state)).font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
-                        Spacer()
-                    }.frame(height: avatarSize)
-                    if !it.body.isEmpty { commentCard(author: it.author, avatar: it.avatar, headline: "left a comment", body: it.body) }
-                    ForEach(it.inline) { rc in inlineCard(rc).padding(.leading, narrow ? 0 : 24) }
+                    if !it.body.isEmpty {
+                        commentCard(author: it.author, avatar: it.avatar, headline: reviewVerb(it.state), body: it.body, at: it.at)
+                    } else {
+                        HStack(spacing: 6) {
+                            Text(it.author ?? "someone").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.fg)
+                            if prIsBot(it.avatar) { prRoleTag("Bot") }
+                            Text(reviewVerb(it.state)).font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
+                            if !it.at.isEmpty { Text("· \(prRelDate(it.at))").font(.system(size: 11)).foregroundStyle(Theme.dim) }
+                            Spacer()
+                        }.frame(height: avatarSize)
+                    }
+                    ForEach(it.threads) { th in ThreadCardView(thread: th, prAuthor: prAuthorLogin) }
                 default:
-                    if let rc = it.inline.first { inlineCard(rc) }
+                    ForEach(it.threads) { th in ThreadCardView(thread: th, prAuthor: prAuthorLogin) }
                 }
             }
             .padding(.bottom, 16)
@@ -884,47 +897,21 @@ struct PRDetail: View {
         }
     }
 
-    private func commentCard(author: String?, avatar: String? = nil, headline: String, body: String) -> some View {
+    private func commentCard(author: String?, avatar: String? = nil, headline: String, body: String, at: String = "") -> some View {
         Card {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 6) {
-                    Avatar(url: avatar, name: author, size: 20)
                     Text(author ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
+                    if prIsBot(avatar) { prRoleTag("Bot") }
+                    if let a = author, a == prAuthorLogin, !prAuthorLogin.isEmpty { prRoleTag("Author") }
                     Text(headline).font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
                     Spacer()
+                    if !at.isEmpty { Text(prRelDate(at)).font(.system(size: 10.5)).foregroundStyle(Theme.dim) }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(Theme.panel3)
                 Divider().overlay(Theme.borderSoft)
                 MarkdownText(body).padding(12)
-            }
-        }
-    }
-
-    private func inlineCard(_ rc: PRReviewComment) -> some View {
-        Card {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 6) {
-                    Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(Theme.fgMuted)
-                    Text(rc.path.map { "\($0)\(rc.line.map { ":\($0)" } ?? "")" } ?? "")
-                        .font(Theme.mono(10.5)).foregroundStyle(Theme.fg).lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                }
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Theme.panel3)
-                if let lines = rc.hunkLines, !lines.isEmpty {
-                    Divider().overlay(Theme.borderSoft)
-                    hunkSnippet(lines)
-                }
-                Divider().overlay(Theme.borderSoft)
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Avatar(url: rc.avatarUrl, name: rc.user, size: 24)
-                        Text(rc.user ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
-                    }
-                    MarkdownText(rc.body ?? "")
-                }
-                .padding(12)
             }
         }
     }
@@ -952,27 +939,7 @@ struct PRDetail: View {
         }.buttonStyle(.plain)
     }
 
-    private func hunkSnippet(_ lines: [DiffLine]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(lines.suffix(6)) { l in
-                let tint: Color? = l.kind == .add ? Theme.ok : l.kind == .del ? Theme.danger : nil
-                let num = l.kind == .del ? l.oldN : l.newN
-                HStack(spacing: 0) {
-                    Text(num.map(String.init) ?? "").font(Theme.mono(10)).foregroundStyle(Theme.dim)
-                        .frame(width: 36, alignment: .trailing)
-                    Text(l.kind == .add ? "+" : l.kind == .del ? "-" : " ").font(Theme.mono(10.5, .bold))
-                        .foregroundStyle(tint ?? Theme.dim).frame(width: 16)
-                    Text(l.text.isEmpty ? " " : l.text).font(Theme.mono(10.5)).foregroundStyle(Theme.fgSoft)
-                        .lineLimit(1).truncationMode(.tail)
-                    Spacer(minLength: 0)
-                }
-                .padding(.trailing, 8).padding(.vertical, 1.5)
-                .background(tint?.opacity(0.10) ?? .clear)
-            }
-        }
-        .padding(.vertical, 4)
-        .background(Theme.bg)
-    }
+    private func hunkSnippet(_ lines: [DiffLine]) -> some View { prHunkSnippet(lines) }
 
     private func reviewTag(_ state: String?) -> (String, Color)? {
         switch (state ?? "").uppercased() {
@@ -1060,5 +1027,108 @@ struct FlowChips: View {
     private func labelColor(_ hex: String?) -> Color {
         guard let h = hex, let v = UInt32(h.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) else { return Theme.fgMuted }
         return Color(hex: v)
+    }
+}
+
+// The small "Bot" / "Author" tag GitHub shows next to a name.
+@ViewBuilder func prRoleTag(_ text: String) -> some View {
+    Text(text).font(.system(size: 9.5, weight: .medium)).foregroundStyle(Theme.fgMuted)
+        .padding(.horizontal, 5).padding(.vertical, 0.5)
+        .overlay(Capsule().strokeBorder(Theme.borderSoft))
+}
+
+// Shared so the flat inline card and the nested thread view render hunks identically.
+@ViewBuilder func prHunkSnippet(_ lines: [DiffLine]) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+        ForEach(lines.suffix(6)) { l in
+            let tint: Color? = l.kind == .add ? Theme.ok : l.kind == .del ? Theme.danger : nil
+            let num = l.kind == .del ? l.oldN : l.newN
+            HStack(spacing: 0) {
+                Text(num.map(String.init) ?? "").font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                    .frame(width: 36, alignment: .trailing)
+                Text(l.kind == .add ? "+" : l.kind == .del ? "-" : " ").font(Theme.mono(10.5, .bold))
+                    .foregroundStyle(tint ?? Theme.dim).frame(width: 16)
+                Text(l.text.isEmpty ? " " : l.text).font(Theme.mono(10.5)).foregroundStyle(Theme.fgSoft)
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .padding(.trailing, 8).padding(.vertical, 1.5)
+            .background(tint?.opacity(0.10) ?? .clear)
+        }
+    }
+    .padding(.vertical, 4)
+    .background(Theme.bg)
+}
+
+// One review-comment thread rendered GitHub-style: a collapsible file header, the
+// diff hunk, then the root comment + replies stacked. Its own @State so toggling one
+// thread never re-renders the whole timeline (that was the collapse jank).
+private struct ThreadCardView: View {
+    let thread: PRThread
+    var prAuthor: String = ""
+    @State private var expanded: Bool
+    @EnvironmentObject var theme: ThemeManager
+
+    init(thread: PRThread, prAuthor: String = "") {
+        self.thread = thread
+        self.prAuthor = prAuthor
+        _expanded = State(initialValue: !thread.resolved)
+    }
+
+    var body: some View {
+        if let root = thread.comments.first {
+            Card {
+                VStack(alignment: .leading, spacing: 0) {
+                    header(root)
+                    if expanded {
+                        if let lines = root.hunkLines, !lines.isEmpty { prHunkSnippet(lines) }
+                        ForEach(Array(thread.comments.enumerated()), id: \.offset) { _, c in
+                            Divider().overlay(Theme.borderSoft)
+                            commentBlock(c)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func header(_ root: PRReviewComment) -> some View {
+        Button { expanded.toggle() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.dim).frame(width: 10)
+                Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(Theme.fgMuted)
+                Text(root.path.map { "\($0)\(root.line.map { ":\($0)" } ?? "")" } ?? "")
+                    .font(Theme.mono(10.5)).foregroundStyle(Theme.fg).lineLimit(1).truncationMode(.middle)
+                if thread.resolved { StatusPill(text: "resolved", color: Theme.ok) }
+                if thread.comments.count > 1 {
+                    Text("\(thread.comments.count)").font(.system(size: 9.5, weight: .semibold)).monospacedDigit()
+                        .foregroundStyle(Theme.dim).padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Theme.bg, in: Capsule())
+                }
+                Spacer()
+                if !thread.at.isEmpty { Text(prRelDate(thread.at)).font(.system(size: 10)).foregroundStyle(Theme.dim) }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(Theme.panel3)
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+    }
+
+    private func commentBlock(_ c: PRReviewComment) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Avatar(url: c.avatarUrl, name: c.user, size: 22)
+                Text(c.user ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
+                if prIsBot(c.avatarUrl) { prRoleTag("Bot") }
+                if let u = c.user, u == prAuthor, !prAuthor.isEmpty { prRoleTag("Author") }
+                if let at = c.createdAt, !at.isEmpty {
+                    Text("· \(prRelDate(at))").font(.system(size: 10.5)).foregroundStyle(Theme.dim)
+                }
+                Spacer()
+            }
+            MarkdownText(c.body ?? "")
+        }
+        .padding(12)
     }
 }

@@ -39,6 +39,7 @@ struct ServicesBoard: View {
         .onAppear { peek.isActive = { [weak state] in state?.appActive ?? true }; peek.sync(windows: runningWindows) }
         .onChange(of: runningWindows) { peek.sync(windows: runningWindows) }
         .onDisappear { peek.stop() }
+        .perfTag("ServicesBoard")
     }
 
     private var gridBoard: some View {
@@ -49,6 +50,7 @@ struct ServicesBoard: View {
                       alignment: .center, spacing: 16) {
                 ForEach(repos, id: \.id) { repo in
                     RepoColumn(repo: repo, branch: workspace.branch, isMain: workspace.isMain, openPane: openPane, openTerminal: openTerminal)
+                        .equatable()
                         .frame(maxWidth: .infinity, alignment: .top)
                         .opacity(dragging == repo.name ? 0.35 : 1)
                         .onDrag {
@@ -90,7 +92,7 @@ struct ServicesBoard: View {
     }
 }
 
-struct RepoColumn: View {
+struct RepoColumn: View, Equatable {
     @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     let repo: Repo
@@ -98,6 +100,12 @@ struct RepoColumn: View {
     let isMain: Bool
     var openPane: (PaneKind) -> Void = { _ in }
     var openTerminal: (String) -> Void = { _ in }
+
+    // The ~1s workspace/liveness poll reassigns the whole `workspaces` array (x4
+    // mounted panes); skip the column unless its repo actually changed.
+    static func == (l: RepoColumn, r: RepoColumn) -> Bool {
+        l.repo == r.repo && l.branch == r.branch && l.isMain == r.isMain
+    }
 
     private var services: [Service] { repo.services ?? [] }
     private var running: Int { services.filter(\.running).count }
@@ -130,10 +138,12 @@ struct RepoColumn: View {
             } else {
                 ForEach(services) { svc in
                     SvcCard(service: svc, branch: branch, isMain: isMain, repoName: repo.name, openTerminal: openTerminal)
+                        .equatable()
                 }
             }
         }
         .frame(width: 360, alignment: .top)
+        .perfTag("RepoColumn")
     }
 
     private func shortcutMenu(_ scs: [Shortcut]) -> some View {
@@ -215,7 +225,7 @@ struct RepoColumn: View {
     }
 }
 
-struct SvcCard: View {
+struct SvcCard: View, Equatable {
     @Environment(AppState.self) var state
     @EnvironmentObject var peek: PeekStore
     @EnvironmentObject var theme: ThemeManager
@@ -224,6 +234,12 @@ struct SvcCard: View {
     let isMain: Bool
     let repoName: String
     var openTerminal: (String) -> Void = { _ in }
+
+    // Peek log updates still re-render (EnvironmentObject invalidation bypasses
+    // Equatable); this only skips the workspace-array reassignment fan-out.
+    static func == (l: SvcCard, r: SvcCard) -> Bool {
+        l.service == r.service && l.branch == r.branch && l.isMain == r.isMain && l.repoName == r.repoName
+    }
     @State private var busy = false
     @State private var busyLabel = "starting…"
     @State private var envPick: String?
@@ -261,6 +277,7 @@ struct SvcCard: View {
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(service.running ? Theme.ok.opacity(0.3) : Theme.borderSoft))
         .animation(.easeInOut(duration: 0.22), value: service.running)
         .animation(.easeInOut(duration: 0.18), value: isBusy)
+        .perfTag("SvcCard")
     }
 
     private var headRow: some View {

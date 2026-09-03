@@ -133,6 +133,7 @@ final class StreamManager {
     }
 
     fileprivate func dispatch(id: Int32, kind: StreamKind, bytes: [UInt8]) {
+        PerfHUD.shared.tick("pty:disp")
         clients[id]?(kind, bytes)
     }
 }

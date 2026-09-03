@@ -13,7 +13,9 @@ struct PomeloApp: App {
                 .environmentObject(theme)
                 .environment(ui)
                 .frame(minWidth: 1040, minHeight: 640)
+                .overlay(alignment: .topTrailing) { PerfHUDOverlay() }
                 .onAppear {
+                    PerfHUD.shared.startLogging()
                     state.uiStore = ui; state.themeManager = theme; state.boot(); theme.applyToWindow()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { state.maybeShowSetupOnFirstRun() }
                 }
@@ -25,7 +27,7 @@ struct PomeloApp: App {
                 Button("Check for Updates…") { updater.checkForUpdates() }
                     .disabled(!updater.canCheckForUpdates)
             }
-            CommandGroup(after: .windowArrangement) { OpenMetalSpikeButton(); MetalTerminalToggle() }
+            CommandGroup(after: .windowArrangement) { OpenMetalSpikeButton(); MetalTerminalToggle(); MetalTermStatsToggle(); PerfHUDToggle() }
         }
 
         Window("Create workspace", id: "create-workspace") {

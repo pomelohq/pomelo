@@ -26,6 +26,7 @@ struct CustomHeader: View {
         .frame(height: 38)
         .frame(maxWidth: .infinity)
         .background(Theme.bgSoft)
+        .perfTag("Header")
     }
 }
 

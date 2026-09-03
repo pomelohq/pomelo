@@ -13,15 +13,57 @@ func (s *Feature) Timeline(branch, repo string, isMain bool) []byte {
 	return buildTimeline(s.PRDetail(branch, repo, isMain), s.PRComments(branch, repo, isMain))
 }
 
+// No omitempty on state/threads/resolved: Swift's synthesized Decodable requires
+// every key even when the property has a default, so an absent key breaks decode.
+type tlItem struct {
+	ID       string            `json:"id"`
+	Kind     string            `json:"kind"`
+	Author   string            `json:"author,omitempty"`
+	Avatar   string            `json:"avatar,omitempty"`
+	Body     string            `json:"body"`
+	At       string            `json:"at"`
+	State    string            `json:"state"`
+	Resolved bool              `json:"resolved"`
+	Threads  []json.RawMessage `json:"threads"`
+}
+
+// Fallback for a pre-reviewThreads cache blob: wrap each inline comment as a
+// one-comment thread so the UI renders it the same way.
+func buildInlineFromComments(comments []json.RawMessage, out *[]tlItem) {
+	for _, raw := range comments {
+		var c struct {
+			User      string `json:"user"`
+			AvatarURL string `json:"avatarUrl"`
+			Body      string `json:"body"`
+			CreatedAt string `json:"createdAt"`
+			Path      string `json:"path"`
+			Line      *int   `json:"line"`
+		}
+		_ = json.Unmarshal(raw, &c)
+		if c.Body == "" {
+			continue
+		}
+		id := "inline-" + c.User + c.Path
+		if c.Line != nil {
+			id += strconv.Itoa(*c.Line)
+		}
+		th, _ := json.Marshal(map[string]any{"resolved": false, "path": c.Path, "line": c.Line,
+			"at": c.CreatedAt, "comments": []json.RawMessage{raw}})
+		*out = append(*out, tlItem{ID: id, Kind: "inline", Author: c.User, Avatar: c.AvatarURL,
+			At: c.CreatedAt, Threads: []json.RawMessage{th}})
+	}
+}
+
 func buildTimeline(detailBytes, commentsBytes []byte) []byte {
 	empty := []byte(`{"items":[]}`)
 
 	var detail struct {
 		PR *struct {
-			Body      string          `json:"body"`
-			Author    *ghActor        `json:"author"`
-			ReviewLog []ghReviewEntry `json:"reviewLog"`
-			Comments  []ghComment     `json:"comments"`
+			Body          string           `json:"body"`
+			Author        *ghActor         `json:"author"`
+			ReviewLog     []ghReviewEntry  `json:"reviewLog"`
+			Comments      []ghComment      `json:"comments"`
+			ReviewThreads []ghReviewThread `json:"reviewThreads"`
 		} `json:"pr"`
 	}
 	if json.Unmarshal(detailBytes, &detail) != nil || detail.PR == nil {
@@ -34,85 +76,67 @@ func buildTimeline(detailBytes, commentsBytes []byte) []byte {
 	}
 	_ = json.Unmarshal(commentsBytes, &cs)
 
-	// No omitempty on state/inline: Swift's synthesized Decodable requires every
-	// key even when the property has a default, so an absent key breaks the decode.
-	type item struct {
-		ID     string            `json:"id"`
-		Kind   string            `json:"kind"`
-		Author string            `json:"author,omitempty"`
-		Avatar string            `json:"avatar,omitempty"`
-		Body   string            `json:"body"`
-		At     string            `json:"at"`
-		State  string            `json:"state"`
-		Inline []json.RawMessage `json:"inline"`
-	}
-	var out []item
+	var out []tlItem
 
 	if strings.TrimSpace(pr.Body) != "" {
-		out = append(out, item{ID: "body", Kind: "description", Author: actorLogin(pr.Author), Avatar: actorAvatar(pr.Author), Body: pr.Body})
+		out = append(out, tlItem{ID: "body", Kind: "description", Author: actorLogin(pr.Author), Avatar: actorAvatar(pr.Author), Body: pr.Body})
 	}
 
+	// GitHub nests a review's inline threads under the "reviewed" event, so group
+	// each thread by the review that created its root comment.
 	known := map[int64]bool{}
 	for _, r := range pr.ReviewLog {
 		known[r.ReviewID] = true
 	}
 	byReview := map[int64][]json.RawMessage{}
-	var loose []json.RawMessage
-	for _, raw := range cs.Comments {
-		var meta struct {
-			Body     string `json:"body"`
-			ReviewID *int64 `json:"reviewId"`
-		}
-		_ = json.Unmarshal(raw, &meta)
-		if meta.Body == "" {
+	var standalone []ghReviewThread
+	for _, t := range pr.ReviewThreads {
+		if len(t.Comments) == 0 {
 			continue
 		}
-		if meta.ReviewID != nil && known[*meta.ReviewID] {
-			byReview[*meta.ReviewID] = append(byReview[*meta.ReviewID], raw)
+		b, _ := json.Marshal(t)
+		if t.ReviewID != 0 && known[t.ReviewID] {
+			byReview[t.ReviewID] = append(byReview[t.ReviewID], b)
 		} else {
-			loose = append(loose, raw)
+			standalone = append(standalone, t)
 		}
 	}
 
 	for _, r := range pr.ReviewLog {
-		inline := byReview[r.ReviewID]
 		state := strings.ToUpper(r.State)
-		if r.Body == "" && len(inline) == 0 && state == "COMMENTED" {
+		ths := byReview[r.ReviewID]
+		if r.Body == "" && len(ths) == 0 && state == "COMMENTED" {
 			continue
 		}
-		it := item{ID: "review-" + strconv.FormatInt(r.ReviewID, 10), Kind: "review", Author: actorLogin(r.Author), Avatar: actorAvatar(r.Author),
-			Body: r.Body, At: r.SubmittedAt, State: state, Inline: inline}
-		out = append(out, it)
+		out = append(out, tlItem{ID: "review-" + strconv.FormatInt(r.ReviewID, 10), Kind: "review",
+			Author: actorLogin(r.Author), Avatar: actorAvatar(r.Author), Body: r.Body, At: r.SubmittedAt, State: state, Threads: ths})
 	}
 
-	for _, raw := range loose {
-		var c struct {
-			User      string `json:"user"`
-			AvatarURL string `json:"avatarUrl"`
-			Body      string `json:"body"`
-			CreatedAt string `json:"createdAt"`
-			Path      string `json:"path"`
-			Line      *int   `json:"line"`
+	if len(pr.ReviewThreads) > 0 {
+		for i, t := range standalone {
+			b, _ := json.Marshal(t)
+			id := "thread-" + strconv.Itoa(i) + t.Path
+			if t.Line != nil {
+				id += strconv.Itoa(*t.Line)
+			}
+			out = append(out, tlItem{ID: id, Kind: "inline", Author: t.Comments[0].User, Avatar: t.Comments[0].AvatarURL,
+				At: t.At, Resolved: t.Resolved, Threads: []json.RawMessage{b}})
 		}
-		_ = json.Unmarshal(raw, &c)
-		id := "inline-" + c.User + c.Path
-		if c.Line != nil {
-			id += strconv.Itoa(*c.Line)
-		}
-		out = append(out, item{ID: id, Kind: "inline", Author: c.User, Avatar: c.AvatarURL, Body: c.Body, At: c.CreatedAt, Inline: []json.RawMessage{raw}})
+	} else {
+		buildInlineFromComments(cs.Comments, &out)
 	}
 
 	for i, c := range pr.Comments {
 		if c.Body == "" {
 			continue
 		}
-		out = append(out, item{ID: "comment-" + strconv.Itoa(i) + actorLogin(c.Author), Kind: "comment",
+		out = append(out, tlItem{ID: "comment-" + strconv.Itoa(i) + actorLogin(c.Author), Kind: "comment",
 			Author: actorLogin(c.Author), Avatar: actorAvatar(c.Author), Body: c.Body, At: c.CreatedAt})
 	}
 
 	for i := range out {
-		if out[i].Inline == nil {
-			out[i].Inline = []json.RawMessage{}
+		if out[i].Threads == nil {
+			out[i].Threads = []json.RawMessage{}
 		}
 	}
 

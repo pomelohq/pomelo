@@ -121,6 +121,7 @@ func fetchPRDetail(wt string) []byte {
         reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
         comments(first: 50) { nodes { author { login avatarUrl } body createdAt } }
         reviews(first: 50) { nodes { databaseId state body submittedAt author { login avatarUrl } } }
+        reviewThreads(first: 100) { nodes { isResolved comments(first: 50) { nodes { databaseId body path line diffHunk createdAt author { login avatarUrl } pullRequestReview { databaseId } } } } }
       } } } }`, owner, name, head, prNodeFields)
 	out, err := gqlQuery(context.Background(), q)
 	var r struct {

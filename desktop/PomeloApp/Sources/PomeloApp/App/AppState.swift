@@ -80,7 +80,7 @@ import Combine
     let agentsvm = AgentsViewModel()
     let sessionsvm = SessionsViewModel()
     init() {}
-    var workspaces: [Workspace] { get { wsvm.workspaces } set { wsvm.workspaces = newValue } }
+    var workspaces: [Workspace] { get { wsvm.workspaces } set { PerfHUD.shared.tick("set:workspaces"); wsvm.workspaces = newValue } }
     var selection: String? { get { wsvm.selection } set { wsvm.selection = newValue } }
     var bootError: String?
     var configError: String?
@@ -122,9 +122,9 @@ import Combine
     struct RepoPull: Decodable, Identifiable, Equatable { var repo = ""; var state = ""; var detail = ""; var id: String { repo } }
     var syncOn = false
     var syncIntervalSec = 1800
-    var syncPulling = false
+    var syncPulling = false { didSet { PerfHUD.shared.tick("set:syncPulling") } }
     var syncPulledAt: Date?
-    var syncProgress: [RepoPull] = []
+    var syncProgress: [RepoPull] = [] { didSet { PerfHUD.shared.tick("set:syncProgress") } }
 
     func refreshSync() async {
         struct R: Decodable { var refresh_main = false; var refresh_interval_sec = 1800; var pulling = false; var last_pull_at: Int64 = 0; var progress: [RepoPull] = [] }
@@ -295,11 +295,11 @@ import Combine
     var notifyClaude = UserDefaults.standard.object(forKey: "notifyClaude") as? Bool ?? true {
         didSet { UserDefaults.standard.set(notifyClaude, forKey: "notifyClaude") }
     }
-    var agentStates: [String: String] { get { agentsvm.states } set { agentsvm.states = newValue } }
+    var agentStates: [String: String] { get { agentsvm.states } set { PerfHUD.shared.tick("set:agentStates"); agentsvm.states = newValue } }
     var ops: [WsOp] = []
     var pendingSvc: [String: String] = [:]
     func svcKey(branch: String, repo: String, svc: String) -> String { "\(branch)|\(repo)|\(svc)" }
-    var wsPRs: [String: [WorkspacePR]] { get { prsvm.wsPRs } set { prsvm.wsPRs = newValue } }
+    var wsPRs: [String: [WorkspacePR]] { get { prsvm.wsPRs } set { PerfHUD.shared.tick("set:wsPRs"); prsvm.wsPRs = newValue } }
     var prsLoading: Bool { get { prsvm.loading } set { prsvm.loading = newValue } }
     var jiraIssues: [String: JiraIssue] { get { jiravm.issues } set { jiravm.issues = newValue } }
     var jiraConfigured: Bool { get { jiravm.configured } set { jiravm.configured = newValue } }
