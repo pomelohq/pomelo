@@ -11,7 +11,7 @@ struct AgentTerminal: View {
     @StateObject private var vm = AgentTerminalViewModel()
     @State private var holder: String?
     @AppStorage("claudeFontSize") private var fontSize: Double = 12
-    @AppStorage("metalTerminal") private var metalTerminal = false
+    @AppStorage("metalTerminal") private var metalTerminal = true
     @State private var failed = false
     @State private var exited = false
     @State private var openedAt = Date()

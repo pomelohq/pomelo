@@ -42,8 +42,8 @@ struct OpenMetalSpikeButton: View {
 }
 
 struct MetalTerminalToggle: View {
-    @AppStorage("metalTerminal") private var on = false
-    var body: some View { Toggle("Use Metal Terminal (experimental)", isOn: $on) }
+    @AppStorage("metalTerminal") private var on = true
+    var body: some View { Toggle("Use Metal Terminal (GPU)", isOn: $on) }
 }
 
 struct MetalTermStatsToggle: View {
@@ -356,10 +356,13 @@ final class MetalTerminalView: NSView {
         fedBytes += bytes.count
         parseQueue.async { [weak self] in
             guard let self else { return }
+            let before = self.terminal.buffer.yDisp
             self.terminal.feed(byteArray: bytes)
-            // Output snaps the viewport back to the live bottom (SwiftTerm's userScrolling
-            // is module-internal, so we can't hold position across output); capture it.
+            // SwiftTerm snaps the viewport to the live bottom on output (its userScrolling
+            // flag is module-internal). If the user has scrolled up, restore their position
+            // so streaming output doesn't yank them to the bottom.
             self.scrollBottomYDisp = self.terminal.buffer.yDisp
+            if self.userScrolledUp { self.terminal.buffer.yDisp = min(before, self.scrollBottomYDisp) }
             let t0 = CACurrentMediaTime()
             let descs = self.buildDescs()
             let yd = self.terminal.buffer.yDisp
@@ -389,6 +392,15 @@ final class MetalTerminalView: NSView {
     }
 
     override var acceptsFirstResponder: Bool { true }
+    override func becomeFirstResponder() -> Bool { isFocused = true; refreshCursor(); return super.becomeFirstResponder() }
+    override func resignFirstResponder() -> Bool { isFocused = false; refreshCursor(); return super.resignFirstResponder() }
+    private func refreshCursor() {
+        parseQueue.async { [weak self] in
+            guard let self else { return }
+            let descs = self.buildDescs()
+            DispatchQueue.main.async { self.latestDescs = descs; self.needsPresent = true }
+        }
+    }
 
     private enum DragKind { case none, select, app }
     private var dragKind: DragKind = .none
@@ -402,9 +414,34 @@ final class MetalTerminalView: NSView {
         window?.makeFirstResponder(self)
         if mouseModeOn && !event.modifierFlags.contains(.option) {
             dragKind = .app; sendMouseSGR(event, code: 0, press: true)
-        } else {
-            dragKind = .select; let c = selCell(at: event); selStart = c; selEnd = c; needsPresent = true
+            return
         }
+        let (col, row) = cell(at: event)
+        if event.clickCount == 2 {                    // double-click: word
+            let (lo, hi) = wordRange(col: col, row: row)
+            selStart = (lo, row + viewYDisp); selEnd = (hi, row + viewYDisp)
+            dragKind = .none; needsPresent = true
+            return
+        }
+        if event.clickCount >= 3 {                    // triple-click: whole line
+            selStart = (0, row + viewYDisp); selEnd = (max(0, termCols - 1), row + viewYDisp)
+            dragKind = .none; needsPresent = true
+            return
+        }
+        dragKind = .select; let c = selCell(at: event); selStart = c; selEnd = c; needsPresent = true
+    }
+
+    private func wordRange(col: Int, row: Int) -> (Int, Int) {
+        func isWord(_ c: Int) -> Bool {
+            guard c >= 0, c < terminal.cols, let cd = terminal.getCharData(col: c, row: row) else { return false }
+            let ch = cd.getCharacter()
+            return ch != " " && ch != "\t" && ch != "\u{0}"
+        }
+        guard isWord(col) else { return (col, col) }
+        var lo = col, hi = col
+        while lo > 0, isWord(lo - 1) { lo -= 1 }
+        while hi < terminal.cols - 1, isWord(hi + 1) { hi += 1 }
+        return (lo, hi)
     }
     // Absolute buffer cell (screen row offset by the current viewport) so a selection
     // sticks to its text while the viewport scrolls.
@@ -459,6 +496,7 @@ final class MetalTerminalView: NSView {
             let target = max(0, min(cur + dir, self.scrollBottomYDisp))
             guard target != cur else { return }
             self.terminal.buffer.yDisp = target
+            self.userScrolledUp = target < self.scrollBottomYDisp
             let descs = self.buildDescs()
             DispatchQueue.main.async {
                 self.viewYDisp = target
@@ -513,7 +551,9 @@ final class MetalTerminalView: NSView {
     // The live bottom (== buffer.yBase, which isn't public) captured after each feed;
     // scrollback clamps between 0 and this. lastYDisp forces a full refill on a move.
     private var scrollBottomYDisp = 0
+    private var userScrolledUp = false   // holds the viewport across streaming output
     private var lastYDisp = -1
+    private var isFocused = false         // dims the cursor when the terminal isn't first responder
     // yDisp of the currently-presented frame, mirrored on the main thread so mouse
     // events and selection hit-testing agree with what's on screen.
     private var viewYDisp = 0
@@ -582,6 +622,7 @@ final class MetalTerminalView: NSView {
             let target = max(0, min(cur - lines, self.scrollBottomYDisp))
             guard target != cur else { return }
             self.terminal.buffer.yDisp = target
+            self.userScrolledUp = target < self.scrollBottomYDisp
             let descs = self.buildDescs()
             DispatchQueue.main.async { self.latestDescs = descs; self.viewYDisp = target; self.needsPresent = true }
         }
@@ -677,6 +718,7 @@ final class MetalTerminalView: NSView {
                     if st.contains(.bold) { d.style |= 1 }
                     if st.contains(.italic) { d.style |= 2 }
                     if st.contains(.underline) { d.style |= 4 }
+                    if st.contains(.crossedOut) { d.style |= 8 }
                     let ch = cd.getCharacter()
                     if ch != " ", let scalar = ch.unicodeScalars.first, scalar.value != 0 { d.ch = ch }
                 } else {
@@ -691,7 +733,7 @@ final class MetalTerminalView: NSView {
         var c = CellDesc()
         c.gridPos = SIMD2(Float(min(max(0, terminal.buffer.x), cols - 1)),
                           Float(min(max(0, terminal.buffer.y), rows - 1)))
-        c.bg = SIMD4(0.55, 0.78, 1.0, 0.5)   // translucent block over the cell
+        c.bg = SIMD4(0.55, 0.78, 1.0, isFocused ? 0.5 : 0.22)   // dimmer block when unfocused
         return c
     }
 
@@ -707,7 +749,7 @@ final class MetalTerminalView: NSView {
                 let g = atlas.glyph(for: ch, bold: d.style & 1 != 0, italic: d.style & 2 != 0, wide: d.wide)
                 i.uvOrigin = g.origin; i.uvSize = g.size
             }
-            i.underline = d.style & 4 != 0 ? 1 : 0
+            i.underline = Float((d.style & 4 != 0 ? 1 : 0) | (d.style & 8 != 0 ? 2 : 0))   // bit0 underline, bit1 strike
             i.cellW = d.wide ? 2 : 1
             return i
         }
@@ -847,7 +889,9 @@ final class MetalTerminalView: NSView {
             float2 auv = in.uvOrigin + in.cellUV * in.uvSize;
             coverage = atlas.sample(s, auv).r;
         }
-        if (in.underline > 0.5 && in.cellUV.y > 0.88 && in.cellUV.y < 0.96) { coverage = 1.0; }
+        int lf = int(in.underline + 0.5);
+        if ((lf & 1) != 0 && in.cellUV.y > 0.88 && in.cellUV.y < 0.96) { coverage = 1.0; }
+        if ((lf & 2) != 0 && in.cellUV.y > 0.46 && in.cellUV.y < 0.54) { coverage = 1.0; }
         return mix(in.bg, in.fg, coverage);
     }
     """

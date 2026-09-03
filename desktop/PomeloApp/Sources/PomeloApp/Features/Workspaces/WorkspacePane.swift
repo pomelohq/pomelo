@@ -392,7 +392,7 @@ struct TerminalDrawer: View {
     @State private var dragStart: CGFloat?
     @State private var resizing = false
     @State private var confirmKill: TermTab?
-    @AppStorage("metalTerminal") private var metalTerminal = false
+    @AppStorage("metalTerminal") private var metalTerminal = true
 
     var body: some View {
         VStack(spacing: 0) {
