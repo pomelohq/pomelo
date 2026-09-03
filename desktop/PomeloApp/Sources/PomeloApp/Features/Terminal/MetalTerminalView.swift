@@ -811,7 +811,7 @@ final class MetalTerminalView: NSView {
                     if st.contains(.italic) { d.style |= 2 }
                     if st.contains(.underline) { d.style |= 4 }
                     if st.contains(.crossedOut) { d.style |= 8 }
-                    let ch = cd.getCharacter()
+                    let ch = terminal.getCharacter(for: cd)   // NOT cd.getCharacter(): astral scalars (Material Design nerd icons, U+F0000+) are stored via the terminal's grapheme-index map; the CharData-only getter returns a space for them
                     if ch != " ", let scalar = ch.unicodeScalars.first, scalar.value != 0 { d.ch = ch }
                 } else {
                     d.bg = defBg

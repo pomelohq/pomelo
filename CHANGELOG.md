@@ -4,6 +4,19 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- The GPU (Metal) terminal renderer is now the default. It reaches parity with the previous renderer and adds glyph-atlas rendering: scrollback, text selection that sticks to the text as it scrolls (with drag-to-select auto-scroll past the top and bottom edges), bold / dim / inverse / italic / underline / strikethrough, wide (CJK) characters, a cursor that dims when the terminal is unfocused, and Cmd+K to clear. (#81)
+
+### Added
+- Nerd Font icons render in the terminal, so TUIs show their devicons, folder, and Material Design glyphs. Missing glyphs fall back through installed Nerd Fonts and are scaled to fit the cell instead of clipping. (#81)
+- Terminal font setting: pick any installed monospaced or Nerd Font family for the terminal. (#81)
+
+### Fixed
+- The terminal, service log peek, split handle, and icon buttons re-tint immediately on a light/dark theme switch instead of keeping stale colors. (#81)
+- Squared the top corners of the Metal terminal and the service peek log, and matched the agent and golden-source header heights. (#81)
+
 ## [0.5.3] - 2026-09-03
 
 ### Added
