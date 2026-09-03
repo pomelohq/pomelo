@@ -150,6 +150,7 @@ final class GlyphAtlas {
     private let boldFont: CTFont
     private let italicFont: CTFont
     private let boldItalicFont: CTFont
+    private let nerdFonts: [CTFont]   // installed Nerd Fonts at this size, for icon glyphs
     private let descent: CGFloat
 
     init?(device: MTLDevice, font: CTFont, cellW: Int, cellH: Int, atlasSide: Int = 4096) {
@@ -158,6 +159,7 @@ final class GlyphAtlas {
         self.boldFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, .boldTrait, .boldTrait) ?? font
         self.italicFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, .italicTrait, .italicTrait) ?? font
         self.boldItalicFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, [.boldTrait, .italicTrait], [.boldTrait, .italicTrait]) ?? font
+        self.nerdFonts = MetalTerminalView.nerdDescriptors.map { CTFontCreateWithFontDescriptor($0, sz, nil) }
         self.descent = CTFontGetDescent(font)
         self.tilePx = SIMD2(cellW, cellH)
         self.cols = max(1, atlasSide / cellW)
@@ -184,15 +186,18 @@ final class GlyphAtlas {
         return g
     }
 
-    // Whether any font in the atlas font's cascade (SF Mono + installed Nerd Fonts)
-    // has a glyph for this character. Used to fall back to a tofu box for missing ones.
-    private func canRender(_ ch: Character) -> Bool {
+    private func hasGlyph(_ f: CTFont, _ units: [UniChar]) -> Bool {
+        var g = [CGGlyph](repeating: 0, count: units.count)
+        return CTFontGetGlyphsForCharacters(f, units, &g, units.count) && g.allSatisfy { $0 != 0 }
+    }
+
+    // The font to draw this char with: the styled base font, else an installed Nerd
+    // Font that has the glyph (devicons), else nil -> draw a tofu box.
+    private func drawFont(for ch: Character, base: CTFont) -> CTFont? {
         let units = Array(String(ch).utf16)
-        guard !units.isEmpty else { return false }
-        let sub = CTFontCreateForString(font, String(ch) as CFString, CFRange(location: 0, length: units.count))
-        var glyphs = [CGGlyph](repeating: 0, count: units.count)
-        guard CTFontGetGlyphsForCharacters(sub, units, &glyphs, units.count) else { return false }
-        return glyphs.allSatisfy { $0 != 0 }
+        guard !units.isEmpty else { return nil }
+        if hasGlyph(base, units) { return base }
+        return nerdFonts.first { hasGlyph($0, units) }
     }
 
     private func rasterize(_ ch: Character, bold: Bool, italic: Bool, wide: Bool, intoTileAt px: Int, _ py: Int) {
@@ -204,8 +209,8 @@ final class GlyphAtlas {
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
         ctx.setFillColor(red: 0, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-        let f = bold && italic ? boldItalicFont : bold ? boldFont : italic ? italicFont : font
-        if canRender(ch) {
+        let base = bold && italic ? boldItalicFont : bold ? boldFont : italic ? italicFont : font
+        if let f = drawFont(for: ch, base: base) {
             let attrs = [kCTFontAttributeName: f,
                          kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
             if let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) {
