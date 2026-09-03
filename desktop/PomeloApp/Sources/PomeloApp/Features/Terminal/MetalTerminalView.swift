@@ -184,6 +184,17 @@ final class GlyphAtlas {
         return g
     }
 
+    // Whether any font in the atlas font's cascade (SF Mono + installed Nerd Fonts)
+    // has a glyph for this character. Used to fall back to a tofu box for missing ones.
+    private func canRender(_ ch: Character) -> Bool {
+        let units = Array(String(ch).utf16)
+        guard !units.isEmpty else { return false }
+        let sub = CTFontCreateForString(font, String(ch) as CFString, CFRange(location: 0, length: units.count))
+        var glyphs = [CGGlyph](repeating: 0, count: units.count)
+        guard CTFontGetGlyphsForCharacters(sub, units, &glyphs, units.count) else { return false }
+        return glyphs.allSatisfy { $0 != 0 }
+    }
+
     private func rasterize(_ ch: Character, bold: Bool, italic: Bool, wide: Bool, intoTileAt px: Int, _ py: Int) {
         let w = tilePx.x * (wide ? 2 : 1), h = tilePx.y
         // CTLine (which shapes the whole grapheme, incl. Vietnamese/combining marks)
@@ -194,12 +205,22 @@ final class GlyphAtlas {
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
         ctx.setFillColor(red: 0, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         let f = bold && italic ? boldItalicFont : bold ? boldFont : italic ? italicFont : font
-        let attrs = [kCTFontAttributeName: f,
-                     kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
-        if let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) {
-            let line = CTLineCreateWithAttributedString(astr)
-            ctx.textPosition = CGPoint(x: 0, y: descent)
-            CTLineDraw(line, ctx)
+        if canRender(ch) {
+            let attrs = [kCTFontAttributeName: f,
+                         kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
+            if let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) {
+                let line = CTLineCreateWithAttributedString(astr)
+                ctx.textPosition = CGPoint(x: 0, y: descent)
+                CTLineDraw(line, ctx)
+            }
+        } else {
+            // No font (not even a Nerd Font in the cascade) has this glyph: draw a
+            // hollow box like a terminal's "tofu" so the cell width stays visible and
+            // columns line up, instead of leaving a blank gap.
+            let inset = CGFloat(w) * 0.16
+            ctx.setStrokeColor(red: 0.6, green: 0.6, blue: 0.6, alpha: 1)
+            ctx.setLineWidth(max(1, CGFloat(w) / 14))
+            ctx.stroke(CGRect(x: inset, y: inset, width: CGFloat(w) - 2 * inset, height: CGFloat(h) - 2 * inset))
         }
         guard let data = ctx.data else { return }
         let rgba = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
@@ -313,15 +334,28 @@ final class MetalTerminalView: NSView {
         needsLayout = true
     }
 
+    // SF Mono, with common Nerd Fonts added to the cascade list so PUA icon glyphs
+    // (LazyVim devicons) fall back to an installed Nerd Font instead of tofu. Advance
+    // stays SF Mono's so cell width is unchanged; icons just fill the cell.
+    static func monoFont(_ size: CGFloat) -> CTFont {
+        let base = NSFont.monospacedSystemFont(ofSize: size, weight: .regular) as CTFont
+        let names = ["Symbols Nerd Font Mono", "Symbols Nerd Font", "SymbolsNerdFontMono-Regular",
+                     "Hack Nerd Font Mono", "JetBrainsMono Nerd Font Mono", "FiraCode Nerd Font Mono",
+                     "MesloLGS NF", "Hack Nerd Font", "JetBrainsMono Nerd Font"]
+        let cascade = names.map { CTFontDescriptorCreateWithNameAndSize($0 as CFString, size) }
+        let desc = CTFontDescriptorCreateWithAttributes([kCTFontCascadeListAttribute: cascade] as CFDictionary)
+        return CTFontCreateCopyWithAttributes(base, size, nil, desc)
+    }
+
     private func setupFontAndAtlas() {
-        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular) as CTFont
+        let font = Self.monoFont(fontSize)
         let advance = self.advanceWidth(font)
         let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font), leading = CTFontGetLeading(font)
         let scale = Float(window?.backingScaleFactor ?? 2)
         let cw = Int((advance * CGFloat(scale)).rounded(.up))
         let ch = Int(((ascent + descent + leading) * CGFloat(scale)).rounded(.up))
         cellPx = SIMD2(Float(cw), Float(ch))
-        let scaledFont = NSFont.monospacedSystemFont(ofSize: fontSize * CGFloat(scale), weight: .regular) as CTFont
+        let scaledFont = Self.monoFont(fontSize * CGFloat(scale))
         // Shared per (cellW,cellH): every terminal has the same font/scale, so a new
         // terminal (workspace switch) or a burst of varied text reuses already-
         // rasterized glyphs instead of re-paying ~1-2ms of CTLine draw each on main.
