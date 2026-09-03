@@ -198,6 +198,35 @@ final class GlyphAtlas {
         return hasGlyph(base, units) ? base : nil
     }
 
+    // Nerd Font / icon glyphs live in the Private Use Areas. They carry metrics that
+    // don't sit at the text baseline, so fit them into the cell instead of baseline-drawing.
+    static func isIconGlyph(_ v: UInt32) -> Bool {
+        (0xE000...0xF8FF).contains(v) || (0xF0000...0x10FFFD).contains(v)
+    }
+
+    // Scale + center the glyph to fill the cell (like Alacritty/Ghostty do for icons),
+    // so devicons render fully instead of clipping to blank. Returns false if it can't
+    // resolve the glyph (caller falls back to the normal path).
+    private func drawIconFit(_ ch: Character, font f: CTFont, ctx: CGContext, w: Int, h: Int) -> Bool {
+        let units = Array(String(ch).utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: units.count)
+        guard CTFontGetGlyphsForCharacters(f, units, &glyphs, units.count), let g = glyphs.first, g != 0 else { return false }
+        var bbox = CGRect.zero
+        _ = withUnsafePointer(to: g) { CTFontGetBoundingRectsForGlyphs(f, .horizontal, $0, &bbox, 1) }
+        guard bbox.width > 0.5, bbox.height > 0.5 else { return false }
+        let pad = CGFloat(w) * 0.06
+        let scale = min((CGFloat(w) - 2 * pad) / bbox.width, (CGFloat(h) - 2 * pad) / bbox.height)
+        let tx = (CGFloat(w) - bbox.width * scale) / 2 - bbox.minX * scale
+        let ty = (CGFloat(h) - bbox.height * scale) / 2 - bbox.minY * scale
+        ctx.saveGState()
+        ctx.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        ctx.translateBy(x: tx, y: ty); ctx.scaleBy(x: scale, y: scale)
+        var pos = CGPoint.zero
+        withUnsafePointer(to: g) { gp in withUnsafePointer(to: pos) { pp in CTFontDrawGlyphs(f, gp, pp, 1, ctx) } }
+        ctx.restoreGState()
+        return true
+    }
+
     private func rasterize(_ ch: Character, bold: Bool, italic: Bool, wide: Bool, intoTileAt px: Int, _ py: Int) {
         let w = tilePx.x * (wide ? 2 : 1), h = tilePx.y
         // CTLine (which shapes the whole grapheme, incl. Vietnamese/combining marks)
@@ -209,12 +238,17 @@ final class GlyphAtlas {
         ctx.setFillColor(red: 0, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         let base = bold && italic ? boldItalicFont : bold ? boldFont : italic ? italicFont : font
         if let f = drawFont(for: ch, base: base) {
-            let attrs = [kCTFontAttributeName: f,
-                         kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
-            if let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) {
-                let line = CTLineCreateWithAttributedString(astr)
-                ctx.textPosition = CGPoint(x: 0, y: descent)
-                CTLineDraw(line, ctx)
+            let scalar = ch.unicodeScalars.first?.value ?? 0
+            if ch.unicodeScalars.count == 1, Self.isIconGlyph(scalar), drawIconFit(ch, font: f, ctx: ctx, w: w, h: h) {
+                // drawn fit-to-cell
+            } else {
+                let attrs = [kCTFontAttributeName: f,
+                             kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
+                if let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) {
+                    let line = CTLineCreateWithAttributedString(astr)
+                    ctx.textPosition = CGPoint(x: 0, y: descent)
+                    CTLineDraw(line, ctx)
+                }
             }
         } else {
             // No font (not even a Nerd Font in the cascade) has this glyph: draw a
