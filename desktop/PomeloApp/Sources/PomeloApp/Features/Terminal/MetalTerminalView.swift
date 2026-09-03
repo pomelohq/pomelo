@@ -199,6 +199,11 @@ final class MetalTerminalView: NSView {
     // uploads the prepared instances to the GPU and presents. The `terminal` engine
     // and the glyph atlas are touched only on this queue.
     private let parseQueue = DispatchQueue(label: "pom.term.parse")
+    // Present is driven by a display link at vsync (not per-feed) so rapid scroll
+    // output can't present a torn frame; main keeps only the latest descriptors.
+    private var displayLink: CADisplayLink?
+    private var latestDescs: [CellDesc]?
+    private var needsPresent = false
     // parseQueue-owned persistent grid so only rows the terminal marks dirty are
     // rebuilt; unchanged rows skip the per-cell getCharData/color work.
     private var grid: [CellDesc] = []
@@ -293,8 +298,26 @@ final class MetalTerminalView: NSView {
             let t0 = CACurrentMediaTime()
             let descs = self.buildDescs()
             self.lastParseMs = (CACurrentMediaTime() - t0) * 1000
-            DispatchQueue.main.async { self.applyDescs(descs); self.uploadAndRender() }
+            DispatchQueue.main.async { self.latestDescs = descs; self.needsPresent = true }
         }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, displayLink == nil {
+            let link = displayLink(target: self, selector: #selector(onDisplayLink))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        } else if window == nil {
+            displayLink?.invalidate(); displayLink = nil
+        }
+    }
+
+    @objc private func onDisplayLink(_ link: CADisplayLink) {
+        guard needsPresent, let descs = latestDescs else { return }
+        needsPresent = false
+        applyDescs(descs)
+        uploadAndRender()
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -303,6 +326,37 @@ final class MetalTerminalView: NSView {
     override func keyDown(with event: NSEvent) {
         let bytes = Self.encodeKey(event)
         if !bytes.isEmpty { onInput(bytes) }
+    }
+
+    private var scrollAccum: CGFloat = 0
+
+    override func scrollWheel(with event: NSEvent) {
+        // A full-screen TUI (Claude) turns on mouse reporting and scrolls itself, so
+        // forward wheel ticks as SGR mouse events. (Plain-shell scrollback is TBD.)
+        let wantsMouse: Bool
+        switch terminal.mouseMode { case .off: wantsMouse = false; default: wantsMouse = true }
+        guard wantsMouse else { return }
+        let dy = event.scrollingDeltaY
+        guard dy != 0 else { return }
+        if (dy > 0) != (scrollAccum > 0) { scrollAccum = 0 }   // direction flip: reset
+        scrollAccum += dy
+        // One tick per few points so a momentum flick keeps producing ticks instead
+        // of being clamped to a small fixed count.
+        let threshold: CGFloat = 3
+        var ticks = 0
+        while abs(scrollAccum) >= threshold, ticks < 24 {
+            ticks += 1
+            scrollAccum += scrollAccum > 0 ? -threshold : threshold
+        }
+        guard ticks > 0 else { return }
+        let scale = window?.backingScaleFactor ?? 2
+        let loc = convert(event.locationInWindow, from: nil)
+        let col = min(max(1, Int(loc.x * scale / CGFloat(cellPx.x)) + 1), termCols)
+        let row = min(max(1, Int((bounds.height - loc.y) * scale / CGFloat(cellPx.y)) + 1), termRows)
+        let b = dy > 0 ? 64 : 65
+        var bytes: [UInt8] = []
+        for _ in 0..<ticks { bytes += Array("\u{1b}[<\(b);\(col);\(row)M".utf8) }
+        onInput(bytes)
     }
 
     static func encodeKey(_ e: NSEvent) -> [UInt8] {
@@ -340,7 +394,7 @@ final class MetalTerminalView: NSView {
             guard let self else { return }
             self.terminal.resize(cols: cols, rows: rows)
             let descs = self.buildDescs()
-            DispatchQueue.main.async { self.applyDescs(descs); self.uploadAndRender() }
+            DispatchQueue.main.async { self.latestDescs = descs; self.needsPresent = true }
         }
         if changed { onResize?(cols, rows) }
     }
