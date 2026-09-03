@@ -334,16 +334,27 @@ final class MetalTerminalView: NSView {
         needsLayout = true
     }
 
-    // SF Mono, with common Nerd Fonts added to the cascade list so PUA icon glyphs
-    // (LazyVim devicons) fall back to an installed Nerd Font instead of tofu. Advance
-    // stays SF Mono's so cell width is unchanged; icons just fill the cell.
+    // Descriptors for every installed Nerd Font (found by name), so PUA icon glyphs
+    // fall back to whichever Nerd Font the user has, not a guessed name.
+    static let nerdDescriptors: [CTFontDescriptor] = {
+        let coll = CTFontCollectionCreateFromAvailableFonts(nil)
+        let all = (CTFontCollectionCreateMatchingFontDescriptors(coll) as? [CTFontDescriptor]) ?? []
+        var seen = Set<String>(), out: [CTFontDescriptor] = []
+        for d in all {
+            guard let name = CTFontDescriptorCopyAttribute(d, kCTFontNameAttribute) as? String else { continue }
+            let l = name.lowercased()
+            guard l.contains("nerd") || l.contains("symbols nerd") else { continue }
+            if seen.insert(name).inserted { out.append(d) }
+        }
+        return out
+    }()
+
+    // SF Mono with the installed Nerd Fonts added to the cascade list so devicon glyphs
+    // render. Advance stays SF Mono's, so cell width is unchanged; icons fill the cell.
     static func monoFont(_ size: CGFloat) -> CTFont {
         let base = NSFont.monospacedSystemFont(ofSize: size, weight: .regular) as CTFont
-        let names = ["Symbols Nerd Font Mono", "Symbols Nerd Font", "SymbolsNerdFontMono-Regular",
-                     "Hack Nerd Font Mono", "JetBrainsMono Nerd Font Mono", "FiraCode Nerd Font Mono",
-                     "MesloLGS NF", "Hack Nerd Font", "JetBrainsMono Nerd Font"]
-        let cascade = names.map { CTFontDescriptorCreateWithNameAndSize($0 as CFString, size) }
-        let desc = CTFontDescriptorCreateWithAttributes([kCTFontCascadeListAttribute: cascade] as CFDictionary)
+        guard !nerdDescriptors.isEmpty else { return base }
+        let desc = CTFontDescriptorCreateWithAttributes([kCTFontCascadeListAttribute: nerdDescriptors] as CFDictionary)
         return CTFontCreateCopyWithAttributes(base, size, nil, desc)
     }
 
