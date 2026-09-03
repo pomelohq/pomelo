@@ -28,7 +28,8 @@ final class PerfHUD: ObservableObject {
 
     func tick(_ name: String) { if collecting || visible { counts[name, default: 0] += 1 } }
 
-    // Always-on file logging, started at launch — no need to open the overlay.
+    // Opt-in file logging: only while the HUD is on, so a normal run never writes to
+    // the user's disk. Off deletes the file so nothing lingers.
     func startLogging() {
         FileManager.default.createFile(atPath: logPath, contents: nil)
         logHandle = FileHandle(forWritingAtPath: logPath)
@@ -36,7 +37,12 @@ final class PerfHUD: ObservableObject {
         ensureTimer()
     }
 
-    func start() { collecting = true; ensureTimer() }
+    func stopLogging() {
+        try? logHandle?.close(); logHandle = nil
+        collecting = false
+        try? FileManager.default.removeItem(atPath: logPath)
+    }
+
 
     private func ensureTimer() {
         guard timer == nil else { return }
@@ -105,7 +111,7 @@ struct PerfHUDToggle: View {
     var body: some View {
         Button(hud.visible ? "Hide Perf HUD" : "Show Perf HUD") {
             hud.visible.toggle()
-            if hud.visible { hud.start() }
+            if hud.visible { hud.startLogging() } else { hud.stopLogging() }
         }
         .keyboardShortcut("p", modifiers: [.command, .option, .control])
     }

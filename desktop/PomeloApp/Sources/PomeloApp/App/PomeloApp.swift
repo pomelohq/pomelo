@@ -15,7 +15,6 @@ struct PomeloApp: App {
                 .frame(minWidth: 1040, minHeight: 640)
                 .overlay(alignment: .topTrailing) { PerfHUDOverlay() }
                 .onAppear {
-                    PerfHUD.shared.startLogging()
                     state.uiStore = ui; state.themeManager = theme; state.boot(); theme.applyToWindow()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { state.maybeShowSetupOnFirstRun() }
                 }
