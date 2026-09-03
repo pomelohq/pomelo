@@ -321,14 +321,97 @@ final class MetalTerminalView: NSView {
     }
 
     override var acceptsFirstResponder: Bool { true }
-    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self) }
+
+    private enum DragKind { case none, select, app }
+    private var dragKind: DragKind = .none
+    private var mouseModeOn: Bool {
+        switch terminal.mouseMode { case .off: return false; default: return true }
+    }
+
+    // When a full-screen TUI (Claude) enables mouse reporting it owns the mouse, so
+    // forward clicks/drags to it; hold Option to grab a terminal text selection instead.
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        if mouseModeOn && !event.modifierFlags.contains(.option) {
+            dragKind = .app; sendMouseSGR(event, code: 0, press: true)
+        } else {
+            dragKind = .select; let c = cell(at: event); selStart = c; selEnd = c; needsPresent = true
+        }
+    }
+    override func mouseDragged(with event: NSEvent) {
+        switch dragKind {
+        case .app: sendMouseSGR(event, code: 32, press: true)
+        case .select: selEnd = cell(at: event); needsPresent = true
+        case .none: break
+        }
+    }
+    override func mouseUp(with event: NSEvent) {
+        switch dragKind {
+        case .app: sendMouseSGR(event, code: 0, press: false)
+        case .select: if let s = selStart, let e = selEnd, s == e { selStart = nil; selEnd = nil; needsPresent = true }
+        case .none: break
+        }
+        dragKind = .none
+    }
+
+    private func sendMouseSGR(_ event: NSEvent, code: Int, press: Bool) {
+        let (c, r) = cell(at: event)
+        let col = min(max(1, c + 1), max(1, termCols)), row = min(max(1, r + 1), max(1, termRows))
+        onInput(Array("\u{1b}[<\(code);\(col);\(row)\(press ? "M" : "m")".utf8))
+    }
 
     override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command) {
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "c": if selStart != nil { copySelection() }; return
+            case "v": if let s = NSPasteboard.general.string(forType: .string) { onInput(Array(s.utf8)) }; return
+            default: return   // don't forward other Cmd shortcuts to the pty
+            }
+        }
         let bytes = Self.encodeKey(event)
         if !bytes.isEmpty { onInput(bytes) }
     }
 
+    private func copySelection() {
+        guard let s = selStart, let e = selEnd, s != e else { return }
+        parseQueue.async { [weak self] in
+            guard let self else { return }
+            let a = self.le(s, e) ? s : e, b = self.le(s, e) ? e : s
+            var out = ""
+            for row in a.1...b.1 {
+                let lo = row == a.1 ? a.0 : 0
+                let hi = row == b.1 ? b.0 : self.terminal.cols - 1
+                var line = ""
+                if lo <= hi { for col in lo...hi { if let cd = self.terminal.getCharData(col: col, row: row) { line += String(cd.getCharacter()) } } }
+                out += line.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+                if row < b.1 { out += "\n" }
+            }
+            DispatchQueue.main.async {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(out, forType: .string)
+            }
+        }
+    }
+
     private var scrollAccum: CGFloat = 0
+    private var selStart: (col: Int, row: Int)?
+    private var selEnd: (col: Int, row: Int)?
+
+    private func cell(at event: NSEvent) -> (Int, Int) {
+        let scale = window?.backingScaleFactor ?? 2
+        let loc = convert(event.locationInWindow, from: nil)
+        let col = min(max(0, Int(loc.x * scale / CGFloat(cellPx.x))), max(0, termCols - 1))
+        let row = min(max(0, Int((bounds.height - loc.y) * scale / CGFloat(cellPx.y))), max(0, termRows - 1))
+        return (col, row)
+    }
+
+    private func le(_ p: (Int, Int), _ q: (Int, Int)) -> Bool { p.1 < q.1 || (p.1 == q.1 && p.0 <= q.0) }
+
+    private func selectionContains(_ col: Int, _ row: Int) -> Bool {
+        guard let s = selStart, let e = selEnd, s != e else { return false }
+        let a = le(s, e) ? s : e, b = le(s, e) ? e : s
+        return le(a, (col, row)) && le((col, row), b)
+    }
 
     override func scrollWheel(with event: NSEvent) {
         // A full-screen TUI (Claude) turns on mouse reporting and scrolls itself, so
@@ -448,9 +531,11 @@ final class MetalTerminalView: NSView {
     // Main thread: resolve each descriptor's glyph against the atlas (rasterizing new
     // ones here, synchronized with the GPU read) and build the instance array.
     private func applyDescs(_ descs: [CellDesc]) {
+        let hasSel = selStart != nil && selEnd != nil && selStart! != selEnd!
         instances = descs.map { d in
             var i = CellInstance()
             i.gridPos = d.gridPos; i.fg = d.fg; i.bg = d.bg
+            if hasSel, selectionContains(Int(d.gridPos.x), Int(d.gridPos.y)) { i.bg = SIMD4(0.20, 0.35, 0.60, 1) }
             if let ch = d.ch { i.uvOrigin = atlas.uvOrigin(for: ch); i.uvSize = atlas.uvSize }
             return i
         }
