@@ -349,18 +349,19 @@ final class MetalTerminalView: NSView {
         return NSFont.monospacedSystemFont(ofSize: size, weight: .regular) as CTFont
     }
 
-    // Installed monospace font families for the Settings picker.
+    // Families for the Settings picker: monospace fonts, plus every Nerd Font (the
+    // non-"Mono" Nerd variants aren't flagged monospace but are the ones people run in
+    // a terminal for full icon coverage).
     static func monospaceFamilies() -> [String] {
         let coll = CTFontCollectionCreateFromAvailableFonts(nil)
         let all = (CTFontCollectionCreateMatchingFontDescriptors(coll) as? [CTFontDescriptor]) ?? []
         var out = Set<String>()
         for d in all {
+            guard let fam = CTFontDescriptorCopyAttribute(d, kCTFontFamilyNameAttribute) as? String, !fam.hasPrefix(".") else { continue }
+            if fam.lowercased().contains("nerd font") { out.insert(fam); continue }
             let traits = (CTFontDescriptorCopyAttribute(d, kCTFontTraitsAttribute) as? [CFString: Any]) ?? [:]
             let sym = (traits[kCTFontSymbolicTrait] as? UInt32) ?? 0
-            guard sym & CTFontSymbolicTraits.traitMonoSpace.rawValue != 0 else { continue }
-            if let fam = CTFontDescriptorCopyAttribute(d, kCTFontFamilyNameAttribute) as? String, !fam.hasPrefix(".") {
-                out.insert(fam)
-            }
+            if sym & CTFontSymbolicTraits.traitMonoSpace.rawValue != 0 { out.insert(fam) }
         }
         return out.sorted()
     }
