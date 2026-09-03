@@ -117,6 +117,7 @@ struct CellInstance {
     var fg: SIMD4<Float> = .zero
     var bg: SIMD4<Float> = .zero
     var underline: Float = 0
+    var cellW: Float = 1     // quad width in cells (2 for a wide glyph)
 }
 
 struct TermUniforms {
@@ -132,7 +133,8 @@ struct CellDesc {
     var fg: SIMD4<Float> = .zero
     var bg: SIMD4<Float> = .zero
     var ch: Character? = nil
-    var style: Int = 0   // 0 regular, |1 bold, |2 italic
+    var style: Int = 0    // 0 regular, |1 bold, |2 italic, |4 underline
+    var wide = false      // CJK / emoji / nerd-font: the glyph spans two cells
 }
 
 // One tile per unique scalar, cell-sized, so the fragment shader samples a glyph by
@@ -142,7 +144,7 @@ final class GlyphAtlas {
     let tilePx: SIMD2<Int>
     private let cols: Int
     private var next = 0
-    private var map: [String: SIMD2<Float>] = [:]
+    private var map: [String: (origin: SIMD2<Float>, size: SIMD2<Float>)] = [:]
     let uvSize: SIMD2<Float>
     private let font: CTFont
     private let boldFont: CTFont
@@ -166,21 +168,24 @@ final class GlyphAtlas {
         self.texture = tex
     }
 
-    func uvOrigin(for ch: Character, bold: Bool = false, italic: Bool = false) -> SIMD2<Float> {
-        let key = (bold ? "\u{1}" : "") + (italic ? "\u{2}" : "") + String(ch)
-        if let uv = map[key] { return uv }
+    func glyph(for ch: Character, bold: Bool = false, italic: Bool = false, wide: Bool = false) -> (origin: SIMD2<Float>, size: SIMD2<Float>) {
+        let key = (bold ? "\u{1}" : "") + (italic ? "\u{2}" : "") + (wide ? "\u{3}" : "") + String(ch)
+        if let g = map[key] { return g }
         PerfHUD.shared.tick("term:raster")
-        let slot = next; next += 1
+        let tiles = wide ? 2 : 1
+        if wide && next % cols == cols - 1 { next += 1 }   // keep both tiles on one row
+        let slot = next; next += tiles
         let cx = slot % cols, cy = slot / cols
         let px = cx * tilePx.x, py = cy * tilePx.y
-        rasterize(ch, bold: bold, italic: italic, intoTileAt: px, py)
-        let uv = SIMD2(Float(px) / Float(texture.width), Float(py) / Float(texture.height))
-        map[key] = uv
-        return uv
+        rasterize(ch, bold: bold, italic: italic, wide: wide, intoTileAt: px, py)
+        let g = (origin: SIMD2(Float(px) / Float(texture.width), Float(py) / Float(texture.height)),
+                 size: SIMD2(uvSize.x * Float(tiles), uvSize.y))
+        map[key] = g
+        return g
     }
 
-    private func rasterize(_ ch: Character, bold: Bool, italic: Bool, intoTileAt px: Int, _ py: Int) {
-        let w = tilePx.x, h = tilePx.y
+    private func rasterize(_ ch: Character, bold: Bool, italic: Bool, wide: Bool, intoTileAt px: Int, _ py: Int) {
+        let w = tilePx.x * (wide ? 2 : 1), h = tilePx.y
         // CTLine (which shapes the whole grapheme, incl. Vietnamese/combining marks)
         // needs a color context; it does not draw in a gray-only one. Rasterize white
         // text on black in RGBA, then keep the red channel as the R8 coverage.
@@ -285,10 +290,6 @@ final class MetalTerminalView: NSView {
         metalLayer.device = device
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = true
-        // The spike window has rounded corners; clip the layer so the sharp
-        // rectangle doesn't poke past them. Harmless when embedded in a pane.
-        metalLayer.cornerRadius = 10
-        metalLayer.masksToBounds = true
         setupFontAndAtlas()
         setupPipeline()
         statsLabel.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
@@ -327,7 +328,7 @@ final class MetalTerminalView: NSView {
         atlas = Self.sharedAtlas(font: scaledFont, cellW: cw, cellH: ch)
         // Pre-rasterize printable ASCII so the parse queue never writes the atlas
         // texture mid-frame while the GPU samples it (no-op once the shared atlas is warm).
-        for u in 32...126 { if let s = UnicodeScalar(u) { _ = atlas.uvOrigin(for: Character(s)) } }
+        for u in 32...126 { if let s = UnicodeScalar(u) { _ = atlas.glyph(for: Character(s)) } }
     }
 
     private static var atlasCache: [String: GlyphAtlas] = [:]
@@ -658,8 +659,16 @@ final class MetalTerminalView: NSView {
             for col in 0..<cols {
                 var d = CellDesc()
                 d.gridPos = SIMD2(Float(col), Float(row))
+                if let cd = terminal.getCharData(col: col, row: row), cd.width == 0 {
+                    // Second half of a wide glyph: draw nothing so the 2-cell glyph from
+                    // the previous column isn't overpainted.
+                    d.bg = SIMD4(0, 0, 0, 0)
+                    grid[row * cols + col] = d
+                    continue
+                }
                 if let cd = terminal.getCharData(col: col, row: row) {
                     let st = cd.attribute.style
+                    if cd.width == 2 { d.wide = true }
                     var fg = color(cd.attribute.fg, def: defFg)
                     var bg = color(cd.attribute.bg, def: defBg)
                     if st.contains(.inverse) { swap(&fg, &bg) }
@@ -694,8 +703,12 @@ final class MetalTerminalView: NSView {
             var i = CellInstance()
             i.gridPos = d.gridPos; i.fg = d.fg; i.bg = d.bg
             if hasSel, selectionContains(Int(d.gridPos.x), Int(d.gridPos.y)) { i.bg = SIMD4(0.20, 0.35, 0.60, 1) }
-            if let ch = d.ch { i.uvOrigin = atlas.uvOrigin(for: ch, bold: d.style & 1 != 0, italic: d.style & 2 != 0); i.uvSize = atlas.uvSize }
+            if let ch = d.ch {
+                let g = atlas.glyph(for: ch, bold: d.style & 1 != 0, italic: d.style & 2 != 0, wide: d.wide)
+                i.uvOrigin = g.origin; i.uvSize = g.size
+            }
             i.underline = d.style & 4 != 0 ? 1 : 0
+            i.cellW = d.wide ? 2 : 1
             return i
         }
     }
@@ -807,7 +820,7 @@ final class MetalTerminalView: NSView {
     static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Cell { float2 gridPos; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; float underline; };
+    struct Cell { float2 gridPos; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; float underline; float cellW; };
     struct Uniforms { float2 viewportPx; float2 cellPx; };
     struct VOut { float4 pos [[position]]; float2 cellUV; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; float underline; };
 
@@ -817,7 +830,7 @@ final class MetalTerminalView: NSView {
         float2 corner = quad[vid];
         Cell c = cells[iid];
         float2 originPx = c.gridPos * u.cellPx;
-        float2 px = originPx + corner * u.cellPx;
+        float2 px = originPx + corner * float2(u.cellPx.x * c.cellW, u.cellPx.y);
         float2 ndc = (px / u.viewportPx) * 2.0 - 1.0;
         ndc.y = -ndc.y;
         VOut o;
