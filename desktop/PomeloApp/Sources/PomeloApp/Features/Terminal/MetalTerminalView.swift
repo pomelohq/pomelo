@@ -190,12 +190,15 @@ final class GlyphAtlas {
         return CTFontGetGlyphsForCharacters(f, units, &g, units.count) && g.allSatisfy { $0 != 0 }
     }
 
-    // Draw with the base font if it has the glyph, else nil -> tofu box. Choose a Nerd
-    // Font in Settings to get real icon glyphs (with correct metrics) for devicons.
-    private func drawFont(for ch: Character, base: CTFont) -> CTFont? {
-        let units = Array(String(ch).utf16)
-        guard !units.isEmpty else { return nil }
-        return hasGlyph(base, units) ? base : nil
+    // CTLine draw at the text baseline; auto-cascades to a system font for glyphs the
+    // base font lacks (emoji, symbols).
+    private func drawText(_ ch: Character, font f: CTFont, ctx: CGContext) {
+        let attrs = [kCTFontAttributeName: f,
+                     kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
+        guard let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) else { return }
+        let line = CTLineCreateWithAttributedString(astr)
+        ctx.textPosition = CGPoint(x: 0, y: descent)
+        CTLineDraw(line, ctx)
     }
 
     // Nerd Font / icon glyphs live in the Private Use Areas. They carry metrics that
@@ -237,27 +240,22 @@ final class GlyphAtlas {
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
         ctx.setFillColor(red: 0, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         let base = bold && italic ? boldItalicFont : bold ? boldFont : italic ? italicFont : font
-        if let f = drawFont(for: ch, base: base) {
-            let scalar = ch.unicodeScalars.first?.value ?? 0
-            if ch.unicodeScalars.count == 1, Self.isIconGlyph(scalar), drawIconFit(ch, font: f, ctx: ctx, w: w, h: h) {
-                // drawn fit-to-cell
+        let units = Array(String(ch).utf16)
+        let scalar = ch.unicodeScalars.first?.value ?? 0
+        if ch.unicodeScalars.count == 1, Self.isIconGlyph(scalar) {
+            // Nerd Font icon: draw with the base font, or a fallback that has it, scaled
+            // + centered to fit the cell (Ghostty's glyph-constraint approach).
+            let iconFont = hasGlyph(base, units) ? base
+                : CTFontCreateForString(base, String(ch) as CFString, CFRange(location: 0, length: units.count))
+            if hasGlyph(iconFont, units), drawIconFit(ch, font: iconFont, ctx: ctx, w: w, h: h) {
+                // constrained icon drawn
             } else {
-                let attrs = [kCTFontAttributeName: f,
-                             kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
-                if let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) {
-                    let line = CTLineCreateWithAttributedString(astr)
-                    ctx.textPosition = CGPoint(x: 0, y: descent)
-                    CTLineDraw(line, ctx)
-                }
+                drawText(ch, font: base, ctx: ctx)
             }
         } else {
-            // No font (not even a Nerd Font in the cascade) has this glyph: draw a
-            // hollow box like a terminal's "tofu" so the cell width stays visible and
-            // columns line up, instead of leaving a blank gap.
-            let inset = CGFloat(w) * 0.16
-            ctx.setStrokeColor(red: 0.6, green: 0.6, blue: 0.6, alpha: 1)
-            ctx.setLineWidth(max(1, CGFloat(w) / 14))
-            ctx.stroke(CGRect(x: inset, y: inset, width: CGFloat(w) - 2 * inset, height: CGFloat(h) - 2 * inset))
+            // Text / symbols: CTLine draws with the base font and auto-cascades to a
+            // system font for anything it lacks (emoji, the agent statusline glyphs).
+            drawText(ch, font: base, ctx: ctx)
         }
         guard let data = ctx.data else { return }
         let rgba = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
