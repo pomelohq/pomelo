@@ -26,13 +26,17 @@ struct IconButton: View {
     var tip: String? = nil
     let action: () -> Void
     @State private var hover = false
+    // Reads the static Theme colors; depend on the appearance so a theme switch
+    // (which flips NSApp.appearance) re-evaluates the body and re-tints the icon.
+    @Environment(\.colorScheme) private var colorScheme
 
     init(_ systemName: String, size: CGFloat = 12, tip: String? = nil, action: @escaping () -> Void) {
         self.systemName = systemName; self.size = size; self.tip = tip; self.action = action
     }
 
     var body: some View {
-        Button(action: action) {
+        let _ = colorScheme
+        return Button(action: action) {
             Image(systemName: systemName).font(.system(size: size))
                 .foregroundStyle(hover ? Theme.fg : Theme.dim)
                 .frame(width: 24, height: 22)
