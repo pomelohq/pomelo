@@ -111,7 +111,8 @@ struct AgentTerminal: View {
                 .buttonStyle(.plain).frame(width: 0, height: 0).opacity(0)
                 .keyboardShortcut("+", modifiers: .command)
         }
-        .padding(.horizontal, 12).padding(.vertical, 7)
+        .padding(.horizontal, 12)
+        .frame(height: 33)
         .background(Theme.bgSoft)
     }
 

@@ -79,14 +79,15 @@ struct ServicesBoard: View {
                     Text(investigating ? "Creating…" : "Scratch workspace").font(.system(size: 12, weight: .medium))
                 }
                 .foregroundStyle(Theme.fgMuted)
-                .padding(.horizontal, 10).padding(.vertical, 2.5)
+                .padding(.horizontal, 10).padding(.vertical, 3)
                 .background(Theme.chip, in: Capsule())
                 .overlay(Capsule().strokeBorder(Theme.chipBd))
             }
             .buttonStyle(.plain).disabled(investigating)
             .help("Create a throwaway investigate-<date> workspace (all main repos) to reproduce a bug in isolation — no ticket/branch to name.")
         }
-        .padding(.horizontal, 14).padding(.vertical, 4)
+        .padding(.horizontal, 14)
+        .frame(height: 33)
         .background(Theme.bgSoft)
         .overlay(Rectangle().fill(Theme.borderSoft).frame(height: 1), alignment: .bottom)
     }
