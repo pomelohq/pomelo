@@ -159,7 +159,7 @@ private struct GeneralSettings: View {
                         Text("System (SF Mono)").tag("")
                         ForEach(monoFamilies, id: \.self) { Text($0).tag($0) }
                     }
-                    .labelsHidden().frame(maxWidth: 260)
+                    .labelsHidden().fixedSize()
                 } label: {
                     HStack(spacing: 5) {
                         Text("Terminal font")

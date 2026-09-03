@@ -385,7 +385,10 @@ final class MetalTerminalView: NSView {
 
     private static var atlasCache: [String: GlyphAtlas] = [:]
     private static func sharedAtlas(font: CTFont, cellW: Int, cellH: Int) -> GlyphAtlas {
-        let key = "\(cellW)x\(cellH)"
+        // Key by the font too: a different family at the same cell size must not reuse
+        // another font's rasterized glyphs.
+        let name = (CTFontCopyPostScriptName(font) as String)
+        let key = "\(name)|\(cellW)x\(cellH)"
         if let a = atlasCache[key] { return a }
         let a = GlyphAtlas(device: sharedDevice, font: font, cellW: cellW, cellH: cellH)!
         atlasCache[key] = a
