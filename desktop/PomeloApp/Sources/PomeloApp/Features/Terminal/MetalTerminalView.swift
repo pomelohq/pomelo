@@ -344,14 +344,13 @@ final class MetalTerminalView: NSView {
     static let nerdDescriptors: [CTFontDescriptor] = {
         let coll = CTFontCollectionCreateFromAvailableFonts(nil)
         let all = (CTFontCollectionCreateMatchingFontDescriptors(coll) as? [CTFontDescriptor]) ?? []
+        // The PostScript name abbreviates to "NF"; the family name carries "Nerd Font".
+        func family(_ d: CTFontDescriptor) -> String { (CTFontDescriptorCopyAttribute(d, kCTFontFamilyNameAttribute) as? String) ?? "" }
         var seen = Set<String>(), out: [CTFontDescriptor] = []
-        for d in all {
-            guard let name = CTFontDescriptorCopyAttribute(d, kCTFontNameAttribute) as? String else { continue }
-            let l = name.lowercased()
-            guard l.contains("nerd") || l.contains("symbols nerd") else { continue }
-            if seen.insert(name).inserted { out.append(d) }
+        for d in all where family(d).lowercased().contains("nerd font") {
+            if seen.insert(family(d)).inserted { out.append(d) }   // one per family
         }
-        return out
+        return out.sorted { family($0).lowercased().contains("mono") && !family($1).lowercased().contains("mono") }
     }()
 
     // SF Mono with the installed Nerd Fonts added to the cascade list so devicon glyphs
