@@ -369,6 +369,7 @@ struct DatabasePane: View {
 
 struct SplitHandle: View {
     enum Axis { case horizontal, vertical }
+    @EnvironmentObject var theme: ThemeManager   // re-tint on theme switch (reads static Theme.*)
     let axis: Axis
     @Binding var value: Double
     let min: Double

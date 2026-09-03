@@ -535,6 +535,9 @@ struct CrashLogSheet: View {
 }
 
 struct SvcPeekView: View {
+    // Observe the theme so a theme switch re-evaluates the body: it reads the static
+    // Theme.bg, and with unchanged `lines` SwiftUI would otherwise keep the stale color.
+    @EnvironmentObject var theme: ThemeManager
     let lines: [String]
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
