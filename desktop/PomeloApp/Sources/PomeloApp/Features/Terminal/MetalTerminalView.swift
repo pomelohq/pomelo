@@ -187,7 +187,10 @@ final class GlyphAtlas {
 
     private func hasGlyph(_ f: CTFont, _ units: [UniChar]) -> Bool {
         var g = [CGGlyph](repeating: 0, count: units.count)
-        return CTFontGetGlyphsForCharacters(f, units, &g, units.count) && g.allSatisfy { $0 != 0 }
+        _ = CTFontGetGlyphsForCharacters(f, units, &g, units.count)
+        // For an astral codepoint (surrogate pair) the glyph lands in g[0] and the low
+        // surrogate maps to 0, so check the first glyph — not every unit.
+        return (g.first ?? 0) != 0
     }
 
     // CTLine draw at the text baseline; auto-cascades to a system font for glyphs the
@@ -213,7 +216,8 @@ final class GlyphAtlas {
     private func drawIconFit(_ ch: Character, font f: CTFont, ctx: CGContext, w: Int, h: Int) -> Bool {
         let units = Array(String(ch).utf16)
         var glyphs = [CGGlyph](repeating: 0, count: units.count)
-        guard CTFontGetGlyphsForCharacters(f, units, &glyphs, units.count), let g = glyphs.first, g != 0 else { return false }
+        _ = CTFontGetGlyphsForCharacters(f, units, &glyphs, units.count)   // astral: glyph in [0], low surrogate 0
+        guard let g = glyphs.first, g != 0 else { return false }
         var bbox = CGRect.zero
         _ = withUnsafePointer(to: g) { CTFontGetBoundingRectsForGlyphs(f, .horizontal, $0, &bbox, 1) }
         guard bbox.width > 0.5, bbox.height > 0.5 else { return false }
