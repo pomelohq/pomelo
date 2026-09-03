@@ -269,10 +269,10 @@ struct SvcCard: View, Equatable {
             if expands {
                 Divider().overlay(Theme.borderSoft)
                 expansion
-                    .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(service.running ? Theme.ok.opacity(0.3) : Theme.borderSoft))
         .animation(.easeInOut(duration: 0.22), value: service.running)
