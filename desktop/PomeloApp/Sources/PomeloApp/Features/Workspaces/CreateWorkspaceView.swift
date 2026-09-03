@@ -53,7 +53,7 @@ private struct SuggestionRowView: View {
 }
 
 struct CreateWorkspaceView: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     @Environment(\.dismiss) private var dismiss
     @State private var ticket = ""

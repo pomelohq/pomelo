@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ConfigDoctorBar: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @ObservedObject var vm: DoctorViewModel
     @State private var expanded = false
 

@@ -77,7 +77,7 @@ struct ExportBundleSheet: View {
 
 struct ImportBundleSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @State private var dataB64 = ""
     @State private var fileName = ""
     @State private var picking = false

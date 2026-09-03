@@ -1,9 +1,9 @@
 import SwiftUI
 
 struct WorkspaceSidebar: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
-    @EnvironmentObject var ui: UIStore
+    @Environment(UIStore.self) var ui
 
     @Environment(\.openWindow) private var openWindow
     @State private var dragId: String?
@@ -119,7 +119,7 @@ struct RowHeightKey: PreferenceKey {
 // claude reconnect / "starting…" flash. Panes beyond the cap are dropped (reopen
 // pays a one-time load).
 struct KeepAliveWorkspaceHost: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @State private var mounted: [String] = []
     private let cap = 4
 
@@ -148,8 +148,8 @@ struct KeepAliveWorkspaceHost: View {
 }
 
 struct WsRow: View {
-    @EnvironmentObject var state: AppState
-    @EnvironmentObject var ui: UIStore
+    @Environment(AppState.self) var state
+    @Environment(UIStore.self) var ui
     @EnvironmentObject var theme: ThemeManager
     let ws: Workspace
     var body: some View {
@@ -172,8 +172,8 @@ struct WsRow: View {
 }
 
 struct RowContextMenu: View {
-    @EnvironmentObject var state: AppState
-    @EnvironmentObject var ui: UIStore
+    @Environment(AppState.self) var state
+    @Environment(UIStore.self) var ui
     let menu: AppState.RowMenu
 
     var body: some View {
@@ -217,7 +217,7 @@ func humanizeBranch(_ b: String) -> String {
 }
 
 struct AddRepoSheet: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @Environment(\.dismiss) private var dismiss
     let ws: Workspace
     @State private var picked: Set<String> = []
@@ -288,7 +288,7 @@ struct AddRepoSheet: View {
 }
 
 struct RenameSheet: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @Environment(\.dismiss) private var dismiss
     let ws: Workspace
     @State private var name = ""

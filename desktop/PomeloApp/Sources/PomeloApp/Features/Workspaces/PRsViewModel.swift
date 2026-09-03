@@ -1,7 +1,7 @@
 import SwiftUI
 
 @MainActor
-final class PRsViewModel: ObservableObject {
+@Observable final class PRsViewModel {
     struct Group: Decodable, Equatable {
         var prs: [WorkspacePR] = []; var severity = "ok"
         init(from d: Decoder) throws {
@@ -12,9 +12,9 @@ final class PRsViewModel: ObservableObject {
         enum K: String, CodingKey { case prs, severity }
     }
 
-    @Published var wsPRs: [String: [WorkspacePR]] = [:]
-    @Published var wsSeverity: [String: String] = [:]
-    @Published var loading = true
+    var wsPRs: [String: [WorkspacePR]] = [:]
+    var wsSeverity: [String: String] = [:]
+    var loading = true
 
     private let api: PRAPI
     init(api: PRAPI = PomCore.shared) { self.api = api }

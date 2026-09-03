@@ -49,7 +49,7 @@ struct PsResponse: Decodable {
 }
 
 struct ActivityView: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     var scopeWsKey: String? = nil
     var onClose: () -> Void = {}

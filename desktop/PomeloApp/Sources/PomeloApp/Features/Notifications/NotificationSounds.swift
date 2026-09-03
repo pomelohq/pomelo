@@ -156,7 +156,7 @@ final class SoundPrefs: ObservableObject {
 }
 
 struct NotificationsSettings: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @StateObject private var prefs = SoundPrefs.shared
     @State private var sources: [NotifSource] = []
     @State private var notifOK = true
@@ -170,6 +170,7 @@ struct NotificationsSettings: View {
     }
 
     var body: some View {
+        @Bindable var state = state
         Form {
             Section {
                 Toggle("Notify on Claude activity", isOn: $state.notifyClaude)

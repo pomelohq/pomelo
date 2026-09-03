@@ -42,7 +42,7 @@ private struct IntegrationsResponse: Decodable {
 }
 
 struct IntegrationsSettings: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @State private var data = IntegrationsResponse()
     @State private var loading = true
     @State private var jiraTest = ""
@@ -57,6 +57,7 @@ struct IntegrationsSettings: View {
 
 
     var body: some View {
+        @Bindable var state = state
         Form {
             Section {
                 providerPicker("Provider", current: "Jira", soon: ["Linear", "GitHub Issues"])

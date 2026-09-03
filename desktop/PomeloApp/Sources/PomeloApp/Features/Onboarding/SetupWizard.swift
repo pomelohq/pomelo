@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SetupWizard: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     var onClose: () -> Void = {}
 

@@ -1,8 +1,8 @@
 import Foundation
 
 @MainActor
-final class AgentsViewModel: ObservableObject {
-    @Published var states: [String: String] = [:]
+@Observable final class AgentsViewModel {
+    var states: [String: String] = [:]
 
     private let api: WorkspaceAPI
     init(api: WorkspaceAPI = PomCore.shared) { self.api = api }
@@ -27,7 +27,7 @@ final class AgentsViewModel: ObservableObject {
                 onNote(n.title, n.event, n.ws)
             }
         }
-        // Guard: an equal @Published assignment still fires objectWillChange, which
+        // Guard: an equal assignment still fires objectWillChange, which
         // AppState fans out to the whole UI every agent poll.
         if states != result.states { states = result.states }
     }

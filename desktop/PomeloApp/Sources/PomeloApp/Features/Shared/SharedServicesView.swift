@@ -99,7 +99,7 @@ private enum DetailTab: String, CaseIterable { case info = "Info", stats = "Stat
 
 struct SharedServicesView: View {
     @EnvironmentObject var theme: ThemeManager
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     var onClose: () -> Void = {}
     @State private var services: [SharedSvc] = []
     @State private var selected: String?
@@ -248,7 +248,7 @@ struct SharedServicesView: View {
 
 
 private struct DetailPane: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     let svc: SharedSvc
     @State private var tab: DetailTab = .info
     @State private var info: SharedInspect

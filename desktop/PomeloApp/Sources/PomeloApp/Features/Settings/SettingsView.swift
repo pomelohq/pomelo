@@ -39,7 +39,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     @Environment(\.dismiss) private var dismiss
     @State private var section: SettingsSection = .general
@@ -106,7 +106,7 @@ struct SettingsView: View {
 }
 
 private struct GeneralSettings: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     @ObservedObject private var codeDisplay = CodeDisplayManager.shared
     @State private var editors: [String] = []
@@ -125,6 +125,7 @@ private struct GeneralSettings: View {
     }
 
     var body: some View {
+        @Bindable var state = state
         Form {
             Section {
                 Picker("Theme", selection: $theme.mode) {
@@ -383,7 +384,7 @@ private struct CfgExplainResp: Decodable {
 }
 
 struct EnvInspector: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @State private var repos: [CfgSvcRef] = []
     @State private var profiles: [String] = []
     @State private var repo = ""
@@ -566,7 +567,7 @@ private struct CfgFilesResp: Decodable {
 }
 
 struct AdvancedSettings: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @State private var files: [CfgFile] = []
     @State private var nodes: [ConfigNode] = []
     @State private var path = ""            // selected file
@@ -599,7 +600,7 @@ struct AdvancedSettings: View {
         }
         .task { await load() }
         .sheet(isPresented: $showExport) { ExportBundleSheet() }
-        .sheet(isPresented: $showImport, onDismiss: { Task { await load() } }) { ImportBundleSheet().environmentObject(state) }
+        .sheet(isPresented: $showImport, onDismiss: { Task { await load() } }) { ImportBundleSheet().environment(state) }
         .sheet(isPresented: $showNew) { newFileSheet }
         .onChange(of: state.agentModel == nil) { if state.agentModel == nil { Task { await load() } } }
     }

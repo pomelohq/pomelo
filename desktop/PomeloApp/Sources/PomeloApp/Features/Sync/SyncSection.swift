@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SyncSection: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @StateObject private var vm = SyncViewModel()
 
     private func apply() async { await vm.save(); await state.refreshSync() }

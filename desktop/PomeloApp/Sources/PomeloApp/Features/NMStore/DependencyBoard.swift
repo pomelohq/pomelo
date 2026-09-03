@@ -4,7 +4,7 @@ import SwiftUI
 // not a force sim: force turns this bipartite data into crossing spaghetti.
 struct DependencyBoard: View {
     var onClose: () -> Void = {}
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @StateObject private var vm = NMStoreViewModel()
     @State private var zoom: CGFloat = 1
     @GestureState private var pinch: CGFloat = 1

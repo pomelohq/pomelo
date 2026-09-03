@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ServicesBoard: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
     var openPane: (PaneKind) -> Void = { _ in }
@@ -91,7 +91,7 @@ struct ServicesBoard: View {
 }
 
 struct RepoColumn: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     let repo: Repo
     let branch: String
@@ -216,7 +216,7 @@ struct RepoColumn: View {
 }
 
 struct SvcCard: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var peek: PeekStore
     @EnvironmentObject var theme: ThemeManager
     let service: Service

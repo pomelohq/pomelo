@@ -3,7 +3,7 @@ import AppKit
 
 struct CustomHeader: View {
     @EnvironmentObject var theme: ThemeManager
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     var body: some View {
         ZStack {
             WindowDragArea()
@@ -69,7 +69,7 @@ struct SessionAnchorKey: PreferenceKey {
 }
 
 struct HeaderLeading: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
 
     var body: some View {
         HStack(spacing: 8) {
@@ -91,7 +91,7 @@ struct HeaderLeading: View {
 }
 
 struct SessionsMenu: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @State private var confirmDeleteSession: String?
 
     var body: some View {
@@ -184,7 +184,7 @@ private struct SessionRow: View {
 
 struct HeaderTrailing: View {
     @EnvironmentObject var theme: ThemeManager
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     private var icon: String {
         switch theme.mode { case .dark: return "moon.fill"; case .light: return "sun.max.fill"; case .sepia: return "sun.haze.fill" }
     }

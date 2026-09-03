@@ -24,15 +24,15 @@ struct TermTab: Identifiable, Equatable {
 }
 
 @MainActor
-final class PaneState: ObservableObject {
-    @Published var pane: PaneKind = .services { didSet { persist() } }
-    @Published var terms: [TermTab] = []
-    @Published var selTerm: UUID?
-    @Published var drawerOpen = false
-    @Published var drawerHeight: CGFloat = 300
-    @Published var agentOpen = false { didSet { persist() } }
-    @Published var funcVisible = true { didSet { persist() } }
-    @Published var agentWidth: Double = 480 { didSet { persist() } }
+@Observable final class PaneState {
+    var pane: PaneKind = .services { didSet { persist() } }
+    var terms: [TermTab] = []
+    var selTerm: UUID?
+    var drawerOpen = false
+    var drawerHeight: CGFloat = 300
+    var agentOpen = false { didSet { persist() } }
+    var funcVisible = true { didSet { persist() } }
+    var agentWidth: Double = 480 { didSet { persist() } }
 
     private var loaded = false
 
@@ -105,7 +105,7 @@ final class PaneState: ObservableObject {
 }
 
 @MainActor
-final class UIStore: ObservableObject {
+@Observable final class UIStore {
     private var map: [String: PaneState] = [:]
     func state(for id: String) -> PaneState {
         if let s = map[id] { return s }
@@ -115,14 +115,14 @@ final class UIStore: ObservableObject {
 
 struct WorkspacePane: View {
     let workspace: Workspace
-    @EnvironmentObject var ui: UIStore
+    @Environment(UIStore.self) var ui
     var body: some View { WorkspacePaneInner(workspace: workspace, ps: ui.state(for: workspace.id)) }
 }
 
 struct WorkspacePaneInner: View {
     let workspace: Workspace
-    @ObservedObject var ps: PaneState
-    @EnvironmentObject var state: AppState
+    @Bindable var ps: PaneState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
 
     @State private var opened: Set<PaneKind> = []

@@ -88,7 +88,9 @@ struct TerminalPane: NSViewRepresentable {
                     self.pending.append(contentsOf: bytes)
                     if !self.flushScheduled {
                         self.flushScheduled = true
-                        DispatchQueue.main.async { self.flush() }
+                        // Coalesce a firehose (log spam / fast agent output) to ~30fps so a
+                        // SwiftTerm feed doesn't run on the main thread every runloop turn.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.033) { self.flush() }
                     }
                 }
                 self.streamID = id

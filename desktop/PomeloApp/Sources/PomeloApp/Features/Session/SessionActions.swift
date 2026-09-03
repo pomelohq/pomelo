@@ -32,7 +32,7 @@ extension AppState {
 }
 
 struct CreateSessionSheet: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var defaultBranch = "main"

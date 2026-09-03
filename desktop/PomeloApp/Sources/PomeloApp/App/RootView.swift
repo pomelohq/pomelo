@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct RootView: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     @Environment(\.openWindow) private var openWindow
     @State private var prPeekHeight: CGFloat = 0
@@ -9,6 +9,7 @@ struct RootView: View {
     @State private var peekWork: DispatchWorkItem?
 
     var body: some View {
+        @Bindable var state = state
         _ = theme.mode
         return content
             .overlayPreferenceValue(PRPeekAnchorKey.self) { anchors in
@@ -49,35 +50,35 @@ struct RootView: View {
             .animation(.spring(response: 0.25, dampingFraction: 0.85), value: state.showPalette)
             .sheet(isPresented: $state.showActivity) {
                 ActivityView(scopeWsKey: state.activityScope, onClose: { state.showActivity = false })
-                    .environmentObject(state).environmentObject(theme)
+                    .environment(state).environmentObject(theme)
             }
             .sheet(isPresented: $state.showPipeline) {
-                PrepareMainPipelineView().environmentObject(state).environmentObject(theme)
+                PrepareMainPipelineView().environment(state).environmentObject(theme)
             }
             .sheet(item: $state.updateMainWs) { ws in
-                UpdateMainSheet(ws: ws).environmentObject(state).environmentObject(theme)
+                UpdateMainSheet(ws: ws).environment(state).environmentObject(theme)
             }
             .sheet(isPresented: $state.showShared) {
-                SharedServicesView(onClose: { state.showShared = false }).environmentObject(state).environmentObject(theme)
+                SharedServicesView(onClose: { state.showShared = false }).environment(state).environmentObject(theme)
             }
             .sheet(isPresented: $state.showDependencies) {
-                DependencyBoard(onClose: { state.showDependencies = false }).environmentObject(state).environmentObject(theme)
+                DependencyBoard(onClose: { state.showDependencies = false }).environment(state).environmentObject(theme)
             }
             .sheet(isPresented: $state.showSessionPanel) {
-                SessionPanel(onClose: { state.showSessionPanel = false }).environmentObject(state).environmentObject(theme)
+                SessionPanel(onClose: { state.showSessionPanel = false }).environment(state).environmentObject(theme)
             }
             .sheet(isPresented: $state.showSetup) {
-                SetupWizard(onClose: { state.showSetup = false }).environmentObject(state).environmentObject(theme)
+                SetupWizard(onClose: { state.showSetup = false }).environment(state).environmentObject(theme)
             }
             .sheet(isPresented: $state.showCreateSession) {
-                CreateSessionSheet().environmentObject(state).environmentObject(theme)
+                CreateSessionSheet().environment(state).environmentObject(theme)
             }
             .sheet(isPresented: Binding(get: { state.onboardBranch != nil }, set: { if !$0 { state.onboardBranch = nil } })) {
                 if let m = state.onboardModel {
                     OnboardSheet(model: m, startAt: state.onboardStartAt ?? Date(), branch: state.onboardBranchName,
                                  onBackground: { state.onboardBranch = nil },
                                  onDone: { state.endOnboard() })
-                        .environmentObject(state).environmentObject(theme)
+                        .environment(state).environmentObject(theme)
                 }
             }
             .sheet(isPresented: $state.showAgentSheet) {
@@ -87,7 +88,7 @@ struct RootView: View {
                                onBackground: { state.backgroundAgent() },
                                onDone: { state.endAgent() },
                                onStop: { state.endAgent() })
-                        .environmentObject(state).environmentObject(theme)
+                        .environment(state).environmentObject(theme)
                 }
             }
             .onChange(of: state.showSettings) {
@@ -103,8 +104,9 @@ struct RootView: View {
     }
 
     @ViewBuilder private var content: some View {
+        @Bindable var state = state
         if state.needsProject {
-            WelcomeView().environmentObject(state)
+            WelcomeView().environment(state)
         } else if let err = state.bootError {
             ContentUnavailableView("Pomelo couldn't start", systemImage: "exclamationmark.triangle", description: Text(err))
         } else {
@@ -119,7 +121,7 @@ struct RootView: View {
                     Group {
                         if let err = state.configError {
                             ConfigErrorOverlay(message: err) { state.showSessionPanel = true }
-                                .environmentObject(state)
+                                .environment(state)
                         } else if state.selectedWorkspace != nil {
                             KeepAliveWorkspaceHost()
                         } else if state.loading {

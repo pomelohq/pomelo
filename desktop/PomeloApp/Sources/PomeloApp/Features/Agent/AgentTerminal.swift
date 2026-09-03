@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct AgentTerminal: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     let branch: String
     let isMain: Bool
     let wsKey: String

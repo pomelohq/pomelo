@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 struct WelcomeView: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
 
     var body: some View {
         VStack(spacing: 0) {

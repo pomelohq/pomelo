@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct UpdateMainSheet: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @Environment(\.dismiss) private var dismiss
     let ws: Workspace
 

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct AgentStatusPill: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @State private var open = false
     @State private var hovered: String?
 

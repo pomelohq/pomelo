@@ -1,12 +1,12 @@
 import Foundation
 
 @MainActor
-final class WorkspacesViewModel: ObservableObject {
-    @Published var workspaces: [Workspace] = [] {
+@Observable final class WorkspacesViewModel {
+    var workspaces: [Workspace] = [] {
         didSet { if oldValue.isEmpty && !workspaces.isEmpty { pushOrder() } } // first load = core is ready
     }
-    @Published var selection: String?
-    @Published var wsOrder: [String] = (UserDefaults.standard.array(forKey: "wsOrder") as? [String]) ?? [] {
+    var selection: String?
+    var wsOrder: [String] = (UserDefaults.standard.array(forKey: "wsOrder") as? [String]) ?? [] {
         didSet { UserDefaults.standard.set(wsOrder, forKey: "wsOrder"); pushOrder() }
     }
 

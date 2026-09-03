@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct CommandPalette: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @Binding var show: Bool
     @State private var query = ""
     @State private var index = 0

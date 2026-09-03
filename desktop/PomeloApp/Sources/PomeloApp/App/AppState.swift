@@ -4,7 +4,7 @@ import AppKit
 import Combine
 
 @MainActor
-final class AppState: ObservableObject {
+@Observable final class AppState {
     private var lastShift: TimeInterval = 0
     private var keysInstalled = false
     weak var uiStore: UIStore?
@@ -79,16 +79,11 @@ final class AppState: ObservableObject {
     let jiravm = JiraViewModel()
     let agentsvm = AgentsViewModel()
     let sessionsvm = SessionsViewModel()
-    private var bag = Set<AnyCancellable>()
-    init() {
-        for vm in [wsvm.objectWillChange, prsvm.objectWillChange, jiravm.objectWillChange, agentsvm.objectWillChange, sessionsvm.objectWillChange] {
-            vm.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &bag)
-        }
-    }
+    init() {}
     var workspaces: [Workspace] { get { wsvm.workspaces } set { wsvm.workspaces = newValue } }
     var selection: String? { get { wsvm.selection } set { wsvm.selection = newValue } }
-    @Published var bootError: String?
-    @Published var configError: String?
+    var bootError: String?
+    var configError: String?
 
     func refreshConfigHealth() async {
         struct F: Decodable { var id = ""; var severity = ""; var title = ""; var detail = "" }
@@ -101,12 +96,12 @@ final class AppState: ObservableObject {
             configError = nil
         }
     }
-    @Published var needsProject = false
-    @Published var loading = false
-    @Published var sidebarCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") {
+    var needsProject = false
+    var loading = false
+    var sidebarCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") {
         didSet { UserDefaults.standard.set(sidebarCollapsed, forKey: "sidebarCollapsed") }
     }
-    @Published var railCollapsed = false
+    var railCollapsed = false
 
     private var sidebarToggleAt = Date.distantPast
     func toggleSidebar() {
@@ -116,20 +111,20 @@ final class AppState: ObservableObject {
         sidebarCollapsed.toggle()
     }
     var sessions: [SessionItem] { get { sessionsvm.sessions } set { sessionsvm.sessions = newValue } }
-    @Published var creating = false
-    @Published var showPalette = false
-    @Published var appActive = true
-    @Published var showActivity = false
-    @Published var showPipeline = false
-    @Published var updateMainWs: Workspace?
-    @Published var fullscreen = false
+    var creating = false
+    var showPalette = false
+    var appActive = true
+    var showActivity = false
+    var showPipeline = false
+    var updateMainWs: Workspace?
+    var fullscreen = false
 
     struct RepoPull: Decodable, Identifiable, Equatable { var repo = ""; var state = ""; var detail = ""; var id: String { repo } }
-    @Published var syncOn = false
-    @Published var syncIntervalSec = 1800
-    @Published var syncPulling = false
-    @Published var syncPulledAt: Date?
-    @Published var syncProgress: [RepoPull] = []
+    var syncOn = false
+    var syncIntervalSec = 1800
+    var syncPulling = false
+    var syncPulledAt: Date?
+    var syncProgress: [RepoPull] = []
 
     func refreshSync() async {
         struct R: Decodable { var refresh_main = false; var refresh_interval_sec = 1800; var pulling = false; var last_pull_at: Int64 = 0; var progress: [RepoPull] = [] }
@@ -161,9 +156,9 @@ final class AppState: ObservableObject {
         }
     }
 
-    @Published var nmBusy = false
-    @Published var nmPhase = ""
-    @Published var nmSummary: String?
+    var nmBusy = false
+    var nmPhase = ""
+    var nmSummary: String?
 
     func nmOptimize(reclaim: Bool) {
         guard !nmBusy else { return }
@@ -210,26 +205,26 @@ final class AppState: ObservableObject {
         }
     }
 
-    @Published var showSettings = false
-    @Published var showShared = false
-    @Published var showDependencies = false
-    @Published var showSessionPanel = false
-    @Published var showCreateSession = false
-    @Published var showSessions = false
-    @Published var switchError: String?
-    @Published var openError: String?
-    @Published var openCreateWorkspace = false
-    @Published var onboardBranch: String?
+    var showSettings = false
+    var showShared = false
+    var showDependencies = false
+    var showSessionPanel = false
+    var showCreateSession = false
+    var showSessions = false
+    var switchError: String?
+    var openError: String?
+    var openCreateWorkspace = false
+    var onboardBranch: String?
 
     struct RowMenu: Identifiable { let id = UUID(); let ws: Workspace; let at: CGPoint }
-    @Published var rowMenu: RowMenu?
-    @Published var renamingWs: Workspace?
-    @Published var confirmDeleteWs: Workspace?
-    @Published var addRepoWs: Workspace?
+    var rowMenu: RowMenu?
+    var renamingWs: Workspace?
+    var confirmDeleteWs: Workspace?
+    var addRepoWs: Workspace?
 
-    @Published var agentModel: AgentStreamModel?
-    @Published var showAgentSheet = false
-    @Published var showSetup = false
+    var agentModel: AgentStreamModel?
+    var showAgentSheet = false
+    var showSetup = false
     func maybeShowSetupOnFirstRun() {
         if !UserDefaults.standard.bool(forKey: "didSetupWizard") {
             UserDefaults.standard.set(true, forKey: "didSetupWizard")
@@ -237,17 +232,17 @@ final class AppState: ObservableObject {
         }
     }
     func openSetup() { bringMainWindowToFront(); showSetup = true }
-    private(set) var agentTitle = "", agentSubtitle = "", agentRunningLabel = ""
+    private(set) var agentTitle = ""
+    private(set) var agentSubtitle = ""
+    private(set) var agentRunningLabel = ""
     private var agentBag = Set<AnyCancellable>()
     var agentRunning: Bool { agentModel?.running ?? false }
 
-    @Published var agentTarget: String?
+    var agentTarget: String?
 
     func launchAgent(title: String, subtitle: String, runningLabel: String, branch: String, isMain: Bool = true, role: String, firstTurn: String, target: String? = nil) {
         agentModel?.stop()
         let m = AgentStreamModel()
-        agentBag.removeAll()
-        m.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &agentBag)
         agentModel = m
         agentTarget = target
         agentTitle = title; agentSubtitle = subtitle; agentRunningLabel = runningLabel
@@ -268,8 +263,8 @@ final class AppState: ObservableObject {
     func reopenAgent() { if agentModel != nil { showAgentSheet = true } }
     func backgroundAgent() { showAgentSheet = false }
 
-    @Published var onboardModel: AgentStreamModel?
-    @Published var onboardStartAt: Date?
+    var onboardModel: AgentStreamModel?
+    var onboardStartAt: Date?
     private(set) var onboardBranchName = "main"
     private var onboardBag = Set<AnyCancellable>()
     var onboardRunning: Bool { onboardModel?.running ?? false }
@@ -278,8 +273,6 @@ final class AppState: ObservableObject {
         onboardBranchName = branch
         if onboardModel == nil {
             let m = AgentStreamModel()
-            onboardBag.removeAll()
-            m.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &onboardBag)
             onboardModel = m
             onboardStartAt = Date()
             m.start(branch: branch, isMain: true, role: "onboarder", firstTurn: OnboardPrompts.firstTurn)
@@ -293,18 +286,18 @@ final class AppState: ObservableObject {
         onboardBranch = nil; Task { await refreshConfigHealth() }
     }
     func endAgent() { agentModel?.stop(); agentModel = nil; agentTarget = nil; agentBag.removeAll(); showAgentSheet = false; Task { await refreshConfigHealth() } }
-    @Published var jiraOnlyMine = UserDefaults.standard.bool(forKey: "jiraOnlyMine") {
+    var jiraOnlyMine = UserDefaults.standard.bool(forKey: "jiraOnlyMine") {
         didSet { UserDefaults.standard.set(jiraOnlyMine, forKey: "jiraOnlyMine") }
     }
-    @Published var editorPref = UserDefaults.standard.string(forKey: "editorPref") ?? "" {
+    var editorPref = UserDefaults.standard.string(forKey: "editorPref") ?? "" {
         didSet { UserDefaults.standard.set(editorPref, forKey: "editorPref") }
     }
-    @Published var notifyClaude = UserDefaults.standard.object(forKey: "notifyClaude") as? Bool ?? true {
+    var notifyClaude = UserDefaults.standard.object(forKey: "notifyClaude") as? Bool ?? true {
         didSet { UserDefaults.standard.set(notifyClaude, forKey: "notifyClaude") }
     }
     var agentStates: [String: String] { get { agentsvm.states } set { agentsvm.states = newValue } }
-    @Published var ops: [WsOp] = []
-    @Published var pendingSvc: [String: String] = [:]
+    var ops: [WsOp] = []
+    var pendingSvc: [String: String] = [:]
     func svcKey(branch: String, repo: String, svc: String) -> String { "\(branch)|\(repo)|\(svc)" }
     var wsPRs: [String: [WorkspacePR]] { get { prsvm.wsPRs } set { prsvm.wsPRs = newValue } }
     var prsLoading: Bool { get { prsvm.loading } set { prsvm.loading = newValue } }
@@ -315,7 +308,7 @@ final class AppState: ObservableObject {
     func prSeverityFor(_ id: String) -> String { prsvm.severityFor(id) }
     func jiraFor(_ branch: String) -> JiraIssue? { jiravm.issueFor(branch) }
     var wsOrder: [String] { get { wsvm.wsOrder } set { wsvm.wsOrder = newValue } }
-    @Published var repoOrder: [String] = (UserDefaults.standard.array(forKey: "repoOrder") as? [String]) ?? [] {
+    var repoOrder: [String] = (UserDefaults.standard.array(forKey: "repoOrder") as? [String]) ?? [] {
         didSet { UserDefaults.standard.set(repoOrder, forKey: "repoOrder") }
     }
     func orderedRepos(_ repos: [Repo]) -> [Repo] {
@@ -396,7 +389,7 @@ final class AppState: ObservableObject {
 
     private var pollTask: Task<Void, Never>?
 
-    private lazy var watcher = WorkspaceWatcher { [weak self] in
+    @ObservationIgnored private lazy var watcher = WorkspaceWatcher { [weak self] in
         Task { @MainActor in
             guard let self, self.appActive else { return }
             await self.refreshWorkspaces()
@@ -551,7 +544,7 @@ final class AppState: ObservableObject {
 
     func refreshLiveness() async { await wsvm.refreshLiveness() }
 
-    @Published var prPeek: String?
+    var prPeek: String?
     private var prPeekClear: DispatchWorkItem?
     func prPeekEnter(_ id: String) { prPeekClear?.cancel(); if prPeek != id { prPeek = id } }
     func prPeekLeave() {

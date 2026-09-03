@@ -138,7 +138,7 @@ extension AppState {
 }
 
 struct OpsBar: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
 
     var body: some View {
         if !state.ops.isEmpty {
@@ -151,7 +151,7 @@ struct OpsBar: View {
 }
 
 private struct OpRow: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     let op: WsOp
     @State private var expanded = false
 

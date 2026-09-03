@@ -1,8 +1,8 @@
 import Foundation
 
 @MainActor
-final class SessionsViewModel: ObservableObject {
-    @Published var sessions: [SessionItem] = []
+@Observable final class SessionsViewModel {
+    var sessions: [SessionItem] = []
 
     private let api: SessionAPI
     init(api: SessionAPI = PomCore.shared) { self.api = api }

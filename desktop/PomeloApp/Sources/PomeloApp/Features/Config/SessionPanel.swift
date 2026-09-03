@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SessionPanel: View {
     @EnvironmentObject var theme: ThemeManager
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     var onClose: () -> Void = {}
 
     enum Tab: String, CaseIterable, Identifiable { case config, secrets, env
@@ -25,6 +25,7 @@ struct SessionPanel: View {
     @State private var tab: Tab = .config
 
     var body: some View {
+        @Bindable var state = state
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "shippingbox.fill").font(.system(size: 13)).foregroundStyle(Theme.accent)
@@ -53,7 +54,7 @@ struct SessionPanel: View {
                            onBackground: { state.backgroundAgent() },
                            onDone: { state.endAgent() },
                            onStop: { state.endAgent() })
-                    .environmentObject(state).environmentObject(theme)
+                    .environment(state).environmentObject(theme)
             }
         }
     }

@@ -1,17 +1,17 @@
 import SwiftUI
 
 struct PomeloApp: App {
-    @StateObject private var state = AppState()
+    @State private var state = AppState()
     @StateObject private var theme = ThemeManager()
-    @StateObject private var ui = UIStore()
+    @State private var ui = UIStore()
     @StateObject private var updater = AppUpdater.shared
 
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environmentObject(state)
+                .environment(state)
                 .environmentObject(theme)
-                .environmentObject(ui)
+                .environment(ui)
                 .frame(minWidth: 1040, minHeight: 640)
                 .onAppear {
                     state.uiStore = ui; state.themeManager = theme; state.boot(); theme.applyToWindow()
@@ -29,9 +29,9 @@ struct PomeloApp: App {
 
         Window("Create workspace", id: "create-workspace") {
             CreateWorkspaceView()
-                .environmentObject(state)
+                .environment(state)
                 .environmentObject(theme)
-                .environmentObject(ui)
+                .environment(ui)
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 540, height: 720)
@@ -39,9 +39,9 @@ struct PomeloApp: App {
 
         Window("Settings", id: "settings") {
             SettingsView()
-                .environmentObject(state)
+                .environment(state)
                 .environmentObject(theme)
-                .environmentObject(ui)
+                .environment(ui)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)

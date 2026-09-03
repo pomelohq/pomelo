@@ -191,7 +191,7 @@ struct PRReviewComment: Decodable, Identifiable, Equatable {
 }
 
 struct PRsBoard: View {
-    @EnvironmentObject var state: AppState
+    @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
 

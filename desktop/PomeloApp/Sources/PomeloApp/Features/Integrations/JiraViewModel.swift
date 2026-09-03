@@ -1,9 +1,9 @@
 import SwiftUI
 
 @MainActor
-final class JiraViewModel: ObservableObject {
-    @Published var issues: [String: JiraIssue] = [:]
-    @Published var configured = false
+@Observable final class JiraViewModel {
+    var issues: [String: JiraIssue] = [:]
+    var configured = false
 
     private let api: JiraAPI
     init(api: JiraAPI = PomCore.shared) { self.api = api }
