@@ -114,6 +114,8 @@ private struct GeneralSettings: View {
     @State private var releasesURL = "https://github.com/pomelohq/pomelo/releases/latest"
     @State private var autoCheck = AppUpdater.shared.automaticChecks
     @State private var startAtLogin = SMAppService.mainApp.status == .enabled
+    @AppStorage("termFontFamily") private var termFontFamily = ""
+    @State private var monoFamilies: [String] = []
 
     private func setLoginItem(_ on: Bool) {
         do {
@@ -151,6 +153,18 @@ private struct GeneralSettings: View {
                     .pickerStyle(.segmented).labelsHidden()
                 } label: {
                     Text("Default diff view")
+                }
+                LabeledContent {
+                    Picker("", selection: $termFontFamily) {
+                        Text("System (SF Mono)").tag("")
+                        ForEach(monoFamilies, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden().frame(maxWidth: 260)
+                } label: {
+                    HStack(spacing: 5) {
+                        Text("Terminal font")
+                        HelpHint("The monospace font for terminals. Pick a Nerd Font (e.g. JetBrainsMono Nerd Font Mono) to get devicon glyphs in TUIs like LazyVim.")
+                    }
                 }
             } header: { Text("Appearance") }
             Section {
@@ -193,6 +207,7 @@ private struct GeneralSettings: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .task { await load() }
+        .onAppear { if monoFamilies.isEmpty { monoFamilies = MetalTerminalView.monospaceFamilies() } }
     }
 
     private func load() async {

@@ -11,6 +11,7 @@ struct AgentTerminal: View {
     @StateObject private var vm = AgentTerminalViewModel()
     @State private var holder: String?
     @AppStorage("claudeFontSize") private var fontSize: Double = 12
+    @AppStorage("termFontFamily") private var termFontFamily = ""
     @AppStorage("metalTerminal") private var metalTerminal = true
     @State private var failed = false
     @State private var exited = false
@@ -57,7 +58,7 @@ struct AgentTerminal: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
             } else if let h = holder {
                 if metalTerminal {
-                    MetalTerminalPane(holderName: h, wsKey: wsKey, fontSize: CGFloat(fontSize), themeMode: theme.mode).id(h)
+                    MetalTerminalPane(holderName: h, wsKey: wsKey, fontSize: CGFloat(fontSize), fontFamily: termFontFamily, themeMode: theme.mode).id(h)
                 } else {
                     TerminalPane(holderName: h, wsKey: wsKey, agentWsKey: wsKey, fontSize: CGFloat(fontSize),
                                  onClosed: { onHolderClosed() }).id(h)

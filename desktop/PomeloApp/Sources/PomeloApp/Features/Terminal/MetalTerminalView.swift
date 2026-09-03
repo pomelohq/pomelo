@@ -58,17 +58,18 @@ struct MetalTerminalPane: NSViewRepresentable {
     let wsKey: String
     var autorun: String? = nil
     var fontSize: CGFloat = 12
+    var fontFamily: String = ""
     var themeMode: ThemeMode = activeThemeMode
     var onClosed: () -> Void = {}
     func makeCoordinator() -> Coord { Coord() }
     func makeNSView(context: Context) -> MetalTerminalView {
         let v = MetalTerminalView(frame: .zero)
-        v.setFontSize(fontSize)
+        v.setFont(family: fontFamily, size: fontSize)
         v.applyTheme(themeMode)
         context.coordinator.attach(view: v, name: holderName, wsKey: wsKey, autorun: autorun, onClosed: onClosed)
         return v
     }
-    func updateNSView(_ nsView: MetalTerminalView, context: Context) { nsView.setFontSize(fontSize); nsView.applyTheme(themeMode) }
+    func updateNSView(_ nsView: MetalTerminalView, context: Context) { nsView.setFont(family: fontFamily, size: fontSize); nsView.applyTheme(themeMode) }
     static func dismantleNSView(_ nsView: MetalTerminalView, coordinator: Coord) { coordinator.detach() }
 
     final class Coord {
@@ -150,7 +151,6 @@ final class GlyphAtlas {
     private let boldFont: CTFont
     private let italicFont: CTFont
     private let boldItalicFont: CTFont
-    private let nerdFonts: [CTFont]   // installed Nerd Fonts at this size, for icon glyphs
     private let descent: CGFloat
 
     init?(device: MTLDevice, font: CTFont, cellW: Int, cellH: Int, atlasSide: Int = 4096) {
@@ -159,7 +159,6 @@ final class GlyphAtlas {
         self.boldFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, .boldTrait, .boldTrait) ?? font
         self.italicFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, .italicTrait, .italicTrait) ?? font
         self.boldItalicFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, [.boldTrait, .italicTrait], [.boldTrait, .italicTrait]) ?? font
-        self.nerdFonts = MetalTerminalView.nerdDescriptors.map { CTFontCreateWithFontDescriptor($0, sz, nil) }
         self.descent = CTFontGetDescent(font)
         self.tilePx = SIMD2(cellW, cellH)
         self.cols = max(1, atlasSide / cellW)
@@ -191,13 +190,12 @@ final class GlyphAtlas {
         return CTFontGetGlyphsForCharacters(f, units, &g, units.count) && g.allSatisfy { $0 != 0 }
     }
 
-    // The font to draw this char with: the styled base font, else an installed Nerd
-    // Font that has the glyph (devicons), else nil -> draw a tofu box.
+    // Draw with the base font if it has the glyph, else nil -> tofu box. Choose a Nerd
+    // Font in Settings to get real icon glyphs (with correct metrics) for devicons.
     private func drawFont(for ch: Character, base: CTFont) -> CTFont? {
         let units = Array(String(ch).utf16)
         guard !units.isEmpty else { return nil }
-        if hasGlyph(base, units) { return base }
-        return nerdFonts.first { hasGlyph($0, units) }
+        return hasGlyph(base, units) ? base : nil
     }
 
     private func rasterize(_ ch: Character, bold: Bool, italic: Bool, wide: Bool, intoTileAt px: Int, _ py: Int) {
@@ -328,49 +326,54 @@ final class MetalTerminalView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    // Match the SwiftTerm pane: SF Mono at the configured size, not a hardcoded Menlo.
     private var fontSize: CGFloat = 12
 
-    func setFontSize(_ s: CGFloat) {
-        guard abs(fontSize - s) > 0.1 else { return }
-        fontSize = s
+    // The configured monospace font family (empty = SF Mono). Pick a Nerd Font here to
+    // get devicon glyphs; unlike a cascade fallback, the whole font's metrics are used
+    // so icons sit in the cell correctly.
+    private var fontFamily = ""
+
+    func setFont(family: String, size: CGFloat) {
+        guard family != fontFamily || abs(size - fontSize) > 0.1 else { return }
+        fontFamily = family; fontSize = size
         setupFontAndAtlas()
         lastYDisp = -1
         needsLayout = true
     }
 
-    // Descriptors for every installed Nerd Font (found by name), so PUA icon glyphs
-    // fall back to whichever Nerd Font the user has, not a guessed name.
-    static let nerdDescriptors: [CTFontDescriptor] = {
+    static func monoFont(_ size: CGFloat, family: String) -> CTFont {
+        if !family.isEmpty {
+            let d = NSFontDescriptor(fontAttributes: [.family: family])
+            if let f = NSFont(descriptor: d, size: size) { return f as CTFont }
+        }
+        return NSFont.monospacedSystemFont(ofSize: size, weight: .regular) as CTFont
+    }
+
+    // Installed monospace font families for the Settings picker.
+    static func monospaceFamilies() -> [String] {
         let coll = CTFontCollectionCreateFromAvailableFonts(nil)
         let all = (CTFontCollectionCreateMatchingFontDescriptors(coll) as? [CTFontDescriptor]) ?? []
-        // The PostScript name abbreviates to "NF"; the family name carries "Nerd Font".
-        func family(_ d: CTFontDescriptor) -> String { (CTFontDescriptorCopyAttribute(d, kCTFontFamilyNameAttribute) as? String) ?? "" }
-        var seen = Set<String>(), out: [CTFontDescriptor] = []
-        for d in all where family(d).lowercased().contains("nerd font") {
-            if seen.insert(family(d)).inserted { out.append(d) }   // one per family
+        var out = Set<String>()
+        for d in all {
+            let traits = (CTFontDescriptorCopyAttribute(d, kCTFontTraitsAttribute) as? [CFString: Any]) ?? [:]
+            let sym = (traits[kCTFontSymbolicTrait] as? UInt32) ?? 0
+            guard sym & CTFontSymbolicTraits.traitMonoSpace.rawValue != 0 else { continue }
+            if let fam = CTFontDescriptorCopyAttribute(d, kCTFontFamilyNameAttribute) as? String, !fam.hasPrefix(".") {
+                out.insert(fam)
+            }
         }
-        return out.sorted { family($0).lowercased().contains("mono") && !family($1).lowercased().contains("mono") }
-    }()
-
-    // SF Mono with the installed Nerd Fonts added to the cascade list so devicon glyphs
-    // render. Advance stays SF Mono's, so cell width is unchanged; icons fill the cell.
-    static func monoFont(_ size: CGFloat) -> CTFont {
-        let base = NSFont.monospacedSystemFont(ofSize: size, weight: .regular) as CTFont
-        guard !nerdDescriptors.isEmpty else { return base }
-        let desc = CTFontDescriptorCreateWithAttributes([kCTFontCascadeListAttribute: nerdDescriptors] as CFDictionary)
-        return CTFontCreateCopyWithAttributes(base, size, nil, desc)
+        return out.sorted()
     }
 
     private func setupFontAndAtlas() {
-        let font = Self.monoFont(fontSize)
+        let font = Self.monoFont(fontSize, family: fontFamily)
         let advance = self.advanceWidth(font)
         let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font), leading = CTFontGetLeading(font)
         let scale = Float(window?.backingScaleFactor ?? 2)
         let cw = Int((advance * CGFloat(scale)).rounded(.up))
         let ch = Int(((ascent + descent + leading) * CGFloat(scale)).rounded(.up))
         cellPx = SIMD2(Float(cw), Float(ch))
-        let scaledFont = Self.monoFont(fontSize * CGFloat(scale))
+        let scaledFont = Self.monoFont(fontSize * CGFloat(scale), family: fontFamily)
         // Shared per (cellW,cellH): every terminal has the same font/scale, so a new
         // terminal (workspace switch) or a burst of varied text reuses already-
         // rasterized glyphs instead of re-paying ~1-2ms of CTLine draw each on main.

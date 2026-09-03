@@ -393,6 +393,7 @@ struct TerminalDrawer: View {
     @State private var resizing = false
     @State private var confirmKill: TermTab?
     @AppStorage("metalTerminal") private var metalTerminal = true
+    @AppStorage("termFontFamily") private var termFontFamily = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -426,7 +427,7 @@ struct TerminalDrawer: View {
             if let sel = selected, let t = terms.first(where: { $0.id == sel }) {
                 if metalTerminal {
                     MetalTerminalPane(holderName: t.holder, wsKey: wsKey, autorun: t.autorun,
-                                      themeMode: theme.mode, onClosed: { removeTab(t) }).id(t.holder)
+                                      fontSize: 12, fontFamily: termFontFamily, themeMode: theme.mode, onClosed: { removeTab(t) }).id(t.holder)
                 } else {
                     TerminalPane(holderName: t.holder, wsKey: wsKey, autorun: t.autorun, themeMode: theme.mode,
                                  onClosed: { removeTab(t) }).id(t.holder)
