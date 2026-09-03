@@ -116,6 +116,7 @@ struct CellInstance {
     var uvSize: SIMD2<Float> = .zero       // glyph tile size in atlas (0..1)
     var fg: SIMD4<Float> = .zero
     var bg: SIMD4<Float> = .zero
+    var underline: Float = 0
 }
 
 struct TermUniforms {
@@ -145,11 +146,16 @@ final class GlyphAtlas {
     let uvSize: SIMD2<Float>
     private let font: CTFont
     private let boldFont: CTFont
+    private let italicFont: CTFont
+    private let boldItalicFont: CTFont
     private let descent: CGFloat
 
     init?(device: MTLDevice, font: CTFont, cellW: Int, cellH: Int, atlasSide: Int = 4096) {
+        let sz = CTFontGetSize(font)
         self.font = font
-        self.boldFont = CTFontCreateCopyWithSymbolicTraits(font, CTFontGetSize(font), nil, .boldTrait, .boldTrait) ?? font
+        self.boldFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, .boldTrait, .boldTrait) ?? font
+        self.italicFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, .italicTrait, .italicTrait) ?? font
+        self.boldItalicFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, [.boldTrait, .italicTrait], [.boldTrait, .italicTrait]) ?? font
         self.descent = CTFontGetDescent(font)
         self.tilePx = SIMD2(cellW, cellH)
         self.cols = max(1, atlasSide / cellW)
@@ -160,20 +166,20 @@ final class GlyphAtlas {
         self.texture = tex
     }
 
-    func uvOrigin(for ch: Character, bold: Bool = false) -> SIMD2<Float> {
-        let key = (bold ? "\u{1}" : "") + String(ch)
+    func uvOrigin(for ch: Character, bold: Bool = false, italic: Bool = false) -> SIMD2<Float> {
+        let key = (bold ? "\u{1}" : "") + (italic ? "\u{2}" : "") + String(ch)
         if let uv = map[key] { return uv }
         PerfHUD.shared.tick("term:raster")
         let slot = next; next += 1
         let cx = slot % cols, cy = slot / cols
         let px = cx * tilePx.x, py = cy * tilePx.y
-        rasterize(ch, bold: bold, intoTileAt: px, py)
+        rasterize(ch, bold: bold, italic: italic, intoTileAt: px, py)
         let uv = SIMD2(Float(px) / Float(texture.width), Float(py) / Float(texture.height))
         map[key] = uv
         return uv
     }
 
-    private func rasterize(_ ch: Character, bold: Bool, intoTileAt px: Int, _ py: Int) {
+    private func rasterize(_ ch: Character, bold: Bool, italic: Bool, intoTileAt px: Int, _ py: Int) {
         let w = tilePx.x, h = tilePx.y
         // CTLine (which shapes the whole grapheme, incl. Vietnamese/combining marks)
         // needs a color context; it does not draw in a gray-only one. Rasterize white
@@ -182,7 +188,8 @@ final class GlyphAtlas {
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
         ctx.setFillColor(red: 0, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-        let attrs = [kCTFontAttributeName: bold ? boldFont : font,
+        let f = bold && italic ? boldItalicFont : bold ? boldFont : italic ? italicFont : font
+        let attrs = [kCTFontAttributeName: f,
                      kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
         if let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) {
             let line = CTLineCreateWithAttributedString(astr)
@@ -659,6 +666,8 @@ final class MetalTerminalView: NSView {
                     if st.contains(.dim) { fg = SIMD4(fg.x * 0.6, fg.y * 0.6, fg.z * 0.6, fg.w) }
                     d.fg = fg; d.bg = bg
                     if st.contains(.bold) { d.style |= 1 }
+                    if st.contains(.italic) { d.style |= 2 }
+                    if st.contains(.underline) { d.style |= 4 }
                     let ch = cd.getCharacter()
                     if ch != " ", let scalar = ch.unicodeScalars.first, scalar.value != 0 { d.ch = ch }
                 } else {
@@ -685,7 +694,8 @@ final class MetalTerminalView: NSView {
             var i = CellInstance()
             i.gridPos = d.gridPos; i.fg = d.fg; i.bg = d.bg
             if hasSel, selectionContains(Int(d.gridPos.x), Int(d.gridPos.y)) { i.bg = SIMD4(0.20, 0.35, 0.60, 1) }
-            if let ch = d.ch { i.uvOrigin = atlas.uvOrigin(for: ch, bold: d.style & 1 != 0); i.uvSize = atlas.uvSize }
+            if let ch = d.ch { i.uvOrigin = atlas.uvOrigin(for: ch, bold: d.style & 1 != 0, italic: d.style & 2 != 0); i.uvSize = atlas.uvSize }
+            i.underline = d.style & 4 != 0 ? 1 : 0
             return i
         }
     }
@@ -797,9 +807,9 @@ final class MetalTerminalView: NSView {
     static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Cell { float2 gridPos; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; };
+    struct Cell { float2 gridPos; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; float underline; };
     struct Uniforms { float2 viewportPx; float2 cellPx; };
-    struct VOut { float4 pos [[position]]; float2 cellUV; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; };
+    struct VOut { float4 pos [[position]]; float2 cellUV; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; float underline; };
 
     vertex VOut term_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
                             const device Cell* cells [[buffer(0)]], constant Uniforms& u [[buffer(1)]]) {
@@ -813,7 +823,7 @@ final class MetalTerminalView: NSView {
         VOut o;
         o.pos = float4(ndc, 0, 1);
         o.cellUV = corner;
-        o.uvOrigin = c.uvOrigin; o.uvSize = c.uvSize; o.fg = c.fg; o.bg = c.bg;
+        o.uvOrigin = c.uvOrigin; o.uvSize = c.uvSize; o.fg = c.fg; o.bg = c.bg; o.underline = c.underline;
         return o;
     }
 
@@ -824,6 +834,7 @@ final class MetalTerminalView: NSView {
             float2 auv = in.uvOrigin + in.cellUV * in.uvSize;
             coverage = atlas.sample(s, auv).r;
         }
+        if (in.underline > 0.5 && in.cellUV.y > 0.88 && in.cellUV.y < 0.96) { coverage = 1.0; }
         return mix(in.bg, in.fg, coverage);
     }
     """
