@@ -46,15 +46,17 @@ struct MetalTerminalToggle: View {
     var body: some View { Toggle("Use Metal Terminal (experimental)", isOn: $on) }
 }
 
-// Read-only: wires a real PTY holder stream to the Metal renderer so its cost can be
-// measured on live Claude output. Falls back to SwiftTerm's TerminalPane behind the flag.
+// Wires a real PTY holder stream to the Metal renderer (output + keyboard input).
+// A drop-in for SwiftTerm's TerminalPane behind the experimental flag.
 struct MetalTerminalPane: NSViewRepresentable {
     let holderName: String
     let wsKey: String
+    var autorun: String? = nil
+    var onClosed: () -> Void = {}
     func makeCoordinator() -> Coord { Coord() }
     func makeNSView(context: Context) -> MetalTerminalView {
         let v = MetalTerminalView(frame: .zero)
-        context.coordinator.attach(view: v, name: holderName, wsKey: wsKey)
+        context.coordinator.attach(view: v, name: holderName, wsKey: wsKey, autorun: autorun, onClosed: onClosed)
         return v
     }
     func updateNSView(_ nsView: MetalTerminalView, context: Context) {}
@@ -62,18 +64,30 @@ struct MetalTerminalPane: NSViewRepresentable {
 
     final class Coord {
         private var streamID: Int32 = 0
-        @MainActor func attach(view: MetalTerminalView, name: String, wsKey: String) {
+        private var closedFired = false
+        @MainActor func attach(view: MetalTerminalView, name: String, wsKey: String, autorun: String?, onClosed: @escaping () -> Void) {
             view.onResize = { [weak self] cols, rows in
                 guard let self, self.streamID > 0 else { return }
                 StreamManager.shared.resize(self.streamID, cols: Int32(cols), rows: Int32(rows))
             }
+            view.onInput = { [weak self] bytes in
+                guard let self, self.streamID > 0 else { return }
+                StreamManager.shared.send(self.streamID, bytes[...])
+            }
             Task { @MainActor in
                 let id = await StreamManager.shared.openPTY(name: name, wsKey: wsKey,
-                                                            cols: Int32(view.termCols), rows: Int32(view.termRows)) { [weak view] kind, bytes in
+                                                            cols: Int32(view.termCols), rows: Int32(view.termRows)) { [weak self, weak view] kind, bytes in
+                    if kind == .close {
+                        if let self, !self.closedFired { self.closedFired = true; DispatchQueue.main.async { onClosed() } }
+                        return
+                    }
                     guard kind == .binary, let view else { return }
                     view.feed(bytes)
                 }
                 self.streamID = id
+                if let cmd = autorun {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { StreamManager.shared.send(id, Array("\(cmd)\r".utf8)[...]) }
+                }
             }
         }
         @MainActor func detach() { if streamID > 0 { StreamManager.shared.close(streamID); streamID = 0 } }
@@ -194,6 +208,7 @@ final class MetalTerminalView: NSView {
     private let palette: [SIMD4<Float>]
     private(set) var termCols = 80, termRows = 24
     var onResize: ((Int, Int) -> Void)?
+    var onInput: ([UInt8]) -> Void = { _ in }
 
     // Meter: main-thread ms/frame is what "smoothness" actually costs; parse ms is the
     // work now off the main thread. FPS = present rate.
@@ -280,6 +295,35 @@ final class MetalTerminalView: NSView {
             self.lastParseMs = (CACurrentMediaTime() - t0) * 1000
             DispatchQueue.main.async { self.applyDescs(descs); self.uploadAndRender() }
         }
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self) }
+
+    override func keyDown(with event: NSEvent) {
+        let bytes = Self.encodeKey(event)
+        if !bytes.isEmpty { onInput(bytes) }
+    }
+
+    static func encodeKey(_ e: NSEvent) -> [UInt8] {
+        switch e.keyCode {
+        case 36, 76: return [0x0d]
+        case 48: return [0x09]
+        case 51: return [0x7f]
+        case 53: return [0x1b]
+        case 123: return [0x1b, 0x5b, 0x44]
+        case 124: return [0x1b, 0x5b, 0x43]
+        case 126: return [0x1b, 0x5b, 0x41]
+        case 125: return [0x1b, 0x5b, 0x42]
+        default: break
+        }
+        guard let chars = e.charactersIgnoringModifiers, let first = chars.unicodeScalars.first else { return [] }
+        if e.modifierFlags.contains(.control) {
+            let v = first.value
+            if v >= 0x61 && v <= 0x7a { return [UInt8(v - 0x60)] }
+            if v >= 0x41 && v <= 0x5a { return [UInt8(v - 0x40)] }
+        }
+        return Array((e.characters ?? "").utf8)
     }
 
     override func layout() {
@@ -447,7 +491,7 @@ final class MetalTerminalView: NSView {
     }
 
     fragment float4 term_fragment(VOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
-        constexpr sampler s(coord::normalized, filter::linear);
+        constexpr sampler s(coord::normalized, filter::nearest);
         float coverage = 0.0;
         if (in.uvSize.x > 0.0) {
             float2 auv = in.uvOrigin + in.cellUV * in.uvSize;
