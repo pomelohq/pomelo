@@ -9,9 +9,12 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.2.0"),
+        .package(path: "../../shared/PomeloTerminalKit"),
     ],
     targets: [
-        .target(name: "PomeloRemoteKit", dependencies: ["SwiftTerm"], path: "Sources/PomeloRemoteKit"),
+        .target(name: "PomeloRemoteKit",
+                dependencies: ["SwiftTerm", .product(name: "PomeloTerminalKit", package: "PomeloTerminalKit")],
+                path: "Sources/PomeloRemoteKit"),
         .testTarget(name: "PomeloRemoteKitTests", dependencies: ["PomeloRemoteKit"], path: "Tests/PomeloRemoteKitTests"),
     ]
 )

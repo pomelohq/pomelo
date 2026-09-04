@@ -22,6 +22,7 @@
 		BF00000000000000000013 /* AgentOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000013 /* AgentOrb.swift */; };
 		BF00000000000000000014 /* WorkspaceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000014 /* WorkspaceDetailView.swift */; };
 		BF000000000000000000A1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = PD000000000000000000A1 /* SwiftTerm */; };
+		BF000000000000000000A2 /* PomeloTerminalKit in Frameworks */ = {isa = PBXBuildFile; productRef = PD000000000000000000A2 /* PomeloTerminalKit */; };
 		BF00000000000000000015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000015 /* Assets.xcassets */; };
 		BF00000000000000000016 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000016 /* WidgetShared.swift */; };
 		BF00000000000000000020 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000020 /* LiveActivityController.swift */; };
@@ -90,6 +91,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BF000000000000000000A1 /* SwiftTerm in Frameworks */,
+				BF000000000000000000A2 /* PomeloTerminalKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -178,6 +180,7 @@
 			name = PomeloRemote;
 			packageProductDependencies = (
 				PD000000000000000000A1 /* SwiftTerm */,
+				PD000000000000000000A2 /* PomeloTerminalKit */,
 			);
 			productName = PomeloRemote;
 			productReference = FR000000000000000000FF /* PomeloRemote.app */;
@@ -229,6 +232,7 @@
 			mainGroup = GR00000000000000000001;
 			packageReferences = (
 				PR000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+				PR000000000000000000A2 /* XCLocalSwiftPackageReference "PomeloTerminalKit" */,
 			);
 			productRefGroup = GR000000000000000000FE /* Products */;
 			projectDirPath = "";
@@ -481,11 +485,23 @@
 		};
 /* End XCRemoteSwiftPackageReference section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		PR000000000000000000A2 /* XCLocalSwiftPackageReference "PomeloTerminalKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../shared/PomeloTerminalKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		PD000000000000000000A1 /* SwiftTerm */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = PR000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
 			productName = SwiftTerm;
+		};
+		PD000000000000000000A2 /* PomeloTerminalKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PR000000000000000000A2 /* XCLocalSwiftPackageReference "PomeloTerminalKit" */;
+			productName = PomeloTerminalKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
