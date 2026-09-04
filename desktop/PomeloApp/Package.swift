@@ -16,6 +16,7 @@ let package = Package(
         .package(path: "LocalPackages/CodeEditTextView"),
         .package(path: "../../shared/PomeloTerminalKit"),
         .package(path: "../../shared/PomeloUI"),
+        .package(path: "../../shared/PomeloCore"),
     ],
     targets: [
         .target(name: "CPom"),
@@ -27,7 +28,8 @@ let package = Package(
                            .product(name: "CodeEditLanguages", package: "CodeEditLanguages"),
                            .product(name: "CodeEditTextView", package: "CodeEditTextView"),
                            .product(name: "PomeloTerminalKit", package: "PomeloTerminalKit"),
-                           .product(name: "PomeloUI", package: "PomeloUI")],
+                           .product(name: "PomeloUI", package: "PomeloUI"),
+                           .product(name: "PomeloCore", package: "PomeloCore")],
             resources: [.process("Resources/Assets.xcassets")],
             linkerSettings: [
                 .unsafeFlags([

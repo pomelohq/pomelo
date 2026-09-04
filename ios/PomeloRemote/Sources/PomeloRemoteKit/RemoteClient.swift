@@ -1,7 +1,13 @@
 import Foundation
 import CryptoKit
+import PomeloCore
 
 enum RemoteError: Error { case badURL, http(Int), notPaired }
+
+// RemoteClient already exposes async query/command/fetch over the network, so it
+// satisfies the shared data seam directly — shared ViewModels can run against it.
+extension RemoteClient: @unchecked Sendable {}
+extension RemoteClient: PomDataSource {}
 
 final class RemoteClient: NSObject, URLSessionDelegate {
     let device: PairedDevice

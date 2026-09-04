@@ -24,6 +24,7 @@
 		BF000000000000000000A1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = PD000000000000000000A1 /* SwiftTerm */; };
 		BF000000000000000000A2 /* PomeloTerminalKit in Frameworks */ = {isa = PBXBuildFile; productRef = PD000000000000000000A2 /* PomeloTerminalKit */; };
 		BF000000000000000000A3 /* PomeloUI in Frameworks */ = {isa = PBXBuildFile; productRef = PD000000000000000000A3 /* PomeloUI */; };
+		BF000000000000000000A4 /* PomeloCore in Frameworks */ = {isa = PBXBuildFile; productRef = PD000000000000000000A4 /* PomeloCore */; };
 		BF00000000000000000015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000015 /* Assets.xcassets */; };
 		BF00000000000000000016 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000016 /* WidgetShared.swift */; };
 		BF00000000000000000020 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FR00000000000000000020 /* LiveActivityController.swift */; };
@@ -94,6 +95,7 @@
 				BF000000000000000000A1 /* SwiftTerm in Frameworks */,
 				BF000000000000000000A2 /* PomeloTerminalKit in Frameworks */,
 				BF000000000000000000A3 /* PomeloUI in Frameworks */,
+				BF000000000000000000A4 /* PomeloCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -184,6 +186,7 @@
 				PD000000000000000000A1 /* SwiftTerm */,
 				PD000000000000000000A2 /* PomeloTerminalKit */,
 				PD000000000000000000A3 /* PomeloUI */,
+				PD000000000000000000A4 /* PomeloCore */,
 			);
 			productName = PomeloRemote;
 			productReference = FR000000000000000000FF /* PomeloRemote.app */;
@@ -237,6 +240,7 @@
 				PR000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				PR000000000000000000A2 /* XCLocalSwiftPackageReference "PomeloTerminalKit" */,
 				PR000000000000000000A3 /* XCLocalSwiftPackageReference "PomeloUI" */,
+				PR000000000000000000A4 /* XCLocalSwiftPackageReference "PomeloCore" */,
 			);
 			productRefGroup = GR000000000000000000FE /* Products */;
 			projectDirPath = "";
@@ -498,6 +502,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../../shared/PomeloUI;
 		};
+		PR000000000000000000A4 /* XCLocalSwiftPackageReference "PomeloCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../shared/PomeloCore;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -515,6 +523,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = PR000000000000000000A3 /* XCLocalSwiftPackageReference "PomeloUI" */;
 			productName = PomeloUI;
+		};
+		PD000000000000000000A4 /* PomeloCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PR000000000000000000A4 /* XCLocalSwiftPackageReference "PomeloCore" */;
+			productName = PomeloCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
