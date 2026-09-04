@@ -1,73 +1,9 @@
 import SwiftUI
 
-// Portable primitives for our design system. Deliberately NO native macOS controls
-// (ProgressView / Picker / Toggle / Stepper / .controlSize) — everything is drawn
-// from SwiftUI shapes so the visual language is ours and stays portable off Apple.
-
-// Custom indeterminate spinner (replaces ProgressView everywhere).
-struct Spinner: View {
-    var size: CGFloat = 12
-    var lineWidth: CGFloat = 1.6
-    var color: Color = Theme.accent
-    @State private var spin = false
-    var body: some View {
-        Circle().trim(from: 0, to: 0.7)
-            .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-            .frame(width: size, height: size)
-            .rotationEffect(.degrees(spin ? 360 : 0))
-            .onAppear { withAnimation(.linear(duration: 0.75).repeatForever(autoreverses: false)) { spin = true } }
-    }
-}
-
-// The ubiquitous plain icon button with a hover background (nav, toolbar, refresh…).
-struct IconButton: View {
-    let systemName: String
-    var size: CGFloat = 12
-    var tip: String? = nil
-    let action: () -> Void
-    @State private var hover = false
-    // Reads the static Theme colors; depend on the appearance so a theme switch
-    // (which flips NSApp.appearance) re-evaluates the body and re-tints the icon.
-    @Environment(\.colorScheme) private var colorScheme
-
-    init(_ systemName: String, size: CGFloat = 12, tip: String? = nil, action: @escaping () -> Void) {
-        self.systemName = systemName; self.size = size; self.tip = tip; self.action = action
-    }
-
-    var body: some View {
-        let _ = colorScheme
-        return Button(action: action) {
-            Image(systemName: systemName).font(.system(size: size))
-                .foregroundStyle(hover ? Theme.fg : Theme.dim)
-                .frame(width: 24, height: 22)
-                .background(hover ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 5))
-        }
-        .buttonStyle(.plain)
-        .onHover { hover = $0 }
-        .modifier(OptionalHelp(tip))
-    }
-}
-
-private struct OptionalHelp: ViewModifier {
-    let text: String?
-    init(_ text: String?) { self.text = text }
-    func body(content: Content) -> some View {
-        if let t = text { content.help(t) } else { content }
-    }
-}
-
-// Surface + soft border + rounded corners — the standard panel/card chrome.
-struct Card<Content: View>: View {
-    var cornerRadius: CGFloat = 8
-    var background: Color = Theme.surface
-    @ViewBuilder var content: () -> Content
-    var body: some View {
-        content()
-            .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(Theme.borderSoft))
-    }
-}
+// Portable primitives (Spinner, IconButton, Card, StatusPill, SelectableRow,
+// SegmentedTabs, HelpHint) now live in the shared PomeloUI package (re-exported via
+// Core/Theme.swift). This file keeps the macOS-specific rows that couple to the app's
+// tooltip system and section headers.
 
 // Uppercase kerned section label used across headers.
 struct SectionLabel: View {
@@ -116,57 +52,6 @@ struct SectionHeader<Trailing: View>: View {
 extension SectionHeader where Trailing == EmptyView {
     init(title: String, expanded: Binding<Bool>, count: Int? = nil, loading: Bool = false) {
         self.init(title: title, expanded: expanded, count: count, loading: loading, trailing: { EmptyView() })
-    }
-}
-
-// Tinted capsule label for a status/state (open/merged/approved/local/jira status…).
-struct StatusPill: View {
-    let text: String
-    var color: Color
-    var uppercase: Bool = false
-    var body: some View {
-        Text(uppercase ? text.uppercased() : text)
-            .font(uppercase ? Theme.mono(9.5, .semibold) : .system(size: 10, weight: .semibold))
-            .kerning(uppercase ? 0.5 : 0)
-            .foregroundStyle(color)
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(color.opacity(0.15), in: Capsule())
-    }
-}
-
-// A row that highlights when active and fires onSelect on tap.
-struct SelectableRow<Content: View>: View {
-    let isActive: Bool
-    var cornerRadius: CGFloat = 7
-    var activeColor: Color = Theme.sel
-    let onSelect: () -> Void
-    @ViewBuilder var content: () -> Content
-    var body: some View {
-        content()
-            .background(isActive ? activeColor : .clear, in: RoundedRectangle(cornerRadius: cornerRadius))
-            .contentShape(Rectangle())
-            .onTapGesture(perform: onSelect)
-    }
-}
-
-// Custom (non-native) segmented tab bar — replaces button-tab clusters and Picker.
-struct SegmentedTabs<Tab: Hashable>: View {
-    let tabs: [Tab]
-    @Binding var selection: Tab
-    var label: (Tab) -> String
-    var accent: Bool = true
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(tabs, id: \.self) { t in
-                Button { selection = t } label: {
-                    Text(label(t)).font(.system(size: 12, weight: selection == t ? .semibold : .regular))
-                        .foregroundStyle(selection == t ? (accent ? Theme.accent : Theme.fg) : Theme.fgMuted)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(selection == t ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain)
-            }
-        }
     }
 }
 
@@ -225,25 +110,5 @@ private struct OptionalTooltip: ViewModifier {
     init(_ text: String?) { self.text = text }
     func body(content: Content) -> some View {
         if let t = text { content.tooltip(t) } else { content }
-    }
-}
-
-/// A "?" badge that explains a setting on hover. Deliberately inert on click —
-/// it is an affordance for the explanation, not a control.
-///
-/// Uses the system `help` tooltip, not the app's: TooltipOverlay is mounted once
-/// in RootView, so the in-app bubble would render in the main window while this
-/// badge lives in a separate one.
-struct HelpHint: View {
-    let text: String
-    init(_ text: String) { self.text = text }
-
-    var body: some View {
-        Image(systemName: "questionmark.circle.fill")
-            .font(.system(size: 11.5))
-            .foregroundStyle(Theme.dim)
-            .contentShape(Circle())
-            .help(text)
-            .accessibilityLabel(text)
     }
 }
