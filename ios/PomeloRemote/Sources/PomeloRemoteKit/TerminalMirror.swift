@@ -3,54 +3,15 @@ import UIKit
 import QuartzCore
 import PomeloTerminalKit
 
-// Thin UIKit host around the shared GPU `TerminalRenderer` (PomeloTerminalKit). Read-only
-// mirror: it renders the SSE PTY stream on the GPU (smooth scroll + Nerd Font icons) and
-// reports geometry changes; all keyboard/scroll input goes to the remote PTY via the
-// controller, so this view needs no first responder.
-final class MetalTerminalUIView: UIView {
-    let renderer = TerminalRenderer()
-    private var displayLink: CADisplayLink?
-    var onResize: ((Int, Int) -> Void)?
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isUserInteractionEnabled = false
-        layer.addSublayer(renderer.metalLayer)
-        renderer.onResize = { [weak self] c, r in self?.onResize?(c, r) }
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    private var currentScale: CGFloat { let s = window?.screen.scale ?? traitCollection.displayScale; return s > 0 ? s : 2 }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        renderer.metalLayer.frame = bounds
-        renderer.updateGeometry(pointSize: bounds.size, scale: currentScale)
-    }
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil, displayLink == nil {
-            let link = CADisplayLink(target: renderer, selector: #selector(TerminalRenderer.renderTick))
-            link.add(to: .main, forMode: .common)
-            displayLink = link
-        } else if window == nil {
-            displayLink?.invalidate(); displayLink = nil
-            renderer.teardown()
-        }
-    }
-
-    func feed(_ bytes: [UInt8]) { renderer.feed(bytes) }
-    func feed(_ bytes: ArraySlice<UInt8>) { renderer.feed(bytes) }
-    func setFont(family: String, size: CGFloat) { renderer.setFont(family: family, size: size); setNeedsLayout() }
-    func applyColors(fg: SIMD4<Float>, bg: SIMD4<Float>) { renderer.setColors(fg: fg, bg: bg) }
-}
+// The GPU terminal host (MetalTerminalHostView) lives in the shared PomeloTerminalKit
+// package; here we wrap it in a container + freeze overlay and drive it from the SSE
+// PTY stream. All keyboard/scroll input goes to the remote PTY via the controller.
 
 final class TerminalContainer: UIView {
-    let terminal: MetalTerminalUIView
+    let terminal: MetalTerminalHostView
     private var freeze: UIView?
 
-    init(terminal: MetalTerminalUIView) {
+    init(terminal: MetalTerminalHostView) {
         self.terminal = terminal
         super.init(frame: .zero)
         addSubview(terminal)
@@ -86,7 +47,7 @@ final class TerminalContainer: UIView {
 
 @MainActor
 final class TerminalController: ObservableObject {
-    weak var view: MetalTerminalUIView?
+    weak var view: MetalTerminalHostView?
     weak var container: TerminalContainer?
     private var client: RemoteClient?
     private(set) var window = ""
@@ -94,7 +55,7 @@ final class TerminalController: ObservableObject {
     private var didAttachOnce = false
     @Published var ended = false
 
-    func attach(_ v: MetalTerminalUIView, container: TerminalContainer, client: RemoteClient, window: String) {
+    func attach(_ v: MetalTerminalHostView, container: TerminalContainer, client: RemoteClient, window: String) {
         self.view = v
         self.container = container
         self.client = client
@@ -234,7 +195,7 @@ struct PtyTerminalView: UIViewRepresentable {
     var fontFamily: String = ""
 
     func makeUIView(context: Context) -> TerminalContainer {
-        let tv = MetalTerminalUIView(frame: .zero)
+        let tv = MetalTerminalHostView(frame: .zero)
         tv.setFont(family: fontFamily, size: fontSize)
         tv.applyColors(fg: Self.simd4(Theme.fg), bg: Self.simd4(Theme.bg))
         tv.onResize = { cols, rows in MainActor.assumeIsolated { ctl.handleSize(cols: cols, rows: rows) } }
