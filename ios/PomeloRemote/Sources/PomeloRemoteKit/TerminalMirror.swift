@@ -164,6 +164,18 @@ final class TerminalController: ObservableObject {
         Task { await client.ptyInput(window: window, data: bytes) }
     }
 
+    // Scroll instantly through the local scrollback for a plain shell (no network round
+    // trip); forward to the remote only when a full-screen TUI owns the mouse. lines > 0
+    // shows older lines.
+    func scroll(lines: Int) {
+        guard lines != 0 else { return }
+        if let v = view, v.renderer.mouseModeOn {
+            wheel(up: lines > 0, count: abs(lines))
+        } else {
+            view?.renderer.scrollLines(lines)
+        }
+    }
+
     func resize(cols: Int, rows: Int) {
         guard let client, !window.isEmpty, cols > 0, rows > 0 else { return }
         Task { await client.ptyResize(window: window, cols: cols, rows: rows) }
