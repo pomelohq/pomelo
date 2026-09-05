@@ -54,25 +54,10 @@ final class DashboardViewModel: ObservableObject {
     private var weeklyPct = 0
 
     private func loadUsage() async {
-        struct Win: Decodable {
-            var pct: Double = 0
-            init() {}
-            enum K: String, CodingKey { case pct }
-            init(from d: Decoder) throws { pct = (try? d.container(keyedBy: K.self).decode(Double.self, forKey: .pct)) ?? 0 }
-        }
-        struct U: Decodable {
-            var session = Win(), weekly = Win()
-            enum K: String, CodingKey { case session, weekly }
-            init(from d: Decoder) throws {
-                let c = try d.container(keyedBy: K.self)
-                session = (try? c.decode(Win.self, forKey: .session)) ?? Win()
-                weekly = (try? c.decode(Win.self, forKey: .weekly)) ?? Win()
-            }
-        }
         func norm(_ p: Double) -> Int { Int((min(1, max(0, p > 1 ? p / 100 : p))) * 100) }
-        if let d = try? await client.claudeUsage(), let u = PomJSON.decode(U.self, from: d) {
-            sessionPct = norm(u.session.pct)
-            weeklyPct = norm(u.weekly.pct)
+        if let d = try? await client.claudeUsage(), let u = PomJSON.decode(ClaudeUsage.self, from: d) {
+            sessionPct = norm(u.session?.pct ?? 0)
+            weeklyPct = norm(u.weekly?.pct ?? 0)
         }
     }
 

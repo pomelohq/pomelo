@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
-import PomeloCore
+// Re-export PomeloCore so PomJSON / shared models (ClaudeUsage, …) resolve app-wide.
+@_exported import PomeloCore
 
 enum RemoteError: Error { case badURL, http(Int), notPaired }
 

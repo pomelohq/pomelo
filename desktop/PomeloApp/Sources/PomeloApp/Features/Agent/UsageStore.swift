@@ -1,16 +1,7 @@
 import SwiftUI
 
-struct ClaudeUsage: Decodable, Equatable {
-    // Optionals: Go omits `error` on success (omitempty), so a non-optional field
-    // would make synthesized Decodable throw. See ADR 0001 / ContractTests.
-    struct Win: Decodable, Equatable { var pct: Double?; var resets_at: Int64? }
-    struct Account: Decodable, Equatable { var email: String?; var plan: String?; var org: String? }
-    var ok: Bool?
-    var error: String?
-    var session: Win?
-    var weekly: Win?
-    var account: Account?
-}
+// `ClaudeUsage` now lives in the shared PomeloCore package (re-exported via
+// Core/PomCore+DataSource.swift), decoded identically by the iOS app.
 
 // One owner of Claude usage, shared across windows. Polls the core off the main
 // thread and only republishes on an actual change (delta-guard), so observers are

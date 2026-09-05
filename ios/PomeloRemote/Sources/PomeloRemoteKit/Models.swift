@@ -49,8 +49,4 @@ struct AgentFrame: Decodable {
     enum K: String, CodingKey { case type, text, v, content }
 }
 
-enum PomJSON {
-    static func decode<T: Decodable>(_ type: T.Type, from data: Data) -> T? {
-        try? JSONDecoder().decode(type, from: data)
-    }
-}
+// PomJSON now comes from the shared PomeloCore package (re-exported via RemoteClient.swift).
