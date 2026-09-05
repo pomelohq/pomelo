@@ -4,7 +4,7 @@ import UIKit
 struct AgentView: View {
     @EnvironmentObject var theme: ThemeManager
     let client: RemoteClient
-    let workspace: WorkspaceRow
+    let workspace: Workspace
 
     @StateObject private var ctl = TerminalController()
     @State private var window = ""

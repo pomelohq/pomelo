@@ -289,7 +289,7 @@ public struct RootView: View {
                     guard ok else { return DeviceResult(id: d.id, ok: false, stat: nil, usage: nil) }
                     var stat: DeviceStat?
                     if let data = try? await client.query("workspaces", ["git": false]),
-                       let p = PomJSON.decode(WorkspacesPayload.self, from: data) {
+                       let p = PomJSON.decode(WorkspacesResponse.self, from: data) {
                         let ws = p.workspaces
                         stat = DeviceStat(ws: ws.count,
                                           running: ws.filter { $0.running > 0 }.count,

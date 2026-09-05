@@ -9,7 +9,7 @@ struct JiraLite: Hashable {
 
 @MainActor
 final class DashboardViewModel: ObservableObject {
-    @Published private(set) var workspaces: [WorkspaceRow] = []
+    @Published private(set) var workspaces: [Workspace] = []
     @Published private(set) var jira: [String: JiraLite] = [:]
     @Published private(set) var prCount: [String: Int] = [:]
     @Published private(set) var prSeverity: [String: String] = [:]
@@ -17,7 +17,7 @@ final class DashboardViewModel: ObservableObject {
     @Published private(set) var reachable = true
     @Published var lastError = ""
 
-    func agentState(_ ws: WorkspaceRow) -> String {
+    func agentState(_ ws: Workspace) -> String {
         agentStates[(ws.isMain ? "main:" : "ws:") + ws.branch] ?? ""
     }
 
@@ -33,7 +33,7 @@ final class DashboardViewModel: ObservableObject {
                 wsOrder = o.order
             }
             let data = try await client.query("workspaces", ["git": false])
-            if let p = PomJSON.decode(WorkspacesPayload.self, from: data) {
+            if let p = PomJSON.decode(WorkspacesResponse.self, from: data) {
                 let list = ordered(p.workspaces)
                 if list != workspaces { workspaces = list }
             }
@@ -74,9 +74,9 @@ final class DashboardViewModel: ObservableObject {
         LiveActivityController.shared.publish(mac: mac, snapshot: snap, sessionPct: sessionPct, weeklyPct: weeklyPct)
     }
 
-    private func ordered(_ list: [WorkspaceRow]) -> [WorkspaceRow] {
+    private func ordered(_ list: [Workspace]) -> [Workspace] {
         let rank = Dictionary(wsOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
-        func key(_ w: WorkspaceRow) -> String { (w.isMain ? "main:" : "ws:") + w.branch }
+        func key(_ w: Workspace) -> String { (w.isMain ? "main:" : "ws:") + w.branch }
         return list.sorted {
             (rank[key($0)] ?? Int.max, $0.branch) < (rank[key($1)] ?? Int.max, $1.branch)
         }

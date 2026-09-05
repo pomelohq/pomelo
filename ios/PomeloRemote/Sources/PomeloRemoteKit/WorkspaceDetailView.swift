@@ -4,7 +4,7 @@ import UIKit
 struct WorkspaceDetailView: View {
     @EnvironmentObject var theme: ThemeManager
     let client: RemoteClient
-    let workspace: WorkspaceRow
+    let workspace: Workspace
     @State private var tab: Tab = .agent
 
     enum Tab: String, CaseIterable { case agent = "Agent", jira = "Jira", prs = "PRs" }
@@ -172,7 +172,7 @@ private struct JiraFull: Decodable {
 
 private struct JiraTab: View {
     let client: RemoteClient
-    let workspace: WorkspaceRow
+    let workspace: Workspace
     @State private var issue: JiraFull?
     @State private var loading = true
 
@@ -510,7 +510,7 @@ struct PRInfo: Decodable {
 
 private struct PRsTab: View {
     let client: RemoteClient
-    let workspace: WorkspaceRow
+    let workspace: Workspace
     @State private var prs: [WsPR] = []
     @State private var loading = true
 
