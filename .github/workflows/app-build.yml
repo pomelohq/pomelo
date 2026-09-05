@@ -27,18 +27,20 @@ jobs:
         uses: ./.github/actions/setup-xcode
 
       # Reuse the compiled dependency tree (swift-collections, Grape, CodeEdit*,
-      # TreeSitter grammars, SwiftTerm, the shared packages) across releases — it
-      # dominates the build (~5 min from scratch). Keyed on the package manifests +
-      # Xcode, so any dependency or toolchain change busts it; bump -v<n> to force.
-      # libpom.a is rebuilt every run and the app binary is force-relinked in
-      # package.sh, so app + Go code are never stale.
+      # TreeSitter grammars, SwiftTerm, the shared packages) — it dominates the build
+      # (~5 min from scratch). Keyed on the package manifests + build config, so any
+      # dependency change busts it; bump -v<n> to force. The config (debug gate vs
+      # release) is in the key because Debug and Release compile into separate
+      # DerivedData and a GitHub cache key is write-once — sharing one key would let
+      # the frequent Debug gate claim it and starve the Release build. libpom.a is
+      # rebuilt every run and the app binary is force-relinked, so nothing is stale.
       - name: Cache DerivedData
         uses: actions/cache@v4
         with:
           path: desktop/PomeloApp/.ddata
-          key: ddata-${{ runner.os }}-${{ hashFiles('desktop/PomeloApp/Package.swift', 'desktop/PomeloApp/LocalPackages/**/Package.swift', 'shared/**/Package.swift') }}-v1
+          key: ddata-${{ inputs.publish && 'release' || 'debug' }}-${{ runner.os }}-${{ hashFiles('desktop/PomeloApp/Package.swift', 'desktop/PomeloApp/LocalPackages/**/Package.swift', 'shared/**/Package.swift') }}-v1
           restore-keys: |
-            ddata-${{ runner.os }}-
+            ddata-${{ inputs.publish && 'release' || 'debug' }}-${{ runner.os }}-
 
       - name: Go build & vet
         run: |
