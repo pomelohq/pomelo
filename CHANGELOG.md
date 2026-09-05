@@ -11,6 +11,7 @@ All notable changes to Pomelo are documented here. The format is based on
 - The GPU (Metal) terminal renderer is now the default. It reaches parity with the previous renderer and adds glyph-atlas rendering: scrollback, text selection that sticks to the text as it scrolls (with drag-to-select auto-scroll past the top and bottom edges), bold / dim / inverse / italic / underline / strikethrough, wide (CJK) characters, a cursor that dims when the terminal is unfocused, and Cmd+K to clear. (#81)
 
 ### Added
+- Files pane: browse everything in the workspace folder from one tree spanning every repo, and preview a file without opening an editor. Code renders with syntax highlighting and line numbers, images get a zoomable viewer, and other binaries show their type instead of garbage. Right-click a file or folder to reveal it in Finder or copy its path, and select lines in a code preview to ask the agent about that block.
 - Nerd Font icons render in the terminal, so TUIs show their devicons, folder, and Material Design glyphs. Missing glyphs fall back through installed Nerd Fonts and are scaled to fit the cell instead of clipping. (#81)
 - Terminal font setting: pick any installed monospaced or Nerd Font family for the terminal. (#81)
 

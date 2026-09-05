@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum PaneKind: String, CaseIterable, Identifiable {
-    case claude = "Claude", services = "Services", git = "Git", jira = "Jira", database = "Database", review = "Review"
+    case claude = "Claude", services = "Services", git = "Git", jira = "Jira", database = "Database", review = "Review", files = "Files"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -11,6 +11,7 @@ enum PaneKind: String, CaseIterable, Identifiable {
         case .jira:     return "ticket"
         case .database: return "cylinder.split.1x2"
         case .review:   return "doc.text.magnifyingglass"
+        case .files:    return "folder"
         }
     }
 }
@@ -227,6 +228,13 @@ struct WorkspacePaneInner: View {
         case .git:    PRsBoard(workspace: workspace).id("git-\(safeWs)")
         case .jira:   JiraPane(workspace: workspace)
         case .database: DatabasePane(workspace: workspace).id("db-\(safeWs)")
+        case .files:
+            FilesPane(workspace: workspace, onAskAgent: { text in
+                opened.insert(.claude)
+                StreamManager.shared.askClaude(wsKey: workspace.id, text: text)
+                ps.agentOpen = true; ps.funcVisible = true
+            })
+            .id("files-\(safeWs)")
         case .review:
             ReviewPane(workspace: workspace, isActive: active, onAskAgent: { text in
                 opened.insert(.claude)
@@ -270,6 +278,7 @@ struct WorkspacePaneInner: View {
             navBtn(.jira, "3", "Jira")
             navBtn(.database, "4", "Database")
             navBtn(.review, "5", "Review")
+            navBtn(.files, "6", "Files")
             editorBtn
             if spread { Spacer(minLength: 8) } else { Spacer().frame(width: 10) }
             agentToggle

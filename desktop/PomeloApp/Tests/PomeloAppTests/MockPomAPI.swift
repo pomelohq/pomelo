@@ -64,6 +64,8 @@ final class MockPomAPI: PomAPI {
     func prRefresh() -> Data { Data(#"{"ok":true}"#.utf8) }
     func reviewGetData(branch: String, isMain: Bool) -> Data { Data(#"{"exists":false}"#.utf8) }
     func filePeekData(branch: String, repo: String, path: String, isMain: Bool) -> Data { Data(#"{"content":""}"#.utf8) }
+    func workspaceFilesData(branch: String, isMain: Bool) -> Data { Data("[]".utf8) }
+    func fileReadData(branch: String, repo: String, path: String, isMain: Bool) -> Data { Data(#"{"text":""}"#.utf8) }
     func reviewThreadsData(branch: String, isMain: Bool) -> Data { Data(#"{"threads":[]}"#.utf8) }
     func reviewThreadAdd(branch: String, isMain: Bool, repo: String, path: String, start: Int, end: Int, side: String, body: String) -> Data { Data(#"{"ok":true}"#.utf8) }
     func reviewThreadReply(branch: String, isMain: Bool, id: String, body: String) -> Data { Data(#"{"ok":true}"#.utf8) }
