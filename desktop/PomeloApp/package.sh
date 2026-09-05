@@ -35,10 +35,14 @@ echo "==> xcodebuild -configuration Release"
 cd "$here"
 PRODUCTS="$here/.ddata/Build/Products/Release"
 rm -f "$PRODUCTS/PomeloApp" 2>/dev/null || true   # force relink (libpom.a isn't a tracked input)
+# arm64 only: libpom.a is an arm64 c-archive and the app ships Apple-Silicon only.
+# Release defaults ONLY_ACTIVE_ARCH=NO, which would also build the x86_64 slice and
+# fail to link against the arm64-only libpom.a ("Undefined symbols for x86_64").
 xcodebuild -scheme PomeloApp -configuration Release \
     -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$here/.ddata" \
     -skipPackagePluginValidation \
+    ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
     build 2>&1 | grep -vE "was built for newer|ld: warning:" || true
 BIN="$PRODUCTS/PomeloApp"
 test -x "$BIN" || { echo "build failed: no PomeloApp binary"; exit 1; }
