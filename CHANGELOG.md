@@ -4,29 +4,31 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-- The Metal terminal renderer moved into a shared cross-platform package (PomeloTerminalKit) used by both the Mac app and the iOS remote. The macOS terminal is unchanged; the split is the groundwork for sharing UI across macOS/iPadOS/iOS.
+## [0.5.5] - 2026-09-05
 
 ### Added
-- The iOS remote terminal now renders on the GPU (Metal) like the Mac, so scrolling is smooth and Nerd Font icons (devicons, folder, Material Design glyphs) render instead of showing blanks.
+- The iOS remote terminal now renders on the GPU (Metal) like the Mac, so scrolling is smooth and Nerd Font icons (devicons, folder, Material Design glyphs) render instead of showing blanks. (#85)
+- Files pane: browse everything in the workspace folder from one tree spanning every repo, and preview a file without opening an editor. Code renders with syntax highlighting and line numbers, images get a zoomable viewer, and other binaries show their type instead of garbage. Right-click a file or folder to reveal it in Finder or copy its path, and select lines in a code preview to ask the agent about that block. (#84)
+
+### Changed
+- The Metal terminal, theme, and design system moved into shared cross-platform packages (PomeloTerminalKit / PomeloUI / PomeloCore) used by both the Mac app and the iOS remote. The macOS app is unchanged; the split is the groundwork for sharing UI across macOS/iPadOS/iOS. (#85)
+- The PRs and Git panes are merged into one Git pane. Local changes now show git status inline in the diff file tree — stage, unstage, and discard on hover, commit staged changes, and push — instead of a separate flat changes list. (#82)
+
+### Fixed
+- Pomelo.app no longer drops a `default.profraw` file into whatever directory Claude Code happens to be working in. The globally installed Claude Code hook re-execs the app binary on every tool-use event, and both the Debug and Release builds were compiled with code coverage instrumentation on, so each re-exec wrote a coverage file to the current directory — for every project on the machine, not just Pomelo workspaces. (#83)
 
 ## [0.5.4] - 2026-09-04
 
 ### Changed
-- The PRs and Git panes are merged into one Git pane. Local changes now show git status inline in the diff file tree — stage, unstage, and discard on hover, commit staged changes, and push — instead of a separate flat changes list.
 - The GPU (Metal) terminal renderer is now the default. It reaches parity with the previous renderer and adds glyph-atlas rendering: scrollback, text selection that sticks to the text as it scrolls (with drag-to-select auto-scroll past the top and bottom edges), bold / dim / inverse / italic / underline / strikethrough, wide (CJK) characters, a cursor that dims when the terminal is unfocused, and Cmd+K to clear. (#81)
 
 ### Added
-- Files pane: browse everything in the workspace folder from one tree spanning every repo, and preview a file without opening an editor. Code renders with syntax highlighting and line numbers, images get a zoomable viewer, and other binaries show their type instead of garbage. Right-click a file or folder to reveal it in Finder or copy its path, and select lines in a code preview to ask the agent about that block.
 - Nerd Font icons render in the terminal, so TUIs show their devicons, folder, and Material Design glyphs. Missing glyphs fall back through installed Nerd Fonts and are scaled to fit the cell instead of clipping. (#81)
 - Terminal font setting: pick any installed monospaced or Nerd Font family for the terminal. (#81)
 
 ### Fixed
 - The terminal, service log peek, split handle, and icon buttons re-tint immediately on a light/dark theme switch instead of keeping stale colors. (#81)
 - Squared the top corners of the Metal terminal and the service peek log, and matched the agent and golden-source header heights. (#81)
-- Pomelo.app no longer drops a `default.profraw` file into whatever directory Claude Code happens to be working in. The globally installed Claude Code hook re-execs the app binary on every tool-use event, and both the Debug and Release builds were compiled with code coverage instrumentation on, so each re-exec wrote a coverage file to the current directory — for every project on the machine, not just Pomelo workspaces.
 
 ## [0.5.3] - 2026-09-03
 
