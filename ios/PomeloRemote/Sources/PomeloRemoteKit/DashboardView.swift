@@ -19,7 +19,7 @@ struct DashboardView: View {
     @State private var loadingSprint = false
     @State private var pickedKey = ""
     @State private var boardMenuOpen = false
-    @State private var renaming: WorkspaceRow?
+    @State private var renaming: Workspace?
     @State private var renameText = ""
     @State private var renameBusy = false
 
@@ -33,8 +33,8 @@ struct DashboardView: View {
 
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
-    private var mainWs: WorkspaceRow? { vm.workspaces.first { $0.isMain } }
-    private var others: [WorkspaceRow] { vm.workspaces.filter { !$0.isMain } }
+    private var mainWs: Workspace? { vm.workspaces.first { $0.isMain } }
+    private var others: [Workspace] { vm.workspaces.filter { !$0.isMain } }
 
     private var headerSubtitle: String {
         var parts = ["\(vm.workspaces.count) workspaces"]
@@ -64,7 +64,7 @@ struct DashboardView: View {
                         NavigationLink { WorkspaceDetailView(client: client, workspace: ws) } label: { card(ws) }
                             .buttonStyle(.plain)
                             .contextMenu {
-                                Button { renameText = ws.displayName; renaming = ws } label: {
+                                Button { renameText = ws.displayName ?? ""; renaming = ws } label: {
                                     Label("Rename", systemImage: "pencil")
                                 }
                             }
@@ -99,7 +99,7 @@ struct DashboardView: View {
         .sheet(item: $renaming) { ws in renameSheet(ws) }
     }
 
-    private func renameSheet(_ ws: WorkspaceRow) -> some View {
+    private func renameSheet(_ ws: Workspace) -> some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 14) {
                 SectionLabel(text: "Display name")
@@ -147,7 +147,7 @@ struct DashboardView: View {
         .preferredColorScheme(activeThemeMode == .light ? .light : .dark)
     }
 
-    private func refineRename(_ ws: WorkspaceRow) {
+    private func refineRename(_ ws: Workspace) {
         renameBusy = true
         Task {
             struct R: Decodable { var name = "" }
@@ -513,7 +513,7 @@ struct DashboardView: View {
         }
     }
 
-    private func wideCard(_ ws: WorkspaceRow) -> some View {
+    private func wideCard(_ ws: Workspace) -> some View {
         let agentState = vm.agentState(ws)
         let orbActive = agentOrbActive(agentState)
         let orbColor = agentOrbColor(agentState)
@@ -540,7 +540,7 @@ struct DashboardView: View {
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.wsAccent.opacity(0.35), lineWidth: 1))
     }
 
-    private func card(_ ws: WorkspaceRow) -> some View {
+    private func card(_ ws: Workspace) -> some View {
         let agentState = vm.agentState(ws)
         let jira = vm.jira[ws.branch]
         let orbActive = agentOrbActive(agentState)

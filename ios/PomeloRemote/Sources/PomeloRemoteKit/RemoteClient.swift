@@ -1,7 +1,14 @@
 import Foundation
 import CryptoKit
+// Re-export PomeloCore so PomJSON / shared models (ClaudeUsage, …) resolve app-wide.
+@_exported import PomeloCore
 
 enum RemoteError: Error { case badURL, http(Int), notPaired }
+
+// RemoteClient already exposes async query/command/fetch over the network, so it
+// satisfies the shared data seam directly — shared ViewModels can run against it.
+extension RemoteClient: @unchecked Sendable {}
+extension RemoteClient: PomDataSource {}
 
 final class RemoteClient: NSObject, URLSessionDelegate {
     let device: PairedDevice

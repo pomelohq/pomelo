@@ -4,7 +4,7 @@ import UIKit
 struct AgentView: View {
     @EnvironmentObject var theme: ThemeManager
     let client: RemoteClient
-    let workspace: WorkspaceRow
+    let workspace: Workspace
 
     @StateObject private var ctl = TerminalController()
     @State private var window = ""
@@ -45,7 +45,7 @@ struct AgentView: View {
                                     .onChanged { v in
                                         let ticks = Int(v.translation.height / 24)
                                         if ticks != scrollTicks {
-                                            ctl.wheel(up: ticks > scrollTicks, count: abs(ticks - scrollTicks))
+                                            ctl.scroll(lines: ticks - scrollTicks)
                                             scrollTicks = ticks
                                         }
                                     }

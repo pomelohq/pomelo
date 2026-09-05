@@ -4,6 +4,14 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- The Metal terminal renderer moved into a shared cross-platform package (PomeloTerminalKit) used by both the Mac app and the iOS remote. The macOS terminal is unchanged; the split is the groundwork for sharing UI across macOS/iPadOS/iOS.
+
+### Added
+- The iOS remote terminal now renders on the GPU (Metal) like the Mac, so scrolling is smooth and Nerd Font icons (devicons, folder, Material Design glyphs) render instead of showing blanks.
+
 ## [0.5.4] - 2026-09-04
 
 ### Changed

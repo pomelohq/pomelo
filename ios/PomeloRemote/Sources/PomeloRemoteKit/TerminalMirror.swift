@@ -1,53 +1,53 @@
 import SwiftUI
-import SwiftTerm
 import UIKit
+import QuartzCore
+import PomeloTerminalKit
 
-final class ReadOnlyTerminalView: TerminalView {
-    override var canBecomeFirstResponder: Bool { false }
-}
+// The GPU terminal host (MetalTerminalHostView) lives in the shared PomeloTerminalKit
+// package; here we wrap it in a container + freeze overlay and drive it from the SSE
+// PTY stream. All keyboard/scroll input goes to the remote PTY via the controller.
 
 final class TerminalContainer: UIView {
-    let terminal: ReadOnlyTerminalView
-    private let freeze = UIImageView()
+    let terminal: MetalTerminalHostView
+    private var freeze: UIView?
 
-    init(terminal: ReadOnlyTerminalView) {
+    init(terminal: MetalTerminalHostView) {
         self.terminal = terminal
         super.init(frame: .zero)
         addSubview(terminal)
-        freeze.contentMode = .scaleToFill
-        freeze.isHidden = true
-        addSubview(freeze)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         terminal.frame = bounds
-        freeze.frame = bounds
+        freeze?.frame = bounds
     }
 
-    // Overlay a still of the current terminal so the reconnect's snapshot replay
-    // repaints behind it instead of flashing a cleared screen.
+    // Overlay a snapshot of the current terminal so the reconnect's scrollback replay
+    // repaints behind it instead of flashing a cleared screen. snapshotView captures the
+    // GPU-rendered content (layer.render(in:) does not for a CAMetalLayer).
     func showFreeze() {
         guard bounds.width > 0, bounds.height > 0 else { return }
-        let r = UIGraphicsImageRenderer(bounds: bounds)
-        freeze.image = r.image { ctx in terminal.layer.render(in: ctx.cgContext) }
-        freeze.alpha = 1
-        freeze.isHidden = false
+        freeze?.removeFromSuperview()
+        guard let snap = terminal.snapshotView(afterScreenUpdates: false) else { return }
+        snap.frame = bounds
+        addSubview(snap)
+        freeze = snap
     }
 
     func hideFreeze() {
-        guard !freeze.isHidden else { return }
-        UIView.animate(withDuration: 0.12, animations: { self.freeze.alpha = 0 }) { _ in
-            self.freeze.isHidden = true
-            self.freeze.image = nil
+        guard let f = freeze else { return }
+        UIView.animate(withDuration: 0.12, animations: { f.alpha = 0 }) { _ in
+            f.removeFromSuperview()
+            if self.freeze === f { self.freeze = nil }
         }
     }
 }
 
 @MainActor
 final class TerminalController: ObservableObject {
-    weak var view: TerminalView?
+    weak var view: MetalTerminalHostView?
     weak var container: TerminalContainer?
     private var client: RemoteClient?
     private(set) var window = ""
@@ -55,7 +55,7 @@ final class TerminalController: ObservableObject {
     private var didAttachOnce = false
     @Published var ended = false
 
-    func attach(_ v: TerminalView, container: TerminalContainer, client: RemoteClient, window: String) {
+    func attach(_ v: MetalTerminalHostView, container: TerminalContainer, client: RemoteClient, window: String) {
         self.view = v
         self.container = container
         self.client = client
@@ -101,9 +101,9 @@ final class TerminalController: ObservableObject {
                     case .reset:
                         // Server sends this before a scrollback replay so the buffer
                         // rebuilds clean instead of interleaving with the stale screen.
-                        self.view?.feed(byteArray: Array("\u{1b}c".utf8)[...])
+                        self.view?.feed(Array("\u{1b}c".utf8))
                     case .output(let bytes):
-                        self.view?.feed(byteArray: bytes[...])
+                        self.view?.feed(bytes)
                         self.offset += UInt64(bytes.count)
                     case .synced(let seq):
                         self.offset = seq
@@ -164,6 +164,18 @@ final class TerminalController: ObservableObject {
         Task { await client.ptyInput(window: window, data: bytes) }
     }
 
+    // Scroll instantly through the local scrollback for a plain shell (no network round
+    // trip); forward to the remote only when a full-screen TUI owns the mouse. lines > 0
+    // shows older lines.
+    func scroll(lines: Int) {
+        guard lines != 0 else { return }
+        if let v = view, v.renderer.mouseModeOn {
+            wheel(up: lines > 0, count: abs(lines))
+        } else {
+            view?.renderer.scrollLines(lines)
+        }
+    }
+
     func resize(cols: Int, rows: Int) {
         guard let client, !window.isEmpty, cols > 0, rows > 0 else { return }
         Task { await client.ptyResize(window: window, cols: cols, rows: rows) }
@@ -192,43 +204,26 @@ struct PtyTerminalView: UIViewRepresentable {
     let window: String
     @ObservedObject var ctl: TerminalController
     var fontSize: CGFloat = 11
+    var fontFamily: String = ""
 
     func makeUIView(context: Context) -> TerminalContainer {
-        let tv = ReadOnlyTerminalView(frame: .zero)
-        tv.terminalDelegate = context.coordinator
-        tv.nativeBackgroundColor = UIColor(Theme.bg)
-        tv.nativeForegroundColor = UIColor(Theme.fg)
-        tv.backgroundColor = UIColor(Theme.bg)
-        tv.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        tv.isUserInteractionEnabled = false
+        let tv = MetalTerminalHostView(frame: .zero)
+        tv.setFont(family: fontFamily, size: fontSize)
+        tv.applyColors(fg: Self.simd4(Theme.fg), bg: Self.simd4(Theme.bg))
+        tv.onResize = { cols, rows in MainActor.assumeIsolated { ctl.handleSize(cols: cols, rows: rows) } }
         let container = TerminalContainer(terminal: tv)
         ctl.attach(tv, container: container, client: client, window: window)
         return container
     }
 
     func updateUIView(_ uiView: TerminalContainer, context: Context) {
-        let tv = uiView.terminal
-        if abs(tv.font.pointSize - fontSize) > 0.1 {
-            tv.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        }
+        uiView.terminal.setFont(family: fontFamily, size: fontSize)
+        uiView.terminal.applyColors(fg: Self.simd4(Theme.fg), bg: Self.simd4(Theme.bg))
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(ctl) }
-
-    final class Coordinator: NSObject, TerminalViewDelegate {
-        let ctl: TerminalController
-        init(_ ctl: TerminalController) { self.ctl = ctl }
-
-        func send(source: TerminalView, data: ArraySlice<UInt8>) {}
-        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-            MainActor.assumeIsolated { ctl.handleSize(cols: newCols, rows: newRows) }
-        }
-        func setTerminalTitle(source: TerminalView, title: String) {}
-        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-        func scrolled(source: TerminalView, position: Double) {}
-        func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
-        func bell(source: TerminalView) {}
-        func clipboardCopy(source: TerminalView, content: Data) {}
-        func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+    private static func simd4(_ color: Color) -> SIMD4<Float> {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
+        return SIMD4(Float(r), Float(g), Float(b), 1)
     }
 }

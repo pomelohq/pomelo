@@ -1,11 +1,11 @@
 import Foundation
 import OSLog
 
-enum PomJSON {
-    static let decoder = JSONDecoder()
+public enum PomJSON {
+    public static let decoder = JSONDecoder()
     private static let log = Logger(subsystem: "com.pomelo.app", category: "decode")
 
-    static func decode<T: Decodable>(_ type: T.Type, from data: Data) -> T? {
+    public static func decode<T: Decodable>(_ type: T.Type, from data: Data) -> T? {
         if data.isEmpty { return nil }
         do {
             return try decoder.decode(type, from: data)
