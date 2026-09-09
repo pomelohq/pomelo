@@ -26,14 +26,42 @@ jobs:
       - name: Select Xcode
         uses: ./.github/actions/setup-xcode
 
+      # Reuse the compiled dependency tree (swift-collections, Grape, CodeEdit*,
+      # TreeSitter grammars, SwiftTerm, the shared packages) — it dominates the build
+      # (~5 min from scratch). Keyed on the package manifests + build config, so any
+      # dependency change busts it; bump -v<n> to force. The config (debug gate vs
+      # release) is in the key because Debug and Release compile into separate
+      # DerivedData and a GitHub cache key is write-once — sharing one key would let
+      # the frequent Debug gate claim it and starve the Release build. libpom.a is
+      # rebuilt every run and the app binary is force-relinked, so nothing is stale.
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: desktop/PomeloApp/.ddata
+          key: ddata-${{ inputs.publish && 'release' || 'debug' }}-${{ runner.os }}-${{ hashFiles('desktop/PomeloApp/Package.swift', 'desktop/PomeloApp/LocalPackages/**/Package.swift', 'shared/**/Package.swift') }}-v1
+          restore-keys: |
+            ddata-${{ inputs.publish && 'release' || 'debug' }}-${{ runner.os }}-
+
       - name: Go build & vet
         run: |
           go build ./...
           go vet ./...
 
-      - name: Compile app (unsigned gate)
+      # Gate (publish=false): build the Go c-archive, then compile the app and run
+      # the Swift tests in one xcodebuild pass. This is the single reusable build the
+      # PR gate (ci.yml) and the release (publish=true, below) both call.
+      - name: Compile app + Swift tests (gate)
         if: ${{ !inputs.publish }}
-        run: bash desktop/PomeloApp/build.sh
+        run: |
+          GOTOOLCHAIN=local CGO_ENABLED=1 go build \
+            -tags nostatic -trimpath -ldflags="-s -w" \
+            -buildmode=c-archive -o desktop/PomeloApp/Vendor/libpom.a ./cmd/libpom/
+          cp desktop/PomeloApp/Vendor/libpom.h desktop/PomeloApp/Sources/CPom/include/libpom.h
+          cd desktop/PomeloApp
+          xcodebuild test -scheme PomeloApp -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath .ddata -skipPackagePluginValidation \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CLANG_ENABLE_CODE_COVERAGE=NO
 
       - name: Import Developer ID certificate
         if: ${{ inputs.publish }}
