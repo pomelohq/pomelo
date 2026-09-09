@@ -1,14 +1,15 @@
 package claude
 
 import (
-	"github.com/pomelohq/pomelo/internal/provider/shell"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 )
 
-var claudeBinOnce sync.Once
-var claudeBinPath = "claude"
+var claudeBinMu sync.Mutex
+var claudeBinPath string // "" until resolved to an absolute path
 
 const configVarReference = "POM CONFIG VARIABLES — dot-notation ONLY. NEVER write colon forms ({{var:…}} {{host:…}} {{port:…}} {{conn:…}} {{db:…}} {{user:…}} {{pass:…}} {{slot:…}} {{url:…}} {{ws:…}}); config load REJECTS them. Migrate any you find:\n" +
 	"- {{shared.<name>.url}} — shared service conn (user:pass@host:port); also .host .port .user .pass .slot (redis DB index)\n" +
@@ -21,26 +22,55 @@ const configVarReference = "POM CONFIG VARIABLES — dot-notation ONLY. NEVER wr
 	"OPENSEARCH_URL: http://{{shared.opensearch.host}}:{{shared.opensearch.port}} · " +
 	"MINIO_URL: http://{{shared.minio.host}}:{{shared.minio.port}}"
 
+// ResolveClaudeBin finds the `claude` binary. A GUI app launched from Finder has a
+// minimal PATH, and the login shell (zsh -lc) does NOT source ~/.zshrc — where the
+// native installer's ~/.local/bin is usually added — so exec.LookPath and a login
+// shell both miss it. Probe the well-known locations directly and, as a last resort,
+// ask an interactive shell. Cache only a successful absolute path (never the failure)
+// so a call made before the env is ready doesn't wedge the binary for the process.
 func ResolveClaudeBin() string {
-	claudeBinOnce.Do(func() {
-		if p, err := exec.LookPath("claude"); err == nil && p != "" {
+	claudeBinMu.Lock()
+	defer claudeBinMu.Unlock()
+	if claudeBinPath != "" {
+		return claudeBinPath
+	}
+
+	if p, err := exec.LookPath("claude"); err == nil && p != "" {
+		claudeBinPath = p
+		return p
+	}
+
+	home, _ := os.UserHomeDir()
+	for _, p := range []string{
+		filepath.Join(home, ".local", "bin", "claude"),
+		filepath.Join(home, ".claude", "local", "claude"),
+		"/opt/homebrew/bin/claude",
+		"/usr/local/bin/claude",
+	} {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
 			claudeBinPath = p
-			return
+			return p
 		}
-		login := shell.Login("command -v claude")
-		out, err := exec.Command(login[0], login[1:]...).Output()
+	}
+
+	sh := os.Getenv("SHELL")
+	if sh == "" {
+		sh = "zsh"
+	}
+	for _, flags := range []string{"-ilc", "-lc"} {
+		out, err := exec.Command(sh, flags, "command -v claude").Output()
 		if err != nil {
-			return
+			continue
 		}
 		for _, ln := range strings.Split(string(out), "\n") {
 			ln = strings.TrimSpace(ln)
 			if strings.HasPrefix(ln, "/") && strings.HasSuffix(ln, "/claude") {
 				claudeBinPath = ln
-				return
+				return ln
 			}
 		}
-	})
-	return claudeBinPath
+	}
+	return "claude" // unresolved; retry on the next call
 }
 
 func (s *Feature) chatSystemPrompt(branch string) string {

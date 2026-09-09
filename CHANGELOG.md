@@ -4,6 +4,11 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- The agent no longer fails with `exec: "claude": executable file not found in $PATH` when the Claude CLI is installed in ~/.local/bin (the native installer's location). Pomelo now probes the well-known install paths and an interactive shell to find it, and never caches a failed lookup.
+
 ## [0.5.7] - 2026-09-05
 
 ### Fixed
