@@ -196,17 +196,22 @@ struct CreateSessionSheet: View {
         let reposJSON = repos.map { "{\"path\":\"\($0.path)\",\"alias\":\"\($0.alias)\"}" }.joined(separator: ",")
         let body = "{\"name\":\"\(name)\",\"default_branch\":\"\(defaultBranch)\",\"repos\":[\(reposJSON)]}"
         Task {
+            struct CreateResp: Decodable { var ok: Bool?; var path: String?; var error: String? }
             let d = await SessionStore.create(json: body)
-            let ok = String(decoding: d, as: UTF8.self).contains("\"ok\":true") || String(decoding: d, as: UTF8.self).contains(name)
+            let resp = try? JSONDecoder().decode(CreateResp.self, from: d)
             busy = false
-            if ok {
-                status = "✓ created"; state.switchSession(name)
+            // Boot straight into the new session's directory (the first session is
+            // created before any server exists, so switchSession's session list is
+            // empty — use the path the create returned).
+            if resp?.ok == true, let path = resp?.path, !path.isEmpty {
+                status = "✓ created"
+                state.bootProject(path)
                 try? await Task.sleep(nanoseconds: 800_000_000)
                 let b = defaultBranch
                 dismiss()
                 state.startOnboard(branch: b)
             }
-            else { status = String(decoding: d, as: UTF8.self).prefix(120).description }
+            else { status = (resp?.error).map { "error: \($0)" } ?? String(decoding: d, as: UTF8.self).prefix(120).description }
         }
     }
 }

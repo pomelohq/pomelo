@@ -278,15 +278,7 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 		case "delete":
 			return s.SessionDelete(pStr(params, "name"), pBool(params, "purge"))
 		case "create":
-			var req CreateSessionReq
-			if json.Unmarshal(params, &req) != nil {
-				return map[string]any{"ok": false, "error": "bad json"}
-			}
-			dir, err := ScaffoldSession(req)
-			if err != nil {
-				return map[string]any{"ok": false, "error": err.Error()}
-			}
-			return map[string]any{"ok": true, "name": req.Name, "path": dir}
+			return ScaffoldSessionCmd(params)
 		}
 	case "network":
 		if action == "set_ports" {

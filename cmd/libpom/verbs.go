@@ -5,7 +5,11 @@ package main
 */
 import "C"
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/pomelohq/pomelo/internal/core"
+)
 
 // The data-routed FFI surface (ADR 0001): three verbs instead of one export per
 // feature. New endpoints add a case in the core dispatch, not a new C symbol.
@@ -21,11 +25,16 @@ func PomQuery(domain, params *C.char) *C.char {
 
 //export PomCommand
 func PomCommand(domain, action, params *C.char) *C.char {
+	d, a, p := C.GoString(domain), C.GoString(action), json.RawMessage(C.GoString(params))
 	s := server()
 	if s == nil {
+		// Creating the first session bootstraps a project — there is no server yet.
+		if d == "session" && a == "create" {
+			return bindingJSON(core.ScaffoldSessionCmd(p))
+		}
 		return C.CString(`{"ok":false,"error":"no server"}`)
 	}
-	return bindingJSON(s.Command(C.GoString(domain), C.GoString(action), json.RawMessage(C.GoString(params))))
+	return bindingJSON(s.Command(d, a, p))
 }
 
 //export PomFetch

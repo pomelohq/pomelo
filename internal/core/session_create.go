@@ -14,6 +14,7 @@ import (
 
 	"github.com/pomelohq/pomelo/internal/detect"
 	"github.com/pomelohq/pomelo/internal/secrets"
+	"github.com/pomelohq/pomelo/internal/services"
 	"github.com/pomelohq/pomelo/internal/sessions"
 )
 
@@ -52,6 +53,24 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "name": strings.TrimSpace(req.Name), "path": sessionDir})
+}
+
+// ScaffoldSessionCmd creates a session from a command payload. It bootstraps the
+// first project, so it needs no running server — the FFI calls it before any config
+// is loaded (there is nothing to serve yet).
+func ScaffoldSessionCmd(params json.RawMessage) any {
+	// The server path runs this after PomInit (which loaded the login shell env);
+	// the bootstrap path has no server, so make sure git/PATH is available for clones.
+	services.LoadLoginShellEnv()
+	var req CreateSessionReq
+	if json.Unmarshal(params, &req) != nil {
+		return map[string]any{"ok": false, "error": "bad json"}
+	}
+	dir, err := ScaffoldSession(req)
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	return map[string]any{"ok": true, "name": strings.TrimSpace(req.Name), "path": dir}
 }
 
 func ScaffoldSession(req CreateSessionReq) (string, error) {
