@@ -105,7 +105,9 @@ struct FilesPane: View {
                 Image(systemName: "sidebar.left").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
             }.buttonStyle(.plain).help(treeVisible ? "Hide file list" : "Show file list")
             if let selected {
-                Text(selected.repo).font(Theme.mono(11, .semibold)).foregroundStyle(Theme.accent)
+                if !selected.repo.isEmpty {
+                    Text(selected.repo).font(Theme.mono(11, .semibold)).foregroundStyle(Theme.accent)
+                }
                 Text(selected.path).font(Theme.mono(11)).foregroundStyle(Theme.fg)
                     .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             } else {

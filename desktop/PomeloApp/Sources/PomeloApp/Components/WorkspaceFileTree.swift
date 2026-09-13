@@ -37,11 +37,17 @@ final class WFileTreeNode: Identifiable {
 
 enum WFileTreeBuilder {
     static func build(_ entries: [WorkspaceFileEntry]) -> [WFileTreeNode] {
-        var roots: [String: WFileTreeNode] = [:]
+        var repoRoots: [String: WFileTreeNode] = [:]
+        var looseFiles: [WFileTreeNode] = []
         for e in entries.sorted(by: { $0.path < $1.path }) {
-            let root = roots[e.repo] ?? {
+            guard !e.repo.isEmpty else {
+                let node = WFileTreeNode(id: e.path, name: e.path, entry: e)
+                looseFiles.append(node)
+                continue
+            }
+            let root = repoRoots[e.repo] ?? {
                 let r = WFileTreeNode(id: e.repo, name: e.repo)
-                roots[e.repo] = r
+                repoRoots[e.repo] = r
                 return r
             }()
             var node = root
@@ -57,9 +63,10 @@ enum WFileTreeBuilder {
             }
             node.attach(e)
         }
-        let ordered = roots.keys.sorted().map { roots[$0]! }
+        let ordered = repoRoots.keys.sorted().map { repoRoots[$0]! }
         for root in ordered { sort(root) }
-        return ordered
+        looseFiles.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return ordered + looseFiles
     }
 
     private static func sort(_ node: WFileTreeNode) {

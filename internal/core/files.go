@@ -26,8 +26,8 @@ func (s *Server) ListWorkspaceFiles(branch string, isMain bool) []byte {
 	if root == "" {
 		return []byte(`[]`)
 	}
-	repos := s.workspaceRepoDirs(root)
-	var out []FileEntry
+	repos, rootFiles := s.workspaceRootEntries(root)
+	out := rootFiles
 	for _, repo := range repos {
 		repoRoot := filepath.Join(root, repo)
 		filepath.WalkDir(repoRoot, func(p string, d os.DirEntry, err error) error {
@@ -61,19 +61,30 @@ func (s *Server) ListWorkspaceFiles(branch string, isMain bool) []byte {
 	return b
 }
 
-func (s *Server) workspaceRepoDirs(root string) []string {
+func (s *Server) workspaceRootEntries(root string) ([]string, []FileEntry) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	var names []string
+	var dirs []string
+	var files []FileEntry
 	for _, e := range entries {
-		if e.IsDir() && !skipDirNames[e.Name()] && !strings.HasPrefix(e.Name(), ".") {
-			names = append(names, e.Name())
+		if skipDirNames[e.Name()] {
+			continue
 		}
+		if e.IsDir() {
+			dirs = append(dirs, e.Name())
+			continue
+		}
+		var size int64
+		if info, err := e.Info(); err == nil {
+			size = info.Size()
+		}
+		files = append(files, FileEntry{Path: e.Name(), Size: size})
 	}
-	sort.Strings(names)
-	return names
+	sort.Strings(dirs)
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return dirs, files
 }
 
 type FileContent struct {
