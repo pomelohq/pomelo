@@ -45,6 +45,8 @@ struct FilesPane: View {
     @State private var selLines: ClosedRange<Int>?
     @State private var question = ""
     @State private var markdownRaw = false
+    @State private var expanded: Set<String> = []
+    @State private var streamID: Int32 = 0
 
     private var selectedIsMarkdown: Bool {
         guard let path = selected?.path else { return false }
@@ -74,7 +76,8 @@ struct FilesPane: View {
             }
         }
         .background(Theme.bg)
-        .task { await load() }
+        .onAppear { startWatch() }
+        .onDisappear { stopWatch() }
         .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview() }
     }
 
@@ -84,7 +87,8 @@ struct FilesPane: View {
                 if entries.isEmpty {
                     EmptyStateView(icon: "folder", title: "No files")
                 } else {
-                    WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path, selected: $selected)
+                    WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path,
+                                          selected: $selected, expanded: $expanded)
                 }
             } else {
                 LoadingView(text: "loading files…")
@@ -124,6 +128,9 @@ struct FilesPane: View {
             if selectedIsMarkdown, case .text = preview {
                 modeBtn(compact ? nil : "Preview", "doc.richtext", on: !markdownRaw) { setMarkdownRaw(false) }
                 modeBtn(compact ? nil : "Raw", "chevron.left.forwardslash.chevron.right", on: markdownRaw) { setMarkdownRaw(true) }
+            }
+            IconButton("arrow.clockwise", size: 11, tip: "Refresh file list") {
+                Task { await reload() }
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
@@ -221,14 +228,42 @@ struct FilesPane: View {
         question = ""
     }
 
-    private func load() async {
+    private func startWatch() {
+        guard streamID == 0 else { return }
+        streamID = StreamManager.shared.openFiles(branch: workspace.branch, isMain: workspace.isMain) { kind, bytes in
+            guard kind == .json, !bytes.isEmpty else { return }
+            Task { await apply(Data(bytes)) }
+        }
+        if streamID <= 0 {
+            streamID = 0
+            Task { await reload() }
+        }
+    }
+
+    private func stopWatch() {
+        guard streamID > 0 else { return }
+        StreamManager.shared.close(streamID)
+        streamID = 0
+    }
+
+    private func reload() async {
         let branch = workspace.branch, isMain = workspace.isMain
+        let raw = await Task.detached(priority: .userInitiated) {
+            FileStore.list(branch: branch, isMain: isMain)
+        }.value
+        await apply(raw)
+    }
+
+    private func apply(_ raw: Data) async {
         let built = await Task.detached(priority: .userInitiated) { () -> ([WorkspaceFileEntry], [WFileTreeNode]) in
-            let list = PomJSON.decode([WorkspaceFileEntry].self, from: FileStore.list(branch: branch, isMain: isMain)) ?? []
+            let list = PomJSON.decode([WorkspaceFileEntry].self, from: raw) ?? []
             return (list, WFileTreeBuilder.build(list))
         }.value
         entries = built.0
         roots = built.1
+        if let sel = selected, !built.0.contains(where: { $0.id == sel.id }) {
+            selected = nil
+        }
     }
 
     private func loadPreview() async {

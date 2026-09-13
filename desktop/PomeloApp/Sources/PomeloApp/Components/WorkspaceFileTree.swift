@@ -82,7 +82,7 @@ struct WorkspaceFileTreeList: View {
     let roots: [WFileTreeNode]
     let workspacePath: String
     @Binding var selected: WorkspaceFileEntry?
-    @State private var expanded: Set<String> = []
+    @Binding var expanded: Set<String>
 
     var body: some View {
         ScrollView {
