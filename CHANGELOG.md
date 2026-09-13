@@ -7,6 +7,7 @@ All notable changes to Pomelo are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- The Files pane tracks the filesystem: a file created, deleted, or renamed on disk appears in the tree without reopening the pane, and open folders stay open across a refresh. Changes under .git and node_modules are ignored, so ordinary git and dev-server churn costs nothing.
 - Markdown files in the Files pane render as formatted text, with a Preview / Raw toggle to switch to the highlighted source.
 
 ### Fixed
