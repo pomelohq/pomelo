@@ -44,6 +44,13 @@ struct FilesPane: View {
     @State private var treeVisible = true
     @State private var selLines: ClosedRange<Int>?
     @State private var question = ""
+    @State private var markdownRaw = false
+
+    private var selectedIsMarkdown: Bool {
+        guard let path = selected?.path else { return false }
+        let ext = (path as NSString).pathExtension.lowercased()
+        return ext == "md" || ext == "markdown"
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -114,9 +121,34 @@ struct FilesPane: View {
                 Text("Select a file").font(.system(size: 12)).foregroundStyle(Theme.dim)
             }
             Spacer()
+            if selectedIsMarkdown, case .text = preview {
+                modeBtn(compact ? nil : "Preview", "doc.richtext", on: !markdownRaw) { setMarkdownRaw(false) }
+                modeBtn(compact ? nil : "Raw", "chevron.left.forwardslash.chevron.right", on: markdownRaw) { setMarkdownRaw(true) }
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(Theme.bgSoft)
+    }
+
+    private func setMarkdownRaw(_ raw: Bool) {
+        guard markdownRaw != raw else { return }
+        markdownRaw = raw
+        selLines = nil
+        question = ""
+    }
+
+    private func modeBtn(_ label: String?, _ icon: String, on: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 10))
+                if let label { Text(label).font(.system(size: 11)) }
+            }
+            .foregroundStyle(on ? Theme.accent : Theme.fgMuted)
+            .padding(.horizontal, label == nil ? 6 : 8).padding(.vertical, 3)
+            .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .help(markdownRaw ? "Switch to rendered preview" : "Switch to raw source")
     }
 
     @ViewBuilder private var content: some View {
@@ -125,15 +157,23 @@ struct FilesPane: View {
             case .loading:
                 LoadingView(text: "loading…")
             case .text(let s):
-                VStack(spacing: 0) {
-                    CodeView(content: s, lang: CodeLang.detect(path: sel.path),
-                             start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
-                             onSelectLines: { sel in
-                                 withAnimation(.easeInOut(duration: 0.12)) { selLines = sel }
-                             })
-                    if let lines = selLines {
-                        Divider().overlay(Theme.borderSoft)
-                        askBar(file: sel, lines: lines)
+                if selectedIsMarkdown && !markdownRaw {
+                    ScrollView {
+                        MarkdownText(s, reading: true)
+                            .padding(.horizontal, 20).padding(.vertical, 16)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                } else {
+                    VStack(spacing: 0) {
+                        CodeView(content: s, lang: CodeLang.detect(path: sel.path),
+                                 start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
+                                 onSelectLines: { sel in
+                                     withAnimation(.easeInOut(duration: 0.12)) { selLines = sel }
+                                 })
+                        if let lines = selLines {
+                            Divider().overlay(Theme.borderSoft)
+                            askBar(file: sel, lines: lines)
+                        }
                     }
                 }
             case .image(let img):
