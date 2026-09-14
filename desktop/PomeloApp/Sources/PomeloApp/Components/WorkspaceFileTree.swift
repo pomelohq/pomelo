@@ -117,7 +117,7 @@ struct WorkspaceFileTreeList: View {
                         row(entry.node, depth: entry.depth, minWidth: max(0, paneWidth - 12))
                     }
                 }
-                .padding(.leading, 6).padding(.vertical, 6)
+                .padding(.leading, 4).padding(.vertical, 6)
             }
         }
         .background(GeometryReader { g in
@@ -139,7 +139,7 @@ struct WorkspaceFileTreeList: View {
 
     @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int, minWidth: CGFloat) -> some View {
         let isDir = !node.isLeaf
-        TreeRow(depth: depth, indent: { CGFloat($0) * 13 + 6 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
+        TreeRow(depth: depth, indent: { CGFloat($0) * 12 + 4 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
                 leadingSymbol: node.isLeaf ? "doc" : (node.isRoot ? "folder.badge.gearshape" : "folder.fill"),
                 marker: nil,
                 selected: node.isLeaf && selected?.id == node.entry?.id, selectionColor: Theme.sel,
