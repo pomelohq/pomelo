@@ -100,6 +100,10 @@ struct WorkspaceFileTreeList: View {
     @Binding var selected: WorkspaceFileEntry?
     @Binding var expanded: Set<String>
 
+    @State private var ctxNodeID: String?
+    @State private var renamingID: String?
+    @State private var renameText = ""
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 1) {
@@ -120,45 +124,68 @@ struct WorkspaceFileTreeList: View {
     }
 
     @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int) -> some View {
-        if node.isLeaf, let e = node.entry {
-            TreeRow(depth: depth, isDir: false, expanded: false, name: node.name,
-                    leadingSymbol: "doc", marker: nil,
-                    selected: selected?.id == e.id, selectionColor: Theme.sel, nameColor: Theme.fg,
-                    nameWeight: .regular, tooltip: node.name) { selected = e }
-                .contextMenu { menu(for: node, isDir: false) }
-        } else {
-            TreeRow(depth: depth, isDir: true, expanded: expanded.contains(node.id), name: node.name,
-                    leadingSymbol: node.isRoot ? "folder.badge.gearshape" : "folder.fill", marker: nil,
-                    selected: false, selectionColor: Theme.sel,
-                    nameColor: node.isRoot ? Theme.fg : Theme.fgMuted, nameWeight: node.isRoot ? .semibold : .medium,
-                    tooltip: node.name) { toggle(node.id) }
-                .contextMenu { menu(for: node, isDir: true) }
+        let isDir = !node.isLeaf
+        TreeRow(depth: depth, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
+                leadingSymbol: node.isLeaf ? "doc" : (node.isRoot ? "folder.badge.gearshape" : "folder.fill"),
+                marker: nil,
+                selected: node.isLeaf && selected?.id == node.entry?.id, selectionColor: Theme.sel,
+                nameColor: node.isRoot ? Theme.fg : (node.isLeaf ? Theme.fg : Theme.fgMuted),
+                nameWeight: node.isLeaf ? .regular : (node.isRoot ? .semibold : .medium),
+                tooltip: node.name,
+                editing: renamingID == node.id, editText: $renameText,
+                onCommitEdit: { commitRename(node) }, onCancelEdit: { renamingID = nil }) {
+            if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
+        }
+        .overlay(RightClickArea { ctxNodeID = node.id })
+        .popover(isPresented: Binding(get: { ctxNodeID == node.id }, set: { if !$0 { ctxNodeID = nil } }),
+                 arrowEdge: .leading) {
+            menuContent(for: node, isDir: isDir)
         }
     }
 
-    @ViewBuilder private func menu(for node: WFileTreeNode, isDir: Bool) -> some View {
-        if isDir {
-            Button("New File...") { newFile(in: node) }
-            Button("New Folder...") { newFolder(in: node) }
-            Divider()
+    // MARK: - Custom context menu (themed; not the native NSMenu)
+
+    @ViewBuilder private func menuContent(for node: WFileTreeNode, isDir: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if isDir {
+                MenuItem("New File", "doc.badge.plus") { newFile(in: node) }
+                MenuItem("New Folder", "folder.badge.plus") { newFolder(in: node) }
+                menuDivider
+            }
+            MenuItem(isDir ? "Open in Finder" : "Reveal in Finder", "magnifyingglass") { reveal(node, isDir: isDir) }
+            if isDir { MenuItem("Open in Terminal", "terminal") { openInTerminal(node) } }
+            menuDivider
+            MenuItem("Copy Path", "doc.on.clipboard") { copyToClipboard(absolutePath(node)) }
+            if !node.isRoot { MenuItem("Copy Relative Path") { copyToClipboard(node.id) } }
+            if !node.isRoot {
+                menuDivider
+                MenuItem("Rename", "pencil") { beginRename(node) }
+                MenuItem("Duplicate", "plus.square.on.square") { duplicate(node) }
+                if node.id.contains("/") { MenuItem("Add to .gitignore") { addToGitignore(node) } }
+                menuDivider
+                MenuItem("Move to Trash", "trash", destructive: true) { trash(node) }
+            }
+            if isDir {
+                menuDivider
+                MenuItem("Expand All") { expanded.formUnion(WFileTreeBuilder.dirIDs(roots)) }
+                MenuItem("Collapse All") { expanded = [""] }
+            }
         }
-        Button(isDir ? "Open Folder in Finder" : "Reveal in Finder") { reveal(node, isDir: isDir) }
-        if isDir { Button("Open in Terminal") { openInTerminal(node) } }
-        Divider()
-        Button("Copy Path") { copyToClipboard(absolutePath(node)) }
-        if !node.isRoot { Button("Copy Relative Path") { copyToClipboard(node.id) } }
-        if !node.isRoot {
-            Divider()
-            Button("Rename...") { rename(node) }
-            Button("Duplicate") { duplicate(node) }
-            if node.id.contains("/") { Button("Add to .gitignore") { addToGitignore(node) } }
-            Divider()
-            Button("Move to Trash") { trash(node) }
-        }
-        if isDir {
-            Divider()
-            Button("Expand All") { expanded.formUnion(WFileTreeBuilder.dirIDs(roots)) }
-            Button("Collapse All") { expanded = [""] }
+        .frame(width: 214)
+        .padding(.vertical, 5)
+        .background(Theme.bgSoft)
+    }
+
+    private var menuDivider: some View {
+        Rectangle().fill(Theme.borderSoft).frame(height: 1).padding(.vertical, 4).padding(.horizontal, 8)
+    }
+
+    // Closes the menu, then runs the action (nothing here mutates while presented).
+    private func MenuItem(_ label: String, _ symbol: String? = nil, destructive: Bool = false,
+                          _ action: @escaping () -> Void) -> some View {
+        MenuItemView(label: label, symbol: symbol, destructive: destructive) {
+            ctxNodeID = nil
+            action()
         }
     }
 
@@ -168,18 +195,8 @@ struct WorkspaceFileTreeList: View {
         (workspacePath as NSString).appendingPathComponent(node.id)
     }
 
-    // The directory a create/paste acts on: the node itself if a folder, else its parent.
     private func containerDir(_ node: WFileTreeNode) -> String {
         node.isLeaf ? (absolutePath(node) as NSString).deletingLastPathComponent : absolutePath(node)
-    }
-
-    // repo + path-within-repo for a node, so a created file can be selected/opened.
-    private func repoAndRel(forChildIn node: WFileTreeNode, name: String) -> (repo: String, path: String) {
-        if node.isRoot { return ("", name) }
-        let comps = node.id.split(separator: "/").map(String.init)
-        let repo = comps.first ?? ""
-        let rel = comps.dropFirst().joined(separator: "/")
-        return (repo, rel.isEmpty ? name : rel + "/" + name)
     }
 
     // MARK: - Actions
@@ -203,27 +220,48 @@ struct WorkspaceFileTreeList: View {
     }
 
     private func newFile(in node: WFileTreeNode) {
-        guard let name = prompt("New File", placeholder: "file name") else { return }
-        let dst = (containerDir(node) as NSString).appendingPathComponent(name)
-        guard !FileManager.default.fileExists(atPath: dst) else { warn("A file named \"\(name)\" already exists."); return }
-        FileManager.default.createFile(atPath: dst, contents: Data())
-        let rr = repoAndRel(forChildIn: node, name: name)
-        selected = WorkspaceFileEntry(repo: rr.repo, path: rr.path, isDir: false)
+        let dir = containerDir(node)
+        let name = uniqueName("Untitled", in: dir)
+        FileManager.default.createFile(atPath: (dir as NSString).appendingPathComponent(name), contents: Data())
+        expanded.insert(node.id)
+        startInlineRename(id: node.id.isEmpty ? name : node.id + "/" + name, text: name)
     }
 
     private func newFolder(in node: WFileTreeNode) {
-        guard let name = prompt("New Folder", placeholder: "folder name") else { return }
-        let dst = (containerDir(node) as NSString).appendingPathComponent(name)
-        try? FileManager.default.createDirectory(atPath: dst, withIntermediateDirectories: true)
+        let dir = containerDir(node)
+        let name = uniqueName("Untitled Folder", in: dir)
+        try? FileManager.default.createDirectory(atPath: (dir as NSString).appendingPathComponent(name),
+                                                 withIntermediateDirectories: true)
         expanded.insert(node.id)
+        startInlineRename(id: node.id.isEmpty ? name : node.id + "/" + name, text: name)
     }
 
-    private func rename(_ node: WFileTreeNode) {
-        guard let name = prompt("Rename", placeholder: "new name", initial: node.name), name != node.name else { return }
+    private func beginRename(_ node: WFileTreeNode) { startInlineRename(id: node.id, text: node.name) }
+
+    // The new/renamed node may not be in the tree yet (FSEvents is async); once its
+    // row appears it renders the inline field because renamingID matches.
+    private func startInlineRename(id: String, text: String) {
+        renameText = text
+        renamingID = id
+    }
+
+    private func commitRename(_ node: WFileTreeNode) {
+        let newName = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        renamingID = nil
+        guard !newName.isEmpty, newName != node.name, !newName.contains("/") else { return }
         let src = absolutePath(node)
-        let dst = ((src as NSString).deletingLastPathComponent as NSString).appendingPathComponent(name)
-        do { try FileManager.default.moveItem(atPath: src, toPath: dst) }
-        catch { warn(error.localizedDescription) }
+        let dst = ((src as NSString).deletingLastPathComponent as NSString).appendingPathComponent(newName)
+        do {
+            try FileManager.default.moveItem(atPath: src, toPath: dst)
+            if selected?.id == node.entry?.id, let e = node.entry {
+                selected = WorkspaceFileEntry(repo: e.repo, path: renameRelPath(e.path, to: newName), isDir: e.isDir)
+            }
+        } catch { warn(error.localizedDescription) }
+    }
+
+    private func renameRelPath(_ old: String, to newName: String) -> String {
+        let parent = (old as NSString).deletingLastPathComponent
+        return parent.isEmpty ? newName : parent + "/" + newName
     }
 
     private func duplicate(_ node: WFileTreeNode) {
@@ -231,17 +269,12 @@ struct WorkspaceFileTreeList: View {
         let ext = (node.name as NSString).pathExtension
         let base = (node.name as NSString).deletingPathExtension
         let dir = (src as NSString).deletingLastPathComponent
-        var candidate = base + " copy" + (ext.isEmpty ? "" : "." + ext)
-        var i = 2
-        while FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent(candidate)) {
-            candidate = base + " copy \(i)" + (ext.isEmpty ? "" : "." + ext); i += 1
-        }
-        try? FileManager.default.copyItem(atPath: src, toPath: (dir as NSString).appendingPathComponent(candidate))
+        let name = uniqueName(base + " copy", in: dir, ext: ext)
+        try? FileManager.default.copyItem(atPath: src, toPath: (dir as NSString).appendingPathComponent(name))
     }
 
     private func trash(_ node: WFileTreeNode) {
-        let url = URL(fileURLWithPath: absolutePath(node))
-        try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        try? FileManager.default.trashItem(at: URL(fileURLWithPath: absolutePath(node)), resultingItemURL: nil)
         if selected?.id == node.entry?.id { selected = nil }
     }
 
@@ -250,8 +283,7 @@ struct WorkspaceFileTreeList: View {
         guard let repo = comps.first else { return }
         let rel = comps.dropFirst().joined(separator: "/")
         guard !rel.isEmpty else { return }
-        let gitignore = (workspacePath as NSString)
-            .appendingPathComponent(repo) + "/.gitignore"
+        let gitignore = (workspacePath as NSString).appendingPathComponent(repo) + "/.gitignore"
         var body = (try? String(contentsOfFile: gitignore, encoding: .utf8)) ?? ""
         let line = "/" + rel
         guard !body.split(separator: "\n").contains(where: { $0.trimmingCharacters(in: .whitespaces) == line }) else { return }
@@ -260,25 +292,18 @@ struct WorkspaceFileTreeList: View {
         try? body.write(toFile: gitignore, atomically: true, encoding: .utf8)
     }
 
-    private func toggle(_ id: String) {
-        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+    private func uniqueName(_ base: String, in dir: String, ext: String = "") -> String {
+        let suffix = ext.isEmpty ? "" : "." + ext
+        var name = base + suffix
+        var i = 2
+        while FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent(name)) {
+            name = base + " \(i)" + suffix; i += 1
+        }
+        return name
     }
 
-    // MARK: - Prompts (AppKit modal — simplest reliable text input on macOS)
-
-    private func prompt(_ title: String, placeholder: String, initial: String = "") -> String? {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.placeholderString = placeholder
-        field.stringValue = initial
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let v = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return v.isEmpty ? nil : v
+    private func toggle(_ id: String) {
+        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
     }
 
     private func warn(_ message: String) {
@@ -287,5 +312,54 @@ struct WorkspaceFileTreeList: View {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+}
+
+// A themed context-menu row with hover highlight.
+private struct MenuItemView: View {
+    let label: String
+    var symbol: String? = nil
+    var destructive = false
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let symbol {
+                    Image(systemName: symbol).font(.system(size: 11)).frame(width: 15)
+                        .foregroundStyle(destructive ? Theme.danger : Theme.fgMuted)
+                }
+                Text(label).font(.system(size: 12)).foregroundStyle(destructive ? Theme.danger : Theme.fg)
+                Spacer(minLength: 12)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(hover ? Theme.sel : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+    }
+}
+
+// Catches right-clicks to trigger the custom menu while letting left-clicks fall
+// through to the SwiftUI row below (hitTest only claims the event for right buttons).
+private struct RightClickArea: NSViewRepresentable {
+    let onRightClick: () -> Void
+    func makeNSView(context: Context) -> NSView { V(onRightClick: onRightClick) }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class V: NSView {
+        let onRightClick: () -> Void
+        init(onRightClick: @escaping () -> Void) { self.onRightClick = onRightClick; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            switch NSApp.currentEvent?.type {
+            case .rightMouseDown, .rightMouseUp, .rightMouseDragged: return self
+            default: return nil
+            }
+        }
+        override func rightMouseDown(with event: NSEvent) { onRightClick() }
     }
 }

@@ -70,33 +70,58 @@ struct TreeRow: View {
     var nameWeight: Font.Weight = .regular
     var tooltip: String? = nil
     var hoverTrailing: AnyView? = nil
+    var editing: Bool = false
+    var editText: Binding<String> = .constant("")
+    var onCommitEdit: () -> Void = {}
+    var onCancelEdit: () -> Void = {}
     let onTap: () -> Void
     @State private var hovering = false
+    @FocusState private var editFocused: Bool
+
+    @ViewBuilder private var leading: some View {
+        if isDir {
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.dim).frame(width: 10)
+        }
+        if let m = marker {
+            Text(m.text).font(Theme.mono(9.5, .bold)).foregroundStyle(m.color).frame(width: 12)
+        }
+        if let sym = leadingSymbol {
+            Image(systemName: sym).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
+        }
+    }
 
     var body: some View {
         HStack(spacing: 5) {
-            Button(action: onTap) {
+            if editing {
                 HStack(spacing: 5) {
-                    if isDir {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.dim).frame(width: 10)
-                    }
-                    if let m = marker {
-                        Text(m.text).font(Theme.mono(9.5, .bold)).foregroundStyle(m.color).frame(width: 12)
-                    }
-                    if let sym = leadingSymbol {
-                        Image(systemName: sym).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
-                    }
-                    Text(name).font(.system(size: 11.5, weight: nameWeight)).foregroundStyle(nameColor)
-                        .lineLimit(1).truncationMode(.middle)
+                    leading
+                    TextField("", text: editText)
+                        .textFieldStyle(.plain).font(.system(size: 11.5, weight: nameWeight))
+                        .foregroundStyle(Theme.fg).focused($editFocused)
+                        .onSubmit { onCommitEdit() }
+                        .onExitCommand { onCancelEdit() }
+                        .onAppear { editFocused = true }
                     Spacer(minLength: 0)
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .modifier(OptionalTooltip(tooltip))
-            if hovering, let hoverTrailing {
-                hoverTrailing
+                .padding(.vertical, 1).padding(.horizontal, 4)
+                .background(Theme.bg, in: RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.accent, lineWidth: 1))
+            } else {
+                Button(action: onTap) {
+                    HStack(spacing: 5) {
+                        leading
+                        Text(name).font(.system(size: 11.5, weight: nameWeight)).foregroundStyle(nameColor)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .modifier(OptionalTooltip(tooltip))
+                if hovering, let hoverTrailing {
+                    hoverTrailing
+                }
             }
         }
         .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
