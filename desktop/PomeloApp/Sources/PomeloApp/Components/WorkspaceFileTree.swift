@@ -139,11 +139,9 @@ struct WorkspaceFileTreeList: View {
 
     @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int, minWidth: CGFloat) -> some View {
         let isDir = !node.isLeaf
-        let icon: (symbol: String, color: Color) = isDir
-            ? (node.isRoot ? ("folder.badge.gearshape", Theme.fgMuted) : ("folder.fill", Theme.fgMuted))
-            : FileIcon.of(node.name)
+        let matName: String? = isDir ? "mi-" + MaterialIcon.folder(node.name) : MaterialIcon.file(node.name).map { "mi-" + $0 }
         TreeRow(depth: depth, indent: { CGFloat($0) * 13 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
-                leadingSymbol: icon.symbol,
+                leadingSymbol: "doc",
                 marker: nil,
                 selected: node.isLeaf && selected?.id == node.entry?.id,
                 selectionColor: Theme.fg.opacity(0.13),
@@ -155,7 +153,7 @@ struct WorkspaceFileTreeList: View {
                 truncate: false, minWidth: minWidth,
                 showChevron: false, guides: depth, hoverHighlight: true,
                 hoverColor: Theme.fg.opacity(0.06), cornerRadius: 0,
-                selectedBorder: nil, iconColor: isDir ? nil : icon.color) {
+                selectedBorder: nil, iconColor: nil, leadingImageName: matName) {
             if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
         }
         .overlay(RightClickArea { ctxNodeID = node.id })
@@ -337,62 +335,91 @@ struct WorkspaceFileTreeList: View {
     }
 }
 
-// Per-file-type icon + color, using free SF Symbols (no bundled assets). Brand logos
-// (Ruby gem, Docker whale, JS/TS) aren't in SF Symbols — a real icon theme would need
-// a bundled set; this approximates by kind + color.
-enum FileIcon {
-    static func of(_ name: String) -> (symbol: String, color: Color) {
+// Maps a file/folder name to a bundled Material Icon Theme asset (mi-<name>), the
+// VS Code icon set (material-extensions/vscode-material-icon-theme, MIT). Returns nil
+// for unmapped files so the tree falls back to a generic doc glyph.
+enum MaterialIcon {
+    static func file(_ name: String) -> String? {
         let lower = name.lowercased()
         switch lower {
-        case "dockerfile", ".dockerignore": return ("shippingbox.fill", Color(red: 0.15, green: 0.55, blue: 0.85))
-        case "makefile", "rakefile", "gemfile", "guardfile", "capfile", "brewfile": return ("hammer.fill", .orange)
-        case "procfile": return ("bolt.horizontal.fill", .purple)
-        case "gemfile.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "cargo.lock", "composer.lock":
-            return ("lock.fill", .gray)
-        case ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep":
-            return ("arrow.triangle.branch", Color(red: 0.9, green: 0.4, blue: 0.3))
-        case "license", "license.md", "licence", "copying": return ("checkmark.seal.fill", .yellow)
-        case "readme", "readme.md": return ("book.fill", Color(red: 0.3, green: 0.6, blue: 0.9))
-        case ".editorconfig", ".prettierrc", ".prettierignore", ".eslintrc", ".npmrc", ".nvmrc",
-             ".rspec", ".ruby-version", ".ruby-gemset", ".tool-versions", ".pryrc", ".rubocop.yml", ".rubocop_todo.yml":
-            return ("gearshape.fill", .gray)
+        case "dockerfile", ".dockerignore", "docker-compose.yml", "docker-compose.yaml": return "docker"
+        case "makefile", "rakefile", "gnumakefile": return "makefile"
+        case "gemfile", "gemfile.lock", ".gemspec": return "ruby"
+        case "package.json": return "nodejs"
+        case "package-lock.json": return "npm"
+        case "readme", "readme.md": return "readme"
+        case "license", "licence", "license.md", "copying": return "license"
+        case ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep": return "git"
+        case "tsconfig.json", "tsconfig.build.json": return "typescript"
+        case "nginx.conf": return "nginx"
+        case "schema.prisma": return "prisma"
         default: break
         }
-        if lower.hasPrefix(".env") { return ("key.fill", Color(red: 0.85, green: 0.7, blue: 0.2)) }
+        if lower.hasPrefix(".env") { return "tune" }
+        if lower.hasPrefix(".git") { return "git" }
+        if lower.hasPrefix(".eslint") { return "eslint" }
+        if lower.hasPrefix(".prettier") { return "prettier" }
+        if lower.contains("tailwind") { return "tailwindcss" }
 
         switch (lower as NSString).pathExtension {
-        case "json", "jsonc", "json5": return ("curlybraces", .yellow)
-        case "yml", "yaml": return ("list.bullet.rectangle", Color(red: 0.6, green: 0.45, blue: 0.8))
-        case "toml", "ini", "conf", "cfg", "properties", "editorconfig": return ("gearshape.fill", .gray)
-        case "md", "markdown", "mdx": return ("doc.richtext", Color(red: 0.3, green: 0.6, blue: 0.9))
-        case "txt", "log", "text": return ("doc.plaintext", Color(white: 0.6))
-        case "csv", "tsv": return ("tablecells.fill", Color(red: 0.2, green: 0.7, blue: 0.4))
-        case "sql": return ("cylinder.fill", Color(red: 0.3, green: 0.6, blue: 0.85))
-        case "sh", "bash", "zsh", "fish": return ("terminal.fill", Color(red: 0.3, green: 0.75, blue: 0.4))
-        case "rb", "erb", "gemspec", "ru": return ("diamond.fill", Color(red: 0.8, green: 0.2, blue: 0.2))
-        case "js", "cjs", "mjs": return ("j.square.fill", Color(red: 0.9, green: 0.8, blue: 0.2))
-        case "jsx": return ("j.square.fill", Color(red: 0.3, green: 0.7, blue: 0.85))
-        case "ts": return ("t.square.fill", Color(red: 0.2, green: 0.5, blue: 0.85))
-        case "tsx": return ("t.square.fill", Color(red: 0.3, green: 0.7, blue: 0.85))
-        case "py", "pyi": return ("p.square.fill", Color(red: 0.25, green: 0.5, blue: 0.75))
-        case "go": return ("g.square.fill", Color(red: 0.2, green: 0.7, blue: 0.8))
-        case "rs": return ("r.square.fill", Color(red: 0.8, green: 0.5, blue: 0.3))
-        case "swift": return ("swift", .orange)
-        case "java", "kt", "kts": return ("cup.and.saucer.fill", Color(red: 0.8, green: 0.4, blue: 0.3))
-        case "php": return ("p.square.fill", Color(red: 0.45, green: 0.45, blue: 0.75))
-        case "c", "h": return ("c.square.fill", Color(red: 0.4, green: 0.5, blue: 0.8))
-        case "cpp", "cc", "hpp", "cxx": return ("plus.square.fill", Color(red: 0.4, green: 0.5, blue: 0.8))
-        case "cs": return ("number.square.fill", Color(red: 0.4, green: 0.6, blue: 0.3))
-        case "html", "htm": return ("chevron.left.forwardslash.chevron.right", Color(red: 0.9, green: 0.45, blue: 0.25))
-        case "css", "scss", "sass", "less": return ("paintbrush.fill", Color(red: 0.3, green: 0.55, blue: 0.85))
-        case "vue": return ("v.square.fill", Color(red: 0.3, green: 0.7, blue: 0.5))
-        case "svg", "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "icns":
-            return ("photo.fill", Color(red: 0.55, green: 0.45, blue: 0.8))
-        case "pdf": return ("doc.fill", Color(red: 0.85, green: 0.25, blue: 0.25))
-        case "zip", "tar", "gz", "tgz", "rar", "7z": return ("archivebox.fill", Color(white: 0.6))
-        case "lock": return ("lock.fill", .gray)
-        case "xml", "plist": return ("chevron.left.forwardslash.chevron.right", Color(red: 0.6, green: 0.7, blue: 0.4))
-        default: return ("doc", Theme.fgMuted)
+        case "js", "cjs", "mjs": return "javascript"
+        case "jsx": return "react"
+        case "ts": return "typescript"
+        case "tsx": return "react_ts"
+        case "json", "json5", "jsonc": return "json"
+        case "yml", "yaml": return "yaml"
+        case "md", "markdown", "mdx": return "markdown"
+        case "html", "htm": return "html"
+        case "css": return "css"
+        case "scss", "sass": return "sass"
+        case "less": return "less"
+        case "rb", "erb", "gemspec", "ru": return "ruby"
+        case "py", "pyi": return "python"
+        case "go": return "go"
+        case "rs": return "rust"
+        case "java": return "java"
+        case "kt", "kts": return "kotlin"
+        case "php": return "php"
+        case "c": return "c"
+        case "h", "hpp": return "h"
+        case "cpp", "cc", "cxx": return "cpp"
+        case "cs": return "csharp"
+        case "swift": return "swift"
+        case "vue": return "vue"
+        case "svelte": return "svelte"
+        case "sh", "bash", "zsh", "fish": return "console"
+        case "sql": return "database"
+        case "csv", "tsv": return "table"
+        case "xml", "plist": return "xml"
+        case "svg": return "svg"
+        case "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "icns": return "image"
+        case "pdf": return "pdf"
+        case "zip", "tar", "gz", "tgz", "rar": return "zip"
+        case "lock": return "lock"
+        case "log": return "log"
+        case "txt", "text": return "document"
+        case "toml", "ini", "conf", "cfg", "properties": return "settings"
+        case "graphql", "gql": return "graphql"
+        case "prisma": return "prisma"
+        case "tf", "tfvars": return "terraform"
+        default: return nil
+        }
+    }
+
+    static func folder(_ name: String) -> String {
+        switch name.lowercased() {
+        case "src", "lib": return "folder-src"
+        case "app": return "folder-app"
+        case "dist", "build", "out": return "folder-dist"
+        case "public", "static", "assets": return "folder-public"
+        case "test", "tests", "spec", "__tests__": return "folder-test"
+        case "docs", "doc", "documentation": return "folder-docs"
+        case "node_modules": return "folder-node"
+        case ".github": return "folder-github"
+        case ".git": return "folder-git"
+        case "components", "component": return "folder-components"
+        case "config", ".config": return "folder-config"
+        default: return "folder-base"
         }
     }
 }

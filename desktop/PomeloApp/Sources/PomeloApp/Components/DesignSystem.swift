@@ -84,6 +84,7 @@ struct TreeRow: View {
     var cornerRadius: CGFloat = 6
     var selectedBorder: Color? = nil
     var iconColor: Color? = nil
+    var leadingImageName: String? = nil
     let onTap: () -> Void
     @State private var hovering = false
     @FocusState private var editFocused: Bool
@@ -111,7 +112,10 @@ struct TreeRow: View {
         if let m = marker {
             Text(m.text).font(Theme.mono(9.5, .bold)).foregroundStyle(m.color).frame(width: 12)
         }
-        if let sym = leadingSymbol {
+        if let img = leadingImageName {
+            Image(img, bundle: .module).resizable().interpolation(.high)
+                .aspectRatio(contentMode: .fit).frame(width: 15, height: 15)
+        } else if let sym = leadingSymbol {
             Image(systemName: sym).font(.system(size: 10.5)).foregroundStyle(iconColor ?? Theme.fgMuted)
         }
     }
