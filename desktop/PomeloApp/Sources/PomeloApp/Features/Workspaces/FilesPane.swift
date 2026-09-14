@@ -207,18 +207,15 @@ struct FilesPane: View {
             case .loading:
                 LoadingView(text: "loading…")
             case .text(let s):
-                if editing {
-                    FileEditor(text: $editText, path: sel.path, mode: theme.mode)
-                } else if selectedIsMarkdown && !markdownRaw {
+                if selectedIsMarkdown && !markdownRaw && !editing {
                     ScrollView {
                         MarkdownText(s, reading: true)
                             .padding(.horizontal, 20).padding(.vertical, 16)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
-                    CodeView(content: s, lang: CodeLang.detect(path: sel.path),
-                             start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
-                             onSelectLines: { _ in })
+                    FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: editing)
+                        .id(sel.id)
                 }
             case .image(let img):
                 FileImageView(image: img)

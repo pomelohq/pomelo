@@ -12,6 +12,7 @@ struct FileEditor: View {
     let path: String
     var mode: ThemeMode
     var wrap: Bool = false
+    var editable: Bool = true
     @State private var state = SourceEditorState()
 
     var body: some View {
@@ -23,9 +24,10 @@ struct FileEditor: View {
                     theme: SQLEditor.palette(mode),
                     useThemeBackground: true,
                     font: .monospacedSystemFont(ofSize: 12, weight: .regular),
+                    lineHeightMultiple: 1.3,
                     wrapLines: wrap
                 ),
-                behavior: .init(indentOption: .spaces(count: 2)),
+                behavior: .init(isEditable: editable, indentOption: .spaces(count: 2)),
                 peripherals: .init(showGutter: true, showMinimap: false)
             ),
             state: $state
