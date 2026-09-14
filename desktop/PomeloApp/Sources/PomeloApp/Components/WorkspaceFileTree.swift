@@ -117,7 +117,7 @@ struct WorkspaceFileTreeList: View {
                         row(entry.node, depth: entry.depth, minWidth: max(0, paneWidth - 12))
                     }
                 }
-                .padding(.leading, 4).padding(.vertical, 6)
+                .padding(.leading, 2).padding(.vertical, 6)
             }
         }
         .background(GeometryReader { g in
@@ -139,17 +139,23 @@ struct WorkspaceFileTreeList: View {
 
     @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int, minWidth: CGFloat) -> some View {
         let isDir = !node.isLeaf
-        TreeRow(depth: depth, indent: { CGFloat($0) * 12 + 4 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
-                leadingSymbol: node.isLeaf ? "doc" : (node.isRoot ? "folder.badge.gearshape" : "folder.fill"),
+        let icon: (symbol: String, color: Color) = isDir
+            ? (node.isRoot ? ("folder.badge.gearshape", Theme.fgMuted) : ("folder.fill", Theme.fgMuted))
+            : FileIcon.of(node.name)
+        TreeRow(depth: depth, indent: { CGFloat($0) * 13 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
+                leadingSymbol: icon.symbol,
                 marker: nil,
-                selected: node.isLeaf && selected?.id == node.entry?.id, selectionColor: Theme.sel,
+                selected: node.isLeaf && selected?.id == node.entry?.id,
+                selectionColor: Theme.fg.opacity(0.10),
                 nameColor: node.isRoot ? Theme.fg : (node.isLeaf ? Theme.fg : Theme.fgMuted),
                 nameWeight: node.isLeaf ? .regular : (node.isRoot ? .semibold : .medium),
                 tooltip: node.name,
                 editing: renamingID == node.id, editText: $renameText,
                 onCommitEdit: { commitRename(node) }, onCancelEdit: { renamingID = nil },
                 truncate: false, minWidth: minWidth,
-                showChevron: false, guides: depth, hoverHighlight: true) {
+                showChevron: false, guides: depth, hoverHighlight: true,
+                hoverColor: Theme.fg.opacity(0.05), cornerRadius: 5,
+                selectedBorder: Theme.accent.opacity(0.55), iconColor: isDir ? nil : icon.color) {
             if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
         }
         .overlay(RightClickArea { ctxNodeID = node.id })
@@ -328,6 +334,66 @@ struct WorkspaceFileTreeList: View {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+}
+
+// Per-file-type icon + color, using free SF Symbols (no bundled assets). Brand logos
+// (Ruby gem, Docker whale, JS/TS) aren't in SF Symbols — a real icon theme would need
+// a bundled set; this approximates by kind + color.
+enum FileIcon {
+    static func of(_ name: String) -> (symbol: String, color: Color) {
+        let lower = name.lowercased()
+        switch lower {
+        case "dockerfile", ".dockerignore": return ("shippingbox.fill", Color(red: 0.15, green: 0.55, blue: 0.85))
+        case "makefile", "rakefile", "gemfile", "guardfile", "capfile", "brewfile": return ("hammer.fill", .orange)
+        case "procfile": return ("bolt.horizontal.fill", .purple)
+        case "gemfile.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "cargo.lock", "composer.lock":
+            return ("lock.fill", .gray)
+        case ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep":
+            return ("arrow.triangle.branch", Color(red: 0.9, green: 0.4, blue: 0.3))
+        case "license", "license.md", "licence", "copying": return ("checkmark.seal.fill", .yellow)
+        case "readme", "readme.md": return ("book.fill", Color(red: 0.3, green: 0.6, blue: 0.9))
+        case ".editorconfig", ".prettierrc", ".prettierignore", ".eslintrc", ".npmrc", ".nvmrc",
+             ".rspec", ".ruby-version", ".ruby-gemset", ".tool-versions", ".pryrc", ".rubocop.yml", ".rubocop_todo.yml":
+            return ("gearshape.fill", .gray)
+        default: break
+        }
+        if lower.hasPrefix(".env") { return ("key.fill", Color(red: 0.85, green: 0.7, blue: 0.2)) }
+
+        switch (lower as NSString).pathExtension {
+        case "json", "jsonc", "json5": return ("curlybraces", .yellow)
+        case "yml", "yaml": return ("list.bullet.rectangle", Color(red: 0.6, green: 0.45, blue: 0.8))
+        case "toml", "ini", "conf", "cfg", "properties", "editorconfig": return ("gearshape.fill", .gray)
+        case "md", "markdown", "mdx": return ("doc.richtext", Color(red: 0.3, green: 0.6, blue: 0.9))
+        case "txt", "log", "text": return ("doc.plaintext", Color(white: 0.6))
+        case "csv", "tsv": return ("tablecells.fill", Color(red: 0.2, green: 0.7, blue: 0.4))
+        case "sql": return ("cylinder.fill", Color(red: 0.3, green: 0.6, blue: 0.85))
+        case "sh", "bash", "zsh", "fish": return ("terminal.fill", Color(red: 0.3, green: 0.75, blue: 0.4))
+        case "rb", "erb", "gemspec", "ru": return ("diamond.fill", Color(red: 0.8, green: 0.2, blue: 0.2))
+        case "js", "cjs", "mjs": return ("j.square.fill", Color(red: 0.9, green: 0.8, blue: 0.2))
+        case "jsx": return ("j.square.fill", Color(red: 0.3, green: 0.7, blue: 0.85))
+        case "ts": return ("t.square.fill", Color(red: 0.2, green: 0.5, blue: 0.85))
+        case "tsx": return ("t.square.fill", Color(red: 0.3, green: 0.7, blue: 0.85))
+        case "py", "pyi": return ("p.square.fill", Color(red: 0.25, green: 0.5, blue: 0.75))
+        case "go": return ("g.square.fill", Color(red: 0.2, green: 0.7, blue: 0.8))
+        case "rs": return ("r.square.fill", Color(red: 0.8, green: 0.5, blue: 0.3))
+        case "swift": return ("swift", .orange)
+        case "java", "kt", "kts": return ("cup.and.saucer.fill", Color(red: 0.8, green: 0.4, blue: 0.3))
+        case "php": return ("p.square.fill", Color(red: 0.45, green: 0.45, blue: 0.75))
+        case "c", "h": return ("c.square.fill", Color(red: 0.4, green: 0.5, blue: 0.8))
+        case "cpp", "cc", "hpp", "cxx": return ("plus.square.fill", Color(red: 0.4, green: 0.5, blue: 0.8))
+        case "cs": return ("number.square.fill", Color(red: 0.4, green: 0.6, blue: 0.3))
+        case "html", "htm": return ("chevron.left.forwardslash.chevron.right", Color(red: 0.9, green: 0.45, blue: 0.25))
+        case "css", "scss", "sass", "less": return ("paintbrush.fill", Color(red: 0.3, green: 0.55, blue: 0.85))
+        case "vue": return ("v.square.fill", Color(red: 0.3, green: 0.7, blue: 0.5))
+        case "svg", "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "icns":
+            return ("photo.fill", Color(red: 0.55, green: 0.45, blue: 0.8))
+        case "pdf": return ("doc.fill", Color(red: 0.85, green: 0.25, blue: 0.25))
+        case "zip", "tar", "gz", "tgz", "rar", "7z": return ("archivebox.fill", Color(white: 0.6))
+        case "lock": return ("lock.fill", .gray)
+        case "xml", "plist": return ("chevron.left.forwardslash.chevron.right", Color(red: 0.6, green: 0.7, blue: 0.4))
+        default: return ("doc", Theme.fgMuted)
+        }
     }
 }
 

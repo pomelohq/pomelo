@@ -80,13 +80,17 @@ struct TreeRow: View {
     var showChevron: Bool = true
     var guides: Int = 0
     var hoverHighlight: Bool = false
+    var hoverColor: Color = Theme.sel.opacity(0.5)
+    var cornerRadius: CGFloat = 6
+    var selectedBorder: Color? = nil
+    var iconColor: Color? = nil
     let onTap: () -> Void
     @State private var hovering = false
     @FocusState private var editFocused: Bool
 
     private var rowBg: Color {
         if selected { return selectionColor }
-        return hoverHighlight && hovering ? Theme.sel.opacity(0.5) : .clear
+        return hoverHighlight && hovering ? hoverColor : .clear
     }
 
     @ViewBuilder private var nameLabel: some View {
@@ -108,7 +112,7 @@ struct TreeRow: View {
             Text(m.text).font(Theme.mono(9.5, .bold)).foregroundStyle(m.color).frame(width: 12)
         }
         if let sym = leadingSymbol {
-            Image(systemName: sym).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
+            Image(systemName: sym).font(.system(size: 10.5)).foregroundStyle(iconColor ?? Theme.fgMuted)
         }
     }
 
@@ -146,15 +150,20 @@ struct TreeRow: View {
         }
         .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
         .frame(minWidth: minWidth, alignment: .leading)
-        .background(rowBg, in: RoundedRectangle(cornerRadius: 6))
+        .background(rowBg, in: RoundedRectangle(cornerRadius: cornerRadius))
+        .overlay {
+            if selected, let selectedBorder {
+                RoundedRectangle(cornerRadius: cornerRadius).stroke(selectedBorder, lineWidth: 1)
+            }
+        }
         .overlay(alignment: .leading) {
             if guides > 0 {
                 ZStack(alignment: .leading) {
                     ForEach(0..<guides, id: \.self) { i in
                         Rectangle().fill(Theme.borderSoft.opacity(0.55)).frame(width: 1)
-                            // +14 = the row's 8pt horizontal padding + ~6 to the icon's center,
-                            // so the line runs down each ancestor icon's column.
-                            .offset(x: indent(i) + 14)
+                            // Sits in the whitespace to the left of each level's icon
+                            // (row has 8pt horizontal padding); leaves a small gap.
+                            .offset(x: indent(i) + 11)
                     }
                 }
                 .allowsHitTesting(false)
