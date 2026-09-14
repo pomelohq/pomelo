@@ -85,6 +85,7 @@ struct TreeRow: View {
     var selectedBorder: Color? = nil
     var iconColor: Color? = nil
     var leadingImageName: String? = nil
+    var fillWidth: Bool = false
     let onTap: () -> Void
     @State private var hovering = false
     @FocusState private var editFocused: Bool
@@ -153,7 +154,7 @@ struct TreeRow: View {
             }
         }
         .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
-        .frame(minWidth: minWidth, alignment: .leading)
+        .frame(minWidth: minWidth, maxWidth: fillWidth ? .infinity : nil, alignment: .leading)
         .background(rowBg, in: RoundedRectangle(cornerRadius: cornerRadius))
         .overlay {
             if selected, let selectedBorder {
