@@ -1,7 +1,6 @@
 package services
 
 import (
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -40,9 +39,10 @@ func SpawnHolderEnv(name, cwd string, cols, rows int, argv, env []string) error 
 	args = append(args, argv...)
 	cmd := exec.Command(bin, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
+	// Every holder (shortcut, terminal, service) gets the tool-augmented PATH so its
+	// commands can find node/npm/etc. from version managers that only init in an
+	// interactive .zshrc — matching what the agent and `pom run_in_env` already use.
+	cmd.Env = append(EnvWithToolPath(), env...)
 	return cmd.Start()
 }
 
