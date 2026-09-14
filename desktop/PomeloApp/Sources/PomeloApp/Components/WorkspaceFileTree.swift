@@ -103,24 +103,26 @@ struct WorkspaceFileTreeList: View {
     @State private var ctxNodeID: String?
     @State private var renamingID: String?
     @State private var renameText = ""
+    @State private var paneWidth: CGFloat = 260
 
     var body: some View {
-        // A macOS List is NSTableView-backed: rows are virtualized and reused, so a
-        // fully-expanded tree scrolls smoothly (LazyVStack in nested ScrollViews
-        // choked). Rows are full-width, so selection spans the row. Long names clip
-        // at the edge (no ellipsis), matching Zed.
-        List {
-            ForEach(flattened(roots, depth: 0), id: \.node.id) { entry in
-                row(entry.node, depth: entry.depth)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
+        // A single vertical ScrollView keeps LazyVStack lazy (only visible rows are
+        // built), so scrolling stays smooth. minWidth = pane width makes the selection
+        // span the full row; longer names clip at the edge (no ellipsis). Wrapping in a
+        // horizontal ScrollView breaks the laziness (renders every row) and janks, so
+        // horizontal scroll is intentionally omitted here.
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                ForEach(flattened(roots, depth: 0), id: \.node.id) { entry in
+                    row(entry.node, depth: entry.depth, minWidth: paneWidth)
+                }
             }
+            .padding(.vertical, 4)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 4)
-        .background(Theme.bg)
+        .background(GeometryReader { g in
+            Color.clear.onAppear { paneWidth = g.size.width }
+                .onChange(of: g.size.width) { paneWidth = $0 }
+        })
     }
 
     private func flattened(_ nodes: [WFileTreeNode], depth: Int) -> [(node: WFileTreeNode, depth: Int)] {
@@ -134,7 +136,7 @@ struct WorkspaceFileTreeList: View {
         return out
     }
 
-    @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int) -> some View {
+    @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int, minWidth: CGFloat) -> some View {
         let isDir = !node.isLeaf
         let matName: String? = isDir ? "mi-" + MaterialIcon.folder(node.name) : MaterialIcon.file(node.name).map { "mi-" + $0 }
         TreeRow(depth: depth, indent: { CGFloat($0) * 13 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
@@ -147,10 +149,10 @@ struct WorkspaceFileTreeList: View {
                 tooltip: nil,
                 editing: renamingID == node.id, editText: $renameText,
                 onCommitEdit: { commitRename(node) }, onCancelEdit: { renamingID = nil },
-                truncate: false,
+                truncate: false, minWidth: minWidth,
                 showChevron: false, guides: depth, hoverHighlight: true,
                 hoverColor: Theme.fg.opacity(0.06), cornerRadius: 0,
-                selectedBorder: nil, iconColor: nil, leadingImageName: matName, fillWidth: true) {
+                selectedBorder: nil, iconColor: nil, leadingImageName: matName) {
             if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
         }
         .overlay(RightClickArea { ctxNodeID = node.id })
