@@ -103,26 +103,35 @@ struct WorkspaceFileTreeList: View {
     @State private var ctxNodeID: String?
     @State private var renamingID: String?
     @State private var renameText = ""
-    @State private var paneWidth: CGFloat = 260
 
     var body: some View {
-        // A single vertical ScrollView keeps LazyVStack lazy (only visible rows are
-        // built), so scrolling stays smooth. minWidth = pane width makes the selection
-        // span the full row; longer names clip at the edge (no ellipsis). Wrapping in a
-        // horizontal ScrollView breaks the laziness (renders every row) and janks, so
-        // horizontal scroll is intentionally omitted here.
-        ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: 1) {
-                ForEach(flattened(roots, depth: 0), id: \.node.id) { entry in
-                    row(entry.node, depth: entry.depth, minWidth: paneWidth)
-                }
-            }
-            .padding(.vertical, 4)
+        let flat = flattened(roots, depth: 0)
+        FileTreeTable(rows: flat, contentWidth: contentWidth(flat), signature: signature(flat)) { node, depth in
+            AnyView(row(node, depth: depth))
         }
-        .background(GeometryReader { g in
-            Color.clear.onAppear { paneWidth = g.size.width }
-                .onChange(of: g.size.width) { paneWidth = $0 }
-        })
+        .background(Theme.bg)
+    }
+
+    // Approximate widest row so the table can scroll horizontally to reveal long names.
+    private func contentWidth(_ flat: [(node: WFileTreeNode, depth: Int)]) -> CGFloat {
+        var maxW: CGFloat = 0
+        for (n, d) in flat {
+            let w = CGFloat(d) * 13 + 46 + CGFloat(n.name.count) * 7
+            if w > maxW { maxW = w }
+        }
+        return maxW
+    }
+
+    // Reload the table only when structure / selection / edit state changes — not on
+    // every rename keystroke (that would rebuild the editing cell and drop focus).
+    private func signature(_ flat: [(node: WFileTreeNode, depth: Int)]) -> Int {
+        var h = Hasher()
+        h.combine(flat.count)
+        h.combine(selected?.id)
+        h.combine(renamingID)
+        h.combine(ctxNodeID)
+        h.combine(expanded)
+        return h.finalize()
     }
 
     private func flattened(_ nodes: [WFileTreeNode], depth: Int) -> [(node: WFileTreeNode, depth: Int)] {
@@ -136,7 +145,7 @@ struct WorkspaceFileTreeList: View {
         return out
     }
 
-    @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int, minWidth: CGFloat) -> some View {
+    @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int) -> some View {
         let isDir = !node.isLeaf
         let matName: String? = isDir ? "mi-" + MaterialIcon.folder(node.name) : MaterialIcon.file(node.name).map { "mi-" + $0 }
         TreeRow(depth: depth, indent: { CGFloat($0) * 13 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
@@ -149,10 +158,10 @@ struct WorkspaceFileTreeList: View {
                 tooltip: nil,
                 editing: renamingID == node.id, editText: $renameText,
                 onCommitEdit: { commitRename(node) }, onCancelEdit: { renamingID = nil },
-                truncate: false, minWidth: minWidth,
+                truncate: false,
                 showChevron: false, guides: depth, hoverHighlight: true,
                 hoverColor: Theme.fg.opacity(0.06), cornerRadius: 0,
-                selectedBorder: nil, iconColor: nil, leadingImageName: matName) {
+                selectedBorder: nil, iconColor: nil, leadingImageName: matName, fillWidth: true) {
             if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
         }
         .overlay(RightClickArea { ctxNodeID = node.id })
