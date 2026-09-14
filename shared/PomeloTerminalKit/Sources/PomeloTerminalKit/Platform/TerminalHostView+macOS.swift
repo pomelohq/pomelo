@@ -198,7 +198,7 @@ public final class MetalTerminalHostView: NSView {
     static func encodeKey(_ e: NSEvent) -> [UInt8] {
         switch e.keyCode {
         case 36, 76: return [0x0d]
-        case 48: return [0x09]
+        case 48: return e.modifierFlags.contains(.shift) ? [0x1b, 0x5b, 0x5a] : [0x09]  // Shift+Tab -> CSI Z (Claude cycles mode)
         case 51: return [0x7f]
         case 53: return [0x1b]
         case 123: return [0x1b, 0x5b, 0x44]
