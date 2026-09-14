@@ -103,6 +103,13 @@ final class StreamManager {
         return id
     }
 
+    func openFiles(branch: String, isMain: Bool, onFrame: @escaping (StreamKind, [UInt8]) -> Void) -> Int32 {
+        ensureCallback()
+        let id = pomSubscribe("files", ["branch": branch, "is_main": isMain])
+        if id > 0 { clients[id] = onFrame }
+        return id
+    }
+
     func openPrepareMain(skipSeed: Bool, onFrame: @escaping (StreamKind, [UInt8]) -> Void) -> Int32 {
         ensureCallback()
         let id = pomSubscribe("prepare_main", ["skip_seed": skipSeed])

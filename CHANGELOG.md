@@ -4,6 +4,15 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- The Files pane tracks the filesystem: a file created, deleted, or renamed on disk appears in the tree without reopening the pane, and open folders stay open across a refresh. Changes under .git and node_modules are ignored, so ordinary git and dev-server churn costs nothing.
+- Markdown files in the Files pane render as formatted text, with a Preview / Raw toggle to switch to the highlighted source.
+
+### Fixed
+- The Files pane lists files that sit directly in the workspace folder rather than inside a repo (CLAUDE.md, docker-compose.yml, and the like), and no longer hides dot-entries at that level while showing them inside repos.
+
 ## [0.5.8] - 2026-09-10
 
 ### Fixed

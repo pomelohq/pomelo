@@ -27,4 +27,20 @@ final class WorkspaceFileTreeTests: XCTestCase {
     func testEmptyEntriesProduceNoRoots() {
         XCTAssertTrue(WFileTreeBuilder.build([]).isEmpty)
     }
+
+    func testRootLevelFilesSitAtTopLevelAfterRepos() {
+        let entries: [WorkspaceFileEntry] = [
+            .init(repo: "api", path: "main.go", isDir: false),
+            .init(repo: "", path: "CLAUDE.md", isDir: false),
+            .init(repo: "", path: ".gitignore", isDir: false),
+        ]
+        let roots = WFileTreeBuilder.build(entries)
+        XCTAssertEqual(roots.map(\.name), ["api", ".gitignore", "CLAUDE.md"])
+
+        let claude = roots.first { $0.name == "CLAUDE.md" }!
+        XCTAssertTrue(claude.isLeaf)
+        XCTAssertTrue(claude.children.isEmpty)
+        XCTAssertEqual(claude.entry?.repo, "")
+        XCTAssertEqual(claude.entry?.path, "CLAUDE.md")
+    }
 }

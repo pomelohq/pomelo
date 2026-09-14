@@ -135,6 +135,20 @@ func PomSubscribe(topic, paramsJSON *C.char) C.int {
 			_ = sink.Close()
 		}()
 		return id
+	case "files":
+		mu.Lock()
+		s := srv
+		mu.Unlock()
+		if s == nil {
+			return -1
+		}
+		id := nextStreamID()
+		done := make(chan struct{})
+		streamMu.Lock()
+		streams[id] = &streamHandle{done: done}
+		streamMu.Unlock()
+		s.OpenFilesStream(cgoSink{id: id}, str("branch"), flag("is_main"), done)
+		return id
 	case "create_workspace":
 		mu.Lock()
 		s := srv

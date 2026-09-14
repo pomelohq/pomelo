@@ -44,6 +44,15 @@ struct FilesPane: View {
     @State private var treeVisible = true
     @State private var selLines: ClosedRange<Int>?
     @State private var question = ""
+    @State private var markdownRaw = false
+    @State private var expanded: Set<String> = []
+    @State private var streamID: Int32 = 0
+
+    private var selectedIsMarkdown: Bool {
+        guard let path = selected?.path else { return false }
+        let ext = (path as NSString).pathExtension.lowercased()
+        return ext == "md" || ext == "markdown"
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -67,7 +76,8 @@ struct FilesPane: View {
             }
         }
         .background(Theme.bg)
-        .task { await load() }
+        .onAppear { startWatch() }
+        .onDisappear { stopWatch() }
         .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview() }
     }
 
@@ -77,7 +87,8 @@ struct FilesPane: View {
                 if entries.isEmpty {
                     EmptyStateView(icon: "folder", title: "No files")
                 } else {
-                    WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path, selected: $selected)
+                    WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path,
+                                          selected: $selected, expanded: $expanded)
                 }
             } else {
                 LoadingView(text: "loading files…")
@@ -105,16 +116,46 @@ struct FilesPane: View {
                 Image(systemName: "sidebar.left").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
             }.buttonStyle(.plain).help(treeVisible ? "Hide file list" : "Show file list")
             if let selected {
-                Text(selected.repo).font(Theme.mono(11, .semibold)).foregroundStyle(Theme.accent)
+                if !selected.repo.isEmpty {
+                    Text(selected.repo).font(Theme.mono(11, .semibold)).foregroundStyle(Theme.accent)
+                }
                 Text(selected.path).font(Theme.mono(11)).foregroundStyle(Theme.fg)
                     .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             } else {
                 Text("Select a file").font(.system(size: 12)).foregroundStyle(Theme.dim)
             }
             Spacer()
+            if selectedIsMarkdown, case .text = preview {
+                modeBtn(compact ? nil : "Preview", "doc.richtext", on: !markdownRaw) { setMarkdownRaw(false) }
+                modeBtn(compact ? nil : "Raw", "chevron.left.forwardslash.chevron.right", on: markdownRaw) { setMarkdownRaw(true) }
+            }
+            IconButton("arrow.clockwise", size: 11, tip: "Refresh file list") {
+                Task { await reload() }
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(Theme.bgSoft)
+    }
+
+    private func setMarkdownRaw(_ raw: Bool) {
+        guard markdownRaw != raw else { return }
+        markdownRaw = raw
+        selLines = nil
+        question = ""
+    }
+
+    private func modeBtn(_ label: String?, _ icon: String, on: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 10))
+                if let label { Text(label).font(.system(size: 11)) }
+            }
+            .foregroundStyle(on ? Theme.accent : Theme.fgMuted)
+            .padding(.horizontal, label == nil ? 6 : 8).padding(.vertical, 3)
+            .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .help(markdownRaw ? "Switch to rendered preview" : "Switch to raw source")
     }
 
     @ViewBuilder private var content: some View {
@@ -123,15 +164,23 @@ struct FilesPane: View {
             case .loading:
                 LoadingView(text: "loading…")
             case .text(let s):
-                VStack(spacing: 0) {
-                    CodeView(content: s, lang: CodeLang.detect(path: sel.path),
-                             start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
-                             onSelectLines: { sel in
-                                 withAnimation(.easeInOut(duration: 0.12)) { selLines = sel }
-                             })
-                    if let lines = selLines {
-                        Divider().overlay(Theme.borderSoft)
-                        askBar(file: sel, lines: lines)
+                if selectedIsMarkdown && !markdownRaw {
+                    ScrollView {
+                        MarkdownText(s, reading: true)
+                            .padding(.horizontal, 20).padding(.vertical, 16)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                } else {
+                    VStack(spacing: 0) {
+                        CodeView(content: s, lang: CodeLang.detect(path: sel.path),
+                                 start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
+                                 onSelectLines: { sel in
+                                     withAnimation(.easeInOut(duration: 0.12)) { selLines = sel }
+                                 })
+                        if let lines = selLines {
+                            Divider().overlay(Theme.borderSoft)
+                            askBar(file: sel, lines: lines)
+                        }
                     }
                 }
             case .image(let img):
@@ -179,14 +228,42 @@ struct FilesPane: View {
         question = ""
     }
 
-    private func load() async {
+    private func startWatch() {
+        guard streamID == 0 else { return }
+        streamID = StreamManager.shared.openFiles(branch: workspace.branch, isMain: workspace.isMain) { kind, bytes in
+            guard kind == .json, !bytes.isEmpty else { return }
+            Task { await apply(Data(bytes)) }
+        }
+        if streamID <= 0 {
+            streamID = 0
+            Task { await reload() }
+        }
+    }
+
+    private func stopWatch() {
+        guard streamID > 0 else { return }
+        StreamManager.shared.close(streamID)
+        streamID = 0
+    }
+
+    private func reload() async {
         let branch = workspace.branch, isMain = workspace.isMain
+        let raw = await Task.detached(priority: .userInitiated) {
+            FileStore.list(branch: branch, isMain: isMain)
+        }.value
+        await apply(raw)
+    }
+
+    private func apply(_ raw: Data) async {
         let built = await Task.detached(priority: .userInitiated) { () -> ([WorkspaceFileEntry], [WFileTreeNode]) in
-            let list = PomJSON.decode([WorkspaceFileEntry].self, from: FileStore.list(branch: branch, isMain: isMain)) ?? []
+            let list = PomJSON.decode([WorkspaceFileEntry].self, from: raw) ?? []
             return (list, WFileTreeBuilder.build(list))
         }.value
         entries = built.0
         roots = built.1
+        if let sel = selected, !built.0.contains(where: { $0.id == sel.id }) {
+            selected = nil
+        }
     }
 
     private func loadPreview() async {
