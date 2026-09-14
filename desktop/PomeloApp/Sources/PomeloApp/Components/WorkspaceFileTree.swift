@@ -97,19 +97,74 @@ enum WFileTreeBuilder {
 struct WorkspaceFileTreeList: View {
     let roots: [WFileTreeNode]
     let workspacePath: String
+    var treeVersion: Int = 0
     @Binding var selected: WorkspaceFileEntry?
     @Binding var expanded: Set<String>
 
     @State private var ctxNodeID: String?
     @State private var renamingID: String?
     @State private var renameText = ""
+    // Cached so a scroll tick (which only updates topRow) never rebuilds the flat list.
+    @State private var flat: [(node: WFileTreeNode, depth: Int)] = []
+    @State private var contentW: CGFloat = 0
+    @State private var topRow = 0
 
     var body: some View {
-        let flat = flattened(roots, depth: 0)
-        FileTreeTable(rows: flat, contentWidth: contentWidth(flat), signature: signature(flat)) { node, depth in
+        FileTreeTable(rows: flat, contentWidth: contentW, signature: signature(flat),
+                      onTopRow: { topRow = $0 }) { node, depth in
             AnyView(row(node, depth: depth))
         }
+        .overlay(alignment: .topLeading) { stickyHeader }
         .background(Theme.bg)
+        .onAppear { rebuild() }
+        .onChange(of: expanded) { _ in rebuild() }
+        .onChange(of: treeVersion) { _ in rebuild() }
+    }
+
+    private func rebuild() {
+        flat = flattened(roots, depth: 0)
+        contentW = contentWidth(flat)
+        if topRow >= flat.count { topRow = 0 }
+    }
+
+    // Sticky breadcrumb of the top row's ancestor folders (Zed-style), pinned on top.
+    @ViewBuilder private var stickyHeader: some View {
+        let anc = ancestors(upTo: topRow)
+        if !anc.isEmpty {
+            VStack(spacing: 1) {
+                ForEach(anc, id: \.node.id) { a in stickyRow(a.node, depth: a.depth) }
+            }
+            .background(Theme.bg)
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.borderSoft).frame(height: 1) }
+        }
+    }
+
+    private func stickyRow(_ node: WFileTreeNode, depth: Int) -> some View {
+        let mat = "mi-" + (node.isRoot ? "folder-base" : MaterialIcon.folder(node.name))
+        return HStack(spacing: 5) {
+            Image(mat, bundle: .module).resizable().interpolation(.high)
+                .aspectRatio(contentMode: .fit).frame(width: 15, height: 15)
+            Text(node.name).font(.system(size: 11.5, weight: node.isRoot ? .semibold : .medium))
+                .foregroundStyle(node.isRoot ? Theme.fg : Theme.fgMuted).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, CGFloat(depth) * 13 + 8).padding(.trailing, 8).padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    // Walk up from the top row, picking one node per shallower depth level.
+    private func ancestors(upTo top: Int) -> [(node: WFileTreeNode, depth: Int)] {
+        guard top > 0, !flat.isEmpty else { return [] }
+        let idx = min(top, flat.count - 1)
+        var out: [(node: WFileTreeNode, depth: Int)] = []
+        var need = flat[idx].depth - 1
+        var i = idx - 1
+        while i >= 0 && need >= 0 {
+            if flat[i].depth == need { out.append(flat[i]); need -= 1 }
+            i -= 1
+        }
+        return out.reversed()
     }
 
     // Approximate widest row so the table can scroll horizontally to reveal long names.

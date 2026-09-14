@@ -47,6 +47,7 @@ struct FilesPane: View {
     @State private var markdownRaw = false
     @State private var expanded: Set<String> = []
     @State private var streamID: Int32 = 0
+    @State private var treeVersion = 0
     @State private var editing = false
     @State private var editText = ""
     @State private var savedText = ""
@@ -117,7 +118,7 @@ struct FilesPane: View {
                 if entries.isEmpty {
                     EmptyStateView(icon: "folder", title: "No files")
                 } else {
-                    WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path,
+                    WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path, treeVersion: treeVersion,
                                           selected: $selected, expanded: $expanded)
                 }
             } else {
@@ -298,6 +299,7 @@ struct FilesPane: View {
         }.value
         entries = built.0
         roots = built.1
+        treeVersion &+= 1
         expanded.insert("")   // keep the workspace-root node open by default
         if let sel = selected, !built.0.contains(where: { $0.id == sel.id }) {
             selected = nil

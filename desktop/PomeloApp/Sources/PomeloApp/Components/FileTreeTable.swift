@@ -9,9 +9,10 @@ struct FileTreeTable: NSViewRepresentable {
     var rows: [(node: WFileTreeNode, depth: Int)]
     var contentWidth: CGFloat
     var signature: Int   // reload only when structure/selection/edit state changes
+    var onTopRow: (Int) -> Void = { _ in }
     let rowView: (WFileTreeNode, Int) -> AnyView
 
-    func makeCoordinator() -> Coordinator { Coordinator(rows: rows, rowView: rowView) }
+    func makeCoordinator() -> Coordinator { Coordinator(rows: rows, rowView: rowView, onTopRow: onTopRow) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let table = NSTableView()
@@ -36,6 +37,11 @@ struct FileTreeTable: NSViewRepresentable {
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         context.coordinator.scroll = scroll
+
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(context.coordinator,
+            selector: #selector(Coordinator.boundsChanged),
+            name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         return scroll
     }
 
@@ -43,6 +49,7 @@ struct FileTreeTable: NSViewRepresentable {
         let c = context.coordinator
         c.rows = rows
         c.rowView = rowView
+        c.onTopRow = onTopRow
         guard let table = c.table, let col = table.tableColumns.first else { return }
         let target = max(scroll.contentSize.width, contentWidth)
         if abs(col.width - target) > 0.5 { col.width = target }
@@ -52,15 +59,29 @@ struct FileTreeTable: NSViewRepresentable {
         }
     }
 
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator)
+    }
+
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         var rows: [(node: WFileTreeNode, depth: Int)]
         var rowView: (WFileTreeNode, Int) -> AnyView
+        var onTopRow: (Int) -> Void
         weak var table: NSTableView?
         weak var scroll: NSScrollView?
         var lastSignature = Int.min
+        private var lastTop = -1
 
-        init(rows: [(node: WFileTreeNode, depth: Int)], rowView: @escaping (WFileTreeNode, Int) -> AnyView) {
-            self.rows = rows; self.rowView = rowView
+        init(rows: [(node: WFileTreeNode, depth: Int)], rowView: @escaping (WFileTreeNode, Int) -> AnyView, onTopRow: @escaping (Int) -> Void) {
+            self.rows = rows; self.rowView = rowView; self.onTopRow = onTopRow
+        }
+
+        @objc func boundsChanged() {
+            guard let table, let scroll else { return }
+            let y = scroll.contentView.bounds.minY
+            let r = table.row(at: NSPoint(x: 4, y: y + 4))
+            let top = r < 0 ? 0 : r
+            if top != lastTop { lastTop = top; onTopRow(top) }
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
