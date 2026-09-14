@@ -114,10 +114,10 @@ struct WorkspaceFileTreeList: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     ForEach(flattened(roots, depth: 0), id: \.node.id) { entry in
-                        row(entry.node, depth: entry.depth, minWidth: max(0, paneWidth - 12))
+                        row(entry.node, depth: entry.depth, minWidth: paneWidth)
                     }
                 }
-                .padding(.leading, 2).padding(.vertical, 6)
+                .padding(.vertical, 4)
             }
         }
         .background(GeometryReader { g in
@@ -146,16 +146,16 @@ struct WorkspaceFileTreeList: View {
                 leadingSymbol: icon.symbol,
                 marker: nil,
                 selected: node.isLeaf && selected?.id == node.entry?.id,
-                selectionColor: Theme.fg.opacity(0.10),
+                selectionColor: Theme.fg.opacity(0.13),
                 nameColor: node.isRoot ? Theme.fg : (node.isLeaf ? Theme.fg : Theme.fgMuted),
                 nameWeight: node.isLeaf ? .regular : (node.isRoot ? .semibold : .medium),
-                tooltip: node.name,
+                tooltip: nil,
                 editing: renamingID == node.id, editText: $renameText,
                 onCommitEdit: { commitRename(node) }, onCancelEdit: { renamingID = nil },
                 truncate: false, minWidth: minWidth,
                 showChevron: false, guides: depth, hoverHighlight: true,
-                hoverColor: Theme.fg.opacity(0.05), cornerRadius: 5,
-                selectedBorder: Theme.accent.opacity(0.55), iconColor: isDir ? nil : icon.color) {
+                hoverColor: Theme.fg.opacity(0.06), cornerRadius: 0,
+                selectedBorder: nil, iconColor: isDir ? nil : icon.color) {
             if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
         }
         .overlay(RightClickArea { ctxNodeID = node.id })
