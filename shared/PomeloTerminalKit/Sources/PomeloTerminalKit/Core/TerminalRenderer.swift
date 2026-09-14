@@ -286,12 +286,23 @@ public final class TerminalRenderer: NSObject {
         parseQueue.async { [weak self] in
             guard let self else { completion(""); return }
             let a = self.le(s, e) ? s : e, b = self.le(s, e) ? e : s
+            // Anchors are absolute buffer rows; getCharData wants a screen-relative
+            // row (it re-adds buffer.yDisp internally). Passing the absolute row made
+            // getLine's `row >= rows` guard reject every cell, so copy came back empty.
+            let yDisp = self.terminal.buffer.yDisp
             var out = ""
             for row in a.1...b.1 {
                 let lo = row == a.1 ? a.0 : 0
                 let hi = row == b.1 ? b.0 : self.terminal.cols - 1
                 var line = ""
-                if lo <= hi { for col in lo...hi { if let cd = self.terminal.getCharData(col: col, row: row) { line += String(cd.getCharacter()) } } }
+                let screenRow = row - yDisp
+                if lo <= hi {
+                    for col in lo...hi {
+                        if let cd = self.terminal.getCharData(col: col, row: screenRow) {
+                            line += String(self.terminal.getCharacter(for: cd))
+                        }
+                    }
+                }
                 out += line.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
                 if row < b.1 { out += "\n" }
             }
