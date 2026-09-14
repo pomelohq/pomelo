@@ -207,15 +207,22 @@ struct FilesPane: View {
             case .loading:
                 LoadingView(text: "loading…")
             case .text(let s):
-                if selectedIsMarkdown && !markdownRaw && !editing {
+                if editing {
+                    // Editing uses CodeEditSourceEditor (only SQL is grammar-highlighted
+                    // in this build; other languages show plain but editable text).
+                    FileEditor(text: $editText, path: sel.path, mode: theme.mode).id(sel.id)
+                } else if selectedIsMarkdown && !markdownRaw {
                     ScrollView {
                         MarkdownText(s, reading: true)
                             .padding(.horizontal, 20).padding(.vertical, 16)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
-                    FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: editing)
-                        .id(sel.id)
+                    // Read-only preview keeps the regex highlighter, which colors many
+                    // languages (tree-sitter only ships SQL grammar here).
+                    CodeView(content: s, lang: CodeLang.detect(path: sel.path),
+                             start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
+                             onSelectLines: { _ in })
                 }
             case .image(let img):
                 FileImageView(image: img)
