@@ -152,7 +152,7 @@ struct TreeRow: View {
                 ZStack(alignment: .leading) {
                     ForEach(0..<guides, id: \.self) { i in
                         Rectangle().fill(Theme.borderSoft.opacity(0.55)).frame(width: 1)
-                            .offset(x: CGFloat(i) * 14 + 16)
+                            .offset(x: indent(i) + 6)   // under each ancestor icon's center
                     }
                 }
                 .allowsHitTesting(false)

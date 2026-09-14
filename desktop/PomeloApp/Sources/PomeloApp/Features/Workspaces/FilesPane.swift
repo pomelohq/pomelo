@@ -215,17 +215,9 @@ struct FilesPane: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
-                    VStack(spacing: 0) {
-                        CodeView(content: s, lang: CodeLang.detect(path: sel.path),
-                                 start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
-                                 onSelectLines: { sel in
-                                     withAnimation(.easeInOut(duration: 0.12)) { selLines = sel }
-                                 })
-                        if let lines = selLines {
-                            Divider().overlay(Theme.borderSoft)
-                            askBar(file: sel, lines: lines)
-                        }
-                    }
+                    CodeView(content: s, lang: CodeLang.detect(path: sel.path),
+                             start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
+                             onSelectLines: { _ in })
                 }
             case .image(let img):
                 FileImageView(image: img)
