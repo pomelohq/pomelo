@@ -4,6 +4,12 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.10] - 2026-09-14
+
+### Fixed
+- A service that takes a while to start no longer 502s through the dev-proxy while it is still building. A slow first build (for example a Nest service that runs a full build before it starts listening) could lose its allocated port mid-build, so the workspace URL returned "no dev-proxy route" even though the service was on its way up. The port is now held for as long as the service's process is alive, and the proxy reports "still starting" (retriable) instead of a route error while it builds.
+- The workspace list no longer shows the red "awaiting input" dot when the agent is simply idle. Claude's idle notification ("Claude is waiting for your input") was misread as a prompt; only a real permission or tool-input request now lights the dot.
+
 ## [0.5.9] - 2026-09-14
 
 ### Added
