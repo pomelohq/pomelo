@@ -131,39 +131,45 @@ struct AgentView: View {
     }
 
     private var keyBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                key("esc") { ctl.input([0x1b]) }
-                key("tab") { ctl.input([0x09]) }
-                key("⇧tab") { ctl.input([0x1b, 0x5b, 0x5a]) }   // CSI Z: Claude cycles mode
-                key("⌃C") { ctl.input([0x03]) }
-                key("⌃D") { ctl.input([0x04]) }
-                key("⌃Z") { ctl.input([0x1a]) }
-                key("⌃R") { ctl.input([0x12]) }
-                key("⌃O") { ctl.input([0x0f]) }
-                key("⌃L") { ctl.input([0x0c]) }
-                key("←") { ctl.input([0x1b, 0x5b, 0x44]) }
-                key("↑") { ctl.input([0x1b, 0x5b, 0x41]) }
-                key("↓") { ctl.input([0x1b, 0x5b, 0x42]) }
-                key("→") { ctl.input([0x1b, 0x5b, 0x43]) }
-                key("PgUp") { ctl.input([0x1b, 0x5b, 0x35, 0x7e]) }
-                key("PgDn") { ctl.input([0x1b, 0x5b, 0x36, 0x7e]) }
-                key("Home") { ctl.input([0x1b, 0x5b, 0x48]) }
-                key("End") { ctl.input([0x1b, 0x5b, 0x46]) }
-                key("⏎") { ctl.input([0x0d]) }
+        // Enter is pinned outside the scroll view so it stays reachable at the
+        // trailing edge — the scrollable keys grew long enough to push it off-screen.
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    key("esc") { ctl.input([0x1b]) }
+                    key("tab") { ctl.input([0x09]) }
+                    key("⇧tab") { ctl.input([0x1b, 0x5b, 0x5a]) }   // CSI Z: Claude cycles mode
+                    key("⌃C") { ctl.input([0x03]) }
+                    key("⌃D") { ctl.input([0x04]) }
+                    key("⌃Z") { ctl.input([0x1a]) }
+                    key("⌃R") { ctl.input([0x12]) }
+                    key("⌃O") { ctl.input([0x0f]) }
+                    key("⌃L") { ctl.input([0x0c]) }
+                    key("←") { ctl.input([0x1b, 0x5b, 0x44]) }
+                    key("↑") { ctl.input([0x1b, 0x5b, 0x41]) }
+                    key("↓") { ctl.input([0x1b, 0x5b, 0x42]) }
+                    key("→") { ctl.input([0x1b, 0x5b, 0x43]) }
+                    key("PgUp") { ctl.input([0x1b, 0x5b, 0x35, 0x7e]) }
+                    key("PgDn") { ctl.input([0x1b, 0x5b, 0x36, 0x7e]) }
+                    key("Home") { ctl.input([0x1b, 0x5b, 0x48]) }
+                    key("End") { ctl.input([0x1b, 0x5b, 0x46]) }
+                }
+                .padding(.leading, 8).padding(.vertical, 6)
             }
-            .padding(.horizontal, 8).padding(.vertical, 6)
+            Rectangle().fill(Theme.borderSoft).frame(width: 1, height: 30)
+            key("⏎", prominent: true) { ctl.input([0x0d]) }
+                .padding(.trailing, 8)
         }
         .background(Theme.bgSoft)
         .overlay(alignment: .top) { Rectangle().fill(Theme.borderSoft).frame(height: 1) }
     }
 
-    private func key(_ label: String, _ action: @escaping () -> Void) -> some View {
+    private func key(_ label: String, prominent: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(label).font(Theme.mono(13, .medium)).foregroundStyle(Theme.fg)
+            Text(label).font(Theme.mono(13, .medium)).foregroundStyle(prominent ? Theme.accent : Theme.fg)
                 .frame(minWidth: 34, minHeight: 30)
-                .background(Theme.panel3, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.borderSoft, lineWidth: 1))
+                .background(prominent ? Theme.accent.opacity(0.12) : Theme.panel3, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(prominent ? Theme.accent.opacity(0.5) : Theme.borderSoft, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
