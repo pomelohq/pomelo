@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // Portable primitives (Spinner, IconButton, Card, StatusPill, SelectableRow,
 // SegmentedTabs, HelpHint) now live in the shared PomeloUI package (re-exported via
@@ -76,9 +77,17 @@ struct TreeRow: View {
     var onCancelEdit: () -> Void = {}
     var truncate: Bool = true
     var minWidth: CGFloat? = nil
+    var showChevron: Bool = true
+    var guides: Int = 0
+    var hoverHighlight: Bool = false
     let onTap: () -> Void
     @State private var hovering = false
     @FocusState private var editFocused: Bool
+
+    private var rowBg: Color {
+        if selected { return selectionColor }
+        return hoverHighlight && hovering ? Theme.sel.opacity(0.5) : .clear
+    }
 
     @ViewBuilder private var nameLabel: some View {
         if truncate {
@@ -91,7 +100,7 @@ struct TreeRow: View {
     }
 
     @ViewBuilder private var leading: some View {
-        if isDir {
+        if isDir && showChevron {
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.dim).frame(width: 10)
         }
@@ -137,8 +146,24 @@ struct TreeRow: View {
         }
         .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
         .frame(minWidth: minWidth, alignment: .leading)
-        .background(selected ? selectionColor : .clear, in: RoundedRectangle(cornerRadius: 6))
-        .onHover { hovering = $0 }
+        .background(rowBg, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(alignment: .leading) {
+            if guides > 0 {
+                ZStack(alignment: .leading) {
+                    ForEach(0..<guides, id: \.self) { i in
+                        Rectangle().fill(Theme.borderSoft.opacity(0.55)).frame(width: 1)
+                            .offset(x: CGFloat(i) * 14 + 16)
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+        }
+        .onHover { h in
+            hovering = h
+            if hoverHighlight {
+                if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        }
     }
 }
 

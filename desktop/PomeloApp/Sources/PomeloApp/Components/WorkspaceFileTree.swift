@@ -103,20 +103,27 @@ struct WorkspaceFileTreeList: View {
     @State private var ctxNodeID: String?
     @State private var renamingID: String?
     @State private var renameText = ""
+    @State private var paneWidth: CGFloat = 260
 
     var body: some View {
-        GeometryReader { geo in
-            // Names never ellipsize (Zed-style); long names / deep nesting scroll
-            // horizontally. minWidth keeps the selection highlight spanning the pane.
-            ScrollView([.vertical, .horizontal]) {
+        // Names never ellipsize (Zed-style); long names / deep nesting overflow and
+        // the inner horizontal ScrollView scrolls sideways. minWidth keeps the
+        // selection highlight spanning the pane. Width is read via a background
+        // GeometryReader so it doesn't disturb the vertical layout (top-aligned).
+        ScrollView(.vertical) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     ForEach(flattened(roots, depth: 0), id: \.node.id) { entry in
-                        row(entry.node, depth: entry.depth, minWidth: max(0, geo.size.width - 12))
+                        row(entry.node, depth: entry.depth, minWidth: max(0, paneWidth - 12))
                     }
                 }
                 .padding(.leading, 6).padding(.vertical, 6)
             }
         }
+        .background(GeometryReader { g in
+            Color.clear.onAppear { paneWidth = g.size.width }
+                .onChange(of: g.size.width) { paneWidth = $0 }
+        })
     }
 
     private func flattened(_ nodes: [WFileTreeNode], depth: Int) -> [(node: WFileTreeNode, depth: Int)] {
@@ -141,7 +148,8 @@ struct WorkspaceFileTreeList: View {
                 tooltip: node.name,
                 editing: renamingID == node.id, editText: $renameText,
                 onCommitEdit: { commitRename(node) }, onCancelEdit: { renamingID = nil },
-                truncate: false, minWidth: minWidth) {
+                truncate: false, minWidth: minWidth,
+                showChevron: false, guides: depth, hoverHighlight: true) {
             if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
         }
         .overlay(RightClickArea { ctxNodeID = node.id })
