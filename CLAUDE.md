@@ -33,6 +33,8 @@ make minor / major
 
 Before cutting a release, run the `release-audit` skill (`.claude/skills/release-audit`): CI builds the GitHub Release notes and the Sparkle appcast from the `## [<version>]` block in `CHANGELOG.md`, so that block MUST be curated and committed before the tag is pushed — otherwise notes fall back to an auto PR list.
 
+**Never touch `CHANGELOG.md` in a fix/feature PR.** The changelog is user-owned: do NOT add, edit, or restore the `## [Unreleased]` block while coding. Leave it entirely to the user. Only curate the `## [<version>]` block at release-cut time, and only when explicitly asked.
+
 ## Architecture (big picture)
 
 **One Go core, two front doors.** `internal/core` holds the `Server` + business logic. It is reached two ways, never over HTTP:
