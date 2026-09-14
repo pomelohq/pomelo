@@ -33,13 +33,14 @@ func hookEventState(event, notifyType string) (string, bool) {
 	case "PreCompact":
 		return "compacting", true
 	case "Notification":
-		if strings.Contains(notifyType, "idle") {
-			return "idle", true
-		}
-		if strings.Contains(notifyType, "permission") || strings.Contains(notifyType, "elicitation") || strings.Contains(notifyType, "input") {
+		// Only a permission/elicitation prompt genuinely blocks on the user.
+		// Claude's idle-timeout notification is "Claude is waiting for your input"
+		// — matching the bare word "input" lit every idle agent red. Anything
+		// that is not a permission/elicitation prompt is just idle.
+		if strings.Contains(notifyType, "permission") || strings.Contains(notifyType, "elicitation") {
 			return "awaiting_input", true
 		}
-		return "", false
+		return "idle", true
 	case "Stop", "SessionEnd":
 		return "idle", true
 	}
@@ -109,7 +110,7 @@ func WriteHookState(rawStdin []byte) error {
 	if body.Event == "Notification" {
 		low := strings.ToLower(string(rawStdin))
 		switch {
-		case strings.Contains(low, "permission") || strings.Contains(low, "elicitation") || strings.Contains(low, "input"):
+		case strings.Contains(low, "permission") || strings.Contains(low, "elicitation"):
 			notify = "permission"
 		default:
 			notify = "idle"

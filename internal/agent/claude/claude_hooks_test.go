@@ -73,6 +73,24 @@ func TestWriteHookStateNotificationPermission(t *testing.T) {
 	}
 }
 
+// Claude's 60s idle notification reads "Claude is waiting for your input" —
+// the substring "input" must NOT be mistaken for a real prompt, or every idle
+// agent shows the red awaiting-input dot.
+func TestWriteHookStateNotificationIdleWaiting(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cwd := "/x/proj/workspace--c/api"
+	in, _ := json.Marshal(map[string]any{"cwd": cwd, "hook_event_name": "Notification", "message": "Claude is waiting for your input"})
+	if err := WriteHookState(in); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(paths.StatePath("agents"), "state-c.json"))
+	var f struct{ State string }
+	_ = json.Unmarshal(b, &f)
+	if f.State != "idle" {
+		t.Errorf("got state %q, want idle (idle-timeout notification is not a prompt)", f.State)
+	}
+}
+
 func TestInstallGlobalClaudeHookIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
