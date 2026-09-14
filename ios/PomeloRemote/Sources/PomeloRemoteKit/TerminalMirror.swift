@@ -66,6 +66,8 @@ final class TerminalController: ObservableObject {
     private var userClosed = false
     private var failures = 0
     private var offset: UInt64 = 0
+    private var lastCols = 0
+    private var lastRows = 0
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
 
     // Hold a background assertion so a brief app switch doesn't suspend the app and
@@ -94,8 +96,14 @@ final class TerminalController: ObservableObject {
         let startedAt = Date()
         task = Task { [weak self] in
             let since = self?.offset ?? 0
+            // Re-announce our real size on every (re)connect. The shared holder is
+            // sized to the smallest primary client; opening with 0 would drop us
+            // from that reconciliation and let a wider desktop client's size win,
+            // rendering its TUI output onto our narrow grid (scrambled screen).
+            let cols = self?.lastCols ?? 0
+            let rows = self?.lastRows ?? 0
             do {
-                for try await frame in client.ptyStream(window: self?.window ?? "", cols: 0, rows: 0, since: since) {
+                for try await frame in client.ptyStream(window: self?.window ?? "", cols: cols, rows: rows, since: since) {
                     guard let self else { break }
                     switch frame {
                     case .reset:
@@ -185,6 +193,8 @@ final class TerminalController: ObservableObject {
 
     func handleSize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
+        lastCols = cols
+        lastRows = rows
         resize(cols: cols, rows: rows)
         guard !didSync else { return }
         didSync = true
