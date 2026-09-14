@@ -47,12 +47,19 @@ struct FilesPane: View {
     @State private var markdownRaw = false
     @State private var expanded: Set<String> = []
     @State private var streamID: Int32 = 0
+    @State private var treeVersion = 0
+    @State private var editing = false
+    @State private var editText = ""
+    @State private var savedText = ""
 
     private var selectedIsMarkdown: Bool {
         guard let path = selected?.path else { return false }
         let ext = (path as NSString).pathExtension.lowercased()
         return ext == "md" || ext == "markdown"
     }
+
+    private var isTextPreview: Bool { if case .text = preview { return true }; return false }
+    private var dirty: Bool { editing && editText != savedText }
 
     var body: some View {
         GeometryReader { geo in
@@ -76,9 +83,33 @@ struct FilesPane: View {
             }
         }
         .background(Theme.bg)
+        .background {
+            Button("") { save() }.keyboardShortcut("s", modifiers: .command)
+                .opacity(0).allowsHitTesting(false)
+        }
         .onAppear { startWatch() }
         .onDisappear { stopWatch() }
         .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview() }
+    }
+
+    private func toggleEdit() {
+        if !editing { editText = savedText }
+        editing.toggle()
+        selLines = nil; question = ""
+    }
+
+    private func save() {
+        guard editing, dirty, let sel = selected else { return }
+        let rel = sel.repo.isEmpty ? sel.path : sel.repo + "/" + sel.path
+        let abs = (workspace.path as NSString).appendingPathComponent(rel)
+        do {
+            try editText.write(toFile: abs, atomically: true, encoding: .utf8)
+            savedText = editText
+        } catch {
+            let alert = NSAlert(); alert.messageText = "Couldn't save"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning; alert.addButton(withTitle: "OK"); alert.runModal()
+        }
     }
 
     private var tree: some View {
@@ -87,7 +118,7 @@ struct FilesPane: View {
                 if entries.isEmpty {
                     EmptyStateView(icon: "folder", title: "No files")
                 } else {
-                    WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path,
+                    WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path, treeVersion: treeVersion,
                                           selected: $selected, expanded: $expanded)
                 }
             } else {
@@ -125,9 +156,21 @@ struct FilesPane: View {
                 Text("Select a file").font(.system(size: 12)).foregroundStyle(Theme.dim)
             }
             Spacer()
-            if selectedIsMarkdown, case .text = preview {
+            if selectedIsMarkdown, case .text = preview, !editing {
                 modeBtn(compact ? nil : "Preview", "doc.richtext", on: !markdownRaw) { setMarkdownRaw(false) }
                 modeBtn(compact ? nil : "Raw", "chevron.left.forwardslash.chevron.right", on: markdownRaw) { setMarkdownRaw(true) }
+            }
+            if isTextPreview {
+                if editing {
+                    if dirty { Circle().fill(Theme.accent).frame(width: 6, height: 6) }
+                    Button { save() } label: {
+                        Text("Save").font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(dirty ? .white : Theme.dim)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(dirty ? Theme.accent : Theme.sel, in: RoundedRectangle(cornerRadius: 6))
+                    }.buttonStyle(.plain).disabled(!dirty).help("Save (Cmd+S)")
+                }
+                modeBtn(compact ? nil : (editing ? "Editing" : "Edit"), "pencil", on: editing) { toggleEdit() }
             }
             IconButton("arrow.clockwise", size: 11, tip: "Refresh file list") {
                 Task { await reload() }
@@ -164,24 +207,22 @@ struct FilesPane: View {
             case .loading:
                 LoadingView(text: "loading…")
             case .text(let s):
-                if selectedIsMarkdown && !markdownRaw {
+                if editing {
+                    // Editing uses CodeEditSourceEditor (only SQL is grammar-highlighted
+                    // in this build; other languages show plain but editable text).
+                    FileEditor(text: $editText, path: sel.path, mode: theme.mode).id(sel.id)
+                } else if selectedIsMarkdown && !markdownRaw {
                     ScrollView {
                         MarkdownText(s, reading: true)
                             .padding(.horizontal, 20).padding(.vertical, 16)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
-                    VStack(spacing: 0) {
-                        CodeView(content: s, lang: CodeLang.detect(path: sel.path),
-                                 start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
-                                 onSelectLines: { sel in
-                                     withAnimation(.easeInOut(duration: 0.12)) { selLines = sel }
-                                 })
-                        if let lines = selLines {
-                            Divider().overlay(Theme.borderSoft)
-                            askBar(file: sel, lines: lines)
-                        }
-                    }
+                    // Read-only preview keeps the regex highlighter, which colors many
+                    // languages (tree-sitter only ships SQL grammar here).
+                    CodeView(content: s, lang: CodeLang.detect(path: sel.path),
+                             start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
+                             onSelectLines: { _ in })
                 }
             case .image(let img):
                 FileImageView(image: img)
@@ -255,12 +296,15 @@ struct FilesPane: View {
     }
 
     private func apply(_ raw: Data) async {
+        let rootName = (workspace.path as NSString).lastPathComponent
         let built = await Task.detached(priority: .userInitiated) { () -> ([WorkspaceFileEntry], [WFileTreeNode]) in
             let list = PomJSON.decode([WorkspaceFileEntry].self, from: raw) ?? []
-            return (list, WFileTreeBuilder.build(list))
+            return (list, WFileTreeBuilder.build(list, rootName: rootName))
         }.value
         entries = built.0
         roots = built.1
+        treeVersion &+= 1
+        expanded.insert("")   // keep the workspace-root node open by default
         if let sel = selected, !built.0.contains(where: { $0.id == sel.id }) {
             selected = nil
         }
@@ -279,6 +323,7 @@ struct FilesPane: View {
         }
         if let text = resp.text {
             preview = .text(text)
+            savedText = text; editText = text; editing = false
         } else if let b64 = resp.base64, let data = Data(base64Encoded: b64), let img = NSImage(data: data) {
             preview = .image(img)
         } else if resp.binary {
