@@ -14,6 +14,7 @@ import (
 
 	"github.com/pomelohq/pomelo/internal/config"
 	"github.com/pomelohq/pomelo/internal/paths"
+	"github.com/pomelohq/pomelo/internal/ptyhost"
 )
 
 var (
@@ -122,23 +123,27 @@ type portManager struct {
 	session string
 	cmds    chan portCmd
 	leases  map[string]*PortLease
+	holders map[string]string // lease key -> holder name, for liveness-gated reap
 	snap    atomic.Pointer[map[string]int]
 	rng     *rand.Rand
 
-	isUp     func(port int) bool
-	bindable func(port int) bool
-	now      func() time.Time
+	isUp        func(port int) bool
+	bindable    func(port int) bool
+	holderAlive func(name string) bool
+	now         func() time.Time
 }
 
 func newPortManager(session string) *portManager {
 	m := &portManager{
-		session:  session,
-		cmds:     make(chan portCmd, 64),
-		leases:   map[string]*PortLease{},
-		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		isUp:     portDialable,
-		bindable: portBindable,
-		now:      time.Now,
+		session:     session,
+		cmds:        make(chan portCmd, 64),
+		leases:      map[string]*PortLease{},
+		holders:     map[string]string{},
+		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
+		isUp:        portDialable,
+		bindable:    portBindable,
+		holderAlive: ptyhost.HolderAlive,
+		now:         time.Now,
 	}
 	empty := map[string]int{}
 	m.snap.Store(&empty)
@@ -183,6 +188,7 @@ func (m *portManager) loop() {
 			for key, l := range m.leases {
 				if strings.HasPrefix(key, c.prefix) {
 					delete(m.leases, key)
+					delete(m.holders, key)
 					_ = os.Remove(leaseFilePath(l.Port))
 				}
 			}
@@ -242,6 +248,7 @@ func (m *portManager) release(key string) {
 		return
 	}
 	delete(m.leases, key)
+	delete(m.holders, key)
 	_ = os.Remove(leaseFilePath(l.Port))
 	m.publish()
 }
@@ -268,12 +275,21 @@ func (m *portManager) reap() {
 				dead = append(dead, key)
 			}
 		case l.State == PortStarting && m.now().Sub(l.Since) > assignGrace:
+			// assignGrace reclaims a port from a service that failed to launch. But a
+			// slow first build (e.g. `watchexec "nest build && node dist/main"` can run
+			// well past 45s) keeps the holder alive while nothing listens yet — reaping
+			// then drops the allocated port and the proxy 502s mid-build. Only reap once
+			// the holder is actually gone.
+			if h := m.holders[key]; h != "" && m.holderAlive(h) {
+				continue
+			}
 			dead = append(dead, key)
 		}
 	}
 	for _, key := range dead {
 		if l := m.leases[key]; l != nil {
 			delete(m.leases, key)
+			delete(m.holders, key)
 			_ = os.Remove(leaseFilePath(l.Port))
 		}
 	}
@@ -353,6 +369,18 @@ func (m *portManager) claimPreferred(l *PortLease, base, span int) int {
 }
 func (m *portManager) Mark(key string, state PortState) { m.cmds <- markCmd{key: key, state: state} }
 func (m *portManager) Release(key string)               { m.cmds <- relCmd{key: key} }
+
+// SetHolder records which holder process owns a lease so reap() can tell a
+// slow-building service (holder alive) from one that failed to launch.
+func (m *portManager) SetHolder(key, holder string) {
+	m.cmds <- funcCmd(func() { m.holders[key] = holder })
+}
+
+// RegisterServiceHolder ties a service's port lease to its holder process; a
+// slow-to-listen service keeps its allocated port as long as the holder lives.
+func RegisterServiceHolder(wsKey, svcKey, holder string) {
+	mgr().SetHolder(svcLocalKey(wsKey, svcKey), holder)
+}
 
 func (m *portManager) ReleaseWorkspace(wsKey string) { m.cmds <- relWsCmd{prefix: wsKey + "\x1f"} }
 func (m *portManager) Reap() {

@@ -183,6 +183,9 @@ func (s *Server) startWindow(session, window string, cfgRepo *config.Dir, svc *c
 	cmd := services.BuildServiceCmd(wtPath, cfgRepo, svc, port, s.svcMode(ref.Repo, ref.Svc, svc))
 	services.RegenerateWorkspaceEnv(configDir, s.cfg(), ref.Branch)
 	env := services.ResolveServiceEnv(configDir, s.cfg(), ref.Branch, ref.Repo, ref.Svc)
+	if svc.HasPort() {
+		services.RegisterServiceHolder(wsKey, alias+"~"+ref.Svc, window)
+	}
 	return services.SpawnHolderEnv(window, wtPath, 0, 0, shell.Login(cmd), env)
 }
 

@@ -85,6 +85,9 @@ func Start(cfg *config.Config, cfgPath, target string) error {
 		fullCmd.WriteString(" && " + resolved.Cmd)
 
 		holder := services.ServiceHolderName(cfg.Session, branch, dirName, svcName)
+		if svc != nil && svc.HasPort() {
+			services.RegisterServiceHolder(wsKey, alias+"~"+svcName, holder)
+		}
 		if err := services.SpawnHolder(holder, resolved.WorkDir, 0, 0, shell.Login(fullCmd.String())); err != nil {
 			fmt.Fprintf(os.Stderr, "%swarning:%s %s — skipping %s\n", Yellow, NC, err, svcName)
 			skipped++

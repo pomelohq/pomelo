@@ -133,28 +133,30 @@ func pickProxyPort(allocated int, liveScan func() int) int {
 	return liveScan()
 }
 
-func (s *Server) liveServicePort(branch, svcKey string) int {
+func (s *Server) svcHolderName(branch, svcKey string) string {
 	i := strings.IndexByte(svcKey, '~')
 	if i < 0 {
-		return 0
+		return ""
 	}
 	alias, svc := svcKey[:i], svcKey[i+1:]
 	cfg := s.cfg()
-	repo := ""
 	for name, d := range cfg.Repos {
 		a := d.Alias
 		if a == "" {
 			a = name
 		}
 		if a == alias || name == alias {
-			repo = name
-			break
+			return services.ServiceHolderName(cfg.Session, branch, name, svc)
 		}
 	}
-	if repo == "" {
+	return ""
+}
+
+func (s *Server) liveServicePort(branch, svcKey string) int {
+	holder := s.svcHolderName(branch, svcKey)
+	if holder == "" {
 		return 0
 	}
-	holder := services.ServiceHolderName(cfg.Session, branch, repo, svc)
 	return ptyhost.ListeningPortInTree(holder, 10000, 65535)
 }
 
@@ -413,6 +415,16 @@ func (s *Server) proxyToURL(w http.ResponseWriter, r *http.Request, raw string) 
 func (s *Server) proxyToWorkspaceService(w http.ResponseWriter, r *http.Request, branchLabel, target string) {
 	port := s.resolveProxyPort(branchLabel, target)
 	if port == 0 {
+		// Known service whose holder is still alive = building/starting, not a
+		// routing error. Report it as retriable so it doesn't read like misconfig.
+		if branch := s.branchForHostLabel(branchLabel); branch != "" {
+			if svcKey, ok := resolveSvcKey(s.cfg(), target); ok {
+				if h := s.svcHolderName(branch, svcKey); h != "" && ptyhost.HolderAlive(h) {
+					http.Error(w, "dev-proxy: "+target+" is still starting (building, not listening yet) — retry shortly", http.StatusServiceUnavailable)
+					return
+				}
+			}
+		}
 		http.Error(w, "no dev-proxy route for "+branchLabel+" / "+target, http.StatusBadGateway)
 		return
 	}

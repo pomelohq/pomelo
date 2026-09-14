@@ -10,13 +10,15 @@ import (
 
 func testManager(session string) *portManager {
 	m := &portManager{
-		session:  session,
-		cmds:     make(chan portCmd, 64),
-		leases:   map[string]*PortLease{},
-		rng:      rand.New(rand.NewSource(1)),
-		isUp:     func(int) bool { return false },
-		bindable: func(int) bool { return true },
-		now:      time.Now,
+		session:     session,
+		cmds:        make(chan portCmd, 64),
+		leases:      map[string]*PortLease{},
+		holders:     map[string]string{},
+		rng:         rand.New(rand.NewSource(1)),
+		isUp:        func(int) bool { return false },
+		bindable:    func(int) bool { return true },
+		holderAlive: func(string) bool { return false },
+		now:         time.Now,
 	}
 	empty := map[string]int{}
 	m.snap.Store(&empty)
@@ -176,6 +178,36 @@ func TestPortManagerFailedStartFreedAfterGrace(t *testing.T) {
 	m.Reap()
 	if m.portOf(key) != 0 {
 		t.Fatalf("starting-but-never-bound lease not freed after grace")
+	}
+}
+
+// A slow first build (e.g. nest build under watchexec) can keep a service in
+// PortStarting well past assignGrace while nothing listens yet. As long as its
+// holder is alive it is still starting, so its allocated port must survive —
+// reaping it made the dev-proxy 502 mid-build.
+func TestPortManagerStartingKeptWhileHolderAlive(t *testing.T) {
+	m := testManager("sess-holder")
+	var mu sync.Mutex
+	alive := true
+	m.holderAlive = func(string) bool { mu.Lock(); defer mu.Unlock(); return alive }
+
+	key := "ws-f\x1fapi"
+	p := m.Acquire(key)
+	m.Mark(key, PortStarting)
+	m.SetHolder(key, "svc-holder")
+
+	m.cmds <- funcCmd(func() { m.leases[key].Since = m.leases[key].Since.Add(-2 * assignGrace) })
+	m.Reap()
+	if m.portOf(key) != p {
+		t.Fatalf("lease reaped while holder still building")
+	}
+
+	mu.Lock()
+	alive = false
+	mu.Unlock()
+	m.Reap()
+	if m.portOf(key) != 0 {
+		t.Fatalf("lease not reclaimed after holder died")
 	}
 }
 
