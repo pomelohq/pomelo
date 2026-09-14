@@ -74,9 +74,21 @@ struct TreeRow: View {
     var editText: Binding<String> = .constant("")
     var onCommitEdit: () -> Void = {}
     var onCancelEdit: () -> Void = {}
+    var truncate: Bool = true
+    var minWidth: CGFloat? = nil
     let onTap: () -> Void
     @State private var hovering = false
     @FocusState private var editFocused: Bool
+
+    @ViewBuilder private var nameLabel: some View {
+        if truncate {
+            Text(name).font(.system(size: 11.5, weight: nameWeight)).foregroundStyle(nameColor)
+                .lineLimit(1).truncationMode(.middle)
+        } else {
+            Text(name).font(.system(size: 11.5, weight: nameWeight)).foregroundStyle(nameColor)
+                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+        }
+    }
 
     @ViewBuilder private var leading: some View {
         if isDir {
@@ -111,8 +123,7 @@ struct TreeRow: View {
                 Button(action: onTap) {
                     HStack(spacing: 5) {
                         leading
-                        Text(name).font(.system(size: 11.5, weight: nameWeight)).foregroundStyle(nameColor)
-                            .lineLimit(1).truncationMode(.middle)
+                        nameLabel
                         Spacer(minLength: 0)
                     }
                     .contentShape(Rectangle())
@@ -125,6 +136,7 @@ struct TreeRow: View {
             }
         }
         .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
+        .frame(minWidth: minWidth, alignment: .leading)
         .background(selected ? selectionColor : .clear, in: RoundedRectangle(cornerRadius: 6))
         .onHover { hovering = $0 }
     }

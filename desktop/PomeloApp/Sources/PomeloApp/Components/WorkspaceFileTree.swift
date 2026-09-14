@@ -105,10 +105,17 @@ struct WorkspaceFileTreeList: View {
     @State private var renameText = ""
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 1) {
-                ForEach(flattened(roots, depth: 0), id: \.node.id) { entry in row(entry.node, depth: entry.depth) }
-            }.padding(6)
+        GeometryReader { geo in
+            // Names never ellipsize (Zed-style); long names / deep nesting scroll
+            // horizontally. minWidth keeps the selection highlight spanning the pane.
+            ScrollView([.vertical, .horizontal]) {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    ForEach(flattened(roots, depth: 0), id: \.node.id) { entry in
+                        row(entry.node, depth: entry.depth, minWidth: max(0, geo.size.width - 12))
+                    }
+                }
+                .padding(.leading, 6).padding(.vertical, 6)
+            }
         }
     }
 
@@ -123,7 +130,7 @@ struct WorkspaceFileTreeList: View {
         return out
     }
 
-    @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int) -> some View {
+    @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int, minWidth: CGFloat) -> some View {
         let isDir = !node.isLeaf
         TreeRow(depth: depth, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
                 leadingSymbol: node.isLeaf ? "doc" : (node.isRoot ? "folder.badge.gearshape" : "folder.fill"),
@@ -133,7 +140,8 @@ struct WorkspaceFileTreeList: View {
                 nameWeight: node.isLeaf ? .regular : (node.isRoot ? .semibold : .medium),
                 tooltip: node.name,
                 editing: renamingID == node.id, editText: $renameText,
-                onCommitEdit: { commitRename(node) }, onCancelEdit: { renamingID = nil }) {
+                onCommitEdit: { commitRename(node) }, onCancelEdit: { renamingID = nil },
+                truncate: false, minWidth: minWidth) {
             if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
         }
         .overlay(RightClickArea { ctxNodeID = node.id })
