@@ -35,6 +35,7 @@ struct FilesPane: View {
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
     var onAskAgent: (String) -> Void = { _ in }
+    @Binding var openRequest: WorkspaceFileEntry?
     @ObservedObject private var codeDisplay = CodeDisplayManager.shared
 
     @State private var entries: [WorkspaceFileEntry]?
@@ -51,24 +52,6 @@ struct FilesPane: View {
     @State private var editing = false
     @State private var editText = ""
     @State private var savedText = ""
-    @State private var quickOpen = false
-    @State private var quickQuery = ""
-    @State private var quickIndex = 0
-    @FocusState private var quickFocused: Bool
-
-    private var quickResults: [WorkspaceFileEntry] {
-        guard let entries else { return [] }
-        let files = entries.filter { !$0.isDir }
-        let q = quickQuery.trimmingCharacters(in: .whitespaces)
-        if q.isEmpty { return Array(files.prefix(60)) }
-        return files.compactMap { e -> (WorkspaceFileEntry, Int)? in
-            let full = e.repo.isEmpty ? e.path : e.repo + "/" + e.path
-            guard let s = Fuzzy.score(q, full) else { return nil }
-            let name = Fuzzy.score(q, (e.path as NSString).lastPathComponent) ?? 0
-            return (e, s + name)   // weight filename matches higher
-        }
-        .sorted { $0.1 > $1.1 }.prefix(60).map { $0.0 }
-    }
 
     private var selectedIsMarkdown: Bool {
         guard let path = selected?.path else { return false }
@@ -104,29 +87,19 @@ struct FilesPane: View {
         .background {
             Button("") { save() }.keyboardShortcut("s", modifiers: .command)
                 .opacity(0).allowsHitTesting(false)
-            Button("") { toggleQuickOpen() }.keyboardShortcut("p", modifiers: .command)
-                .opacity(0).allowsHitTesting(false)
         }
-        .overlay { if quickOpen { quickOpenPanel } }
         .onAppear { startWatch() }
         .onDisappear { stopWatch() }
         .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview() }
+        .onChange(of: openRequest) { req in
+            guard let e = req else { return }
+            revealInTree(e)
+            selected = e
+            openRequest = nil
+        }
     }
 
-    // MARK: - Quick open (Cmd+P): fuzzy-jump to any file, preview only.
-
-    private func toggleQuickOpen() {
-        quickOpen.toggle()
-        if quickOpen { quickQuery = ""; quickIndex = 0; quickFocused = true }
-    }
-
-    private func chooseQuick(_ e: WorkspaceFileEntry) {
-        revealInTree(e)
-        selected = e
-        quickOpen = false
-    }
-
-    // Expand the tree down to the file so it's visible after a quick-open jump.
+    // Expand the tree down to a file so a Cmd+P jump reveals it.
     private func revealInTree(_ e: WorkspaceFileEntry) {
         expanded.insert("")
         var id = ""
@@ -135,63 +108,6 @@ struct FilesPane: View {
             id = id.isEmpty ? String(part) : id + "/" + part
             expanded.insert(id)
         }
-    }
-
-    private var quickOpenPanel: some View {
-        ZStack(alignment: .top) {
-            Color.black.opacity(0.2).ignoresSafeArea().onTapGesture { quickOpen = false }
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
-                    TextField("Go to file...", text: $quickQuery)
-                        .textFieldStyle(.plain).font(.system(size: 14)).foregroundStyle(Theme.fg)
-                        .focused($quickFocused)
-                        .onChange(of: quickQuery) { _ in quickIndex = 0 }
-                        .onSubmit { let r = quickResults; if quickIndex >= 0, quickIndex < r.count { chooseQuick(r[quickIndex]) } }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 10)
-                Divider().overlay(Theme.borderSoft)
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(quickResults.enumerated()), id: \.element.id) { idx, e in
-                                quickRow(e, active: idx == quickIndex).id(idx)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { chooseQuick(e) }
-                            }
-                        }
-                    }
-                    .frame(maxHeight: 340)
-                    .onChange(of: quickIndex) { proxy.scrollTo($0, anchor: .center) }
-                }
-            }
-            .frame(width: 520)
-            .background(Theme.bgSoft, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
-            .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
-            .padding(.top, 64)
-        }
-        .onKeyPress(.downArrow) { quickIndex = min(quickIndex + 1, max(0, quickResults.count - 1)); return .handled }
-        .onKeyPress(.upArrow) { quickIndex = max(quickIndex - 1, 0); return .handled }
-        .onKeyPress(.escape) { quickOpen = false; return .handled }
-    }
-
-    private func quickRow(_ e: WorkspaceFileEntry, active: Bool) -> some View {
-        let mat = MaterialIcon.file(e.path).map { "mi-" + $0 }
-        let dir = (e.path as NSString).deletingLastPathComponent
-        return HStack(spacing: 8) {
-            Group {
-                if let mat { Image(mat, bundle: .module).resizable().aspectRatio(contentMode: .fit) }
-                else { Image(systemName: "doc").foregroundStyle(Theme.fgMuted) }
-            }.frame(width: 15, height: 15)
-            Text((e.path as NSString).lastPathComponent).font(.system(size: 12.5)).foregroundStyle(Theme.fg)
-            Text(e.repo.isEmpty ? dir : e.repo + (dir.isEmpty ? "" : "/" + dir))
-                .font(.system(size: 11)).foregroundStyle(Theme.dim).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(active ? Theme.sel : .clear)
     }
 
     private func toggleEdit() {
