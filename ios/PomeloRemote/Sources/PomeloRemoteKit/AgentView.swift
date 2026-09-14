@@ -135,9 +135,13 @@ struct AgentView: View {
             HStack(spacing: 6) {
                 key("esc") { ctl.input([0x1b]) }
                 key("tab") { ctl.input([0x09]) }
+                key("⇧tab") { ctl.input([0x1b, 0x5b, 0x5a]) }   // CSI Z: Claude cycles mode
                 key("⌃C") { ctl.input([0x03]) }
                 key("⌃D") { ctl.input([0x04]) }
                 key("⌃Z") { ctl.input([0x1a]) }
+                key("⌃R") { ctl.input([0x12]) }
+                key("⌃O") { ctl.input([0x0f]) }
+                key("⌃L") { ctl.input([0x0c]) }
                 key("←") { ctl.input([0x1b, 0x5b, 0x44]) }
                 key("↑") { ctl.input([0x1b, 0x5b, 0x41]) }
                 key("↓") { ctl.input([0x1b, 0x5b, 0x42]) }
