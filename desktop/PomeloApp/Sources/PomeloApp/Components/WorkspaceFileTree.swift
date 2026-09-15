@@ -105,6 +105,8 @@ struct WorkspaceFileTreeList: View {
     @Binding var selected: WorkspaceFileEntry?
     @Binding var expanded: Set<String>
 
+    @EnvironmentObject private var theme: ThemeManager
+
     @State private var renamingID: String?
     @State private var renameText = ""
     // Cached so a scroll tick (which only updates topRow) never rebuilds the flat list.
@@ -189,6 +191,7 @@ struct WorkspaceFileTreeList: View {
         h.combine(renamingID)
         h.combine(expanded)
         h.combine(dirtyKeys)
+        h.combine(theme.mode)
         return h.finalize()
     }
 
