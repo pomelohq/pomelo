@@ -100,6 +100,8 @@ struct WorkspaceFileTreeList: View {
     var treeVersion: Int = 0
     var onOpenInTerminal: (String) -> Void = { _ in }
     var dirtyKeys: Set<String> = []
+    // When set, leaf taps route through this (so the host can open the file as a tab) instead of writing `selected`.
+    var onOpen: ((WorkspaceFileEntry) -> Void)? = nil
     @Binding var selected: WorkspaceFileEntry?
     @Binding var expanded: Set<String>
 
@@ -219,7 +221,9 @@ struct WorkspaceFileTreeList: View {
                 showChevron: false, guides: depth, hoverHighlight: true,
                 hoverColor: Theme.fg.opacity(0.06), cornerRadius: 0,
                 selectedBorder: nil, iconColor: nil, leadingImageName: matName, fillWidth: true) {
-            if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
+            if node.isLeaf, let e = node.entry {
+                if let onOpen { onOpen(e) } else { selected = e }
+            } else { toggle(node.id) }
         }
         .overlay(RightClickArea { pt in
             ContextMenu.show(at: pt) { _ in menuContent(for: node, isDir: isDir) }

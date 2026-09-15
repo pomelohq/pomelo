@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CodeEditSourceEditor
 
 private struct FileContentResponse: Decodable {
     var mimeType: String
@@ -31,12 +32,21 @@ private enum FilePreview {
     case failed(String)
 }
 
+// One open editor tab. `preview` tabs render italic and are reused by the next single-click open (Zed/VSCode style);
+// editing or double-clicking promotes them to permanent.
+private struct FileTab: Identifiable, Equatable {
+    var entry: WorkspaceFileEntry
+    var preview: Bool
+    var id: String { entry.id }
+}
+
 struct FilesPane: View {
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
     var onAskAgent: (String) -> Void = { _ in }
     var onOpenInTerminal: (String) -> Void = { _ in }
     @Binding var openRequest: WorkspaceFileEntry?
+    @Binding var searchRequest: Bool
 
     @State private var entries: [WorkspaceFileEntry]?
     @State private var roots: [WFileTreeNode] = []
@@ -55,7 +65,22 @@ struct FilesPane: View {
     @State private var dirtyKeys: Set<String> = []
     @State private var changedLines: [Int: Int] = [:]
     @State private var blameLines: [Int: String] = [:]
+    @State private var editorState = SourceEditorState()
+    @Environment(AppState.self) private var appState
     @AppStorage("fileEditorFontSize") private var fontSize: Double = 12
+
+    // Tab model. `selected` is the active tab's file; opens route through `open(_:preview:)`.
+    @State private var tabs: [FileTab] = []
+    @State private var buffers: [String: (edit: String, saved: String)] = [:]
+    @State private var history: [String] = []
+    @State private var histIdx = -1
+    @State private var hoverTab: String?
+    @State private var suppressHistory = false
+    @State private var lastTabClick: (id: String, at: Date)?
+    // Project-search (Cmd+Shift+F) lives as its own tab, Zed-style.
+    @State private var searchOpen = false
+    @State private var searchActive = false
+    @State private var pendingJump: Int?
 
     private var selectedIsMarkdown: Bool {
         guard let path = selected?.path else { return false }
@@ -65,6 +90,123 @@ struct FilesPane: View {
 
     private var isTextPreview: Bool { if case .text = preview { return true }; return false }
     private var dirty: Bool { isTextPreview && editText != savedText }
+
+    // MARK: - Tabs
+
+    private var activeID: String? { selected?.id }
+
+    /// A tab is dirty if its cached buffer has unsaved edits (or, for the active tab, the live editor differs).
+    private func tabDirty(_ id: String) -> Bool {
+        if id == activeID { return dirty }
+        if let b = buffers[id] { return b.edit != b.saved }
+        return false
+    }
+
+    /// The single entry point for opening a file. Reuses an existing tab, replaces the current preview tab, or
+    /// appends a new one. `preview` tabs are transient (italic) until edited or double-clicked.
+    private func open(_ e: WorkspaceFileEntry, preview: Bool) {
+        if let idx = tabs.firstIndex(where: { $0.id == e.id }) {
+            if !preview { tabs[idx].preview = false }
+        } else if preview, let pIdx = tabs.firstIndex(where: { $0.preview }) {
+            tabs[pIdx] = FileTab(entry: e, preview: true)
+        } else {
+            tabs.append(FileTab(entry: e, preview: preview))
+        }
+        searchActive = false
+        revealInTree(e)
+        selected = e
+        pushHistory(e.id)
+        if didRestore { saveState() }
+    }
+
+    private func activate(_ id: String) {
+        guard let t = tabs.first(where: { $0.id == id }) else { return }
+        searchActive = false
+        selected = t.entry
+        revealInTree(t.entry)
+        pushHistory(id)
+        if didRestore { saveState() }
+    }
+
+    private func promoteActive() {
+        guard let id = activeID, let idx = tabs.firstIndex(where: { $0.id == id }), tabs[idx].preview else { return }
+        tabs[idx].preview = false
+        if didRestore { saveState() }
+    }
+
+    private func openSearch() { searchOpen = true; searchActive = true }
+    private func closeSearch() { searchOpen = false; searchActive = false }
+
+    private func close(_ id: String) {
+        guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let wasActive = id == activeID
+        tabs.remove(at: idx)
+        buffers[id] = nil
+        history.removeAll { $0 == id }
+        histIdx = min(histIdx, history.count - 1)
+        if wasActive {
+            let next = tabs.indices.contains(idx) ? tabs[idx] : tabs.last
+            selected = next?.entry
+        }
+        if didRestore { saveState() }
+    }
+
+    private func closeOthers(_ id: String) {
+        for t in tabs where t.id != id { buffers[t.id] = nil }
+        tabs.removeAll { $0.id != id }
+        history.removeAll { $0 != id }; histIdx = history.count - 1
+        if let keep = tabs.first { selected = keep.entry }
+        if didRestore { saveState() }
+    }
+
+    private func closeAll() {
+        tabs.removeAll(); buffers.removeAll(); history.removeAll(); histIdx = -1
+        selected = nil
+        if didRestore { saveState() }
+    }
+
+    private func closeToRight(_ id: String) {
+        guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let removed = tabs[(idx + 1)...].map(\.id)
+        tabs.removeSubrange((idx + 1)...)
+        for r in removed { buffers[r] = nil; history.removeAll { $0 == r } }
+        histIdx = min(histIdx, history.count - 1)
+        if let sel = selected, removed.contains(sel.id) { selected = tabs[idx].entry }
+        if didRestore { saveState() }
+    }
+
+    // Per-pane back/forward history of visited tabs.
+    private func pushHistory(_ id: String) {
+        if suppressHistory { return }
+        if histIdx >= 0, histIdx < history.count, history[histIdx] == id { return }
+        if histIdx < history.count - 1 { history.removeSubrange((histIdx + 1)...) }
+        history.append(id)
+        histIdx = history.count - 1
+    }
+
+    private var canBack: Bool { histIdx > 0 }
+    private var canForward: Bool { histIdx >= 0 && histIdx < history.count - 1 }
+
+    private func goBack() {
+        guard canBack else { return }
+        histIdx -= 1
+        navigateHistory()
+    }
+
+    private func goForward() {
+        guard canForward else { return }
+        histIdx += 1
+        navigateHistory()
+    }
+
+    private func navigateHistory() {
+        guard histIdx >= 0, histIdx < history.count,
+              let t = tabs.first(where: { $0.id == history[histIdx] }) else { return }
+        suppressHistory = true
+        selected = t.entry
+        revealInTree(t.entry)
+        suppressHistory = false
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -76,10 +218,20 @@ struct FilesPane: View {
                     Divider().overlay(Theme.borderSoft)
                 }
                 VStack(spacing: 0) {
-                    topBar(compact: overlayTree)
-                    Divider().overlay(Theme.borderSoft)
-                    // Clip so the editor's gutter can't overdraw upward into the path bar.
-                    content.clipped()
+                    if !tabs.isEmpty || searchOpen {
+                        tabBar
+                        Divider().overlay(Theme.borderSoft)
+                    }
+                    if searchActive {
+                        FindInFiles(branch: workspace.branch, isMain: workspace.isMain, mode: theme.mode,
+                                    onChoose: { e, line in searchActive = false; pendingJump = line; open(e, preview: false) },
+                                    onClose: { closeSearch() })
+                    } else {
+                        topBar(compact: overlayTree)
+                        Divider().overlay(Theme.borderSoft)
+                        // Clip so the editor's gutter can't overdraw upward into the path bar.
+                        content.clipped()
+                    }
                 }
             }
             .overlay(alignment: .leading) {
@@ -99,17 +251,33 @@ struct FilesPane: View {
             }
             .opacity(0).allowsHitTesting(false)
         }
-        .onAppear { startWatch() }
+        .onAppear { startWatch(); if searchRequest { openSearch(); searchRequest = false } }
         .onChange(of: expanded) { _ in if didRestore { saveState() } }
-        .onChange(of: selected) { _ in if didRestore { saveState() } }
+        .onChange(of: selected) { old, _ in
+            // Stash the outgoing tab's live buffer so its unsaved edits survive a tab switch.
+            if let o = old, tabs.contains(where: { $0.id == o.id }) { buffers[o.id] = (editText, savedText) }
+            if didRestore { saveState() }
+        }
+        .onChange(of: editText) { _, _ in if editText != savedText { promoteActive() } }
         .onDisappear { stopWatch() }
-        .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview(); await refreshDiff(); await refreshBlame() }
-        .onChange(of: openRequest) { req in
+        .task(id: selected?.id) {
+            selLines = nil; question = ""
+            await loadPreview(); await refreshDiff(); await refreshBlame()
+            if let l = pendingJump {
+                editorState.cursorPositions = [CursorPosition(line: l, column: 1)]
+                pendingJump = nil
+            }
+        }
+        .onChange(of: openRequest) { _, req in
             guard let e = req else { return }
-            revealInTree(e)
-            selected = e
+            open(e, preview: true)   // Cmd+P quick-open = preview tab
             openRequest = nil
         }
+        .onReceive(NotificationCenter.default.publisher(for: .pomFindInFile)) { _ in
+            guard appState.selectedWorkspace?.id == workspace.id, !searchActive, selected != nil else { return }
+            editorState.findPanelVisible = true
+        }
+        .onChange(of: searchRequest) { _, req in if req { openSearch(); searchRequest = false } }
     }
 
     // Expand the tree down to a file so a Cmd+P jump reveals it.
@@ -226,6 +394,7 @@ struct FilesPane: View {
                 } else {
                     WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path, treeVersion: treeVersion,
                                           onOpenInTerminal: onOpenInTerminal, dirtyKeys: dirtyKeys,
+                                          onOpen: { open($0, preview: true) },
                                           selected: $selected, expanded: $expanded)
                 }
             } else {
@@ -246,6 +415,149 @@ struct FilesPane: View {
                 .onTapGesture { withAnimation(.easeInOut(duration: 0.14)) { treeVisible = false } }
         }
         .transition(.move(edge: .leading))
+    }
+
+    // MARK: - Tab bar (Zed-style)
+
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 1) {
+                navBtn("chevron.left", enabled: canBack) { goBack() }
+                navBtn("chevron.right", enabled: canForward) { goForward() }
+            }
+            .padding(.horizontal, 5)
+            Rectangle().fill(Theme.borderSoft).frame(width: 1, height: 18)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        if searchOpen { searchTabView }
+                        ForEach(tabs) { tabView($0).id($0.id) }
+                    }
+                }
+                .onChange(of: selected?.id) { _, id in
+                    guard let id, !searchActive else { return }
+                    withAnimation(.easeInOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) }
+                }
+            }
+        }
+        .frame(height: 34)
+        .background(Theme.bgSoft)
+    }
+
+    private func navBtn(_ icon: String, enabled: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            Image(systemName: icon).font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(enabled ? Theme.fgMuted : Theme.dim.opacity(0.4))
+                .frame(width: 20, height: 22)
+        }
+        .buttonStyle(.plain).disabled(!enabled)
+    }
+
+    private var searchTabView: some View {
+        let active = searchActive
+        let hovered = hoverTab == "__search__"
+        return HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 11))
+                .foregroundStyle(active ? Theme.accent : Theme.fgMuted)
+            Text("Search").font(.system(size: 12)).foregroundStyle(active ? Theme.fg : Theme.fgMuted)
+            ZStack {
+                if hovered {
+                    Button { closeSearch() } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.fgMuted)
+                            .frame(width: 15, height: 15).background(Theme.sel, in: RoundedRectangle(cornerRadius: 4))
+                    }.buttonStyle(.plain)
+                }
+            }.frame(width: 15, height: 15)
+        }
+        .padding(.leading, 10).padding(.trailing, 6)
+        .frame(height: 34)
+        .background(active ? Theme.bg : Theme.bgSoft)
+        .overlay(alignment: .top) { if active { Rectangle().fill(Theme.accent).frame(height: 2) } }
+        .overlay(alignment: .trailing) { Rectangle().fill(Theme.borderSoft).frame(width: 1) }
+        .contentShape(Rectangle())
+        .onHover { hoverTab = $0 ? "__search__" : (hoverTab == "__search__" ? nil : hoverTab) }
+        .onTapGesture { searchActive = true }
+    }
+
+    private func tabView(_ t: FileTab) -> some View {
+        let active = !searchActive && t.id == activeID
+        let hovered = hoverTab == t.id
+        let name = (t.entry.path as NSString).lastPathComponent
+        let isDirty = tabDirty(t.id)
+        return HStack(spacing: 6) {
+            if let mat = MaterialIcon.file(name).map({ "mi-" + $0 }) {
+                Image(mat, bundle: .module).resizable().aspectRatio(contentMode: .fit).frame(width: 14, height: 14)
+            } else {
+                Image(systemName: "doc").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+            }
+            Text(name).font(.system(size: 12)).italic(t.preview)
+                .foregroundStyle(active ? Theme.fg : Theme.fgMuted)
+                .lineLimit(1).truncationMode(.middle)
+            ZStack {
+                if hovered {
+                    Button { close(t.id) } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.fgMuted)
+                            .frame(width: 15, height: 15).background(Theme.sel, in: RoundedRectangle(cornerRadius: 4))
+                    }.buttonStyle(.plain)
+                } else if isDirty {
+                    Circle().fill(Theme.fgMuted).frame(width: 7, height: 7)
+                }
+            }
+            .frame(width: 15, height: 15)
+        }
+        .padding(.leading, 10).padding(.trailing, 6)
+        .frame(maxWidth: 200).frame(height: 34)
+        .background(active ? Theme.bg : Theme.bgSoft)
+        .overlay(alignment: .top) { if active { Rectangle().fill(Theme.accent).frame(height: 2) } }
+        .overlay(alignment: .trailing) { Rectangle().fill(Theme.borderSoft).frame(width: 1) }
+        .contentShape(Rectangle())
+        .onHover { hoverTab = $0 ? t.id : (hoverTab == t.id ? nil : hoverTab) }
+        .onTapGesture { tabClicked(t.id) }
+        .contextMenu { tabMenu(t) }
+        .draggable(t.id) {
+            Text(name).font(.system(size: 12)).padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Theme.bgSoft, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .dropDestination(for: String.self) { items, _ in reorder(dragged: items.first, before: t.id); return true }
+    }
+
+    @ViewBuilder private func tabMenu(_ t: FileTab) -> some View {
+        Button("Close") { close(t.id) }
+        Button("Close Others") { closeOthers(t.id) }.disabled(tabs.count <= 1)
+        Button("Close to the Right") { closeToRight(t.id) }.disabled(tabs.last?.id == t.id)
+        Button("Close All") { closeAll() }
+        Divider()
+        Button("Copy Path") { copyString(editorAbsPath(t.entry)) }
+        Button("Copy Relative Path") { copyString(t.entry.repo.isEmpty ? t.entry.path : t.entry.repo + "/" + t.entry.path) }
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: editorAbsPath(t.entry))])
+        }
+    }
+
+    private func copyString(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+    }
+
+    // Immediate activate on first click; a quick second click on the same tab promotes it to a permanent tab.
+    private func tabClicked(_ id: String) {
+        let now = Date()
+        if let last = lastTabClick, last.id == id, now.timeIntervalSince(last.at) < 0.35 {
+            if let idx = tabs.firstIndex(where: { $0.id == id }) { tabs[idx].preview = false; if didRestore { saveState() } }
+            lastTabClick = nil
+        } else {
+            activate(id)
+            lastTabClick = (id, now)
+        }
+    }
+
+    private func reorder(dragged: String?, before targetID: String) {
+        guard let dragged, dragged != targetID,
+              let from = tabs.firstIndex(where: { $0.id == dragged }) else { return }
+        let moved = tabs.remove(at: from)
+        let to = tabs.firstIndex(where: { $0.id == targetID }) ?? tabs.count
+        tabs.insert(moved, at: to)
+        if didRestore { saveState() }
     }
 
     private func topBar(compact: Bool) -> some View {
@@ -320,7 +632,8 @@ struct FilesPane: View {
                     // Always editable; tree-sitter highlighting where a grammar is bundled.
                     FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: true,
                                fontSize: CGFloat(fontSize), changedLines: changedLines, blameLines: blameLines,
-                               onRightClick: { pt, view in showEditorMenu(sel, at: pt, in: view) }).id(sel.id)
+                               onRightClick: { pt, view in showEditorMenu(sel, at: pt, in: view) },
+                               state: $editorState).id(sel.id)
                 }
             case .image(let img):
                 FileImageView(image: img)
@@ -439,10 +752,12 @@ struct FilesPane: View {
         dirtyKeys = keys
     }
 
+    private struct PersistedTab: Codable { var repo: String; var path: String; var preview: Bool }
     private struct PersistedState: Codable {
         var expanded: [String]
         var selectedRepo: String?
         var selectedPath: String?
+        var tabs: [PersistedTab]?
     }
 
     private var stateKey: String { "filesPane.state.\(workspace.path)" }
@@ -450,7 +765,8 @@ struct FilesPane: View {
     private func saveState() {
         let st = PersistedState(expanded: Array(expanded),
                                 selectedRepo: selected?.repo,
-                                selectedPath: selected?.path)
+                                selectedPath: selected?.path,
+                                tabs: tabs.map { PersistedTab(repo: $0.entry.repo, path: $0.entry.path, preview: $0.preview) })
         if let data = try? JSONEncoder().encode(st) {
             UserDefaults.standard.set(data, forKey: stateKey)
         }
@@ -460,13 +776,30 @@ struct FilesPane: View {
         guard let data = UserDefaults.standard.data(forKey: stateKey),
               let st = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
         expanded.formUnion(st.expanded)
-        if selected == nil, let path = st.selectedPath {
-            selected = list.first { $0.repo == (st.selectedRepo ?? "") && $0.path == path }
+        if tabs.isEmpty, let saved = st.tabs {
+            tabs = saved.compactMap { pt in
+                guard let e = list.first(where: { $0.repo == pt.repo && $0.path == pt.path }) else { return nil }
+                return FileTab(entry: e, preview: pt.preview)
+            }
+        }
+        guard selected == nil else { return }
+        var target = list.first { $0.repo == (st.selectedRepo ?? "") && $0.path == (st.selectedPath ?? "\u{0}") }
+        if target == nil { target = tabs.first?.entry }
+        if let e = target {
+            if !tabs.contains(where: { $0.id == e.id }) { tabs.append(FileTab(entry: e, preview: false)) }
+            suppressHistory = true; selected = e; suppressHistory = false
+            pushHistory(e.id)
         }
     }
 
     private func loadPreview() async {
         guard let sel = selected else { return }
+        // Restore an in-memory buffer (with any unsaved edits) instead of re-reading from disk.
+        if let buf = buffers[sel.id] {
+            savedText = buf.saved; editText = buf.edit
+            preview = .text(buf.edit)
+            return
+        }
         preview = .loading
         let branch = workspace.branch, isMain = workspace.isMain
         let resp = await Task.detached(priority: .userInitiated) { () -> FileContentResponse? in

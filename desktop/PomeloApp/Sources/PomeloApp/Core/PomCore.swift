@@ -216,6 +216,7 @@ final class PomCore: @unchecked Sendable {
     func reviewGetData(branch: String, isMain: Bool) -> Data { fetch(domain: "review_get", params: jp(["branch": branch, "is_main": isMain])) }
     func filePeekData(branch: String, repo: String, path: String, isMain: Bool) -> Data { fetch(domain: "file_peek", params: jp(["branch": branch, "repo": repo, "path": path, "is_main": isMain])) }
     func workspaceFilesData(branch: String, isMain: Bool) -> Data { fetch(domain: "workspace_files", params: jp(["branch": branch, "is_main": isMain])) }
+    func searchFilesData(branch: String, isMain: Bool, query: String) -> Data { fetch(domain: "search_files", params: jp(["branch": branch, "is_main": isMain, "query": query])) }
     func fileReadData(branch: String, repo: String, path: String, isMain: Bool) -> Data { fetch(domain: "file_read", params: jp(["branch": branch, "repo": repo, "path": path, "is_main": isMain])) }
     func reviewThreadsData(branch: String, isMain: Bool) -> Data { fetch(domain: "review_threads", params: jp(["branch": branch, "is_main": isMain])) }
     func reviewThreadAdd(branch: String, isMain: Bool, repo: String, path: String, start: Int, end: Int, side: String, body: String) -> Data {
