@@ -145,7 +145,7 @@ struct WorkspaceFileTreeList: View {
     }
 
     private func stickyRow(_ node: WFileTreeNode, depth: Int) -> some View {
-        let mat = "mi-" + (node.isRoot ? "folder-base" : MaterialIcon.folder(node.name))
+        let mat = MaterialIcon.folderAsset(node.name, root: node.isRoot)
         return HStack(spacing: 5) {
             Image(mat, bundle: .module).resizable().interpolation(.high)
                 .aspectRatio(contentMode: .fit).frame(width: 15, height: 15)
@@ -209,7 +209,7 @@ struct WorkspaceFileTreeList: View {
     @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int) -> some View {
         let isDir = !node.isLeaf
         let dirty = dirtyKeys.contains(node.id)
-        let matName: String? = isDir ? "mi-" + MaterialIcon.folder(node.name) : MaterialIcon.file(node.name).map { "mi-" + $0 }
+        let matName: String? = isDir ? MaterialIcon.folderAsset(node.name, root: node.isRoot) : MaterialIcon.file(node.name).map { "mi-" + $0 }
         TreeRow(depth: depth, indent: { CGFloat($0) * 13 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
                 leadingSymbol: "doc",
                 marker: nil,
@@ -489,6 +489,13 @@ enum MaterialIcon {
         case "config", ".config": return "folder-config"
         default: return "folder-base"
         }
+    }
+
+    // The bundled Material folder icons are two-tone assets tuned for a dark sidebar (a saturated body plus a very
+    // pale detail that washes out on white). On the light theme use the darkened `-light` variants instead.
+    static func folderAsset(_ name: String, root: Bool) -> String {
+        let base = root ? "folder-base" : folder(name)
+        return "mi-" + base + (activeThemeMode == .light ? "-light" : "")
     }
 }
 
