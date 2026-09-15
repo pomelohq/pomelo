@@ -189,13 +189,16 @@ struct FindInFiles: View {
             expandGutter(bi: bi, up: expandUp, down: expandDown)
             Text("\(ln.line)")
                 .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.dim)
-                .frame(width: 40, alignment: .trailing)
+                .frame(width: 38, alignment: .trailing)
+            // Vertical rule separating the line-number gutter from the code, Zed-style (rows stack into one line).
+            Rectangle().fill(Theme.borderSoft.opacity(0.7)).frame(width: 1)
             lineContent(ln, bi: bi, ri: ri)
                 .font(.system(size: 12, design: .monospaced))
                 .lineLimit(1).truncationMode(.tail)
+                .padding(.leading, 4)
             Spacer(minLength: 0)
         }
-        .padding(.trailing, 12).padding(.vertical, 1.5)
+        .padding(.leading, 8).padding(.trailing, 12).padding(.vertical, 1.5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(active ? Theme.accent.opacity(0.16) : (ln.match ? Theme.accent.opacity(0.06) : .clear))
     }
