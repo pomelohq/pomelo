@@ -159,14 +159,38 @@ in this toolchain:
   CommandLineTools (the CLT SDK has the known `arm64e.x1` malformed-tbd bug).
 - **Size.** wasmtime v29 `libwasmtime.dylib` is **13 MB** (v48 was 24 MB) — bundle
   the dylib, not the ~52 MB static archive.
-- **Open item -> P1.** A grammar `.wasm` must be built by a matching tree-sitter
-  (`tree-sitter build --wasm`, emscripten). The npm `tree-sitter-wasms` artifact
-  failed to load (`failed to parse dylink section`): its `dylink.0` section comes
-  from a different tree-sitter. P1 needs a grammar-build pipeline (tree-sitter CLI
-  0.25 + emscripten via docker) or a prebuilt set produced with tree-sitter 0.25.
+- **Grammar pipeline proven end-to-end.** The npm `tree-sitter-wasms` artifact
+  fails to load (`failed to parse dylink section` — its `dylink.0` is from a
+  different tree-sitter). Building the grammar with the matching CLI instead —
+  `npx tree-sitter-cli@0.25.10 build --wasm` (emscripten runs in the
+  `emscripten/emsdk` docker image, a dev/CI tool, never shipped) — produced a
+  5.6 KB `tree-sitter-json.wasm` that the spike **loaded and parsed correctly**:
+  `(document (object (pair key: (string ...) value: (array (number) (number)
+  (true) (null))) ...))`. Compiled grammar `.wasm` files are small (KB–low MB),
+  far smaller than their C source (TS `parser.c` is 8.7 MB).
 
-Conclusion: the WASM approach is feasible and the runtime integration is proven.
-The next concrete step is the grammar-artifact pipeline, not more runtime risk.
+Conclusion: the WASM approach is fully validated — build (emscripten), bundle
+(wasmtime v29 dylib), and runtime load+parse all work. No research risk remains;
+what's left is app integration.
+
+### Remaining P1 work (integration, no longer research-risky)
+
+1. **Grammar artifacts.** A build step (local or CI) runs `tree-sitter build
+   --wasm` per language to produce `<lang>.wasm` + copy queries, for the core
+   stack (ruby, typescript, tsx, javascript, json, yaml, html, css, markdown).
+   Emscripten stays in CI so contributors need no docker; the small `.wasm` files
+   are committed/shipped.
+2. **Runtime.** Add `libwasmtime` (v29 dylib) as a binary dependency and build
+   tree-sitter with `-DTREE_SITTER_FEATURE_WASM` (a small patch to the vendored
+   `TreeSitter` C target: include `wasm_store.c` + `wasm/` generated files, add
+   the wasmtime header/lib paths). Confirm the hardened runtime accepts the wasm
+   engine (JIT entitlement or interpreter).
+3. **Loader + editor.** A `GrammarStore` (Swift) creating a shared engine +
+   `TSWasmStore`, lazily instantiating a `TSLanguage` per file type from its
+   `.wasm`, with queries; wire it into `CodeEditLanguages`/`CodeEditSourceEditor`
+   so the editor accepts a runtime language. Preview switches to tree-sitter where
+   a grammar exists, regex `CodeView` otherwise.
+4. **Registry/install (P2)** builds on top once the built-in path works.
 
 ## Consequences
 
