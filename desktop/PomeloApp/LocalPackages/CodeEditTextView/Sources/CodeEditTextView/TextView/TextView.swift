@@ -263,6 +263,14 @@ open class TextView: NSView, NSTextContent {
 
     var isFirstResponder: Bool = false
 
+    /// True while AppKit is running this view's `layout()`. Frame/needs-layout mutations made during the window's
+    /// layout pass are deferred instead of applied synchronously: on macOS 26+ requesting another layout pass from
+    /// inside one aborts the window ("more Layout Window passes than views"). See `updateFrameIfNeeded()`.
+    var isPerformingLayout: Bool = false
+
+    /// Set while a deferred `updateFrameIfNeeded` is already queued so we don't pile up redundant re-layouts.
+    var frameUpdateScheduled: Bool = false
+
     /// When dragging to create a selection, these enable us to scroll the view as the user drags outside the view's
     /// bounds.
     var mouseDragAnchor: CGPoint?
