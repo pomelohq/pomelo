@@ -235,6 +235,7 @@ struct FilesPane: View {
                         // Keep the search view mounted while its tab is open so results survive switching tabs.
                         if searchOpen {
                             FindInFiles(branch: workspace.branch, isMain: workspace.isMain, mode: theme.mode,
+                                        workspacePath: workspace.path,
                                         query: $searchQuery,
                                         onChoose: { e, line in searchActive = false; pendingJump = line; open(e, preview: false) },
                                         onClose: { closeSearch() })

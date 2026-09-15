@@ -29,21 +29,28 @@ struct FindInFiles: View {
     let branch: String
     let isMain: Bool
     var mode: ThemeMode = .dark
+    var workspacePath: String = ""
     @Binding var query: String
     let onChoose: (WorkspaceFileEntry, Int) -> Void
     let onClose: () -> Void
 
     @State private var blocks: [FindBlock] = []
-    @State private var colored: [Int: [AttributedString]] = [:]
+    @State private var colored: [Int: [NSAttributedString]] = [:]
     @State private var collapsed: Set<String> = []
     @State private var truncated = false
     @State private var index = 0
     @State private var searching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var fileLines: [String: [String]] = [:]
+    // Edited excerpt text (Zed-style multibuffer), keyed by block index; used to write back on Cmd+S.
+    @State private var edited: [Int: [String]] = [:]
     @FocusState private var focused: Bool
 
     private let expandStep = 10
+    private let lineHeight: CGFloat = 16
+    private let codeFontSize: CGFloat = 12
+
+    private var dirtyCount: Int { edited.count }
 
     // Flat list of selectable match lines as (block, row) so arrow keys skip context lines.
     private var matchPositions: [(b: Int, r: Int)] {
@@ -80,6 +87,9 @@ struct FindInFiles: View {
         .onKeyPress(.upArrow) { move(-1); return .handled }
         .onKeyPress(.escape) { onClose(); return .handled }
         .onChange(of: mode) { _ in recolorAll() }
+        .background {
+            Button("") { saveEdits() }.keyboardShortcut("s", modifiers: .command).opacity(0).allowsHitTesting(false)
+        }
         .onAppear {
             focused = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
@@ -95,6 +105,14 @@ struct FindInFiles: View {
                 .focused($focused)
                 .onChange(of: query) { _ in scheduleSearch() }
                 .onSubmit { choose() }
+            if dirtyCount > 0 {
+                Button { saveEdits() } label: {
+                    Text("Save \(dirtyCount)").font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Theme.accent.opacity(0.2), in: Capsule())
+                        .foregroundStyle(Theme.accent)
+                }.buttonStyle(.plain)
+            }
             if searching {
                 ProgressView().controlSize(.small)
             } else if matchCount > 0 {
@@ -110,6 +128,39 @@ struct FindInFiles: View {
         .padding(.horizontal, 12).padding(.vertical, 10)
     }
 
+    // Write each edited excerpt back to its file's original line range. Verify the on-disk lines still match the
+    // excerpt's original text before replacing, so a file changed since the search can't be clobbered.
+    private func saveEdits() {
+        guard !edited.isEmpty, !workspacePath.isEmpty else { return }
+        struct Item { let bi: Int; let start: Int; let count: Int; let original: [String]; let newLines: [String] }
+        var byFile: [String: (repo: String, path: String, items: [Item])] = [:]
+        for (bi, newLines) in edited {
+            guard bi < blocks.count, let start = blocks[bi].lines.first?.line else { continue }
+            let blk = blocks[bi]
+            var entry = byFile[fileKey(blk)] ?? (blk.repo, blk.path, [])
+            entry.items.append(Item(bi: bi, start: start, count: blk.lines.count,
+                                    original: blk.lines.map(\.text), newLines: newLines))
+            byFile[fileKey(blk)] = entry
+        }
+        var saved = Set<Int>()
+        for (_, entry) in byFile {
+            let rel = entry.repo.isEmpty ? entry.path : entry.repo + "/" + entry.path
+            let abs = (workspacePath as NSString).appendingPathComponent(rel)
+            guard let text = try? String(contentsOfFile: abs, encoding: .utf8) else { continue }
+            var fileArr = text.components(separatedBy: "\n")
+            for item in entry.items.sorted(by: { $0.start > $1.start }) {
+                let s = item.start - 1, e = item.start - 1 + item.count
+                guard s >= 0, e <= fileArr.count, Array(fileArr[s..<e]) == item.original else { continue }
+                fileArr.replaceSubrange(s..<e, with: item.newLines)
+                saved.insert(item.bi)
+            }
+            try? fileArr.joined(separator: "\n").write(toFile: abs, atomically: true, encoding: .utf8)
+        }
+        for bi in saved { edited.removeValue(forKey: bi) }
+        // Re-run only when everything saved (refreshes line ranges); keep any edits that failed the safety check.
+        if edited.isEmpty { scheduleSearch() }
+    }
+
     private var results: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -122,29 +173,15 @@ struct FindInFiles: View {
                             if !firstOfFile {
                                 Divider().overlay(Theme.borderSoft.opacity(0.5)).padding(.leading, 54)
                             }
-                            let last = blk.lines.count - 1
-                            let canUp = (blk.lines.first?.line ?? 1) > 1
-                            let canDown = canExpandDown(blk)
-                            ForEach(Array(blk.lines.enumerated()), id: \.offset) { ri, ln in
-                                lineRow(ln, bi: bi, ri: ri,
-                                        expandUp: ri == 0 && canUp,
-                                        expandDown: ri == last && canDown)
-                                    .id("\(bi)-\(ri)")
-                                    // A single click selects the match (no file open, like Zed's multibuffer);
-                                    // Open File / double-click / Enter is what actually opens the file.
-                                    .onTapGesture(count: 2) { open(blk, ln) }
-                                    .simultaneousGesture(TapGesture().onEnded { if let mi = matchIndexAt(bi, ri) { index = mi } })
-                            }
+                            excerpt(blk, bi: bi).id("blk-\(bi)")
                         }
                     }
                 }
-                .textSelection(.enabled)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onChange(of: index) { _ in
                 guard index >= 0, index < matchPositions.count else { return }
-                let p = matchPositions[index]
-                proxy.scrollTo("\(p.b)-\(p.r)", anchor: .center)
+                proxy.scrollTo("blk-\(matchPositions[index].b)", anchor: .center)
             }
         }
     }
@@ -182,43 +219,70 @@ struct FindInFiles: View {
         .onTapGesture { if isCollapsed { collapsed.remove(key) } else { collapsed.insert(key) } }
     }
 
-    private func lineRow(_ ln: FindLine, bi: Int, ri: Int, expandUp: Bool, expandDown: Bool) -> some View {
-        let active = index >= 0 && index < matchPositions.count
-            && matchPositions[index].b == bi && matchPositions[index].r == ri
+    // One editable excerpt (Zed multibuffer): a line-number gutter (with expand chevrons) beside an editable,
+    // syntax-highlighted code view. Both use the same fixed line height so numbers stay aligned with code lines.
+    private func excerpt(_ blk: FindBlock, bi: Int) -> some View {
+        let canUp = (blk.lines.first?.line ?? 1) > 1
+        let canDown = canExpandDown(blk)
+        let last = blk.lines.count - 1
         return HStack(alignment: .top, spacing: 8) {
-            expandGutter(bi: bi, up: expandUp, down: expandDown)
+            VStack(alignment: .trailing, spacing: 0) {
+                ForEach(Array(blk.lines.enumerated()), id: \.offset) { ri, ln in
+                    gutterRow(ln, up: ri == 0 && canUp, down: ri == last && canDown, bi: bi)
+                }
+            }
+            .padding(.leading, 8)
+            Rectangle().fill(Theme.borderSoft.opacity(0.7)).frame(width: 1)
+            ExcerptEditor(lines: linesFor(blk, bi: bi), lineHeight: lineHeight, fontSize: codeFontSize,
+                          textColor: NSColor(Theme.fg), onEdit: { edited[bi] = $0 })
+                .padding(.leading, 4).padding(.trailing, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func gutterRow(_ ln: FindLine, up: Bool, down: Bool, bi: Int) -> some View {
+        HStack(spacing: 4) {
+            Group {
+                if up { Button { expand(bi: bi, up: true) } label: { Image(systemName: "chevron.up") }.buttonStyle(.plain) }
+                else if down { Button { expand(bi: bi, up: false) } label: { Image(systemName: "chevron.down") }.buttonStyle(.plain) }
+                else { Color.clear }
+            }
+            .font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.fgMuted).frame(width: 12)
             Text("\(ln.line)")
                 .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.dim)
                 .frame(width: 38, alignment: .trailing)
-            // Vertical rule separating the line-number gutter from the code, Zed-style (rows stack into one line).
-            Rectangle().fill(Theme.borderSoft.opacity(0.7)).frame(width: 1)
-            lineContent(ln, bi: bi, ri: ri)
-                .font(.system(size: 12, design: .monospaced))
-                .lineLimit(1).truncationMode(.tail)
-                .padding(.leading, 4)
-            Spacer(minLength: 0)
         }
-        .padding(.leading, 8).padding(.trailing, 12).padding(.vertical, 1.5)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(active ? Theme.accent.opacity(0.16) : (ln.match ? Theme.accent.opacity(0.06) : .clear))
+        .frame(height: lineHeight)
     }
 
-    // Zed-style expand control: a chevron in the gutter of an excerpt's first/last line that pulls in more context.
-    @ViewBuilder private func expandGutter(bi: Int, up: Bool, down: Bool) -> some View {
-        Group {
-            if up {
-                Button { expand(bi: bi, up: true) } label: { Image(systemName: "chevron.up") }
-                    .buttonStyle(.plain)
-            } else if down {
-                Button { expand(bi: bi, up: false) } label: { Image(systemName: "chevron.down") }
-                    .buttonStyle(.plain)
-            } else {
-                Color.clear
-            }
+    // Attributed lines for the editor: edited text (plain) if dirty, else the syntax-highlighted lines (or plain
+    // fallback), with the query term emphasized on matched lines.
+    private func linesFor(_ blk: FindBlock, bi: Int) -> [NSAttributedString] {
+        if let e = edited[bi] {
+            return e.map { NSAttributedString(string: $0, attributes: [.foregroundColor: NSColor(Theme.fg)]) }
         }
-        .font(.system(size: 9, weight: .bold))
-        .foregroundStyle(Theme.fgMuted)
-        .frame(width: 12, height: 15)
+        let base: [NSAttributedString]
+        if let c = colored[bi], c.count == blk.lines.count {
+            base = c
+        } else {
+            base = blk.lines.map { NSAttributedString(string: $0.text, attributes: [.foregroundColor: NSColor(Theme.fg)]) }
+        }
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return base }
+        return zip(base, blk.lines).map { (attr, ln) in
+            guard ln.match else { return attr }
+            let m = NSMutableAttributedString(attributedString: attr)
+            let s = m.string as NSString
+            var r = s.range(of: q, options: .caseInsensitive)
+            while r.location != NSNotFound {
+                m.addAttribute(.backgroundColor, value: NSColor(Theme.accent.opacity(0.3)), range: r)
+                let next = r.location + max(r.length, 1)
+                if next >= s.length { break }
+                r = s.range(of: q, options: .caseInsensitive, range: NSRange(location: next, length: s.length - next))
+            }
+            return m
+        }
     }
 
     private func canExpandDown(_ blk: FindBlock) -> Bool {
@@ -293,53 +357,15 @@ struct FindInFiles: View {
 
     private func recolorAll() {
         let theme = SQLEditor.palette(mode)
-        var dict: [Int: [AttributedString]] = [:]
+        var dict: [Int: [NSAttributedString]] = [:]
         for (i, blk) in blocks.enumerated() {
             let text = blk.lines.map(\.text).joined(separator: "\n")
-            if let lines = SearchSyntax.highlight(blockText: text, path: blk.path, theme: theme),
+            if let lines = SearchSyntax.highlightNS(blockText: text, path: blk.path, theme: theme),
                lines.count == blk.lines.count {
                 dict[i] = lines
             }
         }
         colored = dict
-    }
-
-    // Prefer the syntax-highlighted line; fall back to plain text (dim for context) with the match term boxed.
-    private func lineContent(_ ln: FindLine, bi: Int, ri: Int) -> Text {
-        if let lines = colored[bi], ri < lines.count {
-            var a = lines[ri]
-            if ln.match { addMatchBackground(&a) }
-            return Text(a)
-        }
-        return ln.match ? Text(highlighted(ln.text)).foregroundColor(Theme.fg)
-                        : Text(ln.text).foregroundColor(Theme.dim)
-    }
-
-    private func addMatchBackground(_ a: inout AttributedString) {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return }
-        var from = a.startIndex
-        while from < a.endIndex, let r = a[from...].range(of: q, options: .caseInsensitive) {
-            a[r].backgroundColor = Theme.accent.opacity(0.35)
-            from = r.upperBound
-        }
-    }
-
-    // Fallback highlight (no grammar): box the query occurrences in a plain line.
-    private func highlighted(_ s: String) -> AttributedString {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return AttributedString(s) }
-        var out = AttributedString("")
-        var rest = Substring(s)
-        while let r = rest.range(of: q, options: .caseInsensitive) {
-            out += AttributedString(String(rest[rest.startIndex..<r.lowerBound]))
-            var hit = AttributedString(String(rest[r]))
-            hit.backgroundColor = Theme.accent.opacity(0.35)
-            out += hit
-            rest = rest[r.upperBound...]
-        }
-        out += AttributedString(String(rest))
-        return out
     }
 
     private func move(_ delta: Int) {
@@ -351,6 +377,7 @@ struct FindInFiles: View {
         index = 0
         collapsed = []
         fileLines = [:]
+        edited = [:]
         searchTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { blocks = []; colored = [:]; truncated = false; searching = false; return }
@@ -373,11 +400,11 @@ struct FindInFiles: View {
     // Syntax-color each excerpt block via tree-sitter, publishing progressively so the list paints fast.
     private func highlightBlocks(_ blks: [FindBlock], mode: ThemeMode) async {
         let theme = SQLEditor.palette(mode)
-        var dict: [Int: [AttributedString]] = [:]
+        var dict: [Int: [NSAttributedString]] = [:]
         for (i, blk) in blks.enumerated() {
             if Task.isCancelled { return }
             let text = blk.lines.map(\.text).joined(separator: "\n")
-            if let lines = SearchSyntax.highlight(blockText: text, path: blk.path, theme: theme),
+            if let lines = SearchSyntax.highlightNS(blockText: text, path: blk.path, theme: theme),
                lines.count == blk.lines.count {
                 dict[i] = lines
             }
