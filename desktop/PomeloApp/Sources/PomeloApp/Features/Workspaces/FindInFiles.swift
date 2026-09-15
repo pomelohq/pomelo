@@ -75,6 +75,7 @@ struct FindInFiles: View {
         .onKeyPress(.downArrow) { move(1); return .handled }
         .onKeyPress(.upArrow) { move(-1); return .handled }
         .onKeyPress(.escape) { onClose(); return .handled }
+        .onChange(of: mode) { _ in recolorAll() }
         .onAppear {
             focused = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
@@ -116,17 +117,16 @@ struct FindInFiles: View {
                             if !firstOfFile {
                                 Divider().overlay(Theme.borderSoft.opacity(0.5)).padding(.leading, 54)
                             }
-                            if (blk.lines.first?.line ?? 1) > 1 {
-                                expandRow(bi: bi, up: true)
-                            }
+                            let last = blk.lines.count - 1
+                            let canUp = (blk.lines.first?.line ?? 1) > 1
+                            let canDown = canExpandDown(blk)
                             ForEach(Array(blk.lines.enumerated()), id: \.offset) { ri, ln in
-                                lineRow(ln, bi: bi, ri: ri)
+                                lineRow(ln, bi: bi, ri: ri,
+                                        expandUp: ri == 0 && canUp,
+                                        expandDown: ri == last && canDown)
                                     .id("\(bi)-\(ri)")
                                     .contentShape(Rectangle())
                                     .onTapGesture { open(blk, ln) }
-                            }
-                            if canExpandDown(blk) {
-                                expandRow(bi: bi, up: false)
                             }
                         }
                     }
@@ -174,13 +174,14 @@ struct FindInFiles: View {
         .onTapGesture { if isCollapsed { collapsed.remove(key) } else { collapsed.insert(key) } }
     }
 
-    private func lineRow(_ ln: FindLine, bi: Int, ri: Int) -> some View {
+    private func lineRow(_ ln: FindLine, bi: Int, ri: Int, expandUp: Bool, expandDown: Bool) -> some View {
         let active = index >= 0 && index < matchPositions.count
             && matchPositions[index].b == bi && matchPositions[index].r == ri
-        return HStack(alignment: .top, spacing: 10) {
+        return HStack(alignment: .top, spacing: 8) {
+            expandGutter(bi: bi, up: expandUp, down: expandDown)
             Text("\(ln.line)")
                 .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.dim)
-                .frame(width: 44, alignment: .trailing)
+                .frame(width: 40, alignment: .trailing)
             lineContent(ln, bi: bi, ri: ri)
                 .font(.system(size: 12, design: .monospaced))
                 .lineLimit(1).truncationMode(.tail)
@@ -191,20 +192,22 @@ struct FindInFiles: View {
         .background(active ? Theme.accent.opacity(0.16) : (ln.match ? Theme.accent.opacity(0.06) : .clear))
     }
 
-    // Zed-style "expand excerpt": a thin gutter-aligned control that pulls in more surrounding context lines.
-    private func expandRow(bi: Int, up: Bool) -> some View {
-        Button { expand(bi: bi, up: up) } label: {
-            HStack(spacing: 6) {
-                Image(systemName: up ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .frame(width: 44, alignment: .trailing)
-                Rectangle().fill(Theme.borderSoft.opacity(0.6)).frame(height: 1)
+    // Zed-style expand control: a chevron in the gutter of an excerpt's first/last line that pulls in more context.
+    @ViewBuilder private func expandGutter(bi: Int, up: Bool, down: Bool) -> some View {
+        Group {
+            if up {
+                Button { expand(bi: bi, up: true) } label: { Image(systemName: "chevron.up") }
+                    .buttonStyle(.plain)
+            } else if down {
+                Button { expand(bi: bi, up: false) } label: { Image(systemName: "chevron.down") }
+                    .buttonStyle(.plain)
+            } else {
+                Color.clear
             }
-            .foregroundStyle(Theme.dim)
-            .padding(.trailing, 12).padding(.vertical, 3)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(Theme.fgMuted)
+        .frame(width: 12, height: 15)
     }
 
     private func canExpandDown(_ blk: FindBlock) -> Bool {

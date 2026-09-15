@@ -30,19 +30,18 @@ public enum SearchExcerptHighlighter {
             }
         }
 
+        // Split on "\n" deterministically so the count always equals (newlines + 1), matching the caller's
+        // line array even when the excerpt ends in a blank line (NSString.lineRange would drop that final empty line).
         let ns = full.string as NSString
         var out: [NSAttributedString] = []
-        var loc = 0
-        while loc < ns.length {
-            let lr = ns.lineRange(for: NSRange(location: loc, length: 0))
-            var len = lr.length
-            while len > 0 {
-                let c = ns.character(at: lr.location + len - 1)
-                if c == 0x0A || c == 0x0D { len -= 1 } else { break }
+        var start = 0
+        for i in 0..<ns.length {
+            if ns.character(at: i) == 0x0A {
+                out.append(full.attributedSubstring(from: NSRange(location: start, length: i - start)))
+                start = i + 1
             }
-            out.append(full.attributedSubstring(from: NSRange(location: lr.location, length: len)))
-            loc = lr.location + lr.length
         }
+        out.append(full.attributedSubstring(from: NSRange(location: start, length: ns.length - start)))
         return out
     }
 }
