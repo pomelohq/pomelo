@@ -53,6 +53,7 @@ struct FilesPane: View {
     @State private var savedText = ""
     @State private var didRestore = false
     @State private var dirtyKeys: Set<String> = []
+    @State private var changedLines: [Int: Int] = [:]
     @AppStorage("fileEditorFontSize") private var fontSize: Double = 12
 
     private var selectedIsMarkdown: Bool {
@@ -101,7 +102,7 @@ struct FilesPane: View {
         .onChange(of: expanded) { _ in if didRestore { saveState() } }
         .onChange(of: selected) { _ in if didRestore { saveState() } }
         .onDisappear { stopWatch() }
-        .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview() }
+        .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview(); await refreshDiff() }
         .onChange(of: openRequest) { req in
             guard let e = req else { return }
             revealInTree(e)
@@ -159,11 +160,29 @@ struct FilesPane: View {
         do {
             try editText.write(toFile: abs, atomically: true, encoding: .utf8)
             savedText = editText
+            Task { await refreshDiff(); await refreshGitStatus() }
         } catch {
             let alert = NSAlert(); alert.messageText = "Couldn't save"
             alert.informativeText = error.localizedDescription
             alert.alertStyle = .warning; alert.addButton(withTitle: "OK"); alert.runModal()
         }
+    }
+
+    // Change-gutter markers for the open file: 0-based line -> kind (1 added, 2 modified, 3 deleted).
+    private func refreshDiff() async {
+        guard let sel = selected else { changedLines = [:]; return }
+        let branch = workspace.branch, isMain = workspace.isMain
+        let repo = sel.repo, path = sel.path
+        changedLines = await Task.detached(priority: .utility) { () -> [Int: Int] in
+            struct Diff: Decodable { var added: [Int] = []; var modified: [Int] = []; var deleted: [Int] = [] }
+            let data = FileStore.gitDiff(branch: branch, repo: repo, path: path, isMain: isMain)
+            let d = PomJSON.decode(Diff.self, from: data) ?? Diff()
+            var m: [Int: Int] = [:]
+            for line in d.added { m[line - 1] = 1 }
+            for line in d.modified { m[line - 1] = 2 }
+            for line in d.deleted { m[line - 1] = 3 }
+            return m
+        }.value
     }
 
     private var tree: some View {
@@ -267,7 +286,7 @@ struct FilesPane: View {
                 } else {
                     // Always editable; tree-sitter highlighting where a grammar is bundled.
                     FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: true,
-                               fontSize: CGFloat(fontSize),
+                               fontSize: CGFloat(fontSize), changedLines: changedLines,
                                onRightClick: { pt, view in showEditorMenu(sel, at: pt, in: view) }).id(sel.id)
                 }
             case .image(let img):

@@ -14,6 +14,7 @@ struct FileEditor: View {
     var wrap: Bool = false
     var editable: Bool = true
     var fontSize: CGFloat = 12
+    var changedLines: [Int: Int] = [:]
     var onRightClick: (NSPoint, NSView) -> Void = { _, _ in }
     @State private var state = SourceEditorState()
 
@@ -35,5 +36,6 @@ struct FileEditor: View {
             state: $state
         )
         .onRightClick(onRightClick)
+        .changedLines(changedLines)
     }
 }

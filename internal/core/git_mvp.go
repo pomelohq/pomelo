@@ -52,6 +52,15 @@ func (s *Server) gitRepoWorktree(branch, repo string, isMain bool) (string, bool
 	return wt, true
 }
 
+func (s *Server) GitFileDiff(branch, repo, path string, isMain bool) map[string]any {
+	wt, ok := s.gitRepoWorktree(branch, repo, isMain)
+	if !ok {
+		return map[string]any{"added": []int{}, "modified": []int{}, "deleted": []int{}}
+	}
+	d := services.GitDiffForFile(wt, path)
+	return map[string]any{"added": d.Added, "modified": d.Modified, "deleted": d.Deleted}
+}
+
 func (s *Server) GitStage(branch, repo string, isMain bool, paths []string) map[string]any {
 	wt, ok := s.gitRepoWorktree(branch, repo, isMain)
 	if !ok {

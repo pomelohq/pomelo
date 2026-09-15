@@ -393,6 +393,27 @@ public class GutterView: NSView {
     /// Draws selected line backgrounds from the text view's selection manager into the gutter view, making the
     /// selection background appear seamless between the gutter and text view.
     /// - Parameter context: The drawing context to use.
+    /// Git change gutter: 0-based line index -> kind (1 added, 2 modified, 3 deleted).
+    public var changedLines: [Int: Int] = [:] {
+        didSet { needsDisplay = true }
+    }
+
+    private func drawChangeBars(_ context: CGContext, dirtyRect: NSRect) {
+        guard let textView, !changedLines.isEmpty else { return }
+        for line in textView.layoutManager.linesStartingAt(dirtyRect.minY, until: dirtyRect.maxY) {
+            guard let kind = changedLines[line.index] else { continue }
+            let color: NSColor
+            switch kind {
+            case 1: color = .systemGreen
+            case 3: color = .systemRed
+            default: color = .systemYellow
+            }
+            context.setFillColor(color.withAlphaComponent(0.85).cgColor)
+            let height = kind == 3 ? min(4, line.height) : line.height
+            context.fill(CGRect(x: 0, y: line.yPos, width: 2, height: height))
+        }
+    }
+
     private func drawSelectedLines(_ context: CGContext) {
         guard let textView = textView,
               let selectionManager = textView.selectionManager,
@@ -505,6 +526,7 @@ public class GutterView: NSView {
         context.saveGState()
         drawBackground(context, dirtyRect: dirtyRect)
         drawSelectedLines(context)
+        drawChangeBars(context, dirtyRect: dirtyRect)
         if showLineNumbers {
             drawLineNumbers(context, dirtyRect: dirtyRect)
         }

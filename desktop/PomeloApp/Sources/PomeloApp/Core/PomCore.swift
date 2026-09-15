@@ -193,6 +193,7 @@ final class PomCore: @unchecked Sendable {
     func gitPull(branch: String, repo: String, isMain: Bool) -> Data { command(domain: "git", action: "pull", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
     func githubTest(token: String) -> Data { command(domain: "github", action: "test", params: jp(["token": token])) }
     func gitStatusData(branch: String, isMain: Bool) -> Data { query(domain: "git_status", params: jp(["branch": branch, "is_main": isMain])) }
+    func gitFileDiffData(branch: String, repo: String, path: String, isMain: Bool) -> Data { query(domain: "git_diff", params: jp(["branch": branch, "repo": repo, "path": path, "is_main": isMain])) }
     @discardableResult
     func gitStage(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data { command(domain: "git", action: "stage", params: jp(["branch": branch, "repo": repo, "is_main": isMain, "paths": paths])) }
     @discardableResult

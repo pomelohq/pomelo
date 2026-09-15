@@ -102,6 +102,14 @@ public struct SourceEditor: NSViewControllerRepresentable {
     var completionDelegate: CodeSuggestionDelegate?
     var jumpToDefinitionDelegate: JumpToDefinitionDelegate?
     var rightClickHandler: ((NSPoint, NSView) -> Void)?
+    var changeGutter: [Int: Int] = [:]
+
+    /// Git change gutter markers: 0-based line index -> kind (1 added, 2 modified, 3 deleted).
+    public func changedLines(_ lines: [Int: Int]) -> Self {
+        var copy = self
+        copy.changeGutter = lines
+        return copy
+    }
 
     /// Install a custom right-click handler. The editor moves the caret to the click, suppresses the
     /// native menu, and calls `handler` with the click's screen point and the text view (so the host
@@ -171,6 +179,7 @@ public struct SourceEditor: NSViewControllerRepresentable {
         controller.completionDelegate = completionDelegate
         controller.jumpToDefinitionDelegate = jumpToDefinitionDelegate
         controller.textView?.onRightClick = rightClickHandler
+        controller.gutterView?.changedLines = changeGutter
 
         context.coordinator.updateHighlightProviders(highlightProviders)
 
