@@ -50,6 +50,7 @@ struct FilesPane: View {
     @State private var treeVersion = 0
     @State private var editText = ""
     @State private var savedText = ""
+    @State private var didRestore = false
 
     private var selectedIsMarkdown: Bool {
         guard let path = selected?.path else { return false }
@@ -87,6 +88,8 @@ struct FilesPane: View {
                 .opacity(0).allowsHitTesting(false)
         }
         .onAppear { startWatch() }
+        .onChange(of: expanded) { _ in if didRestore { saveState() } }
+        .onChange(of: selected) { _ in if didRestore { saveState() } }
         .onDisappear { stopWatch() }
         .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview() }
         .onChange(of: openRequest) { req in
@@ -304,8 +307,38 @@ struct FilesPane: View {
         roots = built.1
         treeVersion &+= 1
         expanded.insert("")   // keep the workspace-root node open by default
+        if !didRestore {
+            didRestore = true
+            restoreState(from: built.0)
+        }
         if let sel = selected, !built.0.contains(where: { $0.id == sel.id }) {
             selected = nil
+        }
+    }
+
+    private struct PersistedState: Codable {
+        var expanded: [String]
+        var selectedRepo: String?
+        var selectedPath: String?
+    }
+
+    private var stateKey: String { "filesPane.state.\(workspace.path)" }
+
+    private func saveState() {
+        let st = PersistedState(expanded: Array(expanded),
+                                selectedRepo: selected?.repo,
+                                selectedPath: selected?.path)
+        if let data = try? JSONEncoder().encode(st) {
+            UserDefaults.standard.set(data, forKey: stateKey)
+        }
+    }
+
+    private func restoreState(from list: [WorkspaceFileEntry]) {
+        guard let data = UserDefaults.standard.data(forKey: stateKey),
+              let st = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
+        expanded.formUnion(st.expanded)
+        if selected == nil, let path = st.selectedPath {
+            selected = list.first { $0.repo == (st.selectedRepo ?? "") && $0.path == path }
         }
     }
 
