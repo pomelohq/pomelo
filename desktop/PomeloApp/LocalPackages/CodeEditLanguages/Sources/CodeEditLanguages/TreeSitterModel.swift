@@ -27,6 +27,10 @@ public class TreeSitterModel {
             return jsxQuery
         case .json:
             return jsonQuery
+        case .typescript:
+            return typescriptQuery
+        case .tsx:
+            return tsxQuery
         case .sql:
             return sqlQuery
         default:
@@ -52,6 +56,16 @@ public class TreeSitterModel {
     /// Query for `JSON` files.
     public private(set) lazy var jsonQuery: Query? = {
         return queryFor(.json)
+    }()
+
+    /// Query for `TypeScript` files.
+    public private(set) lazy var typescriptQuery: Query? = {
+        return queryFor(.typescript)
+    }()
+
+    /// Query for `TSX` files.
+    public private(set) lazy var tsxQuery: Query? = {
+        return queryFor(.tsx)
     }()
 
     /// Query for `SQL` files.

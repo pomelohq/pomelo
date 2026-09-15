@@ -82,12 +82,18 @@ public struct CodeLanguage {
             .appendingPathComponent("Resources/tree-sitter-\(tsName)/\(highlights).scm")
     }
 
-    /// Gets the TSLanguage from `tree-sitter`. Only SQL is bundled (the in-app SQL
-    /// editor) — other grammars were dropped to keep the binary small.
+    /// Gets the TSLanguage from `tree-sitter`. Only the core-stack grammars are
+    /// bundled natively; the rest fall back to no highlighting.
     private var tsLanguage: OpaquePointer? {
         switch id {
         case .json:
             return tree_sitter_json()
+        case .javascript, .jsx:
+            return tree_sitter_javascript()
+        case .typescript:
+            return tree_sitter_typescript()
+        case .tsx:
+            return tree_sitter_tsx()
         case .sql:
             return tree_sitter_sql()
         default:
