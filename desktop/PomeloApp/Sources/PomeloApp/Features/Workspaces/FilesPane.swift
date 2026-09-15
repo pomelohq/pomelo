@@ -52,6 +52,8 @@ struct FilesPane: View {
     @State private var editText = ""
     @State private var savedText = ""
     @State private var didRestore = false
+    @State private var dirtyKeys: Set<String> = []
+    @AppStorage("fileEditorFontSize") private var fontSize: Double = 12
 
     private var selectedIsMarkdown: Bool {
         guard let path = selected?.path else { return false }
@@ -86,8 +88,14 @@ struct FilesPane: View {
         }
         .background(Theme.bg)
         .background {
-            Button("") { save() }.keyboardShortcut("s", modifiers: .command)
-                .opacity(0).allowsHitTesting(false)
+            Group {
+                Button("") { save() }.keyboardShortcut("s", modifiers: .command)
+                Button("") { fontSize = min(fontSize + 1, 28) }.keyboardShortcut("=", modifiers: .command)
+                Button("") { fontSize = min(fontSize + 1, 28) }.keyboardShortcut("+", modifiers: .command)
+                Button("") { fontSize = max(fontSize - 1, 8) }.keyboardShortcut("-", modifiers: .command)
+                Button("") { fontSize = 12 }.keyboardShortcut("0", modifiers: .command)
+            }
+            .opacity(0).allowsHitTesting(false)
         }
         .onAppear { startWatch() }
         .onChange(of: expanded) { _ in if didRestore { saveState() } }
@@ -165,7 +173,7 @@ struct FilesPane: View {
                     EmptyStateView(icon: "folder", title: "No files")
                 } else {
                     WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path, treeVersion: treeVersion,
-                                          onOpenInTerminal: onOpenInTerminal,
+                                          onOpenInTerminal: onOpenInTerminal, dirtyKeys: dirtyKeys,
                                           selected: $selected, expanded: $expanded)
                 }
             } else {
@@ -259,6 +267,7 @@ struct FilesPane: View {
                 } else {
                     // Always editable; tree-sitter highlighting where a grammar is bundled.
                     FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: true,
+                               fontSize: CGFloat(fontSize),
                                onRightClick: { pt, view in showEditorMenu(sel, at: pt, in: view) }).id(sel.id)
                 }
             case .image(let img):
@@ -349,6 +358,33 @@ struct FilesPane: View {
         if let sel = selected, !built.0.contains(where: { $0.id == sel.id }) {
             selected = nil
         }
+        await refreshGitStatus()
+    }
+
+    // Gold-highlight files with uncommitted git changes and every folder on their path (Zed-style).
+    private func refreshGitStatus() async {
+        let branch = workspace.branch, isMain = workspace.isMain
+        let keys = await Task.detached(priority: .utility) { () -> Set<String> in
+            struct Change: Decodable { var path = "" }
+            struct Repo: Decodable { var repo = ""; var changes: [Change] = [] }
+            struct Payload: Decodable { var repos: [Repo] = [] }
+            let data = FileStore.gitStatus(branch: branch, isMain: isMain)
+            let payload = PomJSON.decode(Payload.self, from: data) ?? Payload()
+            var keys: Set<String> = []
+            for repo in payload.repos {
+                for change in repo.changes where !change.path.isEmpty {
+                    let fileID = repo.repo.isEmpty ? change.path : repo.repo + "/" + change.path
+                    keys.insert("")
+                    var acc = ""
+                    for part in fileID.split(separator: "/") {
+                        acc = acc.isEmpty ? String(part) : acc + "/" + part
+                        keys.insert(acc)
+                    }
+                }
+            }
+            return keys
+        }.value
+        dirtyKeys = keys
     }
 
     private struct PersistedState: Codable {

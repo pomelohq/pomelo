@@ -13,6 +13,7 @@ struct FileEditor: View {
     var mode: ThemeMode
     var wrap: Bool = false
     var editable: Bool = true
+    var fontSize: CGFloat = 12
     var onRightClick: (NSPoint, NSView) -> Void = { _, _ in }
     @State private var state = SourceEditorState()
 
@@ -24,7 +25,7 @@ struct FileEditor: View {
                 appearance: .init(
                     theme: SQLEditor.palette(mode),
                     useThemeBackground: true,
-                    font: .monospacedSystemFont(ofSize: 12, weight: .regular),
+                    font: .monospacedSystemFont(ofSize: fontSize, weight: .regular),
                     lineHeightMultiple: 1.3,
                     wrapLines: wrap
                 ),

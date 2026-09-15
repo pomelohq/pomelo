@@ -99,6 +99,7 @@ struct WorkspaceFileTreeList: View {
     let workspacePath: String
     var treeVersion: Int = 0
     var onOpenInTerminal: (String) -> Void = { _ in }
+    var dirtyKeys: Set<String> = []
     @Binding var selected: WorkspaceFileEntry?
     @Binding var expanded: Set<String>
 
@@ -185,6 +186,7 @@ struct WorkspaceFileTreeList: View {
         h.combine(selected?.id)
         h.combine(renamingID)
         h.combine(expanded)
+        h.combine(dirtyKeys)
         return h.finalize()
     }
 
@@ -201,13 +203,14 @@ struct WorkspaceFileTreeList: View {
 
     @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int) -> some View {
         let isDir = !node.isLeaf
+        let dirty = dirtyKeys.contains(node.id)
         let matName: String? = isDir ? "mi-" + MaterialIcon.folder(node.name) : MaterialIcon.file(node.name).map { "mi-" + $0 }
         TreeRow(depth: depth, indent: { CGFloat($0) * 13 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
                 leadingSymbol: "doc",
                 marker: nil,
                 selected: node.isLeaf && selected?.id == node.entry?.id,
                 selectionColor: Theme.fg.opacity(0.13),
-                nameColor: node.isRoot ? Theme.fg : (node.isLeaf ? Theme.fg : Theme.fgMuted),
+                nameColor: dirty ? Theme.warn : (node.isRoot ? Theme.fg : (node.isLeaf ? Theme.fg : Theme.fgMuted)),
                 nameWeight: node.isLeaf ? .regular : (node.isRoot ? .semibold : .medium),
                 tooltip: nil,
                 editing: renamingID == node.id, editText: $renameText,
