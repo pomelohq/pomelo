@@ -4,6 +4,18 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-15
+
+### Added
+- The Files pane is now a full code editor: edit and save in place (Cmd+S), with native tree-sitter syntax highlighting for JSON, JavaScript, TypeScript/TSX, Python, Ruby, Java, and SQL. No more opening another editor just to read or tweak a file.
+- Indentation guides and a git change gutter in the editor: a colored bar marks added, modified, and deleted lines against HEAD, and the caret's line shows an inline git-blame annotation (author and how long ago).
+- The file tree tints files with uncommitted changes, and the folders that contain them, so you can see at a glance where your edits are.
+- A themed right-click menu for the tree and the editor (Cut/Copy/Paste, Copy Path, Copy Relative Path, Reveal in Finder, Open in Terminal). Open in Terminal opens Pomelo's built-in terminal in that folder, and right-clicking in the editor moves the caret to the click.
+- Editor font size shortcuts (Cmd +, Cmd -, Cmd 0), and the Files pane now remembers the open file and which folders are expanded per workspace.
+
+### Changed
+- The Files editor is always editable now (the separate read-only mode is gone); the Save button appears only when there are unsaved edits.
+
 ## [0.5.10] - 2026-09-14
 
 ### Fixed
