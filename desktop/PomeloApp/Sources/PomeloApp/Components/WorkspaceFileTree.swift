@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-struct WorkspaceFileEntry: Identifiable, Decodable {
+struct WorkspaceFileEntry: Identifiable, Decodable, Equatable {
     var repo: String
     var path: String
     var isDir: Bool

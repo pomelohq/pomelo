@@ -126,6 +126,20 @@ struct WorkspacePaneInner: View {
     @EnvironmentObject var theme: ThemeManager
 
     @State private var opened: Set<PaneKind> = []
+    @State private var quickOpen = false
+    @State private var quickEntries: [WorkspaceFileEntry] = []
+    @State private var openFile: WorkspaceFileEntry?
+
+    private func openQuickOpen() {
+        let branch = workspace.branch, isMain = workspace.isMain
+        Task {
+            let raw = await Task.detached(priority: .userInitiated) {
+                FileStore.list(branch: branch, isMain: isMain)
+            }.value
+            quickEntries = PomJSON.decode([WorkspaceFileEntry].self, from: raw) ?? []
+            quickOpen = true
+        }
+    }
 
     private var safeWs: String {
         workspace.id.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "-")
@@ -157,6 +171,17 @@ struct WorkspacePaneInner: View {
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
         }
         .perfTag("WorkspacePane")
+        .background {
+            Button("") { openQuickOpen() }.keyboardShortcut("p", modifiers: .command)
+                .opacity(0).allowsHitTesting(false)
+        }
+        .overlay {
+            if quickOpen {
+                FileQuickOpen(entries: quickEntries,
+                              onChoose: { e in openFile = e; opened.insert(.files); ps.selectFunc(.files); quickOpen = false },
+                              onClose: { quickOpen = false })
+            }
+        }
     }
 
     private var effectivePane: PaneKind {
@@ -233,7 +258,7 @@ struct WorkspacePaneInner: View {
                 opened.insert(.claude)
                 StreamManager.shared.askClaude(wsKey: workspace.id, text: text)
                 ps.agentOpen = true; ps.funcVisible = true
-            })
+            }, openRequest: $openFile)
             .id("files-\(safeWs)")
         case .review:
             ReviewPane(workspace: workspace, isActive: active, onAskAgent: { text in

@@ -35,6 +35,7 @@ struct FilesPane: View {
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
     var onAskAgent: (String) -> Void = { _ in }
+    @Binding var openRequest: WorkspaceFileEntry?
     @ObservedObject private var codeDisplay = CodeDisplayManager.shared
 
     @State private var entries: [WorkspaceFileEntry]?
@@ -90,6 +91,23 @@ struct FilesPane: View {
         .onAppear { startWatch() }
         .onDisappear { stopWatch() }
         .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview() }
+        .onChange(of: openRequest) { req in
+            guard let e = req else { return }
+            revealInTree(e)
+            selected = e
+            openRequest = nil
+        }
+    }
+
+    // Expand the tree down to a file so a Cmd+P jump reveals it.
+    private func revealInTree(_ e: WorkspaceFileEntry) {
+        expanded.insert("")
+        var id = ""
+        if !e.repo.isEmpty { expanded.insert(e.repo); id = e.repo }
+        for part in e.path.split(separator: "/").dropLast() {
+            id = id.isEmpty ? String(part) : id + "/" + part
+            expanded.insert(id)
+        }
     }
 
     private func toggleEdit() {
