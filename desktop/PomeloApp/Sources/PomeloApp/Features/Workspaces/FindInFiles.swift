@@ -251,20 +251,43 @@ struct FindInFiles: View {
             blk.lines.append(contentsOf: added)
         }
         blocks[bi] = blk
-        rehighlight(bi)
+        normalize()
+        recolorAll()
     }
 
-    private func rehighlight(_ bi: Int) {
-        guard bi >= 0, bi < blocks.count else { return }
-        let blk = blocks[bi]
-        let theme = SQLEditor.palette(mode)
-        let text = blk.lines.map(\.text).joined(separator: "\n")
-        if let lines = SearchSyntax.highlight(blockText: text, path: blk.path, theme: theme),
-           lines.count == blk.lines.count {
-            colored[bi] = lines
-        } else {
-            colored[bi] = nil
+    // Merge consecutive same-file excerpts whose line ranges touch or overlap into one, deduping by line number
+    // (preferring the matched copy) — so expanding an excerpt into its neighbor doesn't render lines twice.
+    private func normalize() {
+        var out: [FindBlock] = []
+        for b in blocks {
+            if var last = out.last, last.repo == b.repo, last.path == b.path,
+               let le = last.lines.last?.line, let bf = b.lines.first?.line, le >= bf - 1 {
+                var byLine: [Int: FindLine] = [:]
+                for l in last.lines { byLine[l.line] = l }
+                for l in b.lines {
+                    if let ex = byLine[l.line] { if l.match && !ex.match { byLine[l.line] = l } }
+                    else { byLine[l.line] = l }
+                }
+                last.lines = byLine.values.sorted { $0.line < $1.line }
+                out[out.count - 1] = last
+            } else {
+                out.append(b)
+            }
         }
+        blocks = out
+    }
+
+    private func recolorAll() {
+        let theme = SQLEditor.palette(mode)
+        var dict: [Int: [AttributedString]] = [:]
+        for (i, blk) in blocks.enumerated() {
+            let text = blk.lines.map(\.text).joined(separator: "\n")
+            if let lines = SearchSyntax.highlight(blockText: text, path: blk.path, theme: theme),
+               lines.count == blk.lines.count {
+                dict[i] = lines
+            }
+        }
+        colored = dict
     }
 
     // Prefer the syntax-highlighted line; fall back to plain text (dim for context) with the match term boxed.
