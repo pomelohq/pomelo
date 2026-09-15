@@ -29,10 +29,10 @@ struct FindInFiles: View {
     let branch: String
     let isMain: Bool
     var mode: ThemeMode = .dark
+    @Binding var query: String
     let onChoose: (WorkspaceFileEntry, Int) -> Void
     let onClose: () -> Void
 
-    @State private var query = ""
     @State private var blocks: [FindBlock] = []
     @State private var colored: [Int: [AttributedString]] = [:]
     @State private var collapsed: Set<String> = []
@@ -79,6 +79,7 @@ struct FindInFiles: View {
         .onAppear {
             focused = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+            if !query.trimmingCharacters(in: .whitespaces).isEmpty && blocks.isEmpty { scheduleSearch() }
         }
     }
 

@@ -80,6 +80,7 @@ struct FilesPane: View {
     // Project-search (Cmd+Shift+F) lives as its own tab, Zed-style.
     @State private var searchOpen = false
     @State private var searchActive = false
+    @State private var searchQuery = ""
     @State private var pendingJump: Int?
 
     private var selectedIsMarkdown: Bool {
@@ -134,8 +135,8 @@ struct FilesPane: View {
         if didRestore { saveState() }
     }
 
-    private func openSearch() { searchOpen = true; searchActive = true }
-    private func closeSearch() { searchOpen = false; searchActive = false }
+    private func openSearch() { searchOpen = true; searchActive = true; if didRestore { saveState() } }
+    private func closeSearch() { searchOpen = false; searchActive = false; if didRestore { saveState() } }
 
     private func close(_ id: String) {
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
@@ -222,15 +223,24 @@ struct FilesPane: View {
                         tabBar
                         Divider().overlay(Theme.borderSoft)
                     }
-                    if searchActive {
-                        FindInFiles(branch: workspace.branch, isMain: workspace.isMain, mode: theme.mode,
-                                    onChoose: { e, line in searchActive = false; pendingJump = line; open(e, preview: false) },
-                                    onClose: { closeSearch() })
-                    } else {
-                        topBar(compact: overlayTree)
-                        Divider().overlay(Theme.borderSoft)
-                        // Clip so the editor's gutter can't overdraw upward into the path bar.
-                        content.clipped()
+                    ZStack {
+                        VStack(spacing: 0) {
+                            topBar(compact: overlayTree)
+                            Divider().overlay(Theme.borderSoft)
+                            // Clip so the editor's gutter can't overdraw upward into the path bar.
+                            content.clipped()
+                        }
+                        .opacity(searchActive ? 0 : 1)
+                        .allowsHitTesting(!searchActive)
+                        // Keep the search view mounted while its tab is open so results survive switching tabs.
+                        if searchOpen {
+                            FindInFiles(branch: workspace.branch, isMain: workspace.isMain, mode: theme.mode,
+                                        query: $searchQuery,
+                                        onChoose: { e, line in searchActive = false; pendingJump = line; open(e, preview: false) },
+                                        onClose: { closeSearch() })
+                                .opacity(searchActive ? 1 : 0)
+                                .allowsHitTesting(searchActive)
+                        }
                     }
                 }
             }
@@ -253,6 +263,7 @@ struct FilesPane: View {
         }
         .onAppear { startWatch(); if searchRequest { openSearch(); searchRequest = false } }
         .onChange(of: expanded) { _ in if didRestore { saveState() } }
+        .onChange(of: searchQuery) { _, _ in if didRestore { saveState() } }
         .onChange(of: selected) { old, _ in
             // Stash the outgoing tab's live buffer so its unsaved edits survive a tab switch.
             if let o = old, tabs.contains(where: { $0.id == o.id }) { buffers[o.id] = (editText, savedText) }
@@ -758,6 +769,8 @@ struct FilesPane: View {
         var selectedRepo: String?
         var selectedPath: String?
         var tabs: [PersistedTab]?
+        var searchOpen: Bool?
+        var searchQuery: String?
     }
 
     private var stateKey: String { "filesPane.state.\(workspace.path)" }
@@ -766,7 +779,9 @@ struct FilesPane: View {
         let st = PersistedState(expanded: Array(expanded),
                                 selectedRepo: selected?.repo,
                                 selectedPath: selected?.path,
-                                tabs: tabs.map { PersistedTab(repo: $0.entry.repo, path: $0.entry.path, preview: $0.preview) })
+                                tabs: tabs.map { PersistedTab(repo: $0.entry.repo, path: $0.entry.path, preview: $0.preview) },
+                                searchOpen: searchOpen,
+                                searchQuery: searchQuery.isEmpty ? nil : searchQuery)
         if let data = try? JSONEncoder().encode(st) {
             UserDefaults.standard.set(data, forKey: stateKey)
         }
@@ -776,6 +791,7 @@ struct FilesPane: View {
         guard let data = UserDefaults.standard.data(forKey: stateKey),
               let st = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
         expanded.formUnion(st.expanded)
+        if let q = st.searchQuery, !q.isEmpty { searchQuery = q; if st.searchOpen == true { searchOpen = true } }
         if tabs.isEmpty, let saved = st.tabs {
             tabs = saved.compactMap { pt in
                 guard let e = list.first(where: { $0.repo == pt.repo && $0.path == pt.path }) else { return nil }
