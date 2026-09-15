@@ -63,7 +63,7 @@ class LineFoldPlaceholder: TextAttachment {
             NSBezierPath(
                 rect: rect.transform(x: charWidth / 2, y: 2.0, width: -charWidth, height: -4.0),
                 roundedCorners: .all,
-                cornerRadius: rect.height / 2
+                cornerRadius: 3
             ).cgPathFallback
         )
         context.fillPath()
