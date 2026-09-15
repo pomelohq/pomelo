@@ -56,6 +56,10 @@ struct FindInFiles: View {
 
     private var matchCount: Int { matchPositions.count }
 
+    private func matchIndexAt(_ bi: Int, _ ri: Int) -> Int? {
+        matchPositions.firstIndex(where: { $0.b == bi && $0.r == ri })
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -126,12 +130,15 @@ struct FindInFiles: View {
                                         expandUp: ri == 0 && canUp,
                                         expandDown: ri == last && canDown)
                                     .id("\(bi)-\(ri)")
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { open(blk, ln) }
+                                    // A single click selects the match (no file open, like Zed's multibuffer);
+                                    // Open File / double-click / Enter is what actually opens the file.
+                                    .onTapGesture(count: 2) { open(blk, ln) }
+                                    .simultaneousGesture(TapGesture().onEnded { if let mi = matchIndexAt(bi, ri) { index = mi } })
                             }
                         }
                     }
                 }
+                .textSelection(.enabled)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onChange(of: index) { _ in
