@@ -31,12 +31,33 @@ public class TreeSitterModel {
             return typescriptQuery
         case .tsx:
             return tsxQuery
+        case .python:
+            return pythonQuery
+        case .ruby:
+            return rubyQuery
+        case .java:
+            return javaQuery
         case .sql:
             return sqlQuery
         default:
             return nil
         }
     }
+
+    /// Query for `Python` files.
+    public private(set) lazy var pythonQuery: Query? = {
+        return queryFor(.python)
+    }()
+
+    /// Query for `Ruby` files.
+    public private(set) lazy var rubyQuery: Query? = {
+        return queryFor(.ruby)
+    }()
+
+    /// Query for `Java` files.
+    public private(set) lazy var javaQuery: Query? = {
+        return queryFor(.java)
+    }()
 
     /// Query for `Bash` files.
     public private(set) lazy var bashQuery: Query? = {

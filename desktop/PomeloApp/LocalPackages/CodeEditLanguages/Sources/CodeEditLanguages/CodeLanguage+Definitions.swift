@@ -17,8 +17,40 @@ public extension CodeLanguage {
         .jsx,
         .typescript,
         .tsx,
+        .python,
+        .ruby,
+        .java,
         .sql
     ]
+
+    /// A language structure for `Python`
+    static let python: CodeLanguage = .init(
+        id: .python,
+        tsName: "python",
+        extensions: ["py", "pyi", "pyw"],
+        lineCommentString: "#",
+        rangeCommentStrings: ("\"\"\"", "\"\"\""),
+        additionalIdentifiers: ["python", "python3"]
+    )
+
+    /// A language structure for `Ruby`
+    static let ruby: CodeLanguage = .init(
+        id: .ruby,
+        tsName: "ruby",
+        extensions: ["rb", "rake", "gemspec"],
+        lineCommentString: "#",
+        rangeCommentStrings: ("=begin", "=end"),
+        additionalIdentifiers: ["ruby"]
+    )
+
+    /// A language structure for `Java`
+    static let java: CodeLanguage = .init(
+        id: .java,
+        tsName: "java",
+        extensions: ["java"],
+        lineCommentString: "//",
+        rangeCommentStrings: ("/*", "*/")
+    )
 
     /// A language structure for `Bash`
     static let bash: CodeLanguage = .init(

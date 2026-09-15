@@ -61,6 +61,18 @@ func (s *Server) GitFileDiff(branch, repo, path string, isMain bool) map[string]
 	return map[string]any{"added": d.Added, "modified": d.Modified, "deleted": d.Deleted}
 }
 
+func (s *Server) GitFileBlame(branch, repo, path string, isMain bool) map[string]any {
+	wt, ok := s.gitRepoWorktree(branch, repo, isMain)
+	if !ok {
+		return map[string]any{"lines": []services.BlameLine{}}
+	}
+	lines := services.GitBlame(wt, path)
+	if lines == nil {
+		lines = []services.BlameLine{}
+	}
+	return map[string]any{"lines": lines}
+}
+
 func (s *Server) GitStage(branch, repo string, isMain bool, paths []string) map[string]any {
 	wt, ok := s.gitRepoWorktree(branch, repo, isMain)
 	if !ok {
