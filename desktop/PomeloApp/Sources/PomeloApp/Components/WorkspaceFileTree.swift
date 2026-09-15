@@ -98,6 +98,7 @@ struct WorkspaceFileTreeList: View {
     let roots: [WFileTreeNode]
     let workspacePath: String
     var treeVersion: Int = 0
+    var onOpenInTerminal: (String) -> Void = { _ in }
     @Binding var selected: WorkspaceFileEntry?
     @Binding var expanded: Set<String>
 
@@ -293,10 +294,7 @@ struct WorkspaceFileTreeList: View {
     }
 
     private func openInTerminal(_ node: WFileTreeNode) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-a", "Terminal", absolutePath(node)]
-        try? p.run()
+        onOpenInTerminal(absolutePath(node))
     }
 
     private func newFile(in node: WFileTreeNode) {

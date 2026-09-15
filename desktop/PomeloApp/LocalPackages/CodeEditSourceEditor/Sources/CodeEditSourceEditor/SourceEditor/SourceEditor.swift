@@ -101,11 +101,12 @@ public struct SourceEditor: NSViewControllerRepresentable {
     var coordinators: [any TextViewCoordinator]
     var completionDelegate: CodeSuggestionDelegate?
     var jumpToDefinitionDelegate: JumpToDefinitionDelegate?
-    var rightClickHandler: ((NSPoint) -> Void)?
+    var rightClickHandler: ((NSPoint, NSView) -> Void)?
 
     /// Install a custom right-click handler. The editor moves the caret to the click, suppresses the
-    /// native menu, and calls `handler` with the click's screen point so the host can show its own menu.
-    public func onRightClick(_ handler: @escaping (NSPoint) -> Void) -> Self {
+    /// native menu, and calls `handler` with the click's screen point and the text view (so the host
+    /// can pin its menu to the scroll).
+    public func onRightClick(_ handler: @escaping (NSPoint, NSView) -> Void) -> Self {
         var copy = self
         copy.rightClickHandler = handler
         return copy

@@ -13,7 +13,7 @@ struct FileEditor: View {
     var mode: ThemeMode
     var wrap: Bool = false
     var editable: Bool = true
-    var onRightClick: (NSPoint) -> Void = { _ in }
+    var onRightClick: (NSPoint, NSView) -> Void = { _, _ in }
     @State private var state = SourceEditorState()
 
     var body: some View {

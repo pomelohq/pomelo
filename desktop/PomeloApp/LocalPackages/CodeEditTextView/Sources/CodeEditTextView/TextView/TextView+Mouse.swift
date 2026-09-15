@@ -141,9 +141,9 @@ extension TextView {
                 needsDisplay = true
             }
         }
-        // Anchor at the pointer's true screen location. Converting the in-window point drifted
-        // (window origin), and the caret rect moves with scroll — the pointer location is fixed.
-        onRightClick(NSEvent.mouseLocation)
+        // Pass the click in this view's (document) coordinates + the view itself, so the host can
+        // mount the menu inside the scrolling content — it then tracks scrolling perfectly.
+        onRightClick(viewPoint, self)
     }
 
     override public func mouseUp(with event: NSEvent) {

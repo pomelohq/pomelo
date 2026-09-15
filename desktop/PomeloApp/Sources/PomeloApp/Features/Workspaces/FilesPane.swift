@@ -118,8 +118,8 @@ struct FilesPane: View {
         return (workspace.path as NSString).appendingPathComponent(rel)
     }
 
-    private func showEditorMenu(_ sel: WorkspaceFileEntry, at point: NSPoint) {
-        ContextMenu.show(at: point) { _ in
+    private func showEditorMenu(_ sel: WorkspaceFileEntry, at point: NSPoint, in view: NSView) {
+        ContextMenu.show(inView: view, at: point) { _ in
             ContextMenu.container {
                 ContextMenuRow(label: "Cut", symbol: "scissors") { NSApp.sendAction(Selector(("cut:")), to: nil, from: nil) }
                 ContextMenuRow(label: "Copy", symbol: "doc.on.doc") { NSApp.sendAction(Selector(("copy:")), to: nil, from: nil) }
@@ -165,6 +165,7 @@ struct FilesPane: View {
                     EmptyStateView(icon: "folder", title: "No files")
                 } else {
                     WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path, treeVersion: treeVersion,
+                                          onOpenInTerminal: onOpenInTerminal,
                                           selected: $selected, expanded: $expanded)
                 }
             } else {
@@ -258,7 +259,7 @@ struct FilesPane: View {
                 } else {
                     // Always editable; tree-sitter highlighting where a grammar is bundled.
                     FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: true,
-                               onRightClick: { pt in showEditorMenu(sel, at: pt) }).id(sel.id)
+                               onRightClick: { pt, view in showEditorMenu(sel, at: pt, in: view) }).id(sel.id)
                 }
             case .image(let img):
                 FileImageView(image: img)

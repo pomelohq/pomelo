@@ -7,10 +7,11 @@ import AppKit
 @MainActor
 enum ContextMenu {
     private static var panel: NSPanel?
+    private static var hosted: NSView?
     private static var monitors: [Any] = []
 
-    /// Present `content` with its top-left at `point` (screen coordinates). `content` receives a
-    /// `dismiss` closure to call right before running an action.
+    /// Present `content` as a floating panel with its top-left at `point` (screen coordinates).
+    /// Used where there's no scrolling surface to pin to (e.g. the file tree rows).
     static func show<Content: View>(at point: NSPoint, @ViewBuilder _ content: (@escaping () -> Void) -> Content) {
         dismiss()
 
@@ -35,13 +36,41 @@ enum ContextMenu {
         positionTopLeft(panel, at: point)
         panel.orderFrontRegardless()
         Self.panel = panel
+        installDismissMonitors()
+    }
 
-        // Dismiss on any mouse-down outside the panel or on Escape.
-        let outside: (NSEvent) -> Void = { event in
-            if event.window != panel { dismiss() }
+    /// Present `content` as a subview of `container` (a flipped, scrolling document view) with its
+    /// top-left at `point` in that view's coordinates. Because the menu is part of the scrolled
+    /// content it tracks scrolling perfectly (Zed's in-editor menu) and clips when out of view.
+    static func show<Content: View>(
+        inView container: NSView,
+        at point: NSPoint,
+        @ViewBuilder _ content: (@escaping () -> Void) -> Content
+    ) {
+        dismiss()
+
+        let host = NSHostingView(rootView: AnyView(content { dismiss() }))
+        host.layoutSubtreeIfNeeded()
+        host.setFrameSize(host.fittingSize)
+        host.setFrameOrigin(point)
+        container.addSubview(host)
+        hosted = host
+        installDismissMonitors()
+    }
+
+    private static func installDismissMonitors() {
+        // A mouse-down inside the menu goes through (buttons handle it); anything else dismisses.
+        func isInsideMenu(_ event: NSEvent) -> Bool {
+            if let panel, event.window == panel { return true }
+            if let hosted, event.window == hosted.window {
+                let p = hosted.convert(event.locationInWindow, from: nil)
+                return hosted.bounds.contains(p)
+            }
+            return false
         }
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
-            outside(event); return event
+            if !isInsideMenu(event) { dismiss() }
+            return event
         } as Any)
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
             dismiss()
@@ -55,6 +84,8 @@ enum ContextMenu {
     static func dismiss() {
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
+        hosted?.removeFromSuperview()
+        hosted = nil
         panel?.orderOut(nil)
         panel = nil
     }
