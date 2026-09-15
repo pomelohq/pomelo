@@ -94,6 +94,12 @@ public struct CodeLanguage {
             return tree_sitter_typescript()
         case .tsx:
             return tree_sitter_tsx()
+        case .python:
+            return tree_sitter_python()
+        case .ruby:
+            return tree_sitter_ruby()
+        case .java:
+            return tree_sitter_java()
         case .sql:
             return tree_sitter_sql()
         default:

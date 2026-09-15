@@ -8,6 +8,9 @@ const TSLanguage *tree_sitter_bash(void);
 const TSLanguage *tree_sitter_javascript(void);
 const TSLanguage *tree_sitter_typescript(void);
 const TSLanguage *tree_sitter_tsx(void);
+const TSLanguage *tree_sitter_python(void);
+const TSLanguage *tree_sitter_ruby(void);
+const TSLanguage *tree_sitter_java(void);
 const TSLanguage *tree_sitter_json(void);
 
 #endif /* TreeSitterGrammars_h */

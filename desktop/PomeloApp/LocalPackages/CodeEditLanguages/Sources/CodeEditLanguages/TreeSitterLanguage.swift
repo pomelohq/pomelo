@@ -17,6 +17,7 @@ public enum TreeSitterLanguage: String {
     case jsx
     case python
     case ruby
+    case java
     case sql
     case tsx
     case typescript
