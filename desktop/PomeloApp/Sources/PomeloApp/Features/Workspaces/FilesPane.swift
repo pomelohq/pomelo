@@ -54,6 +54,7 @@ struct FilesPane: View {
     @State private var didRestore = false
     @State private var dirtyKeys: Set<String> = []
     @State private var changedLines: [Int: Int] = [:]
+    @State private var blameLines: [Int: String] = [:]
     @AppStorage("fileEditorFontSize") private var fontSize: Double = 12
 
     private var selectedIsMarkdown: Bool {
@@ -102,7 +103,7 @@ struct FilesPane: View {
         .onChange(of: expanded) { _ in if didRestore { saveState() } }
         .onChange(of: selected) { _ in if didRestore { saveState() } }
         .onDisappear { stopWatch() }
-        .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview(); await refreshDiff() }
+        .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview(); await refreshDiff(); await refreshBlame() }
         .onChange(of: openRequest) { req in
             guard let e = req else { return }
             revealInTree(e)
@@ -160,7 +161,7 @@ struct FilesPane: View {
         do {
             try editText.write(toFile: abs, atomically: true, encoding: .utf8)
             savedText = editText
-            Task { await refreshDiff(); await refreshGitStatus() }
+            Task { await refreshDiff(); await refreshBlame(); await refreshGitStatus() }
         } catch {
             let alert = NSAlert(); alert.messageText = "Couldn't save"
             alert.informativeText = error.localizedDescription
@@ -183,6 +184,38 @@ struct FilesPane: View {
             for line in d.deleted { m[line - 1] = 3 }
             return m
         }.value
+    }
+
+    // Inline blame for the open file: 0-based line -> "Author, relative date".
+    private func refreshBlame() async {
+        guard let sel = selected else { blameLines = [:]; return }
+        let branch = workspace.branch, isMain = workspace.isMain
+        let repo = sel.repo, path = sel.path
+        blameLines = await Task.detached(priority: .utility) { () -> [Int: String] in
+            struct Line: Decodable { var author = ""; var time: Int64 = 0 }
+            struct Payload: Decodable { var lines: [Line] = [] }
+            let data = FileStore.gitBlame(branch: branch, repo: repo, path: path, isMain: isMain)
+            let payload = PomJSON.decode(Payload.self, from: data) ?? Payload()
+            var out: [Int: String] = [:]
+            for (i, line) in payload.lines.enumerated() where !line.author.isEmpty {
+                out[i] = "\(line.author), \(Self.relativeDate(line.time))"
+            }
+            return out
+        }.value
+    }
+
+    private nonisolated static func relativeDate(_ epoch: Int64) -> String {
+        guard epoch > 0 else { return "" }
+        let secs = max(0, Int(Date().timeIntervalSince1970) - Int(epoch))
+        switch secs {
+        case ..<60: return "just now"
+        case ..<3600: return "\(secs / 60)m ago"
+        case ..<86_400: return "\(secs / 3600)h ago"
+        case ..<604_800: return "\(secs / 86_400)d ago"
+        case ..<2_592_000: return "\(secs / 604_800)w ago"
+        case ..<31_536_000: return "\(secs / 2_592_000)mo ago"
+        default: return "\(secs / 31_536_000)y ago"
+        }
     }
 
     private var tree: some View {
@@ -286,7 +319,7 @@ struct FilesPane: View {
                 } else {
                     // Always editable; tree-sitter highlighting where a grammar is bundled.
                     FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: true,
-                               fontSize: CGFloat(fontSize), changedLines: changedLines,
+                               fontSize: CGFloat(fontSize), changedLines: changedLines, blameLines: blameLines,
                                onRightClick: { pt, view in showEditorMenu(sel, at: pt, in: view) }).id(sel.id)
                 }
             case .image(let img):

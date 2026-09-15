@@ -87,6 +87,13 @@ extension TextViewController {
         textView.addSubview(guides)
         indentGuidesView = guides
 
+        let blame = BlameOverlayView()
+        blame.textView = textView
+        blame.autoresizingMask = [.width, .height]
+        blame.frame = textView.bounds
+        textView.addSubview(blame)
+        blameOverlayView = blame
+
         configuration.didSetOnController(controller: self, oldConfig: nil)
     }
 
@@ -127,6 +134,7 @@ extension TextViewController {
             guard let clipView = notification.object as? NSClipView else { return }
             self?.gutterView.needsDisplay = true
             self?.indentGuidesView?.needsDisplay = true
+            self?.blameOverlayView?.needsDisplay = true
             self?.minimapXConstraint?.constant = clipView.bounds.origin.x
             NotificationCenter.default.post(name: Self.scrollPositionDidUpdateNotification, object: self)
         }
@@ -162,6 +170,10 @@ extension TextViewController {
                 guides.frame = self.textView.bounds
                 guides.needsDisplay = true
             }
+            if let blame = self.blameOverlayView {
+                blame.frame = self.textView.bounds
+                blame.needsDisplay = true
+            }
             self.scrollView.needsLayout = true
         }
     }
@@ -174,6 +186,7 @@ extension TextViewController {
         ) { [weak self] _ in
             self?.updateCursorPosition()
             self?.emphasizeSelectionPairs()
+            self?.blameOverlayView?.needsDisplay = true
         }
     }
 

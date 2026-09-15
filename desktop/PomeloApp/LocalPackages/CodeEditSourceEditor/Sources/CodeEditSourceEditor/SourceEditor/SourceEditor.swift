@@ -103,11 +103,19 @@ public struct SourceEditor: NSViewControllerRepresentable {
     var jumpToDefinitionDelegate: JumpToDefinitionDelegate?
     var rightClickHandler: ((NSPoint, NSView) -> Void)?
     var changeGutter: [Int: Int] = [:]
+    var blameByLine: [Int: String] = [:]
 
     /// Git change gutter markers: 0-based line index -> kind (1 added, 2 modified, 3 deleted).
     public func changedLines(_ lines: [Int: Int]) -> Self {
         var copy = self
         copy.changeGutter = lines
+        return copy
+    }
+
+    /// Inline git-blame annotations: 0-based line index -> annotation shown at end of that line.
+    public func blameLines(_ lines: [Int: String]) -> Self {
+        var copy = self
+        copy.blameByLine = lines
         return copy
     }
 
@@ -180,6 +188,8 @@ public struct SourceEditor: NSViewControllerRepresentable {
         controller.jumpToDefinitionDelegate = jumpToDefinitionDelegate
         controller.textView?.onRightClick = rightClickHandler
         controller.gutterView?.changedLines = changeGutter
+        controller.blameOverlayView?.textColor = configuration.appearance.theme.invisibles.color.withAlphaComponent(0.9)
+        controller.blameOverlayView?.blameLines = blameByLine
 
         context.coordinator.updateHighlightProviders(highlightProviders)
 

@@ -166,6 +166,8 @@ func (s *Server) Query(domain string, params json.RawMessage) any {
 		return s.GitWorkspaceStatus(pStr(params, "branch"), pBool(params, "is_main"))
 	case "git_diff":
 		return s.GitFileDiff(pStr(params, "branch"), pStr(params, "repo"), pStr(params, "path"), pBool(params, "is_main"))
+	case "git_blame":
+		return s.GitFileBlame(pStr(params, "branch"), pStr(params, "repo"), pStr(params, "path"), pBool(params, "is_main"))
 	case "remote_info":
 		return s.RemoteInfo()
 	default:

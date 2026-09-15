@@ -37,6 +37,9 @@ public class TextViewController: NSViewController {
     /// Overlay that draws indentation guides over the text.
     var indentGuidesView: IndentGuidesView?
 
+    /// Overlay that draws an inline git-blame annotation on the caret's line.
+    var blameOverlayView: BlameOverlayView?
+
     /// Middleman between the text view to our invisible characters config, with knowledge of things like the
     ///  /// user's theme and indent option to help correctly draw invisible character placeholders.
     var invisibleCharactersCoordinator: InvisibleCharactersCoordinator
