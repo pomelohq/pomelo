@@ -99,7 +99,7 @@ public struct EditorTheme: Equatable {
         case .number, .float, .constant: return numbers
         case .string: return strings
         case .parameter: return variables
-        case .typeAlternate: return attributes
+        case .attribute, .typeAlternate: return attributes
         default: return text
         }
     }

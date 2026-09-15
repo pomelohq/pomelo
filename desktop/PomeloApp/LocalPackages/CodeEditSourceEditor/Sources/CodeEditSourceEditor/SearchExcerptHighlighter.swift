@@ -14,20 +14,28 @@ public enum SearchExcerptHighlighter {
 
         let parser = Parser()
         do { try parser.setLanguage(tsLanguage) } catch { return nil }
-        guard let tree = parser.parse(text), let root = tree.rootNode else { return nil }
+        guard let tree = parser.parse(text) else { return nil }
 
         let full = NSMutableAttributedString(string: text)
         full.addAttribute(.foregroundColor, value: theme.text.color,
                           range: NSRange(location: 0, length: full.length))
 
-        let cursor = query.execute(node: root, in: tree)
-        for match in cursor {
-            for capture in match.captures {
-                let color = theme.colorFor(CaptureName.fromString(capture.name))
-                let r = capture.range
-                guard r.location >= 0, r.location + r.length <= full.length else { continue }
-                full.addAttribute(.foregroundColor, value: color, range: r)
+        // Resolve predicates (e.g. JSX `#match?` for lowercase tags) and apply capture precedence the way the real
+        // editor does: lower-indexed captures win, so reverse the sequence and keep the first (lowest) per range.
+        var ranges: [NSRange: Int] = [:]
+        let highlights = query.execute(in: tree)
+            .resolve(with: .init(string: text))
+            .flatMap { $0.captures }
+            .reversed()
+            .compactMap { capture -> (NSRange, CaptureName)? in
+                if let level = ranges[capture.range], level <= capture.index { return nil }
+                guard let name = CaptureName.fromString(capture.name) else { return nil }
+                ranges[capture.range] = capture.index
+                return (capture.range, name)
             }
+        for (r, name) in highlights {
+            guard r.location >= 0, r.location + r.length <= full.length else { continue }
+            full.addAttribute(.foregroundColor, value: theme.colorFor(name), range: r)
         }
 
         // Split on "\n" deterministically so the count always equals (newlines + 1), matching the caller's
