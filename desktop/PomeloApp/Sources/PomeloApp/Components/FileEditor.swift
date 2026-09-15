@@ -28,7 +28,7 @@ struct FileEditor: View {
                     wrapLines: wrap
                 ),
                 behavior: .init(isEditable: editable, indentOption: .spaces(count: 2)),
-                peripherals: .init(showGutter: true, showMinimap: false)
+                peripherals: .init(showGutter: true, showMinimap: false, showIndentGuides: true)
             ),
             state: $state
         )

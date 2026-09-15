@@ -78,5 +78,6 @@ public struct SourceEditorConfiguration: Equatable {
         behavior.didSetOnController(controller: controller, oldConfig: oldConfig?.behavior)
         layout.didSetOnController(controller: controller, oldConfig: oldConfig?.layout)
         peripherals.didSetOnController(controller: controller, oldConfig: oldConfig?.peripherals)
+        controller.updateIndentGuides()
     }
 }
