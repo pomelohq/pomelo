@@ -51,17 +51,29 @@ enum ContextMenu {
 
         let host = NSHostingView(rootView: AnyView(content { dismiss() }))
         host.layoutSubtreeIfNeeded()
-        host.setFrameSize(host.fittingSize)
-        host.setFrameOrigin(point)
+        let size = host.fittingSize
+        host.setFrameSize(size)
+        // Keep the menu fully inside the visible area: open downward from the click, flip up near the
+        // bottom, then clamp so it can never be clipped (Zed opens upward near the bottom edge).
+        let visible = container.visibleRect
+        var origin = point
+        if origin.y + size.height > visible.maxY {
+            origin.y = point.y - size.height
+        }
+        origin.y = min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - size.height))
+        origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - size.width))
+        host.setFrameOrigin(origin)
         container.addSubview(host)
         hosted = host
         installDismissMonitors()
     }
 
     private static func installDismissMonitors() {
-        // A mouse-down inside the menu goes through (buttons handle it); anything else dismisses.
+        // A mouse-down inside the menu goes through (buttons handle it); anything else dismisses,
+        // except clicks on a scroller — dragging the scrollbar is scrolling, not "click away".
         func isInsideMenu(_ event: NSEvent) -> Bool {
             if let panel, event.window == panel { return true }
+            if let hit = event.window?.contentView?.hitTest(event.locationInWindow), hit is NSScroller { return true }
             if let hosted, event.window == hosted.window {
                 let p = hosted.convert(event.locationInWindow, from: nil)
                 return hosted.bounds.contains(p)
