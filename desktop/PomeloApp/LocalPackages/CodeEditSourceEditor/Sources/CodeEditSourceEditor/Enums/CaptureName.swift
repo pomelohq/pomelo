@@ -33,6 +33,7 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
     case variableBuiltin
     case keywordReturn
     case keywordFunction
+    case constant
 
     var alternate: CaptureName {
         switch self {
@@ -92,7 +93,14 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
             return .keywordReturn
         case "keyword.function":
             return .keywordFunction
+        case "constant", "constant.builtin":
+            return .constant
         default:
+            // Fall back to the parent scope for dotted names tree-sitter emits but we
+            // don't map explicitly (e.g. `function.method` -> `function`).
+            if let dot = string.lastIndex(of: ".") {
+                return fromString(String(string[..<dot]))
+            }
             return nil
         }
     }
@@ -142,6 +150,8 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
             return "keywordReturn"
         case .keywordFunction:
             return "keywordFunction"
+        case .constant:
+            return "constant"
         }
     }
 }

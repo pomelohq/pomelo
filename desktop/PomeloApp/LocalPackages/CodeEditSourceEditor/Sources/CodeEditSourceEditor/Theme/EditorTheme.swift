@@ -89,15 +89,15 @@ public struct EditorTheme: Equatable {
     /// - Returns: Theme attributes for the capture.
     private func mapCapture(_ capture: CaptureName?) -> Attribute {
         switch capture {
-        case .include, .constructor, .keyword, .boolean, .variableBuiltin,
+        case .include, .keyword, .boolean, .variableBuiltin,
                 .keywordReturn, .keywordFunction, .repeat, .conditional, .tag:
             return keywords
         case .comment: return comments
         case .variable, .property: return variables
-        case .function, .method: return variables
-        case .number, .float: return numbers
+        case .function, .method: return commands
+        case .constructor, .type: return types
+        case .number, .float, .constant: return numbers
         case .string: return strings
-        case .type: return types
         case .parameter: return variables
         case .typeAlternate: return attributes
         default: return text

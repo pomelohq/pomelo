@@ -125,6 +125,27 @@ extension TextView {
         }
     }
 
+    override public func rightMouseDown(with event: NSEvent) {
+        guard let onRightClick else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        // Move the caret to the click, unless it lands inside an existing selection (keep it for Copy).
+        let viewPoint = self.convert(event.locationInWindow, from: nil)
+        let offset = layoutManager.textOffsetAtPoint(viewPoint)
+        if isSelectable, let offset {
+            let insideSelection = selectionManager.textSelections.contains { $0.range.contains(offset) }
+            if !insideSelection {
+                window?.makeFirstResponder(self)
+                selectionManager.setSelectedRange(NSRange(location: offset, length: 0))
+                needsDisplay = true
+            }
+        }
+        // Pass the click in this view's (document) coordinates + the view itself, so the host can
+        // mount the menu inside the scrolling content — it then tracks scrolling perfectly.
+        onRightClick(viewPoint, self)
+    }
+
     override public func mouseUp(with event: NSEvent) {
         mouseDragAnchor = nil
         disableMouseAutoscrollTimer()

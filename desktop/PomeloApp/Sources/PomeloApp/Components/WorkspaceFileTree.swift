@@ -98,10 +98,11 @@ struct WorkspaceFileTreeList: View {
     let roots: [WFileTreeNode]
     let workspacePath: String
     var treeVersion: Int = 0
+    var onOpenInTerminal: (String) -> Void = { _ in }
+    var dirtyKeys: Set<String> = []
     @Binding var selected: WorkspaceFileEntry?
     @Binding var expanded: Set<String>
 
-    @State private var ctxNodeID: String?
     @State private var renamingID: String?
     @State private var renameText = ""
     // Cached so a scroll tick (which only updates topRow) never rebuilds the flat list.
@@ -184,8 +185,8 @@ struct WorkspaceFileTreeList: View {
         h.combine(flat.count)
         h.combine(selected?.id)
         h.combine(renamingID)
-        h.combine(ctxNodeID)
         h.combine(expanded)
+        h.combine(dirtyKeys)
         return h.finalize()
     }
 
@@ -202,13 +203,14 @@ struct WorkspaceFileTreeList: View {
 
     @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int) -> some View {
         let isDir = !node.isLeaf
+        let dirty = dirtyKeys.contains(node.id)
         let matName: String? = isDir ? "mi-" + MaterialIcon.folder(node.name) : MaterialIcon.file(node.name).map { "mi-" + $0 }
         TreeRow(depth: depth, indent: { CGFloat($0) * 13 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
                 leadingSymbol: "doc",
                 marker: nil,
                 selected: node.isLeaf && selected?.id == node.entry?.id,
                 selectionColor: Theme.fg.opacity(0.13),
-                nameColor: node.isRoot ? Theme.fg : (node.isLeaf ? Theme.fg : Theme.fgMuted),
+                nameColor: dirty ? Theme.warn : (node.isRoot ? Theme.fg : (node.isLeaf ? Theme.fg : Theme.fgMuted)),
                 nameWeight: node.isLeaf ? .regular : (node.isRoot ? .semibold : .medium),
                 tooltip: nil,
                 editing: renamingID == node.id, editText: $renameText,
@@ -219,11 +221,9 @@ struct WorkspaceFileTreeList: View {
                 selectedBorder: nil, iconColor: nil, leadingImageName: matName, fillWidth: true) {
             if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
         }
-        .overlay(RightClickArea { ctxNodeID = node.id })
-        .popover(isPresented: Binding(get: { ctxNodeID == node.id }, set: { if !$0 { ctxNodeID = nil } }),
-                 arrowEdge: .leading) {
-            menuContent(for: node, isDir: isDir)
-        }
+        .overlay(RightClickArea { pt in
+            ContextMenu.show(at: pt) { _ in menuContent(for: node, isDir: isDir) }
+        })
     }
 
     // MARK: - Custom context menu (themed; not the native NSMenu)
@@ -256,7 +256,8 @@ struct WorkspaceFileTreeList: View {
         }
         .frame(width: 214)
         .padding(.vertical, 5)
-        .background(Theme.bgSoft)
+        .background(Theme.bgSoft, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.borderSoft, lineWidth: 1))
     }
 
     private var menuDivider: some View {
@@ -267,7 +268,7 @@ struct WorkspaceFileTreeList: View {
     private func MenuItem(_ label: String, _ symbol: String? = nil, destructive: Bool = false,
                           _ action: @escaping () -> Void) -> some View {
         MenuItemView(label: label, symbol: symbol, destructive: destructive) {
-            ctxNodeID = nil
+            ContextMenu.dismiss()
             action()
         }
     }
@@ -296,10 +297,7 @@ struct WorkspaceFileTreeList: View {
     }
 
     private func openInTerminal(_ node: WFileTreeNode) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-a", "Terminal", absolutePath(node)]
-        try? p.run()
+        onOpenInTerminal(absolutePath(node))
     }
 
     private func newFile(in node: WFileTreeNode) {
@@ -515,23 +513,3 @@ private struct MenuItemView: View {
     }
 }
 
-// Catches right-clicks to trigger the custom menu while letting left-clicks fall
-// through to the SwiftUI row below (hitTest only claims the event for right buttons).
-private struct RightClickArea: NSViewRepresentable {
-    let onRightClick: () -> Void
-    func makeNSView(context: Context) -> NSView { V(onRightClick: onRightClick) }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    final class V: NSView {
-        let onRightClick: () -> Void
-        init(onRightClick: @escaping () -> Void) { self.onRightClick = onRightClick; super.init(frame: .zero) }
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            switch NSApp.currentEvent?.type {
-            case .rightMouseDown, .rightMouseUp, .rightMouseDragged: return self
-            default: return nil
-            }
-        }
-        override func rightMouseDown(with event: NSEvent) { onRightClick() }
-    }
-}

@@ -254,6 +254,11 @@ open class TextView: NSView, NSTextContent {
     /// Manages emphasized text ranges in the text view
     public var emphasisManager: EmphasisManager?
 
+    /// When set, right-clicking moves the caret to the click and calls this with the screen point
+    /// and the text view itself (so the host can pin its menu to the scroll), and the native
+    /// context menu is suppressed (the host shows its own).
+    public var onRightClick: ((NSPoint, NSView) -> Void)?
+
     // MARK: - Private Properties
 
     var isFirstResponder: Bool = false

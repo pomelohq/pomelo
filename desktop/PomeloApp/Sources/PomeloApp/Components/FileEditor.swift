@@ -13,6 +13,9 @@ struct FileEditor: View {
     var mode: ThemeMode
     var wrap: Bool = false
     var editable: Bool = true
+    var fontSize: CGFloat = 12
+    var changedLines: [Int: Int] = [:]
+    var onRightClick: (NSPoint, NSView) -> Void = { _, _ in }
     @State private var state = SourceEditorState()
 
     var body: some View {
@@ -23,14 +26,16 @@ struct FileEditor: View {
                 appearance: .init(
                     theme: SQLEditor.palette(mode),
                     useThemeBackground: true,
-                    font: .monospacedSystemFont(ofSize: 12, weight: .regular),
+                    font: .monospacedSystemFont(ofSize: fontSize, weight: .regular),
                     lineHeightMultiple: 1.3,
                     wrapLines: wrap
                 ),
                 behavior: .init(isEditable: editable, indentOption: .spaces(count: 2)),
-                peripherals: .init(showGutter: true, showMinimap: false)
+                peripherals: .init(showGutter: true, showMinimap: false, showIndentGuides: true)
             ),
             state: $state
         )
+        .onRightClick(onRightClick)
+        .changedLines(changedLines)
     }
 }

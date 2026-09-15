@@ -27,11 +27,14 @@ func (p PtyInput) Feed(data []byte) {
 	_ = ptyhost.WriteInput(p.sock, data)
 }
 
-func (s *Server) OpenPTYStream(sink stream.Sink, name, wsKey string, cols, rows int, since uint64, done <-chan struct{}) (PtyInput, error) {
+func (s *Server) OpenPTYStream(sink stream.Sink, name, wsKey string, cols, rows int, since uint64, done <-chan struct{}, cwd string) (PtyInput, error) {
 	if name == "" {
 		name = "shell"
 	}
-	sock, err := s.dialOrSpawnHolder(name, cols, rows, s.ptyCwd(wsKey))
+	if cwd == "" {
+		cwd = s.ptyCwd(wsKey)
+	}
+	sock, err := s.dialOrSpawnHolder(name, cols, rows, cwd)
 	if err != nil {
 		return PtyInput{}, err
 	}

@@ -80,6 +80,13 @@ extension TextViewController {
         setUpKeyBindings(eventMonitor: &self.localEventMonitor)
         updateContentInsets()
 
+        let guides = IndentGuidesView()
+        guides.textView = textView
+        guides.autoresizingMask = [.width, .height]
+        guides.frame = textView.bounds
+        textView.addSubview(guides)
+        indentGuidesView = guides
+
         configuration.didSetOnController(controller: self, oldConfig: nil)
     }
 
@@ -119,6 +126,7 @@ extension TextViewController {
         ) { [weak self] notification in
             guard let clipView = notification.object as? NSClipView else { return }
             self?.gutterView.needsDisplay = true
+            self?.indentGuidesView?.needsDisplay = true
             self?.minimapXConstraint?.constant = clipView.bounds.origin.x
             NotificationCenter.default.post(name: Self.scrollPositionDidUpdateNotification, object: self)
         }
@@ -131,6 +139,7 @@ extension TextViewController {
             queue: .main
         ) { [weak self] _ in
             self?.gutterView.needsDisplay = true
+            self?.indentGuidesView?.needsDisplay = true
             self?.emphasisManager?.removeEmphases(for: EmphasisGroup.brackets)
             self?.updateTextInsets()
             NotificationCenter.default.post(name: Self.scrollPositionDidUpdateNotification, object: self)
@@ -149,6 +158,10 @@ extension TextViewController {
             self.gutterView.needsDisplay = true
             self.gutterView.foldingRibbon.needsDisplay = true
             self.reformattingGuideView?.updatePosition(in: self)
+            if let guides = self.indentGuidesView {
+                guides.frame = self.textView.bounds
+                guides.needsDisplay = true
+            }
             self.scrollView.needsLayout = true
         }
     }

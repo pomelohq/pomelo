@@ -9,9 +9,14 @@ import Foundation
 
 public extension CodeLanguage {
 
-    /// An array of all language structures. Only SQL ships a grammar; the rest were
-    /// dropped to keep the binary small (the app's editor only ever uses SQL).
+    /// An array of all language structures with a bundled grammar. Extending the set
+    /// means adding the grammar sources under `TreeSitterGrammars` + a `tsLanguage` case.
     static let allLanguages: [CodeLanguage] = [
+        .json,
+        .javascript,
+        .jsx,
+        .typescript,
+        .tsx,
         .sql
     ]
 
@@ -86,11 +91,11 @@ public extension CodeLanguage {
     /// A language structure for `TSX`
     static let tsx: CodeLanguage = .init(
         id: .tsx,
-        tsName: "typescript",
+        tsName: "tsx",
         extensions: ["tsx"],
         lineCommentString: "//",
         rangeCommentStrings: ("/*", "*/"),
-        parentURL: CodeLanguage.jsx.queryURL
+        parentURL: CodeLanguage.javascript.queryURL
     )
 
     /// A language structure for `Typescript`

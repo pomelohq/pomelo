@@ -35,8 +35,8 @@ struct FilesPane: View {
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
     var onAskAgent: (String) -> Void = { _ in }
+    var onOpenInTerminal: (String) -> Void = { _ in }
     @Binding var openRequest: WorkspaceFileEntry?
-    @ObservedObject private var codeDisplay = CodeDisplayManager.shared
 
     @State private var entries: [WorkspaceFileEntry]?
     @State private var roots: [WFileTreeNode] = []
@@ -49,9 +49,12 @@ struct FilesPane: View {
     @State private var expanded: Set<String> = []
     @State private var streamID: Int32 = 0
     @State private var treeVersion = 0
-    @State private var editing = false
     @State private var editText = ""
     @State private var savedText = ""
+    @State private var didRestore = false
+    @State private var dirtyKeys: Set<String> = []
+    @State private var changedLines: [Int: Int] = [:]
+    @AppStorage("fileEditorFontSize") private var fontSize: Double = 12
 
     private var selectedIsMarkdown: Bool {
         guard let path = selected?.path else { return false }
@@ -60,7 +63,7 @@ struct FilesPane: View {
     }
 
     private var isTextPreview: Bool { if case .text = preview { return true }; return false }
-    private var dirty: Bool { editing && editText != savedText }
+    private var dirty: Bool { isTextPreview && editText != savedText }
 
     var body: some View {
         GeometryReader { geo in
@@ -74,7 +77,8 @@ struct FilesPane: View {
                 VStack(spacing: 0) {
                     topBar(compact: overlayTree)
                     Divider().overlay(Theme.borderSoft)
-                    content
+                    // Clip so the editor's gutter can't overdraw upward into the path bar.
+                    content.clipped()
                 }
             }
             .overlay(alignment: .leading) {
@@ -85,12 +89,20 @@ struct FilesPane: View {
         }
         .background(Theme.bg)
         .background {
-            Button("") { save() }.keyboardShortcut("s", modifiers: .command)
-                .opacity(0).allowsHitTesting(false)
+            Group {
+                Button("") { save() }.keyboardShortcut("s", modifiers: .command)
+                Button("") { fontSize = min(fontSize + 1, 28) }.keyboardShortcut("=", modifiers: .command)
+                Button("") { fontSize = min(fontSize + 1, 28) }.keyboardShortcut("+", modifiers: .command)
+                Button("") { fontSize = max(fontSize - 1, 8) }.keyboardShortcut("-", modifiers: .command)
+                Button("") { fontSize = 12 }.keyboardShortcut("0", modifiers: .command)
+            }
+            .opacity(0).allowsHitTesting(false)
         }
         .onAppear { startWatch() }
+        .onChange(of: expanded) { _ in if didRestore { saveState() } }
+        .onChange(of: selected) { _ in if didRestore { saveState() } }
         .onDisappear { stopWatch() }
-        .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview() }
+        .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview(); await refreshDiff() }
         .onChange(of: openRequest) { req in
             guard let e = req else { return }
             revealInTree(e)
@@ -110,24 +122,67 @@ struct FilesPane: View {
         }
     }
 
-    private func toggleEdit() {
-        if !editing { editText = savedText }
-        editing.toggle()
-        selLines = nil; question = ""
+    private func editorAbsPath(_ e: WorkspaceFileEntry) -> String {
+        let rel = e.repo.isEmpty ? e.path : e.repo + "/" + e.path
+        return (workspace.path as NSString).appendingPathComponent(rel)
+    }
+
+    private func showEditorMenu(_ sel: WorkspaceFileEntry, at point: NSPoint, in view: NSView) {
+        ContextMenu.show(inView: view, at: point) { _ in
+            ContextMenu.container {
+                ContextMenuRow(label: "Cut", symbol: "scissors") { NSApp.sendAction(Selector(("cut:")), to: nil, from: nil) }
+                ContextMenuRow(label: "Copy", symbol: "doc.on.doc") { NSApp.sendAction(Selector(("copy:")), to: nil, from: nil) }
+                ContextMenuRow(label: "Paste", symbol: "clipboard") { NSApp.sendAction(Selector(("paste:")), to: nil, from: nil) }
+                ContextMenuSeparator()
+                ContextMenuRow(label: "Copy Path", symbol: "doc.on.clipboard") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(editorAbsPath(sel), forType: .string)
+                }
+                ContextMenuRow(label: "Copy Relative Path") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(sel.repo.isEmpty ? sel.path : sel.repo + "/" + sel.path, forType: .string)
+                }
+                ContextMenuSeparator()
+                ContextMenuRow(label: "Reveal in Finder", symbol: "magnifyingglass") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: editorAbsPath(sel))])
+                }
+                ContextMenuRow(label: "Open in Terminal", symbol: "terminal") {
+                    onOpenInTerminal((editorAbsPath(sel) as NSString).deletingLastPathComponent)
+                }
+            }
+        }
     }
 
     private func save() {
-        guard editing, dirty, let sel = selected else { return }
+        guard dirty, let sel = selected else { return }
         let rel = sel.repo.isEmpty ? sel.path : sel.repo + "/" + sel.path
         let abs = (workspace.path as NSString).appendingPathComponent(rel)
         do {
             try editText.write(toFile: abs, atomically: true, encoding: .utf8)
             savedText = editText
+            Task { await refreshDiff(); await refreshGitStatus() }
         } catch {
             let alert = NSAlert(); alert.messageText = "Couldn't save"
             alert.informativeText = error.localizedDescription
             alert.alertStyle = .warning; alert.addButton(withTitle: "OK"); alert.runModal()
         }
+    }
+
+    // Change-gutter markers for the open file: 0-based line -> kind (1 added, 2 modified, 3 deleted).
+    private func refreshDiff() async {
+        guard let sel = selected else { changedLines = [:]; return }
+        let branch = workspace.branch, isMain = workspace.isMain
+        let repo = sel.repo, path = sel.path
+        changedLines = await Task.detached(priority: .utility) { () -> [Int: Int] in
+            struct Diff: Decodable { var added: [Int] = []; var modified: [Int] = []; var deleted: [Int] = [] }
+            let data = FileStore.gitDiff(branch: branch, repo: repo, path: path, isMain: isMain)
+            let d = PomJSON.decode(Diff.self, from: data) ?? Diff()
+            var m: [Int: Int] = [:]
+            for line in d.added { m[line - 1] = 1 }
+            for line in d.modified { m[line - 1] = 2 }
+            for line in d.deleted { m[line - 1] = 3 }
+            return m
+        }.value
     }
 
     private var tree: some View {
@@ -137,6 +192,7 @@ struct FilesPane: View {
                     EmptyStateView(icon: "folder", title: "No files")
                 } else {
                     WorkspaceFileTreeList(roots: roots, workspacePath: workspace.path, treeVersion: treeVersion,
+                                          onOpenInTerminal: onOpenInTerminal, dirtyKeys: dirtyKeys,
                                           selected: $selected, expanded: $expanded)
                 }
             } else {
@@ -174,21 +230,17 @@ struct FilesPane: View {
                 Text("Select a file").font(.system(size: 12)).foregroundStyle(Theme.dim)
             }
             Spacer()
-            if selectedIsMarkdown, case .text = preview, !editing {
+            if selectedIsMarkdown, case .text = preview {
                 modeBtn(compact ? nil : "Preview", "doc.richtext", on: !markdownRaw) { setMarkdownRaw(false) }
                 modeBtn(compact ? nil : "Raw", "chevron.left.forwardslash.chevron.right", on: markdownRaw) { setMarkdownRaw(true) }
             }
-            if isTextPreview {
-                if editing {
-                    if dirty { Circle().fill(Theme.accent).frame(width: 6, height: 6) }
-                    Button { save() } label: {
-                        Text("Save").font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(dirty ? .white : Theme.dim)
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(dirty ? Theme.accent : Theme.sel, in: RoundedRectangle(cornerRadius: 6))
-                    }.buttonStyle(.plain).disabled(!dirty).help("Save (Cmd+S)")
-                }
-                modeBtn(compact ? nil : (editing ? "Editing" : "Edit"), "pencil", on: editing) { toggleEdit() }
+            if dirty {
+                Circle().fill(Theme.accent).frame(width: 6, height: 6)
+                Button { save() } label: {
+                    Text("Save").font(.system(size: 11, weight: .medium)).foregroundStyle(.white)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Theme.accent, in: RoundedRectangle(cornerRadius: 6))
+                }.buttonStyle(.plain).help("Save (Cmd+S)")
             }
             IconButton("arrow.clockwise", size: 11, tip: "Refresh file list") {
                 Task { await reload() }
@@ -225,22 +277,17 @@ struct FilesPane: View {
             case .loading:
                 LoadingView(text: "loading…")
             case .text(let s):
-                if editing {
-                    // Editing uses CodeEditSourceEditor (only SQL is grammar-highlighted
-                    // in this build; other languages show plain but editable text).
-                    FileEditor(text: $editText, path: sel.path, mode: theme.mode).id(sel.id)
-                } else if selectedIsMarkdown && !markdownRaw {
+                if selectedIsMarkdown && !markdownRaw {
                     ScrollView {
                         MarkdownText(s, reading: true)
                             .padding(.horizontal, 20).padding(.vertical, 16)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
-                    // Read-only preview keeps the regex highlighter, which colors many
-                    // languages (tree-sitter only ships SQL grammar here).
-                    CodeView(content: s, lang: CodeLang.detect(path: sel.path),
-                             start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
-                             onSelectLines: { _ in })
+                    // Always editable; tree-sitter highlighting where a grammar is bundled.
+                    FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: true,
+                               fontSize: CGFloat(fontSize), changedLines: changedLines,
+                               onRightClick: { pt, view in showEditorMenu(sel, at: pt, in: view) }).id(sel.id)
                 }
             case .image(let img):
                 FileImageView(image: img)
@@ -323,8 +370,65 @@ struct FilesPane: View {
         roots = built.1
         treeVersion &+= 1
         expanded.insert("")   // keep the workspace-root node open by default
+        if !didRestore {
+            didRestore = true
+            restoreState(from: built.0)
+        }
         if let sel = selected, !built.0.contains(where: { $0.id == sel.id }) {
             selected = nil
+        }
+        await refreshGitStatus()
+    }
+
+    // Gold-highlight files with uncommitted git changes and every folder on their path (Zed-style).
+    private func refreshGitStatus() async {
+        let branch = workspace.branch, isMain = workspace.isMain
+        let keys = await Task.detached(priority: .utility) { () -> Set<String> in
+            struct Change: Decodable { var path = "" }
+            struct Repo: Decodable { var repo = ""; var changes: [Change] = [] }
+            struct Payload: Decodable { var repos: [Repo] = [] }
+            let data = FileStore.gitStatus(branch: branch, isMain: isMain)
+            let payload = PomJSON.decode(Payload.self, from: data) ?? Payload()
+            var keys: Set<String> = []
+            for repo in payload.repos {
+                for change in repo.changes where !change.path.isEmpty {
+                    let fileID = repo.repo.isEmpty ? change.path : repo.repo + "/" + change.path
+                    keys.insert("")
+                    var acc = ""
+                    for part in fileID.split(separator: "/") {
+                        acc = acc.isEmpty ? String(part) : acc + "/" + part
+                        keys.insert(acc)
+                    }
+                }
+            }
+            return keys
+        }.value
+        dirtyKeys = keys
+    }
+
+    private struct PersistedState: Codable {
+        var expanded: [String]
+        var selectedRepo: String?
+        var selectedPath: String?
+    }
+
+    private var stateKey: String { "filesPane.state.\(workspace.path)" }
+
+    private func saveState() {
+        let st = PersistedState(expanded: Array(expanded),
+                                selectedRepo: selected?.repo,
+                                selectedPath: selected?.path)
+        if let data = try? JSONEncoder().encode(st) {
+            UserDefaults.standard.set(data, forKey: stateKey)
+        }
+    }
+
+    private func restoreState(from list: [WorkspaceFileEntry]) {
+        guard let data = UserDefaults.standard.data(forKey: stateKey),
+              let st = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
+        expanded.formUnion(st.expanded)
+        if selected == nil, let path = st.selectedPath {
+            selected = list.first { $0.repo == (st.selectedRepo ?? "") && $0.path == path }
         }
     }
 
@@ -341,7 +445,7 @@ struct FilesPane: View {
         }
         if let text = resp.text {
             preview = .text(text)
-            savedText = text; editText = text; editing = false
+            savedText = text; editText = text
         } else if let b64 = resp.base64, let data = Data(base64Encoded: b64), let img = NSImage(data: data) {
             preview = .image(img)
         } else if resp.binary {

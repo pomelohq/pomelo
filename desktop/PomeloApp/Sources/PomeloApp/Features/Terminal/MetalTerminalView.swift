@@ -77,6 +77,7 @@ struct MetalTerminalPane: NSViewRepresentable {
     let holderName: String
     let wsKey: String
     var autorun: String? = nil
+    var startDir: String? = nil
     var fontSize: CGFloat = 12
     var fontFamily: String = ""
     var themeMode: ThemeMode = activeThemeMode
@@ -87,7 +88,7 @@ struct MetalTerminalPane: NSViewRepresentable {
         v.setFont(family: fontFamily, size: fontSize)
         let c = MetalTerminalView.themeColors(themeMode); v.applyColors(fg: c.fg, bg: c.bg)
         v.statsEnabled = UserDefaults.standard.bool(forKey: MetalTerminalView.statsKey)
-        context.coordinator.attach(view: v, name: holderName, wsKey: wsKey, autorun: autorun, onClosed: onClosed)
+        context.coordinator.attach(view: v, name: holderName, wsKey: wsKey, autorun: autorun, startDir: startDir, onClosed: onClosed)
         return v
     }
     func updateNSView(_ nsView: MetalTerminalHostView, context: Context) {
@@ -100,7 +101,7 @@ struct MetalTerminalPane: NSViewRepresentable {
     final class Coord {
         private var streamID: Int32 = 0
         private var closedFired = false
-        @MainActor func attach(view: MetalTerminalHostView, name: String, wsKey: String, autorun: String?, onClosed: @escaping () -> Void) {
+        @MainActor func attach(view: MetalTerminalHostView, name: String, wsKey: String, autorun: String?, startDir: String? = nil, onClosed: @escaping () -> Void) {
             view.onResize = { [weak self] cols, rows in
                 guard let self, self.streamID > 0 else { return }
                 StreamManager.shared.resize(self.streamID, cols: Int32(cols), rows: Int32(rows))
@@ -111,7 +112,7 @@ struct MetalTerminalPane: NSViewRepresentable {
             }
             Task { @MainActor in
                 let id = await StreamManager.shared.openPTY(name: name, wsKey: wsKey,
-                                                            cols: Int32(view.termCols), rows: Int32(view.termRows)) { [weak self, weak view] kind, bytes in
+                                                            cols: Int32(view.termCols), rows: Int32(view.termRows), cwd: startDir) { [weak self, weak view] kind, bytes in
                     if kind == .close {
                         if let self, !self.closedFired { self.closedFired = true; DispatchQueue.main.async { onClosed() } }
                         return

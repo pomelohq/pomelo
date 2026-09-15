@@ -20,6 +20,9 @@ extension SourceEditorConfiguration {
         /// Whether to show the reformatting guide.
         public var showReformattingGuide: Bool
 
+        /// Whether to draw Zed-style indentation guides beneath the text.
+        public var showIndentGuides: Bool = false
+
         /// Whether to show the folding ribbon. Only available if ``showGutter`` is `true`.
         public var showFoldingRibbon: Bool
 
@@ -53,6 +56,7 @@ extension SourceEditorConfiguration {
             showLineNumbers: Bool = true,
             showMinimap: Bool = true,
             showReformattingGuide: Bool = false,
+            showIndentGuides: Bool = false,
             showFoldingRibbon: Bool = true,
             showStatementRunControls: Bool = false,
             gutterFitsContent: Bool = false,
@@ -64,6 +68,7 @@ extension SourceEditorConfiguration {
             self.showLineNumbers = showLineNumbers
             self.showMinimap = showMinimap
             self.showReformattingGuide = showReformattingGuide
+            self.showIndentGuides = showIndentGuides
             self.showFoldingRibbon = showFoldingRibbon
             self.showStatementRunControls = showStatementRunControls
             self.gutterFitsContent = gutterFitsContent
