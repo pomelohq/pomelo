@@ -100,8 +100,12 @@ struct WorkspaceFileTreeList: View {
     var treeVersion: Int = 0
     var onOpenInTerminal: (String) -> Void = { _ in }
     var dirtyKeys: Set<String> = []
+    // When set, leaf taps route through this (so the host can open the file as a tab) instead of writing `selected`.
+    var onOpen: ((WorkspaceFileEntry) -> Void)? = nil
     @Binding var selected: WorkspaceFileEntry?
     @Binding var expanded: Set<String>
+
+    @EnvironmentObject private var theme: ThemeManager
 
     @State private var renamingID: String?
     @State private var renameText = ""
@@ -141,7 +145,7 @@ struct WorkspaceFileTreeList: View {
     }
 
     private func stickyRow(_ node: WFileTreeNode, depth: Int) -> some View {
-        let mat = "mi-" + (node.isRoot ? "folder-base" : MaterialIcon.folder(node.name))
+        let mat = MaterialIcon.folderAsset(node.name, root: node.isRoot)
         return HStack(spacing: 5) {
             Image(mat, bundle: .module).resizable().interpolation(.high)
                 .aspectRatio(contentMode: .fit).frame(width: 15, height: 15)
@@ -187,6 +191,7 @@ struct WorkspaceFileTreeList: View {
         h.combine(renamingID)
         h.combine(expanded)
         h.combine(dirtyKeys)
+        h.combine(theme.mode)
         return h.finalize()
     }
 
@@ -204,7 +209,7 @@ struct WorkspaceFileTreeList: View {
     @ViewBuilder private func row(_ node: WFileTreeNode, depth: Int) -> some View {
         let isDir = !node.isLeaf
         let dirty = dirtyKeys.contains(node.id)
-        let matName: String? = isDir ? "mi-" + MaterialIcon.folder(node.name) : MaterialIcon.file(node.name).map { "mi-" + $0 }
+        let matName: String? = isDir ? MaterialIcon.folderAsset(node.name, root: node.isRoot) : MaterialIcon.file(node.name).map { "mi-" + $0 }
         TreeRow(depth: depth, indent: { CGFloat($0) * 13 }, isDir: isDir, expanded: expanded.contains(node.id), name: node.name,
                 leadingSymbol: "doc",
                 marker: nil,
@@ -219,7 +224,9 @@ struct WorkspaceFileTreeList: View {
                 showChevron: false, guides: depth, hoverHighlight: true,
                 hoverColor: Theme.fg.opacity(0.06), cornerRadius: 0,
                 selectedBorder: nil, iconColor: nil, leadingImageName: matName, fillWidth: true) {
-            if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
+            if node.isLeaf, let e = node.entry {
+                if let onOpen { onOpen(e) } else { selected = e }
+            } else { toggle(node.id) }
         }
         .overlay(RightClickArea { pt in
             ContextMenu.show(at: pt) { _ in menuContent(for: node, isDir: isDir) }
@@ -482,6 +489,13 @@ enum MaterialIcon {
         case "config", ".config": return "folder-config"
         default: return "folder-base"
         }
+    }
+
+    // The bundled Material folder icons are two-tone assets tuned for a dark sidebar (a saturated body plus a very
+    // pale detail that washes out on white). On the light theme use the darkened `-light` variants instead.
+    static func folderAsset(_ name: String, root: Bool) -> String {
+        let base = root ? "folder-base" : folder(name)
+        return "mi-" + base + (activeThemeMode == .light ? "-light" : "")
     }
 }
 
