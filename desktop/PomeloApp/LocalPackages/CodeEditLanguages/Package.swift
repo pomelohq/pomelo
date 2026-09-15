@@ -8,7 +8,8 @@ let package = Package(
         .library(name: "CodeEditLanguages", targets: ["CodeEditLanguages"])
     ],
     dependencies: [
-        .package(url: "https://github.com/ChimeHQ/SwiftTreeSitter.git", from: "0.9.0")
+        // Local SwiftTreeSitter -> local WASM-enabled tree-sitter.
+        .package(path: "../SwiftTreeSitter")
     ],
     targets: [
         .target(
