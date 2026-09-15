@@ -139,6 +139,35 @@ from a registry.
   gives real tree-sitter for the core stack with a bounded (few-MB) size increase
   but no runtime install. Kept as the fallback, not the goal.
 
+## Spike results (P0)
+
+Validated the make-or-break unknown — running tree-sitter WASM grammars natively
+in this toolchain:
+
+- **Version pin.** tree-sitter 0.25.10 (what SwiftTreeSitter / CodeEditLanguages
+  use) pins **wasmtime 29.0.1**. Its `wasm_store.c` does NOT compile against the
+  latest wasmtime (v48): the C API changed (`wasmtime_func_t.__private`
+  `uint32_t` -> `void*`, 8 errors). Against the **v29.0.1 C API it compiles
+  clean**. So match wasmtime to tree-sitter, not to "latest" — upgrading wasmtime
+  alone breaks the contract; upgrading tree-sitter would ripple through the whole
+  editor stack.
+- **Build + link + run works.** Compiling `lib/src/lib.c` with
+  `-DTREE_SITTER_FEATURE_WASM` (it `#include`s `wasm_store.c`) plus the vendored
+  `wasm/{stdlib-symbols.txt,wasm-stdlib.h}`, linking `libwasmtime` (v29), produces
+  a binary that creates a `wasm_engine` + `TSWasmStore` and reaches
+  `ts_wasm_store_load_language`. Must build with the **Xcode toolchain**, not
+  CommandLineTools (the CLT SDK has the known `arm64e.x1` malformed-tbd bug).
+- **Size.** wasmtime v29 `libwasmtime.dylib` is **13 MB** (v48 was 24 MB) — bundle
+  the dylib, not the ~52 MB static archive.
+- **Open item -> P1.** A grammar `.wasm` must be built by a matching tree-sitter
+  (`tree-sitter build --wasm`, emscripten). The npm `tree-sitter-wasms` artifact
+  failed to load (`failed to parse dylink section`): its `dylink.0` section comes
+  from a different tree-sitter. P1 needs a grammar-build pipeline (tree-sitter CLI
+  0.25 + emscripten via docker) or a prebuilt set produced with tree-sitter 0.25.
+
+Conclusion: the WASM approach is feasible and the runtime integration is proven.
+The next concrete step is the grammar-artifact pipeline, not more runtime risk.
+
 ## Consequences
 
 - One highlighting engine (tree-sitter) becomes the default wherever a grammar is
