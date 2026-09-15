@@ -101,6 +101,15 @@ public struct SourceEditor: NSViewControllerRepresentable {
     var coordinators: [any TextViewCoordinator]
     var completionDelegate: CodeSuggestionDelegate?
     var jumpToDefinitionDelegate: JumpToDefinitionDelegate?
+    var rightClickHandler: ((NSPoint) -> Void)?
+
+    /// Install a custom right-click handler. The editor moves the caret to the click, suppresses the
+    /// native menu, and calls `handler` with the click's screen point so the host can show its own menu.
+    public func onRightClick(_ handler: @escaping (NSPoint) -> Void) -> Self {
+        var copy = self
+        copy.rightClickHandler = handler
+        return copy
+    }
 
     public typealias NSViewControllerType = TextViewController
 
@@ -160,6 +169,7 @@ public struct SourceEditor: NSViewControllerRepresentable {
     public func updateNSViewController(_ controller: TextViewController, context: Context) {
         controller.completionDelegate = completionDelegate
         controller.jumpToDefinitionDelegate = jumpToDefinitionDelegate
+        controller.textView?.onRightClick = rightClickHandler
 
         context.coordinator.updateHighlightProviders(highlightProviders)
 

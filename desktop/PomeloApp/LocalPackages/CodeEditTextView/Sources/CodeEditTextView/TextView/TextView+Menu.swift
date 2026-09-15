@@ -13,6 +13,8 @@ extension TextView {
     /// owns the click rather than a view guessing from event coordinates.
     override public func menu(for event: NSEvent) -> NSMenu? {
         guard event.type == .rightMouseDown else { return nil }
+        // A host that installs `onRightClick` shows its own menu; suppress the native one.
+        if onRightClick != nil { return nil }
 
         if let assignedMenu = super.menu(for: event) {
             return assignedMenu

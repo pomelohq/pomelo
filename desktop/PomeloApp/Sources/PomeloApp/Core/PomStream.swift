@@ -64,11 +64,13 @@ final class StreamManager {
         PomSetStreamCallback(pomStreamTrampoline)
     }
 
-    func openPTY(name: String, wsKey: String, cols: Int32, rows: Int32,
+    func openPTY(name: String, wsKey: String, cols: Int32, rows: Int32, cwd: String? = nil,
                  onFrame: @escaping (StreamKind, [UInt8]) -> Void) async -> Int32 {
         ensureCallback()
         let id = await Task.detached(priority: .userInitiated) {
-            pomSubscribe("pty", ["name": name, "ws_key": wsKey, "cols": Int(cols), "rows": Int(rows)])
+            var params: [String: Any] = ["name": name, "ws_key": wsKey, "cols": Int(cols), "rows": Int(rows)]
+            if let cwd, !cwd.isEmpty { params["cwd"] = cwd }
+            return pomSubscribe("pty", params)
         }.value
         if id > 0 { clients[id] = onFrame; activeStreamID = id }
         return id

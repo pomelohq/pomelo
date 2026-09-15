@@ -125,6 +125,27 @@ extension TextView {
         }
     }
 
+    override public func rightMouseDown(with event: NSEvent) {
+        guard let onRightClick else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        // Move the caret to the click, unless it lands inside an existing selection (keep it for Copy).
+        let viewPoint = self.convert(event.locationInWindow, from: nil)
+        let offset = layoutManager.textOffsetAtPoint(viewPoint)
+        if isSelectable, let offset {
+            let insideSelection = selectionManager.textSelections.contains { $0.range.contains(offset) }
+            if !insideSelection {
+                window?.makeFirstResponder(self)
+                selectionManager.setSelectedRange(NSRange(location: offset, length: 0))
+                needsDisplay = true
+            }
+        }
+        // Anchor at the pointer's true screen location. Converting the in-window point drifted
+        // (window origin), and the caret rect moves with scroll — the pointer location is fixed.
+        onRightClick(NSEvent.mouseLocation)
+    }
+
     override public func mouseUp(with event: NSEvent) {
         mouseDragAnchor = nil
         disableMouseAutoscrollTimer()

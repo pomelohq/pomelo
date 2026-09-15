@@ -21,6 +21,7 @@ struct TermTab: Identifiable, Equatable {
     var title: String
     let holder: String
     var autorun: String? = nil
+    var startDir: String? = nil
 }
 
 @MainActor
@@ -79,6 +80,14 @@ struct TermTab: Identifiable, Equatable {
 
     func newTerminal() {
         let t = makeShellTab()
+        terms.append(t); selTerm = t.id; drawerOpen = true
+    }
+
+    // Open a built-in terminal tab whose shell starts in `dir` (spawned with that cwd, no echoed cd).
+    func openTerminal(at dir: String) {
+        termSeq += 1
+        var t = TermTab(title: (dir as NSString).lastPathComponent, holder: "appsh-\(safeWs)-\(termSeq)")
+        t.startDir = dir
         terms.append(t); selTerm = t.id; drawerOpen = true
     }
 
@@ -258,7 +267,7 @@ struct WorkspacePaneInner: View {
                 opened.insert(.claude)
                 StreamManager.shared.askClaude(wsKey: workspace.id, text: text)
                 ps.agentOpen = true; ps.funcVisible = true
-            }, openRequest: $openFile)
+            }, onOpenInTerminal: { ps.openTerminal(at: $0) }, openRequest: $openFile)
             .id("files-\(safeWs)")
         case .review:
             ReviewPane(workspace: workspace, isActive: active, onAskAgent: { text in
@@ -457,7 +466,7 @@ struct TerminalDrawer: View {
 
             if let sel = selected, let t = terms.first(where: { $0.id == sel }) {
                 if metalTerminal {
-                    MetalTerminalPane(holderName: t.holder, wsKey: wsKey, autorun: t.autorun,
+                    MetalTerminalPane(holderName: t.holder, wsKey: wsKey, autorun: t.autorun, startDir: t.startDir,
                                       fontSize: 12, fontFamily: termFontFamily, themeMode: theme.mode, onClosed: { removeTab(t) }).id(t.holder)
                 } else {
                     TerminalPane(holderName: t.holder, wsKey: wsKey, autorun: t.autorun, themeMode: theme.mode,

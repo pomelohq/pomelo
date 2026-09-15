@@ -35,6 +35,7 @@ struct FilesPane: View {
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
     var onAskAgent: (String) -> Void = { _ in }
+    var onOpenInTerminal: (String) -> Void = { _ in }
     @Binding var openRequest: WorkspaceFileEntry?
 
     @State private var entries: [WorkspaceFileEntry]?
@@ -109,6 +110,37 @@ struct FilesPane: View {
         for part in e.path.split(separator: "/").dropLast() {
             id = id.isEmpty ? String(part) : id + "/" + part
             expanded.insert(id)
+        }
+    }
+
+    private func editorAbsPath(_ e: WorkspaceFileEntry) -> String {
+        let rel = e.repo.isEmpty ? e.path : e.repo + "/" + e.path
+        return (workspace.path as NSString).appendingPathComponent(rel)
+    }
+
+    private func showEditorMenu(_ sel: WorkspaceFileEntry, at point: NSPoint) {
+        ContextMenu.show(at: point) { _ in
+            ContextMenu.container {
+                ContextMenuRow(label: "Cut", symbol: "scissors") { NSApp.sendAction(Selector(("cut:")), to: nil, from: nil) }
+                ContextMenuRow(label: "Copy", symbol: "doc.on.doc") { NSApp.sendAction(Selector(("copy:")), to: nil, from: nil) }
+                ContextMenuRow(label: "Paste", symbol: "clipboard") { NSApp.sendAction(Selector(("paste:")), to: nil, from: nil) }
+                ContextMenuSeparator()
+                ContextMenuRow(label: "Copy Path", symbol: "doc.on.clipboard") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(editorAbsPath(sel), forType: .string)
+                }
+                ContextMenuRow(label: "Copy Relative Path") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(sel.repo.isEmpty ? sel.path : sel.repo + "/" + sel.path, forType: .string)
+                }
+                ContextMenuSeparator()
+                ContextMenuRow(label: "Reveal in Finder", symbol: "magnifyingglass") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: editorAbsPath(sel))])
+                }
+                ContextMenuRow(label: "Open in Terminal", symbol: "terminal") {
+                    onOpenInTerminal((editorAbsPath(sel) as NSString).deletingLastPathComponent)
+                }
+            }
         }
     }
 
@@ -225,7 +257,8 @@ struct FilesPane: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
                     // Always editable; tree-sitter highlighting where a grammar is bundled.
-                    FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: true).id(sel.id)
+                    FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: true,
+                               onRightClick: { pt in showEditorMenu(sel, at: pt) }).id(sel.id)
                 }
             case .image(let img):
                 FileImageView(image: img)

@@ -101,7 +101,6 @@ struct WorkspaceFileTreeList: View {
     @Binding var selected: WorkspaceFileEntry?
     @Binding var expanded: Set<String>
 
-    @State private var ctxNodeID: String?
     @State private var renamingID: String?
     @State private var renameText = ""
     // Cached so a scroll tick (which only updates topRow) never rebuilds the flat list.
@@ -184,7 +183,6 @@ struct WorkspaceFileTreeList: View {
         h.combine(flat.count)
         h.combine(selected?.id)
         h.combine(renamingID)
-        h.combine(ctxNodeID)
         h.combine(expanded)
         return h.finalize()
     }
@@ -219,11 +217,9 @@ struct WorkspaceFileTreeList: View {
                 selectedBorder: nil, iconColor: nil, leadingImageName: matName, fillWidth: true) {
             if node.isLeaf, let e = node.entry { selected = e } else { toggle(node.id) }
         }
-        .overlay(RightClickArea { ctxNodeID = node.id })
-        .popover(isPresented: Binding(get: { ctxNodeID == node.id }, set: { if !$0 { ctxNodeID = nil } }),
-                 arrowEdge: .leading) {
-            menuContent(for: node, isDir: isDir)
-        }
+        .overlay(RightClickArea { pt in
+            ContextMenu.show(at: pt) { _ in menuContent(for: node, isDir: isDir) }
+        })
     }
 
     // MARK: - Custom context menu (themed; not the native NSMenu)
@@ -256,7 +252,8 @@ struct WorkspaceFileTreeList: View {
         }
         .frame(width: 214)
         .padding(.vertical, 5)
-        .background(Theme.bgSoft)
+        .background(Theme.bgSoft, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.borderSoft, lineWidth: 1))
     }
 
     private var menuDivider: some View {
@@ -267,7 +264,7 @@ struct WorkspaceFileTreeList: View {
     private func MenuItem(_ label: String, _ symbol: String? = nil, destructive: Bool = false,
                           _ action: @escaping () -> Void) -> some View {
         MenuItemView(label: label, symbol: symbol, destructive: destructive) {
-            ctxNodeID = nil
+            ContextMenu.dismiss()
             action()
         }
     }
@@ -515,23 +512,3 @@ private struct MenuItemView: View {
     }
 }
 
-// Catches right-clicks to trigger the custom menu while letting left-clicks fall
-// through to the SwiftUI row below (hitTest only claims the event for right buttons).
-private struct RightClickArea: NSViewRepresentable {
-    let onRightClick: () -> Void
-    func makeNSView(context: Context) -> NSView { V(onRightClick: onRightClick) }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    final class V: NSView {
-        let onRightClick: () -> Void
-        init(onRightClick: @escaping () -> Void) { self.onRightClick = onRightClick; super.init(frame: .zero) }
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            switch NSApp.currentEvent?.type {
-            case .rightMouseDown, .rightMouseUp, .rightMouseDragged: return self
-            default: return nil
-            }
-        }
-        override func rightMouseDown(with event: NSEvent) { onRightClick() }
-    }
-}
