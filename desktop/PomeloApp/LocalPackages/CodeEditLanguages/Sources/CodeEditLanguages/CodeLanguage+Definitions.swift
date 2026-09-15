@@ -12,6 +12,7 @@ public extension CodeLanguage {
     /// An array of all language structures. Only SQL ships a grammar; the rest were
     /// dropped to keep the binary small (the app's editor only ever uses SQL).
     static let allLanguages: [CodeLanguage] = [
+        .json,
         .sql
     ]
 

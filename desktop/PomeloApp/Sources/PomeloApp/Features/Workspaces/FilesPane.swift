@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CodeEditLanguages
 
 private struct FileContentResponse: Decodable {
     var mimeType: String
@@ -61,6 +62,10 @@ struct FilesPane: View {
 
     private var isTextPreview: Bool { if case .text = preview { return true }; return false }
     private var dirty: Bool { editing && editText != savedText }
+
+    private func hasTreeSitter(_ path: String) -> Bool {
+        CodeLanguage.detectLanguageFrom(url: URL(fileURLWithPath: path)).hasBundledGrammar
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -226,8 +231,6 @@ struct FilesPane: View {
                 LoadingView(text: "loading…")
             case .text(let s):
                 if editing {
-                    // Editing uses CodeEditSourceEditor (only SQL is grammar-highlighted
-                    // in this build; other languages show plain but editable text).
                     FileEditor(text: $editText, path: sel.path, mode: theme.mode).id(sel.id)
                 } else if selectedIsMarkdown && !markdownRaw {
                     ScrollView {
@@ -235,9 +238,11 @@ struct FilesPane: View {
                             .padding(.horizontal, 20).padding(.vertical, 16)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                } else if hasTreeSitter(sel.path) {
+                    // Accurate tree-sitter highlighting for languages with a bundled grammar.
+                    FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: false).id(sel.id)
                 } else {
-                    // Read-only preview keeps the regex highlighter, which colors many
-                    // languages (tree-sitter only ships SQL grammar here).
+                    // Regex highlighter fallback for languages without a grammar.
                     CodeView(content: s, lang: CodeLang.detect(path: sel.path),
                              start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
                              onSelectLines: { _ in })

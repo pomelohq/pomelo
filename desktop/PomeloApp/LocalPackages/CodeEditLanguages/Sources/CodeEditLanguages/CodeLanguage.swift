@@ -86,12 +86,18 @@ public struct CodeLanguage {
     /// editor) — other grammars were dropped to keep the binary small.
     private var tsLanguage: OpaquePointer? {
         switch id {
+        case .json:
+            return tree_sitter_json()
         case .sql:
             return tree_sitter_sql()
         default:
             return nil
         }
     }
+
+    /// True when this language has a bundled tree-sitter grammar (accurate
+    /// highlighting available); callers fall back to a regex highlighter otherwise.
+    public var hasBundledGrammar: Bool { tsLanguage != nil }
 }
 
 extension CodeLanguage: Hashable {
