@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import CodeEditLanguages
 
 private struct FileContentResponse: Decodable {
     var mimeType: String
@@ -37,7 +36,6 @@ struct FilesPane: View {
     let workspace: Workspace
     var onAskAgent: (String) -> Void = { _ in }
     @Binding var openRequest: WorkspaceFileEntry?
-    @ObservedObject private var codeDisplay = CodeDisplayManager.shared
 
     @State private var entries: [WorkspaceFileEntry]?
     @State private var roots: [WFileTreeNode] = []
@@ -50,7 +48,6 @@ struct FilesPane: View {
     @State private var expanded: Set<String> = []
     @State private var streamID: Int32 = 0
     @State private var treeVersion = 0
-    @State private var editing = false
     @State private var editText = ""
     @State private var savedText = ""
 
@@ -61,11 +58,7 @@ struct FilesPane: View {
     }
 
     private var isTextPreview: Bool { if case .text = preview { return true }; return false }
-    private var dirty: Bool { editing && editText != savedText }
-
-    private func hasTreeSitter(_ path: String) -> Bool {
-        CodeLanguage.detectLanguageFrom(url: URL(fileURLWithPath: path)).hasBundledGrammar
-    }
+    private var dirty: Bool { isTextPreview && editText != savedText }
 
     var body: some View {
         GeometryReader { geo in
@@ -115,14 +108,8 @@ struct FilesPane: View {
         }
     }
 
-    private func toggleEdit() {
-        if !editing { editText = savedText }
-        editing.toggle()
-        selLines = nil; question = ""
-    }
-
     private func save() {
-        guard editing, dirty, let sel = selected else { return }
+        guard dirty, let sel = selected else { return }
         let rel = sel.repo.isEmpty ? sel.path : sel.repo + "/" + sel.path
         let abs = (workspace.path as NSString).appendingPathComponent(rel)
         do {
@@ -179,21 +166,17 @@ struct FilesPane: View {
                 Text("Select a file").font(.system(size: 12)).foregroundStyle(Theme.dim)
             }
             Spacer()
-            if selectedIsMarkdown, case .text = preview, !editing {
+            if selectedIsMarkdown, case .text = preview {
                 modeBtn(compact ? nil : "Preview", "doc.richtext", on: !markdownRaw) { setMarkdownRaw(false) }
                 modeBtn(compact ? nil : "Raw", "chevron.left.forwardslash.chevron.right", on: markdownRaw) { setMarkdownRaw(true) }
             }
-            if isTextPreview {
-                if editing {
-                    if dirty { Circle().fill(Theme.accent).frame(width: 6, height: 6) }
-                    Button { save() } label: {
-                        Text("Save").font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(dirty ? .white : Theme.dim)
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(dirty ? Theme.accent : Theme.sel, in: RoundedRectangle(cornerRadius: 6))
-                    }.buttonStyle(.plain).disabled(!dirty).help("Save (Cmd+S)")
-                }
-                modeBtn(compact ? nil : (editing ? "Editing" : "Edit"), "pencil", on: editing) { toggleEdit() }
+            if dirty {
+                Circle().fill(Theme.accent).frame(width: 6, height: 6)
+                Button { save() } label: {
+                    Text("Save").font(.system(size: 11, weight: .medium)).foregroundStyle(.white)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Theme.accent, in: RoundedRectangle(cornerRadius: 6))
+                }.buttonStyle(.plain).help("Save (Cmd+S)")
             }
             IconButton("arrow.clockwise", size: 11, tip: "Refresh file list") {
                 Task { await reload() }
@@ -230,22 +213,15 @@ struct FilesPane: View {
             case .loading:
                 LoadingView(text: "loading…")
             case .text(let s):
-                if editing {
-                    FileEditor(text: $editText, path: sel.path, mode: theme.mode).id(sel.id)
-                } else if selectedIsMarkdown && !markdownRaw {
+                if selectedIsMarkdown && !markdownRaw {
                     ScrollView {
                         MarkdownText(s, reading: true)
                             .padding(.horizontal, 20).padding(.vertical, 16)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                } else if hasTreeSitter(sel.path) {
-                    // Accurate tree-sitter highlighting for languages with a bundled grammar.
-                    FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: false).id(sel.id)
                 } else {
-                    // Regex highlighter fallback for languages without a grammar.
-                    CodeView(content: s, lang: CodeLang.detect(path: sel.path),
-                             start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
-                             onSelectLines: { _ in })
+                    // Always editable; tree-sitter highlighting where a grammar is bundled.
+                    FileEditor(text: $editText, path: sel.path, mode: theme.mode, editable: true).id(sel.id)
                 }
             case .image(let img):
                 FileImageView(image: img)
@@ -346,7 +322,7 @@ struct FilesPane: View {
         }
         if let text = resp.text {
             preview = .text(text)
-            savedText = text; editText = text; editing = false
+            savedText = text; editText = text
         } else if let b64 = resp.base64, let data = Data(base64Encoded: b64), let img = NSImage(data: data) {
             preview = .image(img)
         } else if resp.binary {
