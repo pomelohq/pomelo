@@ -73,7 +73,8 @@ struct FilesPane: View {
                 VStack(spacing: 0) {
                     topBar(compact: overlayTree)
                     Divider().overlay(Theme.borderSoft)
-                    content
+                    // Clip so the editor's gutter can't overdraw upward into the path bar.
+                    content.clipped()
                 }
             }
             .overlay(alignment: .leading) {
