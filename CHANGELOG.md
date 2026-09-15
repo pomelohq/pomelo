@@ -4,6 +4,11 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-09-16
+
+### Fixed
+- Fixed a crash on macOS 27 that could close the app when opening the Files editor or the Database SQL editor. The editor no longer re-triggers a layout pass from within one, so short files and switching panes are stable.
+
 ## [0.6.0] - 2026-09-15
 
 ### Added
