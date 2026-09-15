@@ -60,6 +60,7 @@ struct FileQuickOpen: View {
             .frame(width: 540)
             .background(Theme.bgSoft, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
             .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
             .padding(.top, 72)
         }
