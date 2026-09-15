@@ -160,7 +160,21 @@ extension TextViewController {
             object: textView,
             queue: .main
         ) { [weak self] _ in
+            self?.repositionFloatingViews()
+        }
+    }
+
+    /// Re-sync the gutter and overlay frames to the text view. The floating subviews translate their autoresizing
+    /// mask into constraints, so writing their frame while hosted in a SwiftUI `NSHostingView` propagates a
+    /// constraint change up to the host. This notification fires from `-[NSView setFrameSize:]` during the window's
+    /// layout pass (the text view frame is updated mid-layout), and on macOS 26+ invalidating the host's constraints
+    /// during that pass raises an uncaught exception. Coalesce the writes onto the next runloop, outside the pass.
+    private func repositionFloatingViews() {
+        if pendingFloatingReposition { return }
+        pendingFloatingReposition = true
+        DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.pendingFloatingReposition = false
             self.gutterView.frame.size.height = self.textView.frame.height + 10
             self.gutterView.frame.origin.y = self.textView.frame.origin.y - self.scrollView.contentInsets.top
             self.gutterView.needsDisplay = true

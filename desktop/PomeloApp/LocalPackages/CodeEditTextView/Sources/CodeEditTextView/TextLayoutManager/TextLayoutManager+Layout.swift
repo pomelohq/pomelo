@@ -159,7 +159,11 @@ extension TextLayoutManager {
             delegate?.layoutManagerYAdjustment(yContentAdjustment)
         }
 
-        if originalHeight != lineStorage.height || layoutView?.frame.size.height != lineStorage.height {
+        // Only notify when content actually changed height, or the view is too short to fit it. Comparing for plain
+        // inequality loops forever when the document is shorter than the viewport: the view frame is deliberately
+        // grown to the viewport height (> content height), so `frame.height != contentHeight` never converges and
+        // macOS 27 aborts the window after too many layout passes.
+        if originalHeight != lineStorage.height || (layoutView?.frame.size.height ?? .greatestFiniteMagnitude) < lineStorage.height {
             delegate?.layoutManagerHeightDidUpdate(newHeight: lineStorage.height)
         }
 

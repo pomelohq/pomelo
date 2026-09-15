@@ -40,6 +40,10 @@ public class TextViewController: NSViewController {
     /// Overlay that draws an inline git-blame annotation on the caret's line.
     var blameOverlayView: BlameOverlayView?
 
+    /// Set while a floating-subview reposition is already queued so rapid frame-change notifications coalesce into
+    /// one deferred update instead of scheduling one per notification.
+    var pendingFloatingReposition = false
+
     /// Middleman between the text view to our invisible characters config, with knowledge of things like the
     ///  /// user's theme and indent option to help correctly draw invisible character placeholders.
     var invisibleCharactersCoordinator: InvisibleCharactersCoordinator

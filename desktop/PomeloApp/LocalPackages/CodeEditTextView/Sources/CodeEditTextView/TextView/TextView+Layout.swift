@@ -9,6 +9,8 @@ import Foundation
 
 extension TextView {
     override public func layout() {
+        isPerformingLayout = true
+        defer { isPerformingLayout = false }
         super.layout()
         layoutManager.layoutLines()
         selectionManager.updateSelectionViews(skipTimerReset: true)
@@ -72,6 +74,20 @@ extension TextView {
     /// - Returns: Whether or not the view was updated.
     @discardableResult
     public func updateFrameIfNeeded() -> Bool {
+        // Never mutate the frame or request layout from inside the window's layout pass. Doing so re-enters the
+        // display cycle and on macOS 26+ aborts the window ("more Layout Window passes than views"). Coalesce to the
+        // next runloop turn, where a single follow-up pass converges once the frame fits the content.
+        if isPerformingLayout {
+            if !frameUpdateScheduled {
+                frameUpdateScheduled = true
+                DispatchQueue.main.async { [weak self] in
+                    self?.frameUpdateScheduled = false
+                    self?.updateFrameIfNeeded()
+                }
+            }
+            return false
+        }
+
         var availableSize = scrollView?.contentSize ?? .zero
         availableSize.height -= (scrollView?.contentInsets.top ?? 0) + (scrollView?.contentInsets.bottom ?? 0)
 
