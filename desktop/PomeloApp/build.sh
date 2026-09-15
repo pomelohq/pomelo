@@ -73,7 +73,10 @@ codesign -s - --force --deep "$APP" >/dev/null 2>&1 || true
 echo "Build complete! -> $APP"
 
 case "${1:-}" in
-    run)          exec open -n "$APP" ;;
+    run)
+        pkill -f "/PomeloDev.app/Contents/MacOS/PomeloDev" 2>/dev/null || true
+        sleep 0.3
+        exec open -n "$APP" ;;
     selftest)     exec "$PRODUCTS/PomeloApp" --selftest ;;
     selftest-pty) exec "$PRODUCTS/PomeloApp" --selftest-pty ;;
 esac

@@ -28,6 +28,8 @@ dev:
 	go build -o $(BINARY) ./cmd/pom/ && ./$(BINARY) $(ARGS)
 
 # Native app dev build (unsigned Debug .app). `make app-run` builds + opens it.
+# `app-run` kills any previous PomeloDev instance first (build.sh) so you never
+# end up looking at a stale dev build; the released Pomelo is left untouched.
 app:
 	bash desktop/PomeloApp/build.sh
 
