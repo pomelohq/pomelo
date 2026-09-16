@@ -52,8 +52,18 @@ struct TermTab: Identifiable, Equatable {
         if let w = d["w"] as? Double { agentWidth = w }
     }
 
+    var rightPanel: PaneKind = .claude
+
     func toggleAgent() {
         agentOpen.toggle()
+        ensureOneVisible()
+    }
+
+    // The right dock hosts git/jira/database/review/agent as switchable panels (Zed-style). Clicking an active panel's
+    // nav icon closes the dock; clicking another switches to it.
+    func toggleRight(_ kind: PaneKind) {
+        if agentOpen && rightPanel == kind { agentOpen = false }
+        else { rightPanel = kind; agentOpen = true }
         ensureOneVisible()
     }
 
@@ -166,9 +176,10 @@ struct WorkspacePaneInner: View {
             VStack(spacing: 0) {
                 splitArea(width: geo.size.width, height: contentH, active: active)
                     .frame(width: geo.size.width, height: contentH)
-                    .onAppear { opened.insert(active); if ps.agentOpen { opened.insert(.claude) } }
+                    .onAppear { opened.insert(active); if ps.agentOpen { opened.insert(ps.rightPanel) } }
                     .onChange(of: ps.pane) { opened.insert(active) }
-                    .onChange(of: ps.agentOpen) { if ps.agentOpen { opened.insert(.claude) } }
+                    .onChange(of: ps.agentOpen) { if ps.agentOpen { opened.insert(ps.rightPanel) } }
+                    .onChange(of: ps.rightPanel) { if ps.agentOpen { opened.insert(ps.rightPanel) } }
                 if !ps.terms.isEmpty {
                     TerminalDrawer(terms: $ps.terms, selected: $ps.selTerm, height: $ps.drawerHeight,
                                    maxHeight: maxDrawer, wsKey: workspace.id,
@@ -204,10 +215,14 @@ struct WorkspacePaneInner: View {
     }
 
     private var effectivePane: PaneKind {
-        navDisabled(ps.pane) ? .services : ps.pane
+        let p = navDisabled(ps.pane) ? .services : ps.pane
+        return centerKinds.contains(p) ? p : .files
     }
 
-    private var functionKinds: [PaneKind] { PaneKind.allCases.filter { $0 != .claude } }
+    // Center hosts the editor + services; the rest are right-dock panels.
+    private var centerKinds: [PaneKind] { [.services, .files] }
+    private var rightKinds: [PaneKind] { [.claude, .git, .jira, .database, .review] }
+    private var functionKinds: [PaneKind] { centerKinds }
 
     private func clampAgent(_ w: Double, _ total: CGFloat) -> CGFloat {
         CGFloat(min(max(320, w), max(320, Double(total) - 320)))
@@ -227,7 +242,7 @@ struct WorkspacePaneInner: View {
                 SplitHandle(axis: .horizontal, value: $ps.agentWidth, min: 320, max: max(320, Double(width) - 320), invert: true)
                     .offset(x: funcW)
             }
-            if opened.contains(.claude) {
+            if rightKinds.contains(where: { opened.contains($0) }) {
                 agentArea()
                     .frame(width: agentW)
                     .offset(x: showAgent ? (showFunc ? funcW + handleW : 0) : width)
@@ -255,7 +270,16 @@ struct WorkspacePaneInner: View {
     }
 
     private func agentArea() -> some View {
-        paneView(.claude, active: true)
+        ZStack {
+            ForEach(rightKinds) { kind in
+                if opened.contains(kind), !(workspace.isMain && (kind == .jira || kind == .review)) {
+                    paneView(kind, active: ps.rightPanel == kind)
+                        .opacity(ps.rightPanel == kind ? 1 : 0)
+                        .allowsHitTesting(ps.rightPanel == kind)
+                        .zIndex(ps.rightPanel == kind ? 1 : 0)
+                }
+            }
+        }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .clipped()
     }
@@ -335,13 +359,14 @@ struct WorkspacePaneInner: View {
     }
 
     private var agentToggle: some View {
-        Button {
-            ps.toggleAgent(); if ps.agentOpen { opened.insert(.claude) }
+        let on = ps.agentOpen && ps.rightPanel == .claude
+        return Button {
+            ps.toggleRight(.claude); opened.insert(.claude)
         } label: {
             Image(systemName: PaneKind.claude.icon).font(.system(size: 11))
-                .foregroundStyle(ps.agentOpen ? Theme.accent : Theme.fgMuted)
+                .foregroundStyle(on ? Theme.accent : Theme.fgMuted)
                 .frame(width: 24, height: 18)
-                .background(ps.agentOpen ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 5))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -354,8 +379,13 @@ struct WorkspacePaneInner: View {
 
     private func navBtn(_ kind: PaneKind, _ key: KeyEquivalent, _ name: String) -> some View {
         let off = navDisabled(kind)
-        let on = ps.pane == kind && ps.funcVisible
-        return Button { if !off { withAnimation(.easeInOut(duration: 0.16)) { ps.selectFunc(kind) } } } label: {
+        let isRight = rightKinds.contains(kind)
+        let on = isRight ? (ps.agentOpen && ps.rightPanel == kind) : (ps.pane == kind && ps.funcVisible)
+        return Button {
+            guard !off else { return }
+            if isRight { ps.toggleRight(kind); opened.insert(kind) }
+            else { withAnimation(.easeInOut(duration: 0.16)) { ps.selectFunc(kind) } }
+        } label: {
             Image(systemName: kind.icon).font(.system(size: 11))
                 .foregroundStyle(off ? Theme.dim.opacity(0.4) : (on ? Theme.accent : Theme.fgMuted))
                 .frame(width: 24, height: 18)
