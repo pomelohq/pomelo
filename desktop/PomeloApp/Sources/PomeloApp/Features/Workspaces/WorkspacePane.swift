@@ -269,7 +269,10 @@ struct WorkspacePaneInner: View {
         case .services:
             ServicesBoard(workspace: workspace, openPane: { ps.pane = $0 }, openTerminal: attachLog,
                           onPrepareMain: { state.showPipeline = true })
-        case .git:    PRsBoard(workspace: workspace).id("git-\(safeWs)")
+        case .git:    PRsBoard(workspace: workspace, onOpenDiff: { e in
+            workbench.openGitDiffCmd = e
+            opened.insert(.files); ps.selectFunc(.files)
+        }).id("git-\(safeWs)")
         case .jira:   JiraPane(workspace: workspace)
         case .database: DatabasePane(workspace: workspace).id("db-\(safeWs)")
         case .files:

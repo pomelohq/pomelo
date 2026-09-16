@@ -194,6 +194,7 @@ struct PRsBoard: View {
     @Environment(AppState.self) var state
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
+    var onOpenDiff: ((WorkspaceFileEntry) -> Void)? = nil
 
     enum Selection: Equatable { case pr(String), local(String) }
 
@@ -213,8 +214,9 @@ struct PRsBoard: View {
     @AppStorage("prs.sectionExpanded") private var sectionExpanded = true
     @AppStorage("prs.localSectionExpanded") private var localSectionExpanded = true
 
-    init(workspace: Workspace) {
+    init(workspace: Workspace, onOpenDiff: ((WorkspaceFileEntry) -> Void)? = nil) {
         self.workspace = workspace
+        self.onOpenDiff = onOpenDiff
         _gitVM = StateObject(wrappedValue: GitViewModel(branch: workspace.branch, isMain: workspace.isMain))
     }
 
@@ -281,7 +283,7 @@ struct PRsBoard: View {
             } else { emptyDetail }
         case .local(let repo):
             if let it = localChanges.first(where: { $0.repo == repo }) {
-                LocalChangesDetail(item: it, branch: workspace.branch, isMain: workspace.isMain, gitVM: gitVM).id("local:\(it.repo)")
+                LocalChangesDetail(item: it, branch: workspace.branch, isMain: workspace.isMain, gitVM: gitVM, onOpenDiff: onOpenDiff).id("local:\(it.repo)")
             } else { emptyDetail }
         case nil:
             emptyDetail
@@ -673,6 +675,7 @@ struct LocalChangesDetail: View {
     let branch: String
     let isMain: Bool
     @ObservedObject var gitVM: GitViewModel
+    var onOpenDiff: ((WorkspaceFileEntry) -> Void)? = nil
 
     @State private var diffFiles: [DiffFile]?
     @State private var selFile: String?
@@ -701,6 +704,9 @@ struct LocalChangesDetail: View {
                           gitStatus: gitStatusByPath, gitVM: gitVM, gitRepo: item.repo)
         }
         .task(id: item.repo) { await loadDiff() }
+        .onChange(of: selFile) { _, p in
+            if let p, let cb = onOpenDiff { cb(WorkspaceFileEntry(repo: item.repo, path: p, isDir: false)) }
+        }
         .overlay(alignment: .top) {
             if !gitVM.lastError.isEmpty {
                 Text(gitVM.lastError)
@@ -730,7 +736,7 @@ struct LocalChangesDetail: View {
             PomJSON.decode([DiffFile].self, from: PRStore.localDiff(branch: branch, repo: repo, isMain: isMain)) ?? []
         }.value
         diffFiles = files
-        if selFile == nil { selFile = files.first?.path }
+        if selFile == nil, onOpenDiff == nil { selFile = files.first?.path }
     }
 }
 

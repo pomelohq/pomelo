@@ -40,6 +40,13 @@ private struct FileTab: Identifiable, Equatable {
     var id: String { entry.id }
 }
 
+// Fires when an @Observable command value changes, off the main body chain (which is at the type-checker's limit).
+private struct WorkbenchValueWatcher<V: Equatable>: View {
+    let value: V?
+    let onChange: () -> Void
+    var body: some View { Color.clear.onChange(of: value) { _, _ in onChange() } }
+}
+
 struct FilesPane: View {
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
@@ -94,6 +101,9 @@ struct FilesPane: View {
     @State private var searchActive = false
     @State private var searchQuery = ""
     @State private var pendingJump: Int?
+    // A single read-only git-diff tab, retargeted each time a file is picked in the git panel.
+    @State private var gitDiffEntry: WorkspaceFileEntry?
+    @State private var gitDiffActive = false
 
     private var selectedIsMarkdown: Bool {
         guard let path = selected?.path else { return false }
@@ -111,6 +121,23 @@ struct FilesPane: View {
     }
     private func stateBinding(_ id: String) -> Binding<SourceEditorState> {
         Binding(get: { docState[id] ?? SourceEditorState() }, set: { docState[id] = $0 })
+    }
+
+    // Search / git-diff tabs render over the editor stack (mounted while open so their state survives a tab switch).
+    // Extracted from the body so the main view expression stays inside the type-checker's budget.
+    @ViewBuilder private var altTabOverlays: some View {
+        if searchOpen {
+            FindInFiles(branch: workspace.branch, isMain: workspace.isMain, mode: theme.mode,
+                        workspacePath: workspace.path,
+                        query: $searchQuery,
+                        onChoose: { e, line in searchActive = false; pendingJump = line; open(e, preview: false) },
+                        onClose: { closeSearch() })
+                .opacity(searchActive ? 1 : 0)
+                .allowsHitTesting(searchActive)
+        }
+        if gitDiffActive, let e = gitDiffEntry {
+            GitDiffTab(workspace: workspace, entry: e).allowsHitTesting(gitDiffActive)
+        }
     }
 
     // MARK: - Tabs
@@ -133,7 +160,7 @@ struct FilesPane: View {
         } else {
             tabs.append(FileTab(entry: e, preview: preview))
         }
-        searchActive = false
+        searchActive = false; gitDiffActive = false
         revealInTree(e)
         selected = e
         pushHistory(e.id)
@@ -142,7 +169,7 @@ struct FilesPane: View {
 
     private func activate(_ id: String) {
         guard let t = tabs.first(where: { $0.id == id }) else { return }
-        searchActive = false
+        searchActive = false; gitDiffActive = false
         selected = t.entry
         revealInTree(t.entry)
         pushHistory(id)
@@ -155,8 +182,14 @@ struct FilesPane: View {
         if didRestore { saveState() }
     }
 
-    private func openSearch() { searchOpen = true; searchActive = true; if didRestore { saveState() } }
+    private func openSearch() { searchOpen = true; searchActive = true; gitDiffActive = false; if didRestore { saveState() } }
     private func closeSearch() { searchOpen = false; searchActive = false; if didRestore { saveState() } }
+
+    private func openGitDiff(_ e: WorkspaceFileEntry) {
+        gitDiffEntry = e; gitDiffActive = true; searchActive = false
+    }
+    private func closeGitDiff() { gitDiffEntry = nil; gitDiffActive = false }
+
 
     private func close(_ id: String) {
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
@@ -272,18 +305,9 @@ struct FilesPane: View {
                             }
                             .clipped()
                         }
-                        .opacity(searchActive ? 0 : 1)
-                        .allowsHitTesting(!searchActive)
-                        // Keep the search view mounted while its tab is open so results survive switching tabs.
-                        if searchOpen {
-                            FindInFiles(branch: workspace.branch, isMain: workspace.isMain, mode: theme.mode,
-                                        workspacePath: workspace.path,
-                                        query: $searchQuery,
-                                        onChoose: { e, line in searchActive = false; pendingJump = line; open(e, preview: false) },
-                                        onClose: { closeSearch() })
-                                .opacity(searchActive ? 1 : 0)
-                                .allowsHitTesting(searchActive)
-                        }
+                        .opacity(searchActive || gitDiffActive ? 0 : 1)
+                        .allowsHitTesting(!(searchActive || gitDiffActive))
+                        altTabOverlays
                     }
                 }
             }
@@ -304,6 +328,7 @@ struct FilesPane: View {
             }
             .opacity(0).allowsHitTesting(false)
         }
+        .background(WorkbenchValueWatcher(value: workbench?.openGitDiffCmd) { if let e = workbench?.openGitDiffCmd { openGitDiff(e); workbench?.openGitDiffCmd = nil } })
         .onAppear {
             if isSecondaryPane { restoreSecondary() } else { startWatch() }
             if searchRequest { openSearch(); searchRequest = false }
@@ -390,12 +415,14 @@ struct FilesPane: View {
     fileprivate func applyActivateCmd(_ cmd: String?) {
         guard let c = cmd else { return }
         if c == "search" { if searchOpen { searchActive = true } else { openSearch() } }
+        else if c.hasPrefix("gitdiff:") { searchActive = false; gitDiffActive = true }
         else if let t = tabs.first(where: { workRef($0.entry) == c }) { activate(t.id) }
         workbench?.activateCmd = nil
     }
     fileprivate func applyCloseCmd(_ cmd: String?) {
         guard let c = cmd else { return }
         if c == "search" { closeSearch() }
+        else if c.hasPrefix("gitdiff:") { closeGitDiff() }
         else if let t = tabs.first(where: { workRef($0.entry) == c }) { close(t.id) }
         workbench?.closeCmd = nil
     }
@@ -423,9 +450,15 @@ struct FilesPane: View {
         if searchOpen {
             list.insert(WorkTab(kind: .search, label: "Search", materialIcon: nil, preview: false, dirty: false), at: 0)
         }
+        if let g = gitDiffEntry {
+            list.append(WorkTab(kind: .gitDiff(repo: g.repo, path: g.path),
+                                label: (g.path as NSString).lastPathComponent + " (diff)",
+                                materialIcon: nil, preview: false, dirty: false))
+        }
         wb.tabs = list
-        wb.active = searchActive ? "search" : selected.map(workRef)
-        wb.activeFile = searchActive ? nil : selected
+        wb.active = gitDiffActive ? gitDiffEntry.map { "gitdiff:\($0.repo)/\($0.path)" }
+                  : searchActive ? "search" : selected.map(workRef)
+        wb.activeFile = (searchActive || gitDiffActive) ? nil : selected
         if let s = selected, !searchActive { wb.treeExpanded.formUnion(ancestorIDs(s)) }
         wb.treeDirty = dirtyKeys   // the sidebar tree (workbench-owned) still wants the git-dirty highlight
         wb.canBack = canBack
