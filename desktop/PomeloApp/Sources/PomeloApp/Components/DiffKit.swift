@@ -424,6 +424,8 @@ func splitRows(_ file: DiffFile) -> [SplitRow] {
     var rows: [SplitRow] = []
     var dels: [DiffLine] = [], adds: [DiffLine] = []
     var rid = 0
+    // Tokenize like the built-in editor (tree-sitter); fall back to the lexer when no grammar is bundled.
+    func syn(_ t: String) -> [SynSpan] { EditorSyntax.spans(t, path: file.path) ?? Syntax.spans(t) }
     func flush() {
         let n = max(dels.count, adds.count)
         for i in 0..<n {
@@ -434,8 +436,8 @@ func splitRows(_ file: DiffFile) -> [SplitRow] {
             if let d, let a, d.text != a.text, d.text.count < 400, a.text.count < 400 {
                 (lHi, rHi) = middleDiff(d.text, a.text)
             }
-            rows.append(SplitRow(id: rid, leftN: d?.oldN, left: d?.text, leftHi: lHi, leftSpans: d.map { Syntax.spans($0.text) } ?? [],
-                                 rightN: a?.newN, right: a?.text, rightHi: rHi, rightSpans: a.map { Syntax.spans($0.text) } ?? [], changed: true))
+            rows.append(SplitRow(id: rid, leftN: d?.oldN, left: d?.text, leftHi: lHi, leftSpans: d.map { syn($0.text) } ?? [],
+                                 rightN: a?.newN, right: a?.text, rightHi: rHi, rightSpans: a.map { syn($0.text) } ?? [], changed: true))
         }
         dels.removeAll(); adds.removeAll()
     }
@@ -446,7 +448,7 @@ func splitRows(_ file: DiffFile) -> [SplitRow] {
         case .add:     adds.append(l)
         case .context:
             flush(); rid += 1
-            let sp = Syntax.spans(l.text)
+            let sp = syn(l.text)
             rows.append(SplitRow(id: rid, leftN: l.oldN, left: l.text, leftSpans: sp, rightN: l.newN, right: l.text, rightSpans: sp))
         }
     }
@@ -513,7 +515,7 @@ extension CodeTextView {
                 cells.append(GutterCell(columns: [l.oldN.map(String.init) ?? "", l.newN.map(String.init) ?? ""],
                                         sign: l.kind == .add ? "+" : l.kind == .del ? "-" : "",
                                         signColor: l.kind == .add ? addC : l.kind == .del ? delC : dim))
-                out.append(attributedLine(l.text + "\n", spans: Syntax.spans(l.text), font: mono, base: code, paragraph: para))
+                out.append(attributedLine(l.text + "\n", spans: EditorSyntax.spans(l.text, path: file.path) ?? Syntax.spans(l.text), font: mono, base: code, paragraph: para))
             }
         }
         let maxN = cells.compactMap { $0.columns.compactMap(Int.init).max() }.max() ?? 0

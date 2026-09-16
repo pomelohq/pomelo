@@ -11,7 +11,7 @@ enum PaneKind: String, CaseIterable, Identifiable {
         case .jira:     return "ticket"
         case .database: return "cylinder.split.1x2"
         case .review:   return "doc.text.magnifyingglass"
-        case .files:    return "folder"
+        case .files:    return "chevron.left.forwardslash.chevron.right"
         }
     }
 }
@@ -135,9 +135,11 @@ struct WorkspacePaneInner: View {
     @EnvironmentObject var theme: ThemeManager
 
     @State private var opened: Set<PaneKind> = []
+    @State private var workbench = Workbench()
     @State private var quickOpen = false
     @State private var quickEntries: [WorkspaceFileEntry] = []
     @State private var openFile: WorkspaceFileEntry?
+    @State private var searchRequest = false
 
     private func openQuickOpen() {
         let branch = workspace.branch, isMain = workspace.isMain
@@ -190,6 +192,14 @@ struct WorkspacePaneInner: View {
                               onChoose: { e in openFile = e; opened.insert(.files); ps.selectFunc(.files); quickOpen = false },
                               onClose: { quickOpen = false })
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pomQuickOpen)) { _ in
+            guard state.selectedWorkspace?.id == workspace.id else { return }
+            openQuickOpen()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pomFindInFiles)) { _ in
+            guard state.selectedWorkspace?.id == workspace.id else { return }
+            opened.insert(.files); ps.selectFunc(.files); searchRequest = true
         }
     }
 
@@ -263,11 +273,11 @@ struct WorkspacePaneInner: View {
         case .jira:   JiraPane(workspace: workspace)
         case .database: DatabasePane(workspace: workspace).id("db-\(safeWs)")
         case .files:
-            FilesPane(workspace: workspace, onAskAgent: { text in
+            EditorWorkbench(workspace: workspace, workbench: workbench, onAskAgent: { text in
                 opened.insert(.claude)
                 StreamManager.shared.askClaude(wsKey: workspace.id, text: text)
                 ps.agentOpen = true; ps.funcVisible = true
-            }, onOpenInTerminal: { ps.openTerminal(at: $0) }, openRequest: $openFile)
+            }, onOpenInTerminal: { ps.openTerminal(at: $0) }, openRequest: $openFile, searchRequest: $searchRequest)
             .id("files-\(safeWs)")
         case .review:
             ReviewPane(workspace: workspace, isActive: active, onAskAgent: { text in
@@ -307,13 +317,13 @@ struct WorkspacePaneInner: View {
             .buttonStyle(.plain)
             .tooltip("Activity (this workspace)", shortcut: "⌘0", align: .topLeading)
             Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
+            navBtn(.files, "6", "Editor")
+            Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
             navBtn(.services, "1", "Services")
             navBtn(.git, "2", "Git")
             navBtn(.jira, "3", "Jira")
             navBtn(.database, "4", "Database")
             navBtn(.review, "5", "Review")
-            navBtn(.files, "6", "Files")
-            editorBtn
             if spread { Spacer(minLength: 8) } else { Spacer().frame(width: 10) }
             agentToggle
             Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
@@ -360,17 +370,6 @@ struct WorkspacePaneInner: View {
         .tooltip(off ? "\(name) — not on main"
                  : (kind == .services && workspace.total > 0 ? "Services · \(workspace.running)/\(workspace.total)" : name),
                  shortcut: "⌘\(String(key.character).uppercased())")
-    }
-
-    private var editorBtn: some View {
-        Button { state.openEditor(workspace) } label: {
-            Image(systemName: "square.and.pencil").font(.system(size: 11))
-                .foregroundStyle(Theme.fgMuted).frame(width: 24, height: 18)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .keyboardShortcut("e", modifiers: .command)
-        .tooltip("Open in editor", shortcut: "⌘E")
     }
 
     private var terminalToggle: some View {

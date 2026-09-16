@@ -125,24 +125,14 @@ struct CommandPalette: View {
             Text(ws.title).font(.system(size: 13)).foregroundStyle(Theme.fg).lineLimit(1)
             Spacer()
             if let l = label(st) {
-                Text(l).font(Theme.mono(9.5)).foregroundStyle(orbColor(st))
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(orbColor(st).opacity(0.14), in: Capsule())
+                Badge(text: l, color: orbColor(st))
             }
             if !ws.isMain, let j = state.jiraFor(ws.branch), !j.status.isEmpty {
-                Text(j.status).font(Theme.mono(9.5, .semibold)).foregroundStyle(j.color).lineLimit(1)
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(j.color.opacity(0.14), in: Capsule())
+                Badge(text: j.status, color: j.color)
             }
             let prCount = state.prsFor(ws.id).filter { $0.pr != nil }.count
             if prCount > 0 {
-                let c = prColor(state.prSeverityFor(ws.id))
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.triangle.pull").font(.system(size: 8.5))
-                    Text("\(prCount)").font(Theme.mono(9.5, .semibold))
-                }
-                .foregroundStyle(c).padding(.horizontal, 5).padding(.vertical, 1)
-                .background(c.opacity(0.16), in: Capsule())
+                Badge(icon: "arrow.triangle.pull", text: "\(prCount)", color: prColor(state.prSeverityFor(ws.id)))
             }
             if ws.running > 0 {
                 Circle().fill(ws.running >= ws.total ? Theme.ok : Theme.warn)

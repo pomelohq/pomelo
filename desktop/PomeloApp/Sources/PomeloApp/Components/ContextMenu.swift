@@ -31,7 +31,12 @@ enum ContextMenu {
         panel.hasShadow = true
         panel.isOpaque = false
         panel.hidesOnDeactivate = true
-        panel.contentView = host
+
+        let container = ArrowCursorView(frame: NSRect(origin: .zero, size: host.fittingSize))
+        host.frame = container.bounds
+        host.autoresizingMask = [.width, .height]
+        container.addSubview(host)
+        panel.contentView = container
 
         positionTopLeft(panel, at: point)
         panel.orderFrontRegardless()
@@ -148,12 +153,24 @@ struct ContextMenuRow: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(hover ? Theme.sel : .clear)
+            .background(RoundedRectangle(cornerRadius: 5).fill(hover ? Theme.sel : .clear).padding(.horizontal, 5))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
     }
+}
+
+// Forces the arrow cursor over the floating menu. A .nonactivatingPanel leaves the main window key, so the editor's
+// I-beam cursor rect keeps winning; an always-active cursorUpdate tracking area overrides it.
+final class ArrowCursorView: NSView {
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.activeAlways, .cursorUpdate, .mouseMoved, .inVisibleRect], owner: self))
+    }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
+    override func mouseMoved(with event: NSEvent) { NSCursor.arrow.set() }
 }
 
 struct ContextMenuSeparator: View {

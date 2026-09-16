@@ -160,8 +160,7 @@ private struct SessionRow: View {
                     .foregroundStyle(dead ? Theme.dim : Theme.fg).strikethrough(dead)
                 Spacer(minLength: 12)
                 if session.current {
-                    Text("CURRENT").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.ok)
-                        .padding(.horizontal, 5).padding(.vertical, 1).background(Theme.ok.opacity(0.15), in: Capsule())
+                    StatusPill(text: "CURRENT", color: Theme.ok)
                 } else if dead {
                     Text("missing").font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.dim)
                 }

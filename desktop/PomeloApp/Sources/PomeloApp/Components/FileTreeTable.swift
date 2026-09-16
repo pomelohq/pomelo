@@ -10,6 +10,7 @@ struct FileTreeTable: NSViewRepresentable {
     var contentWidth: CGFloat
     var signature: Int   // reload only when structure/selection/edit state changes
     var onTopRow: (Int) -> Void = { _ in }
+    var scrollToID: String? = nil   // when this changes, reveal the matching row (minimal scroll)
     let rowView: (WFileTreeNode, Int) -> AnyView
 
     func makeCoordinator() -> Coordinator { Coordinator(rows: rows, rowView: rowView, onTopRow: onTopRow) }
@@ -57,6 +58,15 @@ struct FileTreeTable: NSViewRepresentable {
             c.lastSignature = signature
             table.reloadData()
         }
+        // Reveal the active row. Only advance `lastScrollTarget` once the row actually exists in the current flat
+        // list, so a switch into a collapsed folder still scrolls after the expand rebuilds the rows.
+        if scrollToID == nil {
+            c.lastScrollTarget = nil
+        } else if let want = scrollToID, c.lastScrollTarget != want,
+                  let idx = c.rows.firstIndex(where: { $0.node.entry?.id == want }) {
+            c.lastScrollTarget = want
+            DispatchQueue.main.async { [weak c] in c?.reveal(row: idx) }
+        }
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -70,10 +80,28 @@ struct FileTreeTable: NSViewRepresentable {
         weak var table: NSTableView?
         weak var scroll: NSScrollView?
         var lastSignature = Int.min
+        var lastScrollTarget: String?
         private var lastTop = -1
 
         init(rows: [(node: WFileTreeNode, depth: Int)], rowView: @escaping (WFileTreeNode, Int) -> AnyView, onTopRow: @escaping (Int) -> Void) {
             self.rows = rows; self.rowView = rowView; self.onTopRow = onTopRow
+        }
+
+        // Bring the row into view with the MINIMAL scroll: if it's already fully visible, don't move (clicking a
+        // visible file shouldn't jerk the tree); otherwise align it to the nearest edge. Centering felt jarring.
+        func reveal(row: Int) {
+            guard let table, let scroll, row >= 0, row < rows.count else { return }
+            let rowRect = table.rect(ofRow: row)
+            guard rowRect.height > 0 else { table.scrollRowToVisible(row); return }
+            let visible = scroll.contentView.bounds
+            if rowRect.minY >= visible.minY && rowRect.maxY <= visible.maxY { return }
+            var y = visible.minY
+            if rowRect.minY < visible.minY { y = rowRect.minY }                        // above -> align top
+            else if rowRect.maxY > visible.maxY { y = rowRect.maxY - visible.height }   // below -> align bottom
+            let maxY = max(0, table.bounds.height - visible.height)
+            y = min(max(0, y), maxY)
+            scroll.contentView.scroll(to: NSPoint(x: visible.minX, y: y))
+            scroll.reflectScrolledClipView(scroll.contentView)
         }
 
         @objc func boundsChanged() {

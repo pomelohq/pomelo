@@ -35,12 +35,15 @@ final class PerfHUD: ObservableObject {
         logHandle = FileHandle(forWritingAtPath: logPath)
         collecting = true
         ensureTimer()
+        MainThreadHangSampler.shared.registerMainThread()
+        MainThreadHangSampler.shared.start()
     }
 
     func stopLogging() {
         try? logHandle?.close(); logHandle = nil
         collecting = false
         try? FileManager.default.removeItem(atPath: logPath)
+        MainThreadHangSampler.shared.stop()
     }
 
 
@@ -54,6 +57,7 @@ final class PerfHUD: ObservableObject {
 
     private func sample() {
         let now = CACurrentMediaTime()
+        MainThreadHangSampler.shared.beat()
         worst = max(worst, (now - lastTick) * 1000)
         lastTick = now
         guard now - lastSecond >= 1 else { return }

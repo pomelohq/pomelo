@@ -45,6 +45,17 @@ import Combine
             }
             let shift = e.modifierFlags.contains(.shift)
             let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
+            // App-global editor shortcuts: handled here so they fire even while the code editor holds first
+            // responder (an editable NSTextView would otherwise swallow the key before SwiftUI sees it).
+            if ch == "p" && !shift { NotificationCenter.default.post(name: .pomQuickOpen, object: nil); return nil }
+            if ch == "f" { NotificationCenter.default.post(name: shift ? .pomFindInFiles : .pomFindInFile, object: nil); return nil }
+            if ch == "e" {
+                if let ws = self.selectedWorkspace {
+                    if shift { self.openEditor(ws) }                          // external editor
+                    else { self.uiStore?.state(for: ws.id).selectFunc(.files) } // built-in Files editor
+                }
+                return nil
+            }
             if ch == "," { self.showSettings = true; return nil }
             if shift && (ch == "0" || ch == ")") { self.openActivity(scope: nil); return nil }
             if shift && ch == "s" { self.showShared = true; return nil }
@@ -66,7 +77,6 @@ import Combine
 
             case "0": self.openActivity(scope: ws.id); return nil
             case "i": ps.toggleAgent(); return nil
-            case "e": self.openEditor(ws); return nil
             case "j": withAnimation(.easeInOut(duration: 0.16)) { ps.toggleDrawer() }; return nil
             case "b": self.toggleSidebar(); return nil
             case "w": ps.closeSelected(); return nil
@@ -594,4 +604,10 @@ import Combine
             }
         }
     }
+}
+
+extension Notification.Name {
+    static let pomQuickOpen = Notification.Name("pom.quickOpen")
+    static let pomFindInFile = Notification.Name("pom.findInFile")
+    static let pomFindInFiles = Notification.Name("pom.findInFiles")
 }

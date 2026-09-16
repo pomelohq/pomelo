@@ -1,6 +1,6 @@
 import Foundation
 
-enum SynKind: Sendable { case plain, keyword, string, number, comment, type, function }
+enum SynKind: Sendable { case plain, keyword, string, number, comment, type, function, attribute }
 struct SynSpan: Sendable { let lo: Int; let hi: Int; let kind: SynKind }
 
 // Detected code language. Drives keyword set + comment/string rules for the lexer.
