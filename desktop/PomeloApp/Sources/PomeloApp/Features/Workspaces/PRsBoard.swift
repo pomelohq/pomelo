@@ -206,6 +206,9 @@ struct PRsBoard: View {
     @State private var loading = true
     @State private var refreshing = false
     @State private var pollTask: Task<Void, Never>?
+    @State private var watcher = WorktreeWatcher()
+    @State private var expandedRepos: Set<String> = []
+    @State private var gitTab: GitTab = .changes
     @AppStorage("prs.masterWidth") private var masterWidth = 320.0
     @AppStorage("prs.sectionExpanded") private var sectionExpanded = true
     @AppStorage("prs.localSectionExpanded") private var localSectionExpanded = true
@@ -235,19 +238,23 @@ struct PRsBoard: View {
             }
             await load(); startPolling()
             await gitVM.load()
+            if localChanges.isEmpty && !prs.isEmpty { gitTab = .prs }
+            alignSelection(to: gitTab)
+            startWatching()
         }
-        .onDisappear { pollTask?.cancel() }
+        .onChange(of: gitTab) { _, tab in alignSelection(to: tab) }
+        .onDisappear { pollTask?.cancel(); watcher.stop() }
         .perfTag("PRsBoard")
     }
 
     // Wide: master list beside the detail, user-resizable. The master is clamped
     // against the real width so a dragged-narrow agent split can't starve the detail.
     private func sideBySide(total: CGFloat) -> some View {
-        let w = min(masterWidth, Swift.max(220, Double(total) - PaneMetrics.minDetail))
+        let w = min(masterWidth, Swift.max(280, Double(total) - PaneMetrics.minDetail))
         return HStack(spacing: 0) {
             master.frame(width: w)
-            SplitHandle(axis: .horizontal, value: $masterWidth, min: 220,
-                        max: Swift.max(220, Double(total) - PaneMetrics.minDetail))
+            SplitHandle(axis: .horizontal, value: $masterWidth, min: 280,
+                        max: Swift.max(280, Double(total) - PaneMetrics.minDetail))
             detail.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -294,28 +301,63 @@ struct PRsBoard: View {
         drilled = true
     }
 
+    // Keep the detail pane in sync with the active tab: on Changes show a local repo, on Pull Requests show a PR.
+    private func alignSelection(to tab: GitTab) {
+        switch tab {
+        case .changes:
+            if case .local = selection { return }
+            selection = localChanges.first.map { .local($0.repo) }
+        case .prs:
+            if case .pr = selection { return }
+            selection = prs.first.map { .pr($0.repo) }
+        }
+    }
+
+    // Two distinct concerns — local git state vs remote PR review — split into tabs so neither crowds a narrow
+    // column. Reuses the shared SegmentedTabs so the Git pane matches the rest of the app (PR detail, Activity, etc.).
+    enum GitTab: String, CaseIterable { case changes = "Changes", prs = "Pull Requests" }
+
     private var master: some View {
         VStack(spacing: 0) {
-            localChangesSection
-            prSection
+            HStack(spacing: 8) {
+                SegmentedTabs(tabs: GitTab.allCases, selection: $gitTab,
+                              label: { $0 == .changes ? changesLabel : prLabel })
+                Spacer(minLength: 0)
+                if gitTab == .prs {
+                    if refreshing { Spinner(size: 11).frame(width: 16, height: 14) }
+                    else { IconButton("arrow.clockwise", size: 11, tip: "Refresh pull requests") { refresh() } }
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            Divider().overlay(Theme.borderSoft)
+            Group {
+                if gitTab == .changes { changesContent } else { prContent }
+            }
         }
         .background(Theme.bgSoft)
     }
 
-    @ViewBuilder private var localChangesSection: some View {
-        SectionHeader(title: "LOCAL CHANGES", expanded: $localSectionExpanded, count: localChanges.isEmpty ? nil : localChanges.count)
-        Divider().overlay(Theme.borderSoft)
+    private var changesLabel: String { localChanges.isEmpty ? "Changes" : "Changes \(localChanges.count)" }
+    private var prLabel: String { prs.isEmpty ? "Pull Requests" : "Pull Requests \(prs.count)" }
 
-        if localSectionExpanded {
-            if localChanges.isEmpty {
-                Text("No local changes").font(.system(size: 12)).foregroundStyle(Theme.dim)
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-            } else {
+    @ViewBuilder private var changesContent: some View {
+        if localChanges.isEmpty {
+            EmptyStateView(icon: "checkmark.circle", title: "No local changes")
+        } else {
+            ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(localChanges) { item in
-                        LocalChangeRow(item: item, active: selection == .local(item.repo))
-                            .contentShape(Rectangle())
-                            .onTapGesture { select(.local(item.repo)) }
+                        RepoChangesGroup(
+                            item: item,
+                            status: gitVM.repos.first { $0.repo == item.repo },
+                            gitVM: gitVM,
+                            active: selection == .local(item.repo),
+                            expanded: expandedRepos.contains(item.repo),
+                            onToggle: {
+                                if expandedRepos.contains(item.repo) { expandedRepos.remove(item.repo) }
+                                else { expandedRepos.insert(item.repo) }
+                            },
+                            onOpen: { select(.local(item.repo)) })
                     }
                 }
                 .padding(8)
@@ -323,33 +365,21 @@ struct PRsBoard: View {
         }
     }
 
-    private var prSection: some View {
-        VStack(spacing: 0) {
-            SectionHeader(title: "PULL REQUESTS", expanded: $sectionExpanded, loading: loading) {
-                if refreshing { Spinner(size: 11).frame(width: 16, height: 14) }
-                else { IconButton("arrow.clockwise", size: 11, tip: "Refresh") { refresh() } }
-            }
-            Divider().overlay(Theme.borderSoft)
-
-            if sectionExpanded {
-                if prs.isEmpty && loading {
-                    LoadingView(text: "loading pull requests…")
-                } else if prs.isEmpty {
-                    EmptyStateView(icon: "arrow.triangle.pull", title: "No pull requests")
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 4) {
-                            ForEach(prs) { item in
-                                PRRow(item: item, active: selection == .pr(item.repo))
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { select(.pr(item.repo)) }
-                            }
-                        }
-                        .padding(8)
+    @ViewBuilder private var prContent: some View {
+        if prs.isEmpty && loading {
+            LoadingView(text: "loading pull requests…")
+        } else if prs.isEmpty {
+            EmptyStateView(icon: "arrow.triangle.pull", title: "No pull requests")
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(prs) { item in
+                        PRRow(item: item, active: selection == .pr(item.repo))
+                            .contentShape(Rectangle())
+                            .onTapGesture { select(.pr(item.repo)) }
                     }
                 }
-            } else {
-                Spacer(minLength: 0)
+                .padding(8)
             }
         }
     }
@@ -408,6 +438,24 @@ struct PRsBoard: View {
                 if state.appActive && state.selection == id { await load(); await gitVM.load() }
             }
         }
+    }
+
+    // Real-time: refresh working-tree status the moment files or the git index change (FSEvents), instead of waiting
+    // for the 30s poll. The poll still covers remote-driven data (PRs, behind counts) that the filesystem can't see.
+    private func startWatching() {
+        watcher.start(paths: [workspace.path]) {
+            guard state.appActive, state.selection == workspace.id else { return }
+            Task { await gitVM.load(); await reloadLocalChanges() }
+        }
+    }
+
+    private func reloadLocalChanges() async {
+        let branch = workspace.branch, isMain = workspace.isMain
+        let fresh = await Task.detached(priority: .userInitiated) { () -> [LocalChangeRepo]? in
+            struct R: Decodable { let repos: [LocalChangeRepo]? }
+            return PomJSON.decode(R.self, from: PRStore.localChanges(branch: branch, isMain: isMain))?.repos
+        }.value
+        if let fresh, fresh != localChanges { localChanges = fresh }
     }
 }
 
@@ -515,6 +563,106 @@ struct LocalChangeRow: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 7)
         .background(active ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 7))
+    }
+}
+
+// Zed-style git panel group: a repo header that expands to its changed files, each with a stage checkbox, status
+// badge and discard, plus an inline commit/push bar. Backed by GitViewModel (stage/unstage/discard/commit/push/pull).
+struct RepoChangesGroup: View {
+    @EnvironmentObject var theme: ThemeManager
+    let item: LocalChangeRepo
+    let status: GitViewModel.RepoStatus?
+    @ObservedObject var gitVM: GitViewModel
+    let active: Bool
+    let expanded: Bool
+    let onToggle: () -> Void
+    let onOpen: () -> Void
+
+    private var changes: [GitViewModel.Change] { status?.changes ?? [] }
+    private var stagedCount: Int { changes.filter { $0.staged }.count }
+    // Working-tree file count (stageable). Falls back to the summary count only until git status has loaded.
+    private var wtCount: Int { status != nil ? changes.count : item.files }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            if expanded {
+                if changes.isEmpty {
+                    Text(cleanLabel).font(.system(size: 10.5)).foregroundStyle(Theme.dim)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 26).padding(.vertical, 4)
+                } else {
+                    ForEach(changes) { fileRow($0) }
+                    if stagedCount > 0, let status { GitCommitBar(vm: gitVM, repo: status).padding(.top, 4) }
+                }
+            }
+        }
+        .padding(.vertical, 3)
+        .background(active ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: Theme.Radius.md))
+    }
+
+    // Why the repo can show with a clean working tree: it has unpushed commits (ahead) and/or is behind origin.
+    private var cleanLabel: String {
+        var bits: [String] = []
+        if let a = status?.ahead, a > 0 { bits.append("\(a) commit\(a == 1 ? "" : "s") to push") }
+        if item.behind > 0 { bits.append("\(item.behind) to pull") }
+        return bits.isEmpty ? "Working tree clean" : "Working tree clean · " + bits.joined(separator: ", ")
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.fgMuted).frame(width: 10)
+            Circle().fill(wtCount > 0 ? Theme.warn : Theme.accent).frame(width: 7, height: 7)
+            Text(item.alias).font(Theme.mono(11.5, .medium)).foregroundStyle(Theme.fg)
+                .lineLimit(1).truncationMode(.tail).layoutPriority(1)
+            if wtCount > 0 {
+                Text("\(wtCount)").font(Theme.mono(10)).foregroundStyle(Theme.fgMuted).lineLimit(1).fixedSize()
+            }
+            Spacer(minLength: 4)
+            if let ahead = status?.ahead, ahead > 0 { syncPill("arrow.up", ahead, Theme.accent) { Task { await gitVM.push(item.repo) } } }
+            if item.behind > 0 { syncPill("arrow.down", item.behind, Theme.warn) { Task { await gitVM.pull(item.repo) } } }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .onTapGesture { onToggle() }
+    }
+
+    private func syncPill(_ icon: String, _ n: Int, _ color: Color, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { Badge(icon: icon, text: "\(n)", color: color) }
+            .buttonStyle(.plain).fixedSize().disabled(gitVM.busy)
+    }
+
+    private func fileRow(_ c: GitViewModel.Change) -> some View {
+        HStack(spacing: 7) {
+            Button { Task { c.staged ? await gitVM.unstage(item.repo, [c.path]) : await gitVM.stage(item.repo, [c.path]) } } label: {
+                Image(systemName: c.staged ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 12)).foregroundStyle(c.staged ? Theme.accent : Theme.fgMuted)
+            }
+            .buttonStyle(.plain).disabled(gitVM.busy)
+            Text(c.badge).font(Theme.mono(10, .bold)).foregroundStyle(badgeColor(c.badge)).frame(width: 12)
+            Text((c.path as NSString).lastPathComponent).font(.system(size: 11)).foregroundStyle(Theme.fg)
+                .lineLimit(1).truncationMode(.middle)
+            Text((c.path as NSString).deletingLastPathComponent).font(.system(size: 9.5)).foregroundStyle(Theme.dim)
+                .lineLimit(1).truncationMode(.head)
+            Spacer(minLength: 0)
+            Button { Task { await gitVM.discard(item.repo, [c.path]) } } label: {
+                Image(systemName: "arrow.uturn.backward").font(.system(size: 10)).foregroundStyle(Theme.fgMuted)
+            }
+            .buttonStyle(.plain).help("Discard changes").disabled(gitVM.busy)
+        }
+        .padding(.leading, 24).padding(.trailing, 8).padding(.vertical, 2.5)
+        .contentShape(Rectangle())
+        .onTapGesture { onOpen() }
+    }
+
+    private func badgeColor(_ b: String) -> Color {
+        switch b {
+        case "M": return Theme.warn
+        case "A", "U": return Theme.ok
+        case "D": return Theme.danger
+        case "R", "C": return Theme.accent
+        default: return Theme.dim
+        }
     }
 }
 

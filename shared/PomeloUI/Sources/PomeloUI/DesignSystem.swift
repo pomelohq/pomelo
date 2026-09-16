@@ -125,7 +125,9 @@ public struct SegmentedTabs<Tab: Hashable>: View {
         HStack(spacing: 2) {
             ForEach(tabs, id: \.self) { t in
                 Button { selection = t } label: {
-                    Text(label(t)).font(.system(size: 12, weight: selection == t ? .semibold : .regular))
+                    // Constant weight (medium) so a tab's width never changes with selection — active is shown by the
+                    // accent colour + filled background only, which keeps tabs from shifting when you switch.
+                    Text(label(t)).font(.system(size: 12, weight: .medium)).lineLimit(1).fixedSize()
                         .foregroundStyle(selection == t ? (accent ? Theme.accent : Theme.fg) : Theme.fgMuted)
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(selection == t ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
