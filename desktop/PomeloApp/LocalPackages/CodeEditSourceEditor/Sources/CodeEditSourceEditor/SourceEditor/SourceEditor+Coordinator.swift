@@ -28,6 +28,11 @@ extension SourceEditor {
         /// guarantees.
         let textCoordinators: [any TextViewCoordinator]
 
+        /// Last focus token applied via ``SourceEditor/focusToken(_:)``. When the host bumps the token the editor
+        /// makes its text view the window's first responder — needed when several editors are mounted at once
+        /// (e.g. one per tab) so keyboard actions like undo target the visible one, not the last-edited.
+        var lastFocusToken: Int = .min
+
         private var cancellables: Set<AnyCancellable> = []
 
         init(

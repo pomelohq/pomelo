@@ -146,6 +146,9 @@ extension TextViewController {
             object: scrollView.contentView,
             queue: .main
         ) { [weak self] _ in
+            // Frozen during a pane-divider drag: updateTextInsets sets the layout manager's edge insets (invalidating
+            // line layout) on every width change — the remaining per-frame cost for horizontal resize.
+            if CETextViewSuppressLayout { return }
             self?.gutterView.needsDisplay = true
             self?.indentGuidesView?.needsDisplay = true
             self?.emphasisManager?.removeEmphases(for: EmphasisGroup.brackets)
@@ -160,6 +163,7 @@ extension TextViewController {
             object: textView,
             queue: .main
         ) { [weak self] _ in
+            if CETextViewSuppressLayout { return }
             self?.repositionFloatingViews()
         }
     }

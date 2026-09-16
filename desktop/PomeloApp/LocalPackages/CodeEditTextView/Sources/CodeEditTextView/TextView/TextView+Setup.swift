@@ -57,6 +57,16 @@ extension TextView {
         ) { [weak self] _ in
             self?.updatedViewport(self?.visibleRect ?? .zero)
         }
+
+        // Host broadcasts this when a pane-divider drag ends, so the (frozen) text view relayouts once.
+        NotificationCenter.default.addObserver(
+            forName: .ceForceRelayout, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.updateFrameIfNeeded()
+            self.layoutManager.layoutLines()
+            self.needsDisplay = true
+        }
     }
 
     @objc func scrollViewWillStartScroll() {

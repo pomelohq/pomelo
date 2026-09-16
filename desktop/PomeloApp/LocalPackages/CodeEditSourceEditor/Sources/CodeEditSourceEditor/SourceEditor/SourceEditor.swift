@@ -104,6 +104,15 @@ public struct SourceEditor: NSViewControllerRepresentable {
     var rightClickHandler: ((NSPoint, NSView) -> Void)?
     var changeGutter: [Int: Int] = [:]
     var blameByLine: [Int: String] = [:]
+    var focusToken: Int = .min
+
+    /// Bump this to make the editor's text view the window's first responder. Use when multiple editors are mounted
+    /// at once (one per tab) so undo/redo and typing target the visible editor rather than the last-edited one.
+    public func focusToken(_ token: Int) -> Self {
+        var copy = self
+        copy.focusToken = token
+        return copy
+    }
 
     /// Git change gutter markers: 0-based line index -> kind (1 added, 2 modified, 3 deleted).
     public func changedLines(_ lines: [Int: Int]) -> Self {
@@ -192,6 +201,15 @@ public struct SourceEditor: NSViewControllerRepresentable {
         controller.blameOverlayView?.blameLines = blameByLine
 
         context.coordinator.updateHighlightProviders(highlightProviders)
+
+        if focusToken != .min && focusToken != context.coordinator.lastFocusToken {
+            context.coordinator.lastFocusToken = focusToken
+            DispatchQueue.main.async { [weak controller] in
+                guard let textView = controller?.textView, let window = textView.window,
+                      window.firstResponder !== textView else { return }
+                window.makeFirstResponder(textView)
+            }
+        }
 
         context.coordinator.textSync.text = text
         if case .binding(let binding) = text {

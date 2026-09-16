@@ -34,6 +34,7 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
     case keywordReturn
     case keywordFunction
     case constant
+    case attribute
 
     var alternate: CaptureName {
         switch self {
@@ -95,6 +96,8 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
             return .keywordFunction
         case "constant", "constant.builtin":
             return .constant
+        case "attribute":
+            return .attribute
         default:
             // Fall back to the parent scope for dotted names tree-sitter emits but we
             // don't map explicitly (e.g. `function.method` -> `function`).
@@ -152,6 +155,8 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
             return "keywordFunction"
         case .constant:
             return "constant"
+        case .attribute:
+            return "attribute"
         }
     }
 }

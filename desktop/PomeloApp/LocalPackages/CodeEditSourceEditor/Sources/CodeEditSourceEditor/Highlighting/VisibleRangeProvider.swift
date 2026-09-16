@@ -60,6 +60,8 @@ class VisibleRangeProvider {
 
     /// Updates the view to highlight newly visible text when the textview is scrolled or bounds change.
     @objc func visibleTextChanged() {
+        // Frozen during a pane-divider drag so a width change doesn't trigger highlight recomputation each frame.
+        if CETextViewSuppressLayout { return }
         guard let textViewVisibleRange = textView?.visibleTextRange else {
             return
         }
@@ -67,6 +69,10 @@ class VisibleRangeProvider {
         if !(minimapView?.isHidden ?? true), let minimapVisibleRange = minimapView?.visibleTextRange {
             visibleSet.formUnion(IndexSet(integersIn: minimapVisibleRange))
         }
+        // Only re-highlight when the visible set actually changes. A width change with wrapping off (e.g. dragging a
+        // horizontal pane divider) fires frameDidChange every frame but keeps the same lines visible; skipping the
+        // redundant highlight pass there is what makes horizontal resize smooth.
+        guard visibleSet != self.visibleSet else { return }
         self.visibleSet = visibleSet
         delegate?.visibleSetDidUpdate(visibleSet)
     }
