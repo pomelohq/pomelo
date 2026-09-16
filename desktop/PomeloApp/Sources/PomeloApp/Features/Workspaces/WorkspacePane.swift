@@ -470,29 +470,28 @@ struct TerminalDrawer: View {
     var body: some View {
         VStack(spacing: 0) {
             resizeHandle
-            HStack(spacing: 2) {
+            HStack(spacing: 0) {
                 ForEach(terms) { t in
-                    Button { selected = t.id } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: killable(t.holder) ? "terminal" : "bolt.horizontal.circle")
-                                .font(.system(size: 10))
-                            Text(t.title).font(.system(size: 11))
-                            Button { requestClose(t) } label: { Image(systemName: "xmark").font(.system(size: 8)) }
-                                .buttonStyle(.plain).foregroundStyle(Theme.dim)
-                        }
-                        .foregroundStyle(selected == t.id ? Theme.fg : Theme.fgMuted)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(selected == t.id ? Theme.panel3 : .clear, in: RoundedRectangle(cornerRadius: 6))
+                    HStack(spacing: 6) {
+                        Image(systemName: killable(t.holder) ? "terminal" : "bolt.horizontal.circle").font(.system(size: 10))
+                            .foregroundStyle(Theme.fgMuted)
+                        Text(t.title).font(.system(size: 12)).lineLimit(1).fixedSize()
+                        Button { requestClose(t) } label: { Image(systemName: "xmark").font(.system(size: 9)) }
+                            .buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
                     }
-                    .buttonStyle(.plain)
+                    .foregroundStyle(selected == t.id ? Theme.fg : Theme.fgMuted)
+                    .padding(.horizontal, 10).frame(height: 30)
+                    .background(selected == t.id ? Theme.bg : .clear)
+                    .overlay(alignment: .trailing) { Rectangle().fill(Theme.borderSoft).frame(width: 1) }
+                    .contentShape(Rectangle())
+                    .onTapGesture { selected = t.id }
                 }
-                Button(action: onNew) { Image(systemName: "plus").font(.system(size: 11)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).padding(.horizontal, 4)
-                Spacer()
+                Button(action: onNew) { Image(systemName: "plus").font(.system(size: 11, weight: .medium)) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).frame(width: 30, height: 30)
+                Spacer(minLength: 0)
                 Button(action: onClose) { Image(systemName: "chevron.down").font(.system(size: 11)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
+                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).frame(width: 30, height: 30)
             }
-            .padding(.horizontal, 8).padding(.top, 2).padding(.bottom, 6)
             .background(Theme.bgSoft)
             Divider().overlay(Theme.borderSoft)
 
