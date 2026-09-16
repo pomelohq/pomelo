@@ -38,6 +38,7 @@ struct EditorWorkbench: View {
     @State private var dragMonitor: Any?
     @State private var lastTap: (id: String, at: Date)?
     @State private var chrome = PaneChrome()
+    @AppStorage("editorTreeWidth") private var treeWidth = 240.0
 
     private var focusedLeaf: String { get { chrome.focusedLeaf } nonmutating set { chrome.focusedLeaf = newValue } }
     private var hoverTab: String? { get { chrome.hoverTab } nonmutating set { chrome.hoverTab = newValue } }
@@ -48,9 +49,8 @@ struct EditorWorkbench: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if workbench.treeVisible {
-                sidebar.frame(width: 240)
-                Divider().overlay(Theme.borderSoft)
+            PanelDock(edge: .left, isOpen: workbench.treeVisible, size: $treeWidth, minSize: 160, maxSize: 480) {
+                sidebar
             }
             paneCanvas
         }
