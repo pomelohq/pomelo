@@ -137,6 +137,22 @@ final class GPUEditorNSView: NSView {
         render()
     }
 
+    override func mouseDown(with event: NSEvent) {
+        guard let ed = editor else { return }
+        window?.makeFirstResponder(self)
+        let p = convert(event.locationInWindow, from: nil)
+        pomelo_editor_click(ed, Float(p.x), Float(p.y))
+        wakeCaret()
+        render()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let ed = editor else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        pomelo_editor_drag(ed, Float(p.x), Float(p.y))
+        render()
+    }
+
     deinit {
         link?.invalidate()
         blinkTimer?.invalidate()
