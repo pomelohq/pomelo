@@ -43,6 +43,7 @@ pub struct EditorRenderer {
     char_width: f32,
     scroll_y: f32,
     scroll_x: f32,
+    max_line_w: f32,
     caret_on: bool,
     text_dirty: bool,
     quad_pipeline: wgpu::RenderPipeline,
@@ -171,6 +172,7 @@ impl EditorRenderer {
             char_width,
             scroll_y: 0.0,
             scroll_x: 0.0,
+            max_line_w: 0.0,
             caret_on: true,
             text_dirty: true,
             quad_pipeline,
@@ -194,6 +196,12 @@ impl EditorRenderer {
 
     pub fn mark_text_dirty(&mut self) {
         self.text_dirty = true;
+    }
+
+    /// Reset horizontal scroll + its running max (call when the whole document is replaced).
+    pub fn reset_hscroll(&mut self) {
+        self.scroll_x = 0.0;
+        self.max_line_w = 0.0;
     }
 
     pub fn set_tab_title(&mut self, title: &str) {
@@ -424,10 +432,13 @@ impl EditorRenderer {
         self.buffer.shape_until_scroll(&mut self.font_system, false);
         self.gutter.shape_until_scroll(&mut self.font_system, false);
 
-        // Clamp horizontal scroll to the widest currently-visible line (Zed-style horizontal scroll, no wrap).
+        // Clamp horizontal scroll to the widest line seen so far (running max, only grows) — clamping to just the
+        // currently-visible lines would snap scroll_x back left when scrolling down onto shorter lines. Reset on
+        // set_text (new file). Zed-style horizontal scroll, no wrap.
         let widest = self.buffer.layout_runs().map(|r| r.line_w).fold(0.0_f32, f32::max);
+        self.max_line_w = self.max_line_w.max(widest);
         let code_view_w = (self.config.width as f32 / self.scale - GUTTER_WIDTH).max(1.0);
-        let max_x = (widest - code_view_w).max(0.0);
+        let max_x = (self.max_line_w - code_view_w).max(0.0);
         self.scroll_x = self.scroll_x.clamp(0.0, max_x);
 
         self.viewport.update(

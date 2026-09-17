@@ -34,6 +34,7 @@ pub unsafe extern "C" fn pomelo_editor_set_text(ed: *mut Editor, ptr: *const u8,
     if let Ok(text) = std::str::from_utf8(bytes) {
         ed.buffer = EditorBuffer::from_str(text);
         ed.renderer.mark_text_dirty();
+        ed.renderer.reset_hscroll();
         ed.renderer.follow_cursor(&ed.buffer);
     }
 }
