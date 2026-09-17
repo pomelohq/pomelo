@@ -199,14 +199,8 @@ struct WsCard: View {
 
     private var prPill: some View {
         Button(action: { onOpenPRs() }) {
-            HStack(spacing: 4) {
-                Image(systemName: "arrow.triangle.pull").font(.system(size: 9))
-                Text("\(openPRs.count)").font(Theme.mono(10.5, .semibold))
-            }
-            .foregroundStyle(prColor)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(prColor.opacity(0.16), in: Capsule())
-            .contentShape(Capsule())
+            Badge(icon: "arrow.triangle.pull", text: "\(openPRs.count)", color: prColor)
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         // Only the hovered row publishes its anchor; a .bounds anchor on every row stutters scroll.
@@ -246,8 +240,7 @@ struct PRPopRow: View {
                     Text(verbatim: "#\(pr.number)").font(Theme.mono(10.5)).foregroundStyle(Theme.dim)
                     Spacer()
                     if item.behind > 0 {
-                        Text("↓\(item.behind) behind").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.warn)
-                            .padding(.horizontal, 5).padding(.vertical, 1).background(Theme.warn.opacity(0.15), in: Capsule())
+                        Badge(icon: "arrow.down", text: "\(item.behind) behind", color: Theme.warn)
                     }
                 }
                 RoundedRectangle(cornerRadius: 2).fill(ciColor).frame(height: 3)

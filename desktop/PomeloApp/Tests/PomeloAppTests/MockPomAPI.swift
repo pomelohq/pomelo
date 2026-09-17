@@ -130,4 +130,5 @@ final class MockPomAPI: PomAPI {
     func gitDiscard(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data { gitCalls.append(("discard", repo, paths)); return Data(#"{"ok":true}"#.utf8) }
     func gitCommit(branch: String, repo: String, isMain: Bool, message: String) -> Data { gitCommitCalls.append((repo, message)); return Data(#"{"ok":true}"#.utf8) }
     func gitPush(branch: String, repo: String, isMain: Bool) -> Data { gitCalls.append(("push", repo, [])); return Data(#"{"ok":true}"#.utf8) }
+    func gitPull(branch: String, repo: String, isMain: Bool) -> Data { gitCalls.append(("pull", repo, [])); return Data(#"{"ok":true}"#.utf8) }
 }

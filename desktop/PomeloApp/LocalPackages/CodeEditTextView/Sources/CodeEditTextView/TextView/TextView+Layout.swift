@@ -7,11 +7,22 @@
 
 import Foundation
 
+/// Set by the host while a pane divider is being dragged. Text views then skip their per-frame line relayout so the
+/// resize is composited by Core Animation (GPU) instead of re-laying-out lines on the CPU each frame; the host clears
+/// it on drag end and the final frame change relayouts once.
+public nonisolated(unsafe) var CETextViewSuppressLayout = false
+
+public extension Notification.Name {
+    /// Post after a pane-divider drag ends to make frozen text views relayout once.
+    static let ceForceRelayout = Notification.Name("CEForceRelayout")
+}
+
 extension TextView {
     override public func layout() {
         isPerformingLayout = true
         defer { isPerformingLayout = false }
         super.layout()
+        guard !CETextViewSuppressLayout else { return }
         layoutManager.layoutLines()
         selectionManager.updateSelectionViews(skipTimerReset: true)
     }
@@ -64,6 +75,9 @@ extension TextView {
     }
 
     public func updatedViewport(_ newRect: CGRect) {
+        // Frozen during a pane-divider drag: skip the per-frame line relayout triggered by the scroll view's bounds
+        // change (updateFrameIfNeeded returns false while frozen, which would otherwise fall through to layoutLines).
+        if CETextViewSuppressLayout { return }
         if !updateFrameIfNeeded() {
             layoutManager.layoutLines()
         }
@@ -74,6 +88,8 @@ extension TextView {
     /// - Returns: Whether or not the view was updated.
     @discardableResult
     public func updateFrameIfNeeded() -> Bool {
+        // Frozen during a pane-divider drag (see CETextViewSuppressLayout) so resizing doesn't recompute the frame.
+        if CETextViewSuppressLayout { return false }
         // Never mutate the frame or request layout from inside the window's layout pass. Doing so re-enters the
         // display cycle and on macOS 26+ aborts the window ("more Layout Window passes than views"). Coalesce to the
         // next runloop turn, where a single follow-up pass converges once the frame fits the content.

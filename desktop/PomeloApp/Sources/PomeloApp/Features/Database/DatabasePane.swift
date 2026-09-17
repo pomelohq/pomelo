@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import CodeEditSourceEditor
+import CodeEditTextView
 
 struct DatabasePane: View {
     let workspace: Workspace
@@ -392,12 +393,16 @@ struct SplitHandle: View {
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { g in
-                    if start == nil { start = value; active = true }
+                    if start == nil { start = value; active = true; CETextViewSuppressLayout = true }
                     let raw = axis == .horizontal ? g.translation.width : g.translation.height
                     let delta = invert ? -raw : raw
                     value = Swift.min(max, Swift.max(min, (start ?? value) + delta))
                 }
-                .onEnded { _ in start = nil; active = false; NSCursor.arrow.set() }
+                .onEnded { _ in
+                    start = nil; active = false; NSCursor.arrow.set()
+                    CETextViewSuppressLayout = false
+                    NotificationCenter.default.post(name: .ceForceRelayout, object: nil)
+                }
         )
     }
 }

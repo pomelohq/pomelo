@@ -17,7 +17,8 @@ struct FileEditor: View {
     var changedLines: [Int: Int] = [:]
     var blameLines: [Int: String] = [:]
     var onRightClick: (NSPoint, NSView) -> Void = { _, _ in }
-    @State private var state = SourceEditorState()
+    var focusToken: Int = .min
+    @Binding var state: SourceEditorState
 
     var body: some View {
         SourceEditor(
@@ -39,5 +40,6 @@ struct FileEditor: View {
         .onRightClick(onRightClick)
         .changedLines(changedLines)
         .blameLines(blameLines)
+        .focusToken(focusToken)
     }
 }

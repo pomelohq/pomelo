@@ -1,5 +1,7 @@
 .build/
 .ddata/
+.ddata-check/
+LocalPackages/tree-sitter/
 *.profraw
 Package.resolved
 Vendor/libpom.a

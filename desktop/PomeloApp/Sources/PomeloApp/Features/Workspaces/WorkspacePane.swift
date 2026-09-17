@@ -1,4 +1,5 @@
 import SwiftUI
+import CodeEditTextView
 
 enum PaneKind: String, CaseIterable, Identifiable {
     case claude = "Claude", services = "Services", git = "Git", jira = "Jira", database = "Database", review = "Review", files = "Files"
@@ -11,7 +12,7 @@ enum PaneKind: String, CaseIterable, Identifiable {
         case .jira:     return "ticket"
         case .database: return "cylinder.split.1x2"
         case .review:   return "doc.text.magnifyingglass"
-        case .files:    return "folder"
+        case .files:    return "chevron.left.forwardslash.chevron.right"
         }
     }
 }
@@ -52,8 +53,18 @@ struct TermTab: Identifiable, Equatable {
         if let w = d["w"] as? Double { agentWidth = w }
     }
 
+    var rightPanel: PaneKind = .claude
+
     func toggleAgent() {
         agentOpen.toggle()
+        ensureOneVisible()
+    }
+
+    // The right dock hosts git/jira/database/review/agent as switchable panels (Zed-style). Clicking an active panel's
+    // nav icon closes the dock; clicking another switches to it.
+    func toggleRight(_ kind: PaneKind) {
+        if agentOpen && rightPanel == kind { agentOpen = false }
+        else { rightPanel = kind; agentOpen = true }
         ensureOneVisible()
     }
 
@@ -135,9 +146,11 @@ struct WorkspacePaneInner: View {
     @EnvironmentObject var theme: ThemeManager
 
     @State private var opened: Set<PaneKind> = []
+    @State private var workbench = Workbench()
     @State private var quickOpen = false
     @State private var quickEntries: [WorkspaceFileEntry] = []
     @State private var openFile: WorkspaceFileEntry?
+    @State private var searchRequest = false
 
     private func openQuickOpen() {
         let branch = workspace.branch, isMain = workspace.isMain
@@ -154,6 +167,16 @@ struct WorkspacePaneInner: View {
         workspace.id.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "-")
     }
 
+    // Freeze editor text layout while the dock open/close width animation runs, so the mounted editors don't re-layout
+    // every frame (the source of the animation lag with many panes open).
+    private func freezeEditorsBriefly() {
+        CETextViewSuppressLayout = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+            CETextViewSuppressLayout = false
+            NotificationCenter.default.post(name: .ceForceRelayout, object: nil)
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
             let footerH: CGFloat = 23
@@ -164,9 +187,10 @@ struct WorkspacePaneInner: View {
             VStack(spacing: 0) {
                 splitArea(width: geo.size.width, height: contentH, active: active)
                     .frame(width: geo.size.width, height: contentH)
-                    .onAppear { opened.insert(active); if ps.agentOpen { opened.insert(.claude) } }
+                    .onAppear { opened.insert(active); if ps.agentOpen { opened.insert(ps.rightPanel) } }
                     .onChange(of: ps.pane) { opened.insert(active) }
-                    .onChange(of: ps.agentOpen) { if ps.agentOpen { opened.insert(.claude) } }
+                    .onChange(of: ps.agentOpen) { if ps.agentOpen { opened.insert(ps.rightPanel) }; freezeEditorsBriefly() }
+                    .onChange(of: ps.rightPanel) { if ps.agentOpen { opened.insert(ps.rightPanel) } }
                 if !ps.terms.isEmpty {
                     TerminalDrawer(terms: $ps.terms, selected: $ps.selTerm, height: $ps.drawerHeight,
                                    maxHeight: maxDrawer, wsKey: workspace.id,
@@ -191,13 +215,25 @@ struct WorkspacePaneInner: View {
                               onClose: { quickOpen = false })
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .pomQuickOpen)) { _ in
+            guard state.selectedWorkspace?.id == workspace.id else { return }
+            openQuickOpen()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pomFindInFiles)) { _ in
+            guard state.selectedWorkspace?.id == workspace.id else { return }
+            opened.insert(.files); ps.selectFunc(.files); searchRequest = true
+        }
     }
 
     private var effectivePane: PaneKind {
-        navDisabled(ps.pane) ? .services : ps.pane
+        let p = navDisabled(ps.pane) ? .services : ps.pane
+        return centerKinds.contains(p) ? p : .files
     }
 
-    private var functionKinds: [PaneKind] { PaneKind.allCases.filter { $0 != .claude } }
+    // Center hosts the editor + services; the rest are right-dock panels.
+    private var centerKinds: [PaneKind] { [.services, .files] }
+    private var rightKinds: [PaneKind] { [.claude, .git, .jira, .database, .review] }
+    private var functionKinds: [PaneKind] { centerKinds }
 
     private func clampAgent(_ w: Double, _ total: CGFloat) -> CGFloat {
         CGFloat(min(max(320, w), max(320, Double(total) - 320)))
@@ -217,7 +253,7 @@ struct WorkspacePaneInner: View {
                 SplitHandle(axis: .horizontal, value: $ps.agentWidth, min: 320, max: max(320, Double(width) - 320), invert: true)
                     .offset(x: funcW)
             }
-            if opened.contains(.claude) {
+            if rightKinds.contains(where: { opened.contains($0) }) {
                 agentArea()
                     .frame(width: agentW)
                     .offset(x: showAgent ? (showFunc ? funcW + handleW : 0) : width)
@@ -245,7 +281,16 @@ struct WorkspacePaneInner: View {
     }
 
     private func agentArea() -> some View {
-        paneView(.claude, active: true)
+        ZStack {
+            ForEach(rightKinds) { kind in
+                if opened.contains(kind), !(workspace.isMain && (kind == .jira || kind == .review)) {
+                    paneView(kind, active: ps.rightPanel == kind)
+                        .opacity(ps.rightPanel == kind ? 1 : 0)
+                        .allowsHitTesting(ps.rightPanel == kind)
+                        .zIndex(ps.rightPanel == kind ? 1 : 0)
+                }
+            }
+        }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .clipped()
     }
@@ -259,15 +304,18 @@ struct WorkspacePaneInner: View {
         case .services:
             ServicesBoard(workspace: workspace, openPane: { ps.pane = $0 }, openTerminal: attachLog,
                           onPrepareMain: { state.showPipeline = true })
-        case .git:    PRsBoard(workspace: workspace).id("git-\(safeWs)")
+        case .git:    PRsBoard(workspace: workspace, onOpenDiff: { e in
+            workbench.openGitDiffCmd = e
+            opened.insert(.files); ps.selectFunc(.files)
+        }).id("git-\(safeWs)")
         case .jira:   JiraPane(workspace: workspace)
         case .database: DatabasePane(workspace: workspace).id("db-\(safeWs)")
         case .files:
-            FilesPane(workspace: workspace, onAskAgent: { text in
+            EditorWorkbench(workspace: workspace, workbench: workbench, onAskAgent: { text in
                 opened.insert(.claude)
                 StreamManager.shared.askClaude(wsKey: workspace.id, text: text)
                 ps.agentOpen = true; ps.funcVisible = true
-            }, onOpenInTerminal: { ps.openTerminal(at: $0) }, openRequest: $openFile)
+            }, onOpenInTerminal: { ps.openTerminal(at: $0) }, openRequest: $openFile, searchRequest: $searchRequest)
             .id("files-\(safeWs)")
         case .review:
             ReviewPane(workspace: workspace, isActive: active, onAskAgent: { text in
@@ -307,13 +355,13 @@ struct WorkspacePaneInner: View {
             .buttonStyle(.plain)
             .tooltip("Activity (this workspace)", shortcut: "⌘0", align: .topLeading)
             Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
+            navBtn(.files, "6", "Editor")
+            Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
             navBtn(.services, "1", "Services")
             navBtn(.git, "2", "Git")
             navBtn(.jira, "3", "Jira")
             navBtn(.database, "4", "Database")
             navBtn(.review, "5", "Review")
-            navBtn(.files, "6", "Files")
-            editorBtn
             if spread { Spacer(minLength: 8) } else { Spacer().frame(width: 10) }
             agentToggle
             Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
@@ -322,13 +370,14 @@ struct WorkspacePaneInner: View {
     }
 
     private var agentToggle: some View {
-        Button {
-            ps.toggleAgent(); if ps.agentOpen { opened.insert(.claude) }
+        let on = ps.agentOpen && ps.rightPanel == .claude
+        return Button {
+            ps.toggleRight(.claude); opened.insert(.claude)
         } label: {
             Image(systemName: PaneKind.claude.icon).font(.system(size: 11))
-                .foregroundStyle(ps.agentOpen ? Theme.accent : Theme.fgMuted)
+                .foregroundStyle(on ? Theme.accent : Theme.fgMuted)
                 .frame(width: 24, height: 18)
-                .background(ps.agentOpen ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 5))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -341,8 +390,13 @@ struct WorkspacePaneInner: View {
 
     private func navBtn(_ kind: PaneKind, _ key: KeyEquivalent, _ name: String) -> some View {
         let off = navDisabled(kind)
-        let on = ps.pane == kind && ps.funcVisible
-        return Button { if !off { withAnimation(.easeInOut(duration: 0.16)) { ps.selectFunc(kind) } } } label: {
+        let isRight = rightKinds.contains(kind)
+        let on = isRight ? (ps.agentOpen && ps.rightPanel == kind) : (ps.pane == kind && ps.funcVisible)
+        return Button {
+            guard !off else { return }
+            if isRight { ps.toggleRight(kind); opened.insert(kind) }
+            else { withAnimation(.easeInOut(duration: 0.16)) { ps.selectFunc(kind) } }
+        } label: {
             Image(systemName: kind.icon).font(.system(size: 11))
                 .foregroundStyle(off ? Theme.dim.opacity(0.4) : (on ? Theme.accent : Theme.fgMuted))
                 .frame(width: 24, height: 18)
@@ -360,17 +414,6 @@ struct WorkspacePaneInner: View {
         .tooltip(off ? "\(name) — not on main"
                  : (kind == .services && workspace.total > 0 ? "Services · \(workspace.running)/\(workspace.total)" : name),
                  shortcut: "⌘\(String(key.character).uppercased())")
-    }
-
-    private var editorBtn: some View {
-        Button { state.openEditor(workspace) } label: {
-            Image(systemName: "square.and.pencil").font(.system(size: 11))
-                .foregroundStyle(Theme.fgMuted).frame(width: 24, height: 18)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .keyboardShortcut("e", modifiers: .command)
-        .tooltip("Open in editor", shortcut: "⌘E")
     }
 
     private var terminalToggle: some View {
@@ -438,29 +481,28 @@ struct TerminalDrawer: View {
     var body: some View {
         VStack(spacing: 0) {
             resizeHandle
-            HStack(spacing: 2) {
+            HStack(spacing: 0) {
                 ForEach(terms) { t in
-                    Button { selected = t.id } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: killable(t.holder) ? "terminal" : "bolt.horizontal.circle")
-                                .font(.system(size: 10))
-                            Text(t.title).font(.system(size: 11))
-                            Button { requestClose(t) } label: { Image(systemName: "xmark").font(.system(size: 8)) }
-                                .buttonStyle(.plain).foregroundStyle(Theme.dim)
-                        }
-                        .foregroundStyle(selected == t.id ? Theme.fg : Theme.fgMuted)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(selected == t.id ? Theme.panel3 : .clear, in: RoundedRectangle(cornerRadius: 6))
+                    HStack(spacing: 6) {
+                        Image(systemName: killable(t.holder) ? "terminal" : "bolt.horizontal.circle").font(.system(size: 10))
+                            .foregroundStyle(Theme.fgMuted)
+                        Text(t.title).font(.system(size: 12)).lineLimit(1).fixedSize()
+                        Button { requestClose(t) } label: { Image(systemName: "xmark").font(.system(size: 9)) }
+                            .buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
                     }
-                    .buttonStyle(.plain)
+                    .foregroundStyle(selected == t.id ? Theme.fg : Theme.fgMuted)
+                    .padding(.horizontal, 10).frame(height: 30)
+                    .background(selected == t.id ? Theme.bg : .clear)
+                    .overlay(alignment: .trailing) { Rectangle().fill(Theme.borderSoft).frame(width: 1) }
+                    .contentShape(Rectangle())
+                    .onTapGesture { selected = t.id }
                 }
-                Button(action: onNew) { Image(systemName: "plus").font(.system(size: 11)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).padding(.horizontal, 4)
-                Spacer()
+                Button(action: onNew) { Image(systemName: "plus").font(.system(size: 11, weight: .medium)) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).frame(width: 30, height: 30)
+                Spacer(minLength: 0)
                 Button(action: onClose) { Image(systemName: "chevron.down").font(.system(size: 11)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted)
+                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).frame(width: 30, height: 30)
             }
-            .padding(.horizontal, 8).padding(.top, 2).padding(.bottom, 6)
             .background(Theme.bgSoft)
             Divider().overlay(Theme.borderSoft)
 

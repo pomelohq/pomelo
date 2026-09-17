@@ -112,6 +112,7 @@ protocol GitAPI: PomBaseAPI {
     func gitDiscard(branch: String, repo: String, isMain: Bool, paths: [String]) -> Data
     func gitCommit(branch: String, repo: String, isMain: Bool, message: String) -> Data
     func gitPush(branch: String, repo: String, isMain: Bool) -> Data
+    func gitPull(branch: String, repo: String, isMain: Bool) -> Data
 }
 
 protocol JiraAPI: PomBaseAPI {

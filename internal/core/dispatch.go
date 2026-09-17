@@ -398,6 +398,8 @@ func (s *Server) Fetch(domain string, params json.RawMessage) []byte {
 		return s.FilePeek(branch, repo, pStr(params, "path"), isMain)
 	case "workspace_files":
 		return s.ListWorkspaceFiles(branch, isMain)
+	case "search_files":
+		return s.SearchFiles(branch, pStr(params, "query"), isMain)
 	case "file_read":
 		return s.ReadFile(branch, repo, pStr(params, "path"), isMain)
 	case "local_changes":

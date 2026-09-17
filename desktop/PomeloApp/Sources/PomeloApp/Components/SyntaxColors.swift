@@ -1,31 +1,24 @@
 import SwiftUI
 import AppKit
+import CodeEditSourceEditor
 
 // One palette + one highlighter for every read-only code surface (review peek, flow
-// timeline, diffs) so syntax colours are identical everywhere instead of each view
-// picking its own.
+// timeline, diffs). Colours come straight from the built-in editor theme
+// (SQLEditor.palette, theme-aware) so read-only code reads identically to the editor.
 enum SyntaxStyle {
-    static func color(_ k: SynKind) -> Color {
-        switch k {
-        case .keyword:  return Theme.accent
-        case .string:   return Theme.ok
-        case .number:   return Theme.warn
-        case .comment:  return Theme.dim
-        case .type:     return Theme.tool
-        case .function: return Theme.wsAccent
-        case .plain:    return Theme.fgSoft
-        }
-    }
+    static func color(_ k: SynKind) -> Color { Color(nsColor: nsColor(k)) }
 
     static func nsColor(_ k: SynKind) -> NSColor {
+        let t = SQLEditor.palette(activeThemeMode)
         switch k {
-        case .keyword:  return NSColor(Theme.accent)
-        case .string:   return NSColor(Theme.ok)
-        case .number:   return NSColor(Theme.warn)
-        case .comment:  return NSColor(Theme.dim)
-        case .type:     return NSColor(Theme.tool)
-        case .function: return NSColor(Theme.wsAccent)
-        case .plain:    return NSColor(Theme.fgSoft)
+        case .keyword:  return t.keywords.color
+        case .string:   return t.strings.color
+        case .number:   return t.numbers.color
+        case .comment:  return t.comments.color
+        case .type:     return t.types.color
+        case .function: return t.commands.color
+        case .attribute: return t.attributes.color
+        case .plain:    return t.text.color
         }
     }
 

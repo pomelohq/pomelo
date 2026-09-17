@@ -83,8 +83,12 @@ struct MetalTerminalPane: NSViewRepresentable {
     var themeMode: ThemeMode = activeThemeMode
     var onClosed: () -> Void = {}
     func makeCoordinator() -> Coord { Coord() }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: MetalTerminalHostView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
     func makeNSView(context: Context) -> MetalTerminalHostView {
         let v = MetalTerminalHostView(frame: .zero)
+        v.translatesAutoresizingMaskIntoConstraints = true   // frame-based: SwiftUI's fitting-size query stays cheap
         v.setFont(family: fontFamily, size: fontSize)
         let c = MetalTerminalView.themeColors(themeMode); v.applyColors(fg: c.fg, bg: c.bg)
         v.statsEnabled = UserDefaults.standard.bool(forKey: MetalTerminalView.statsKey)

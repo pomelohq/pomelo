@@ -99,6 +99,9 @@ final class GitViewModel: ObservableObject {
     func push(_ repo: String) async {
         await run { $0.gitPush(branch: self.branch, repo: repo, isMain: self.isMain) }
     }
+    func pull(_ repo: String) async {
+        await run { $0.gitPull(branch: self.branch, repo: repo, isMain: self.isMain) }
+    }
 }
 
 struct OkResult: Decodable {

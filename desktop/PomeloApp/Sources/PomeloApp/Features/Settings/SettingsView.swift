@@ -499,9 +499,7 @@ struct EnvInspector: View {
                     }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Reveal value")
                 }
                 if !value.isEmpty { CopyMini(text: value) }
-                Text(badge).font(.system(size: 9.5, weight: .medium)).foregroundStyle(badgeColor)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(badgeColor.opacity(0.12), in: Capsule())
+                Badge(text: badge, color: badgeColor)
                     .frame(width: 88, alignment: .trailing).fixedSize()
             }
             .padding(.horizontal, 20).padding(.vertical, 5)

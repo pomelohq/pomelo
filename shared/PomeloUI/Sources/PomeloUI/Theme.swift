@@ -88,6 +88,31 @@ public enum Theme {
     public static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight, design: .monospaced) }
     public static func ui(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight) }
 
+    // Design tokens — the canonical spacing / radius / font scale. Prefer these over ad-hoc literals so the whole
+    // app stays on one rhythm (drift today: radii mix 4/5/6/7/8/10, fonts spread 9..13 with half-points).
+    public enum Space {
+        public static let xs: CGFloat = 4
+        public static let sm: CGFloat = 6
+        public static let md: CGFloat = 8
+        public static let lg: CGFloat = 12
+        public static let xl: CGFloat = 16
+        public static let xxl: CGFloat = 24
+    }
+    public enum Radius {
+        public static let sm: CGFloat = 5
+        public static let md: CGFloat = 7
+        public static let lg: CGFloat = 10
+    }
+    public enum FontSize {
+        public static let micro: CGFloat = 9
+        public static let tiny: CGFloat = 10
+        public static let small: CGFloat = 11
+        public static let body: CGFloat = 12
+        public static let callout: CGFloat = 13
+        public static let title: CGFloat = 15
+        public static let large: CGFloat = 18
+    }
+
     public static let dark = Palette(
         bg: Color(hex: 0x17171a), bgSoft: Color(hex: 0x202024), surface: Color(hex: 0x202024), panel3: Color(hex: 0x2e2e33),
         borderSoft: .w(0.08), border: .w(0.13), borderHi: .w(0.20),
