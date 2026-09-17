@@ -1,0 +1,15 @@
+[package]
+name = "pomelo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pomelo — a cross-platform dev-environment app, rewritten in Rust."
+
+[[bin]]
+name = "pomelo"
+path = "src/main.rs"
+
+[dependencies]
+pomelo-editor = { path = "../editor" }
+winit.workspace = true
+anyhow.workspace = true
