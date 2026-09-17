@@ -4,6 +4,10 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use glyphon::{
+    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas,
+    TextBounds, TextRenderer, Viewport,
+};
 use wgpu::{
     CompositeAlphaMode, DeviceDescriptor, Instance, LoadOp, MultisampleState, Operations, PresentMode,
     RenderPassColorAttachment, RenderPassDescriptor, RequestAdapterOptions, StoreOp, SurfaceConfiguration,
@@ -19,6 +23,16 @@ pub struct Rect {
     pub w: f32,
     pub h: f32,
     pub color: [u8; 3],
+}
+
+/// A run of text in logical pixels (top-left origin).
+#[derive(Clone)]
+pub struct Text {
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+    pub color: [u8; 3],
+    pub text: String,
 }
 
 fn srgb_to_linear(c: f64) -> f64 {
@@ -38,6 +52,11 @@ pub struct UiRenderer {
     pipeline: wgpu::RenderPipeline,
     vbuf: wgpu::Buffer,
     capacity: usize,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    atlas: TextAtlas,
+    viewport: Viewport,
+    text_renderer: TextRenderer,
 }
 
 impl UiRenderer {
@@ -115,7 +134,28 @@ impl UiRenderer {
             mapped_at_creation: false,
         });
 
-        Ok(Self { device, queue, surface, config, scale, pipeline, vbuf, capacity })
+        let font_system = FontSystem::new();
+        let swash_cache = SwashCache::new();
+        let cache = Cache::new(&device);
+        let viewport = Viewport::new(&device, &cache);
+        let mut atlas = TextAtlas::new(&device, &queue, &cache, format);
+        let text_renderer = TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
+
+        Ok(Self {
+            device,
+            queue,
+            surface,
+            config,
+            scale,
+            pipeline,
+            vbuf,
+            capacity,
+            font_system,
+            swash_cache,
+            atlas,
+            viewport,
+            text_renderer,
+        })
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -128,7 +168,7 @@ impl UiRenderer {
         (self.config.width as f32 / self.scale, self.config.height as f32 / self.scale)
     }
 
-    pub fn render(&mut self, rects: &[Rect]) -> Result<()> {
+    pub fn render(&mut self, rects: &[Rect], texts: &[Text]) -> Result<()> {
         let vw = self.config.width as f32;
         let vh = self.config.height as f32;
         let mut verts: Vec<f32> = Vec::with_capacity(rects.len() * 36);
@@ -160,6 +200,45 @@ impl UiRenderer {
             self.queue.write_buffer(&self.vbuf, 0, bytemuck::cast_slice(&verts));
         }
 
+        // Shape each text run into its own buffer, then prepare the glyph atlas.
+        let bounds = TextBounds { left: 0, top: 0, right: self.config.width as i32, bottom: self.config.height as i32 };
+        let mut buffers: Vec<Buffer> = Vec::with_capacity(texts.len());
+        for t in texts {
+            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(t.size, t.size * 1.3));
+            buf.set_size(&mut self.font_system, Some(vw / self.scale), Some(t.size * 1.4));
+            buf.set_text(
+                &mut self.font_system,
+                &t.text,
+                Attrs::new().family(Family::SansSerif).color(Color::rgb(t.color[0], t.color[1], t.color[2])),
+                Shaping::Advanced,
+            );
+            buf.shape_until_scroll(&mut self.font_system, false);
+            buffers.push(buf);
+        }
+        self.viewport.update(&self.queue, Resolution { width: self.config.width, height: self.config.height });
+        let areas: Vec<TextArea> = texts
+            .iter()
+            .zip(&buffers)
+            .map(|(t, buf)| TextArea {
+                buffer: buf,
+                left: t.x * self.scale,
+                top: t.y * self.scale,
+                scale: self.scale,
+                bounds,
+                default_color: Color::rgb(t.color[0], t.color[1], t.color[2]),
+                custom_glyphs: &[],
+            })
+            .collect();
+        self.text_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            areas,
+            &mut self.swash_cache,
+        )?;
+
         let frame = self.surface.get_current_texture()?;
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -180,9 +259,11 @@ impl UiRenderer {
                 pass.set_vertex_buffer(0, self.vbuf.slice(..));
                 pass.draw(0..quad_count as u32, 0..1);
             }
+            self.text_renderer.render(&self.atlas, &self.viewport, &mut pass)?;
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        self.atlas.trim();
         Ok(())
     }
 }

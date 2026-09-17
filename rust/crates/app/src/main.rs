@@ -20,7 +20,8 @@ struct App {
     ui: Option<UiRenderer>,
     layout: Layout,
     cursor: (f64, f64),
-    dragging_divider: bool,
+    dragging_left: bool,
+    dragging_right: bool,
 }
 
 impl App {
@@ -30,6 +31,15 @@ impl App {
     fn cursor_logical(&self) -> (f32, f32) {
         let s = self.scale();
         (self.cursor.0 as f32 / s, self.cursor.1 as f32 / s)
+    }
+    fn draw(&mut self) {
+        if let Some(ui) = self.ui.as_mut() {
+            let (w, h) = ui.size();
+            let (rects, texts) = self.layout.build(w, h);
+            if let Err(e) = ui.render(&rects, &texts) {
+                eprintln!("ui render error: {e}");
+            }
+        }
     }
 }
 
@@ -57,46 +67,56 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let (Some(window), Some(ui)) = (self.window.as_ref(), self.ui.as_mut()) else {
+        if self.window.is_none() || self.ui.is_none() {
             return;
-        };
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                ui.resize(size.width, size.height);
+                self.ui.as_mut().unwrap().resize(size.width, size.height);
                 #[cfg(target_os = "macos")]
-                center_traffic_lights(window);
-                window.request_redraw();
+                center_traffic_lights(self.window.as_ref().unwrap());
+                // Draw synchronously so the content matches the new size immediately (avoids the compositor
+                // stretching the previous frame during live resize, which reads as jitter).
+                self.draw();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x, position.y);
-                if self.dragging_divider {
-                    let x = position.x as f32 / window.scale_factor() as f32;
-                    self.layout.set_divider(x);
-                    window.request_redraw();
+                let s = self.scale();
+                let (lx, _ly) = (position.x as f32 / s, position.y as f32 / s);
+                if self.dragging_left {
+                    self.layout.set_left_divider(lx);
+                    self.draw();
+                } else if self.dragging_right {
+                    let w = self.ui.as_ref().unwrap().size().0;
+                    self.layout.set_right_divider(lx, w);
+                    self.draw();
                 }
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 let (lx, ly) = self.cursor_logical();
+                let w = self.ui.as_ref().unwrap().size().0;
                 match state {
                     ElementState::Pressed => {
-                        if self.layout.hit_toggle(lx, ly) {
-                            self.layout.toggle();
-                            window.request_redraw();
-                        } else if self.layout.on_divider(lx, ly) {
-                            self.dragging_divider = true;
+                        if self.layout.hit_left_toggle(lx, ly) {
+                            self.layout.left.collapsed = !self.layout.left.collapsed;
+                            self.draw();
+                        } else if self.layout.hit_right_toggle(lx, ly, w) {
+                            self.layout.right.collapsed = !self.layout.right.collapsed;
+                            self.draw();
+                        } else if self.layout.on_left_divider(lx, ly) {
+                            self.dragging_left = true;
+                        } else if self.layout.on_right_divider(lx, ly, w) {
+                            self.dragging_right = true;
                         }
                     }
-                    ElementState::Released => self.dragging_divider = false,
+                    ElementState::Released => {
+                        self.dragging_left = false;
+                        self.dragging_right = false;
+                    }
                 }
             }
-            WindowEvent::RedrawRequested => {
-                let (w, h) = ui.size();
-                let rects = self.layout.rects(w, h);
-                if let Err(e) = ui.render(&rects) {
-                    eprintln!("ui render error: {e}");
-                }
-            }
+            WindowEvent::RedrawRequested => self.draw(),
             _ => {}
         }
     }
