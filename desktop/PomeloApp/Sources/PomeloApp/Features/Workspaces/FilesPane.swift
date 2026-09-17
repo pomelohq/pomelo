@@ -150,15 +150,14 @@ struct FilesPane: View {
                 .allowsHitTesting(searchActive)
         }
         if gitDiffActive, let e = gitDiffEntry {
-            GitDiffTab(workspace: workspace, entry: e).allowsHitTesting(gitDiffActive)
+            DiffItem(workspace: workspace, entry: e).content().allowsHitTesting(gitDiffActive)
         }
         ForEach(tabs.filter { $0.isTerminal }) { t in
-            if let h = t.terminalHolder {
-                MetalTerminalPane(holderName: h, wsKey: workspace.id, startDir: workspace.path,
-                                  themeMode: theme.mode, onClosed: { close(t.id) })
+            if case .terminal(let h, let title) = t.kind {
+                TerminalItem(holder: h, title: title, wsKey: workspace.id, startDir: workspace.path,
+                             themeMode: theme.mode, onClosed: { close(t.id) }).content()
                     .opacity(activeTerm == h ? 1 : 0)
                     .allowsHitTesting(activeTerm == h)
-                    .id(h)
             }
         }
     }
