@@ -13,6 +13,7 @@ final class GPUEditorNSView: NSView {
     private var caretOn = true
     var initialText: String = ""
     var languageExt: String = ""
+    var tabTitle: String = ""
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -108,6 +109,7 @@ final class GPUEditorNSView: NSView {
         editor = pomelo_editor_new(layerPtr, w, h, Float(scale))
         guard let ed = editor else { return }
         setLanguage(ed, languageExt)
+        setTabTitle(ed, tabTitle)
         setText(ed, initialText)
         caretOn = false
         pomelo_editor_set_caret_on(ed, false)
@@ -132,11 +134,18 @@ final class GPUEditorNSView: NSView {
         bytes.withUnsafeBufferPointer { pomelo_editor_set_language(ed, $0.baseAddress, $0.count) }
     }
 
-    func load(_ text: String, ext: String) {
+    private func setTabTitle(_ ed: OpaquePointer, _ title: String) {
+        let bytes = Array(title.utf8)
+        bytes.withUnsafeBufferPointer { pomelo_editor_set_tab_title(ed, $0.baseAddress, $0.count) }
+    }
+
+    func load(_ text: String, ext: String, title: String) {
         initialText = text
         languageExt = ext
+        tabTitle = title
         guard let ed = editor else { return }
         setLanguage(ed, ext)
+        setTabTitle(ed, title)
         setText(ed, text)
         render()
     }
@@ -197,17 +206,19 @@ final class GPUEditorNSView: NSView {
 struct GPUEditorView: NSViewRepresentable {
     var text: String
     var ext: String = ""
+    var title: String = ""
 
     func makeNSView(context: Context) -> GPUEditorNSView {
         let v = GPUEditorNSView(frame: .zero)
         v.initialText = text
         v.languageExt = ext
+        v.tabTitle = title
         DispatchQueue.main.async { v.window?.makeFirstResponder(v) }
         return v
     }
 
     func updateNSView(_ nsView: GPUEditorNSView, context: Context) {
-        nsView.load(text, ext: ext)
+        nsView.load(text, ext: ext, title: title)
     }
 }
 
@@ -227,7 +238,7 @@ struct GPUEditorSpike: View {
     }()
 
     var body: some View {
-        GPUEditorView(text: Self.sample, ext: "tsx")
+        GPUEditorView(text: Self.sample, ext: "tsx", title: "Widget.tsx")
             .background(Color(red: 40.0 / 255.0, green: 44.0 / 255.0, blue: 51.0 / 255.0))
     }
 }

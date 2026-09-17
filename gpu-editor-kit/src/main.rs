@@ -19,6 +19,7 @@ struct App {
     editor: EditorBuffer,
     text: String,
     ext: String,
+    name: String,
 }
 
 impl ApplicationHandler for App {
@@ -32,6 +33,7 @@ impl ApplicationHandler for App {
         self.editor = EditorBuffer::from_str(&self.text);
         let mut renderer = EditorRenderer::new(window.clone()).expect("renderer");
         renderer.set_language(pomelo_editor_kit::Lang::from_ext(&self.ext));
+        renderer.set_tab_title(if self.name.is_empty() { "untitled" } else { &self.name });
         self.renderer = Some(renderer);
         self.window = Some(window);
     }
@@ -95,14 +97,13 @@ fn main() -> anyhow::Result<()> {
     let mut app = App::default();
     if let Some(path) = std::env::args().nth(1) {
         app.text = std::fs::read_to_string(&path).unwrap_or_else(|e| format!("// could not read {path}: {e}\n"));
-        app.ext = std::path::Path::new(&path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_string();
+        let p = std::path::Path::new(&path);
+        app.ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+        app.name = p.file_name().and_then(|e| e.to_str()).unwrap_or("untitled").to_string();
     } else {
         app.text = SAMPLE.to_string();
         app.ext = "rs".to_string();
+        app.name = "sample.rs".to_string();
     }
     let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut app)?;

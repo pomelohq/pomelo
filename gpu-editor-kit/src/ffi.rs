@@ -97,6 +97,15 @@ pub unsafe extern "C" fn pomelo_editor_set_language(ed: *mut Editor, ptr: *const
     ed.renderer.set_language(crate::highlight::Lang::from_ext(ext));
 }
 
+/// Set the tab-bar title (usually the file name).
+/// # Safety `ed` must come from `pomelo_editor_new`; `ptr`/`len` a valid UTF-8 byte range.
+#[no_mangle]
+pub unsafe extern "C" fn pomelo_editor_set_tab_title(ed: *mut Editor, ptr: *const u8, len: usize) {
+    let Some(ed) = ed.as_mut() else { return };
+    let title = std::str::from_utf8(slice::from_raw_parts(ptr, len)).unwrap_or("");
+    ed.renderer.set_tab_title(title);
+}
+
 /// # Safety `ed` must come from `pomelo_editor_new`; `ptr`/`len` a valid UTF-8 byte range.
 #[no_mangle]
 pub unsafe extern "C" fn pomelo_editor_insert_text(ed: *mut Editor, ptr: *const u8, len: usize) {

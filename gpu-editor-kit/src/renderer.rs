@@ -18,9 +18,9 @@ use winit::window::Window;
 use crate::EditorBuffer;
 
 const GUTTER_WIDTH: f32 = 52.0;
-// No top padding: content scrolls flush to the top edge like Zed, so a scrolled top line clips cleanly instead of
-// leaving a weird padding band above a half-clipped row.
-const TOP_PAD: f32 = 0.0;
+// Height of the tab bar; the editor content starts below it (like a Zed pane), so a scrolled top line clips under the
+// tab bar instead of against the window chrome.
+const CONTENT_TOP: f32 = 36.0;
 
 pub struct EditorRenderer {
     device: wgpu::Device,
@@ -35,6 +35,9 @@ pub struct EditorRenderer {
     text_renderer: TextRenderer,
     buffer: Buffer,
     gutter: Buffer,
+    tab_title: Buffer,
+    title: String,
+    title_dirty: bool,
     scale: f32,
     line_height: f32,
     char_width: f32,
@@ -54,6 +57,17 @@ fn srgb_to_linear(c: f64) -> f64 {
     } else {
         ((c + 0.055) / 1.055).powf(2.4)
     }
+}
+
+// sRGB u8 color -> linear f32 quad color. The surface is sRGB, so quad fragment output must be linear to display the
+// intended sRGB color (same reason the clear color is linearized).
+fn lin(rgb: [u8; 3], a: f32) -> [f32; 4] {
+    [
+        srgb_to_linear(rgb[0] as f64 / 255.0) as f32,
+        srgb_to_linear(rgb[1] as f64 / 255.0) as f32,
+        srgb_to_linear(rgb[2] as f64 / 255.0) as f32,
+        a,
+    ]
 }
 
 impl EditorRenderer {
@@ -121,6 +135,8 @@ impl EditorRenderer {
         );
         let mut gutter = Buffer::new(&mut font_system, Metrics::new(font_size, line_height));
         gutter.set_size(&mut font_system, Some(GUTTER_WIDTH), Some(size.height as f32 / scale));
+        let mut tab_title = Buffer::new(&mut font_system, Metrics::new(13.0, CONTENT_TOP));
+        tab_title.set_size(&mut font_system, Some(size.width as f32 / scale), Some(CONTENT_TOP));
 
         let mut probe = Buffer::new(&mut font_system, Metrics::new(font_size, line_height));
         probe.set_text(&mut font_system, "M", Attrs::new().family(Family::Monospace), Shaping::Advanced);
@@ -146,6 +162,9 @@ impl EditorRenderer {
             text_renderer,
             buffer,
             gutter,
+            tab_title,
+            title: String::new(),
+            title_dirty: true,
             scale,
             line_height,
             char_width,
@@ -175,9 +194,16 @@ impl EditorRenderer {
         self.text_dirty = true;
     }
 
+    pub fn set_tab_title(&mut self, title: &str) {
+        if self.title != title {
+            self.title = title.to_string();
+            self.title_dirty = true;
+        }
+    }
+
     /// Map a point in logical view coords (top-left origin) to a (line, col) in the text.
     pub fn point_to_line_col(&self, px: f32, py: f32) -> (usize, usize) {
-        let y = (py - TOP_PAD + self.scroll_y).max(0.0);
+        let y = (py - CONTENT_TOP + self.scroll_y).max(0.0);
         let line = (y / self.line_height).floor() as usize;
         let x = (px - GUTTER_WIDTH).max(0.0);
         let col = (x / self.char_width).round() as usize;
@@ -262,10 +288,23 @@ impl EditorRenderer {
         v(r, t); v(r, b); v(l, b);
     }
 
+    // Clip a content rect to below the tab bar so selection/caret never paints over the tab strip.
+    fn push_content_rect(&self, out: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+        let top = y.max(CONTENT_TOP);
+        let bottom = y + h;
+        if bottom > top {
+            self.push_rect(out, x, top, w, bottom - top, color);
+        }
+    }
+
     fn build_quad_vertices(&self, editor: &EditorBuffer) -> Vec<f32> {
         let mut out = Vec::new();
-        // Zed One Dark player selection #74ade8 @ 0x3d alpha.
-        let sel = [0.455, 0.678, 0.910, 0.24];
+        let view_w = self.config.width as f32 / self.scale;
+        // Tab bar (Zed One Dark): background #2f343e, 1px bottom border #464b57.
+        self.push_rect(&mut out, 0.0, 0.0, view_w, CONTENT_TOP, lin([47, 52, 62], 1.0));
+        self.push_rect(&mut out, 0.0, CONTENT_TOP - 1.0, view_w, 1.0, lin([70, 75, 87], 1.0));
+
+        let sel = lin([116, 173, 232], 0.24); // player selection #74ade8 @ 0x3d
         if let Some((s, e)) = editor.selection() {
             let (sl, sc) = editor.line_col_of(s);
             let (el, ec) = editor.line_col_of(e);
@@ -274,15 +313,15 @@ impl EditorRenderer {
                 let end = if line == el { ec } else { editor.line_len(line) + 1 };
                 let x = GUTTER_WIDTH + c0 as f32 * self.char_width;
                 let w = (end.saturating_sub(c0)) as f32 * self.char_width;
-                let y = TOP_PAD + line as f32 * self.line_height - self.scroll_y;
-                self.push_rect(&mut out, x, y, w.max(1.0), self.line_height, sel);
+                let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
+                self.push_content_rect(&mut out, x, y, w.max(1.0), self.line_height, sel);
             }
         }
         if self.caret_on {
             let (line, col) = editor.line_col();
             let x = GUTTER_WIDTH + col as f32 * self.char_width;
-            let y = TOP_PAD + line as f32 * self.line_height - self.scroll_y;
-            self.push_rect(&mut out, x, y, 2.0, self.line_height, [0.455, 0.678, 0.910, 1.0]);
+            let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
+            self.push_content_rect(&mut out, x, y, 2.0, self.line_height, lin([116, 173, 232], 1.0));
         }
         out
     }
@@ -293,7 +332,7 @@ impl EditorRenderer {
 
     fn max_scroll(&self, editor: &EditorBuffer) -> f32 {
         let content = editor.rope.len_lines().max(1) as f32 * self.line_height;
-        (content + TOP_PAD - self.viewport_height()).max(0.0)
+        (content + CONTENT_TOP - self.viewport_height()).max(0.0)
     }
 
     pub fn scroll_by(&mut self, delta_y: f32, editor: &EditorBuffer) {
@@ -305,7 +344,7 @@ impl EditorRenderer {
         let (line, _) = editor.line_col();
         let top = line as f32 * self.line_height;
         let bottom = top + self.line_height;
-        let view = self.viewport_height() - TOP_PAD;
+        let view = self.viewport_height() - CONTENT_TOP;
         if top < self.scroll_y {
             self.scroll_y = top;
         } else if bottom > self.scroll_y + view {
@@ -324,11 +363,11 @@ impl EditorRenderer {
     pub fn render(&mut self, editor: &EditorBuffer) -> Result<()> {
         // Reshape text only when it changed — not every frame — so scroll/caret redraws stay cheap on large files.
         if self.text_dirty {
-            // Height = viewport + a few lines of overscan so cosmic-text shapes the visible window (culling) plus a
-            // little past the bottom edge, so the last row isn't culled early; TextBounds still clips to the viewport.
-            let code_w = (self.config.width as f32 / self.scale - GUTTER_WIDTH).max(1.0);
+            // Width = None so lines never soft-wrap (Zed scrolls horizontally instead); a wrapped code line would add
+            // visual rows that the 1-number-per-line gutter can't match, misaligning line numbers. Height = viewport +
+            // overscan so cosmic-text shapes only the visible window (cull) plus a little past the bottom edge.
             let view_h = self.config.height as f32 / self.scale + 3.0 * self.line_height;
-            self.buffer.set_size(&mut self.font_system, Some(code_w), Some(view_h));
+            self.buffer.set_size(&mut self.font_system, None, Some(view_h));
             self.gutter.set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(view_h));
 
             let text = editor.text();
@@ -354,6 +393,17 @@ impl EditorRenderer {
             );
             self.text_dirty = false;
         }
+        if self.title_dirty {
+            self.tab_title.set_size(&mut self.font_system, Some(self.config.width as f32 / self.scale), Some(CONTENT_TOP));
+            self.tab_title.set_text(
+                &mut self.font_system,
+                &self.title,
+                Attrs::new().family(Family::SansSerif).color(Color::rgb(220, 224, 229)),
+                Shaping::Advanced,
+            );
+            self.tab_title.shape_until_scroll(&mut self.font_system, false);
+            self.title_dirty = false;
+        }
 
         // Scroll by whole lines through cosmic-text (so it shapes/culls the visible window) and do the sub-line
         // remainder via the text areas' top offset. cosmic-text's layout iterator drops a line once its baseline
@@ -374,7 +424,7 @@ impl EditorRenderer {
 
         // Clip content to below the top padding so a partially-scrolled top line ends at a clean edge instead of
         // bleeding to y=0 (into the title bar / tab strip).
-        let clip_top = (TOP_PAD * self.scale) as i32;
+        let clip_top = (CONTENT_TOP * self.scale) as i32;
         let bounds = TextBounds {
             left: 0,
             top: clip_top,
@@ -391,7 +441,7 @@ impl EditorRenderer {
                 TextArea {
                     buffer: &self.gutter,
                     left: 8.0 * self.scale,
-                    top: (TOP_PAD - scroll_frac) * self.scale,
+                    top: (CONTENT_TOP - scroll_frac) * self.scale,
                     scale: self.scale,
                     bounds,
                     default_color: Color::rgb(78, 90, 95),
@@ -400,10 +450,19 @@ impl EditorRenderer {
                 TextArea {
                     buffer: &self.buffer,
                     left: GUTTER_WIDTH * self.scale,
-                    top: (TOP_PAD - scroll_frac) * self.scale,
+                    top: (CONTENT_TOP - scroll_frac) * self.scale,
                     scale: self.scale,
                     bounds,
                     default_color: Color::rgb(172, 178, 190),
+                    custom_glyphs: &[],
+                },
+                TextArea {
+                    buffer: &self.tab_title,
+                    left: 12.0 * self.scale,
+                    top: 0.0,
+                    scale: self.scale,
+                    bounds: TextBounds { left: 0, top: 0, right: self.config.width as i32, bottom: clip_top },
+                    default_color: Color::rgb(220, 224, 229),
                     custom_glyphs: &[],
                 },
             ],
@@ -450,11 +509,6 @@ impl EditorRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            // Clip caret/selection to the same content area as the text (below the top padding).
-            let sy = clip_top.max(0) as u32;
-            if self.config.height > sy {
-                pass.set_scissor_rect(0, sy, self.config.width, self.config.height - sy);
-            }
             if quad_count > 0 {
                 pass.set_pipeline(&self.quad_pipeline);
                 pass.set_vertex_buffer(0, self.quad_vertices.slice(..));
