@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas,
-    TextBounds, TextRenderer, Viewport,
+    TextBounds, TextRenderer, Viewport, Weight,
 };
 use wgpu::{
     CompositeAlphaMode, DeviceDescriptor, Instance, LoadOp, MultisampleState, Operations, PresentMode,
@@ -209,7 +209,10 @@ impl UiRenderer {
             buf.set_text(
                 &mut self.font_system,
                 &t.text,
-                Attrs::new().family(Family::SansSerif).color(Color::rgb(t.color[0], t.color[1], t.color[2])),
+                Attrs::new()
+                    .family(Family::SansSerif)
+                    .weight(Weight::MEDIUM)
+                    .color(Color::rgb(t.color[0], t.color[1], t.color[2])),
                 Shaping::Advanced,
             );
             buf.shape_until_scroll(&mut self.font_system, false);
@@ -221,8 +224,9 @@ impl UiRenderer {
             .zip(&buffers)
             .map(|(t, buf)| TextArea {
                 buffer: buf,
-                left: t.x * self.scale,
-                top: t.y * self.scale,
+                // Snap to whole device pixels so glyphs aren't blurred by sub-pixel positioning.
+                left: (t.x * self.scale).round(),
+                top: (t.y * self.scale).round(),
                 scale: self.scale,
                 bounds,
                 default_color: Color::rgb(t.color[0], t.color[1], t.color[2]),
