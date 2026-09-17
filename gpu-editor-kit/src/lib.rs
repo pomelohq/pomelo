@@ -18,4 +18,5 @@ pub mod highlight;
 pub mod renderer;
 
 pub use buffer::EditorBuffer;
+pub use highlight::Lang;
 pub use renderer::EditorRenderer;

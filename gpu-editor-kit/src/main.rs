@@ -27,7 +27,9 @@ impl ApplicationHandler for App {
         let attrs = Window::default_attributes().with_title("Pomelo Editor (GPU)");
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         self.editor = EditorBuffer::from_str(SAMPLE);
-        self.renderer = Some(EditorRenderer::new(window.clone()).expect("renderer"));
+        let mut renderer = EditorRenderer::new(window.clone()).expect("renderer");
+        renderer.set_language(pomelo_editor_kit::Lang::Rust);
+        self.renderer = Some(renderer);
         self.window = Some(window);
     }
 

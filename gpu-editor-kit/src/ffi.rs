@@ -88,6 +88,15 @@ pub unsafe extern "C" fn pomelo_editor_set_caret_on(ed: *mut Editor, on: bool) {
     ed.renderer.set_caret_on(on);
 }
 
+/// Set the syntax language from a file extension (e.g. "tsx", "rs"). Unknown -> plain text.
+/// # Safety `ed` must come from `pomelo_editor_new`; `ptr`/`len` a valid UTF-8 byte range.
+#[no_mangle]
+pub unsafe extern "C" fn pomelo_editor_set_language(ed: *mut Editor, ptr: *const u8, len: usize) {
+    let Some(ed) = ed.as_mut() else { return };
+    let ext = std::str::from_utf8(slice::from_raw_parts(ptr, len)).unwrap_or("");
+    ed.renderer.set_language(crate::highlight::Lang::from_ext(ext));
+}
+
 /// # Safety `ed` must come from `pomelo_editor_new`; `ptr`/`len` a valid UTF-8 byte range.
 #[no_mangle]
 pub unsafe extern "C" fn pomelo_editor_insert_text(ed: *mut Editor, ptr: *const u8, len: usize) {

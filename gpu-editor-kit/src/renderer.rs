@@ -42,6 +42,8 @@ pub struct EditorRenderer {
     quad_pipeline: wgpu::RenderPipeline,
     quad_vertices: wgpu::Buffer,
     quad_capacity: usize,
+    highlighter: crate::highlight::Highlighter,
+    language: crate::highlight::Lang,
 }
 
 fn srgb_to_linear(c: f64) -> f64 {
@@ -151,11 +153,20 @@ impl EditorRenderer {
             quad_pipeline,
             quad_vertices,
             quad_capacity,
+            highlighter: crate::highlight::Highlighter::default(),
+            language: crate::highlight::Lang::PlainText,
         })
     }
 
     pub fn set_caret_on(&mut self, on: bool) {
         self.caret_on = on;
+    }
+
+    pub fn set_language(&mut self, lang: crate::highlight::Lang) {
+        if self.language != lang {
+            self.language = lang;
+            self.text_dirty = true;
+        }
     }
 
     pub fn mark_text_dirty(&mut self) {
@@ -304,20 +315,22 @@ impl EditorRenderer {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
-        self.buffer.set_size(
-            &mut self.font_system,
-            Some((width as f32 / self.scale - GUTTER_WIDTH).max(1.0)),
-            Some(height as f32 / self.scale),
-        );
-        self.gutter
-            .set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(height as f32 / self.scale));
-        self.text_dirty = true;
+        self.text_dirty = true; // reshape re-sizes the text buffers from the new config
     }
 
     pub fn render(&mut self, editor: &EditorBuffer) -> Result<()> {
         // Reshape text only when it changed — not every frame — so scroll/caret redraws stay cheap on large files.
         if self.text_dirty {
-            let spans = crate::highlight::highlight(&editor.text());
+            let line_count = editor.rope.len_lines().max(1);
+            // Lay out ALL lines (height = content, not viewport) so scrolling reveals lines below the first screen;
+            // TextBounds clips to the viewport. Scroll then just offsets the text areas' top.
+            let content_h = (line_count as f32 + 1.0) * self.line_height;
+            let code_w = (self.config.width as f32 / self.scale - GUTTER_WIDTH).max(1.0);
+            self.buffer.set_size(&mut self.font_system, Some(code_w), Some(content_h));
+            self.gutter.set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(content_h));
+
+            let text = editor.text();
+            let spans = self.highlighter.highlight(&text, self.language);
             let rich: Vec<(&str, Attrs)> = spans
                 .iter()
                 .map(|s| (s.text.as_str(), Attrs::new().family(Family::Monospace).color(s.color)))
@@ -330,7 +343,6 @@ impl EditorRenderer {
             );
             self.buffer.shape_until_scroll(&mut self.font_system, false);
 
-            let line_count = editor.rope.len_lines().max(1);
             let numbers: String = (1..=line_count).map(|n| format!("{n}\n")).collect();
             self.gutter.set_text(
                 &mut self.font_system,
