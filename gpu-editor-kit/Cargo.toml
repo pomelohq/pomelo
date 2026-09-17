@@ -1,0 +1,23 @@
+[package]
+name = "pomelo-editor-kit"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform GPU-rendered code editor kit (Linux/macOS/Windows), the Zed-style replacement for the AppKit NSTextView editor."
+
+[[bin]]
+name = "pomelo-editor-demo"
+path = "src/main.rs"
+
+[lib]
+name = "pomelo_editor_kit"
+path = "src/lib.rs"
+
+[dependencies]
+# GPU: wgpu targets Metal (macOS), Vulkan (Linux), and DX12 (Windows) from one API.
+wgpu = "22"
+# Cross-platform windowing/input.
+winit = "0.30"
+# GPU text rendering on wgpu (cosmic-text shaping + glyph atlas), the core of the editor's rendering.
+glyphon = "0.6"
+pollster = "0.3"
+anyhow = "1"
