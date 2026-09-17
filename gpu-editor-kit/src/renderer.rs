@@ -353,11 +353,13 @@ impl EditorRenderer {
             self.text_dirty = false;
         }
 
-        // Scroll = cosmic-text's own vertical scroll, so it shapes only the visible lines each frame (cull). line +
-        // sub-line pixel offset; the caret/selection y still use scroll_y directly (equivalent positioning).
+        // Scroll by whole lines through cosmic-text (so it shapes/culls the visible window) and do the sub-line
+        // remainder via the text areas' top offset. cosmic-text's layout iterator drops a line once its baseline
+        // rises above 0, so a fractional `Scroll::vertical` would cull the top line ~80% of the way up; keeping
+        // vertical=0 and shifting `top` avoids that. caret/selection y still use scroll_y directly (equivalent).
         let top_line = (self.scroll_y / self.line_height).floor().max(0.0);
-        let vertical = self.scroll_y - top_line * self.line_height;
-        let scroll = glyphon::cosmic_text::Scroll { line: top_line as usize, vertical, horizontal: 0.0 };
+        let scroll_frac = self.scroll_y - top_line * self.line_height;
+        let scroll = glyphon::cosmic_text::Scroll { line: top_line as usize, vertical: 0.0, horizontal: 0.0 };
         self.buffer.set_scroll(scroll);
         self.gutter.set_scroll(scroll);
         self.buffer.shape_until_scroll(&mut self.font_system, false);
@@ -384,7 +386,7 @@ impl EditorRenderer {
                 TextArea {
                     buffer: &self.gutter,
                     left: 8.0 * self.scale,
-                    top: TOP_PAD * self.scale,
+                    top: (TOP_PAD - scroll_frac) * self.scale,
                     scale: self.scale,
                     bounds,
                     default_color: Color::rgb(78, 90, 95),
@@ -393,7 +395,7 @@ impl EditorRenderer {
                 TextArea {
                     buffer: &self.buffer,
                     left: GUTTER_WIDTH * self.scale,
-                    top: TOP_PAD * self.scale,
+                    top: (TOP_PAD - scroll_frac) * self.scale,
                     scale: self.scale,
                     bounds,
                     default_color: Color::rgb(172, 178, 190),
