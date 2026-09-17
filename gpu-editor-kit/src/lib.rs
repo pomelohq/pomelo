@@ -13,6 +13,7 @@
 //! GPU editor that runs on all three platforms.
 
 pub mod buffer;
+pub mod highlight;
 pub mod renderer;
 
 pub use buffer::{Cursor, EditorBuffer};

@@ -103,9 +103,14 @@ impl EditorRenderer {
     }
 
     pub fn render(&mut self, editor: &EditorBuffer) -> Result<()> {
-        self.buffer.set_text(
+        let spans = crate::highlight::highlight(&editor.text());
+        let rich: Vec<(&str, Attrs)> = spans
+            .iter()
+            .map(|s| (s.text.as_str(), Attrs::new().family(Family::Monospace).color(s.color)))
+            .collect();
+        self.buffer.set_rich_text(
             &mut self.font_system,
-            &editor.text(),
+            rich,
             Attrs::new().family(Family::Monospace),
             Shaping::Advanced,
         );
