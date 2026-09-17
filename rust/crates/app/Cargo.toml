@@ -13,3 +13,6 @@ path = "src/main.rs"
 pomelo-editor = { path = "../editor" }
 winit.workspace = true
 anyhow.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true
