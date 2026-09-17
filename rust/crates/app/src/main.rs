@@ -131,6 +131,7 @@ impl ApplicationHandler for App {
 fn configure_surface_layer(window: &Window) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let Ok(handle) = window.window_handle() else { return };
     let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
@@ -139,6 +140,10 @@ fn configure_surface_layer(window: &Window) {
         let layer: *mut AnyObject = msg_send![view, layer];
         if !layer.is_null() {
             let _: () = msg_send![layer, setPresentsWithTransaction: true];
+            // Pin the previous frame top-left at native size during a live resize instead of stretching it (the
+            // default `resize` gravity), which distorts the fixed top bar until the next frame is drawn.
+            let gravity = NSString::from_str("topLeft");
+            let _: () = msg_send![layer, setContentsGravity: &*gravity];
         }
     }
 }
