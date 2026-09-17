@@ -3,23 +3,94 @@
 
 use ropey::Rope;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    None,
+    Insert,
+    Delete,
+}
+
+#[derive(Clone)]
+struct Snapshot {
+    rope: Rope,
+    cursor: usize,
+    anchor: usize,
+}
+
 pub struct EditorBuffer {
     pub rope: Rope,
     /// Cursor as a character offset into the rope.
     pub cursor: usize,
     /// Selection anchor; a selection exists while it differs from `cursor`.
     pub anchor: usize,
+    undo_stack: Vec<Snapshot>,
+    redo_stack: Vec<Snapshot>,
+    last_edit: EditKind,
 }
 
 impl Default for EditorBuffer {
     fn default() -> Self {
-        Self { rope: Rope::from_str(""), cursor: 0, anchor: 0 }
+        Self::from_str("")
     }
 }
 
 impl EditorBuffer {
     pub fn from_str(text: &str) -> Self {
-        Self { rope: Rope::from_str(text), cursor: 0, anchor: 0 }
+        Self {
+            rope: Rope::from_str(text),
+            cursor: 0,
+            anchor: 0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_edit: EditKind::None,
+        }
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot { rope: self.rope.clone(), cursor: self.cursor, anchor: self.anchor }
+    }
+
+    // Push an undo entry only when the edit kind changes, so a run of typing (or deleting) coalesces into one undo.
+    fn record(&mut self, kind: EditKind) {
+        if self.last_edit != kind {
+            self.undo_stack.push(self.snapshot());
+            self.redo_stack.clear();
+            self.last_edit = kind;
+        }
+    }
+
+    fn break_run(&mut self) {
+        self.last_edit = EditKind::None;
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(prev) = self.undo_stack.pop() {
+            self.redo_stack.push(self.snapshot());
+            self.rope = prev.rope;
+            self.cursor = prev.cursor.min(self.rope.len_chars());
+            self.anchor = prev.anchor.min(self.rope.len_chars());
+            self.last_edit = EditKind::None;
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            self.undo_stack.push(self.snapshot());
+            self.rope = next.rope;
+            self.cursor = next.cursor.min(self.rope.len_chars());
+            self.anchor = next.anchor.min(self.rope.len_chars());
+            self.last_edit = EditKind::None;
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        self.anchor = 0;
+        self.cursor = self.rope.len_chars();
+        self.break_run();
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        self.selection().map(|(s, e)| self.rope.slice(s..e).to_string())
     }
 
     /// Selected char range (start, end) if any, else None.
@@ -57,11 +128,13 @@ impl EditorBuffer {
     pub fn place_cursor(&mut self, off: usize) {
         self.cursor = off.min(self.rope.len_chars());
         self.collapse();
+        self.break_run();
     }
 
     /// Move the cursor while keeping the anchor (a drag extends the selection).
     pub fn extend_cursor(&mut self, off: usize) {
         self.cursor = off.min(self.rope.len_chars());
+        self.break_run();
     }
 
     pub fn text(&self) -> String {
@@ -94,6 +167,7 @@ impl EditorBuffer {
     }
 
     pub fn insert_char(&mut self, ch: char) {
+        self.record(EditKind::Insert);
         self.delete_selection();
         self.rope.insert_char(self.cursor, ch);
         self.cursor += 1;
@@ -101,6 +175,7 @@ impl EditorBuffer {
     }
 
     pub fn backspace(&mut self) {
+        self.record(EditKind::Delete);
         if self.delete_selection() {
             return;
         }
@@ -112,10 +187,9 @@ impl EditorBuffer {
     }
 
     pub fn move_left(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-        }
+        self.cursor = self.cursor.saturating_sub(1);
         self.collapse();
+        self.break_run();
     }
 
     pub fn move_right(&mut self) {
@@ -123,26 +197,54 @@ impl EditorBuffer {
             self.cursor += 1;
         }
         self.collapse();
+        self.break_run();
     }
 
     pub fn move_up(&mut self) {
         let (line, col) = self.line_col();
-        if line == 0 {
-            self.collapse();
-            return;
+        if line > 0 {
+            self.cursor = self.clamp_to_line(line - 1, col);
         }
-        self.cursor = self.clamp_to_line(line - 1, col);
         self.collapse();
+        self.break_run();
     }
 
     pub fn move_down(&mut self) {
         let (line, col) = self.line_col();
-        if line + 1 >= self.rope.len_lines() {
-            self.collapse();
-            return;
+        if line + 1 < self.rope.len_lines() {
+            self.cursor = self.clamp_to_line(line + 1, col);
         }
-        self.cursor = self.clamp_to_line(line + 1, col);
         self.collapse();
+        self.break_run();
+    }
+
+    // Shift+arrow: move the cursor but keep the anchor, extending the selection.
+    pub fn extend_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+        self.break_run();
+    }
+
+    pub fn extend_right(&mut self) {
+        if self.cursor < self.rope.len_chars() {
+            self.cursor += 1;
+        }
+        self.break_run();
+    }
+
+    pub fn extend_up(&mut self) {
+        let (line, col) = self.line_col();
+        if line > 0 {
+            self.cursor = self.clamp_to_line(line - 1, col);
+        }
+        self.break_run();
+    }
+
+    pub fn extend_down(&mut self) {
+        let (line, col) = self.line_col();
+        if line + 1 < self.rope.len_lines() {
+            self.cursor = self.clamp_to_line(line + 1, col);
+        }
+        self.break_run();
     }
 
     /// Char offset at `col` on `line`, clamped to that line's length (excluding its trailing newline).

@@ -124,7 +124,8 @@ pub unsafe extern "C" fn pomelo_editor_insert_text(ed: *mut Editor, ptr: *const 
     }
 }
 
-/// Special keys: 1 backspace, 2 enter, 3 left, 4 right, 5 up, 6 down.
+/// Special keys: 1 backspace, 2 enter, 3 left, 4 right, 5 up, 6 down,
+/// 7 undo, 8 redo, 9 select-all, 10 shift-left, 11 shift-right, 12 shift-up, 13 shift-down.
 /// # Safety `ed` must come from `pomelo_editor_new`.
 #[no_mangle]
 pub unsafe extern "C" fn pomelo_editor_key(ed: *mut Editor, key: u32) {
@@ -136,13 +137,35 @@ pub unsafe extern "C" fn pomelo_editor_key(ed: *mut Editor, key: u32) {
         4 => ed.buffer.move_right(),
         5 => ed.buffer.move_up(),
         6 => ed.buffer.move_down(),
+        7 => ed.buffer.undo(),
+        8 => ed.buffer.redo(),
+        9 => ed.buffer.select_all(),
+        10 => ed.buffer.extend_left(),
+        11 => ed.buffer.extend_right(),
+        12 => ed.buffer.extend_up(),
+        13 => ed.buffer.extend_down(),
         _ => {}
     }
-    if key == 1 || key == 2 {
+    if matches!(key, 1 | 2 | 7 | 8) {
         ed.renderer.mark_text_dirty();
     }
     ed.renderer.follow_cursor(&ed.buffer);
     ed.renderer.set_caret_on(true);
+}
+
+/// Copy the selected text into `out` (up to `cap` bytes); returns the full byte length (may exceed cap; call again
+/// with a bigger buffer, or pass cap=0 to just query the length). Empty selection returns 0.
+/// # Safety `ed` must come from `pomelo_editor_new`; `out`/`cap` a writable byte range.
+#[no_mangle]
+pub unsafe extern "C" fn pomelo_editor_copy(ed: *mut Editor, out: *mut u8, cap: usize) -> usize {
+    let Some(ed) = ed.as_mut() else { return 0 };
+    let Some(text) = ed.buffer.selected_text() else { return 0 };
+    let bytes = text.as_bytes();
+    if cap > 0 && !out.is_null() {
+        let n = bytes.len().min(cap);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, n);
+    }
+    bytes.len()
 }
 
 /// # Safety `ed` must come from `pomelo_editor_new` and not be used afterwards.

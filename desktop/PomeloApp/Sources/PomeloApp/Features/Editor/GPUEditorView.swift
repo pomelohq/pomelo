@@ -157,13 +157,27 @@ final class GPUEditorNSView: NSView {
 
     override func keyDown(with event: NSEvent) {
         guard let ed = editor else { return super.keyDown(with: event) }
+        let mods = event.modifierFlags
+        let cmd = mods.contains(.command)
+        let shift = mods.contains(.shift)
+        if cmd {
+            switch event.keyCode {
+            case 6: pomelo_editor_key(ed, shift ? 8 : 7) // z / shift-z: undo / redo
+            case 0: pomelo_editor_key(ed, 9)             // a: select all
+            case 8: copySelection(ed)                    // c
+            case 7: copySelection(ed); pomelo_editor_key(ed, 1) // x: copy then delete
+            case 9: paste(ed)                            // v
+            default: super.keyDown(with: event); return
+            }
+            wakeCaret(); render(); return
+        }
         switch event.keyCode {
         case 51: pomelo_editor_key(ed, 1)
         case 36, 76: pomelo_editor_key(ed, 2)
-        case 123: pomelo_editor_key(ed, 3)
-        case 124: pomelo_editor_key(ed, 4)
-        case 126: pomelo_editor_key(ed, 5)
-        case 125: pomelo_editor_key(ed, 6)
+        case 123: pomelo_editor_key(ed, shift ? 10 : 3)
+        case 124: pomelo_editor_key(ed, shift ? 11 : 4)
+        case 126: pomelo_editor_key(ed, shift ? 12 : 5)
+        case 125: pomelo_editor_key(ed, shift ? 13 : 6)
         default:
             if let chars = event.characters, !chars.isEmpty {
                 let bytes = Array(chars.utf8)
@@ -172,6 +186,23 @@ final class GPUEditorNSView: NSView {
         }
         wakeCaret()
         render()
+    }
+
+    private func copySelection(_ ed: OpaquePointer) {
+        let len = pomelo_editor_copy(ed, nil, 0)
+        guard len > 0 else { return }
+        var buf = [UInt8](repeating: 0, count: len)
+        _ = buf.withUnsafeMutableBufferPointer { pomelo_editor_copy(ed, $0.baseAddress, len) }
+        if let s = String(bytes: buf, encoding: .utf8) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(s, forType: .string)
+        }
+    }
+
+    private func paste(_ ed: OpaquePointer) {
+        guard let s = NSPasteboard.general.string(forType: .string), !s.isEmpty else { return }
+        let bytes = Array(s.utf8)
+        bytes.withUnsafeBufferPointer { pomelo_editor_insert_text(ed, $0.baseAddress, $0.count) }
     }
 
     override func scrollWheel(with event: NSEvent) {

@@ -20,6 +20,7 @@ struct App {
     text: String,
     ext: String,
     name: String,
+    mods: winit::keyboard::ModifiersState,
 }
 
 impl ApplicationHandler for App {
@@ -48,27 +49,43 @@ impl ApplicationHandler for App {
                 renderer.resize(size.width, size.height);
                 window.request_redraw();
             }
+            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
                 ..
             } => {
-                match logical_key {
-                    Key::Named(NamedKey::Backspace) => self.editor.backspace(),
-                    Key::Named(NamedKey::Enter) => self.editor.insert_char('\n'),
-                    Key::Named(NamedKey::Space) => self.editor.insert_char(' '),
-                    Key::Named(NamedKey::ArrowLeft) => self.editor.move_left(),
-                    Key::Named(NamedKey::ArrowRight) => self.editor.move_right(),
-                    Key::Named(NamedKey::ArrowUp) => self.editor.move_up(),
-                    Key::Named(NamedKey::ArrowDown) => self.editor.move_down(),
+                let shift = self.mods.shift_key();
+                let cmd = self.mods.super_key() || self.mods.control_key();
+                let mut edited = false;
+                match &logical_key {
+                    Key::Named(NamedKey::Backspace) => { self.editor.backspace(); edited = true; }
+                    Key::Named(NamedKey::Enter) => { self.editor.insert_char('\n'); edited = true; }
+                    Key::Named(NamedKey::Space) if !cmd => { self.editor.insert_char(' '); edited = true; }
+                    Key::Named(NamedKey::ArrowLeft) => if shift { self.editor.extend_left() } else { self.editor.move_left() },
+                    Key::Named(NamedKey::ArrowRight) => if shift { self.editor.extend_right() } else { self.editor.move_right() },
+                    Key::Named(NamedKey::ArrowUp) => if shift { self.editor.extend_up() } else { self.editor.move_up() },
+                    Key::Named(NamedKey::ArrowDown) => if shift { self.editor.extend_down() } else { self.editor.move_down() },
+                    Key::Character(c) if cmd => match c.as_str() {
+                        "z" if shift => { self.editor.redo(); edited = true; }
+                        "z" => { self.editor.undo(); edited = true; }
+                        "a" => self.editor.select_all(),
+                        _ => {}
+                    },
                     _ => {
-                        if let Some(t) = text {
-                            for ch in t.chars() {
-                                if !ch.is_control() {
-                                    self.editor.insert_char(ch);
+                        if !cmd {
+                            if let Some(t) = text {
+                                for ch in t.chars() {
+                                    if !ch.is_control() {
+                                        self.editor.insert_char(ch);
+                                    }
                                 }
+                                edited = true;
                             }
                         }
                     }
+                }
+                if edited {
+                    renderer.mark_text_dirty();
                 }
                 renderer.follow_cursor(&self.editor);
                 window.request_redraw();
