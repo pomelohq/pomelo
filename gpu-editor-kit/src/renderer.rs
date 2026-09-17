@@ -204,6 +204,23 @@ impl EditorRenderer {
         self.max_line_w = 0.0;
     }
 
+    /// While drag-selecting, if the pointer is past the top/bottom content edge, scroll toward it (Zed autoscroll).
+    /// `y` is in logical view coords. Call every frame during a drag so it keeps scrolling when the mouse is still.
+    pub fn autoscroll_for_drag(&mut self, editor: &EditorBuffer, y: f32) {
+        let bottom = self.config.height as f32 / self.scale;
+        let speed = 0.5;
+        if y < CONTENT_TOP {
+            self.scroll_y = (self.scroll_y - (CONTENT_TOP - y) * speed).max(0.0);
+        } else if y > bottom {
+            self.scroll_y = (self.scroll_y + (y - bottom) * speed).min(self.max_scroll(editor));
+        }
+    }
+
+    /// Clamp a drag point's y into the content area so the extended selection maps to the edge line, not past it.
+    pub fn clamp_drag_y(&self, y: f32) -> f32 {
+        y.clamp(CONTENT_TOP, self.config.height as f32 / self.scale)
+    }
+
     pub fn set_tab_title(&mut self, title: &str) {
         if self.title != title {
             self.title = title.to_string();

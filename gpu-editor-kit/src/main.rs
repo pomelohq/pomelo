@@ -158,8 +158,20 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                if self.mouse_down {
+                    let scale = window.scale_factor() as f32;
+                    let (lx, ly) = (self.cursor_pos.0 as f32 / scale, self.cursor_pos.1 as f32 / scale);
+                    renderer.autoscroll_for_drag(&self.editor, ly);
+                    let cy = renderer.clamp_drag_y(ly);
+                    let (l, c) = renderer.point_to_line_col(lx, cy);
+                    let off = self.editor.offset_at(l, c);
+                    self.editor.extend_cursor(off);
+                }
                 if let Err(e) = renderer.render(&self.editor) {
                     eprintln!("render error: {e}");
+                }
+                if self.mouse_down {
+                    window.request_redraw(); // keep autoscrolling while the drag is held
                 }
             }
             _ => {}

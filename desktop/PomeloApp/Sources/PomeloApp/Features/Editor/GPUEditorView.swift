@@ -11,6 +11,8 @@ final class GPUEditorNSView: NSView {
     private var link: CADisplayLink?
     private var blinkTimer: Timer?
     private var caretOn = true
+    private var dragging = false
+    private var lastDragPoint: CGPoint = .zero
     var initialText: String = ""
     var languageExt: String = ""
     var tabTitle: String = ""
@@ -43,7 +45,13 @@ final class GPUEditorNSView: NSView {
         }
     }
 
-    @objc private func step(_ sender: CADisplayLink) { render() }
+    @objc private func step(_ sender: CADisplayLink) {
+        // Keep autoscrolling while dragging even if the mouse is still (Zed drag-select autoscroll).
+        if dragging, let ed = editor {
+            pomelo_editor_drag(ed, Float(lastDragPoint.x), Float(lastDragPoint.y))
+        }
+        render()
+    }
 
     // Zed shows the caret only in the focused editor and blinks it at 500ms.
     override func becomeFirstResponder() -> Bool {
@@ -233,6 +241,8 @@ final class GPUEditorNSView: NSView {
         } else {
             pomelo_editor_click(ed, Float(p.x), Float(p.y))
         }
+        dragging = true
+        lastDragPoint = p
         wakeCaret()
         render()
     }
@@ -240,8 +250,13 @@ final class GPUEditorNSView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let ed = editor else { return }
         let p = convert(event.locationInWindow, from: nil)
+        lastDragPoint = p
         pomelo_editor_drag(ed, Float(p.x), Float(p.y))
         render()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragging = false
     }
 
     deinit {

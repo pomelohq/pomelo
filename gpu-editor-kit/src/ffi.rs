@@ -55,7 +55,9 @@ pub unsafe extern "C" fn pomelo_editor_click(ed: *mut Editor, x: f32, y: f32) {
 #[no_mangle]
 pub unsafe extern "C" fn pomelo_editor_drag(ed: *mut Editor, x: f32, y: f32) {
     let Some(ed) = ed.as_mut() else { return };
-    let (line, col) = ed.renderer.point_to_line_col(x, y);
+    ed.renderer.autoscroll_for_drag(&ed.buffer, y);
+    let cy = ed.renderer.clamp_drag_y(y);
+    let (line, col) = ed.renderer.point_to_line_col(x, cy);
     let off = ed.buffer.offset_at(line, col);
     ed.buffer.extend_cursor(off);
     ed.renderer.set_caret_on(true);
