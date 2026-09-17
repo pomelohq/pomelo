@@ -34,19 +34,39 @@ final class GPUEditorNSView: NSView {
         ensureEditor()
         if window == nil {
             link?.invalidate(); link = nil
-            blinkTimer?.invalidate(); blinkTimer = nil
+            stopBlink()
         } else if link == nil {
             let l = displayLink(target: self, selector: #selector(step))
             l.add(to: .current, forMode: .common)
             link = l
-            // Zed: caret blinks at 500ms; typing forces it back on.
-            let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.toggleCaret() }
-            RunLoop.main.add(t, forMode: .common)
-            blinkTimer = t
         }
     }
 
     @objc private func step(_ sender: CADisplayLink) { render() }
+
+    // Zed shows the caret only in the focused editor and blinks it at 500ms.
+    override func becomeFirstResponder() -> Bool {
+        wakeCaret()
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        stopBlink()
+        if let ed = editor { caretOn = false; pomelo_editor_set_caret_on(ed, false) }
+        return super.resignFirstResponder()
+    }
+
+    private func startBlink() {
+        guard blinkTimer == nil else { return }
+        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.toggleCaret() }
+        RunLoop.main.add(t, forMode: .common)
+        blinkTimer = t
+    }
+
+    private func stopBlink() {
+        blinkTimer?.invalidate()
+        blinkTimer = nil
+    }
 
     private func toggleCaret() {
         guard let ed = editor else { return }
@@ -58,6 +78,8 @@ final class GPUEditorNSView: NSView {
         guard let ed = editor else { return }
         caretOn = true
         pomelo_editor_set_caret_on(ed, true)
+        stopBlink()
+        startBlink()
     }
 
     override func viewDidChangeBackingProperties() {
@@ -87,6 +109,9 @@ final class GPUEditorNSView: NSView {
         guard let ed = editor else { return }
         setLanguage(ed, languageExt)
         setText(ed, initialText)
+        caretOn = false
+        pomelo_editor_set_caret_on(ed, false)
+        if window?.firstResponder === self { wakeCaret() }
         render()
     }
 

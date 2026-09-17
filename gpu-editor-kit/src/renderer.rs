@@ -322,10 +322,10 @@ impl EditorRenderer {
     pub fn render(&mut self, editor: &EditorBuffer) -> Result<()> {
         // Reshape text only when it changed — not every frame — so scroll/caret redraws stay cheap on large files.
         if self.text_dirty {
-            // Height = viewport so cosmic-text shapes only the visible window per scroll position (culling); we drive
-            // the vertical position through Buffer::set_scroll, not a top offset.
+            // Height = viewport + a few lines of overscan so cosmic-text shapes the visible window (culling) plus a
+            // little past the bottom edge, so the last row isn't culled early; TextBounds still clips to the viewport.
             let code_w = (self.config.width as f32 / self.scale - GUTTER_WIDTH).max(1.0);
-            let view_h = self.config.height as f32 / self.scale;
+            let view_h = self.config.height as f32 / self.scale + 3.0 * self.line_height;
             self.buffer.set_size(&mut self.font_system, Some(code_w), Some(view_h));
             self.gutter.set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(view_h));
 
