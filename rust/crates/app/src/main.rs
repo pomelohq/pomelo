@@ -78,7 +78,11 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 self.ui.as_mut().unwrap().resize(size.width, size.height);
                 #[cfg(target_os = "macos")]
-                center_traffic_lights(self.window.as_ref().unwrap());
+                {
+                    // Re-apply layer/view placement in case wgpu's reconfigure reset it, then recenter the lights.
+                    configure_surface_layer(self.window.as_ref().unwrap());
+                    center_traffic_lights(self.window.as_ref().unwrap());
+                }
                 // Draw synchronously so the content matches the new size immediately (avoids the compositor
                 // stretching the previous frame during live resize, which reads as jitter).
                 self.draw();
@@ -137,11 +141,15 @@ fn configure_surface_layer(window: &Window) {
     let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
     unsafe {
         let view = h.ns_view.as_ptr() as *mut AnyObject;
+        // For a layer-backed NSView, AppKit's layerContentsPlacement (default: stretch) governs how the layer's
+        // contents are scaled during a live resize — it overrides the layer's own contentsGravity. Pin it top-left so
+        // the previous frame stays at native size in the top-left while resizing, instead of stretching the top bar.
+        // NSViewLayerContentsPlacementTopLeft = 11.
+        let _: () = msg_send![view, setLayerContentsPlacement: 11i64];
         let layer: *mut AnyObject = msg_send![view, layer];
         if !layer.is_null() {
             let _: () = msg_send![layer, setPresentsWithTransaction: true];
-            // Pin the previous frame top-left at native size during a live resize instead of stretching it (the
-            // default `resize` gravity), which distorts the fixed top bar until the next frame is drawn.
+            let _: () = msg_send![layer, setNeedsDisplayOnBoundsChange: true];
             let gravity = NSString::from_str("topLeft");
             let _: () = msg_send![layer, setContentsGravity: &*gravity];
         }
