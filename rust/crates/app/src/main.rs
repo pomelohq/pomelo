@@ -41,6 +41,7 @@ impl App {
             }
         }
     }
+
 }
 
 impl ApplicationHandler for App {
@@ -62,10 +63,7 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         self.ui = Some(UiRenderer::new(window.clone()).expect("ui"));
         #[cfg(target_os = "macos")]
-        {
-            configure_surface_layer(&window);
-            center_traffic_lights(&window);
-        }
+        center_traffic_lights(&window);
         self.window = Some(window);
     }
 
@@ -78,13 +76,7 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 self.ui.as_mut().unwrap().resize(size.width, size.height);
                 #[cfg(target_os = "macos")]
-                {
-                    // Re-apply layer/view placement in case wgpu's reconfigure reset it, then reposition the traffic
-                    // lights (Zed does this on windowDidResize) — now that we resize the correct titlebar container to
-                    // a fixed height, they stay put instead of drifting.
-                    configure_surface_layer(self.window.as_ref().unwrap());
-                    center_traffic_lights(self.window.as_ref().unwrap());
-                }
+                center_traffic_lights(self.window.as_ref().unwrap());
                 // Draw synchronously so the content matches the new size immediately (avoids the compositor
                 // stretching the previous frame during live resize, which reads as jitter).
                 self.draw();
@@ -131,42 +123,9 @@ impl ApplicationHandler for App {
     }
 }
 
-// Present the metal drawable inside the layer's transaction, so during a live resize the drawable and the layer
-// bounds change atomically instead of the old frame being stretched (which reads as blur/ghosting).
-#[cfg(target_os = "macos")]
-fn configure_surface_layer(window: &Window) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-    use objc2_foundation::NSString;
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let Ok(handle) = window.window_handle() else { return };
-    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
-    unsafe {
-        let view = h.ns_view.as_ptr() as *mut AnyObject;
-        // For a layer-backed NSView, AppKit's layerContentsPlacement (default: stretch) governs how the layer's
-        // contents are scaled during a live resize — it overrides the layer's own contentsGravity. Pin it top-left so
-        // the previous frame stays at native size in the top-left while resizing, instead of stretching the top bar.
-        // NSViewLayerContentsPlacementTopLeft = 11.
-        let _: () = msg_send![view, setLayerContentsPlacement: 11i64];
-        // Ask AppKit to redraw the layer contents during a live resize (2 = DuringViewResize) rather than scaling the
-        // stale frame.
-        let _: () = msg_send![view, setLayerContentsRedrawPolicy: 2i64];
-        let layer: *mut AnyObject = msg_send![view, layer];
-        if !layer.is_null() {
-            let _: () = msg_send![layer, setPresentsWithTransaction: true];
-            let _: () = msg_send![layer, setNeedsDisplayOnBoundsChange: true];
-            let gravity = NSString::from_str("topLeft");
-            let _: () = msg_send![layer, setContentsGravity: &*gravity];
-        }
-    }
-}
-
-// Vertically center the macOS traffic lights inside our taller top bar (they default to a standard ~28px title bar,
-// which sits too high). Re-applied on resize because AppKit re-lays them out. Zed does the same.
-// Center the macOS traffic lights in our taller top bar. Following Zed (gpui_macos move_traffic_light): resize the
-// buttons' container (the titlebar view) to a FIXED height pinned to the top of the window, then place the buttons at
-// a fixed offset within it. Because the container height is constant and pinned, the buttons don't drift as the
-// window is resized (computing their y from the live window height made them jump).
+// Center the macOS traffic lights in our taller top bar (Zed's move_traffic_light): resize the titlebar container
+// (two levels up) to a fixed height pinned to the window top, then place the buttons at a constant offset within it,
+// so they don't drift when the window is resized.
 #[cfg(target_os = "macos")]
 fn center_traffic_lights(window: &Window) {
     use objc2::msg_send;
