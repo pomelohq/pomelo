@@ -79,10 +79,11 @@ impl ApplicationHandler for App {
                 self.ui.as_mut().unwrap().resize(size.width, size.height);
                 #[cfg(target_os = "macos")]
                 {
-                    // Re-apply layer/view placement in case wgpu's reconfigure reset it. Do NOT reposition the traffic
-                    // lights here — AppKit keeps them anchored top-left, and moving them every resize event is what
-                    // made the header appear to jitter.
+                    // Re-apply layer/view placement in case wgpu's reconfigure reset it, then reposition the traffic
+                    // lights (Zed does this on windowDidResize) — now that we resize the correct titlebar container to
+                    // a fixed height, they stay put instead of drifting.
                     configure_surface_layer(self.window.as_ref().unwrap());
+                    center_traffic_lights(self.window.as_ref().unwrap());
                 }
                 // Draw synchronously so the content matches the new size immediately (avoids the compositor
                 // stretching the previous frame during live resize, which reads as jitter).
@@ -179,29 +180,49 @@ fn center_traffic_lights(window: &Window) {
     unsafe {
         let view: &NSView = &*(h.ns_view.as_ptr() as *const NSView);
         let Some(ns_window) = view.window() else { return };
+        // Re-fetch the buttons every time — AppKit can recreate the standard buttons on layout passes (Zed does this).
         let Some(close) = ns_window.standardWindowButton(NSWindowButton::NSWindowCloseButton) else { return };
         let Some(minimize) = ns_window.standardWindowButton(NSWindowButton::NSWindowMiniaturizeButton) else { return };
         let Some(zoom) = ns_window.standardWindowButton(NSWindowButton::NSWindowZoomButton) else { return };
-        let Some(container) = close.superview() else { return };
+        // The titlebar container is TWO levels up (button -> widget container -> titlebar view). Resizing the wrong
+        // one (the immediate superview) breaks/hides the buttons.
+        let Some(button_container) = close.superview() else { return };
+        let Some(titlebar) = button_container.superview() else { return };
 
-        // No implicit position animation, or the moves would interpolate and read as jitter during a live resize.
         let catx = AnyClass::get("CATransaction");
         if let Some(catx) = catx {
             let _: () = msg_send![catx, begin];
             let _: () = msg_send![catx, setDisableActions: true];
         }
 
-        let container_h = container.frame().size.height;
-        let btn = close.frame().size;
-        let pad = (minimize.frame().origin.x - close.frame().origin.x - btn.width).max(6.0);
-        let start_x = 19.0_f64;
+        let window_h = ns_window.frame().size.height;
+        let close_f = close.frame();
+        let btn_w = close_f.size.width;
+        let btn_h = close_f.size.height;
+        let btn_pad = (minimize.frame().origin.x - close_f.origin.x - btn_w).max(0.0);
+        let pos_x = 19.0_f64;
+        let pos_y = ((layout::TOP_BAR_H as f64 - btn_h) / 2.0).max(0.0); // vertical padding -> centers in the top bar
+        let container_h = btn_h + 2.0 * pos_y;
 
-        // Container's top is the window top; place the buttons so their center is TOP_BAR_H/2 below it (bottom-left
-        // origin). Stable as long as the titlebar container keeps a fixed height.
-        let y = container_h - (layout::TOP_BAR_H as f64 / 2.0) - (btn.height / 2.0);
-        close.setFrameOrigin(NSPoint::new(start_x, y));
-        minimize.setFrameOrigin(NSPoint::new(start_x + btn.width + pad, y));
-        zoom.setFrameOrigin(NSPoint::new(start_x + 2.0 * (btn.width + pad), y));
+        // Pin the titlebar container to the top of the window at a fixed height (constant across resizes -> stable).
+        let mut tf = titlebar.frame();
+        tf.size.height = container_h;
+        tf.origin.y = window_h - container_h;
+        let _: () = msg_send![&*titlebar, setFrame: tf];
+
+        let min_x = pos_x + btn_w + btn_pad;
+        let zoom_x = min_x + btn_w + btn_pad;
+        close.setFrameOrigin(NSPoint::new(pos_x, pos_y));
+        minimize.setFrameOrigin(NSPoint::new(min_x, pos_y));
+        zoom.setFrameOrigin(NSPoint::new(zoom_x, pos_y));
+        let _: () = msg_send![&*titlebar, updateTrackingAreas];
+
+        if std::env::var("POMELO_RESIZE_LOG").is_ok() {
+            eprintln!(
+                "[resize] window_h={window_h:.1} container_h={container_h:.1} titlebar.y={:.1} close=({pos_x:.1},{pos_y:.1}) btn={btn_w:.1}x{btn_h:.1}",
+                tf.origin.y
+            );
+        }
 
         if let Some(catx) = catx {
             let _: () = msg_send![catx, commit];
