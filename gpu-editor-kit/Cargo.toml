@@ -2,7 +2,8 @@
 name = "pomelo-editor-kit"
 version = "0.1.0"
 edition = "2021"
-description = "Cross-platform GPU-rendered code editor kit (Linux/macOS/Windows), the Zed-style replacement for the AppKit NSTextView editor."
+license = "MIT"
+description = "Cross-platform GPU-rendered code editor kit (Linux/macOS/Windows)."
 
 [[bin]]
 name = "pomelo-editor-demo"
