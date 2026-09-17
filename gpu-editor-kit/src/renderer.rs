@@ -18,7 +18,9 @@ use winit::window::Window;
 use crate::EditorBuffer;
 
 const GUTTER_WIDTH: f32 = 52.0;
-const TOP_PAD: f32 = 10.0;
+// No top padding: content scrolls flush to the top edge like Zed, so a scrolled top line clips cleanly instead of
+// leaving a weird padding band above a half-clipped row.
+const TOP_PAD: f32 = 0.0;
 
 pub struct EditorRenderer {
     device: wgpu::Device,
