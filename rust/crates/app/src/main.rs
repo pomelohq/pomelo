@@ -147,6 +147,8 @@ fn configure_surface_layer(window: &Window) {
 // which sits too high). Re-applied on resize because AppKit re-lays them out. Zed does the same.
 #[cfg(target_os = "macos")]
 fn center_traffic_lights(window: &Window) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyClass;
     use objc2_app_kit::{NSView, NSWindowButton};
     use objc2_foundation::NSPoint;
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -156,6 +158,13 @@ fn center_traffic_lights(window: &Window) {
     unsafe {
         let view: &NSView = &*(h.ns_view.as_ptr() as *const NSView);
         let Some(ns_window) = view.window() else { return };
+        // Disable the implicit CALayer position animation, or each reposition during a live resize would animate and
+        // read as the header jittering.
+        let catx = AnyClass::get("CATransaction");
+        if let Some(catx) = catx {
+            let _: () = msg_send![catx, begin];
+            let _: () = msg_send![catx, setDisableActions: true];
+        }
         let btn_h = 14.0_f64;
         let start_x = 19.0_f64;
         let spacing = 20.0_f64;
@@ -175,6 +184,9 @@ fn center_traffic_lights(window: &Window) {
                     btn.setFrameOrigin(NSPoint::new(start_x + i as f64 * spacing, y));
                 }
             }
+        }
+        if let Some(catx) = catx {
+            let _: () = msg_send![catx, commit];
         }
     }
 }
