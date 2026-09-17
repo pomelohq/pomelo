@@ -370,9 +370,12 @@ impl EditorRenderer {
             Resolution { width: self.config.width, height: self.config.height },
         );
 
+        // Clip content to below the top padding so a partially-scrolled top line ends at a clean edge instead of
+        // bleeding to y=0 (into the title bar / tab strip).
+        let clip_top = (TOP_PAD * self.scale) as i32;
         let bounds = TextBounds {
             left: 0,
-            top: 0,
+            top: clip_top,
             right: self.config.width as i32,
             bottom: self.config.height as i32,
         };
@@ -445,6 +448,11 @@ impl EditorRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            // Clip caret/selection to the same content area as the text (below the top padding).
+            let sy = clip_top.max(0) as u32;
+            if self.config.height > sy {
+                pass.set_scissor_rect(0, sy, self.config.width, self.config.height - sy);
+            }
             if quad_count > 0 {
                 pass.set_pipeline(&self.quad_pipeline);
                 pass.set_vertex_buffer(0, self.quad_vertices.slice(..));
