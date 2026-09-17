@@ -51,6 +51,8 @@ impl ApplicationHandler for App {
         }
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         self.ui = Some(UiRenderer::new(window.clone()).expect("ui"));
+        #[cfg(target_os = "macos")]
+        center_traffic_lights(&window);
         self.window = Some(window);
     }
 
@@ -62,6 +64,8 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 ui.resize(size.width, size.height);
+                #[cfg(target_os = "macos")]
+                center_traffic_lights(window);
                 window.request_redraw();
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -94,6 +98,42 @@ impl ApplicationHandler for App {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+// Vertically center the macOS traffic lights inside our taller top bar (they default to a standard ~28px title bar,
+// which sits too high). Re-applied on resize because AppKit re-lays them out. Zed does the same.
+#[cfg(target_os = "macos")]
+fn center_traffic_lights(window: &Window) {
+    use objc2_app_kit::{NSView, NSWindowButton};
+    use objc2_foundation::NSPoint;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    unsafe {
+        let view: &NSView = &*(h.ns_view.as_ptr() as *const NSView);
+        let Some(ns_window) = view.window() else { return };
+        let btn_h = 14.0_f64;
+        let start_x = 19.0_f64;
+        let spacing = 20.0_f64;
+        for (i, kind) in [
+            NSWindowButton::NSWindowCloseButton,
+            NSWindowButton::NSWindowMiniaturizeButton,
+            NSWindowButton::NSWindowZoomButton,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if let Some(btn) = ns_window.standardWindowButton(kind) {
+                if let Some(sv) = btn.superview() {
+                    let sv_h = sv.frame().size.height;
+                    // Frame origin is bottom-left; place the button so its center is at TOP_BAR_H/2 from the top.
+                    let y = sv_h - (layout::TOP_BAR_H as f64 / 2.0) - (btn_h / 2.0);
+                    btn.setFrameOrigin(NSPoint::new(start_x + i as f64 * spacing, y));
+                }
+            }
         }
     }
 }
