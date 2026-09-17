@@ -12,6 +12,8 @@ path = "src/main.rs"
 [lib]
 name = "pomelo_editor_kit"
 path = "src/lib.rs"
+# staticlib: linked into the Swift app. rlib: used by the winit demo bin.
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 # GPU: wgpu targets Metal (macOS), Vulkan (Linux), and DX12 (Windows) from one API.

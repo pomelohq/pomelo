@@ -1,0 +1,153 @@
+import SwiftUI
+import AppKit
+import QuartzCore
+import CEditorKit
+
+// Embeds the Rust/wgpu editor kit (libpomelo_editor_kit) in a CAMetalLayer-backed NSView. The Rust side owns all
+// rendering; AppKit forwards size + input and asks it to redraw. This is the cross-platform GPU editor path that
+// will eventually replace the AppKit NSTextView editor.
+final class GPUEditorNSView: NSView {
+    private var editor: OpaquePointer?
+    var initialText: String = ""
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .duringViewResize
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
+
+    override func makeBackingLayer() -> CALayer { CAMetalLayer() }
+
+    override var acceptsFirstResponder: Bool { true }
+    override var isFlipped: Bool { true }
+
+    private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        ensureEditor()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        metalLayer.contentsScale = window?.backingScaleFactor ?? 2
+        resizeEditor()
+    }
+
+    override func layout() {
+        super.layout()
+        if editor == nil { ensureEditor() } else { resizeEditor() }
+    }
+
+    private func pixelSize() -> (UInt32, UInt32, CGFloat) {
+        let scale = window?.backingScaleFactor ?? 2
+        let w = max(1, Int(bounds.width * scale))
+        let h = max(1, Int(bounds.height * scale))
+        return (UInt32(w), UInt32(h), scale)
+    }
+
+    private func ensureEditor() {
+        guard editor == nil, window != nil, bounds.width > 1, bounds.height > 1 else { return }
+        let (w, h, scale) = pixelSize()
+        metalLayer.contentsScale = scale
+        let layerPtr = Unmanaged.passUnretained(metalLayer).toOpaque()
+        editor = pomelo_editor_new(layerPtr, w, h, Float(scale))
+        guard let ed = editor else { return }
+        setText(ed, initialText)
+        render()
+    }
+
+    private func resizeEditor() {
+        guard let ed = editor, bounds.width > 1, bounds.height > 1 else { return }
+        let (w, h, _) = pixelSize()
+        pomelo_editor_resize(ed, w, h)
+        render()
+    }
+
+    private func setText(_ ed: OpaquePointer, _ text: String) {
+        let bytes = Array(text.utf8)
+        bytes.withUnsafeBufferPointer { pomelo_editor_set_text(ed, $0.baseAddress, $0.count) }
+    }
+
+    func load(_ text: String) {
+        initialText = text
+        guard let ed = editor else { return }
+        setText(ed, text)
+        render()
+    }
+
+    private func render() {
+        guard let ed = editor else { return }
+        pomelo_editor_render(ed)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard let ed = editor else { return super.keyDown(with: event) }
+        switch event.keyCode {
+        case 51: pomelo_editor_key(ed, 1)
+        case 36, 76: pomelo_editor_key(ed, 2)
+        case 123: pomelo_editor_key(ed, 3)
+        case 124: pomelo_editor_key(ed, 4)
+        case 126: pomelo_editor_key(ed, 5)
+        case 125: pomelo_editor_key(ed, 6)
+        default:
+            if let chars = event.characters, !chars.isEmpty {
+                let bytes = Array(chars.utf8)
+                bytes.withUnsafeBufferPointer { pomelo_editor_insert_text(ed, $0.baseAddress, $0.count) }
+            }
+        }
+        render()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let ed = editor else { return }
+        pomelo_editor_scroll(ed, Float(event.scrollingDeltaY))
+        render()
+    }
+
+    deinit {
+        if let ed = editor { pomelo_editor_free(ed) }
+    }
+}
+
+struct GPUEditorView: NSViewRepresentable {
+    var text: String
+
+    func makeNSView(context: Context) -> GPUEditorNSView {
+        let v = GPUEditorNSView(frame: .zero)
+        v.initialText = text
+        DispatchQueue.main.async { v.window?.makeFirstResponder(v) }
+        return v
+    }
+
+    func updateNSView(_ nsView: GPUEditorNSView, context: Context) {
+        nsView.load(text)
+    }
+}
+
+struct GPUEditorSpike: View {
+    private static let sample = """
+    // pomelo-editor-kit - GPU text, cross-platform (wgpu + winit + glyphon)
+    fn main() {
+        let greeting = "Hello from the GPU editor";
+        for i in 0..3 {
+            println!("{greeting} #{i}");
+        }
+    }
+    """
+
+    var body: some View {
+        GPUEditorView(text: Self.sample)
+            .background(Color(red: 0.086, green: 0.086, blue: 0.098))
+    }
+}
+
+struct OpenGPUEditorButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("GPU Editor Spike") { openWindow(id: "gpu-editor-spike") }
+            .keyboardShortcut("g", modifiers: [.command, .option, .control])
+    }
+}

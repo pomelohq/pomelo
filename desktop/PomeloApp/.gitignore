@@ -6,6 +6,7 @@ LocalPackages/tree-sitter/
 Package.resolved
 Vendor/libpom.a
 Vendor/libpom.h
+Vendor/libpomelo_editor_kit.a
 Sources/CPom/include/libpom.h
 
 dist/

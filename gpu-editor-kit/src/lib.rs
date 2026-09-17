@@ -13,6 +13,7 @@
 //! GPU editor that runs on all three platforms.
 
 pub mod buffer;
+pub mod ffi;
 pub mod highlight;
 pub mod renderer;
 

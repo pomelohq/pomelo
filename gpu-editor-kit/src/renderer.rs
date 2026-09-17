@@ -42,9 +42,29 @@ impl EditorRenderer {
     pub fn new(window: Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
         let scale = window.scale_factor() as f32;
-
         let instance = Instance::default();
         let surface = instance.create_surface(window.clone())?;
+        Self::from_surface(instance, surface, size.width, size.height, scale)
+    }
+
+    /// Build a renderer that draws into an existing macOS `CAMetalLayer` (for embedding in an AppKit/SwiftUI host).
+    ///
+    /// # Safety
+    /// `layer` must be a valid `CAMetalLayer` pointer that outlives the returned renderer.
+    pub unsafe fn from_metal_layer(layer: *mut std::ffi::c_void, width: u32, height: u32, scale: f32) -> Result<Self> {
+        let instance = Instance::default();
+        let surface = instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))?;
+        Self::from_surface(instance, surface, width, height, scale)
+    }
+
+    fn from_surface(
+        instance: Instance,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> Result<Self> {
+        let size = winit::dpi::PhysicalSize::new(width.max(1), height.max(1));
         let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
             compatible_surface: Some(&surface),
             ..Default::default()

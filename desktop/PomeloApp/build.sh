@@ -15,6 +15,10 @@ GOTOOLCHAIN=local CGO_ENABLED=1 go build -C "$repo" \
     -buildmode=c-archive -o "$here/Vendor/libpom.a" ./cmd/libpom/
 cp "$here/Vendor/libpom.h" "$here/Sources/CPom/include/libpom.h"
 
+echo "==> Building GPU editor kit (libpomelo_editor_kit.a)"
+cargo build --release --manifest-path "$repo/gpu-editor-kit/Cargo.toml" --lib
+cp "$repo/gpu-editor-kit/target/release/libpomelo_editor_kit.a" "$here/Vendor/libpomelo_editor_kit.a"
+
 echo "==> xcodebuild"
 cd "$here"
 # SwiftPM doesn't track the prebuilt libpom.a as an input, so a Go-only change
