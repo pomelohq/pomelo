@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use pomelo_editor_kit::{EditorBuffer, EditorRenderer};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
+use std::time::Instant;
+
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
@@ -21,6 +23,10 @@ struct App {
     ext: String,
     name: String,
     mods: winit::keyboard::ModifiersState,
+    cursor_pos: (f64, f64),
+    mouse_down: bool,
+    last_click: Option<Instant>,
+    last_click_pos: (f64, f64),
 }
 
 impl ApplicationHandler for App {
@@ -106,6 +112,42 @@ impl ApplicationHandler for App {
                 }
                 renderer.follow_cursor(&self.editor);
                 window.request_redraw();
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_pos = (position.x, position.y);
+                if self.mouse_down {
+                    let scale = window.scale_factor() as f32;
+                    let (l, c) = renderer.point_to_line_col(position.x as f32 / scale, position.y as f32 / scale);
+                    let off = self.editor.offset_at(l, c);
+                    self.editor.extend_cursor(off);
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                let scale = window.scale_factor() as f32;
+                let (px, py) = self.cursor_pos;
+                let (l, c) = renderer.point_to_line_col(px as f32 / scale, py as f32 / scale);
+                let off = self.editor.offset_at(l, c);
+                match state {
+                    ElementState::Pressed => {
+                        self.mouse_down = true;
+                        let now = Instant::now();
+                        let dbl = self.last_click.is_some_and(|t| now.duration_since(t).as_millis() < 400)
+                            && (self.last_click_pos.0 - px).abs() < 4.0
+                            && (self.last_click_pos.1 - py).abs() < 4.0;
+                        if dbl {
+                            self.editor.select_word_at(off);
+                            self.last_click = None;
+                        } else {
+                            self.editor.place_cursor(off);
+                            self.last_click = Some(now);
+                            self.last_click_pos = (px, py);
+                        }
+                        renderer.set_caret_on(true);
+                        window.request_redraw();
+                    }
+                    ElementState::Released => self.mouse_down = false,
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
