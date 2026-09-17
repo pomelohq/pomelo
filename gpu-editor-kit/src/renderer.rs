@@ -338,18 +338,21 @@ impl EditorRenderer {
         if let Some((s, e)) = editor.selection() {
             let (sl, sc) = editor.line_col_of(s);
             let (el, ec) = editor.line_col_of(e);
+            // Zed highlights each line to its own text width, plus a small marker when the trailing newline is selected.
+            let nl_marker = self.char_width * 0.4;
             for line in sl..=el {
                 let c0 = if line == sl { sc } else { 0 };
+                let end_col = if line == el { ec } else { editor.line_len(line) };
                 let x = GUTTER_WIDTH + c0 as f32 * self.char_width - self.scroll_x;
-                // A fully-selected line (its trailing newline is inside the selection) extends to the right edge, so a
-                // multi-line selection reads as a solid block like Zed/VS Code, not a ragged per-line staircase.
-                let w = if line < el {
-                    view_w - x
+                let mut w = end_col.saturating_sub(c0) as f32 * self.char_width;
+                let min_w = if line < el {
+                    w += nl_marker;
+                    nl_marker
                 } else {
-                    ec.saturating_sub(c0) as f32 * self.char_width
+                    1.0
                 };
                 let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
-                self.push_content_rect(&mut out, x, y, w.max(1.0), self.line_height, sel);
+                self.push_content_rect(&mut out, x, y, w.max(min_w), self.line_height, sel);
             }
         }
         if self.caret_on {
