@@ -62,7 +62,10 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         self.ui = Some(UiRenderer::new(window.clone()).expect("ui"));
         #[cfg(target_os = "macos")]
-        center_traffic_lights(&window);
+        {
+            configure_surface_layer(&window);
+            center_traffic_lights(&window);
+        }
         self.window = Some(window);
     }
 
@@ -118,6 +121,24 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => self.draw(),
             _ => {}
+        }
+    }
+}
+
+// Present the metal drawable inside the layer's transaction, so during a live resize the drawable and the layer
+// bounds change atomically instead of the old frame being stretched (which reads as blur/ghosting).
+#[cfg(target_os = "macos")]
+fn configure_surface_layer(window: &Window) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    unsafe {
+        let view = h.ns_view.as_ptr() as *mut AnyObject;
+        let layer: *mut AnyObject = msg_send![view, layer];
+        if !layer.is_null() {
+            let _: () = msg_send![layer, setPresentsWithTransaction: true];
         }
     }
 }
