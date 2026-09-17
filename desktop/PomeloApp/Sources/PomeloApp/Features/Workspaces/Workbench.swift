@@ -3,7 +3,7 @@ import SwiftUI
 // One tab in the shared workbench strip. Stage 1 covers editor items (files + project search); later stages add
 // PR / diff / database tabs from the other panes.
 struct WorkTab: Identifiable, Hashable {
-    enum Kind: Hashable { case file(repo: String, path: String), search, gitDiff(repo: String, path: String) }
+    enum Kind: Hashable { case file(repo: String, path: String), search, gitDiff(repo: String, path: String), terminal(holder: String) }
     var kind: Kind
     var label: String
     var materialIcon: String?   // mi-* asset for files; nil -> system icon
@@ -15,6 +15,7 @@ struct WorkTab: Identifiable, Hashable {
         case .file(let repo, let path): return "file:\(repo)/\(path)"
         case .search: return "search"
         case .gitDiff(let repo, let path): return "gitdiff:\(repo)/\(path)"
+        case .terminal(let holder): return "term:\(holder)"
         }
     }
     var systemIcon: String {
@@ -22,6 +23,7 @@ struct WorkTab: Identifiable, Hashable {
         case .search: return "magnifyingglass"
         case .file: return "doc.text"
         case .gitDiff: return "plusminus"
+        case .terminal: return "terminal"
         }
     }
 }
@@ -57,6 +59,7 @@ struct TabCloseCmd: Equatable {
     var closeCmd: String?
     var tabCloseCmd: TabCloseCmd?
     var openGitDiffCmd: WorkspaceFileEntry?   // git panel click -> open a read-only diff tab in the editor
+    var openTerminalCmd = 0                   // "+ New Terminal" -> open a terminal tab in this pane
     var promoteCmd: String?   // double-click a preview tab -> make it permanent
 
     func tabClose(_ kind: TabCloseCmd.Kind, _ anchor: String) {

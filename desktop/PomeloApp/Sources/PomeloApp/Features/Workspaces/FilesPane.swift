@@ -35,9 +35,16 @@ private enum FilePreview {
 // One open editor tab. `preview` tabs render italic and are reused by the next single-click open (Zed/VSCode style);
 // editing or double-clicking promotes them to permanent.
 private struct FileTab: Identifiable, Equatable {
+    enum Kind: Equatable { case file, terminal(holder: String, title: String) }
     var entry: WorkspaceFileEntry
+    var kind: Kind = .file
     var preview: Bool
-    var id: String { entry.id }
+    var id: String {
+        if case .terminal(let h, _) = kind { return "term:" + h }
+        return entry.id
+    }
+    var isTerminal: Bool { if case .terminal = kind { return true }; return false }
+    var terminalHolder: String? { if case .terminal(let h, _) = kind { return h }; return nil }
 }
 
 // Fires when an @Observable command value changes, off the main body chain (which is at the type-checker's limit).
@@ -104,6 +111,13 @@ struct FilesPane: View {
     // A single read-only git-diff tab, retargeted each time a file is picked in the git panel.
     @State private var gitDiffEntry: WorkspaceFileEntry?
     @State private var gitDiffActive = false
+    // Terminal tabs live in `tabs` as items; `activeTerm` (a holder) is the active terminal, nil when a file is active.
+    @State private var activeTerm: String?
+
+    private var termSeqKey: String { "editorTermSeq" }
+    private var safeWs: String {
+        workspace.id.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "-")
+    }
 
     private var selectedIsMarkdown: Bool {
         guard let path = selected?.path else { return false }
@@ -138,11 +152,20 @@ struct FilesPane: View {
         if gitDiffActive, let e = gitDiffEntry {
             GitDiffTab(workspace: workspace, entry: e).allowsHitTesting(gitDiffActive)
         }
+        ForEach(tabs.filter { $0.isTerminal }) { t in
+            if let h = t.terminalHolder {
+                MetalTerminalPane(holderName: h, wsKey: workspace.id, startDir: workspace.path,
+                                  themeMode: theme.mode, onClosed: { close(t.id) })
+                    .opacity(activeTerm == h ? 1 : 0)
+                    .allowsHitTesting(activeTerm == h)
+                    .id(h)
+            }
+        }
     }
 
     // MARK: - Tabs
 
-    private var activeID: String? { selected?.id }
+    private var activeID: String? { activeTerm.map { "term:" + $0 } ?? selected?.id }
 
     /// A tab is dirty if its cached buffer has unsaved edits (or, for the active tab, the live editor differs).
     private func tabDirty(_ id: String) -> Bool {
@@ -160,7 +183,7 @@ struct FilesPane: View {
         } else {
             tabs.append(FileTab(entry: e, preview: preview))
         }
-        searchActive = false; gitDiffActive = false
+        searchActive = false; gitDiffActive = false; activeTerm = nil
         revealInTree(e)
         selected = e
         pushHistory(e.id)
@@ -170,10 +193,22 @@ struct FilesPane: View {
     private func activate(_ id: String) {
         guard let t = tabs.first(where: { $0.id == id }) else { return }
         searchActive = false; gitDiffActive = false
+        if let h = t.terminalHolder { activeTerm = h; return }
+        activeTerm = nil
         selected = t.entry
         revealInTree(t.entry)
         pushHistory(id)
         if didRestore { saveState() }
+    }
+
+    private func openTerminalTab() {
+        let seq = UserDefaults.standard.integer(forKey: termSeqKey) + 1
+        UserDefaults.standard.set(seq, forKey: termSeqKey)
+        let holder = "appsh-\(safeWs)-edit-\(seq)"
+        let title = "zsh \(seq)"
+        tabs.append(FileTab(entry: WorkspaceFileEntry(repo: "", path: title, isDir: false),
+                            kind: .terminal(holder: holder, title: title), preview: false))
+        searchActive = false; gitDiffActive = false; activeTerm = holder
     }
 
     private func promoteActive() {
@@ -182,17 +217,29 @@ struct FilesPane: View {
         if didRestore { saveState() }
     }
 
-    private func openSearch() { searchOpen = true; searchActive = true; gitDiffActive = false; if didRestore { saveState() } }
+    private func openSearch() { searchOpen = true; searchActive = true; gitDiffActive = false; activeTerm = nil; if didRestore { saveState() } }
     private func closeSearch() { searchOpen = false; searchActive = false; if didRestore { saveState() } }
 
     private func openGitDiff(_ e: WorkspaceFileEntry) {
-        gitDiffEntry = e; gitDiffActive = true; searchActive = false
+        gitDiffEntry = e; gitDiffActive = true; searchActive = false; activeTerm = nil
     }
     private func closeGitDiff() { gitDiffEntry = nil; gitDiffActive = false }
 
 
     private func close(_ id: String) {
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
+        if let h = tabs[idx].terminalHolder {
+            PaneStore.kill(paneID: "pty:" + h)
+            tabs.remove(at: idx)
+            if activeTerm == h {
+                activeTerm = nil
+                if let n = tabs.indices.contains(idx) ? tabs[idx] : tabs.last {
+                    if let nh = n.terminalHolder { activeTerm = nh } else { selected = n.entry }
+                }
+            }
+            if didRestore { saveState() }
+            return
+        }
         let wasActive = id == activeID
         tabs.remove(at: idx)
         dropDoc(id)
@@ -305,8 +352,8 @@ struct FilesPane: View {
                             }
                             .clipped()
                         }
-                        .opacity(searchActive || gitDiffActive ? 0 : 1)
-                        .allowsHitTesting(!(searchActive || gitDiffActive))
+                        .opacity(searchActive || gitDiffActive || activeTerm != nil ? 0 : 1)
+                        .allowsHitTesting(!(searchActive || gitDiffActive || activeTerm != nil))
                         altTabOverlays
                     }
                 }
@@ -328,7 +375,10 @@ struct FilesPane: View {
             }
             .opacity(0).allowsHitTesting(false)
         }
-        .background(WorkbenchValueWatcher(value: workbench?.openGitDiffCmd) { if let e = workbench?.openGitDiffCmd { openGitDiff(e); workbench?.openGitDiffCmd = nil } })
+        .background {
+            WorkbenchValueWatcher(value: workbench?.openGitDiffCmd) { if let e = workbench?.openGitDiffCmd { openGitDiff(e); workbench?.openGitDiffCmd = nil } }
+            WorkbenchValueWatcher(value: workbench?.openTerminalCmd) { openTerminalTab() }
+        }
         .onAppear {
             if isSecondaryPane { restoreSecondary() } else { startWatch() }
             if searchRequest { openSearch(); searchRequest = false }
@@ -442,10 +492,13 @@ struct FilesPane: View {
     private func publishToWorkbench() {
         guard let wb = workbench else { return }
         var list: [WorkTab] = tabs.map { t in
-            WorkTab(kind: .file(repo: t.entry.repo, path: t.entry.path),
-                    label: (t.entry.path as NSString).lastPathComponent,
-                    materialIcon: MaterialIcon.file(t.entry.path).map { "mi-" + $0 },
-                    preview: t.preview, dirty: tabDirty(t.id))
+            if case .terminal(let h, let title) = t.kind {
+                return WorkTab(kind: .terminal(holder: h), label: title, materialIcon: nil, preview: false, dirty: false)
+            }
+            return WorkTab(kind: .file(repo: t.entry.repo, path: t.entry.path),
+                           label: (t.entry.path as NSString).lastPathComponent,
+                           materialIcon: MaterialIcon.file(t.entry.path).map { "mi-" + $0 },
+                           preview: t.preview, dirty: tabDirty(t.id))
         }
         if searchOpen {
             list.insert(WorkTab(kind: .search, label: "Search", materialIcon: nil, preview: false, dirty: false), at: 0)
@@ -456,9 +509,10 @@ struct FilesPane: View {
                                 materialIcon: nil, preview: false, dirty: false))
         }
         wb.tabs = list
-        wb.active = gitDiffActive ? gitDiffEntry.map { "gitdiff:\($0.repo)/\($0.path)" }
-                  : searchActive ? "search" : selected.map(workRef)
-        wb.activeFile = (searchActive || gitDiffActive) ? nil : selected
+        wb.active = activeTerm.map { "term:" + $0 }
+                  ?? (gitDiffActive ? gitDiffEntry.map { "gitdiff:\($0.repo)/\($0.path)" }
+                  : searchActive ? "search" : selected.map(workRef))
+        wb.activeFile = (searchActive || gitDiffActive || activeTerm != nil) ? nil : selected
         if let s = selected, !searchActive { wb.treeExpanded.formUnion(ancestorIDs(s)) }
         wb.treeDirty = dirtyKeys   // the sidebar tree (workbench-owned) still wants the git-dirty highlight
         wb.canBack = canBack

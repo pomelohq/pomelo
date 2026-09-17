@@ -293,6 +293,7 @@ struct EditorWorkbench: View {
         Menu {
             Button("Open File") { focusedLeaf = leafID; NotificationCenter.default.post(name: .pomQuickOpen, object: nil) }
             Button("Search in Project") { focusedLeaf = "leaf-0"; searchRequest = true }
+            Button("New Terminal") { focusedLeaf = leafID; wb.openTerminalCmd &+= 1 }
         } label: {
             Image(systemName: "plus").font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Theme.fgMuted).frame(width: 30, height: 34).contentShape(Rectangle())
