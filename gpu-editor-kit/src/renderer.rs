@@ -18,6 +18,7 @@ use winit::window::Window;
 use crate::EditorBuffer;
 
 const GUTTER_WIDTH: f32 = 52.0;
+const TOP_PAD: f32 = 10.0;
 
 pub struct EditorRenderer {
     device: wgpu::Device,
@@ -33,6 +34,8 @@ pub struct EditorRenderer {
     buffer: Buffer,
     gutter: Buffer,
     scale: f32,
+    line_height: f32,
+    scroll_y: f32,
 }
 
 impl EditorRenderer {
@@ -94,7 +97,36 @@ impl EditorRenderer {
             buffer,
             gutter,
             scale,
+            line_height,
+            scroll_y: 0.0,
         })
+    }
+
+    fn viewport_height(&self) -> f32 {
+        self.config.height as f32 / self.scale
+    }
+
+    fn max_scroll(&self, editor: &EditorBuffer) -> f32 {
+        let content = editor.rope.len_lines().max(1) as f32 * self.line_height;
+        (content + TOP_PAD - self.viewport_height()).max(0.0)
+    }
+
+    pub fn scroll_by(&mut self, delta_y: f32, editor: &EditorBuffer) {
+        self.scroll_y = (self.scroll_y - delta_y).clamp(0.0, self.max_scroll(editor));
+    }
+
+    /// Keep the cursor's line inside the viewport after a nav/edit.
+    pub fn follow_cursor(&mut self, editor: &EditorBuffer) {
+        let (line, _) = editor.line_col();
+        let top = line as f32 * self.line_height;
+        let bottom = top + self.line_height;
+        let view = self.viewport_height() - TOP_PAD;
+        if top < self.scroll_y {
+            self.scroll_y = top;
+        } else if bottom > self.scroll_y + view {
+            self.scroll_y = bottom - view;
+        }
+        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll(editor));
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -155,7 +187,7 @@ impl EditorRenderer {
                 TextArea {
                     buffer: &self.gutter,
                     left: 8.0,
-                    top: 10.0,
+                    top: TOP_PAD - self.scroll_y,
                     scale: self.scale,
                     bounds,
                     default_color: Color::rgb(92, 99, 112),
@@ -164,7 +196,7 @@ impl EditorRenderer {
                 TextArea {
                     buffer: &self.buffer,
                     left: GUTTER_WIDTH,
-                    top: 10.0,
+                    top: TOP_PAD - self.scroll_y,
                     scale: self.scale,
                     bounds,
                     default_color: Color::rgb(220, 223, 228),

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use pomelo_editor_kit::{EditorBuffer, EditorRenderer};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
@@ -63,6 +63,15 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                renderer.follow_cursor(&self.editor);
+                window.request_redraw();
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y * 24.0,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                };
+                renderer.scroll_by(dy, &self.editor);
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
