@@ -38,8 +38,18 @@ pub struct EditorRenderer {
     char_width: f32,
     scroll_y: f32,
     caret_on: bool,
-    caret_pipeline: wgpu::RenderPipeline,
-    caret_vertices: wgpu::Buffer,
+    text_dirty: bool,
+    quad_pipeline: wgpu::RenderPipeline,
+    quad_vertices: wgpu::Buffer,
+    quad_capacity: usize,
+}
+
+fn srgb_to_linear(c: f64) -> f64 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 impl EditorRenderer {
@@ -117,7 +127,8 @@ impl EditorRenderer {
             .and_then(|r| r.glyphs.first().map(|g| g.w))
             .unwrap_or(font_size * 0.6);
 
-        let (caret_pipeline, caret_vertices) = Self::build_caret(&device, format);
+        let quad_capacity = 256;
+        let (quad_pipeline, quad_vertices) = Self::build_quads(&device, format, quad_capacity);
 
         Ok(Self {
             device,
@@ -136,8 +147,10 @@ impl EditorRenderer {
             char_width,
             scroll_y: 0.0,
             caret_on: true,
-            caret_pipeline,
-            caret_vertices,
+            text_dirty: true,
+            quad_pipeline,
+            quad_vertices,
+            quad_capacity,
         })
     }
 
@@ -145,43 +158,67 @@ impl EditorRenderer {
         self.caret_on = on;
     }
 
-    fn build_caret(device: &wgpu::Device, format: TextureFormat) -> (wgpu::RenderPipeline, wgpu::Buffer) {
+    pub fn mark_text_dirty(&mut self) {
+        self.text_dirty = true;
+    }
+
+    /// Map a point in logical view coords (top-left origin) to a (line, col) in the text.
+    pub fn point_to_line_col(&self, px: f32, py: f32) -> (usize, usize) {
+        let y = (py - TOP_PAD + self.scroll_y).max(0.0);
+        let line = (y / self.line_height).floor() as usize;
+        let x = (px - GUTTER_WIDTH).max(0.0);
+        let col = (x / self.char_width).round() as usize;
+        (line, col)
+    }
+
+    fn build_quads(
+        device: &wgpu::Device,
+        format: TextureFormat,
+        capacity: usize,
+    ) -> (wgpu::RenderPipeline, wgpu::Buffer) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("caret"),
+            label: Some("quad"),
             source: wgpu::ShaderSource::Wgsl(
                 r#"
-                @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
-                    return vec4<f32>(p, 0.0, 1.0);
+                struct VOut { @builtin(position) pos: vec4<f32>, @location(0) color: vec4<f32> };
+                @vertex fn vs(@location(0) p: vec2<f32>, @location(1) c: vec4<f32>) -> VOut {
+                    var o: VOut;
+                    o.pos = vec4<f32>(p, 0.0, 1.0);
+                    o.color = c;
+                    return o;
                 }
-                @fragment fn fs() -> @location(0) vec4<f32> {
-                    return vec4<f32>(0.33, 0.52, 0.98, 1.0);
+                @fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+                    return in.color;
                 }
                 "#
                 .into(),
             ),
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("caret"),
+            label: Some("quad"),
             layout: None,
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs",
                 compilation_options: Default::default(),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: 8,
+                    array_stride: 24,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x2,
-                        offset: 0,
-                        shader_location: 0,
-                    }],
+                    attributes: &[
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 8, shader_location: 1 },
+                    ],
                 }],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: "fs",
                 compilation_options: Default::default(),
-                targets: &[Some(format.into())],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
@@ -190,26 +227,50 @@ impl EditorRenderer {
             cache: None,
         });
         let vertices = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("caret-verts"),
-            size: 48,
+            label: Some("quad-verts"),
+            size: (capacity * 24) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         (pipeline, vertices)
     }
 
-    fn caret_quad(&self, editor: &EditorBuffer) -> [f32; 12] {
-        let (line, col) = editor.line_col();
-        let px = (GUTTER_WIDTH + col as f32 * self.char_width) * self.scale;
-        let py = (TOP_PAD + line as f32 * self.line_height - self.scroll_y) * self.scale;
-        let pw = 2.0 * self.scale;
-        let ph = self.line_height * self.scale;
+    // A screen rect (logical px) -> 6 vertices (2 triangles) in NDC, each carrying `color`.
+    fn push_rect(&self, out: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
         let vw = self.config.width as f32;
         let vh = self.config.height as f32;
-        let ndc = |x: f32, y: f32| (x / vw * 2.0 - 1.0, 1.0 - y / vh * 2.0);
-        let (l, t) = ndc(px, py);
-        let (r, b) = ndc(px + pw, py + ph);
-        [l, t, r, t, l, b, r, t, r, b, l, b]
+        let ndc = |x: f32, y: f32| ((x * self.scale) / vw * 2.0 - 1.0, 1.0 - (y * self.scale) / vh * 2.0);
+        let (l, t) = ndc(x, y);
+        let (r, b) = ndc(x + w, y + h);
+        let mut v = |px: f32, py: f32| {
+            out.extend_from_slice(&[px, py, color[0], color[1], color[2], color[3]]);
+        };
+        v(l, t); v(r, t); v(l, b);
+        v(r, t); v(r, b); v(l, b);
+    }
+
+    fn build_quad_vertices(&self, editor: &EditorBuffer) -> Vec<f32> {
+        let mut out = Vec::new();
+        let sel = [0.20, 0.42, 0.75, 0.40];
+        if let Some((s, e)) = editor.selection() {
+            let (sl, sc) = editor.line_col_of(s);
+            let (el, ec) = editor.line_col_of(e);
+            for line in sl..=el {
+                let c0 = if line == sl { sc } else { 0 };
+                let end = if line == el { ec } else { editor.line_len(line) + 1 };
+                let x = GUTTER_WIDTH + c0 as f32 * self.char_width;
+                let w = (end.saturating_sub(c0)) as f32 * self.char_width;
+                let y = TOP_PAD + line as f32 * self.line_height - self.scroll_y;
+                self.push_rect(&mut out, x, y, w.max(1.0), self.line_height, sel);
+            }
+        }
+        if self.caret_on {
+            let (line, col) = editor.line_col();
+            let x = GUTTER_WIDTH + col as f32 * self.char_width;
+            let y = TOP_PAD + line as f32 * self.line_height - self.scroll_y;
+            self.push_rect(&mut out, x, y, 2.0, self.line_height, [0.33, 0.52, 0.98, 1.0]);
+        }
+        out
     }
 
     fn viewport_height(&self) -> f32 {
@@ -250,31 +311,36 @@ impl EditorRenderer {
         );
         self.gutter
             .set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(height as f32 / self.scale));
+        self.text_dirty = true;
     }
 
     pub fn render(&mut self, editor: &EditorBuffer) -> Result<()> {
-        let spans = crate::highlight::highlight(&editor.text());
-        let rich: Vec<(&str, Attrs)> = spans
-            .iter()
-            .map(|s| (s.text.as_str(), Attrs::new().family(Family::Monospace).color(s.color)))
-            .collect();
-        self.buffer.set_rich_text(
-            &mut self.font_system,
-            rich,
-            Attrs::new().family(Family::Monospace),
-            Shaping::Advanced,
-        );
-        self.buffer.shape_until_scroll(&mut self.font_system, false);
+        // Reshape text only when it changed — not every frame — so scroll/caret redraws stay cheap on large files.
+        if self.text_dirty {
+            let spans = crate::highlight::highlight(&editor.text());
+            let rich: Vec<(&str, Attrs)> = spans
+                .iter()
+                .map(|s| (s.text.as_str(), Attrs::new().family(Family::Monospace).color(s.color)))
+                .collect();
+            self.buffer.set_rich_text(
+                &mut self.font_system,
+                rich,
+                Attrs::new().family(Family::Monospace),
+                Shaping::Advanced,
+            );
+            self.buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let line_count = editor.rope.len_lines().max(1);
-        let numbers: String = (1..=line_count).map(|n| format!("{n}\n")).collect();
-        self.gutter.set_text(
-            &mut self.font_system,
-            &numbers,
-            Attrs::new().family(Family::Monospace).color(Color::rgb(92, 99, 112)),
-            Shaping::Advanced,
-        );
-        self.gutter.shape_until_scroll(&mut self.font_system, false);
+            let line_count = editor.rope.len_lines().max(1);
+            let numbers: String = (1..=line_count).map(|n| format!("{n}\n")).collect();
+            self.gutter.set_text(
+                &mut self.font_system,
+                &numbers,
+                Attrs::new().family(Family::Monospace).color(Color::rgb(92, 99, 112)),
+                Shaping::Advanced,
+            );
+            self.gutter.shape_until_scroll(&mut self.font_system, false);
+            self.text_dirty = false;
+        }
 
         self.viewport.update(
             &self.queue,
@@ -296,8 +362,8 @@ impl EditorRenderer {
             [
                 TextArea {
                     buffer: &self.gutter,
-                    left: 8.0,
-                    top: TOP_PAD - self.scroll_y,
+                    left: 8.0 * self.scale,
+                    top: (TOP_PAD - self.scroll_y) * self.scale,
                     scale: self.scale,
                     bounds,
                     default_color: Color::rgb(92, 99, 112),
@@ -305,8 +371,8 @@ impl EditorRenderer {
                 },
                 TextArea {
                     buffer: &self.buffer,
-                    left: GUTTER_WIDTH,
-                    top: TOP_PAD - self.scroll_y,
+                    left: GUTTER_WIDTH * self.scale,
+                    top: (TOP_PAD - self.scroll_y) * self.scale,
                     scale: self.scale,
                     bounds,
                     default_color: Color::rgb(220, 223, 228),
@@ -316,8 +382,20 @@ impl EditorRenderer {
             &mut self.swash_cache,
         )?;
 
-        let caret = self.caret_quad(editor);
-        self.queue.write_buffer(&self.caret_vertices, 0, bytemuck::cast_slice(&caret));
+        let verts = self.build_quad_vertices(editor);
+        let quad_count = verts.len() / 6;
+        if quad_count > self.quad_capacity {
+            self.quad_capacity = quad_count.next_power_of_two();
+            self.quad_vertices = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("quad-verts"),
+                size: (self.quad_capacity * 24) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        if !verts.is_empty() {
+            self.queue.write_buffer(&self.quad_vertices, 0, bytemuck::cast_slice(&verts));
+        }
 
         let frame = self.surface.get_current_texture()?;
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
@@ -329,7 +407,13 @@ impl EditorRenderer {
                     view: &view,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(wgpu::Color { r: 0.086, g: 0.086, b: 0.098, a: 1.0 }),
+                        // The surface is sRGB; wgpu gamma-encodes the clear, so pass a linearized color.
+                        load: LoadOp::Clear(wgpu::Color {
+                            r: srgb_to_linear(0.086),
+                            g: srgb_to_linear(0.086),
+                            b: srgb_to_linear(0.098),
+                            a: 1.0,
+                        }),
                         store: StoreOp::Store,
                     },
                 })],
@@ -337,12 +421,12 @@ impl EditorRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            self.text_renderer.render(&self.atlas, &self.viewport, &mut pass)?;
-            if self.caret_on {
-                pass.set_pipeline(&self.caret_pipeline);
-                pass.set_vertex_buffer(0, self.caret_vertices.slice(..));
-                pass.draw(0..6, 0..1);
+            if quad_count > 0 {
+                pass.set_pipeline(&self.quad_pipeline);
+                pass.set_vertex_buffer(0, self.quad_vertices.slice(..));
+                pass.draw(0..quad_count as u32, 0..1);
             }
+            self.text_renderer.render(&self.atlas, &self.viewport, &mut pass)?;
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();

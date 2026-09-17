@@ -18,6 +18,8 @@ void pomelo_editor_render(Editor *ed);
 void pomelo_editor_resize(Editor *ed, uint32_t width, uint32_t height);
 void pomelo_editor_scroll(Editor *ed, float delta_y);
 void pomelo_editor_set_caret_on(Editor *ed, bool on);
+void pomelo_editor_click(Editor *ed, float x, float y);
+void pomelo_editor_drag(Editor *ed, float x, float y);
 void pomelo_editor_insert_text(Editor *ed, const uint8_t *ptr, size_t len);
 
 // Special keys: 1 backspace, 2 enter, 3 left, 4 right, 5 up, 6 down.

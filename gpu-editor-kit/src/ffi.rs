@@ -33,8 +33,31 @@ pub unsafe extern "C" fn pomelo_editor_set_text(ed: *mut Editor, ptr: *const u8,
     let bytes = slice::from_raw_parts(ptr, len);
     if let Ok(text) = std::str::from_utf8(bytes) {
         ed.buffer = EditorBuffer::from_str(text);
+        ed.renderer.mark_text_dirty();
         ed.renderer.follow_cursor(&ed.buffer);
     }
+}
+
+/// Place the cursor at a point in logical view coords (a click). Collapses selection.
+/// # Safety `ed` must come from `pomelo_editor_new`.
+#[no_mangle]
+pub unsafe extern "C" fn pomelo_editor_click(ed: *mut Editor, x: f32, y: f32) {
+    let Some(ed) = ed.as_mut() else { return };
+    let (line, col) = ed.renderer.point_to_line_col(x, y);
+    let off = ed.buffer.offset_at(line, col);
+    ed.buffer.place_cursor(off);
+    ed.renderer.set_caret_on(true);
+}
+
+/// Extend the selection to a point (a drag).
+/// # Safety `ed` must come from `pomelo_editor_new`.
+#[no_mangle]
+pub unsafe extern "C" fn pomelo_editor_drag(ed: *mut Editor, x: f32, y: f32) {
+    let Some(ed) = ed.as_mut() else { return };
+    let (line, col) = ed.renderer.point_to_line_col(x, y);
+    let off = ed.buffer.offset_at(line, col);
+    ed.buffer.extend_cursor(off);
+    ed.renderer.set_caret_on(true);
 }
 
 /// # Safety `ed` must come from `pomelo_editor_new`.
@@ -76,6 +99,7 @@ pub unsafe extern "C" fn pomelo_editor_insert_text(ed: *mut Editor, ptr: *const 
                 ed.buffer.insert_char(ch);
             }
         }
+        ed.renderer.mark_text_dirty();
         ed.renderer.follow_cursor(&ed.buffer);
         ed.renderer.set_caret_on(true);
     }
@@ -94,6 +118,9 @@ pub unsafe extern "C" fn pomelo_editor_key(ed: *mut Editor, key: u32) {
         5 => ed.buffer.move_up(),
         6 => ed.buffer.move_down(),
         _ => {}
+    }
+    if key == 1 || key == 2 {
+        ed.renderer.mark_text_dirty();
     }
     ed.renderer.follow_cursor(&ed.buffer);
     ed.renderer.set_caret_on(true);
