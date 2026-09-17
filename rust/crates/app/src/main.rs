@@ -38,7 +38,17 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("Pomelo");
+        let mut attrs = Window::default_attributes().with_title("Pomelo");
+        // Zed-style: manage the title bar ourselves — content fills under a transparent title bar; the traffic lights
+        // stay (top-left) and we draw our own top bar behind/around them. No separate native title strip.
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs = attrs
+                .with_titlebar_transparent(true)
+                .with_fullsize_content_view(true)
+                .with_title_hidden(true);
+        }
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         self.ui = Some(UiRenderer::new(window.clone()).expect("ui"));
         self.window = Some(window);
