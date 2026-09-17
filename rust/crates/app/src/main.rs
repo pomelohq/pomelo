@@ -79,9 +79,10 @@ impl ApplicationHandler for App {
                 self.ui.as_mut().unwrap().resize(size.width, size.height);
                 #[cfg(target_os = "macos")]
                 {
-                    // Re-apply layer/view placement in case wgpu's reconfigure reset it, then recenter the lights.
+                    // Re-apply layer/view placement in case wgpu's reconfigure reset it. Do NOT reposition the traffic
+                    // lights here — AppKit keeps them anchored top-left, and moving them every resize event is what
+                    // made the header appear to jitter.
                     configure_surface_layer(self.window.as_ref().unwrap());
-                    center_traffic_lights(self.window.as_ref().unwrap());
                 }
                 // Draw synchronously so the content matches the new size immediately (avoids the compositor
                 // stretching the previous frame during live resize, which reads as jitter).
@@ -161,6 +162,10 @@ fn configure_surface_layer(window: &Window) {
 
 // Vertically center the macOS traffic lights inside our taller top bar (they default to a standard ~28px title bar,
 // which sits too high). Re-applied on resize because AppKit re-lays them out. Zed does the same.
+// Center the macOS traffic lights in our taller top bar. Following Zed (gpui_macos move_traffic_light): resize the
+// buttons' container (the titlebar view) to a FIXED height pinned to the top of the window, then place the buttons at
+// a fixed offset within it. Because the container height is constant and pinned, the buttons don't drift as the
+// window is resized (computing their y from the live window height made them jump).
 #[cfg(target_os = "macos")]
 fn center_traffic_lights(window: &Window) {
     use objc2::msg_send;
@@ -174,33 +179,30 @@ fn center_traffic_lights(window: &Window) {
     unsafe {
         let view: &NSView = &*(h.ns_view.as_ptr() as *const NSView);
         let Some(ns_window) = view.window() else { return };
-        // Disable the implicit CALayer position animation, or each reposition during a live resize would animate and
-        // read as the header jittering.
+        let Some(close) = ns_window.standardWindowButton(NSWindowButton::NSWindowCloseButton) else { return };
+        let Some(minimize) = ns_window.standardWindowButton(NSWindowButton::NSWindowMiniaturizeButton) else { return };
+        let Some(zoom) = ns_window.standardWindowButton(NSWindowButton::NSWindowZoomButton) else { return };
+        let Some(container) = close.superview() else { return };
+
+        // No implicit position animation, or the moves would interpolate and read as jitter during a live resize.
         let catx = AnyClass::get("CATransaction");
         if let Some(catx) = catx {
             let _: () = msg_send![catx, begin];
             let _: () = msg_send![catx, setDisableActions: true];
         }
-        let btn_h = 14.0_f64;
+
+        let container_h = container.frame().size.height;
+        let btn = close.frame().size;
+        let pad = (minimize.frame().origin.x - close.frame().origin.x - btn.width).max(6.0);
         let start_x = 19.0_f64;
-        let spacing = 20.0_f64;
-        for (i, kind) in [
-            NSWindowButton::NSWindowCloseButton,
-            NSWindowButton::NSWindowMiniaturizeButton,
-            NSWindowButton::NSWindowZoomButton,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if let Some(btn) = ns_window.standardWindowButton(kind) {
-                if let Some(sv) = btn.superview() {
-                    let sv_h = sv.frame().size.height;
-                    // Frame origin is bottom-left; place the button so its center is at TOP_BAR_H/2 from the top.
-                    let y = sv_h - (layout::TOP_BAR_H as f64 / 2.0) - (btn_h / 2.0);
-                    btn.setFrameOrigin(NSPoint::new(start_x + i as f64 * spacing, y));
-                }
-            }
-        }
+
+        // Container's top is the window top; place the buttons so their center is TOP_BAR_H/2 below it (bottom-left
+        // origin). Stable as long as the titlebar container keeps a fixed height.
+        let y = container_h - (layout::TOP_BAR_H as f64 / 2.0) - (btn.height / 2.0);
+        close.setFrameOrigin(NSPoint::new(start_x, y));
+        minimize.setFrameOrigin(NSPoint::new(start_x + btn.width + pad, y));
+        zoom.setFrameOrigin(NSPoint::new(start_x + 2.0 * (btn.width + pad), y));
+
         if let Some(catx) = catx {
             let _: () = msg_send![catx, commit];
         }
