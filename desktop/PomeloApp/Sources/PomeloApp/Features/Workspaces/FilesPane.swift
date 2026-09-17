@@ -872,15 +872,15 @@ struct FilesPane: View {
     // (opacity 0) preserves each tab's undo stack, cursor, and scroll so switching away and back doesn't reset them.
     private var editorStack: some View {
         ZStack {
-            ForEach(tabs.filter { docText[$0.id] != nil }, id: \.id) { tab in
+            ForEach(tabs.filter { !$0.isTerminal && docText[$0.id] != nil }, id: \.id) { tab in
                 let isActive = tab.id == activeID && editorVisibleForActive
-                FileEditor(text: textBinding(tab.id), path: tab.entry.path, mode: theme.mode, editable: true,
-                           fontSize: CGFloat(fontSize),
-                           changedLines: isActive ? changedLines : [:],
-                           blameLines: isActive ? blameLines : [:],
-                           onRightClick: { pt, view in showEditorMenu(tab.entry, at: pt, in: view) },
-                           focusToken: isActive ? focusBump : .min,
-                           state: stateBinding(tab.id))
+                FileItem(entry: tab.entry, text: textBinding(tab.id), state: stateBinding(tab.id),
+                         mode: theme.mode, fontSize: CGFloat(fontSize),
+                         changedLines: isActive ? changedLines : [:],
+                         blameLines: isActive ? blameLines : [:],
+                         focusToken: isActive ? focusBump : .min,
+                         previewTab: tab.preview, dirtyTab: tabDirty(tab.id),
+                         onRightClick: { pt, view in showEditorMenu(tab.entry, at: pt, in: view) }).content()
                     .opacity(isActive ? 1 : 0)
                     .allowsHitTesting(isActive)
                     .id(tab.id)

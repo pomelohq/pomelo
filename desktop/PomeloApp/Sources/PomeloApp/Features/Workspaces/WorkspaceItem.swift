@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import CodeEditSourceEditor
 
 // A single thing a pane can host, ported from Zed's `Item` trait: it carries its own tab metadata and renders its own
 // content. Concrete items conform (terminal, diff, and — as their state migrates out of FilesPane — file/search), so a
@@ -49,6 +51,35 @@ struct DiffItem: WorkspaceItem {
     var tabSystemIcon: String { "plusminus" }
 
     func content() -> AnyView { AnyView(GitDiffTab(workspace: workspace, entry: entry)) }
+}
+
+// A file-editor item. Its text/undo/cursor still live in FilesPane's per-tab storage (passed as bindings) — full
+// self-ownership is the remaining migration — but rendering now flows through the item like every other kind.
+struct FileItem: WorkspaceItem {
+    let entry: WorkspaceFileEntry
+    let text: Binding<String>
+    let state: Binding<SourceEditorState>
+    let mode: ThemeMode
+    let fontSize: CGFloat
+    let changedLines: [Int: Int]
+    let blameLines: [Int: String]
+    let focusToken: Int
+    let previewTab: Bool
+    let dirtyTab: Bool
+    let onRightClick: (NSPoint, NSView) -> Void
+
+    var itemID: String { entry.id }
+    var tabLabel: String { (entry.path as NSString).lastPathComponent }
+    var tabSystemIcon: String { "doc.text" }
+    var tabMaterialIcon: String? { MaterialIcon.file(entry.path).map { "mi-" + $0 } }
+    var isPreview: Bool { previewTab }
+    var isDirty: Bool { dirtyTab }
+
+    func content() -> AnyView {
+        AnyView(FileEditor(text: text, path: entry.path, mode: mode, editable: true, fontSize: fontSize,
+                           changedLines: changedLines, blameLines: blameLines, onRightClick: onRightClick,
+                           focusToken: focusToken, state: state))
+    }
 }
 
 // The project-search item (Cmd+Shift+F). Its result list is owned by FindInFiles; opening a result routes back through
