@@ -874,7 +874,7 @@ struct FilesPane: View {
     private var editorStack: some View {
         ZStack {
             if gpuEditor, let id = activeID, let text = docText[id] {
-                GPUEditorView(text: text)
+                GPUEditorView(text: text, ext: (tabs.first { $0.id == id }?.entry.path as NSString?)?.pathExtension ?? "")
                     .id(id)
             }
             ForEach(tabs.filter { !$0.isTerminal && docText[$0.id] != nil }, id: \.id) { tab in

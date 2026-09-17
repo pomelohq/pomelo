@@ -12,6 +12,7 @@ final class GPUEditorNSView: NSView {
     private var blinkTimer: Timer?
     private var caretOn = true
     var initialText: String = ""
+    var languageExt: String = ""
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -84,6 +85,7 @@ final class GPUEditorNSView: NSView {
         let layerPtr = Unmanaged.passUnretained(metalLayer).toOpaque()
         editor = pomelo_editor_new(layerPtr, w, h, Float(scale))
         guard let ed = editor else { return }
+        setLanguage(ed, languageExt)
         setText(ed, initialText)
         render()
     }
@@ -100,9 +102,16 @@ final class GPUEditorNSView: NSView {
         bytes.withUnsafeBufferPointer { pomelo_editor_set_text(ed, $0.baseAddress, $0.count) }
     }
 
-    func load(_ text: String) {
+    private func setLanguage(_ ed: OpaquePointer, _ ext: String) {
+        let bytes = Array(ext.utf8)
+        bytes.withUnsafeBufferPointer { pomelo_editor_set_language(ed, $0.baseAddress, $0.count) }
+    }
+
+    func load(_ text: String, ext: String) {
         initialText = text
+        languageExt = ext
         guard let ed = editor else { return }
+        setLanguage(ed, ext)
         setText(ed, text)
         render()
     }
@@ -162,32 +171,34 @@ final class GPUEditorNSView: NSView {
 
 struct GPUEditorView: NSViewRepresentable {
     var text: String
+    var ext: String = ""
 
     func makeNSView(context: Context) -> GPUEditorNSView {
         let v = GPUEditorNSView(frame: .zero)
         v.initialText = text
+        v.languageExt = ext
         DispatchQueue.main.async { v.window?.makeFirstResponder(v) }
         return v
     }
 
     func updateNSView(_ nsView: GPUEditorNSView, context: Context) {
-        nsView.load(text)
+        nsView.load(text, ext: ext)
     }
 }
 
 struct GPUEditorSpike: View {
     private static let sample = """
-    // pomelo-editor-kit - GPU text, cross-platform (wgpu + winit + glyphon)
-    fn main() {
-        let greeting = "Hello from the GPU editor";
-        for i in 0..3 {
-            println!("{greeting} #{i}");
-        }
-    }
+    // pomelo-editor-kit demo (wgpu + glyphon + tree-sitter)
+    import { useMemo } from "react";
+
+    export const Table = ({ rows }: { rows: number[] }) => {
+        const total = useMemo(() => rows.reduce((a, b) => a + b, 0), [rows]);
+        return <div className="total">{total}</div>;
+    };
     """
 
     var body: some View {
-        GPUEditorView(text: Self.sample)
+        GPUEditorView(text: Self.sample, ext: "tsx")
             .background(Color(red: 0.086, green: 0.086, blue: 0.098))
     }
 }
