@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/pomelohq/pomelo/releases/latest"><img src="https://img.shields.io/github/v/release/pomelohq/pomelo" alt="Release"></a>
-  <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg" alt="License: AGPL v3"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="#install"><img src="https://img.shields.io/badge/platform-macOS%2014%2B%20·%20Apple%20Silicon-lightgrey.svg" alt="Platform: macOS"></a>
   <a href="https://pomelohq.app"><img src="https://img.shields.io/badge/docs-pomelohq.app-d9b45b.svg" alt="Docs"></a>
 </p>
@@ -105,7 +105,4 @@ By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-Copyright (C) 2026 Toan Tran.
-
-Pomelo is free software licensed under the [GNU AGPL-3.0](LICENSE). Commercial
-licensing is available from the copyright holder.
+Pomelo is released under the [MIT License](LICENSE).

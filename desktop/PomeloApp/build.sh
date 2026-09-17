@@ -15,6 +15,21 @@ GOTOOLCHAIN=local CGO_ENABLED=1 go build -C "$repo" \
     -buildmode=c-archive -o "$here/Vendor/libpom.a" ./cmd/libpom/
 cp "$here/Vendor/libpom.h" "$here/Sources/CPom/include/libpom.h"
 
+echo "==> Building GPU editor kit (libpomelo_editor_kit.a)"
+cargo build --release --manifest-path "$repo/gpu-editor-kit/Cargo.toml" --lib
+# The kit statically bundles tree-sitter's C runtime + grammars; the app also links a copy via SwiftTreeSitter. Merge
+# the kit into one relocatable object and hide the tree-sitter C symbols (_ts_*, _tree_sitter_*) so the two copies
+# don't collide with duplicate-symbol errors at final link. -all_load avoids the ar-extract clobber of same-named
+# members (each grammar compiles its own parser.o/scanner.o).
+ekwork="$(mktemp -d)"
+ld -r -arch arm64 -platform_version macos 14.0 26.0 \
+  -all_load "$repo/gpu-editor-kit/target/release/libpomelo_editor_kit.a" \
+  -unexported_symbols_list "$here/editorkit_hide.txt" \
+  -o "$ekwork/combined.o"
+rm -f "$here/Vendor/libpomelo_editor_kit.a"
+ar crs "$here/Vendor/libpomelo_editor_kit.a" "$ekwork/combined.o"
+rm -rf "$ekwork"
+
 echo "==> xcodebuild"
 cd "$here"
 # SwiftPM doesn't track the prebuilt libpom.a as an input, so a Go-only change

@@ -92,6 +92,7 @@ struct FilesPane: View {
     @State private var docState: [String: SourceEditorState] = [:]
     @Environment(AppState.self) private var appState
     @AppStorage("fileEditorFontSize") private var fontSize: Double = 12
+    @AppStorage("gpuEditor") private var gpuEditor = false
 
     // Tab model. `selected` is the active tab's file; opens route through `open(_:preview:)`.
     @State private var tabs: [FileTab] = []
@@ -872,6 +873,11 @@ struct FilesPane: View {
     // (opacity 0) preserves each tab's undo stack, cursor, and scroll so switching away and back doesn't reset them.
     private var editorStack: some View {
         ZStack {
+            if gpuEditor, let id = activeID, let text = docText[id] {
+                let path = tabs.first { $0.id == id }?.entry.path ?? ""
+                GPUEditorView(text: text, ext: (path as NSString).pathExtension, title: (path as NSString).lastPathComponent)
+                    .id(id)
+            }
             ForEach(tabs.filter { !$0.isTerminal && docText[$0.id] != nil }, id: \.id) { tab in
                 let isActive = tab.id == activeID && editorVisibleForActive
                 FileItem(entry: tab.entry, text: textBinding(tab.id), state: stateBinding(tab.id),
@@ -881,8 +887,8 @@ struct FilesPane: View {
                          focusToken: isActive ? focusBump : .min,
                          previewTab: tab.preview, dirtyTab: tabDirty(tab.id),
                          onRightClick: { pt, view in showEditorMenu(tab.entry, at: pt, in: view) }).content()
-                    .opacity(isActive ? 1 : 0)
-                    .allowsHitTesting(isActive)
+                    .opacity(isActive && !gpuEditor ? 1 : 0)
+                    .allowsHitTesting(isActive && !gpuEditor)
                     .id(tab.id)
             }
         }

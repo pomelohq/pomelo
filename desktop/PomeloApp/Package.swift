@@ -20,9 +20,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "CPom"),
+        .target(name: "CEditorKit"),
         .executableTarget(
             name: "PomeloApp",
-            dependencies: ["CPom", .product(name: "SwiftTerm", package: "SwiftTerm"), .product(name: "Sparkle", package: "Sparkle"),
+            dependencies: ["CPom", "CEditorKit", .product(name: "SwiftTerm", package: "SwiftTerm"), .product(name: "Sparkle", package: "Sparkle"),
                            .product(name: "Grape", package: "Grape"),
                            .product(name: "CodeEditSourceEditor", package: "CodeEditSourceEditor"),
                            .product(name: "CodeEditLanguages", package: "CodeEditLanguages"),
@@ -33,9 +34,11 @@ let package = Package(
             resources: [.process("Resources/Assets.xcassets")],
             linkerSettings: [
                 .unsafeFlags([
-                    "-LVendor", "-lpom",
+                    "-LVendor", "-lpom", "-lpomelo_editor_kit",
                     "-framework", "CoreFoundation",
                     "-framework", "Security",
+                    "-framework", "Metal",
+                    "-framework", "QuartzCore",
                     "-lresolv",
                 ])
             ]
@@ -45,9 +48,11 @@ let package = Package(
             dependencies: ["PomeloApp"],
             linkerSettings: [
                 .unsafeFlags([
-                    "-LVendor", "-lpom",
+                    "-LVendor", "-lpom", "-lpomelo_editor_kit",
                     "-framework", "CoreFoundation",
                     "-framework", "Security",
+                    "-framework", "Metal",
+                    "-framework", "QuartzCore",
                     "-lresolv",
                 ])
             ]

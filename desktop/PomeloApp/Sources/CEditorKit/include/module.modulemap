@@ -1,0 +1,4 @@
+module CEditorKit {
+    header "pomelo_editor.h"
+    export *
+}

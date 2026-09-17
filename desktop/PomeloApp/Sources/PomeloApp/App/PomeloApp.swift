@@ -26,7 +26,7 @@ struct PomeloApp: App {
                 Button("Check for Updates…") { updater.checkForUpdates() }
                     .disabled(!updater.canCheckForUpdates)
             }
-            CommandGroup(after: .windowArrangement) { OpenMetalSpikeButton(); MetalTerminalToggle(); MetalTermStatsToggle(); PerfHUDToggle() }
+            CommandGroup(after: .windowArrangement) { OpenMetalSpikeButton(); OpenGPUEditorButton(); GPUEditorFilesToggle(); MetalTerminalToggle(); MetalTermStatsToggle(); PerfHUDToggle() }
         }
 
         Window("Create workspace", id: "create-workspace") {
@@ -54,6 +54,12 @@ struct PomeloApp: App {
             MetalTerminalSpike().frame(minWidth: 760, minHeight: 460).background(.black)
         }
         .defaultSize(width: 900, height: 560)
+        .defaultPosition(.center)
+
+        Window("GPU Editor Spike", id: "gpu-editor-spike") {
+            GPUEditorSpike().frame(minWidth: 640, minHeight: 420)
+        }
+        .defaultSize(width: 820, height: 560)
         .defaultPosition(.center)
     }
 }
