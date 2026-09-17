@@ -1393,6 +1393,7 @@ name = "pomelo-editor-kit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "glyphon",
  "pollster",
  "ropey",

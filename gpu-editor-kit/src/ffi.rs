@@ -58,6 +58,13 @@ pub unsafe extern "C" fn pomelo_editor_scroll(ed: *mut Editor, delta_y: f32) {
     ed.renderer.scroll_by(delta_y, &ed.buffer);
 }
 
+/// # Safety `ed` must come from `pomelo_editor_new`.
+#[no_mangle]
+pub unsafe extern "C" fn pomelo_editor_set_caret_on(ed: *mut Editor, on: bool) {
+    let Some(ed) = ed.as_mut() else { return };
+    ed.renderer.set_caret_on(on);
+}
+
 /// # Safety `ed` must come from `pomelo_editor_new`; `ptr`/`len` a valid UTF-8 byte range.
 #[no_mangle]
 pub unsafe extern "C" fn pomelo_editor_insert_text(ed: *mut Editor, ptr: *const u8, len: usize) {
@@ -70,6 +77,7 @@ pub unsafe extern "C" fn pomelo_editor_insert_text(ed: *mut Editor, ptr: *const 
             }
         }
         ed.renderer.follow_cursor(&ed.buffer);
+        ed.renderer.set_caret_on(true);
     }
 }
 
@@ -88,6 +96,7 @@ pub unsafe extern "C" fn pomelo_editor_key(ed: *mut Editor, key: u32) {
         _ => {}
     }
     ed.renderer.follow_cursor(&ed.buffer);
+    ed.renderer.set_caret_on(true);
 }
 
 /// # Safety `ed` must come from `pomelo_editor_new` and not be used afterwards.

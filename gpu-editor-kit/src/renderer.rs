@@ -35,7 +35,11 @@ pub struct EditorRenderer {
     gutter: Buffer,
     scale: f32,
     line_height: f32,
+    char_width: f32,
     scroll_y: f32,
+    caret_on: bool,
+    caret_pipeline: wgpu::RenderPipeline,
+    caret_vertices: wgpu::Buffer,
 }
 
 impl EditorRenderer {
@@ -104,6 +108,17 @@ impl EditorRenderer {
         let mut gutter = Buffer::new(&mut font_system, Metrics::new(font_size, line_height));
         gutter.set_size(&mut font_system, Some(GUTTER_WIDTH), Some(size.height as f32 / scale));
 
+        let mut probe = Buffer::new(&mut font_system, Metrics::new(font_size, line_height));
+        probe.set_text(&mut font_system, "M", Attrs::new().family(Family::Monospace), Shaping::Advanced);
+        probe.shape_until_scroll(&mut font_system, false);
+        let char_width = probe
+            .layout_runs()
+            .next()
+            .and_then(|r| r.glyphs.first().map(|g| g.w))
+            .unwrap_or(font_size * 0.6);
+
+        let (caret_pipeline, caret_vertices) = Self::build_caret(&device, format);
+
         Ok(Self {
             device,
             queue,
@@ -118,8 +133,83 @@ impl EditorRenderer {
             gutter,
             scale,
             line_height,
+            char_width,
             scroll_y: 0.0,
+            caret_on: true,
+            caret_pipeline,
+            caret_vertices,
         })
+    }
+
+    pub fn set_caret_on(&mut self, on: bool) {
+        self.caret_on = on;
+    }
+
+    fn build_caret(device: &wgpu::Device, format: TextureFormat) -> (wgpu::RenderPipeline, wgpu::Buffer) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("caret"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+                @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+                    return vec4<f32>(p, 0.0, 1.0);
+                }
+                @fragment fn fs() -> @location(0) vec4<f32> {
+                    return vec4<f32>(0.33, 0.52, 0.98, 1.0);
+                }
+                "#
+                .into(),
+            ),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("caret"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs",
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 8,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    }],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs",
+                compilation_options: Default::default(),
+                targets: &[Some(format.into())],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let vertices = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("caret-verts"),
+            size: 48,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        (pipeline, vertices)
+    }
+
+    fn caret_quad(&self, editor: &EditorBuffer) -> [f32; 12] {
+        let (line, col) = editor.line_col();
+        let px = (GUTTER_WIDTH + col as f32 * self.char_width) * self.scale;
+        let py = (TOP_PAD + line as f32 * self.line_height - self.scroll_y) * self.scale;
+        let pw = 2.0 * self.scale;
+        let ph = self.line_height * self.scale;
+        let vw = self.config.width as f32;
+        let vh = self.config.height as f32;
+        let ndc = |x: f32, y: f32| (x / vw * 2.0 - 1.0, 1.0 - y / vh * 2.0);
+        let (l, t) = ndc(px, py);
+        let (r, b) = ndc(px + pw, py + ph);
+        [l, t, r, t, l, b, r, t, r, b, l, b]
     }
 
     fn viewport_height(&self) -> f32 {
@@ -226,6 +316,9 @@ impl EditorRenderer {
             &mut self.swash_cache,
         )?;
 
+        let caret = self.caret_quad(editor);
+        self.queue.write_buffer(&self.caret_vertices, 0, bytemuck::cast_slice(&caret));
+
         let frame = self.surface.get_current_texture()?;
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -245,6 +338,11 @@ impl EditorRenderer {
                 occlusion_query_set: None,
             });
             self.text_renderer.render(&self.atlas, &self.viewport, &mut pass)?;
+            if self.caret_on {
+                pass.set_pipeline(&self.caret_pipeline);
+                pass.set_vertex_buffer(0, self.caret_vertices.slice(..));
+                pass.draw(0..6, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
