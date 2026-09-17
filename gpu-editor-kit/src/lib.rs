@@ -16,5 +16,5 @@ pub mod buffer;
 pub mod highlight;
 pub mod renderer;
 
-pub use buffer::{Cursor, EditorBuffer};
+pub use buffer::EditorBuffer;
 pub use renderer::EditorRenderer;

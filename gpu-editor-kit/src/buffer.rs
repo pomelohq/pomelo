@@ -1,86 +1,83 @@
-//! The editor's text model: lines of text plus a cursor. Kept deliberately simple for the kit's first cut; a rope
-//! (e.g. `ropey`) replaces this once editing scales. Platform-independent — no GPU, no windowing.
+//! The editor's text model: a rope (O(log n) edits/indexing, scales to large files) plus a char-offset cursor.
+//! Platform-independent — no GPU, no windowing.
 
-#[derive(Clone, Default)]
+use ropey::Rope;
+
 pub struct EditorBuffer {
-    pub lines: Vec<String>,
-    pub cursor: Cursor,
+    pub rope: Rope,
+    /// Cursor as a character offset into the rope.
+    pub cursor: usize,
 }
 
-#[derive(Clone, Copy, Default)]
-pub struct Cursor {
-    pub line: usize,
-    pub column: usize,
+impl Default for EditorBuffer {
+    fn default() -> Self {
+        Self { rope: Rope::from_str(""), cursor: 0 }
+    }
 }
 
 impl EditorBuffer {
     pub fn from_str(text: &str) -> Self {
-        let lines: Vec<String> = if text.is_empty() {
-            vec![String::new()]
-        } else {
-            text.split('\n').map(|s| s.to_string()).collect()
-        };
-        Self { lines, cursor: Cursor::default() }
+        Self { rope: Rope::from_str(text), cursor: 0 }
     }
 
     pub fn text(&self) -> String {
-        self.lines.join("\n")
+        self.rope.to_string()
+    }
+
+    /// Cursor position as (line, column) in characters.
+    pub fn line_col(&self) -> (usize, usize) {
+        let line = self.rope.char_to_line(self.cursor);
+        let line_start = self.rope.line_to_char(line);
+        (line, self.cursor - line_start)
     }
 
     pub fn insert_char(&mut self, ch: char) {
-        if ch == '\n' {
-            let rest = self.lines[self.cursor.line].split_off(self.cursor.column);
-            self.lines.insert(self.cursor.line + 1, rest);
-            self.cursor.line += 1;
-            self.cursor.column = 0;
-            return;
-        }
-        self.lines[self.cursor.line].insert(self.cursor.column, ch);
-        self.cursor.column += 1;
+        self.rope.insert_char(self.cursor, ch);
+        self.cursor += 1;
     }
 
     pub fn backspace(&mut self) {
-        if self.cursor.column > 0 {
-            self.cursor.column -= 1;
-            self.lines[self.cursor.line].remove(self.cursor.column);
-        } else if self.cursor.line > 0 {
-            let removed = self.lines.remove(self.cursor.line);
-            self.cursor.line -= 1;
-            self.cursor.column = self.lines[self.cursor.line].len();
-            self.lines[self.cursor.line].push_str(&removed);
+        if self.cursor > 0 {
+            self.rope.remove(self.cursor - 1..self.cursor);
+            self.cursor -= 1;
         }
     }
 
     pub fn move_left(&mut self) {
-        if self.cursor.column > 0 {
-            self.cursor.column -= 1;
-        } else if self.cursor.line > 0 {
-            self.cursor.line -= 1;
-            self.cursor.column = self.lines[self.cursor.line].len();
+        if self.cursor > 0 {
+            self.cursor -= 1;
         }
     }
 
     pub fn move_right(&mut self) {
-        let len = self.lines[self.cursor.line].len();
-        if self.cursor.column < len {
-            self.cursor.column += 1;
-        } else if self.cursor.line + 1 < self.lines.len() {
-            self.cursor.line += 1;
-            self.cursor.column = 0;
+        if self.cursor < self.rope.len_chars() {
+            self.cursor += 1;
         }
     }
 
     pub fn move_up(&mut self) {
-        if self.cursor.line > 0 {
-            self.cursor.line -= 1;
-            self.cursor.column = self.cursor.column.min(self.lines[self.cursor.line].len());
+        let (line, col) = self.line_col();
+        if line == 0 {
+            return;
         }
+        self.cursor = self.clamp_to_line(line - 1, col);
     }
 
     pub fn move_down(&mut self) {
-        if self.cursor.line + 1 < self.lines.len() {
-            self.cursor.line += 1;
-            self.cursor.column = self.cursor.column.min(self.lines[self.cursor.line].len());
+        let (line, col) = self.line_col();
+        if line + 1 >= self.rope.len_lines() {
+            return;
         }
+        self.cursor = self.clamp_to_line(line + 1, col);
+    }
+
+    /// Char offset at `col` on `line`, clamped to that line's length (excluding its trailing newline).
+    fn clamp_to_line(&self, line: usize, col: usize) -> usize {
+        let start = self.rope.line_to_char(line);
+        let mut len = self.rope.line(line).len_chars();
+        if self.rope.line(line).chars().last() == Some('\n') {
+            len -= 1;
+        }
+        start + col.min(len)
     }
 }

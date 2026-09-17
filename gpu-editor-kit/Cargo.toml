@@ -22,3 +22,5 @@ winit = "0.30"
 glyphon = "0.6"
 pollster = "0.3"
 anyhow = "1"
+# Rope text buffer: O(log n) edits/indexing, scales to large files (what real editors use).
+ropey = "1.6"
