@@ -146,6 +146,9 @@ fn configure_surface_layer(window: &Window) {
         // the previous frame stays at native size in the top-left while resizing, instead of stretching the top bar.
         // NSViewLayerContentsPlacementTopLeft = 11.
         let _: () = msg_send![view, setLayerContentsPlacement: 11i64];
+        // Ask AppKit to redraw the layer contents during a live resize (2 = DuringViewResize) rather than scaling the
+        // stale frame.
+        let _: () = msg_send![view, setLayerContentsRedrawPolicy: 2i64];
         let layer: *mut AnyObject = msg_send![view, layer];
         if !layer.is_null() {
             let _: () = msg_send![layer, setPresentsWithTransaction: true];
