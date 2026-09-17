@@ -61,6 +61,17 @@ pub unsafe extern "C" fn pomelo_editor_drag(ed: *mut Editor, x: f32, y: f32) {
     ed.renderer.set_caret_on(true);
 }
 
+/// Select the word at a point (a double-click).
+/// # Safety `ed` must come from `pomelo_editor_new`.
+#[no_mangle]
+pub unsafe extern "C" fn pomelo_editor_double_click(ed: *mut Editor, x: f32, y: f32) {
+    let Some(ed) = ed.as_mut() else { return };
+    let (line, col) = ed.renderer.point_to_line_col(x, y);
+    let off = ed.buffer.offset_at(line, col);
+    ed.buffer.select_word_at(off);
+    ed.renderer.set_caret_on(true);
+}
+
 /// # Safety `ed` must come from `pomelo_editor_new`.
 #[no_mangle]
 pub unsafe extern "C" fn pomelo_editor_render(ed: *mut Editor) {
@@ -144,6 +155,14 @@ pub unsafe extern "C" fn pomelo_editor_key(ed: *mut Editor, key: u32) {
         11 => ed.buffer.extend_right(),
         12 => ed.buffer.extend_up(),
         13 => ed.buffer.extend_down(),
+        14 => ed.buffer.move_word_left(),
+        15 => ed.buffer.move_word_right(),
+        16 => ed.buffer.move_home(),
+        17 => ed.buffer.move_end(),
+        18 => ed.buffer.extend_word_left(),
+        19 => ed.buffer.extend_word_right(),
+        20 => ed.buffer.extend_home(),
+        21 => ed.buffer.extend_end(),
         _ => {}
     }
     if matches!(key, 1 | 2 | 7 | 8) {

@@ -247,6 +247,109 @@ impl EditorBuffer {
         self.break_run();
     }
 
+    fn is_word(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    // Next word boundary to the right: skip non-word chars, then the word.
+    fn word_right(&self, mut i: usize) -> usize {
+        let n = self.rope.len_chars();
+        while i < n && !Self::is_word(self.rope.char(i)) {
+            i += 1;
+        }
+        while i < n && Self::is_word(self.rope.char(i)) {
+            i += 1;
+        }
+        i
+    }
+
+    // Previous word boundary to the left: skip non-word chars, then the word.
+    fn word_left(&self, mut i: usize) -> usize {
+        while i > 0 && !Self::is_word(self.rope.char(i - 1)) {
+            i -= 1;
+        }
+        while i > 0 && Self::is_word(self.rope.char(i - 1)) {
+            i -= 1;
+        }
+        i
+    }
+
+    fn line_start(&self) -> usize {
+        let (line, _) = self.line_col();
+        self.rope.line_to_char(line)
+    }
+
+    fn line_end(&self) -> usize {
+        let (line, _) = self.line_col();
+        self.rope.line_to_char(line) + self.line_len(line)
+    }
+
+    pub fn move_word_left(&mut self) {
+        self.cursor = self.word_left(self.cursor);
+        self.collapse();
+        self.break_run();
+    }
+
+    pub fn move_word_right(&mut self) {
+        self.cursor = self.word_right(self.cursor);
+        self.collapse();
+        self.break_run();
+    }
+
+    pub fn extend_word_left(&mut self) {
+        self.cursor = self.word_left(self.cursor);
+        self.break_run();
+    }
+
+    pub fn extend_word_right(&mut self) {
+        self.cursor = self.word_right(self.cursor);
+        self.break_run();
+    }
+
+    pub fn move_home(&mut self) {
+        self.cursor = self.line_start();
+        self.collapse();
+        self.break_run();
+    }
+
+    pub fn move_end(&mut self) {
+        self.cursor = self.line_end();
+        self.collapse();
+        self.break_run();
+    }
+
+    pub fn extend_home(&mut self) {
+        self.cursor = self.line_start();
+        self.break_run();
+    }
+
+    pub fn extend_end(&mut self) {
+        self.cursor = self.line_end();
+        self.break_run();
+    }
+
+    /// Select the word around `off` (double-click).
+    pub fn select_word_at(&mut self, off: usize) {
+        let n = self.rope.len_chars();
+        let off = off.min(n);
+        let inside = (off < n && Self::is_word(self.rope.char(off))) || (off > 0 && Self::is_word(self.rope.char(off - 1)));
+        if !inside {
+            self.place_cursor(off);
+            return;
+        }
+        let mut start = off;
+        while start > 0 && Self::is_word(self.rope.char(start - 1)) {
+            start -= 1;
+        }
+        let mut end = off;
+        while end < n && Self::is_word(self.rope.char(end)) {
+            end += 1;
+        }
+        self.anchor = start;
+        self.cursor = end;
+        self.break_run();
+    }
+
     /// Char offset at `col` on `line`, clamped to that line's length (excluding its trailing newline).
     fn clamp_to_line(&self, line: usize, col: usize) -> usize {
         let start = self.rope.line_to_char(line);

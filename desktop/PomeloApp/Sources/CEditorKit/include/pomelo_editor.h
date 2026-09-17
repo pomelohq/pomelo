@@ -25,8 +25,10 @@ void pomelo_editor_drag(Editor *ed, float x, float y);
 void pomelo_editor_insert_text(Editor *ed, const uint8_t *ptr, size_t len);
 
 // Special keys: 1 backspace, 2 enter, 3 left, 4 right, 5 up, 6 down, 7 undo, 8 redo,
-// 9 select-all, 10 shift-left, 11 shift-right, 12 shift-up, 13 shift-down.
+// 9 select-all, 10 shift-left, 11 shift-right, 12 shift-up, 13 shift-down, 14 word-left,
+// 15 word-right, 16 home, 17 end, 18 shift-word-left, 19 shift-word-right, 20 shift-home, 21 shift-end.
 void pomelo_editor_key(Editor *ed, uint32_t key);
+void pomelo_editor_double_click(Editor *ed, float x, float y);
 
 // Copy selection into out (up to cap bytes); returns full byte length. cap=0 queries length.
 size_t pomelo_editor_copy(Editor *ed, uint8_t *out, size_t cap);

@@ -56,15 +56,32 @@ impl ApplicationHandler for App {
             } => {
                 let shift = self.mods.shift_key();
                 let cmd = self.mods.super_key() || self.mods.control_key();
+                let alt = self.mods.alt_key();
                 let mut edited = false;
                 match &logical_key {
                     Key::Named(NamedKey::Backspace) => { self.editor.backspace(); edited = true; }
                     Key::Named(NamedKey::Enter) => { self.editor.insert_char('\n'); edited = true; }
                     Key::Named(NamedKey::Space) if !cmd => { self.editor.insert_char(' '); edited = true; }
-                    Key::Named(NamedKey::ArrowLeft) => if shift { self.editor.extend_left() } else { self.editor.move_left() },
-                    Key::Named(NamedKey::ArrowRight) => if shift { self.editor.extend_right() } else { self.editor.move_right() },
+                    Key::Named(NamedKey::ArrowLeft) => match (alt, cmd, shift) {
+                        (true, _, true) => self.editor.extend_word_left(),
+                        (true, _, false) => self.editor.move_word_left(),
+                        (_, true, true) => self.editor.extend_home(),
+                        (_, true, false) => self.editor.move_home(),
+                        (_, _, true) => self.editor.extend_left(),
+                        _ => self.editor.move_left(),
+                    },
+                    Key::Named(NamedKey::ArrowRight) => match (alt, cmd, shift) {
+                        (true, _, true) => self.editor.extend_word_right(),
+                        (true, _, false) => self.editor.move_word_right(),
+                        (_, true, true) => self.editor.extend_end(),
+                        (_, true, false) => self.editor.move_end(),
+                        (_, _, true) => self.editor.extend_right(),
+                        _ => self.editor.move_right(),
+                    },
                     Key::Named(NamedKey::ArrowUp) => if shift { self.editor.extend_up() } else { self.editor.move_up() },
                     Key::Named(NamedKey::ArrowDown) => if shift { self.editor.extend_down() } else { self.editor.move_down() },
+                    Key::Named(NamedKey::Home) => if shift { self.editor.extend_home() } else { self.editor.move_home() },
+                    Key::Named(NamedKey::End) => if shift { self.editor.extend_end() } else { self.editor.move_end() },
                     Key::Character(c) if cmd => match c.as_str() {
                         "z" if shift => { self.editor.redo(); edited = true; }
                         "z" => { self.editor.undo(); edited = true; }

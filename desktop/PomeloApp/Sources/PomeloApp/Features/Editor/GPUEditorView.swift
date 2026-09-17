@@ -160,6 +160,7 @@ final class GPUEditorNSView: NSView {
         let mods = event.modifierFlags
         let cmd = mods.contains(.command)
         let shift = mods.contains(.shift)
+        let opt = mods.contains(.option)
         if cmd {
             switch event.keyCode {
             case 6: pomelo_editor_key(ed, shift ? 8 : 7) // z / shift-z: undo / redo
@@ -167,6 +168,16 @@ final class GPUEditorNSView: NSView {
             case 8: copySelection(ed)                    // c
             case 7: copySelection(ed); pomelo_editor_key(ed, 1) // x: copy then delete
             case 9: paste(ed)                            // v
+            case 123: pomelo_editor_key(ed, shift ? 20 : 16) // cmd-left: (shift) home
+            case 124: pomelo_editor_key(ed, shift ? 21 : 17) // cmd-right: (shift) end
+            default: super.keyDown(with: event); return
+            }
+            wakeCaret(); render(); return
+        }
+        if opt {
+            switch event.keyCode {
+            case 123: pomelo_editor_key(ed, shift ? 18 : 14) // opt-left: (shift) word-left
+            case 124: pomelo_editor_key(ed, shift ? 19 : 15) // opt-right: (shift) word-right
             default: super.keyDown(with: event); return
             }
             wakeCaret(); render(); return
@@ -178,6 +189,8 @@ final class GPUEditorNSView: NSView {
         case 124: pomelo_editor_key(ed, shift ? 11 : 4)
         case 126: pomelo_editor_key(ed, shift ? 12 : 5)
         case 125: pomelo_editor_key(ed, shift ? 13 : 6)
+        case 115: pomelo_editor_key(ed, shift ? 20 : 16) // home
+        case 119: pomelo_editor_key(ed, shift ? 21 : 17) // end
         default:
             if let chars = event.characters, !chars.isEmpty {
                 let bytes = Array(chars.utf8)
@@ -215,7 +228,11 @@ final class GPUEditorNSView: NSView {
         guard let ed = editor else { return }
         window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
-        pomelo_editor_click(ed, Float(p.x), Float(p.y))
+        if event.clickCount >= 2 {
+            pomelo_editor_double_click(ed, Float(p.x), Float(p.y))
+        } else {
+            pomelo_editor_click(ed, Float(p.x), Float(p.y))
+        }
         wakeCaret()
         render()
     }
