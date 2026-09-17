@@ -83,6 +83,9 @@ struct MetalTerminalPane: NSViewRepresentable {
     var themeMode: ThemeMode = activeThemeMode
     var onClosed: () -> Void = {}
     func makeCoordinator() -> Coord { Coord() }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: MetalTerminalHostView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
     func makeNSView(context: Context) -> MetalTerminalHostView {
         let v = MetalTerminalHostView(frame: .zero)
         v.setFont(family: fontFamily, size: fontSize)

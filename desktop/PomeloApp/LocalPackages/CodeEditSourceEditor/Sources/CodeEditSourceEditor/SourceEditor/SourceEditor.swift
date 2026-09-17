@@ -139,6 +139,13 @@ public struct SourceEditor: NSViewControllerRepresentable {
 
     public typealias NSViewControllerType = TextViewController
 
+    // Take the proposed size directly instead of measuring via Auto Layout. SwiftUI otherwise calls
+    // `systemLayoutSizeFittingSize` on the scroll/text-view subtree every layout pass, which runs the constraint
+    // engine and stalls hard when many editor panes resize at once (e.g. dragging a dock divider).
+    public func sizeThatFits(_ proposal: ProposedViewSize, nsViewController: TextViewController, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
     public func makeNSViewController(context: Context) -> TextViewController {
         let controller = TextViewController(
             string: "",
