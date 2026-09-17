@@ -1,4 +1,5 @@
 import SwiftUI
+import CodeEditTextView
 
 enum PaneKind: String, CaseIterable, Identifiable {
     case claude = "Claude", services = "Services", git = "Git", jira = "Jira", database = "Database", review = "Review", files = "Files"
@@ -166,6 +167,16 @@ struct WorkspacePaneInner: View {
         workspace.id.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "-")
     }
 
+    // Freeze editor text layout while the dock open/close width animation runs, so the mounted editors don't re-layout
+    // every frame (the source of the animation lag with many panes open).
+    private func freezeEditorsBriefly() {
+        CETextViewSuppressLayout = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+            CETextViewSuppressLayout = false
+            NotificationCenter.default.post(name: .ceForceRelayout, object: nil)
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
             let footerH: CGFloat = 23
@@ -178,7 +189,7 @@ struct WorkspacePaneInner: View {
                     .frame(width: geo.size.width, height: contentH)
                     .onAppear { opened.insert(active); if ps.agentOpen { opened.insert(ps.rightPanel) } }
                     .onChange(of: ps.pane) { opened.insert(active) }
-                    .onChange(of: ps.agentOpen) { if ps.agentOpen { opened.insert(ps.rightPanel) } }
+                    .onChange(of: ps.agentOpen) { if ps.agentOpen { opened.insert(ps.rightPanel) }; freezeEditorsBriefly() }
                     .onChange(of: ps.rightPanel) { if ps.agentOpen { opened.insert(ps.rightPanel) } }
                 if !ps.terms.isEmpty {
                     TerminalDrawer(terms: $ps.terms, selected: $ps.selTerm, height: $ps.drawerHeight,
