@@ -17,6 +17,8 @@ use winit::window::Window;
 
 use crate::EditorBuffer;
 
+const GUTTER_WIDTH: f32 = 52.0;
+
 pub struct EditorRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -29,6 +31,7 @@ pub struct EditorRenderer {
     viewport: Viewport,
     text_renderer: TextRenderer,
     buffer: Buffer,
+    gutter: Buffer,
     scale: f32,
 }
 
@@ -75,6 +78,8 @@ impl EditorRenderer {
             Some(size.width as f32 / scale),
             Some(size.height as f32 / scale),
         );
+        let mut gutter = Buffer::new(&mut font_system, Metrics::new(font_size, line_height));
+        gutter.set_size(&mut font_system, Some(GUTTER_WIDTH), Some(size.height as f32 / scale));
 
         Ok(Self {
             device,
@@ -87,6 +92,7 @@ impl EditorRenderer {
             viewport,
             text_renderer,
             buffer,
+            gutter,
             scale,
         })
     }
@@ -97,9 +103,11 @@ impl EditorRenderer {
         self.surface.configure(&self.device, &self.config);
         self.buffer.set_size(
             &mut self.font_system,
-            Some(width as f32 / self.scale),
+            Some((width as f32 / self.scale - GUTTER_WIDTH).max(1.0)),
             Some(height as f32 / self.scale),
         );
+        self.gutter
+            .set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(height as f32 / self.scale));
     }
 
     pub fn render(&mut self, editor: &EditorBuffer) -> Result<()> {
@@ -116,31 +124,53 @@ impl EditorRenderer {
         );
         self.buffer.shape_until_scroll(&mut self.font_system, false);
 
+        let line_count = editor.rope.len_lines().max(1);
+        let numbers: String = (1..=line_count).map(|n| format!("{n}\n")).collect();
+        self.gutter.set_text(
+            &mut self.font_system,
+            &numbers,
+            Attrs::new().family(Family::Monospace).color(Color::rgb(92, 99, 112)),
+            Shaping::Advanced,
+        );
+        self.gutter.shape_until_scroll(&mut self.font_system, false);
+
         self.viewport.update(
             &self.queue,
             Resolution { width: self.config.width, height: self.config.height },
         );
 
+        let bounds = TextBounds {
+            left: 0,
+            top: 0,
+            right: self.config.width as i32,
+            bottom: self.config.height as i32,
+        };
         self.text_renderer.prepare(
             &self.device,
             &self.queue,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
-            [TextArea {
-                buffer: &self.buffer,
-                left: 12.0,
-                top: 10.0,
-                scale: self.scale,
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: self.config.width as i32,
-                    bottom: self.config.height as i32,
+            [
+                TextArea {
+                    buffer: &self.gutter,
+                    left: 8.0,
+                    top: 10.0,
+                    scale: self.scale,
+                    bounds,
+                    default_color: Color::rgb(92, 99, 112),
+                    custom_glyphs: &[],
                 },
-                default_color: Color::rgb(220, 223, 228),
-                custom_glyphs: &[],
-            }],
+                TextArea {
+                    buffer: &self.buffer,
+                    left: GUTTER_WIDTH,
+                    top: 10.0,
+                    scale: self.scale,
+                    bounds,
+                    default_color: Color::rgb(220, 223, 228),
+                    custom_glyphs: &[],
+                },
+            ],
             &mut self.swash_cache,
         )?;
 
