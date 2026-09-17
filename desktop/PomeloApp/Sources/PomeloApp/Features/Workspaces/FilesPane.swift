@@ -141,11 +141,10 @@ struct FilesPane: View {
     // Extracted from the body so the main view expression stays inside the type-checker's budget.
     @ViewBuilder private var altTabOverlays: some View {
         if searchOpen {
-            FindInFiles(branch: workspace.branch, isMain: workspace.isMain, mode: theme.mode,
-                        workspacePath: workspace.path,
-                        query: $searchQuery,
-                        onChoose: { e, line in searchActive = false; pendingJump = line; open(e, preview: false) },
-                        onClose: { closeSearch() })
+            SearchItem(branch: workspace.branch, isMain: workspace.isMain, mode: theme.mode,
+                       workspacePath: workspace.path, query: $searchQuery,
+                       onChoose: { e, line in searchActive = false; pendingJump = line; open(e, preview: false) },
+                       onClose: { closeSearch() }).content()
                 .opacity(searchActive ? 1 : 0)
                 .allowsHitTesting(searchActive)
         }

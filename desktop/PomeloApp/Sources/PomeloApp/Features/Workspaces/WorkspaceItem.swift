@@ -50,3 +50,24 @@ struct DiffItem: WorkspaceItem {
 
     func content() -> AnyView { AnyView(GitDiffTab(workspace: workspace, entry: entry)) }
 }
+
+// The project-search item (Cmd+Shift+F). Its result list is owned by FindInFiles; opening a result routes back through
+// the pane's file-open via `onChoose`.
+struct SearchItem: WorkspaceItem {
+    let branch: String
+    let isMain: Bool
+    let mode: ThemeMode
+    let workspacePath: String
+    let query: Binding<String>
+    let onChoose: (WorkspaceFileEntry, Int) -> Void
+    let onClose: () -> Void
+
+    var itemID: String { "search" }
+    var tabLabel: String { "Search" }
+    var tabSystemIcon: String { "magnifyingglass" }
+
+    func content() -> AnyView {
+        AnyView(FindInFiles(branch: branch, isMain: isMain, mode: mode, workspacePath: workspacePath,
+                            query: query, onChoose: onChoose, onClose: onClose))
+    }
+}
