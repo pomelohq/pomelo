@@ -187,19 +187,23 @@ struct GPUEditorView: NSViewRepresentable {
 }
 
 struct GPUEditorSpike: View {
-    private static let sample = """
-    // pomelo-editor-kit demo (wgpu + glyphon + tree-sitter)
-    import { useMemo } from "react";
-
-    export const Table = ({ rows }: { rows: number[] }) => {
-        const total = useMemo(() => rows.reduce((a, b) => a + b, 0), [rows]);
-        return <div className="total">{total}</div>;
-    };
-    """
+    private static let sample: String = {
+        var s = "// pomelo-editor-kit demo (wgpu + glyphon + tree-sitter)\n"
+        s += "import { useMemo, useState } from \"react\";\n\n"
+        for i in 0..<12 {
+            s += "export const Widget\(i) = ({ rows }: { rows: number[] }) => {\n"
+            s += "    const [open, setOpen] = useState(false);\n"
+            s += "    const total = useMemo(() => rows.reduce((a, b) => a + b, 0), [rows]);\n"
+            s += "    // row \(i): renders the running total\n"
+            s += "    return <div className=\"widget\">{open ? total : 0}</div>;\n"
+            s += "};\n\n"
+        }
+        return s
+    }()
 
     var body: some View {
         GPUEditorView(text: Self.sample, ext: "tsx")
-            .background(Color(red: 0.086, green: 0.086, blue: 0.098))
+            .background(Color(red: 40.0 / 255.0, green: 44.0 / 255.0, blue: 51.0 / 255.0))
     }
 }
 

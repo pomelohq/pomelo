@@ -262,7 +262,8 @@ impl EditorRenderer {
 
     fn build_quad_vertices(&self, editor: &EditorBuffer) -> Vec<f32> {
         let mut out = Vec::new();
-        let sel = [0.20, 0.42, 0.75, 0.40];
+        // Zed One Dark player selection #74ade8 @ 0x3d alpha.
+        let sel = [0.455, 0.678, 0.910, 0.24];
         if let Some((s, e)) = editor.selection() {
             let (sl, sc) = editor.line_col_of(s);
             let (el, ec) = editor.line_col_of(e);
@@ -279,7 +280,7 @@ impl EditorRenderer {
             let (line, col) = editor.line_col();
             let x = GUTTER_WIDTH + col as f32 * self.char_width;
             let y = TOP_PAD + line as f32 * self.line_height - self.scroll_y;
-            self.push_rect(&mut out, x, y, 2.0, self.line_height, [0.33, 0.52, 0.98, 1.0]);
+            self.push_rect(&mut out, x, y, 2.0, self.line_height, [0.455, 0.678, 0.910, 1.0]);
         }
         out
     }
@@ -321,13 +322,12 @@ impl EditorRenderer {
     pub fn render(&mut self, editor: &EditorBuffer) -> Result<()> {
         // Reshape text only when it changed — not every frame — so scroll/caret redraws stay cheap on large files.
         if self.text_dirty {
-            let line_count = editor.rope.len_lines().max(1);
-            // Lay out ALL lines (height = content, not viewport) so scrolling reveals lines below the first screen;
-            // TextBounds clips to the viewport. Scroll then just offsets the text areas' top.
-            let content_h = (line_count as f32 + 1.0) * self.line_height;
+            // Height = viewport so cosmic-text shapes only the visible window per scroll position (culling); we drive
+            // the vertical position through Buffer::set_scroll, not a top offset.
             let code_w = (self.config.width as f32 / self.scale - GUTTER_WIDTH).max(1.0);
-            self.buffer.set_size(&mut self.font_system, Some(code_w), Some(content_h));
-            self.gutter.set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(content_h));
+            let view_h = self.config.height as f32 / self.scale;
+            self.buffer.set_size(&mut self.font_system, Some(code_w), Some(view_h));
+            self.gutter.set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(view_h));
 
             let text = editor.text();
             let spans = self.highlighter.highlight(&text, self.language);
@@ -341,18 +341,27 @@ impl EditorRenderer {
                 Attrs::new().family(Family::Monospace),
                 Shaping::Advanced,
             );
-            self.buffer.shape_until_scroll(&mut self.font_system, false);
 
+            let line_count = editor.rope.len_lines().max(1);
             let numbers: String = (1..=line_count).map(|n| format!("{n}\n")).collect();
             self.gutter.set_text(
                 &mut self.font_system,
                 &numbers,
-                Attrs::new().family(Family::Monospace).color(Color::rgb(92, 99, 112)),
+                Attrs::new().family(Family::Monospace).color(Color::rgb(78, 90, 95)),
                 Shaping::Advanced,
             );
-            self.gutter.shape_until_scroll(&mut self.font_system, false);
             self.text_dirty = false;
         }
+
+        // Scroll = cosmic-text's own vertical scroll, so it shapes only the visible lines each frame (cull). line +
+        // sub-line pixel offset; the caret/selection y still use scroll_y directly (equivalent positioning).
+        let top_line = (self.scroll_y / self.line_height).floor().max(0.0);
+        let vertical = self.scroll_y - top_line * self.line_height;
+        let scroll = glyphon::cosmic_text::Scroll { line: top_line as usize, vertical, horizontal: 0.0 };
+        self.buffer.set_scroll(scroll);
+        self.gutter.set_scroll(scroll);
+        self.buffer.shape_until_scroll(&mut self.font_system, false);
+        self.gutter.shape_until_scroll(&mut self.font_system, false);
 
         self.viewport.update(
             &self.queue,
@@ -375,19 +384,19 @@ impl EditorRenderer {
                 TextArea {
                     buffer: &self.gutter,
                     left: 8.0 * self.scale,
-                    top: (TOP_PAD - self.scroll_y) * self.scale,
+                    top: TOP_PAD * self.scale,
                     scale: self.scale,
                     bounds,
-                    default_color: Color::rgb(92, 99, 112),
+                    default_color: Color::rgb(78, 90, 95),
                     custom_glyphs: &[],
                 },
                 TextArea {
                     buffer: &self.buffer,
                     left: GUTTER_WIDTH * self.scale,
-                    top: (TOP_PAD - self.scroll_y) * self.scale,
+                    top: TOP_PAD * self.scale,
                     scale: self.scale,
                     bounds,
-                    default_color: Color::rgb(220, 223, 228),
+                    default_color: Color::rgb(172, 178, 190),
                     custom_glyphs: &[],
                 },
             ],
@@ -419,11 +428,12 @@ impl EditorRenderer {
                     view: &view,
                     resolve_target: None,
                     ops: Operations {
-                        // The surface is sRGB; wgpu gamma-encodes the clear, so pass a linearized color.
+                        // Zed One Dark editor.background #282c33. The surface is sRGB; wgpu gamma-encodes the clear,
+                        // so pass a linearized color.
                         load: LoadOp::Clear(wgpu::Color {
-                            r: srgb_to_linear(0.086),
-                            g: srgb_to_linear(0.086),
-                            b: srgb_to_linear(0.098),
+                            r: srgb_to_linear(40.0 / 255.0),
+                            g: srgb_to_linear(44.0 / 255.0),
+                            b: srgb_to_linear(51.0 / 255.0),
                             a: 1.0,
                         }),
                         store: StoreOp::Store,

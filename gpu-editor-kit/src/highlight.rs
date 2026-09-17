@@ -38,35 +38,51 @@ impl Lang {
     }
 }
 
-// Capture names we recognize; tree-sitter maps each query capture to an index into this list.
+// Capture names we recognize; tree-sitter maps each query capture to an index into this list. Ported from Zed's One
+// Dark syntax keys (assets/themes/one/one.json) so grammar captures resolve to the same styles Zed uses.
 const HIGHLIGHT_NAMES: &[&str] = &[
-    "attribute", "boolean", "comment", "constant", "constant.builtin", "constructor", "escape", "function",
-    "function.builtin", "function.method", "keyword", "label", "number", "operator", "property", "punctuation",
-    "punctuation.bracket", "punctuation.delimiter", "string", "string.escape", "string.special", "tag", "type",
-    "type.builtin", "variable", "variable.builtin", "variable.parameter",
+    "attribute", "boolean", "comment", "comment.doc", "constant", "constant.builtin", "constructor", "embedded",
+    "enum", "function", "function.method", "keyword", "label", "namespace", "number", "operator", "predictive",
+    "preproc", "primary", "property", "punctuation", "punctuation.bracket", "punctuation.delimiter",
+    "punctuation.list_marker", "punctuation.special", "string", "string.escape", "string.regex", "string.special",
+    "string.special.symbol", "tag", "text.literal", "title", "type", "type.builtin", "variable",
+    "variable.parameter", "variable.special", "variant",
 ];
 
-fn plain() -> Color { Color::rgb(220, 223, 228) }
+// Foreground (#acb2be) — Zed One Dark editor.foreground.
+fn plain() -> Color { Color::rgb(172, 178, 190) }
+
+// Exact One Dark syntax colors (Zed). Dotted names fall back to their base (function.method -> function), matching
+// Zed's HighlightMap longest-prefix resolution.
+fn exact(name: &str) -> Option<Color> {
+    Some(match name {
+        "keyword" | "preproc" => Color::rgb(180, 119, 207),
+        "function" | "constructor" => Color::rgb(115, 173, 233),
+        "type" | "operator" | "enum" | "link_uri" => Color::rgb(110, 180, 191),
+        "string" | "string.regex" => Color::rgb(161, 193, 129),
+        "comment" => Color::rgb(93, 99, 111),
+        "number" | "boolean" | "variable.special" | "string.special.symbol" | "string.escape" | "string.special" => {
+            Color::rgb(191, 149, 106)
+        }
+        "constant" => Color::rgb(223, 193, 132),
+        "property" | "title" => Color::rgb(208, 114, 119),
+        "tag" | "attribute" | "label" | "emphasis" => Color::rgb(116, 173, 232),
+        "variable" | "punctuation" | "embedded" => Color::rgb(172, 178, 190),
+        "punctuation.bracket" | "punctuation.delimiter" => Color::rgb(178, 185, 198),
+        _ => return None,
+    })
+}
 
 fn color_for_name(name: &str) -> Color {
-    if name.starts_with("keyword") {
-        Color::rgb(198, 120, 221)
-    } else if name.starts_with("function") || name == "constructor" {
-        Color::rgb(97, 175, 239)
-    } else if name.starts_with("type") {
-        Color::rgb(229, 192, 123)
-    } else if name.starts_with("string") || name == "escape" {
-        Color::rgb(152, 195, 121)
-    } else if name.starts_with("comment") {
-        Color::rgb(92, 99, 112)
-    } else if name.starts_with("number") || name.starts_with("constant") || name == "boolean" {
-        Color::rgb(209, 154, 102)
-    } else if name.starts_with("property") || name.starts_with("tag") || name.starts_with("attribute") {
-        Color::rgb(224, 108, 117)
-    } else if name.starts_with("operator") || name.starts_with("punctuation") {
-        Color::rgb(171, 178, 191)
-    } else {
-        plain()
+    let mut n = name;
+    loop {
+        if let Some(c) = exact(n) {
+            return c;
+        }
+        match n.rfind('.') {
+            Some(i) => n = &n[..i],
+            None => return plain(),
+        }
     }
 }
 
