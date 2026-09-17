@@ -42,6 +42,7 @@ pub struct EditorRenderer {
     line_height: f32,
     char_width: f32,
     scroll_y: f32,
+    scroll_x: f32,
     caret_on: bool,
     text_dirty: bool,
     quad_pipeline: wgpu::RenderPipeline,
@@ -169,6 +170,7 @@ impl EditorRenderer {
             line_height,
             char_width,
             scroll_y: 0.0,
+            scroll_x: 0.0,
             caret_on: true,
             text_dirty: true,
             quad_pipeline,
@@ -205,7 +207,7 @@ impl EditorRenderer {
     pub fn point_to_line_col(&self, px: f32, py: f32) -> (usize, usize) {
         let y = (py - CONTENT_TOP + self.scroll_y).max(0.0);
         let line = (y / self.line_height).floor() as usize;
-        let x = (px - GUTTER_WIDTH).max(0.0);
+        let x = (px - GUTTER_WIDTH + self.scroll_x).max(0.0);
         let col = (x / self.char_width).round() as usize;
         (line, col)
     }
@@ -288,12 +290,15 @@ impl EditorRenderer {
         v(r, t); v(r, b); v(l, b);
     }
 
-    // Clip a content rect to below the tab bar so selection/caret never paints over the tab strip.
+    // Clip a content rect to the editor area (below the tab bar, right of the gutter) so selection/caret never paints
+    // over the tab strip or the gutter when scrolled.
     fn push_content_rect(&self, out: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
         let top = y.max(CONTENT_TOP);
         let bottom = y + h;
-        if bottom > top {
-            self.push_rect(out, x, top, w, bottom - top, color);
+        let left = x.max(GUTTER_WIDTH);
+        let right = x + w;
+        if bottom > top && right > left {
+            self.push_rect(out, left, top, right - left, bottom - top, color);
         }
     }
 
@@ -311,7 +316,7 @@ impl EditorRenderer {
             for line in sl..=el {
                 let c0 = if line == sl { sc } else { 0 };
                 let end = if line == el { ec } else { editor.line_len(line) + 1 };
-                let x = GUTTER_WIDTH + c0 as f32 * self.char_width;
+                let x = GUTTER_WIDTH + c0 as f32 * self.char_width - self.scroll_x;
                 let w = (end.saturating_sub(c0)) as f32 * self.char_width;
                 let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
                 self.push_content_rect(&mut out, x, y, w.max(1.0), self.line_height, sel);
@@ -319,7 +324,7 @@ impl EditorRenderer {
         }
         if self.caret_on {
             let (line, col) = editor.line_col();
-            let x = GUTTER_WIDTH + col as f32 * self.char_width;
+            let x = GUTTER_WIDTH + col as f32 * self.char_width - self.scroll_x;
             let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
             self.push_content_rect(&mut out, x, y, 2.0, self.line_height, lin([116, 173, 232], 1.0));
         }
@@ -335,8 +340,10 @@ impl EditorRenderer {
         (content + CONTENT_TOP - self.viewport_height()).max(0.0)
     }
 
-    pub fn scroll_by(&mut self, delta_y: f32, editor: &EditorBuffer) {
+    pub fn scroll_by(&mut self, delta_x: f32, delta_y: f32, editor: &EditorBuffer) {
         self.scroll_y = (self.scroll_y - delta_y).clamp(0.0, self.max_scroll(editor));
+        // Upper bound clamped in render() where the widest visible line width is known.
+        self.scroll_x = (self.scroll_x - delta_x).max(0.0);
     }
 
     /// Keep the cursor's line inside the viewport after a nav/edit.
@@ -417,6 +424,12 @@ impl EditorRenderer {
         self.buffer.shape_until_scroll(&mut self.font_system, false);
         self.gutter.shape_until_scroll(&mut self.font_system, false);
 
+        // Clamp horizontal scroll to the widest currently-visible line (Zed-style horizontal scroll, no wrap).
+        let widest = self.buffer.layout_runs().map(|r| r.line_w).fold(0.0_f32, f32::max);
+        let code_view_w = (self.config.width as f32 / self.scale - GUTTER_WIDTH).max(1.0);
+        let max_x = (widest - code_view_w).max(0.0);
+        self.scroll_x = self.scroll_x.clamp(0.0, max_x);
+
         self.viewport.update(
             &self.queue,
             Resolution { width: self.config.width, height: self.config.height },
@@ -449,10 +462,11 @@ impl EditorRenderer {
                 },
                 TextArea {
                     buffer: &self.buffer,
-                    left: GUTTER_WIDTH * self.scale,
+                    left: (GUTTER_WIDTH - self.scroll_x) * self.scale,
                     top: (CONTENT_TOP - scroll_frac) * self.scale,
                     scale: self.scale,
-                    bounds,
+                    // Clip the code to the right of the gutter so horizontally-scrolled text doesn't underlap it.
+                    bounds: TextBounds { left: (GUTTER_WIDTH * self.scale) as i32, top: clip_top, right: self.config.width as i32, bottom: self.config.height as i32 },
                     default_color: Color::rgb(172, 178, 190),
                     custom_glyphs: &[],
                 },

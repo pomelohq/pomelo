@@ -16,7 +16,7 @@ Editor *pomelo_editor_new(void *layer, uint32_t width, uint32_t height, float sc
 void pomelo_editor_set_text(Editor *ed, const uint8_t *ptr, size_t len);
 void pomelo_editor_render(Editor *ed);
 void pomelo_editor_resize(Editor *ed, uint32_t width, uint32_t height);
-void pomelo_editor_scroll(Editor *ed, float delta_y);
+void pomelo_editor_scroll(Editor *ed, float delta_x, float delta_y);
 void pomelo_editor_set_caret_on(Editor *ed, bool on);
 void pomelo_editor_set_language(Editor *ed, const uint8_t *ptr, size_t len);
 void pomelo_editor_set_tab_title(Editor *ed, const uint8_t *ptr, size_t len);

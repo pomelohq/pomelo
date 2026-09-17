@@ -176,7 +176,7 @@ final class GPUEditorNSView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         guard let ed = editor else { return }
-        pomelo_editor_scroll(ed, Float(event.scrollingDeltaY))
+        pomelo_editor_scroll(ed, Float(event.scrollingDeltaX), Float(event.scrollingDeltaY))
         render()
     }
 

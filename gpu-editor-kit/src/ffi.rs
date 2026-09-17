@@ -76,9 +76,9 @@ pub unsafe extern "C" fn pomelo_editor_resize(ed: *mut Editor, width: u32, heigh
 
 /// # Safety `ed` must come from `pomelo_editor_new`.
 #[no_mangle]
-pub unsafe extern "C" fn pomelo_editor_scroll(ed: *mut Editor, delta_y: f32) {
+pub unsafe extern "C" fn pomelo_editor_scroll(ed: *mut Editor, delta_x: f32, delta_y: f32) {
     let Some(ed) = ed.as_mut() else { return };
-    ed.renderer.scroll_by(delta_y, &ed.buffer);
+    ed.renderer.scroll_by(delta_x, delta_y, &ed.buffer);
 }
 
 /// # Safety `ed` must come from `pomelo_editor_new`.

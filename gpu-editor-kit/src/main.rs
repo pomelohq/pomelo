@@ -74,11 +74,11 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y * 24.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * 24.0, y * 24.0),
+                    MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
                 };
-                renderer.scroll_by(dy, &self.editor);
+                renderer.scroll_by(dx, dy, &self.editor);
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
