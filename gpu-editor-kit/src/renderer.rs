@@ -335,31 +335,35 @@ impl EditorRenderer {
         self.push_rect(&mut out, 0.0, CONTENT_TOP - 1.0, view_w, 1.0, lin([70, 75, 87], 1.0));
 
         let sel = lin([116, 173, 232], 0.24); // player selection #74ade8 @ 0x3d
-        if let Some((s, e)) = editor.selection() {
-            let (sl, sc) = editor.line_col_of(s);
-            let (el, ec) = editor.line_col_of(e);
-            // Zed highlights each line to its own text width, plus a small marker when the trailing newline is selected.
-            let nl_marker = self.char_width * 0.4;
-            for line in sl..=el {
-                let c0 = if line == sl { sc } else { 0 };
-                let end_col = if line == el { ec } else { editor.line_len(line) };
-                let x = GUTTER_WIDTH + c0 as f32 * self.char_width - self.scroll_x;
-                let mut w = end_col.saturating_sub(c0) as f32 * self.char_width;
-                let min_w = if line < el {
-                    w += nl_marker;
-                    nl_marker
-                } else {
-                    1.0
-                };
-                let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
-                self.push_content_rect(&mut out, x, y, w.max(min_w), self.line_height, sel);
+        // Zed highlights each line to its own text width, plus a small marker when the trailing newline is selected.
+        let nl_marker = self.char_width * 0.4;
+        for s in editor.selections() {
+            if let Some((a, b)) = s.range() {
+                let (sl, sc) = editor.line_col_of(a);
+                let (el, ec) = editor.line_col_of(b);
+                for line in sl..=el {
+                    let c0 = if line == sl { sc } else { 0 };
+                    let end_col = if line == el { ec } else { editor.line_len(line) };
+                    let x = GUTTER_WIDTH + c0 as f32 * self.char_width - self.scroll_x;
+                    let mut w = end_col.saturating_sub(c0) as f32 * self.char_width;
+                    let min_w = if line < el {
+                        w += nl_marker;
+                        nl_marker
+                    } else {
+                        1.0
+                    };
+                    let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
+                    self.push_content_rect(&mut out, x, y, w.max(min_w), self.line_height, sel);
+                }
             }
         }
         if self.caret_on {
-            let (line, col) = editor.line_col();
-            let x = GUTTER_WIDTH + col as f32 * self.char_width - self.scroll_x;
-            let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
-            self.push_content_rect(&mut out, x, y, 2.0, self.line_height, lin([116, 173, 232], 1.0));
+            for s in editor.selections() {
+                let (line, col) = editor.line_col_of(s.cursor);
+                let x = GUTTER_WIDTH + col as f32 * self.char_width - self.scroll_x;
+                let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
+                self.push_content_rect(&mut out, x, y, 2.0, self.line_height, lin([116, 173, 232], 1.0));
+            }
         }
         out
     }

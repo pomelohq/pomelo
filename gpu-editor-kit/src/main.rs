@@ -88,10 +88,12 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::ArrowDown) => if shift { self.editor.extend_down() } else { self.editor.move_down() },
                     Key::Named(NamedKey::Home) => if shift { self.editor.extend_home() } else { self.editor.move_home() },
                     Key::Named(NamedKey::End) => if shift { self.editor.extend_end() } else { self.editor.move_end() },
+                    Key::Named(NamedKey::Escape) => self.editor.collapse_cursors(),
                     Key::Character(c) if cmd => match c.as_str() {
                         "z" if shift => { self.editor.redo(); edited = true; }
                         "z" => { self.editor.undo(); edited = true; }
                         "a" => self.editor.select_all(),
+                        "d" => self.editor.select_next(),
                         _ => {}
                     },
                     _ => {
@@ -135,7 +137,9 @@ impl ApplicationHandler for App {
                         let dbl = self.last_click.is_some_and(|t| now.duration_since(t).as_millis() < 400)
                             && (self.last_click_pos.0 - px).abs() < 4.0
                             && (self.last_click_pos.1 - py).abs() < 4.0;
-                        if dbl {
+                        if self.mods.super_key() || self.mods.control_key() {
+                            self.editor.add_cursor(off);
+                        } else if dbl {
                             self.editor.select_word_at(off);
                             self.last_click = None;
                         } else {

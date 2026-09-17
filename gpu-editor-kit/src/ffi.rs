@@ -74,6 +74,17 @@ pub unsafe extern "C" fn pomelo_editor_double_click(ed: *mut Editor, x: f32, y: 
     ed.renderer.set_caret_on(true);
 }
 
+/// Add a caret at a point (Cmd+click multi-cursor).
+/// # Safety `ed` must come from `pomelo_editor_new`.
+#[no_mangle]
+pub unsafe extern "C" fn pomelo_editor_add_cursor(ed: *mut Editor, x: f32, y: f32) {
+    let Some(ed) = ed.as_mut() else { return };
+    let (line, col) = ed.renderer.point_to_line_col(x, y);
+    let off = ed.buffer.offset_at(line, col);
+    ed.buffer.add_cursor(off);
+    ed.renderer.set_caret_on(true);
+}
+
 /// # Safety `ed` must come from `pomelo_editor_new`.
 #[no_mangle]
 pub unsafe extern "C" fn pomelo_editor_render(ed: *mut Editor) {
@@ -165,6 +176,8 @@ pub unsafe extern "C" fn pomelo_editor_key(ed: *mut Editor, key: u32) {
         19 => ed.buffer.extend_word_right(),
         20 => ed.buffer.extend_home(),
         21 => ed.buffer.extend_end(),
+        22 => ed.buffer.collapse_cursors(),
+        23 => ed.buffer.select_next(),
         _ => {}
     }
     if matches!(key, 1 | 2 | 7 | 8) {
