@@ -17,6 +17,8 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<EditorRenderer>,
     editor: EditorBuffer,
+    text: String,
+    ext: String,
 }
 
 impl ApplicationHandler for App {
@@ -24,11 +26,12 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("Pomelo Editor (GPU)");
+        let title = if self.ext.is_empty() { "Pomelo Editor (GPU)".to_string() } else { format!("Pomelo Editor — {}", self.text.len()) };
+        let attrs = Window::default_attributes().with_title(title);
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
-        self.editor = EditorBuffer::from_str(SAMPLE);
+        self.editor = EditorBuffer::from_str(&self.text);
         let mut renderer = EditorRenderer::new(window.clone()).expect("renderer");
-        renderer.set_language(pomelo_editor_kit::Lang::Rust);
+        renderer.set_language(pomelo_editor_kit::Lang::from_ext(&self.ext));
         self.renderer = Some(renderer);
         self.window = Some(window);
     }
@@ -87,8 +90,21 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> anyhow::Result<()> {
-    let event_loop = EventLoop::new()?;
+    // Standalone Rust editor: `pomelo-editor-demo [path]`. With a path, open that file and pick the language from its
+    // extension; otherwise show the built-in sample. First step of the Swift->Rust app migration.
     let mut app = App::default();
+    if let Some(path) = std::env::args().nth(1) {
+        app.text = std::fs::read_to_string(&path).unwrap_or_else(|e| format!("// could not read {path}: {e}\n"));
+        app.ext = std::path::Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
+    } else {
+        app.text = SAMPLE.to_string();
+        app.ext = "rs".to_string();
+    }
+    let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut app)?;
     Ok(())
 }
