@@ -26,7 +26,7 @@ struct PomeloApp: App {
                 Button("Check for Updates…") { updater.checkForUpdates() }
                     .disabled(!updater.canCheckForUpdates)
             }
-            CommandGroup(after: .windowArrangement) { OpenMetalSpikeButton(); OpenGPUEditorButton(); MetalTerminalToggle(); MetalTermStatsToggle(); PerfHUDToggle() }
+            CommandGroup(after: .windowArrangement) { OpenMetalSpikeButton(); OpenGPUEditorButton(); GPUEditorFilesToggle(); MetalTerminalToggle(); MetalTermStatsToggle(); PerfHUDToggle() }
         }
 
         Window("Create workspace", id: "create-workspace") {

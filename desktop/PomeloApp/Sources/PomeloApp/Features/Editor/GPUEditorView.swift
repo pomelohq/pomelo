@@ -8,6 +8,9 @@ import CEditorKit
 // will eventually replace the AppKit NSTextView editor.
 final class GPUEditorNSView: NSView {
     private var editor: OpaquePointer?
+    private var link: CADisplayLink?
+    private var blinkTimer: Timer?
+    private var caretOn = true
     var initialText: String = ""
 
     override init(frame frameRect: NSRect) {
@@ -28,6 +31,32 @@ final class GPUEditorNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         ensureEditor()
+        if window == nil {
+            link?.invalidate(); link = nil
+            blinkTimer?.invalidate(); blinkTimer = nil
+        } else if link == nil {
+            let l = displayLink(target: self, selector: #selector(step))
+            l.add(to: .current, forMode: .common)
+            link = l
+            // Zed: caret blinks at 500ms; typing forces it back on.
+            let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.toggleCaret() }
+            RunLoop.main.add(t, forMode: .common)
+            blinkTimer = t
+        }
+    }
+
+    @objc private func step(_ sender: CADisplayLink) { render() }
+
+    private func toggleCaret() {
+        guard let ed = editor else { return }
+        caretOn.toggle()
+        pomelo_editor_set_caret_on(ed, caretOn)
+    }
+
+    private func wakeCaret() {
+        guard let ed = editor else { return }
+        caretOn = true
+        pomelo_editor_set_caret_on(ed, true)
     }
 
     override func viewDidChangeBackingProperties() {
@@ -98,6 +127,7 @@ final class GPUEditorNSView: NSView {
                 bytes.withUnsafeBufferPointer { pomelo_editor_insert_text(ed, $0.baseAddress, $0.count) }
             }
         }
+        wakeCaret()
         render()
     }
 
@@ -108,6 +138,8 @@ final class GPUEditorNSView: NSView {
     }
 
     deinit {
+        link?.invalidate()
+        blinkTimer?.invalidate()
         if let ed = editor { pomelo_editor_free(ed) }
     }
 }
@@ -149,5 +181,13 @@ struct OpenGPUEditorButton: View {
     var body: some View {
         Button("GPU Editor Spike") { openWindow(id: "gpu-editor-spike") }
             .keyboardShortcut("g", modifiers: [.command, .option, .control])
+    }
+}
+
+struct GPUEditorFilesToggle: View {
+    @AppStorage("gpuEditor") private var on = false
+    var body: some View {
+        Toggle("GPU Editor in Files (test)", isOn: $on)
+            .keyboardShortcut("g", modifiers: [.command, .shift, .option])
     }
 }
