@@ -1,0 +1,19 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Minimal GPU UI primitives (colored rects + text) on a wgpu surface. The reactive framework layer."
+
+[lib]
+path = "src/ui.rs"
+
+[dependencies]
+reactor = { path = "../reactor" }
+winit.workspace = true
+anyhow.workspace = true
+wgpu.workspace = true
+glyphon.workspace = true
+resvg.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true

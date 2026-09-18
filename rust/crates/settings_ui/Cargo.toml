@@ -1,0 +1,13 @@
+[package]
+name = "settings_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The settings screen: renders settings::Settings into ui primitives (read-only overlay for now)."
+
+[lib]
+path = "src/settings_ui.rs"
+
+[dependencies]
+ui = { path = "../ui" }
+settings = { path = "../settings" }

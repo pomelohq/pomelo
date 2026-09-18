@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use glyphon::{
-    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas,
-    TextBounds, TextRenderer, Viewport,
+    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
+    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use wgpu::{
-    CompositeAlphaMode, DeviceDescriptor, Instance, LoadOp, MultisampleState, Operations, PresentMode,
-    RenderPassColorAttachment, RenderPassDescriptor, RequestAdapterOptions, StoreOp, SurfaceConfiguration,
-    TextureFormat, TextureUsages, TextureViewDescriptor,
+    CompositeAlphaMode, DeviceDescriptor, Instance, LoadOp, MultisampleState, Operations,
+    PresentMode, RenderPassColorAttachment, RenderPassDescriptor, RequestAdapterOptions, StoreOp,
+    SurfaceConfiguration, TextureFormat, TextureUsages, TextureViewDescriptor,
 };
 use winit::window::Window;
 
@@ -23,7 +23,7 @@ fn gc(c: crate::theme::Color) -> Color {
 }
 
 const GUTTER_WIDTH: f32 = 52.0;
-// Height of the tab bar; the editor content starts below it (like a Zed pane), so a scrolled top line clips under the
+// Height of the tab bar; the editor content starts below it, so a scrolled top line clips under the
 // tab bar instead of against the window chrome.
 const CONTENT_TOP: f32 = 36.0;
 
@@ -91,9 +91,15 @@ impl EditorRenderer {
     ///
     /// # Safety
     /// `layer` must be a valid `CAMetalLayer` pointer that outlives the returned renderer.
-    pub unsafe fn from_metal_layer(layer: *mut std::ffi::c_void, width: u32, height: u32, scale: f32) -> Result<Self> {
+    pub unsafe fn from_metal_layer(
+        layer: *mut std::ffi::c_void,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> Result<Self> {
         let instance = Instance::default();
-        let surface = instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))?;
+        let surface =
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))?;
         Self::from_surface(instance, surface, width, height, scale)
     }
 
@@ -131,7 +137,8 @@ impl EditorRenderer {
         let cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &cache);
         let mut atlas = TextAtlas::new(&device, &queue, &cache, format);
-        let text_renderer = TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
+        let text_renderer =
+            TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
 
         let font_size = 13.0;
         let line_height = font_size * 1.4;
@@ -142,12 +149,25 @@ impl EditorRenderer {
             Some(size.height as f32 / scale),
         );
         let mut gutter = Buffer::new(&mut font_system, Metrics::new(font_size, line_height));
-        gutter.set_size(&mut font_system, Some(GUTTER_WIDTH), Some(size.height as f32 / scale));
+        gutter.set_size(
+            &mut font_system,
+            Some(GUTTER_WIDTH),
+            Some(size.height as f32 / scale),
+        );
         let mut tab_title = Buffer::new(&mut font_system, Metrics::new(13.0, CONTENT_TOP));
-        tab_title.set_size(&mut font_system, Some(size.width as f32 / scale), Some(CONTENT_TOP));
+        tab_title.set_size(
+            &mut font_system,
+            Some(size.width as f32 / scale),
+            Some(CONTENT_TOP),
+        );
 
         let mut probe = Buffer::new(&mut font_system, Metrics::new(font_size, line_height));
-        probe.set_text(&mut font_system, "M", Attrs::new().family(Family::Monospace), Shaping::Advanced);
+        probe.set_text(
+            &mut font_system,
+            "M",
+            Attrs::new().family(Family::Monospace),
+            Shaping::Advanced,
+        );
         probe.shape_until_scroll(&mut font_system, false);
         let char_width = probe
             .layout_runs()
@@ -217,7 +237,7 @@ impl EditorRenderer {
         self.max_line_w = 0.0;
     }
 
-    /// While drag-selecting, if the pointer is past the top/bottom content edge, scroll toward it (Zed autoscroll).
+    /// While drag-selecting, if the pointer is past the top/bottom content edge, scroll toward it (autoscroll).
     /// `y` is in logical view coords. Call every frame during a drag so it keeps scrolling when the mouse is still.
     pub fn autoscroll_for_drag(&mut self, editor: &EditorBuffer, y: f32) {
         let bottom = self.config.height as f32 / self.scale;
@@ -284,8 +304,16 @@ impl EditorRenderer {
                     array_stride: 24,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 8, shader_location: 1 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 8,
+                            shader_location: 1,
+                        },
                     ],
                 }],
             },
@@ -318,19 +346,36 @@ impl EditorRenderer {
     fn push_rect(&self, out: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
         let vw = self.config.width as f32;
         let vh = self.config.height as f32;
-        let ndc = |x: f32, y: f32| ((x * self.scale) / vw * 2.0 - 1.0, 1.0 - (y * self.scale) / vh * 2.0);
+        let ndc = |x: f32, y: f32| {
+            (
+                (x * self.scale) / vw * 2.0 - 1.0,
+                1.0 - (y * self.scale) / vh * 2.0,
+            )
+        };
         let (l, t) = ndc(x, y);
         let (r, b) = ndc(x + w, y + h);
         let mut v = |px: f32, py: f32| {
             out.extend_from_slice(&[px, py, color[0], color[1], color[2], color[3]]);
         };
-        v(l, t); v(r, t); v(l, b);
-        v(r, t); v(r, b); v(l, b);
+        v(l, t);
+        v(r, t);
+        v(l, b);
+        v(r, t);
+        v(r, b);
+        v(l, b);
     }
 
     // Clip a content rect to the editor area (below the tab bar, right of the gutter) so selection/caret never paints
     // over the tab strip or the gutter when scrolled.
-    fn push_content_rect(&self, out: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+    fn push_content_rect(
+        &self,
+        out: &mut Vec<f32>,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+    ) {
         let top = y.max(CONTENT_TOP);
         let bottom = y + h;
         let left = x.max(GUTTER_WIDTH);
@@ -343,12 +388,26 @@ impl EditorRenderer {
     fn build_quad_vertices(&self, editor: &EditorBuffer) -> Vec<f32> {
         let mut out = Vec::new();
         let view_w = self.config.width as f32 / self.scale;
-        // Tab bar (Zed One Dark): background #2f343e, 1px bottom border #464b57.
-        self.push_rect(&mut out, 0.0, 0.0, view_w, CONTENT_TOP, lin(self.theme.tab_bar.0, 1.0));
-        self.push_rect(&mut out, 0.0, CONTENT_TOP - 1.0, view_w, 1.0, lin(self.theme.tab_border.0, 1.0));
+        // Tab bar (One Dark): background #2f343e, 1px bottom border #464b57.
+        self.push_rect(
+            &mut out,
+            0.0,
+            0.0,
+            view_w,
+            CONTENT_TOP,
+            lin(self.theme.tab_bar.0, 1.0),
+        );
+        self.push_rect(
+            &mut out,
+            0.0,
+            CONTENT_TOP - 1.0,
+            view_w,
+            1.0,
+            lin(self.theme.tab_border.0, 1.0),
+        );
 
         let sel = lin(self.theme.selection.0, self.theme.selection_alpha);
-        // Zed highlights each line to its own text width, plus a small marker when the trailing newline is selected.
+        // Highlight each line to its own text width, plus a small marker when the trailing newline is selected.
         let nl_marker = self.char_width * 0.4;
         for s in editor.selections() {
             if let Some((a, b)) = s.range() {
@@ -356,7 +415,11 @@ impl EditorRenderer {
                 let (el, ec) = editor.line_col_of(b);
                 for line in sl..=el {
                     let c0 = if line == sl { sc } else { 0 };
-                    let end_col = if line == el { ec } else { editor.line_len(line) };
+                    let end_col = if line == el {
+                        ec
+                    } else {
+                        editor.line_len(line)
+                    };
                     let x = GUTTER_WIDTH + c0 as f32 * self.char_width - self.scroll_x;
                     let mut w = end_col.saturating_sub(c0) as f32 * self.char_width;
                     let min_w = if line < el {
@@ -375,7 +438,14 @@ impl EditorRenderer {
                 let (line, col) = editor.line_col_of(s.cursor);
                 let x = GUTTER_WIDTH + col as f32 * self.char_width - self.scroll_x;
                 let y = CONTENT_TOP + line as f32 * self.line_height - self.scroll_y;
-                self.push_content_rect(&mut out, x, y, 2.0, self.line_height, lin(self.theme.caret.0, 1.0));
+                self.push_content_rect(
+                    &mut out,
+                    x,
+                    y,
+                    2.0,
+                    self.line_height,
+                    lin(self.theme.caret.0, 1.0),
+                );
             }
         }
         out
@@ -420,12 +490,14 @@ impl EditorRenderer {
     pub fn render(&mut self, editor: &EditorBuffer) -> Result<()> {
         // Reshape text only when it changed — not every frame — so scroll/caret redraws stay cheap on large files.
         if self.text_dirty {
-            // Width = None so lines never soft-wrap (Zed scrolls horizontally instead); a wrapped code line would add
+            // Width = None so lines never soft-wrap (we scroll horizontally instead); a wrapped code line would add
             // visual rows that the 1-number-per-line gutter can't match, misaligning line numbers. Height = viewport +
             // overscan so cosmic-text shapes only the visible window (cull) plus a little past the bottom edge.
             let view_h = self.config.height as f32 / self.scale + 3.0 * self.line_height;
-            self.buffer.set_size(&mut self.font_system, None, Some(view_h));
-            self.gutter.set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(view_h));
+            self.buffer
+                .set_size(&mut self.font_system, None, Some(view_h));
+            self.gutter
+                .set_size(&mut self.font_system, Some(GUTTER_WIDTH), Some(view_h));
 
             let text = editor.text();
             let spans = self.highlighter.highlight(&text, self.language);
@@ -433,7 +505,10 @@ impl EditorRenderer {
                 .iter()
                 .map(|s| {
                     let color = gc(self.theme.syntax_color(s.capture));
-                    (s.text.as_str(), Attrs::new().family(Family::Monospace).color(color))
+                    (
+                        s.text.as_str(),
+                        Attrs::new().family(Family::Monospace).color(color),
+                    )
                 })
                 .collect();
             self.buffer.set_rich_text(
@@ -448,20 +523,29 @@ impl EditorRenderer {
             self.gutter.set_text(
                 &mut self.font_system,
                 &numbers,
-                Attrs::new().family(Family::Monospace).color(gc(self.theme.gutter)),
+                Attrs::new()
+                    .family(Family::Monospace)
+                    .color(gc(self.theme.gutter)),
                 Shaping::Advanced,
             );
             self.text_dirty = false;
         }
         if self.title_dirty {
-            self.tab_title.set_size(&mut self.font_system, Some(self.config.width as f32 / self.scale), Some(CONTENT_TOP));
+            self.tab_title.set_size(
+                &mut self.font_system,
+                Some(self.config.width as f32 / self.scale),
+                Some(CONTENT_TOP),
+            );
             self.tab_title.set_text(
                 &mut self.font_system,
                 &self.title,
-                Attrs::new().family(Family::SansSerif).color(gc(self.theme.foreground)),
+                Attrs::new()
+                    .family(Family::SansSerif)
+                    .color(gc(self.theme.foreground)),
                 Shaping::Advanced,
             );
-            self.tab_title.shape_until_scroll(&mut self.font_system, false);
+            self.tab_title
+                .shape_until_scroll(&mut self.font_system, false);
             self.title_dirty = false;
         }
 
@@ -471,7 +555,11 @@ impl EditorRenderer {
         // vertical=0 and shifting `top` avoids that. caret/selection y still use scroll_y directly (equivalent).
         let top_line = (self.scroll_y / self.line_height).floor().max(0.0);
         let scroll_frac = self.scroll_y - top_line * self.line_height;
-        let scroll = glyphon::cosmic_text::Scroll { line: top_line as usize, vertical: 0.0, horizontal: 0.0 };
+        let scroll = glyphon::cosmic_text::Scroll {
+            line: top_line as usize,
+            vertical: 0.0,
+            horizontal: 0.0,
+        };
         self.buffer.set_scroll(scroll);
         self.gutter.set_scroll(scroll);
         self.buffer.shape_until_scroll(&mut self.font_system, false);
@@ -479,8 +567,12 @@ impl EditorRenderer {
 
         // Clamp horizontal scroll to the widest line seen so far (running max, only grows) — clamping to just the
         // currently-visible lines would snap scroll_x back left when scrolling down onto shorter lines. Reset on
-        // set_text (new file). Zed-style horizontal scroll, no wrap.
-        let widest = self.buffer.layout_runs().map(|r| r.line_w).fold(0.0_f32, f32::max);
+        // set_text (new file). Horizontal scroll, no wrap.
+        let widest = self
+            .buffer
+            .layout_runs()
+            .map(|r| r.line_w)
+            .fold(0.0_f32, f32::max);
         self.max_line_w = self.max_line_w.max(widest);
         let code_view_w = (self.config.width as f32 / self.scale - GUTTER_WIDTH).max(1.0);
         let max_x = (self.max_line_w - code_view_w).max(0.0);
@@ -488,7 +580,10 @@ impl EditorRenderer {
 
         self.viewport.update(
             &self.queue,
-            Resolution { width: self.config.width, height: self.config.height },
+            Resolution {
+                width: self.config.width,
+                height: self.config.height,
+            },
         );
 
         // Clip content to below the top padding so a partially-scrolled top line ends at a clean edge instead of
@@ -522,7 +617,12 @@ impl EditorRenderer {
                     top: (CONTENT_TOP - scroll_frac) * self.scale,
                     scale: self.scale,
                     // Clip the code to the right of the gutter so horizontally-scrolled text doesn't underlap it.
-                    bounds: TextBounds { left: (GUTTER_WIDTH * self.scale) as i32, top: clip_top, right: self.config.width as i32, bottom: self.config.height as i32 },
+                    bounds: TextBounds {
+                        left: (GUTTER_WIDTH * self.scale) as i32,
+                        top: clip_top,
+                        right: self.config.width as i32,
+                        bottom: self.config.height as i32,
+                    },
                     default_color: gc(self.theme.foreground),
                     custom_glyphs: &[],
                 },
@@ -531,7 +631,12 @@ impl EditorRenderer {
                     left: 12.0 * self.scale,
                     top: 0.0,
                     scale: self.scale,
-                    bounds: TextBounds { left: 0, top: 0, right: self.config.width as i32, bottom: clip_top },
+                    bounds: TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: self.config.width as i32,
+                        bottom: clip_top,
+                    },
                     default_color: Color::rgb(220, 224, 229),
                     custom_glyphs: &[],
                 },
@@ -551,7 +656,8 @@ impl EditorRenderer {
             });
         }
         if !verts.is_empty() {
-            self.queue.write_buffer(&self.quad_vertices, 0, bytemuck::cast_slice(&verts));
+            self.queue
+                .write_buffer(&self.quad_vertices, 0, bytemuck::cast_slice(&verts));
         }
 
         let frame = self.surface.get_current_texture()?;
@@ -584,7 +690,8 @@ impl EditorRenderer {
                 pass.set_vertex_buffer(0, self.quad_vertices.slice(..));
                 pass.draw(0..quad_count as u32, 0..1);
             }
-            self.text_renderer.render(&self.atlas, &self.viewport, &mut pass)?;
+            self.text_renderer
+                .render(&self.atlas, &self.viewport, &mut pass)?;
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();

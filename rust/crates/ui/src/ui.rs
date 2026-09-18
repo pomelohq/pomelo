@@ -1,0 +1,1404 @@
+//! Minimal GPU UI layer: fills colored rectangles on a wgpu surface. The layout (top bar, docks, content) is
+//! expressed as a list of rects each frame; text/icons come later. Platform-agnostic (Metal/Vulkan/DX12).
+
+mod app;
+mod components;
+mod element;
+mod theme;
+pub use app::*;
+pub use components::*;
+pub use element::*;
+pub use theme::*;
+
+// Re-export the reactive core so view crates depend on `ui` alone (the framework exposes these from one crate).
+pub use reactor::{App, Context, Entity, Global, Subscription, WeakEntity};
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use glyphon::{
+    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
+    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
+};
+use wgpu::util::DeviceExt;
+use wgpu::{
+    CompositeAlphaMode, DeviceDescriptor, Instance, LoadOp, MultisampleState, Operations,
+    PresentMode, RenderPassColorAttachment, RenderPassDescriptor, RequestAdapterOptions, StoreOp,
+    SurfaceConfiguration, TextureFormat, TextureUsages, TextureViewDescriptor,
+};
+use winit::window::Window as WinitWindow;
+
+/// A colored rectangle in logical pixels (top-left origin). `radius` rounds the corners (0 = sharp);
+/// `border` draws a `border`-px-wide ring in `border_color` inside the edge (0 = no border).
+#[derive(Clone, Copy)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub color: Rgba,
+    pub radius: f32,
+    pub border: f32,
+    pub border_color: Rgba,
+}
+
+impl Rect {
+    pub fn new(x: f32, y: f32, w: f32, h: f32, color: Rgba) -> Self {
+        Self {
+            x,
+            y,
+            w,
+            h,
+            color,
+            radius: 0.0,
+            border: 0.0,
+            border_color: Rgba::TRANSPARENT,
+        }
+    }
+}
+
+/// A filled triangle in logical pixels (for small icons like the disclosure/dropdown chevron).
+#[derive(Clone, Copy)]
+pub struct Tri {
+    pub p: [[f32; 2]; 3],
+    pub color: Rgba,
+}
+
+/// A run of text in logical pixels (top-left origin). `mono` renders it in the mono UI font (`.PomeloMono`)
+/// instead of the active family — used for section headers.
+#[derive(Clone)]
+pub struct Text {
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+    pub color: Rgba,
+    pub text: String,
+    pub mono: bool,
+    /// OpenType weight (400 = regular, 500 = medium, 700 = bold). Most UI text is regular, matching the
+    /// reference; only emphasized runs bump this.
+    pub weight: u16,
+    /// Wrap width in logical (design) px; `0` = single line. Used for wrapping setting descriptions.
+    pub wrap: f32,
+}
+
+/// A scissor rectangle `(x, y, w, h)` in physical pixels; `None` means draw unclipped.
+pub type Clip = Option<(f32, f32, f32, f32)>;
+
+/// One back-to-front compositing layer for `render_frame`: its rects, triangles, text runs, icons, and clip.
+pub type Layer<'a> = (&'a [Rect], &'a [Tri], &'a [Text], &'a [IconQuad], Clip);
+
+/// One icon draw within a layer: the `(kind, pixel-size)` cache key and the vertex range to draw.
+type IconDraw = ((IconKind, u32), u32, u32);
+
+fn ui_config(width: u32, height: u32) -> SurfaceConfiguration {
+    SurfaceConfiguration {
+        usage: TextureUsages::RENDER_ATTACHMENT,
+        format: TextureFormat::Bgra8UnormSrgb,
+        width: width.max(1),
+        height: height.max(1),
+        present_mode: PresentMode::Fifo,
+        alpha_mode: CompositeAlphaMode::Auto,
+        view_formats: vec![],
+        desired_maximum_frame_latency: 2,
+    }
+}
+
+fn glyph_color(c: Rgba) -> Color {
+    let [r, g, b, a] = c.to_u8();
+    Color::rgba(r, g, b, a)
+}
+
+fn srgb_to_linear(c: f64) -> f64 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+pub struct UiRenderer {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    // Windowed rendering targets a surface; headless (for UI snapshot tests) targets an offscreen texture.
+    surface: Option<wgpu::Surface<'static>>,
+    offscreen: Option<wgpu::Texture>,
+    config: SurfaceConfiguration,
+    scale: f32,
+    pipeline: wgpu::RenderPipeline,
+    vbuf: wgpu::Buffer,
+    capacity: usize,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    atlas: TextAtlas,
+    viewport: Viewport,
+    // One text renderer per composited layer (base, overlay, top, ...); grown on demand.
+    text_renderers: Vec<TextRenderer>,
+    ui_font: Option<String>,     // active family used for rendering
+    sans_family: Option<String>, // resolves ".PomeloSans"
+    mono_family: Option<String>, // resolves ".PomeloMono"
+    // Icons: real SVGs rasterized to an alpha mask (cached per size) and drawn tinted.
+    icon_pipeline: wgpu::RenderPipeline,
+    icon_bgl: wgpu::BindGroupLayout,
+    icon_sampler: wgpu::Sampler,
+    icon_cache: std::collections::HashMap<(IconKind, u32), wgpu::BindGroup>,
+}
+
+// Bundle our UI font (IBM Plex, OFL) so labels render crisp and identical on every machine, instead of a
+// system fallback whose optical size is wrong at small sizes. We register all static weight faces under the
+// same family so `Attrs::weight` picks the matching face (cosmic-text 0.12 does not instantiate a variable
+// font's `wght` axis, so a single variable file would be stuck at Regular). Returns the registered family name.
+fn load_font(font_system: &mut FontSystem, faces: &[&'static [u8]]) -> Option<String> {
+    use glyphon::fontdb::Source;
+    let mut first: Option<String> = None;
+    for bytes in faces {
+        let ids = font_system
+            .db_mut()
+            .load_font_source(Source::Binary(Arc::new(*bytes)));
+        if first.is_none() {
+            if let Some(id) = ids.first() {
+                first = font_system
+                    .db()
+                    .face(*id)
+                    .and_then(|f| f.families.first().map(|(n, _)| n.clone()));
+            }
+        }
+    }
+    first
+}
+
+/// Bundle our UI fonts (IBM Plex Sans + Mono, OFL) and return their real family names. We expose them under
+/// the aliases ".PomeloSans" / ".PomeloMono". All static weights
+/// (Thin 100 .. Bold 700) are registered so the Font Weight control spans the family's real range.
+fn load_ui_fonts(font_system: &mut FontSystem) -> (Option<String>, Option<String>) {
+    let sans = load_font(
+        font_system,
+        &[
+            include_bytes!("../assets/IBMPlexSans-Thin.ttf"),
+            include_bytes!("../assets/IBMPlexSans-ExtraLight.ttf"),
+            include_bytes!("../assets/IBMPlexSans-Light.ttf"),
+            include_bytes!("../assets/IBMPlexSans-Regular.ttf"),
+            include_bytes!("../assets/IBMPlexSans-Medium.ttf"),
+            include_bytes!("../assets/IBMPlexSans-SemiBold.ttf"),
+            include_bytes!("../assets/IBMPlexSans-Bold.ttf"),
+        ],
+    );
+    let mono = load_font(
+        font_system,
+        &[
+            include_bytes!("../assets/IBMPlexMono-Thin.ttf"),
+            include_bytes!("../assets/IBMPlexMono-ExtraLight.ttf"),
+            include_bytes!("../assets/IBMPlexMono-Light.ttf"),
+            include_bytes!("../assets/IBMPlexMono-Regular.ttf"),
+            include_bytes!("../assets/IBMPlexMono-Medium.ttf"),
+            include_bytes!("../assets/IBMPlexMono-SemiBold.ttf"),
+            include_bytes!("../assets/IBMPlexMono-Bold.ttf"),
+        ],
+    );
+    theme::set_bundled_fonts(sans.clone(), mono.clone());
+    (sans, mono)
+}
+
+struct Measurer {
+    font_system: FontSystem,
+    sans: Option<String>,
+    mono: Option<String>,
+    // Shaping a buffer per label per frame is expensive and dominates layout while scrolling; cache widths
+    // keyed by (text, quarter-px size, mono) so repeated labels across frames are free.
+    cache: std::collections::HashMap<(String, u32, bool), f32>,
+    // Wrapped (width, height) keyed additionally by wrap width (half-px buckets).
+    wrap_cache: std::collections::HashMap<(String, u32, bool, u32), (f32, f32)>,
+}
+
+thread_local! {
+    // A standalone font context (our bundled fonts only) used to measure text widths during element layout,
+    // so containers size to the actual shaped glyphs instead of a crude average-char estimate.
+    static MEASURER: std::cell::RefCell<Option<Measurer>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Width in logical px of `text` shaped at `size` in the sans (or mono) UI font. Used by the element tree's
+/// intrinsic sizing so a label's box matches its real glyph extent.
+pub fn measure_text_width(text: &str, size: f32, mono: bool, weight: u16) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let size = size * theme::ui_text_scale();
+    MEASURER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let m = slot.get_or_insert_with(|| {
+            // System fonts too (not just bundled Plex): the user can pick any installed family as the UI font,
+            // and measurement must shape in that same family or laid-out boxes won't match the rendered glyphs.
+            let mut font_system = FontSystem::new();
+            let (sans, mono) = load_ui_fonts(&mut font_system);
+            Measurer {
+                font_system,
+                sans,
+                mono,
+                cache: std::collections::HashMap::new(),
+                wrap_cache: std::collections::HashMap::new(),
+            }
+        });
+        let family_name = if mono {
+            m.mono.clone()
+        } else {
+            theme::active_ui_font().or_else(|| m.sans.clone())
+        };
+        let weight = theme::snap_weight(family_name.as_deref(), weight);
+        let key = (
+            format!(
+                "{}\u{0}{}\u{0}{}",
+                family_name.as_deref().unwrap_or(""),
+                weight,
+                text
+            ),
+            (size * 4.0).round() as u32,
+            mono,
+        );
+        if let Some(w) = m.cache.get(&key) {
+            return *w;
+        }
+        let family = match &family_name {
+            Some(name) => Family::Name(name),
+            None => Family::SansSerif,
+        };
+        let mut buffer = Buffer::new(&mut m.font_system, Metrics::new(size, size * 1.3));
+        buffer.set_size(&mut m.font_system, None, None);
+        buffer.set_text(
+            &mut m.font_system,
+            text,
+            Attrs::new().family(family).weight(Weight(weight)),
+            Shaping::Advanced,
+        );
+        buffer.shape_until_scroll(&mut m.font_system, false);
+        let width = buffer
+            .layout_runs()
+            .map(|run| run.line_w)
+            .fold(0.0_f32, f32::max);
+        m.cache.insert(key, width);
+        width
+    })
+}
+
+/// Shaped size of `text` wrapped to `max_w` logical (design) px at `size`, as (widest line, total height).
+/// Used to lay out multi-line setting descriptions.
+pub fn measure_wrapped(text: &str, size: f32, mono: bool, weight: u16, max_w: f32) -> (f32, f32) {
+    let scale = theme::ui_text_scale();
+    let size = size * scale;
+    let max_w = max_w * scale;
+    if text.is_empty() || max_w <= 0.0 {
+        return (0.0, size * 1.4);
+    }
+    MEASURER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let m = slot.get_or_insert_with(|| {
+            // System fonts too (not just bundled Plex): the user can pick any installed family as the UI font,
+            // and measurement must shape in that same family or laid-out boxes won't match the rendered glyphs.
+            let mut font_system = FontSystem::new();
+            let (sans, mono) = load_ui_fonts(&mut font_system);
+            Measurer {
+                font_system,
+                sans,
+                mono,
+                cache: std::collections::HashMap::new(),
+                wrap_cache: std::collections::HashMap::new(),
+            }
+        });
+        let family_name = if mono {
+            m.mono.clone()
+        } else {
+            theme::active_ui_font().or_else(|| m.sans.clone())
+        };
+        let weight = theme::snap_weight(family_name.as_deref(), weight);
+        let key = (
+            format!(
+                "{}\u{0}{}\u{0}{}",
+                family_name.as_deref().unwrap_or(""),
+                weight,
+                text
+            ),
+            (size * 4.0).round() as u32,
+            mono,
+            (max_w * 2.0).round() as u32,
+        );
+        if let Some(v) = m.wrap_cache.get(&key) {
+            return *v;
+        }
+        let family = match &family_name {
+            Some(name) => Family::Name(name),
+            None => Family::SansSerif,
+        };
+        let mut buffer = Buffer::new(&mut m.font_system, Metrics::new(size, size * 1.3));
+        buffer.set_size(&mut m.font_system, Some(max_w), None);
+        buffer.set_text(
+            &mut m.font_system,
+            text,
+            Attrs::new().family(family).weight(Weight(weight)),
+            Shaping::Advanced,
+        );
+        buffer.shape_until_scroll(&mut m.font_system, false);
+        let mut lines = 0usize;
+        let mut w = 0.0_f32;
+        for run in buffer.layout_runs() {
+            lines += 1;
+            w = w.max(run.line_w);
+        }
+        let out = (w, lines.max(1) as f32 * size * 1.5);
+        m.wrap_cache.insert(key, out);
+        out
+    })
+}
+
+/// The SVG source for each icon (Lucide, ISC/MIT — see `assets/icons/LICENSES`), bundled into the binary.
+fn icon_svg(kind: IconKind) -> &'static [u8] {
+    macro_rules! svg {
+        ($f:literal) => {
+            include_bytes!(concat!("../assets/icons/", $f))
+        };
+    }
+    match kind {
+        IconKind::ChevronRight => svg!("chevron_right.svg"),
+        IconKind::ChevronDown => svg!("chevron_down.svg"),
+        IconKind::ChevronUpDown => svg!("chevron_up_down.svg"),
+        IconKind::Search => svg!("search.svg"),
+        IconKind::Close => svg!("close.svg"),
+        IconKind::Check => svg!("check.svg"),
+        IconKind::Plus => svg!("plus.svg"),
+        IconKind::Folder => svg!("folder.svg"),
+        IconKind::Monitor => svg!("monitor.svg"),
+        IconKind::ArrowUpRight => svg!("arrow_up_right.svg"),
+        IconKind::Window => svg!("window.svg"),
+        IconKind::Grid => svg!("grid.svg"),
+        IconKind::Branch => svg!("branch.svg"),
+        IconKind::Cylinder => svg!("cylinder.svg"),
+        IconKind::Ticket => svg!("ticket.svg"),
+        IconKind::Terminal => svg!("terminal.svg"),
+        IconKind::Diamond => svg!("diamond.svg"),
+        IconKind::Sparkle => svg!("sparkle.svg"),
+        IconKind::Sidebar => svg!("sidebar.svg"),
+        IconKind::PanelRight => svg!("panel_right.svg"),
+        IconKind::PanelBottom => svg!("panel_bottom.svg"),
+        IconKind::Server => svg!("server.svg"),
+    }
+}
+
+/// Rasterize an icon's SVG to a `px`-by-`px` alpha coverage mask (one byte per pixel). Returns all-zero on any
+/// parse/render failure so a bad asset degrades to a blank icon rather than crashing.
+fn rasterize_icon(kind: IconKind, px: u32) -> Vec<u8> {
+    let blank = || vec![0u8; (px * px) as usize];
+    let opt = resvg::usvg::Options::default();
+    let Ok(tree) = resvg::usvg::Tree::from_data(icon_svg(kind), &opt) else {
+        return blank();
+    };
+    let Some(mut pixmap) = resvg::tiny_skia::Pixmap::new(px, px) else {
+        return blank();
+    };
+    let size = tree.size();
+    let scale = (px as f32 / size.width()).min(px as f32 / size.height());
+    // Center the (possibly non-square) drawing in the square pixmap.
+    let tx = (px as f32 - size.width() * scale) / 2.0;
+    let ty = (px as f32 - size.height() * scale) / 2.0;
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale).post_translate(tx, ty);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    // tiny-skia stores premultiplied RGBA; the alpha channel is the coverage we tint later.
+    pixmap.data().chunks_exact(4).map(|p| p[3]).collect()
+}
+
+impl UiRenderer {
+    pub fn new(window: Arc<WinitWindow>) -> Result<Self> {
+        let size = window.inner_size();
+        let scale = window.scale_factor() as f32;
+        let instance = Instance::default();
+        let surface = instance.create_surface(window.clone())?;
+        let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        }))
+        .ok_or_else(|| anyhow::anyhow!("no GPU adapter"))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&DeviceDescriptor::default(), None))?;
+
+        let config = ui_config(size.width, size.height);
+        surface.configure(&device, &config);
+        Self::from_parts(device, queue, config, scale, Some(surface), None)
+    }
+
+    /// Headless renderer that draws to an offscreen texture (for the UI snapshot tool). Sizes are physical.
+    pub fn new_headless(width: u32, height: u32, scale: f32) -> Result<Self> {
+        let instance = Instance::default();
+        let adapter =
+            pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default()))
+                .ok_or_else(|| anyhow::anyhow!("no GPU adapter"))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&DeviceDescriptor::default(), None))?;
+        let config = ui_config(width, height);
+        let offscreen = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ui-offscreen"),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        Self::from_parts(device, queue, config, scale, None, Some(offscreen))
+    }
+
+    fn from_parts(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        config: SurfaceConfiguration,
+        scale: f32,
+        surface: Option<wgpu::Surface<'static>>,
+        offscreen: Option<wgpu::Texture>,
+    ) -> Result<Self> {
+        let format = config.format;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ui"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+                struct VOut {
+                    @builtin(position) pos: vec4<f32>,
+                    @location(0) color: vec4<f32>,
+                    @location(1) local: vec2<f32>,
+                    @location(2) hsize: vec2<f32>,
+                    @location(3) radius: f32,
+                    @location(4) bcolor: vec4<f32>,
+                    @location(5) bwidth: f32,
+                };
+                @vertex fn vs(
+                    @location(0) p: vec2<f32>,
+                    @location(1) c: vec4<f32>,
+                    @location(2) local: vec2<f32>,
+                    @location(3) hsize: vec2<f32>,
+                    @location(4) radius: f32,
+                    @location(5) bcolor: vec4<f32>,
+                    @location(6) bwidth: f32,
+                ) -> VOut {
+                    var o: VOut;
+                    o.pos = vec4<f32>(p, 0.0, 1.0);
+                    o.color = c; o.local = local; o.hsize = hsize; o.radius = radius;
+                    o.bcolor = bcolor; o.bwidth = bwidth;
+                    return o;
+                }
+                fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+                    let q = abs(p) - b + vec2<f32>(r, r);
+                    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r;
+                }
+                @fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+                    let d = sd_round_box(in.local, in.hsize, in.radius);
+                    let aa = fwidth(d);
+                    let cov = 1.0 - smoothstep(0.0, aa, d);
+                    // Border ring: pixels within `bwidth` of the edge use the border color. The inner AA
+                    // straddles the -bwidth boundary (not spilling fully inward), so a 1px border reads as a
+                    // crisp hairline instead of a ~2px fuzzy band.
+                    let edge = select(0.0, smoothstep(-in.bwidth - aa * 0.5, -in.bwidth + aa * 0.5, d), in.bwidth > 0.0);
+                    let rgb = mix(in.color.rgb, in.bcolor.rgb, edge);
+                    // Alpha must follow the border in the ring, else a transparent fill (ghost buttons) hides
+                    // the border entirely.
+                    let a = mix(in.color.a, in.bcolor.a, edge);
+                    return vec4<f32>(rgb, a * cov);
+                }
+                "#
+                .into(),
+            ),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ui"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs",
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 24,
+                            shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 32,
+                            shader_location: 3,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32,
+                            offset: 40,
+                            shader_location: 4,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 44,
+                            shader_location: 5,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32,
+                            offset: 60,
+                            shader_location: 6,
+                        },
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let capacity = 256;
+        let vbuf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ui-verts"),
+            size: (capacity * 64) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut font_system = FontSystem::new();
+        let (sans_family, mono_family) = load_ui_fonts(&mut font_system);
+        let ui_font = sans_family.clone();
+        let swash_cache = SwashCache::new();
+        let cache = Cache::new(&device);
+        let viewport = Viewport::new(&device, &cache);
+        let mut atlas = TextAtlas::new(&device, &queue, &cache, format);
+        let text_renderers = (0..4)
+            .map(|_| TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None))
+            .collect();
+
+        // Icon pipeline: a textured quad sampling an alpha mask (R8), tinted by the per-vertex color.
+        let icon_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ui-icon"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+                struct VOut {
+                    @builtin(position) pos: vec4<f32>,
+                    @location(0) uv: vec2<f32>,
+                    @location(1) color: vec4<f32>,
+                };
+                @vertex fn vs(
+                    @location(0) p: vec2<f32>,
+                    @location(1) uv: vec2<f32>,
+                    @location(2) c: vec4<f32>,
+                ) -> VOut {
+                    var o: VOut;
+                    o.pos = vec4<f32>(p, 0.0, 1.0);
+                    o.uv = uv; o.color = c;
+                    return o;
+                }
+                @group(0) @binding(0) var tex: texture_2d<f32>;
+                @group(0) @binding(1) var samp: sampler;
+                @fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+                    let cov = textureSample(tex, samp, in.uv).r;
+                    return vec4<f32>(in.color.rgb, in.color.a * cov);
+                }
+                "#
+                .into(),
+            ),
+        });
+        let icon_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ui-icon-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let icon_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ui-icon-layout"),
+            bind_group_layouts: &[&icon_bgl],
+            push_constant_ranges: &[],
+        });
+        let icon_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ui-icon"),
+            layout: Some(&icon_layout),
+            vertex: wgpu::VertexState {
+                module: &icon_shader,
+                entry_point: "vs",
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 32,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 2,
+                        },
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &icon_shader,
+                entry_point: "fs",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let icon_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ui-icon-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        Ok(Self {
+            device,
+            queue,
+            surface,
+            offscreen,
+            config,
+            scale,
+            pipeline,
+            vbuf,
+            capacity,
+            font_system,
+            swash_cache,
+            atlas,
+            viewport,
+            text_renderers,
+            ui_font,
+            sans_family,
+            mono_family,
+            icon_pipeline,
+            icon_bgl,
+            icon_sampler,
+            icon_cache: std::collections::HashMap::new(),
+        })
+    }
+
+    /// Ensure the (icon, px) alpha mask is uploaded and a bind group cached; return nothing (cache side effect).
+    fn ensure_icon(&mut self, kind: IconKind, px: u32) {
+        if px == 0 || self.icon_cache.contains_key(&(kind, px)) {
+            return;
+        }
+        let alpha = rasterize_icon(kind, px);
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ui-icon-tex"),
+            size: wgpu::Extent3d {
+                width: px,
+                height: px,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &alpha,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(px),
+                rows_per_image: Some(px),
+            },
+            wgpu::Extent3d {
+                width: px,
+                height: px,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui-icon-bg"),
+            layout: &self.icon_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.icon_sampler),
+                },
+            ],
+        });
+        self.icon_cache.insert((kind, px), bind_group);
+    }
+
+    /// Set the active UI font family. Accepts the ".PomeloSans"/".PomeloMono" aliases or any real family
+    /// name; unknown names fall back to the sans font so text never disappears.
+    pub fn set_ui_font(&mut self, name: &str) {
+        self.ui_font = match name {
+            ".PomeloSans" => self.sans_family.clone(),
+            ".PomeloMono" => self.mono_family.clone(),
+            other => {
+                let known = self
+                    .font_system
+                    .db()
+                    .faces()
+                    .any(|f| f.families.iter().any(|(n, _)| n == other));
+                if known {
+                    Some(other.to_string())
+                } else {
+                    self.sans_family.clone()
+                }
+            }
+        };
+        theme::set_active_ui_font(self.ui_font.clone());
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.config.width = width.max(1);
+        self.config.height = height.max(1);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.config);
+        }
+    }
+
+    pub fn size(&self) -> (f32, f32) {
+        (
+            self.config.width as f32 / self.scale,
+            self.config.height as f32 / self.scale,
+        )
+    }
+
+    pub fn render(&mut self, rects: &[Rect], tris: &[Tri], texts: &[Text]) -> Result<()> {
+        let vw = self.config.width as f32;
+        let vh = self.config.height as f32;
+        const FLOATS_PER_VERT: usize = 16; // pos2 + color4 + local2 + hsize2 + radius1 + bcolor4 + bwidth1
+        let mut verts: Vec<f32> =
+            Vec::with_capacity((rects.len() + tris.len()) * 6 * FLOATS_PER_VERT);
+        let s = self.scale;
+        let ndc = |x: f32, y: f32| ((x * s) / vw * 2.0 - 1.0, 1.0 - (y * s) / vh * 2.0);
+        let lin = |c: Rgba| {
+            [
+                srgb_to_linear(c.r as f64) as f32,
+                srgb_to_linear(c.g as f64) as f32,
+                srgb_to_linear(c.b as f64) as f32,
+                c.a,
+            ]
+        };
+        for r in rects {
+            let col = lin(r.color);
+            let bcol = lin(r.border_color);
+            let bw = r.border * s;
+            let (l, t) = ndc(r.x, r.y);
+            let (rr, b) = ndc(r.x + r.w, r.y + r.h);
+            // SDF params in physical pixels: half-extent, and the corner-relative local coord per vertex.
+            let hw = r.w * s / 2.0;
+            let hh = r.h * s / 2.0;
+            let rad = (r.radius * s).min(hw).min(hh).max(0.0);
+            let corners = [
+                (l, t, -hw, -hh),
+                (rr, t, hw, -hh),
+                (l, b, -hw, hh),
+                (rr, t, hw, -hh),
+                (rr, b, hw, hh),
+                (l, b, -hw, hh),
+            ];
+            for (px, py, lx, ly) in corners {
+                verts.extend_from_slice(&[
+                    px, py, col[0], col[1], col[2], col[3], lx, ly, hw, hh, rad, bcol[0], bcol[1],
+                    bcol[2], bcol[3], bw,
+                ]);
+            }
+        }
+        // Triangles: solid fill via the same pipeline (huge hsize + local 0 -> SDF always inside), no border.
+        for tr in tris {
+            let col = lin(tr.color);
+            for [x, y] in tr.p {
+                let (px, py) = ndc(x, y);
+                verts.extend_from_slice(&[
+                    px, py, col[0], col[1], col[2], col[3], 0.0, 0.0, 1.0e6, 1.0e6, 0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                ]);
+            }
+        }
+        let vert_count = verts.len() / FLOATS_PER_VERT;
+        if vert_count > self.capacity {
+            self.capacity = vert_count.next_power_of_two();
+            self.vbuf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("ui-verts"),
+                size: (self.capacity * 64) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        if !verts.is_empty() {
+            self.queue
+                .write_buffer(&self.vbuf, 0, bytemuck::cast_slice(&verts));
+        }
+
+        // Shape each text run into its own buffer, then prepare the glyph atlas.
+        let bounds = TextBounds {
+            left: 0,
+            top: 0,
+            right: self.config.width as i32,
+            bottom: self.config.height as i32,
+        };
+        let sans = self.ui_font.clone();
+        let mono = self.mono_family.clone().or_else(|| sans.clone());
+        let mut buffers: Vec<Buffer> = Vec::with_capacity(texts.len());
+        for t in texts {
+            let fam = if t.mono { &mono } else { &sans };
+            let family = match fam {
+                Some(name) => Family::Name(name),
+                None => Family::SansSerif,
+            };
+            let sz = t.size * theme::ui_text_scale();
+            let wrap_w = if t.wrap > 0.0 {
+                t.wrap * theme::ui_text_scale()
+            } else {
+                vw / self.scale
+            };
+            let weight = theme::snap_weight(fam.as_deref(), t.weight);
+            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
+            buf.set_size(&mut self.font_system, Some(wrap_w), None);
+            buf.set_text(
+                &mut self.font_system,
+                &t.text,
+                Attrs::new()
+                    .family(family)
+                    .weight(Weight(weight))
+                    .color(glyph_color(t.color)),
+                Shaping::Advanced,
+            );
+            buf.shape_until_scroll(&mut self.font_system, false);
+            buffers.push(buf);
+        }
+        self.viewport.update(
+            &self.queue,
+            Resolution {
+                width: self.config.width,
+                height: self.config.height,
+            },
+        );
+        let areas: Vec<TextArea> = texts
+            .iter()
+            .zip(&buffers)
+            .map(|(t, buf)| TextArea {
+                buffer: buf,
+                // Snap to whole device pixels so glyphs aren't blurred by sub-pixel positioning.
+                left: (t.x * self.scale).round(),
+                top: (t.y * self.scale).round(),
+                scale: self.scale,
+                bounds,
+                default_color: glyph_color(t.color),
+                custom_glyphs: &[],
+            })
+            .collect();
+        self.text_renderers[0].prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            areas,
+            &mut self.swash_cache,
+        )?;
+
+        let frame = match &self.surface {
+            Some(surface) => Some(surface.get_current_texture()?),
+            None => None,
+        };
+        let target = match (&frame, &self.offscreen) {
+            (Some(f), _) => &f.texture,
+            (None, Some(tex)) => tex,
+            (None, None) => return Ok(()),
+        };
+        let view = target.create_view(&TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("ui"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(wgpu::Color::BLACK),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if vert_count > 0 {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, self.vbuf.slice(..));
+                pass.draw(0..vert_count as u32, 0..1);
+            }
+            self.text_renderers[0].render(&self.atlas, &self.viewport, &mut pass)?;
+        }
+        self.queue.submit(Some(encoder.finish()));
+        if let Some(frame) = frame {
+            frame.present();
+        }
+        self.atlas.trim();
+        Ok(())
+    }
+
+    /// Read the offscreen framebuffer back as RGBA8 (headless only). Call after `render`.
+    pub fn read_rgba(&self) -> Result<(u32, u32, Vec<u8>)> {
+        let tex = self
+            .offscreen
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("read_rgba requires a headless renderer"))?;
+        let (w, h) = (self.config.width, self.config.height);
+        let bytes_per_row = (w * 4).div_ceil(256) * 256; // wgpu requires 256-byte-aligned rows
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (bytes_per_row * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &buf,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        // De-pad rows and swap BGRA -> RGBA.
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for row in 0..h {
+            let start = (row * bytes_per_row) as usize;
+            for px in 0..w as usize {
+                let p = start + px * 4;
+                out.extend_from_slice(&[data[p + 2], data[p + 1], data[p], data[p + 3]]);
+            }
+        }
+        drop(data);
+        buf.unmap();
+        Ok((w, h, out))
+    }
+
+    /// Font family names for a picker: our ".PomeloSans"/".PomeloMono" aliases first, then the system fonts.
+    pub fn font_families(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .font_system
+            .db()
+            .faces()
+            .filter_map(|f| f.families.first().map(|(n, _)| n.clone()))
+            .filter(|n| !n.starts_with('.')) // hide private system fonts
+            .collect();
+        v.sort();
+        v.dedup();
+        let mut out = vec![".PomeloSans".to_string(), ".PomeloMono".to_string()];
+        out.extend(v);
+        out
+    }
+
+    /// Draw `base` then `overlay` in one frame (two passes), so the overlay floats above without the base's
+    /// text bleeding through (all text draws after all rects within a single pass). Used for popovers.
+    pub fn render_layered(
+        &mut self,
+        base: (&[Rect], &[Tri], &[Text]),
+        overlay: (&[Rect], &[Tri], &[Text]),
+    ) -> Result<()> {
+        self.render_layered_clip(base, overlay, None, None, Rgba::new(0.0, 0.0, 0.0, 1.0))
+    }
+
+    /// Like `render_layered`, but scissors the base layer to `base_clip` and/or the overlay layer to
+    /// `overlay_clip` (both logical px) and clears to `clear`. `overlay_clip` lets a scrolling list draw
+    /// smoothly inside fixed chrome (e.g. a menu whose list scrolls between a fixed search and footer).
+    pub fn render_layered_clip(
+        &mut self,
+        base: (&[Rect], &[Tri], &[Text]),
+        overlay: (&[Rect], &[Tri], &[Text]),
+        base_clip: Option<(f32, f32, f32, f32)>,
+        overlay_clip: Option<(f32, f32, f32, f32)>,
+        clear: Rgba,
+    ) -> Result<()> {
+        self.render_frame(
+            clear,
+            &[
+                (base.0, base.1, base.2, &[], base_clip),
+                (overlay.0, overlay.1, overlay.2, &[], overlay_clip),
+            ],
+        )
+    }
+
+    /// Three-layer render (base, overlay, optional unclipped `top`), kept for callers that want a tooltip layer.
+    pub fn render_layers(
+        &mut self,
+        base: (&[Rect], &[Tri], &[Text]),
+        overlay: (&[Rect], &[Tri], &[Text]),
+        top: Option<(&[Rect], &[Tri], &[Text])>,
+        base_clip: Option<(f32, f32, f32, f32)>,
+        overlay_clip: Option<(f32, f32, f32, f32)>,
+        clear: Rgba,
+    ) -> Result<()> {
+        let mut layers: Vec<Layer> = vec![
+            (base.0, base.1, base.2, &[], base_clip),
+            (overlay.0, overlay.1, overlay.2, &[], overlay_clip),
+        ];
+        if let Some(t) = top {
+            layers.push((t.0, t.1, t.2, &[], None));
+        }
+        self.render_frame(clear, &layers)
+    }
+
+    /// Composite N layers back-to-front into one frame: layer 0 clears to `clear`, later layers load over it;
+    /// each layer draws its shapes+text with an optional scissor clip and its own text renderer. This is how a
+    /// scrolling menu list (clipped) sits above the body yet below an unclipped tooltip.
+    pub fn render_frame(&mut self, clear: Rgba, layers: &[Layer]) -> Result<()> {
+        const FPV: usize = 16;
+        let mut verts: Vec<f32> = Vec::new();
+        let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(layers.len());
+        for (rects, tris, _, _, _) in layers {
+            let start = verts.len() / FPV;
+            verts.extend(self.verts_for(rects, tris));
+            ranges.push((start, verts.len() / FPV));
+        }
+        // Icons: rasterize/cache each needed (icon, px) mask, then build a textured-quad vertex buffer with a
+        // per-layer draw list of (bind-group key, vertex range).
+        const IPV: usize = 8; // pos2 + uv2 + color4
+        let mut icon_verts: Vec<f32> = Vec::new();
+        let mut icon_draws: Vec<Vec<IconDraw>> = Vec::with_capacity(layers.len());
+        {
+            let vw = self.config.width as f32;
+            let vh = self.config.height as f32;
+            let s = self.scale;
+            for (_, _, _, icons, _) in layers {
+                let mut draws = Vec::new();
+                for q in icons.iter() {
+                    let px = (q.w * s).round().max(1.0) as u32;
+                    self.ensure_icon(q.kind, px);
+                    let ndc = |x: f32, y: f32| ((x * s) / vw * 2.0 - 1.0, 1.0 - (y * s) / vh * 2.0);
+                    let (l, t) = ndc(q.x, q.y);
+                    let (r, b) = ndc(q.x + q.w, q.y + q.h);
+                    let c = [
+                        srgb_to_linear(q.color.r as f64) as f32,
+                        srgb_to_linear(q.color.g as f64) as f32,
+                        srgb_to_linear(q.color.b as f64) as f32,
+                        q.color.a,
+                    ];
+                    let start = (icon_verts.len() / IPV) as u32;
+                    for (px_, py_, u, v) in [
+                        (l, t, 0.0, 0.0),
+                        (r, t, 1.0, 0.0),
+                        (l, b, 0.0, 1.0),
+                        (r, t, 1.0, 0.0),
+                        (r, b, 1.0, 1.0),
+                        (l, b, 0.0, 1.0),
+                    ] {
+                        icon_verts.extend_from_slice(&[px_, py_, u, v, c[0], c[1], c[2], c[3]]);
+                    }
+                    let end = (icon_verts.len() / IPV) as u32;
+                    draws.push(((q.kind, px), start, end));
+                }
+                icon_draws.push(draws);
+            }
+        }
+        let icon_vbuf = if icon_verts.is_empty() {
+            None
+        } else {
+            Some(
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("ui-icon-verts"),
+                        contents: bytemuck::cast_slice(&icon_verts),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+        let total_vc = verts.len() / FPV;
+        if total_vc > self.capacity {
+            self.capacity = total_vc.next_power_of_two();
+            self.vbuf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("ui-verts"),
+                size: (self.capacity * 64) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        if !verts.is_empty() {
+            self.queue
+                .write_buffer(&self.vbuf, 0, bytemuck::cast_slice(&verts));
+        }
+        // Prepare all layers' text before any pass, so the atlas is final and every bind group is valid.
+        for (i, (_, _, texts, _, _)) in layers.iter().enumerate() {
+            self.prepare_layer(texts, i as u8)?;
+        }
+
+        let frame = match &self.surface {
+            Some(surface) => Some(surface.get_current_texture()?),
+            None => None,
+        };
+        let target = match (&frame, &self.offscreen) {
+            (Some(f), _) => &f.texture,
+            (None, Some(tex)) => tex,
+            (None, None) => return Ok(()),
+        };
+        let view = target.create_view(&TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        for (i, (_, _, _, _, clip)) in layers.iter().enumerate() {
+            let load = if i == 0 {
+                LoadOp::Clear(wgpu::Color {
+                    r: srgb_to_linear(clear.r as f64),
+                    g: srgb_to_linear(clear.g as f64),
+                    b: srgb_to_linear(clear.b as f64),
+                    a: clear.a as f64,
+                })
+            } else {
+                LoadOp::Load
+            };
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("ui-layer"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: Operations {
+                        load,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if let Some((cx, cy, cw, ch)) = *clip {
+                let s = self.scale;
+                let px = |v: f32| (v * s).max(0.0) as u32;
+                let x = px(cx).min(self.config.width);
+                let y = px(cy).min(self.config.height);
+                let w = px(cw).min(self.config.width.saturating_sub(x));
+                let h = px(ch).min(self.config.height.saturating_sub(y));
+                if w > 0 && h > 0 {
+                    pass.set_scissor_rect(x, y, w, h);
+                }
+            }
+            let (start, end) = ranges[i];
+            if end > start {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, self.vbuf.slice(..));
+                pass.draw(start as u32..end as u32, 0..1);
+            }
+            // Icons for this layer: one draw per icon, binding its cached alpha mask.
+            if let Some(ibuf) = &icon_vbuf {
+                if !icon_draws[i].is_empty() {
+                    pass.set_pipeline(&self.icon_pipeline);
+                    pass.set_vertex_buffer(0, ibuf.slice(..));
+                    for (key, vs, ve) in &icon_draws[i] {
+                        if let Some(bg) = self.icon_cache.get(key) {
+                            pass.set_bind_group(0, bg, &[]);
+                            pass.draw(*vs..*ve, 0..1);
+                        }
+                    }
+                }
+            }
+            self.text_renderers[i].render(&self.atlas, &self.viewport, &mut pass)?;
+        }
+        self.queue.submit(Some(encoder.finish()));
+        if let Some(frame) = frame {
+            frame.present();
+        }
+        self.atlas.trim();
+        Ok(())
+    }
+
+    fn verts_for(&self, rects: &[Rect], tris: &[Tri]) -> Vec<f32> {
+        let vw = self.config.width as f32;
+        let vh = self.config.height as f32;
+        let s = self.scale;
+        let ndc = |x: f32, y: f32| ((x * s) / vw * 2.0 - 1.0, 1.0 - (y * s) / vh * 2.0);
+        let lin = |c: Rgba| {
+            [
+                srgb_to_linear(c.r as f64) as f32,
+                srgb_to_linear(c.g as f64) as f32,
+                srgb_to_linear(c.b as f64) as f32,
+                c.a,
+            ]
+        };
+        let mut verts: Vec<f32> = Vec::with_capacity((rects.len() + tris.len()) * 6 * 16);
+        for r in rects {
+            let col = lin(r.color);
+            let bcol = lin(r.border_color);
+            let bw = r.border * s;
+            let (l, t) = ndc(r.x, r.y);
+            let (rr, b) = ndc(r.x + r.w, r.y + r.h);
+            let hw = r.w * s / 2.0;
+            let hh = r.h * s / 2.0;
+            let rad = (r.radius * s).min(hw).min(hh).max(0.0);
+            for (px, py, lx, ly) in [
+                (l, t, -hw, -hh),
+                (rr, t, hw, -hh),
+                (l, b, -hw, hh),
+                (rr, t, hw, -hh),
+                (rr, b, hw, hh),
+                (l, b, -hw, hh),
+            ] {
+                verts.extend_from_slice(&[
+                    px, py, col[0], col[1], col[2], col[3], lx, ly, hw, hh, rad, bcol[0], bcol[1],
+                    bcol[2], bcol[3], bw,
+                ]);
+            }
+        }
+        for tr in tris {
+            let col = lin(tr.color);
+            for [x, y] in tr.p {
+                let (px, py) = ndc(x, y);
+                verts.extend_from_slice(&[
+                    px, py, col[0], col[1], col[2], col[3], 0.0, 0.0, 1.0e6, 1.0e6, 0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                ]);
+            }
+        }
+        verts
+    }
+
+    fn prepare_layer(&mut self, texts: &[Text], layer: u8) -> Result<()> {
+        let vw = self.config.width as f32;
+        let bounds = TextBounds {
+            left: 0,
+            top: 0,
+            right: self.config.width as i32,
+            bottom: self.config.height as i32,
+        };
+        let sans = self.ui_font.clone();
+        let mono = self.mono_family.clone().or_else(|| sans.clone());
+        let mut buffers: Vec<Buffer> = Vec::with_capacity(texts.len());
+        for t in texts {
+            let fam = if t.mono { &mono } else { &sans };
+            let family = match fam {
+                Some(name) => Family::Name(name),
+                None => Family::SansSerif,
+            };
+            let sz = t.size * theme::ui_text_scale();
+            let wrap_w = if t.wrap > 0.0 {
+                t.wrap * theme::ui_text_scale()
+            } else {
+                vw / self.scale
+            };
+            let weight = theme::snap_weight(fam.as_deref(), t.weight);
+            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
+            buf.set_size(&mut self.font_system, Some(wrap_w), None);
+            buf.set_text(
+                &mut self.font_system,
+                &t.text,
+                Attrs::new()
+                    .family(family)
+                    .weight(Weight(weight))
+                    .color(glyph_color(t.color)),
+                Shaping::Advanced,
+            );
+            buf.shape_until_scroll(&mut self.font_system, false);
+            buffers.push(buf);
+        }
+        self.viewport.update(
+            &self.queue,
+            Resolution {
+                width: self.config.width,
+                height: self.config.height,
+            },
+        );
+        let areas: Vec<TextArea> = texts
+            .iter()
+            .zip(&buffers)
+            .map(|(t, buf)| TextArea {
+                buffer: buf,
+                left: (t.x * self.scale).round(),
+                top: (t.y * self.scale).round(),
+                scale: self.scale,
+                bounds,
+                default_color: glyph_color(t.color),
+                custom_glyphs: &[],
+            })
+            .collect();
+        while self.text_renderers.len() <= layer as usize {
+            self.text_renderers.push(TextRenderer::new(
+                &mut self.atlas,
+                &self.device,
+                MultisampleState::default(),
+                None,
+            ));
+        }
+        let renderer = &mut self.text_renderers[layer as usize];
+        renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            areas,
+            &mut self.swash_cache,
+        )?;
+        Ok(())
+    }
+}

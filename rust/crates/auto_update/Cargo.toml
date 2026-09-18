@@ -1,0 +1,12 @@
+[package]
+name = "auto_update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Self-update for the release bundle: check GitHub Releases, download, swap, relaunch."
+
+[lib]
+path = "src/auto_update.rs"
+
+[dependencies]
+serde_json.workspace = true
