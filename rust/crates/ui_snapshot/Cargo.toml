@@ -1,0 +1,18 @@
+[package]
+name = "ui_snapshot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless UI snapshot tool: render a screen to PNG so we can eyeball layout without a window."
+
+[[bin]]
+name = "ui_snapshot"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../ui" }
+settings = { path = "../settings" }
+settings_ui = { path = "../settings_ui" }
+workspace = { path = "../workspace" }
+anyhow.workspace = true
+png = "0.17"

@@ -1,4 +1,4 @@
-//! User-configurable theme. Loaded from JSON (hex colors, like Zed's theme files); falls back to a built-in One Dark.
+//! User-configurable theme. Loaded from JSON (hex colors); falls back to a built-in One Dark.
 //! The renderer reads the base colors from here and maps tree-sitter capture names to `syntax` colors.
 
 use std::collections::HashMap;
@@ -17,7 +17,10 @@ impl Color {
 
 impl Serialize for Color {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&format!("#{:02x}{:02x}{:02x}", self.0[0], self.0[1], self.0[2]))
+        s.serialize_str(&format!(
+            "#{:02x}{:02x}{:02x}",
+            self.0[0], self.0[1], self.0[2]
+        ))
     }
 }
 
@@ -60,7 +63,7 @@ impl Theme {
             .unwrap_or_else(Theme::one_dark)
     }
 
-    /// Color for a tree-sitter capture name, resolved by longest dotted prefix (like Zed's HighlightMap).
+    /// Color for a tree-sitter capture name, resolved by longest dotted prefix.
     pub fn syntax_color(&self, name: &str) -> Color {
         let mut n = name;
         loop {
@@ -74,7 +77,7 @@ impl Theme {
         }
     }
 
-    /// Built-in Zed One Dark.
+    /// Built-in One Dark.
     pub fn one_dark() -> Theme {
         let mut syntax = HashMap::new();
         let mut put = |k: &str, c: Color| {

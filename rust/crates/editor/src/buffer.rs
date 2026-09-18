@@ -1,5 +1,5 @@
 //! The editor's text model: a rope plus one-or-more selections (multi-cursor), with coalesced undo/redo.
-//! Platform-independent — no GPU, no windowing. Modeled on Zed's SelectionsCollection: edits apply to every
+//! Platform-independent — no GPU, no windowing. Multi-selection: edits apply to every
 //! selection (processed right-to-left so earlier offsets stay valid), and overlapping selections merge.
 
 use ropey::Rope;
@@ -20,7 +20,10 @@ pub struct Sel {
 
 impl Sel {
     fn caret(off: usize) -> Self {
-        Sel { anchor: off, cursor: off }
+        Sel {
+            anchor: off,
+            cursor: off,
+        }
     }
     pub fn start(&self) -> usize {
         self.anchor.min(self.cursor)
@@ -57,12 +60,12 @@ pub struct EditorBuffer {
 
 impl Default for EditorBuffer {
     fn default() -> Self {
-        Self::from_str("")
+        Self::from_text("")
     }
 }
 
 impl EditorBuffer {
-    pub fn from_str(text: &str) -> Self {
+    pub fn from_text(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),
             sels: vec![Sel::caret(0)],
@@ -178,7 +181,8 @@ impl EditorBuffer {
     fn word_range_at(&self, off: usize) -> (usize, usize) {
         let n = self.rope.len_chars();
         let off = off.min(n);
-        let inside = (off < n && Self::is_word(self.rope.char(off))) || (off > 0 && Self::is_word(self.rope.char(off - 1)));
+        let inside = (off < n && Self::is_word(self.rope.char(off)))
+            || (off > 0 && Self::is_word(self.rope.char(off - 1)));
         if !inside {
             return (off, off);
         }
@@ -197,19 +201,31 @@ impl EditorBuffer {
         let mut parts: Vec<(usize, String)> = self
             .sels
             .iter()
-            .filter_map(|s| s.range().map(|(a, b)| (a, self.rope.slice(a..b).to_string())))
+            .filter_map(|s| {
+                s.range()
+                    .map(|(a, b)| (a, self.rope.slice(a..b).to_string()))
+            })
             .collect();
         if parts.is_empty() {
             return None;
         }
         parts.sort_by_key(|(a, _)| *a);
-        Some(parts.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n"))
+        Some(
+            parts
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
     }
 
     // ---- undo/redo ----
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot { rope: self.rope.clone(), sels: self.sels.clone() }
+        Snapshot {
+            rope: self.rope.clone(),
+            sels: self.sels.clone(),
+        }
     }
 
     fn record(&mut self, kind: EditKind) {
@@ -227,7 +243,14 @@ impl EditorBuffer {
     fn restore(&mut self, snap: Snapshot) {
         self.rope = snap.rope;
         let n = self.rope.len_chars();
-        self.sels = snap.sels.into_iter().map(|s| Sel { anchor: s.anchor.min(n), cursor: s.cursor.min(n) }).collect();
+        self.sels = snap
+            .sels
+            .into_iter()
+            .map(|s| Sel {
+                anchor: s.anchor.min(n),
+                cursor: s.cursor.min(n),
+            })
+            .collect();
         if self.sels.is_empty() {
             self.sels.push(Sel::caret(0));
         }
@@ -261,14 +284,21 @@ impl EditorBuffer {
             for s in std::mem::take(&mut self.sels) {
                 if let Some(last) = merged.last_mut() {
                     if s.start() <= last.end() {
-                        *last = Sel { anchor: last.start().min(s.start()), cursor: last.end().max(s.end()) };
+                        *last = Sel {
+                            anchor: last.start().min(s.start()),
+                            cursor: last.end().max(s.end()),
+                        };
                         continue;
                     }
                 }
                 merged.push(s);
             }
             self.sels = merged;
-            if let Some(pi) = self.sels.iter().position(|s| s.start() <= primary_cursor && primary_cursor <= s.end()) {
+            if let Some(pi) = self
+                .sels
+                .iter()
+                .position(|s| s.start() <= primary_cursor && primary_cursor <= s.end())
+            {
                 let p = self.sels.remove(pi);
                 self.sels.push(p);
             }
@@ -280,7 +310,11 @@ impl EditorBuffer {
 
     // Move each selection's cursor via `f`, collapsing the anchor (plain arrow), then merge.
     fn move_each(&mut self, f: impl Fn(&Self, usize) -> usize) {
-        let next: Vec<Sel> = self.sels.iter().map(|s| Sel::caret(f(self, s.cursor))).collect();
+        let next: Vec<Sel> = self
+            .sels
+            .iter()
+            .map(|s| Sel::caret(f(self, s.cursor)))
+            .collect();
         self.sels = next;
         self.merge();
         self.break_run();
@@ -288,7 +322,14 @@ impl EditorBuffer {
 
     // Move each selection's cursor via `f`, keeping the anchor (shift+arrow), then merge.
     fn extend_each(&mut self, f: impl Fn(&Self, usize) -> usize) {
-        let next: Vec<Sel> = self.sels.iter().map(|s| Sel { anchor: s.anchor, cursor: f(self, s.cursor) }).collect();
+        let next: Vec<Sel> = self
+            .sels
+            .iter()
+            .map(|s| Sel {
+                anchor: s.anchor,
+                cursor: f(self, s.cursor),
+            })
+            .collect();
         self.sels = next;
         self.merge();
         self.break_run();
@@ -375,12 +416,18 @@ impl EditorBuffer {
 
     pub fn select_word_at(&mut self, off: usize) {
         let (a, b) = self.word_range_at(off);
-        self.sels = vec![Sel { anchor: a, cursor: b }];
+        self.sels = vec![Sel {
+            anchor: a,
+            cursor: b,
+        }];
         self.break_run();
     }
 
     pub fn select_all(&mut self) {
-        self.sels = vec![Sel { anchor: 0, cursor: self.rope.len_chars() }];
+        self.sels = vec![Sel {
+            anchor: 0,
+            cursor: self.rope.len_chars(),
+        }];
         self.break_run();
     }
 
@@ -389,13 +436,19 @@ impl EditorBuffer {
         let p = self.primary();
         if p.is_empty() {
             let (a, b) = self.word_range_at(p.cursor);
-            *self.sels.last_mut().unwrap() = Sel { anchor: a, cursor: b };
+            *self.sels.last_mut().unwrap() = Sel {
+                anchor: a,
+                cursor: b,
+            };
         } else {
             let needle = self.rope.slice(p.start()..p.end()).to_string();
             if !needle.is_empty() {
                 if let Some(pos) = self.find_from(&needle, p.end()) {
                     let len = needle.chars().count();
-                    self.sels.push(Sel { anchor: pos, cursor: pos + len });
+                    self.sels.push(Sel {
+                        anchor: pos,
+                        cursor: pos + len,
+                    });
                     self.merge();
                 }
             }
@@ -405,9 +458,19 @@ impl EditorBuffer {
 
     fn find_from(&self, needle: &str, start_char: usize) -> Option<usize> {
         let text = self.rope.to_string();
-        let start_byte = text.char_indices().nth(start_char).map(|(b, _)| b).unwrap_or(text.len());
-        let after = text[start_byte..].find(needle).map(|b| text[..start_byte + b].chars().count());
-        after.or_else(|| text[..start_byte].find(needle).map(|b| text[..b].chars().count()))
+        let start_byte = text
+            .char_indices()
+            .nth(start_char)
+            .map(|(b, _)| b)
+            .unwrap_or(text.len());
+        let after = text[start_byte..]
+            .find(needle)
+            .map(|b| text[..start_byte + b].chars().count());
+        after.or_else(|| {
+            text[..start_byte]
+                .find(needle)
+                .map(|b| text[..b].chars().count())
+        })
     }
 
     // ---- navigation (multi-cursor aware) ----
@@ -480,7 +543,7 @@ mod tests {
 
     #[test]
     fn typing_and_undo() {
-        let mut b = EditorBuffer::from_str("");
+        let mut b = EditorBuffer::from_text("");
         for ch in "abc".chars() {
             b.insert_char(ch);
         }
@@ -493,7 +556,7 @@ mod tests {
 
     #[test]
     fn add_cursor_types_at_all() {
-        let mut b = EditorBuffer::from_str("a\nb\n");
+        let mut b = EditorBuffer::from_text("a\nb\n");
         b.place_cursor(0); // before 'a'
         b.add_cursor(2); // before 'b'
         b.insert_char('X');
@@ -503,7 +566,7 @@ mod tests {
 
     #[test]
     fn select_next_occurrence() {
-        let mut b = EditorBuffer::from_str("total = total + total");
+        let mut b = EditorBuffer::from_text("total = total + total");
         b.place_cursor(2); // inside the first "total"
         b.select_next(); // selects first "total"
         assert_eq!(b.ranges(), vec![(0, 5)]);
@@ -519,7 +582,7 @@ mod tests {
 
     #[test]
     fn overlapping_cursors_merge() {
-        let mut b = EditorBuffer::from_str("hello");
+        let mut b = EditorBuffer::from_text("hello");
         b.place_cursor(2);
         b.add_cursor(2); // same spot -> should dedup
         assert_eq!(b.selections().len(), 1);
@@ -527,7 +590,7 @@ mod tests {
 
     #[test]
     fn word_and_home_end() {
-        let mut b = EditorBuffer::from_str("foo bar");
+        let mut b = EditorBuffer::from_text("foo bar");
         b.place_cursor(0);
         b.move_word_right();
         assert_eq!(b.cursor(), 3); // end of "foo"

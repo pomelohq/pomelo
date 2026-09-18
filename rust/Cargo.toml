@@ -3,7 +3,18 @@
 # `app` is the winit application that will grow the pane/tab/file-tree/terminal UI.
 [workspace]
 resolver = "2"
-members = ["crates/editor", "crates/app"]
+members = [
+    "crates/pomelo",
+    "crates/reactor",
+    "crates/ui",
+    "crates/workspace",
+    "crates/editor",
+    "crates/auto_update",
+    "crates/auto_update_ui",
+    "crates/settings",
+    "crates/settings_ui",
+    "crates/ui_snapshot",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +25,7 @@ license = "MIT"
 wgpu = "22"
 winit = "0.30"
 glyphon = "0.6"
+resvg = { version = "0.44", default-features = false }
 pollster = "0.3"
 anyhow = "1"
 bytemuck = "1"
@@ -28,3 +40,8 @@ tree-sitter-javascript = "0.25.0"
 tree-sitter-go = "0.25.0"
 tree-sitter-python = "0.25.0"
 tree-sitter-json = "0.24.8"
+
+# Vendored one-line change: enable CAMetalLayer transaction-coupled present (smooth live-resize).
+# Upstream hardcodes it off with no public toggle. See vendor/wgpu-hal/src/metal/surface.rs:69.
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }

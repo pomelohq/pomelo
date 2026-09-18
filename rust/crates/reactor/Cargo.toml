@@ -1,0 +1,9 @@
+[package]
+name = "reactor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reactive app runtime (App/Entity/Context/Global) in the reactive-entity style: state entities that notify observers and drive re-renders. Windows + views land on top of this core."
+
+[lib]
+path = "src/reactor.rs"
