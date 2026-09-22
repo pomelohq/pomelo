@@ -122,6 +122,8 @@ struct App {
     settings_handle: Option<ui::WindowHandle>,
     settings_entity: Option<ui::Entity<settings_ui::SettingsView>>,
     caret_last_toggle: Option<Instant>,
+    /// Cmd+K was pressed; the next key completes a two-stroke editor binding.
+    pending_cmd_k: bool,
     settings_dirty: bool,
     settings_cursor: (f64, f64),
     super_down: bool,
@@ -727,8 +729,17 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                let after_cmd_k = std::mem::take(&mut self.pending_cmd_k);
+                if cmd && matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "k") {
+                    self.pending_cmd_k = true;
+                    return;
+                }
                 let key = |k| Some(EditorInput::Key(k));
                 let input: Option<EditorInput> = match &ke.logical_key {
+                    Key::Character(c) if after_cmd_k && !cmd => match c.as_str() {
+                        "z" => key(EditKey::ToggleSoftWrap),
+                        _ => None,
+                    },
                     Key::Named(NamedKey::ArrowLeft) if cmd => key(EditKey::Home),
                     Key::Named(NamedKey::ArrowRight) if cmd => key(EditKey::End),
                     Key::Named(NamedKey::ArrowLeft) if alt => key(EditKey::WordLeft),
