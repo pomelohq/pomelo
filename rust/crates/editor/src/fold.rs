@@ -4,7 +4,7 @@
 //! opens with a closing bracket, so `{...}` reads on one line) or at the end of the last non-blank row of the
 //! block. Every row after the header up to the row holding the fold's end is hidden from the display.
 
-use crate::buffer::{map_offset, Bias, EditorBuffer};
+use crate::buffer::{map_offset, Bias, DisplayRows, EditorBuffer};
 use crate::syntax::Syntax;
 use std::ops::Range;
 
@@ -192,6 +192,95 @@ impl FoldMap {
     }
 }
 
+/// Display rows with folds applied (one row per visible line), measured in columns of each row's own line.
+pub struct FoldRows<'a> {
+    buffer: &'a EditorBuffer,
+    folds: Vec<Range<usize>>,
+    lines: Vec<usize>,
+}
+
+impl<'a> FoldRows<'a> {
+    pub fn new(buffer: &'a EditorBuffer, folds: &FoldMap) -> Self {
+        Self {
+            buffer,
+            folds: folds.merged(),
+            lines: folds.visible_rows(buffer),
+        }
+    }
+
+    fn line_of_row(&self, row: usize) -> usize {
+        self.lines
+            .get(row)
+            .copied()
+            .unwrap_or_else(|| self.buffer.rope.len_lines().saturating_sub(1))
+    }
+
+    fn line_end_of(&self, line: usize) -> usize {
+        self.buffer.rope.line_to_char(line) + self.buffer.line_len(line)
+    }
+}
+
+impl DisplayRows for FoldRows<'_> {
+    fn clip(&self, offset: usize, bias: Bias) -> usize {
+        match self
+            .folds
+            .iter()
+            .find(|f| f.start < offset && offset < f.end)
+        {
+            Some(fold) => match bias {
+                Bias::Left => fold.start,
+                Bias::Right => fold.end,
+            },
+            None => offset,
+        }
+    }
+
+    fn row_of(&self, offset: usize) -> usize {
+        let line = self
+            .buffer
+            .rope
+            .char_to_line(offset.min(self.buffer.rope.len_chars()));
+        match self.lines.binary_search(&line) {
+            Ok(row) => row,
+            Err(row) => row.saturating_sub(1),
+        }
+    }
+
+    fn max_row(&self) -> usize {
+        self.lines.len().saturating_sub(1)
+    }
+
+    fn row_start(&self, row: usize) -> usize {
+        self.buffer.rope.line_to_char(self.line_of_row(row))
+    }
+
+    fn row_end(&self, row: usize) -> usize {
+        let mut end = self.line_end_of(self.line_of_row(row));
+        while let Some(fold) = self.folds.iter().find(|f| f.start <= end && end < f.end) {
+            end = self.line_end_of(self.buffer.rope.char_to_line(fold.end));
+        }
+        end
+    }
+
+    fn line_start(&self, offset: usize) -> usize {
+        self.row_start(self.row_of(offset))
+    }
+
+    fn line_end(&self, offset: usize) -> usize {
+        self.row_end(self.row_of(offset))
+    }
+
+    fn x_of(&self, offset: usize) -> f32 {
+        self.buffer.line_col_of(offset).1 as f32
+    }
+
+    fn offset_for_x(&self, row: usize, x: f32) -> usize {
+        let line = self.line_of_row(row);
+        let column = (x.max(0.0).round() as usize).min(self.buffer.line_len(line));
+        self.clip(self.buffer.rope.line_to_char(line) + column, Bias::Left)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,23 +367,26 @@ mod tests {
         let mut b = buffer("fn a() {\n    x;\n}\nz\n");
         let mut folds = FoldMap::default();
         folds.fold(&b, fold_range_for_row(&b, None, 0).unwrap());
-        let merged = folds.merged();
+        let step = |b: &mut EditorBuffer, motion: Motion| {
+            let next = b.moved_selections(motion, false, &FoldRows::new(b, &folds));
+            b.set_selections(next);
+        };
         let header_end = "fn a() {".len();
         let closer = "fn a() {\n    x;\n".len();
         b.place_cursor(header_end);
-        b.apply_motion(Motion::Right, false, &merged);
+        step(&mut b, Motion::Right);
         assert_eq!(b.cursor(), closer);
-        b.apply_motion(Motion::Left, false, &merged);
+        step(&mut b, Motion::Left);
         assert_eq!(b.cursor(), header_end);
         b.place_cursor(2);
-        b.apply_motion(Motion::Down, false, &merged);
+        step(&mut b, Motion::Down);
         assert_eq!(b.line_col(), (3, 1));
-        b.apply_motion(Motion::Up, false, &merged);
+        step(&mut b, Motion::Up);
         assert_eq!(b.line_col(), (0, 2));
         b.place_cursor(closer);
-        b.apply_motion(Motion::Home, false, &merged);
+        step(&mut b, Motion::Home);
         assert_eq!(b.cursor(), 0);
-        b.apply_motion(Motion::End, false, &merged);
+        step(&mut b, Motion::End);
         assert_eq!(b.cursor(), closer + 1);
     }
 }

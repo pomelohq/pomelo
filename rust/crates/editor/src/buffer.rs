@@ -44,14 +44,15 @@ pub fn normalize_newlines(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// Where vertical motion aims: the x (in the display's units) the cursor started from.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum SelectionGoal {
     #[default]
     None,
-    Column(usize),
+    HorizontalPosition(f32),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Selection {
     pub id: usize,
     pub start: usize,
@@ -171,10 +172,53 @@ pub enum Motion {
     End,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Direction {
-    Up,
-    Down,
+/// The rows a buffer is displayed in (after folds and soft wrap), for motions that move by what's on screen.
+pub trait DisplayRows {
+    /// Snap an offset inside hidden text to the nearest visible one in `bias`'s direction.
+    fn clip(&self, offset: usize, bias: Bias) -> usize;
+    fn row_of(&self, offset: usize) -> usize;
+    fn max_row(&self) -> usize;
+    fn row_start(&self, row: usize) -> usize;
+    /// The last offset shown on `row` (before a soft break, the char before it).
+    fn row_end(&self, row: usize) -> usize;
+    /// Start of the display line (the run of rows between hard newlines) holding `offset`.
+    fn line_start(&self, offset: usize) -> usize;
+    fn line_end(&self, offset: usize) -> usize;
+    fn x_of(&self, offset: usize) -> f32;
+    fn offset_for_x(&self, row: usize, x: f32) -> usize;
+}
+
+/// One row per buffer line, measured in columns.
+pub struct LineRows<'a>(pub &'a EditorBuffer);
+
+impl DisplayRows for LineRows<'_> {
+    fn clip(&self, offset: usize, _bias: Bias) -> usize {
+        offset.min(self.0.rope.len_chars())
+    }
+    fn row_of(&self, offset: usize) -> usize {
+        self.0.line_col_of(offset).0
+    }
+    fn max_row(&self) -> usize {
+        self.0.rope.len_lines().saturating_sub(1)
+    }
+    fn row_start(&self, row: usize) -> usize {
+        self.0.rope.line_to_char(row)
+    }
+    fn row_end(&self, row: usize) -> usize {
+        self.0.clamp_to_line(row, usize::MAX)
+    }
+    fn line_start(&self, offset: usize) -> usize {
+        self.0.line_start_of(offset)
+    }
+    fn line_end(&self, offset: usize) -> usize {
+        self.0.line_end_of(offset)
+    }
+    fn x_of(&self, offset: usize) -> f32 {
+        self.0.line_col_of(offset).1 as f32
+    }
+    fn offset_for_x(&self, row: usize, x: f32) -> usize {
+        self.0.clamp_to_line(row, x.max(0.0).round() as usize)
+    }
 }
 
 pub struct EditorBuffer {
@@ -817,80 +861,15 @@ impl EditorBuffer {
 
     // ---- navigation (multi-cursor aware) ----
 
-    /// Snap an offset strictly inside a fold to its start (`Left`) or end (`Right`); `folds` are merged, sorted.
-    fn clip_to_folds(off: usize, bias: Bias, folds: &[Range<usize>]) -> usize {
-        match folds.iter().find(|f| f.start < off && off < f.end) {
-            Some(fold) => match bias {
-                Bias::Left => fold.start,
-                Bias::Right => fold.end,
-            },
-            None => off,
-        }
-    }
-
-    /// Start of the display row holding `off`: a row hidden by a fold belongs to the fold's header row.
-    fn display_row_start(&self, off: usize, folds: &[Range<usize>]) -> usize {
-        let mut start = self.line_start_of(off);
-        while let Some(fold) = folds.iter().find(|f| f.start < start && start <= f.end) {
-            start = self.line_start_of(fold.start);
-        }
-        start
-    }
-
-    fn display_row_end(&self, off: usize, folds: &[Range<usize>]) -> usize {
-        let mut end = self.line_end_of(off);
-        while let Some(fold) = folds.iter().find(|f| f.start <= end && end < f.end) {
-            end = self.line_end_of(fold.end);
-        }
-        end
-    }
-
-    fn vertical_target(
+    /// Selections after `motion` (or, with `extend`, grown by it), measured over `rows`.
+    pub fn moved_selections(
         &self,
-        from: usize,
-        goal: usize,
-        dir: Direction,
-        rows: usize,
-        folds: &[Range<usize>],
-    ) -> usize {
-        match dir {
-            Direction::Up => {
-                let mut row_start = self.display_row_start(from, folds);
-                if row_start == 0 {
-                    return 0;
-                }
-                for _ in 0..rows {
-                    if row_start == 0 {
-                        break;
-                    }
-                    row_start = self.display_row_start(row_start - 1, folds);
-                }
-                self.clamp_to_line(self.rope.char_to_line(row_start), goal)
-            }
-            Direction::Down => {
-                let len = self.rope.len_chars();
-                let mut row_end = self.display_row_end(from, folds);
-                if row_end >= len {
-                    return len;
-                }
-                let mut line = self.rope.char_to_line(from);
-                for _ in 0..rows {
-                    if row_end >= len {
-                        break;
-                    }
-                    line = self.rope.char_to_line(row_end + 1);
-                    row_end = self.display_row_end(row_end + 1, folds);
-                }
-                Self::clip_to_folds(self.clamp_to_line(line, goal), Bias::Left, folds)
-            }
-        }
-    }
-
-    /// Move (or, with `extend`, grow) every selection by `motion`, treating each fold as one unit.
-    pub fn apply_motion(&mut self, motion: Motion, extend: bool, folds: &[Range<usize>]) {
+        motion: Motion,
+        extend: bool,
+        rows: &dyn DisplayRows,
+    ) -> Vec<Selection> {
         let len = self.rope.len_chars();
-        let next: Vec<Selection> = self
-            .selections
+        self.selections
             .iter()
             .map(|s| {
                 let mut s = *s;
@@ -900,44 +879,72 @@ impl EditorBuffer {
                     Motion::Left if collapsing => (s.start, SelectionGoal::None),
                     Motion::Right if collapsing => (s.end, SelectionGoal::None),
                     Motion::Left => (
-                        Self::clip_to_folds(head.saturating_sub(1), Bias::Left, folds),
+                        rows.clip(head.saturating_sub(1), Bias::Left),
                         SelectionGoal::None,
                     ),
                     Motion::Right => (
-                        Self::clip_to_folds((head + 1).min(len), Bias::Right, folds),
+                        rows.clip((head + 1).min(len), Bias::Right),
                         SelectionGoal::None,
                     ),
                     Motion::WordLeft => (
-                        Self::clip_to_folds(self.word_left(head), Bias::Left, folds),
+                        rows.clip(self.word_left(head), Bias::Left),
                         SelectionGoal::None,
                     ),
                     Motion::WordRight => (
-                        Self::clip_to_folds(self.word_right(head), Bias::Right, folds),
+                        rows.clip(self.word_right(head), Bias::Right),
                         SelectionGoal::None,
                     ),
-                    Motion::Home => (self.display_row_start(head, folds), SelectionGoal::None),
-                    Motion::End => (self.display_row_end(head, folds), SelectionGoal::None),
-                    Motion::Up | Motion::Down | Motion::PageUp(_) | Motion::PageDown(_) => {
-                        let (dir, rows, page) = match motion {
-                            Motion::Up => (Direction::Up, 1, false),
-                            Motion::PageUp(rows) => (Direction::Up, rows, true),
-                            Motion::PageDown(rows) => (Direction::Down, rows, true),
-                            _ => (Direction::Down, 1, false),
+                    Motion::Home => {
+                        let soft_start = rows.row_start(rows.row_of(head));
+                        let to = if head != soft_start {
+                            soft_start
+                        } else {
+                            rows.line_start(head)
                         };
+                        (to, SelectionGoal::None)
+                    }
+                    Motion::End => {
+                        let soft_end = rows.row_end(rows.row_of(head));
+                        let to = if head != soft_end {
+                            soft_end
+                        } else {
+                            rows.line_end(head)
+                        };
+                        (to, SelectionGoal::None)
+                    }
+                    Motion::Up | Motion::Down | Motion::PageUp(_) | Motion::PageDown(_) => {
+                        let (up, count, page) = match motion {
+                            Motion::Up => (true, 1, false),
+                            Motion::PageUp(count) => (true, count, true),
+                            Motion::PageDown(count) => (false, count, true),
+                            _ => (false, 1, false),
+                        };
+                        if collapsing {
+                            s.goal = SelectionGoal::None;
+                        }
                         // Page moves start from the selection end in both directions.
-                        let from = match (collapsing, page, dir) {
-                            (true, true, _) | (true, false, Direction::Down) => s.end,
-                            (true, false, Direction::Up) => s.start,
+                        let from = match (collapsing, page, up) {
+                            (true, true, _) | (true, false, false) => s.end,
+                            (true, false, true) => s.start,
                             _ => head,
                         };
-                        let goal = match s.goal {
-                            SelectionGoal::Column(column) if !collapsing => column,
-                            _ => self.line_col_of(from).1,
+                        let goal_x = match s.goal {
+                            SelectionGoal::HorizontalPosition(x) => x,
+                            SelectionGoal::None => rows.x_of(from),
                         };
-                        (
-                            self.vertical_target(from, goal, dir, rows, folds),
-                            SelectionGoal::Column(goal),
-                        )
+                        let row = rows.row_of(from);
+                        let to = if up {
+                            if row == 0 {
+                                0
+                            } else {
+                                rows.offset_for_x(row.saturating_sub(count), goal_x)
+                            }
+                        } else if row >= rows.max_row() {
+                            len
+                        } else {
+                            rows.offset_for_x((row + count).min(rows.max_row()), goal_x)
+                        };
+                        (to, SelectionGoal::HorizontalPosition(goal_x))
                     }
                 };
                 if extend {
@@ -947,58 +954,68 @@ impl EditorBuffer {
                 }
                 s
             })
-            .collect();
+            .collect()
+    }
+
+    /// Replace the selections (merging any that now overlap).
+    pub fn set_selections(&mut self, selections: Vec<Selection>) {
+        self.select(selections);
+    }
+
+    /// Apply `motion` with one display row per buffer line.
+    pub fn apply_motion(&mut self, motion: Motion, extend: bool) {
+        let next = self.moved_selections(motion, extend, &LineRows(self));
         self.select(next);
     }
 
     pub fn move_left(&mut self) {
-        self.apply_motion(Motion::Left, false, &[]);
+        self.apply_motion(Motion::Left, false);
     }
     pub fn move_right(&mut self) {
-        self.apply_motion(Motion::Right, false, &[]);
+        self.apply_motion(Motion::Right, false);
     }
     pub fn move_up(&mut self) {
-        self.apply_motion(Motion::Up, false, &[]);
+        self.apply_motion(Motion::Up, false);
     }
     pub fn move_down(&mut self) {
-        self.apply_motion(Motion::Down, false, &[]);
+        self.apply_motion(Motion::Down, false);
     }
     pub fn move_word_left(&mut self) {
-        self.apply_motion(Motion::WordLeft, false, &[]);
+        self.apply_motion(Motion::WordLeft, false);
     }
     pub fn move_word_right(&mut self) {
-        self.apply_motion(Motion::WordRight, false, &[]);
+        self.apply_motion(Motion::WordRight, false);
     }
     pub fn move_home(&mut self) {
-        self.apply_motion(Motion::Home, false, &[]);
+        self.apply_motion(Motion::Home, false);
     }
     pub fn move_end(&mut self) {
-        self.apply_motion(Motion::End, false, &[]);
+        self.apply_motion(Motion::End, false);
     }
 
     pub fn extend_left(&mut self) {
-        self.apply_motion(Motion::Left, true, &[]);
+        self.apply_motion(Motion::Left, true);
     }
     pub fn extend_right(&mut self) {
-        self.apply_motion(Motion::Right, true, &[]);
+        self.apply_motion(Motion::Right, true);
     }
     pub fn extend_up(&mut self) {
-        self.apply_motion(Motion::Up, true, &[]);
+        self.apply_motion(Motion::Up, true);
     }
     pub fn extend_down(&mut self) {
-        self.apply_motion(Motion::Down, true, &[]);
+        self.apply_motion(Motion::Down, true);
     }
     pub fn extend_word_left(&mut self) {
-        self.apply_motion(Motion::WordLeft, true, &[]);
+        self.apply_motion(Motion::WordLeft, true);
     }
     pub fn extend_word_right(&mut self) {
-        self.apply_motion(Motion::WordRight, true, &[]);
+        self.apply_motion(Motion::WordRight, true);
     }
     pub fn extend_home(&mut self) {
-        self.apply_motion(Motion::Home, true, &[]);
+        self.apply_motion(Motion::Home, true);
     }
     pub fn extend_end(&mut self) {
-        self.apply_motion(Motion::End, true, &[]);
+        self.apply_motion(Motion::End, true);
     }
 
     #[cfg(test)]
@@ -1255,13 +1272,13 @@ mod tests {
         let text: String = (0..10).map(|i| format!("line{i}\n")).collect();
         let mut b = buffer(&text);
         b.place_cursor(2);
-        b.apply_motion(Motion::PageDown(4), false, &[]);
+        b.apply_motion(Motion::PageDown(4), false);
         assert_eq!(b.line_col(), (4, 2));
-        b.apply_motion(Motion::PageDown(20), false, &[]);
+        b.apply_motion(Motion::PageDown(20), false);
         assert_eq!(b.line_col(), (10, 0));
-        b.apply_motion(Motion::PageUp(4), false, &[]);
+        b.apply_motion(Motion::PageUp(4), false);
         assert_eq!(b.line_col(), (6, 2));
-        b.apply_motion(Motion::PageUp(20), true, &[]);
+        b.apply_motion(Motion::PageUp(20), true);
         assert_eq!(b.line_col(), (0, 2));
         assert_eq!(b.selected_text().as_deref().map(str::len), Some(6 * 6));
     }

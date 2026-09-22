@@ -6,8 +6,14 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use editor::buffer::{Bias, Motion};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ops::Range;
+use std::rc::Rc;
+
+use editor::buffer::{Bias, DisplayRows, Motion, Selection};
 use editor::fold::FoldMap;
+use editor::wrap::Boundary;
 use editor::{EditorBuffer, Lang, Syntax, Theme};
 use files::FileNode;
 use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
@@ -26,6 +32,9 @@ const CARET_W: f32 = 2.0;
 const GUTTER_GAP: f32 = 12.0; // space between the line-number gutter and the first text column
 const VERTICAL_SCROLL_MARGIN: f32 = 3.0;
 const HORIZONTAL_SCROLL_MARGIN: f32 = 5.0;
+/// With soft wrap off, lines still break past this many columns so pathological lines stay cheap to lay out.
+const UNWRAPPED_MAX_COLUMNS: f32 = 512.0;
+const FOLD_PILL_PAD: f32 = 4.0;
 const FOLD_COL: f32 = 14.0; // fold-chevron column, between the line number and the text
 const TAB_COLS: usize = 4; // indent-guide spacing: one guide per this many leading columns
 
@@ -183,6 +192,22 @@ impl LineLayout {
     }
 }
 
+/// One screen row: a slice `[start, end)` of `line`'s tab-expanded text (`end` is `usize::MAX` on a line's last
+/// row), drawn after `indent` blank columns (non-zero only on soft-wrap continuation rows).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DisplayRow {
+    line: usize,
+    start: usize,
+    end: usize,
+    indent: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SoftWrap {
+    None,
+    EditorWidth,
+}
+
 struct FileItem {
     root: PathBuf,
     path: String,
@@ -209,15 +234,23 @@ struct FileItem {
     /// the text scrolls left by `scroll_x`.
     scroll_x: f32,
     body_w: f32,
-    /// Widest line, in visual columns (tabs expanded) -- sizes the h-scrollbar.
-    max_cols: usize,
     /// Visual width per line (`None` = needs measuring); edits splice it so only touched lines are re-measured.
     line_widths: Vec<Option<usize>>,
     /// Shaped rows by buffer line, dropped whenever the text changes.
     layout_cache: std::cell::RefCell<std::collections::HashMap<usize, std::rc::Rc<LineLayout>>>,
     folds: FoldMap,
-    /// Display-row -> buffer-line map (rebuilt when text or folds change). `None` = needs rebuild.
-    visible: Option<Vec<usize>>,
+    /// Screen rows after folds and soft wrap (rebuilt when text, folds or wrap width change). `None` = stale.
+    rows: Option<Vec<DisplayRow>>,
+    /// First row of each buffer line; a line hidden in a fold maps to its header's first row.
+    line_rows: Vec<usize>,
+    /// Soft-wrap breaks per buffer line (`None` = not computed), spliced on edits like `line_widths`.
+    wraps: Vec<Option<Rc<[Boundary]>>>,
+    wrap_width: f32,
+    soft_wrap: SoftWrap,
+    soft_wrap_override: Option<SoftWrap>,
+    /// Widest row in columns, sizing horizontal scroll.
+    max_row_cols: usize,
+    char_widths: RefCell<HashMap<char, f32>>,
 }
 
 impl FileItem {
@@ -243,11 +276,21 @@ impl FileItem {
             body_h: 400.0,
             scroll_x: 0.0,
             body_w: 400.0,
-            max_cols: 0,
             line_widths: Vec::new(),
             layout_cache: Default::default(),
             folds: FoldMap::default(),
-            visible: None,
+            rows: None,
+            line_rows: Vec::new(),
+            wraps: Vec::new(),
+            wrap_width: 0.0,
+            soft_wrap: if lang == Lang::Markdown {
+                SoftWrap::EditorWidth
+            } else {
+                SoftWrap::None
+            },
+            soft_wrap_override: None,
+            max_row_cols: 0,
+            char_widths: RefCell::default(),
         }
     }
 
@@ -282,24 +325,25 @@ impl FileItem {
                     let fresh = edit.new_end_position.row + 1 - edit.start_position.row;
                     self.line_widths
                         .splice(start..old_end, std::iter::repeat_n(None, fresh));
+                    let wrap_end = old_end.min(self.wraps.len());
+                    let wrap_start = start.min(wrap_end);
+                    self.wraps
+                        .splice(wrap_start..wrap_end, std::iter::repeat_n(None, fresh));
                 }
             }
-            _ => self.line_widths.clear(),
+            _ => {
+                self.line_widths.clear();
+                self.wraps.clear();
+            }
         }
         self.line_widths.resize(b.rope.len_lines(), None);
+        self.wraps.resize(b.rope.len_lines(), None);
         for (line, width) in self.line_widths.iter_mut().enumerate() {
             if width.is_none() {
                 *width = Some(Self::vis_col(b, line, b.line_len(line)));
             }
         }
-        self.max_cols = self
-            .line_widths
-            .iter()
-            .flatten()
-            .copied()
-            .max()
-            .unwrap_or(0);
-        self.visible = None;
+        self.rows = None;
         self.layout_cache.borrow_mut().clear();
         self.synced_version = Some(version);
     }
@@ -342,7 +386,7 @@ impl FileItem {
             .unwrap_or(1)
     }
 
-    // ---- folding: a display row is a visible line; folded ranges hide their inner buffer rows ----
+    // ---- display rows: folds hide buffer rows, soft wrap splits a line into several rows ----
 
     fn is_folded(&self, line: usize) -> bool {
         self.buffer
@@ -357,68 +401,294 @@ impl FileItem {
             || self.is_folded(line)
     }
 
-    fn rebuild_visible(&mut self) {
-        let rows = match self.buffer.as_ref() {
-            Some(b) if !self.folds.is_empty() => self.folds.visible_rows(b),
-            _ => (0..self.line_count()).collect(),
+    fn soft_wrap_mode(&self) -> SoftWrap {
+        self.soft_wrap_override.unwrap_or(self.soft_wrap)
+    }
+
+    fn current_wrap_width(&self) -> f32 {
+        let em = char_advance();
+        match self.soft_wrap_mode() {
+            SoftWrap::None => UNWRAPPED_MAX_COLUMNS * em,
+            SoftWrap::EditorWidth => (self.text_viewport_w() - 2.0 * em).max(em),
+        }
+    }
+
+    fn toggle_soft_wrap(&mut self) {
+        self.soft_wrap_override = match self.soft_wrap_override {
+            Some(_) => None,
+            None => Some(match self.soft_wrap_mode() {
+                SoftWrap::None => SoftWrap::EditorWidth,
+                SoftWrap::EditorWidth => SoftWrap::None,
+            }),
         };
-        self.visible = Some(rows);
+        self.rows = None;
+        self.ensure_visible();
+        self.scroll_x = self.scroll_x.min(self.max_scroll_x());
+        self.ensure_cursor_visible();
+    }
+
+    fn rebuild_rows(&mut self) {
+        let Some(b) = self.buffer.as_ref() else {
+            self.rows = Some(Vec::new());
+            return;
+        };
+        let wrap_width = self.current_wrap_width();
+        if (wrap_width - self.wrap_width).abs() > 0.5 {
+            self.wraps.iter_mut().for_each(|w| *w = None);
+            self.wrap_width = wrap_width;
+        }
+        let line_count = b.rope.len_lines();
+        let lines: Vec<usize> = if self.folds.is_empty() {
+            (0..line_count).collect()
+        } else {
+            self.folds.visible_rows(b)
+        };
+        let folded: std::collections::HashSet<usize> = self
+            .folds
+            .merged()
+            .iter()
+            .map(|f| b.rope.char_to_line(f.start))
+            .collect();
+        let em = char_advance();
+        let mut rows = Vec::with_capacity(lines.len());
+        let mut line_rows = vec![0usize; line_count];
+        let mut max_row_cols = 0usize;
+        for (i, &line) in lines.iter().enumerate() {
+            let next = lines.get(i + 1).copied().unwrap_or(line_count);
+            for slot in line_rows.iter_mut().take(next).skip(line) {
+                *slot = rows.len();
+            }
+            let columns = self.line_widths.get(line).copied().flatten().unwrap_or(0);
+            let boundaries = if folded.contains(&line) {
+                None
+            } else {
+                match self.wraps.get(line).cloned().flatten() {
+                    Some(cached) => Some(cached),
+                    None => {
+                        let computed =
+                            wrap_boundaries(b, line, columns, wrap_width, em, &self.char_widths);
+                        if let Some(slot) = self.wraps.get_mut(line) {
+                            *slot = Some(computed.clone());
+                        }
+                        Some(computed)
+                    }
+                }
+            };
+            let (mut start, mut indent) = (0usize, 0usize);
+            for boundary in boundaries.iter().flat_map(|b| b.iter()) {
+                rows.push(DisplayRow {
+                    line,
+                    start,
+                    end: boundary.index,
+                    indent,
+                });
+                max_row_cols = max_row_cols.max(indent + boundary.index - start);
+                start = boundary.index;
+                indent = boundary.indent;
+            }
+            rows.push(DisplayRow {
+                line,
+                start,
+                end: usize::MAX,
+                indent,
+            });
+            let last_cols = if start == 0 {
+                columns
+            } else {
+                indent + Self::display_index(b, line, b.line_len(line)).saturating_sub(start)
+            };
+            max_row_cols = max_row_cols.max(last_cols);
+        }
+        self.rows = Some(rows);
+        self.line_rows = line_rows;
+        self.max_row_cols = max_row_cols;
     }
 
     fn ensure_visible(&mut self) {
-        if self.visible.is_none() {
-            self.rebuild_visible();
+        if self.rows.is_none() || (self.current_wrap_width() - self.wrap_width).abs() > 0.5 {
+            self.rebuild_rows();
             self.restore_scroll_anchor();
         }
     }
 
     fn restore_scroll_anchor(&mut self) {
-        let Some(b) = self.buffer.as_ref() else {
+        if self.buffer.is_none() {
             return;
-        };
-        let line = b
-            .rope
-            .char_to_line(self.scroll_anchor.min(b.rope.len_chars()));
-        let top = self.disp_of(line) as f32 * EDIT_LINE_H;
+        }
+        let top = self.position(self.scroll_anchor).0 as f32 * EDIT_LINE_H;
         self.scroll_y = (top + self.scroll_anchor_offset).clamp(0.0, self.max_scroll());
     }
 
     fn set_scroll_y(&mut self, scroll_y: f32) {
         self.scroll_y = scroll_y.clamp(0.0, self.max_scroll());
         let top_row = self.first_line();
-        let line = self.buf_of(top_row);
-        if let Some(b) = self.buffer.as_ref() {
-            self.scroll_anchor = b
-                .rope
-                .line_to_char(line.min(b.rope.len_lines().saturating_sub(1)));
-        }
+        self.scroll_anchor = self.row_start_offset(top_row);
         self.scroll_anchor_offset = self.scroll_y - top_row as f32 * EDIT_LINE_H;
     }
 
-    /// Number of display rows (visible lines after folds).
+    fn row(&self, row: usize) -> Option<DisplayRow> {
+        self.rows.as_ref().and_then(|rows| rows.get(row).copied())
+    }
+
     fn disp_count(&self) -> usize {
-        self.visible
+        self.rows
             .as_ref()
-            .map(|v| v.len())
+            .map(|rows| rows.len())
             .unwrap_or_else(|| self.line_count())
     }
 
-    /// Buffer line at a display row.
-    fn buf_of(&self, disp: usize) -> usize {
-        self.visible
-            .as_ref()
-            .and_then(|v| v.get(disp).copied())
-            .unwrap_or(disp)
+    /// Buffer line shown on a display row.
+    fn buf_of(&self, row: usize) -> usize {
+        self.row(row).map_or(row, |r| r.line)
     }
 
-    /// Display row of a buffer line; a line hidden inside a fold maps to the fold's (visible) start row.
-    fn disp_of(&self, buf: usize) -> usize {
-        match self.visible.as_ref() {
-            Some(v) => match v.binary_search(&buf) {
-                Ok(i) => i,
-                Err(i) => i.saturating_sub(1),
-            },
-            None => buf,
+    /// First display row of a buffer line (the fold header's row for a hidden line).
+    fn disp_of(&self, line: usize) -> usize {
+        self.line_rows.get(line).copied().unwrap_or(line)
+    }
+
+    fn last_row_of_line(&self, line: usize) -> usize {
+        let mut row = self.disp_of(line);
+        while self.row(row + 1).is_some_and(|next| next.line == line) {
+            row += 1;
+        }
+        row
+    }
+
+    /// Whether `row` ends at a soft break (its line continues on the next row).
+    fn soft_break_after(&self, row: usize) -> bool {
+        match (self.row(row), self.row(row + 1)) {
+            (Some(this), Some(next)) => next.line == this.line,
+            _ => false,
+        }
+    }
+
+    fn display_offset(&self, line: usize, index: usize) -> usize {
+        let Some(b) = self.buffer.as_ref() else {
+            return 0;
+        };
+        b.offset_at(line, Self::char_col_for_display_index(b, line, index))
+    }
+
+    fn row_start_offset(&self, row: usize) -> usize {
+        match self.row(row) {
+            Some(r) => self.display_offset(r.line, r.start),
+            None => self.buffer.as_ref().map_or(0, |b| b.rope.len_chars()),
+        }
+    }
+
+    /// End of the text a display line shows: past a fold, the end of the row holding the fold's end.
+    fn display_line_end(&self, line: usize) -> usize {
+        let Some(b) = self.buffer.as_ref() else {
+            return 0;
+        };
+        let line_end = |line: usize| b.rope.line_to_char(line) + b.line_len(line);
+        let folds = self.folds.merged();
+        let mut end = line_end(line);
+        while let Some(fold) = folds.iter().find(|f| f.start <= end && end < f.end) {
+            end = line_end(b.rope.char_to_line(fold.end));
+        }
+        end
+    }
+
+    /// Last caret position on `row`: before a soft break that's the char before it.
+    fn row_end_offset(&self, row: usize) -> usize {
+        let Some(r) = self.row(row) else {
+            return self.buffer.as_ref().map_or(0, |b| b.rope.len_chars());
+        };
+        if self.soft_break_after(row) {
+            self.display_offset(r.line, r.end).saturating_sub(1)
+        } else {
+            self.display_line_end(r.line)
+        }
+    }
+
+    /// The display row and x (text-local px) of a buffer offset. An offset on a soft break shows at the start of
+    /// the following row; one after a fold shows in the fold header row's tail.
+    fn position(&self, offset: usize) -> (usize, f32) {
+        let Some(b) = self.buffer.as_ref() else {
+            return (0, 0.0);
+        };
+        let (line, col) = b.line_col_of(offset.min(b.rope.len_chars()));
+        let index = Self::display_index(b, line, col);
+        let first = self.disp_of(line);
+        let Some(first_row) = self.row(first) else {
+            return (first, 0.0);
+        };
+        if first_row.line != line {
+            return (first, self.tail_x(first_row.line, line, index));
+        }
+        let mut row = first;
+        while self
+            .row(row + 1)
+            .is_some_and(|next| next.line == line && next.start <= index)
+        {
+            row += 1;
+        }
+        (row, self.x_in_row(row, index))
+    }
+
+    fn x_in_row(&self, row: usize, index: usize) -> f32 {
+        let Some(r) = self.row(row) else {
+            return 0.0;
+        };
+        let layout = self.line_layout(r.line);
+        layout.x_for_index(index) - layout.x_for_index(r.start) + r.indent as f32 * char_advance()
+    }
+
+    fn fold_pill_w() -> f32 {
+        3.0 * char_advance() + 2.0 * FOLD_PILL_PAD
+    }
+
+    /// x of display `index` on `line`, drawn in the tail of the folded `header` row.
+    fn tail_x(&self, header: usize, line: usize, index: usize) -> f32 {
+        let Some(b) = self.buffer.as_ref() else {
+            return 0.0;
+        };
+        let Some(fold) = self.folds.fold_on_row(b, header) else {
+            return self.line_layout(header).width;
+        };
+        let end_line = b.rope.char_to_line(fold.end);
+        let skip = Self::display_index(b, end_line, fold.end - b.rope.line_to_char(end_line));
+        let layout = self.line_layout(line);
+        self.line_layout(header).width
+            + Self::fold_pill_w()
+            + (layout.x_for_index(index) - layout.x_for_index(skip)).max(0.0)
+    }
+
+    fn row_width(&self, row: usize) -> f32 {
+        let Some(r) = self.row(row) else {
+            return 0.0;
+        };
+        if !self.soft_break_after(row) {
+            if let Some(b) = self.buffer.as_ref() {
+                if self.folds.fold_on_row(b, r.line).is_some() {
+                    return self.position(self.display_line_end(r.line)).1;
+                }
+            }
+        }
+        self.x_in_row(row, r.end)
+    }
+
+    /// The buffer offset under text-local `x` on `row`. A click in a continuation row's indent, or past the end
+    /// of a row before a soft break, lands just before the break; vertical motion lands at the row's start.
+    fn offset_for_row_x(&self, row: usize, x: f32, click: bool) -> usize {
+        let Some(r) = self.row(row) else {
+            return self.buffer.as_ref().map_or(0, |b| b.rope.len_chars());
+        };
+        let em = char_advance();
+        let indent_w = r.indent as f32 * em;
+        if click && r.start > 0 && x < indent_w {
+            return self.display_offset(r.line, r.start).saturating_sub(1);
+        }
+        let layout = self.line_layout(r.line);
+        let local = (x - indent_w).max(0.0) + layout.x_for_index(r.start);
+        let index = layout.closest_index_for_x(local).clamp(r.start, r.end);
+        let offset = self.display_offset(r.line, index);
+        if index >= r.end && self.soft_break_after(row) {
+            offset.saturating_sub(1)
+        } else {
+            offset
         }
     }
 
@@ -433,7 +703,7 @@ impl FileItem {
         } else {
             return;
         }
-        self.visible = None;
+        self.rows = None;
     }
 
     /// Colored runs of the text after the fold headed by `row`, or `None` when `row` isn't folded.
@@ -471,7 +741,7 @@ impl FileItem {
 
     /// Total text width (px) of the widest line, plus a trailing column so the last glyph isn't flush to the edge.
     fn content_w(&self) -> f32 {
-        (self.max_cols + 1) as f32 * char_advance()
+        (self.max_row_cols + 1) as f32 * char_advance()
     }
 
     /// The largest valid horizontal scroll (so the widest line's end can reach the right edge).
@@ -493,7 +763,7 @@ impl FileItem {
         let (Some(first), Some(last)) = (b.selections().first(), b.selections().last()) else {
             return;
         };
-        let row_of = |offset: usize| self.disp_of(b.rope.char_to_line(offset)) as f32;
+        let row_of = |offset: usize| self.position(offset).0 as f32;
         let visible_lines = self.body_h / EDIT_LINE_H;
         let mut target_top = row_of(first.head());
         let mut target_bottom = row_of(last.head()) + 1.0;
@@ -516,7 +786,8 @@ impl FileItem {
         }
     }
 
-    /// Scroll so each on-screen selection's span (or, if that's wider than the view, its head) is visible.
+    /// Scroll so each on-screen selection's span on its head row (or, if that's wider than the view, the head)
+    /// is visible.
     fn autoscroll_horizontally(&mut self) {
         let Some(b) = self.buffer.as_ref() else {
             return;
@@ -527,30 +798,24 @@ impl FileItem {
         let viewport = self.text_viewport_w();
         let (mut target_left, mut target_right) = (f32::INFINITY, 0.0f32);
         for selection in b.selections() {
-            let (head_line, head_col) = b.line_col_of(selection.head());
-            if !(first_row..last_row).contains(&self.disp_of(head_line)) {
+            let (head_row, head_x) = self.position(selection.head());
+            if !(first_row..last_row).contains(&head_row) {
                 continue;
             }
-            let (start_line, start_col) = b.line_col_of(selection.start);
-            let (end_line, end_col) = b.line_col_of(selection.end);
-            let line_len = b.line_len(head_line);
-            let start_col = if start_line == head_line {
-                start_col
+            let (start_row, start_x) = self.position(selection.start);
+            let (end_row, end_x) = self.position(selection.end);
+            let row_width = self.row_width(head_row);
+            let start_x = if start_row == head_row { start_x } else { 0.0 };
+            let end_x = if end_row == head_row {
+                end_x
             } else {
-                0
-            };
-            let end_col = if end_line == head_line {
-                end_col
-            } else {
-                line_len
+                row_width
             }
-            .min(line_len);
-            let layout = self.line_layout(head_line);
-            let x_of = |col: usize| layout.x_for_index(Self::display_index(b, head_line, col));
-            let (mut left, mut right) = (x_of(start_col), x_of(end_col) + em);
+            .min(row_width);
+            let (mut left, mut right) = (start_x, end_x + em);
             if right - left > viewport {
-                left = x_of(head_col);
-                right = x_of(head_col.min(line_len)) + em;
+                left = head_x;
+                right = head_x.min(row_width) + em;
             }
             target_left = target_left.min(left);
             target_right = target_right.max(right);
@@ -576,15 +841,12 @@ impl FileItem {
     fn offset_at_local(&self, local_x: f32, local_y: f32) -> Option<usize> {
         let b = self.buffer.as_ref()?;
         let gw = gutter_width(self.line_count());
-        let disp = ((self.scroll_y + local_y) / EDIT_LINE_H).max(0.0) as usize;
-        if disp >= self.disp_count() {
+        let row = ((self.scroll_y + local_y) / EDIT_LINE_H).max(0.0) as usize;
+        if row >= self.disp_count() {
             return Some(b.rope.len_chars());
         }
-        let line = self.buf_of(disp);
         let x = (local_x - gw + self.scroll_x).max(0.0);
-        let index = self.line_layout(line).closest_index_for_x(x);
-        let col = Self::char_col_for_display_index(b, line, index);
-        Some(b.offset_at(line, col))
+        Some(self.offset_for_row_x(row, x, true))
     }
 
     /// Leading-whitespace width of a line in visual columns (tabs -> next `TAB_COLS` stop), or `None` if the line
@@ -772,8 +1034,8 @@ impl Item for FileItem {
         self.refresh();
         self.ensure_visible();
         let colors = syntax_theme();
-        // Virtualize over DISPLAY rows (folds hide inner buffer rows). The shell offsets the body up by the
-        // sub-line remainder (`body_y_offset`) so scroll is pixel-smooth.
+        // Virtualize over display rows. The shell offsets the body up by the sub-row remainder
+        // (`body_y_offset`) so scroll is pixel-smooth.
         let dcount = self.disp_count();
         let first = self.first_line().min(dcount);
         let visible = (self.body_h / EDIT_LINE_H).ceil() as usize + 2;
@@ -781,60 +1043,76 @@ impl Item for FileItem {
         // Text rows only (no gutter): the shell shifts this node left by `scroll_x`. The gutter is a separate
         // fixed overlay (see `gutter`), so long lines scroll under a stationary line-number column.
         let mut body = div().col().flex(1.0).py(EDIT_PAD_Y);
-        for d in first..last {
-            let buf = self.buf_of(d);
-            let line = self.line_segments(buf, &colors);
+        let dot = theme().text_muted.alpha(0.55);
+        for row_index in first..last {
+            let Some(row) = self.row(row_index) else {
+                break;
+            };
             let mut r = div().row().h_px(EDIT_LINE_H).items_center();
-            if line.is_empty() {
+            if row.indent > 0 {
+                r = r.child(label(" ".repeat(row.indent)).size(EDIT_FONT).mono());
+            }
+            // Whitespace inside a selection shows as faint middle dots, injected into the text flow so they sit
+            // on the glyph grid.
+            let dots = self.sel_vis_range_for(row.line);
+            let (mut byte, mut column) = (0usize, 0usize);
+            let mut empty = true;
+            for (segment, color) in self.line_segments(row.line, &colors) {
+                let segment_end = byte + segment.len();
+                if segment_end <= row.start || byte >= row.end {
+                    column += segment.chars().count();
+                    byte = segment_end;
+                    continue;
+                }
+                let mut run = String::new();
+                let mut run_color = color;
+                for (offset, ch) in segment.char_indices() {
+                    let at = byte + offset;
+                    if at < row.start || at >= row.end {
+                        column += 1;
+                        continue;
+                    }
+                    let is_dot = ch == ' ' && dots.is_some_and(|(s, e)| column >= s && column < e);
+                    let ch_color = if is_dot { dot } else { color };
+                    if ch_color != run_color && !run.is_empty() {
+                        r = r.child(
+                            label(std::mem::take(&mut run))
+                                .size(EDIT_FONT)
+                                .mono()
+                                .color(run_color),
+                        );
+                    }
+                    run_color = ch_color;
+                    run.push(if is_dot { '\u{b7}' } else { ch });
+                    column += 1;
+                }
+                if !run.is_empty() {
+                    empty = false;
+                    r = r.child(label(run).size(EDIT_FONT).mono().color(run_color));
+                }
+                byte = segment_end;
+            }
+            if empty && row.indent == 0 {
                 r = r.child(label(" ").size(EDIT_FONT).mono());
             }
-            // Render whitespace inside a selection as faint middle dots (reference's show_whitespaces=selection).
-            // Injected into the text flow so the dots sit exactly on the glyph grid.
-            let ws = self.sel_vis_range_for(buf);
-            let dot = theme().text_muted.alpha(0.55);
-            let mut vcol = 0usize;
-            for (seg, color) in &line {
-                match ws {
-                    Some((s, e)) => {
-                        let mut run = String::new();
-                        let mut run_color = *color;
-                        for ch in seg.chars() {
-                            let is_dot = ch == ' ' && vcol >= s && vcol < e;
-                            let c = if is_dot { dot } else { *color };
-                            if c != run_color && !run.is_empty() {
-                                r = r.child(
-                                    label(std::mem::take(&mut run))
-                                        .size(EDIT_FONT)
-                                        .mono()
-                                        .color(run_color),
-                                );
-                            }
-                            run_color = c;
-                            run.push(if is_dot { '·' } else { ch });
-                            vcol += 1;
-                        }
-                        if !run.is_empty() {
-                            r = r.child(label(run).size(EDIT_FONT).mono().color(run_color));
-                        }
-                    }
-                    None => {
-                        vcol += seg.chars().count();
-                        r = r.child(label(seg.clone()).size(EDIT_FONT).mono().color(*color));
-                    }
-                }
-            }
             // The row resumes after the placeholder with the text following the fold's end, so a block reads `{...}`.
-            if let Some(tail) = self.fold_tail(buf, &colors) {
-                r = r.child(
-                    div().px(4.0).rounded(3.0).bg(theme().element_hover).child(
-                        label("...".to_string())
-                            .size(EDIT_FONT)
-                            .mono()
-                            .color(theme().text_muted),
-                    ),
-                );
-                for (text, color) in tail {
-                    r = r.child(label(text).size(EDIT_FONT).mono().color(color));
+            if !self.soft_break_after(row_index) {
+                if let Some(tail) = self.fold_tail(row.line, &colors) {
+                    r = r.child(
+                        div()
+                            .px(FOLD_PILL_PAD)
+                            .rounded(3.0)
+                            .bg(theme().element_hover)
+                            .child(
+                                label("...".to_string())
+                                    .size(EDIT_FONT)
+                                    .mono()
+                                    .color(theme().text_muted),
+                            ),
+                    );
+                    for (text, color) in tail {
+                        r = r.child(label(text).size(EDIT_FONT).mono().color(color));
+                    }
                 }
             }
             body = body.child(r);
@@ -852,8 +1130,15 @@ impl Item for FileItem {
         let visible = (self.body_h / EDIT_LINE_H).ceil() as usize + 2;
         let last = (first + visible).min(dcount);
         let mut col = div().col().flex(1.0).px(EDIT_PAD_X).py(EDIT_PAD_Y);
-        for d in first..last {
-            let line = self.buf_of(d);
+        for row_index in first..last {
+            let Some(row) = self.row(row_index) else {
+                break;
+            };
+            let line = row.line;
+            if row.start > 0 {
+                col = col.child(div().w_px(gw).h_px(EDIT_LINE_H));
+                continue;
+            }
             let num_color = if line == cur_line {
                 theme().text
             } else {
@@ -978,8 +1263,8 @@ impl Item for FileItem {
 
     fn buffer_line_at(&self, local_y: f32) -> Option<usize> {
         self.buffer.as_ref()?;
-        let disp = ((self.scroll_y + local_y) / EDIT_LINE_H).max(0.0) as usize;
-        Some(self.buf_of(disp))
+        let row = ((self.scroll_y + local_y) / EDIT_LINE_H).max(0.0) as usize;
+        Some(self.buf_of(row.min(self.disp_count().saturating_sub(1))))
     }
 
     fn line_screen_y(&self, content: Rect, line: usize) -> Option<f32> {
@@ -994,6 +1279,7 @@ impl Item for FileItem {
 
     fn set_body_width(&mut self, w: f32) {
         self.body_w = w;
+        self.ensure_visible();
         self.scroll_x = self.scroll_x.min(self.max_scroll_x());
     }
 
@@ -1067,22 +1353,41 @@ impl Item for FileItem {
     }
 
     fn input_key(&mut self, key: EditKey, shift: bool) {
-        let mut edited = false;
-        let folds = self.folds.merged();
         // One row of the previous page stays on screen.
         let page_rows = ((self.body_h / EDIT_LINE_H) as usize).saturating_sub(1);
+        let motion = match key {
+            EditKey::Left => Some(Motion::Left),
+            EditKey::Right => Some(Motion::Right),
+            EditKey::Up => Some(Motion::Up),
+            EditKey::Down => Some(Motion::Down),
+            EditKey::Home => Some(Motion::Home),
+            EditKey::End => Some(Motion::End),
+            EditKey::WordLeft => Some(Motion::WordLeft),
+            EditKey::WordRight => Some(Motion::WordRight),
+            EditKey::PageUp => Some(Motion::PageUp(page_rows)),
+            EditKey::PageDown => Some(Motion::PageDown(page_rows)),
+            _ => None,
+        };
+        if let Some(motion) = motion {
+            self.refresh();
+            self.ensure_visible();
+            let next: Option<Vec<Selection>> = self
+                .buffer
+                .as_ref()
+                .map(|b| b.moved_selections(motion, shift, &EditorRows::new(self)));
+            if let (Some(b), Some(next)) = (self.buffer.as_mut(), next) {
+                b.set_selections(next);
+            }
+            self.ensure_cursor_visible();
+            return;
+        }
+        if key == EditKey::ToggleSoftWrap {
+            self.toggle_soft_wrap();
+            return;
+        }
+        let mut edited = false;
         if let Some(b) = self.buffer.as_mut() {
             match key {
-                EditKey::Left => b.apply_motion(Motion::Left, shift, &folds),
-                EditKey::Right => b.apply_motion(Motion::Right, shift, &folds),
-                EditKey::Up => b.apply_motion(Motion::Up, shift, &folds),
-                EditKey::Down => b.apply_motion(Motion::Down, shift, &folds),
-                EditKey::Home => b.apply_motion(Motion::Home, shift, &folds),
-                EditKey::End => b.apply_motion(Motion::End, shift, &folds),
-                EditKey::WordLeft => b.apply_motion(Motion::WordLeft, shift, &folds),
-                EditKey::WordRight => b.apply_motion(Motion::WordRight, shift, &folds),
-                EditKey::PageUp => b.apply_motion(Motion::PageUp(page_rows), shift, &folds),
-                EditKey::PageDown => b.apply_motion(Motion::PageDown(page_rows), shift, &folds),
                 EditKey::Backspace => {
                     b.backspace();
                     edited = true;
@@ -1105,6 +1410,7 @@ impl Item for FileItem {
                 }
                 EditKey::SelectAll => b.select_all(),
                 EditKey::Escape => b.collapse_cursors(),
+                _ => {}
             }
         }
         if edited {
@@ -1152,13 +1458,10 @@ impl Item for FileItem {
         b.selections()
             .iter()
             .filter_map(|s| {
-                let (line, col) = b.line_col_of(s.head());
-                let x = self
-                    .line_layout(line)
-                    .x_for_index(Self::display_index(b, line, col));
-                let y = content.y + self.disp_of(line) as f32 * EDIT_LINE_H - self.scroll_y;
+                let (row, x) = self.position(s.head());
+                let y = content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
                 if y + EDIT_LINE_H <= content.y || y >= content.y + self.body_h {
-                    return None; // off-screen
+                    return None;
                 }
                 Some(Rect::new(
                     content.x + gw + x - self.scroll_x,
@@ -1177,46 +1480,43 @@ impl Item for FileItem {
         };
         let cw = char_advance();
         let gw = gutter_width(self.line_count());
-        // `row_y` takes a DISPLAY row (folds hide inner buffer rows).
-        let row_y = |disp: usize| content.y + disp as f32 * EDIT_LINE_H - self.scroll_y;
+        let row_y = |row: usize| content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
         let first = self.first_line();
         let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
         let mut rects = Vec::new();
 
-        // Current-line highlight (focused caret's line only), spanning the whole content width.
+        // The cursor's whole display line is highlighted, across its soft-wrapped rows.
         if self.focused {
-            let (cur, _) = b.line_col_of(b.cursor());
-            let disp = self.disp_of(cur);
-            if (first..last).contains(&disp) {
+            let line = self.buf_of(self.position(b.cursor()).0);
+            let (top, bottom) = (self.disp_of(line), self.last_row_of_line(line));
+            if top < last && bottom >= first {
                 rects.push(Rect::new(
                     content.x,
-                    row_y(disp),
+                    row_y(top),
                     content.w,
-                    EDIT_LINE_H,
+                    (bottom + 1 - top) as f32 * EDIT_LINE_H,
                     theme().editor_active_line,
                 ));
             }
         }
 
-        // Indent guides: one continuous vertical line per (block, level), spanning whole row ranges -- blank
-        // lines inside a block inherit the block's depth so the guide doesn't break (the reference's algorithm).
-        // Computed over the visible BUFFER range, then mapped to display rows so folds compress them.
+        // Indent guides: one continuous vertical line per (block, level) over buffer lines -- blank lines inside
+        // a block inherit its depth so the guide doesn't break -- then mapped to display rows.
         let buf_first = self.buf_of(first);
         let buf_last = self.buf_of(last.saturating_sub(1)) + 1;
         let guide = theme().panel_indent_guide;
         for (s, e, depth) in self.indent_guides(buf_first, buf_last) {
-            let sd = self.disp_of(s);
-            let ed = self.disp_of(e);
-            // Skip guides whose rows are hidden inside a collapsed fold (they'd otherwise draw a stub bar on the
-            // fold's header row, cutting through its text).
-            if ed < sd || self.buf_of(sd) != s {
+            let top = self.disp_of(s);
+            let bottom = self.last_row_of_line(e);
+            // A guide starting inside a collapsed fold would draw a stub through the header's text.
+            if bottom < top || self.buf_of(top) != s {
                 continue;
             }
             rects.push(Rect::new(
                 content.x + gw + (depth * TAB_COLS) as f32 * cw - self.scroll_x,
-                row_y(sd),
+                row_y(top),
                 1.0,
-                (ed + 1 - sd) as f32 * EDIT_LINE_H,
+                (bottom + 1 - top) as f32 * EDIT_LINE_H,
                 guide,
             ));
         }
@@ -1247,36 +1547,36 @@ impl Item for FileItem {
         let mut tris = Vec::new();
         for s in b.selections() {
             let Some((a, e)) = s.range() else { continue };
-            let (l0, c0) = b.line_col_of(a);
-            let (l1, c1) = b.line_col_of(e);
-            // Walk visible DISPLAY rows so folds compress the band; each row's span is that buffer line's.
             let mut rows: Vec<(f32, f32)> = Vec::new();
-            let mut top_disp = None;
-            for d in first..last {
-                let line = self.buf_of(d);
-                if line < l0 || line > l1 {
+            let mut top_row = None;
+            for row in first..last {
+                let row_start = self.row_start_offset(row);
+                let soft = self.soft_break_after(row);
+                let row_next = match self.row(row + 1) {
+                    Some(next) if soft => self.display_offset(next.line, next.start),
+                    _ => self.display_line_end(self.buf_of(row)) + 1,
+                };
+                if a >= row_next || e <= row_start {
                     continue;
                 }
-                if top_disp.is_none() {
-                    top_disp = Some(d);
-                }
-                let layout = self.line_layout(line);
-                let start_x = if line == l0 {
-                    text_x + layout.x_for_index(Self::display_index(b, line, c0))
+                top_row.get_or_insert(row);
+                let start_x = if a > row_start {
+                    self.position(a).1
                 } else {
-                    text_x
+                    0.0
                 };
-                let end_x = if line == l1 {
-                    text_x + layout.x_for_index(Self::display_index(b, line, c1))
+                // A band running past a hard line end overshoots so the block reads as one shape.
+                let end_x = if e < row_next {
+                    self.position(e).1
+                } else if soft {
+                    self.row_width(row)
                 } else {
-                    // Rows before the last run past the line end (selecting the newline) plus an overshoot, so
-                    // the block reads as one shape.
-                    text_x + layout.width + overshoot
+                    self.row_width(row) + overshoot
                 };
-                rows.push((start_x, end_x.max(start_x + 1.0)));
+                rows.push((text_x + start_x, text_x + end_x.max(start_x + 1.0)));
             }
-            let Some(td) = top_disp else { continue };
-            let top_y = content.y + td as f32 * EDIT_LINE_H - self.scroll_y;
+            let Some(top) = top_row else { continue };
+            let top_y = content.y + top as f32 * EDIT_LINE_H - self.scroll_y;
             tris.extend(ui::selection_path(
                 &rows,
                 top_y,
@@ -1305,6 +1605,102 @@ impl Item for FileItem {
             thumb_h,
             theme().scrollbar_thumb_background,
         ))
+    }
+}
+
+/// Soft-wrap breaks for `line`, skipping the measure when an all-ASCII line clearly fits.
+fn wrap_boundaries(
+    buffer: &EditorBuffer,
+    line: usize,
+    columns: usize,
+    wrap_width: f32,
+    em: f32,
+    char_widths: &RefCell<HashMap<char, f32>>,
+) -> Rc<[Boundary]> {
+    let slice = buffer.rope.line(line);
+    if slice.len_bytes() == slice.len_chars() && columns as f32 * em <= wrap_width {
+        return Rc::from([]);
+    }
+    let mut text = String::new();
+    let (mut column, mut byte) = (0usize, 0usize);
+    for chunk in slice.chunks() {
+        let chunk = chunk.trim_end_matches(['\n', '\r']);
+        editor::display::push_expanded(&mut text, chunk, TAB_COLS, &mut column, &mut byte);
+    }
+    let mut widths = char_widths.borrow_mut();
+    let width_of = |c: char| {
+        if c.is_ascii() {
+            return em;
+        }
+        *widths
+            .entry(c)
+            .or_insert_with(|| ui::measure_text_width(&c.to_string(), EDIT_FONT, true, 400))
+    };
+    editor::wrap::wrap_line(&text, wrap_width, width_of).into()
+}
+
+/// A file item's screen rows, for motions that move by what's displayed.
+struct EditorRows<'a> {
+    item: &'a FileItem,
+    folds: Vec<Range<usize>>,
+}
+
+impl<'a> EditorRows<'a> {
+    fn new(item: &'a FileItem) -> Self {
+        Self {
+            item,
+            folds: item.folds.merged(),
+        }
+    }
+}
+
+impl DisplayRows for EditorRows<'_> {
+    fn clip(&self, offset: usize, bias: Bias) -> usize {
+        match self
+            .folds
+            .iter()
+            .find(|f| f.start < offset && offset < f.end)
+        {
+            Some(fold) => match bias {
+                Bias::Left => fold.start,
+                Bias::Right => fold.end,
+            },
+            None => offset,
+        }
+    }
+
+    fn row_of(&self, offset: usize) -> usize {
+        self.item.position(offset).0
+    }
+
+    fn max_row(&self) -> usize {
+        self.item.disp_count().saturating_sub(1)
+    }
+
+    fn row_start(&self, row: usize) -> usize {
+        self.item.row_start_offset(row)
+    }
+
+    fn row_end(&self, row: usize) -> usize {
+        self.item.row_end_offset(row)
+    }
+
+    fn line_start(&self, offset: usize) -> usize {
+        let line = self.item.buf_of(self.row_of(offset));
+        self.item.display_offset(line, 0)
+    }
+
+    fn line_end(&self, offset: usize) -> usize {
+        self.item
+            .display_line_end(self.item.buf_of(self.row_of(offset)))
+    }
+
+    fn x_of(&self, offset: usize) -> f32 {
+        self.item.position(offset).1
+    }
+
+    fn offset_for_x(&self, row: usize, x: f32) -> usize {
+        self.clip(self.item.offset_for_row_x(row, x, false), Bias::Left)
     }
 }
 
@@ -3239,8 +3635,10 @@ mod line_width_tests {
             step(item.buffer.as_mut().unwrap());
             item.refresh();
             assert_eq!(item.line_widths, full_widths(&item));
+            assert_eq!(item.wraps.len(), item.line_widths.len());
+            item.ensure_visible();
             assert_eq!(
-                item.max_cols,
+                item.max_row_cols,
                 full_widths(&item).into_iter().flatten().max().unwrap_or(0)
             );
         }
@@ -3297,5 +3695,77 @@ mod scroll_tests {
         }
         item.set_body_height(10.0 * EDIT_LINE_H);
         assert_eq!(top_row(&item), 42.0);
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    /// A soft-wrapping item whose text area fits `columns` columns.
+    fn wrapped(text: &str, columns: usize) -> FileItem {
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.md", Some(text.into()));
+        let em = char_advance();
+        let body_w =
+            (columns as f32 + 2.0) * em + 2.0 * EDIT_PAD_X + gutter_width(item.line_count());
+        item.set_body_width(body_w);
+        item.set_body_height(10.0 * EDIT_LINE_H);
+        item
+    }
+
+    fn row_texts(item: &FileItem) -> Vec<String> {
+        let b = item.buffer.as_ref().unwrap();
+        item.rows
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let line: String = b.rope.line(r.line).chars().collect();
+                let line = line.trim_end_matches('\n');
+                format!(
+                    "{}{}",
+                    " ".repeat(r.indent),
+                    &line[r.start..r.end.min(line.len())]
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn long_lines_wrap_with_the_line_indent() {
+        let item = wrapped("  alpha beta gamma\nx\n", 10);
+        assert_eq!(
+            row_texts(&item),
+            vec!["  alpha ", "  beta ", "  gamma", "x", ""]
+        );
+    }
+
+    #[test]
+    fn down_moves_through_wrapped_rows_of_one_line() {
+        let mut item = wrapped("alpha beta gamma\nx\n", 8);
+        item.input_key(EditKey::Down, false);
+        let b = item.buffer.as_ref().unwrap();
+        assert_eq!(b.line_col(), (0, "alpha ".len()));
+        assert_eq!(item.position(b.cursor()).0, 1);
+    }
+
+    #[test]
+    fn end_stops_before_the_soft_break_first() {
+        let mut item = wrapped("alpha beta gamma\n", 8);
+        item.input_key(EditKey::End, false);
+        assert_eq!(item.buffer.as_ref().unwrap().cursor(), "alpha".len());
+        item.input_key(EditKey::End, false);
+        assert_eq!(
+            item.buffer.as_ref().unwrap().cursor(),
+            "alpha beta gamma".len()
+        );
+    }
+
+    #[test]
+    fn toggling_soft_wrap_restores_one_row_per_line() {
+        let mut item = wrapped("alpha beta gamma\n", 8);
+        assert_eq!(item.disp_count(), 4);
+        item.input_key(EditKey::ToggleSoftWrap, false);
+        assert_eq!(item.disp_count(), 2);
     }
 }

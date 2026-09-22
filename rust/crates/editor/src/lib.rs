@@ -4,6 +4,7 @@ pub mod fold;
 pub mod highlight;
 pub mod syntax;
 pub mod theme;
+pub mod wrap;
 
 pub use buffer::EditorBuffer;
 pub use highlight::Lang;

@@ -328,6 +328,7 @@ pub enum EditKey {
     Redo,
     SelectAll,
     Escape,
+    ToggleSoftWrap,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
