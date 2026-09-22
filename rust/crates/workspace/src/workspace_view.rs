@@ -1233,7 +1233,7 @@ impl WorkspaceView {
                 .layout
                 .files_view
                 .as_mut()
-                .map(|v| v.editor_click(x, y, true))
+                .map(|v| v.editor_drag(x, y))
                 .unwrap_or(false),
             Drag::None => {
                 if let Some((id, px, py)) = self.pending_tab {

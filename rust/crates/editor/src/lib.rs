@@ -1,4 +1,6 @@
 pub mod buffer;
+pub mod display;
+pub mod fold;
 pub mod highlight;
 pub mod syntax;
 pub mod theme;

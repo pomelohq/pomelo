@@ -6,7 +6,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use editor::buffer::Bias;
+use editor::buffer::{Bias, Motion};
+use editor::fold::FoldMap;
 use editor::{EditorBuffer, Lang, Syntax, Theme};
 use files::FileNode;
 use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
@@ -23,6 +24,8 @@ const EDIT_PAD_X: f32 = 8.0;
 const EDIT_PAD_Y: f32 = 8.0;
 const CARET_W: f32 = 2.0;
 const GUTTER_GAP: f32 = 12.0; // space between the line-number gutter and the first text column
+const VERTICAL_SCROLL_MARGIN: f32 = 3.0;
+const HORIZONTAL_SCROLL_MARGIN: f32 = 5.0;
 const FOLD_COL: f32 = 14.0; // fold-chevron column, between the line number and the text
 const TAB_COLS: usize = 4; // indent-guide spacing: one guide per this many leading columns
 
@@ -142,6 +145,44 @@ struct TabDrop {
 /// An open file as a center `Item` (an editor item): path/name + decoded text + language (`None` text =
 /// binary) + its own syntax highlighter. Any center tab is a `Box<dyn Item>`, so a terminal/search/etc. can
 /// share the same pane later.
+/// A shaped display row: each glyph's starting byte index (into the tab-expanded text) with its x.
+#[derive(Default)]
+struct LineLayout {
+    glyphs: Vec<(usize, f32)>,
+    width: f32,
+    len: usize,
+}
+
+impl LineLayout {
+    /// The x of the glyph at or after `index`; the row's width past the end.
+    fn x_for_index(&self, index: usize) -> f32 {
+        self.glyphs
+            .iter()
+            .find(|(i, _)| *i >= index)
+            .map_or(self.width, |(_, x)| *x)
+    }
+
+    /// The glyph boundary nearest `x`.
+    fn closest_index_for_x(&self, x: f32) -> usize {
+        let (mut prev_index, mut prev_x) = (0usize, 0.0f32);
+        for &(index, glyph_x) in &self.glyphs {
+            if glyph_x >= x {
+                return if glyph_x - x < x - prev_x {
+                    index
+                } else {
+                    prev_index
+                };
+            }
+            prev_index = index;
+            prev_x = glyph_x;
+        }
+        if self.len == 1 {
+            return usize::from(x > self.width / 2.0);
+        }
+        self.len
+    }
+}
+
 struct FileItem {
     root: PathBuf,
     path: String,
@@ -159,6 +200,10 @@ struct FileItem {
     focused: bool,
     /// Vertical scroll in pixels (smooth, sub-line) and the visible body height (px) set before render.
     scroll_y: f32,
+    /// Char offset whose display row sits at the top of the viewport, plus the pixel offset past that row, so the
+    /// view stays on the same text when edits or folds change the rows above it.
+    scroll_anchor: usize,
+    scroll_anchor_offset: f32,
     body_h: f32,
     /// Horizontal scroll in pixels and the visible body width (px), for long lines. The gutter stays fixed; only
     /// the text scrolls left by `scroll_x`.
@@ -168,11 +213,9 @@ struct FileItem {
     max_cols: usize,
     /// Visual width per line (`None` = needs measuring); edits splice it so only touched lines are re-measured.
     line_widths: Vec<Option<usize>>,
-    /// Buffer line indices that start a currently-collapsed fold (indent-based). The rows inside each fold are
-    /// hidden from the display; `visible` is the display-row -> buffer-line map derived from this.
-    folded: std::collections::HashSet<usize>,
-    /// Char offset of each folded line's start, carried through edits so folds stay on their lines.
-    fold_offsets: Vec<usize>,
+    /// Shaped rows by buffer line, dropped whenever the text changes.
+    layout_cache: std::cell::RefCell<std::collections::HashMap<usize, std::rc::Rc<LineLayout>>>,
+    folds: FoldMap,
     /// Display-row -> buffer-line map (rebuilt when text or folds change). `None` = needs rebuild.
     visible: Option<Vec<usize>>,
 }
@@ -195,13 +238,15 @@ impl FileItem {
             conflict: false,
             focused: false,
             scroll_y: 0.0,
+            scroll_anchor: 0,
+            scroll_anchor_offset: 0.0,
             body_h: 400.0,
             scroll_x: 0.0,
             body_w: 400.0,
             max_cols: 0,
             line_widths: Vec::new(),
-            folded: HashSet::new(),
-            fold_offsets: Vec::new(),
+            layout_cache: Default::default(),
+            folds: FoldMap::default(),
             visible: None,
         }
     }
@@ -220,21 +265,12 @@ impl FileItem {
             return;
         }
         if let Some(since) = self.synced_version {
-            if !self.fold_offsets.is_empty() {
-                for batch in b.edits_since(since) {
-                    for offset in &mut self.fold_offsets {
-                        *offset = editor::buffer::map_offset(batch, *offset, Bias::Left);
-                    }
-                }
-                self.fold_offsets.sort_unstable();
-                self.fold_offsets.dedup();
-                self.folded = self
-                    .fold_offsets
-                    .iter()
-                    .map(|o| b.rope.char_to_line(*o))
-                    .collect();
+            for batch in b.edits_since(since) {
+                self.scroll_anchor =
+                    editor::buffer::map_offset(batch, self.scroll_anchor, Bias::Left);
             }
         }
+        self.folds.sync(b);
         match self.synced_version {
             // Edits are logged in application order with rows valid at that moment, so splicing in that order
             // keeps every slot aligned with its line; only the spliced-in rows get re-measured.
@@ -264,6 +300,7 @@ impl FileItem {
             .max()
             .unwrap_or(0);
         self.visible = None;
+        self.layout_cache.borrow_mut().clear();
         self.synced_version = Some(version);
     }
 
@@ -285,13 +322,13 @@ impl FileItem {
                 capture: None,
             }],
         };
-        let mut col = 0usize;
+        let (mut col, mut byte) = (0usize, 0usize);
         runs.into_iter()
             .filter(|run| !run.range.is_empty())
             .map(|run| {
                 let mut text = String::new();
                 for chunk in b.rope.byte_slice(run.range).chunks() {
-                    push_expanded(&mut text, chunk, &mut col);
+                    editor::display::push_expanded(&mut text, chunk, TAB_COLS, &mut col, &mut byte);
                 }
                 (text, color_of(colors, run.capture.unwrap_or("")))
             })
@@ -307,84 +344,55 @@ impl FileItem {
 
     // ---- folding: a display row is a visible line; folded ranges hide their inner buffer rows ----
 
-    /// The indent-based fold starting at `start`: `(last_hidden_line, closer_line)`. Rows `start+1..=last_hidden`
-    /// are hidden when collapsed. `closer_line` is the dedent line that closes the block (e.g. `}`) when it's a
-    /// lone closing bracket -- it's hidden too and rendered inline after the placeholder so a fold reads `{...}`
-    /// like the reference (for brace languages). `None` if the line starts no foldable block.
-    fn fold_span(&self, start: usize) -> Option<(usize, Option<usize>)> {
-        let b = self.buffer.as_ref()?;
-        let n = b.rope.len_lines();
-        let base = Self::indent_cols(b, start)?;
-        let mut deep_end = start;
-        let mut r = start + 1;
-        while r < n {
-            match Self::indent_cols(b, r) {
-                Some(c) if c > base => {
-                    deep_end = r;
-                    r += 1;
-                }
-                Some(_) => break,
-                None => r += 1, // blank line inside the block: included if a deeper line follows
-            }
-        }
-        if deep_end == start {
-            return None;
-        }
-        // The break line `r` closes the block if it's a lone closing bracket at (<=) the base indent.
-        if r < n
-            && Self::indent_cols(b, r).is_some_and(|c| c <= base)
-            && Self::starts_with_closer(b, r)
-        {
-            Some((r, Some(r)))
-        } else {
-            Some((deep_end, None))
-        }
+    fn is_folded(&self, line: usize) -> bool {
+        self.buffer
+            .as_ref()
+            .is_some_and(|b| self.folds.fold_on_row(b, line).is_some())
     }
 
-    fn fold_end(&self, start: usize) -> Option<usize> {
-        self.fold_span(start).map(|(e, _)| e)
-    }
-
-    /// Whether the first non-whitespace char on a line is a closing bracket.
-    fn starts_with_closer(b: &EditorBuffer, line: usize) -> bool {
-        if line >= b.rope.len_lines() {
-            return false;
-        }
-        for ch in b.rope.line(line).chars() {
-            match ch {
-                ' ' | '\t' => continue,
-                '}' | ')' | ']' => return true,
-                _ => return false,
-            }
-        }
-        false
-    }
-
-    fn is_foldable(&self, start: usize) -> bool {
-        self.fold_span(start).is_some()
+    fn is_foldable(&self, line: usize) -> bool {
+        self.buffer
+            .as_ref()
+            .is_some_and(|b| editor::fold::starts_indent(b, line))
+            || self.is_folded(line)
     }
 
     fn rebuild_visible(&mut self) {
-        let n = self.line_count();
-        let mut v = Vec::with_capacity(n);
-        let mut i = 0;
-        while i < n {
-            v.push(i);
-            if self.folded.contains(&i) {
-                if let Some(e) = self.fold_end(i) {
-                    i = e + 1;
-                    continue;
-                }
-            }
-            i += 1;
-        }
-        self.visible = Some(v);
+        let rows = match self.buffer.as_ref() {
+            Some(b) if !self.folds.is_empty() => self.folds.visible_rows(b),
+            _ => (0..self.line_count()).collect(),
+        };
+        self.visible = Some(rows);
     }
 
     fn ensure_visible(&mut self) {
         if self.visible.is_none() {
             self.rebuild_visible();
+            self.restore_scroll_anchor();
         }
+    }
+
+    fn restore_scroll_anchor(&mut self) {
+        let Some(b) = self.buffer.as_ref() else {
+            return;
+        };
+        let line = b
+            .rope
+            .char_to_line(self.scroll_anchor.min(b.rope.len_chars()));
+        let top = self.disp_of(line) as f32 * EDIT_LINE_H;
+        self.scroll_y = (top + self.scroll_anchor_offset).clamp(0.0, self.max_scroll());
+    }
+
+    fn set_scroll_y(&mut self, scroll_y: f32) {
+        self.scroll_y = scroll_y.clamp(0.0, self.max_scroll());
+        let top_row = self.first_line();
+        let line = self.buf_of(top_row);
+        if let Some(b) = self.buffer.as_ref() {
+            self.scroll_anchor = b
+                .rope
+                .line_to_char(line.min(b.rope.len_lines().saturating_sub(1)));
+        }
+        self.scroll_anchor_offset = self.scroll_y - top_row as f32 * EDIT_LINE_H;
     }
 
     /// Number of display rows (visible lines after folds).
@@ -414,21 +422,36 @@ impl FileItem {
         }
     }
 
-    fn do_toggle_fold(&mut self, start: usize) {
-        if !self.is_foldable(start) {
-            return;
-        }
-        let Some(offset) = self.buffer.as_ref().map(|b| b.rope.line_to_char(start)) else {
+    fn do_toggle_fold(&mut self, row: usize) {
+        let Some(b) = self.buffer.as_ref() else {
             return;
         };
-        if self.folded.remove(&start) {
-            self.fold_offsets.retain(|o| *o != offset);
+        if self.folds.fold_on_row(b, row).is_some() {
+            self.folds.unfold_row(b, row);
+        } else if let Some(range) = editor::fold::fold_range_for_row(b, self.syntax.as_ref(), row) {
+            self.folds.fold(b, range);
         } else {
-            self.folded.insert(start);
-            self.fold_offsets.push(offset);
-            self.fold_offsets.sort_unstable();
+            return;
         }
         self.visible = None;
+    }
+
+    /// Colored runs of the text after the fold headed by `row`, or `None` when `row` isn't folded.
+    fn fold_tail(&self, row: usize, colors: &Theme) -> Option<Vec<(String, Rgba)>> {
+        let b = self.buffer.as_ref()?;
+        let fold = self.folds.fold_on_row(b, row)?;
+        let end_row = b.rope.char_to_line(fold.end);
+        let skip = Self::display_index(b, end_row, fold.end - b.rope.line_to_char(end_row));
+        let mut consumed = 0usize;
+        let mut tail = Vec::new();
+        for (text, color) in self.line_segments(end_row, colors) {
+            let from = skip.saturating_sub(consumed).min(text.len());
+            consumed += text.len();
+            if from < text.len() {
+                tail.push((text[from..].to_string(), color));
+            }
+        }
+        Some(tail)
     }
 
     /// Total content height (px), in display rows.
@@ -436,9 +459,9 @@ impl FileItem {
         self.disp_count() as f32 * EDIT_LINE_H
     }
 
-    /// The largest valid scroll (so the last line can reach the bottom).
+    /// The last row may scroll up to the top of the viewport.
     fn max_scroll(&self) -> f32 {
-        (self.content_h() - self.body_h).max(0.0)
+        (self.disp_count().saturating_sub(1)) as f32 * EDIT_LINE_H
     }
 
     /// The text viewport width (px): the body minus the padding and the fixed gutter.
@@ -461,30 +484,92 @@ impl FileItem {
         (self.scroll_y / EDIT_LINE_H).floor().max(0.0) as usize
     }
 
-    /// Scroll so the primary cursor stays within the visible window, both vertically and horizontally (caret-follow).
-    fn ensure_cursor_visible(&mut self) {
+    /// Scroll just enough to show the selections with up to `VERTICAL_SCROLL_MARGIN` rows around them, falling
+    /// back to the newest selection when they don't all fit.
+    fn autoscroll_vertically(&mut self) {
         let Some(b) = self.buffer.as_ref() else {
             return;
         };
-        let (line, col) = b.line_col_of(b.cursor());
-        let top = self.disp_of(line) as f32 * EDIT_LINE_H;
-        let bottom = top + EDIT_LINE_H;
-        if top < self.scroll_y {
-            self.scroll_y = top;
-        } else if bottom > self.scroll_y + self.body_h {
-            self.scroll_y = bottom - self.body_h;
+        let (Some(first), Some(last)) = (b.selections().first(), b.selections().last()) else {
+            return;
+        };
+        let row_of = |offset: usize| self.disp_of(b.rope.char_to_line(offset)) as f32;
+        let visible_lines = self.body_h / EDIT_LINE_H;
+        let mut target_top = row_of(first.head());
+        let mut target_bottom = row_of(last.head()) + 1.0;
+        if target_bottom - target_top > visible_lines {
+            target_top = row_of(b.newest().head());
+            target_bottom = target_top + 1.0;
         }
-        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll());
+        let margin = ((visible_lines - (target_bottom - target_top)) / 2.0)
+            .floor()
+            .clamp(0.0, VERTICAL_SCROLL_MARGIN);
+        let target_top = (target_top - margin).max(0.0);
+        let target_bottom = target_bottom + margin;
+        let start_row = self.scroll_y / EDIT_LINE_H;
+        let needs_up = target_top < start_row;
+        let needs_down = target_bottom >= start_row + visible_lines;
+        if needs_up && !needs_down {
+            self.set_scroll_y(target_top * EDIT_LINE_H);
+        } else if needs_down && !needs_up {
+            self.set_scroll_y((target_bottom - visible_lines) * EDIT_LINE_H);
+        }
+    }
 
-        let cw = char_advance();
-        let caret_x = Self::vis_col(b, line, col) as f32 * cw;
+    /// Scroll so each on-screen selection's span (or, if that's wider than the view, its head) is visible.
+    fn autoscroll_horizontally(&mut self) {
+        let Some(b) = self.buffer.as_ref() else {
+            return;
+        };
+        let first_row = self.first_line();
+        let last_row = first_row + (self.body_h / EDIT_LINE_H).ceil() as usize + 1;
+        let em = char_advance();
         let viewport = self.text_viewport_w();
-        if caret_x < self.scroll_x {
-            self.scroll_x = caret_x;
-        } else if caret_x + cw > self.scroll_x + viewport {
-            self.scroll_x = caret_x + cw - viewport;
+        let (mut target_left, mut target_right) = (f32::INFINITY, 0.0f32);
+        for selection in b.selections() {
+            let (head_line, head_col) = b.line_col_of(selection.head());
+            if !(first_row..last_row).contains(&self.disp_of(head_line)) {
+                continue;
+            }
+            let (start_line, start_col) = b.line_col_of(selection.start);
+            let (end_line, end_col) = b.line_col_of(selection.end);
+            let line_len = b.line_len(head_line);
+            let start_col = if start_line == head_line {
+                start_col
+            } else {
+                0
+            };
+            let end_col = if end_line == head_line {
+                end_col
+            } else {
+                line_len
+            }
+            .min(line_len);
+            let layout = self.line_layout(head_line);
+            let x_of = |col: usize| layout.x_for_index(Self::display_index(b, head_line, col));
+            let (mut left, mut right) = (x_of(start_col), x_of(end_col) + em);
+            if right - left > viewport {
+                left = x_of(head_col);
+                right = x_of(head_col.min(line_len)) + em;
+            }
+            target_left = target_left.min(left);
+            target_right = target_right.max(right);
+        }
+        let target_right = target_right.min(self.content_w());
+        if target_right - target_left > viewport {
+            return;
+        }
+        if target_left < self.scroll_x {
+            self.scroll_x = target_left;
+        } else if target_right > self.scroll_x + viewport {
+            self.scroll_x = target_right - viewport;
         }
         self.scroll_x = self.scroll_x.clamp(0.0, self.max_scroll_x());
+    }
+
+    fn ensure_cursor_visible(&mut self) {
+        self.autoscroll_vertically();
+        self.autoscroll_horizontally();
     }
 
     /// Map a content-local pointer position (before the gutter, before scroll) to a buffer offset.
@@ -492,11 +577,13 @@ impl FileItem {
         let b = self.buffer.as_ref()?;
         let gw = gutter_width(self.line_count());
         let disp = ((self.scroll_y + local_y) / EDIT_LINE_H).max(0.0) as usize;
+        if disp >= self.disp_count() {
+            return Some(b.rope.len_chars());
+        }
         let line = self.buf_of(disp);
-        let target_vis = ((local_x - gw + self.scroll_x) / char_advance())
-            .max(0.0)
-            .round() as usize;
-        let col = Self::char_col_at_vis(b, line, target_vis);
+        let x = (local_x - gw + self.scroll_x).max(0.0);
+        let index = self.line_layout(line).closest_index_for_x(x);
+        let col = Self::char_col_for_display_index(b, line, index);
         Some(b.offset_at(line, col))
     }
 
@@ -579,55 +666,48 @@ impl FileItem {
         result.extend(stack);
         result
     }
-
-    /// Visual column of a char column on a line, expanding tabs to the next `TAB_COLS` stop. Rendered glyphs sit
-    /// on the monospace grid (tabs become spaces in `spans_to_lines`), so caret/selection geometry must use this
-    /// instead of the raw char column or it drifts from the text on tab-indented lines.
+    /// Display column (tabs expanded) of buffer column `char_col` on `line`.
     fn vis_col(b: &EditorBuffer, line: usize, char_col: usize) -> usize {
         if line >= b.rope.len_lines() {
             return char_col;
         }
-        let mut vis = 0usize;
-        for (i, ch) in b.rope.line(line).chars().enumerate() {
-            if i >= char_col {
-                break;
-            }
-            match ch {
-                '\t' => vis += TAB_COLS - (vis % TAB_COLS),
-                '\n' | '\r' => break,
-                _ => vis += 1,
-            }
+        editor::display::to_display(b.rope.line(line), char_col, TAB_COLS).0
+    }
+    /// Byte index into the tab-expanded display text of `line` for buffer column `char_col`.
+    fn display_index(b: &EditorBuffer, line: usize, char_col: usize) -> usize {
+        if line >= b.rope.len_lines() {
+            return 0;
         }
-        vis
+        editor::display::to_display(b.rope.line(line), char_col, TAB_COLS).1
+    }
+    /// Buffer column for a display byte index; a position inside a tab resolves to before it.
+    fn char_col_for_display_index(b: &EditorBuffer, line: usize, index: usize) -> usize {
+        if line >= b.rope.len_lines() {
+            return 0;
+        }
+        editor::display::from_display_index(b.rope.line(line), index, TAB_COLS, Bias::Left)
     }
 
-    /// Inverse of `vis_col`: the char column whose grid position is nearest `target_vis` (click mapping).
-    fn char_col_at_vis(b: &EditorBuffer, line: usize, target_vis: usize) -> usize {
-        if line >= b.rope.len_lines() {
-            return target_vis;
+    /// The shaped display row for buffer `line`, laid out from the same colored segments the renderer draws
+    /// (each segment is its own label placed after the previous one). Cached until the text changes.
+    fn line_layout(&self, line: usize) -> std::rc::Rc<LineLayout> {
+        if let Some(hit) = self.layout_cache.borrow().get(&line) {
+            return hit.clone();
         }
-        let mut vis = 0usize;
-        let mut col = 0usize;
-        for ch in b.rope.line(line).chars() {
-            if ch == '\n' || ch == '\r' {
-                break;
-            }
-            let w = if ch == '\t' {
-                TAB_COLS - (vis % TAB_COLS)
-            } else {
-                1
-            };
-            if target_vis < vis + w {
-                return if target_vis - vis < (vis + w) - target_vis {
-                    col
-                } else {
-                    col + 1
-                };
-            }
-            vis += w;
-            col += 1;
+        let colors = syntax_theme();
+        let mut layout = LineLayout::default();
+        for (segment, _) in self.line_segments(line, &colors) {
+            let (glyphs, width) = ui::measure_glyphs(&segment, EDIT_FONT, true, 400);
+            let (base_index, base_x) = (layout.len, layout.width);
+            layout
+                .glyphs
+                .extend(glyphs.iter().map(|(i, x)| (base_index + i, base_x + x)));
+            layout.len += segment.len();
+            layout.width += width;
         }
-        col
+        let layout = std::rc::Rc::new(layout);
+        self.layout_cache.borrow_mut().insert(line, layout.clone());
+        layout
     }
 
     /// The visual-column range `[start, end)` selected on a buffer line (merged across cursors), for drawing
@@ -743,9 +823,8 @@ impl Item for FileItem {
                     }
                 }
             }
-            // A collapsed fold shows a muted "..." pill where its hidden rows were, then the block's closing
-            // bracket inline (rendered from the closer line, leading whitespace trimmed) so it reads `{...}`.
-            if self.folded.contains(&buf) {
+            // The row resumes after the placeholder with the text following the fold's end, so a block reads `{...}`.
+            if let Some(tail) = self.fold_tail(buf, &colors) {
                 r = r.child(
                     div().px(4.0).rounded(3.0).bg(theme().element_hover).child(
                         label("...".to_string())
@@ -754,20 +833,8 @@ impl Item for FileItem {
                             .color(theme().text_muted),
                     ),
                 );
-                if let Some((_, Some(cl))) = self.fold_span(buf) {
-                    let seg = self.line_segments(cl, &colors);
-                    {
-                        let mut first = true;
-                        for (s, color) in &seg {
-                            let t = if first { s.trim_start() } else { s.as_str() };
-                            first = false;
-                            if !t.is_empty() {
-                                r = r.child(
-                                    label(t.to_string()).size(EDIT_FONT).mono().color(*color),
-                                );
-                            }
-                        }
-                    }
+                for (text, color) in tail {
+                    r = r.child(label(text).size(EDIT_FONT).mono().color(color));
                 }
             }
             body = body.child(r);
@@ -800,7 +867,7 @@ impl Item for FileItem {
                 .items_center()
                 .justify_center();
             if self.is_foldable(line) {
-                let kind = if self.folded.contains(&line) {
+                let kind = if self.is_folded(line) {
                     IconKind::ChevronRight
                 } else {
                     IconKind::ChevronDown
@@ -977,8 +1044,7 @@ impl Item for FileItem {
         // Catch up with the buffer and build the display map before the &self readers (back_rects/carets) run.
         self.refresh();
         self.ensure_visible();
-        // Keep scroll within bounds if the pane shrank.
-        self.scroll_y = self.scroll_y.min(self.max_scroll());
+        self.set_scroll_y(self.scroll_y);
     }
 
     fn body_y_offset(&self) -> f32 {
@@ -987,7 +1053,7 @@ impl Item for FileItem {
 
     fn scroll_by(&mut self, dy: f32) -> bool {
         let before = self.scroll_y;
-        self.scroll_y = (self.scroll_y - dy).clamp(0.0, self.max_scroll());
+        self.set_scroll_y(self.scroll_y - dy);
         (self.scroll_y - before).abs() > 0.01
     }
 
@@ -1002,24 +1068,21 @@ impl Item for FileItem {
 
     fn input_key(&mut self, key: EditKey, shift: bool) {
         let mut edited = false;
+        let folds = self.folds.merged();
+        // One row of the previous page stays on screen.
+        let page_rows = ((self.body_h / EDIT_LINE_H) as usize).saturating_sub(1);
         if let Some(b) = self.buffer.as_mut() {
             match key {
-                EditKey::Left if shift => b.extend_left(),
-                EditKey::Left => b.move_left(),
-                EditKey::Right if shift => b.extend_right(),
-                EditKey::Right => b.move_right(),
-                EditKey::Up if shift => b.extend_up(),
-                EditKey::Up => b.move_up(),
-                EditKey::Down if shift => b.extend_down(),
-                EditKey::Down => b.move_down(),
-                EditKey::Home if shift => b.extend_home(),
-                EditKey::Home => b.move_home(),
-                EditKey::End if shift => b.extend_end(),
-                EditKey::End => b.move_end(),
-                EditKey::WordLeft if shift => b.extend_word_left(),
-                EditKey::WordLeft => b.move_word_left(),
-                EditKey::WordRight if shift => b.extend_word_right(),
-                EditKey::WordRight => b.move_word_right(),
+                EditKey::Left => b.apply_motion(Motion::Left, shift, &folds),
+                EditKey::Right => b.apply_motion(Motion::Right, shift, &folds),
+                EditKey::Up => b.apply_motion(Motion::Up, shift, &folds),
+                EditKey::Down => b.apply_motion(Motion::Down, shift, &folds),
+                EditKey::Home => b.apply_motion(Motion::Home, shift, &folds),
+                EditKey::End => b.apply_motion(Motion::End, shift, &folds),
+                EditKey::WordLeft => b.apply_motion(Motion::WordLeft, shift, &folds),
+                EditKey::WordRight => b.apply_motion(Motion::WordRight, shift, &folds),
+                EditKey::PageUp => b.apply_motion(Motion::PageUp(page_rows), shift, &folds),
+                EditKey::PageDown => b.apply_motion(Motion::PageDown(page_rows), shift, &folds),
                 EditKey::Backspace => {
                     b.backspace();
                     edited = true;
@@ -1085,19 +1148,20 @@ impl Item for FileItem {
         let Some(b) = self.buffer.as_ref() else {
             return Vec::new();
         };
-        let cw = char_advance();
         let gw = gutter_width(self.line_count());
         b.selections()
             .iter()
             .filter_map(|s| {
                 let (line, col) = b.line_col_of(s.head());
-                let vcol = Self::vis_col(b, line, col);
+                let x = self
+                    .line_layout(line)
+                    .x_for_index(Self::display_index(b, line, col));
                 let y = content.y + self.disp_of(line) as f32 * EDIT_LINE_H - self.scroll_y;
                 if y + EDIT_LINE_H <= content.y || y >= content.y + self.body_h {
                     return None; // off-screen
                 }
                 Some(Rect::new(
-                    content.x + gw + vcol as f32 * cw - self.scroll_x,
+                    content.x + gw + x - self.scroll_x,
                     y,
                     CARET_W,
                     EDIT_LINE_H,
@@ -1163,7 +1227,6 @@ impl Item for FileItem {
         let Some(b) = self.buffer.as_ref() else {
             return Vec::new();
         };
-        let cw = char_advance();
         let gw = gutter_width(self.line_count());
         let first = self.first_line();
         let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
@@ -1197,18 +1260,18 @@ impl Item for FileItem {
                 if top_disp.is_none() {
                     top_disp = Some(d);
                 }
-                let start_vis = if line == l0 {
-                    Self::vis_col(b, line, c0)
+                let layout = self.line_layout(line);
+                let start_x = if line == l0 {
+                    text_x + layout.x_for_index(Self::display_index(b, line, c0))
                 } else {
-                    0
+                    text_x
                 };
-                let start_x = text_x + start_vis as f32 * cw;
                 let end_x = if line == l1 {
-                    text_x + Self::vis_col(b, line, c1) as f32 * cw
+                    text_x + layout.x_for_index(Self::display_index(b, line, c1))
                 } else {
-                    // Interior/first rows extend past the line's end (selecting the newline) so the block reads
-                    // as one shape, plus a small overshoot -- the reference's look.
-                    text_x + Self::vis_col(b, line, b.line_len(line)) as f32 * cw + overshoot
+                    // Rows before the last run past the line end (selecting the newline) plus an overshoot, so
+                    // the block reads as one shape.
+                    text_x + layout.width + overshoot
                 };
                 rows.push((start_x, end_x.max(start_x + 1.0)));
             }
@@ -1228,11 +1291,12 @@ impl Item for FileItem {
     fn scrollbar(&self, content: Rect) -> Option<Rect> {
         self.buffer.as_ref()?;
         let max_scroll = self.max_scroll();
-        if max_scroll <= 0.0 {
-            return None; // content fits; no scrollbar
-        }
         let visible = content.h;
-        let thumb_h = (visible * visible / self.content_h()).clamp(28.0, visible);
+        if self.content_h() <= visible || max_scroll <= 0.0 {
+            return None;
+        }
+        // The scroll range includes one page past the last row.
+        let thumb_h = (visible * visible / (self.content_h() + visible)).clamp(28.0, visible);
         let t = (self.scroll_y / max_scroll).clamp(0.0, 1.0);
         Some(Rect::new(
             content.x + content.w + EDIT_PAD_X - 6.0,
@@ -1242,6 +1306,15 @@ impl Item for FileItem {
             theme().scrollbar_thumb_background,
         ))
     }
+}
+
+/// Rows to scroll per drag event for a pointer `overshoot` px past the edge band, accelerating with distance.
+fn drag_autoscroll_rows(overshoot: f32) -> f32 {
+    (overshoot.powf(1.2) / 100.0).min(3.0)
+}
+
+fn drag_autoscroll_columns(overshoot: f32) -> f32 {
+    overshoot.powf(1.2) / 300.0
 }
 
 /// Whether a file extension is a viewable raster image.
@@ -1978,20 +2051,6 @@ fn color_of(theme: &Theme, capture: &str) -> Rgba {
     };
     let [r, g, b] = c.0;
     Rgba::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
-}
-
-/// Append `text` to `out` with tabs expanded to the next `TAB_COLS` stop, advancing the visual column `col`.
-fn push_expanded(out: &mut String, text: &str, col: &mut usize) {
-    for ch in text.chars() {
-        if ch == '\t' {
-            let w = TAB_COLS - (*col % TAB_COLS);
-            out.extend(std::iter::repeat_n(' ', w));
-            *col += w;
-        } else {
-            out.push(ch);
-            *col += 1;
-        }
-    }
 }
 
 /// Lay out one member of the group into `rect`. Leaves emit a `PanePlacement` (rect + node); splits divide
@@ -2991,6 +3050,48 @@ impl FunctionView for FilesView {
         }
     }
 
+    fn editor_drag(&mut self, x: f32, y: f32) -> bool {
+        let Some(index) = self.pane_order.iter().position(|p| *p == self.active) else {
+            return false;
+        };
+        let Some(rect) = self.pane_rects.get(index).copied() else {
+            return false;
+        };
+        let text_top = rect.y + TAB_H;
+        let text_bottom = rect.y + rect.h;
+        let vertical_margin = EDIT_LINE_H.min((text_bottom - text_top) / 3.0);
+        let delta_rows = if y < text_top + vertical_margin {
+            -drag_autoscroll_rows(text_top + vertical_margin - y)
+        } else if y > text_bottom - vertical_margin {
+            drag_autoscroll_rows(y - (text_bottom - vertical_margin))
+        } else {
+            0.0
+        };
+        let em = char_advance();
+        let horizontal_space = HORIZONTAL_SCROLL_MARGIN * em;
+        let Some(item) = self.active_item_mut() else {
+            return false;
+        };
+        if !item.is_editable() {
+            return false;
+        }
+        let text_left = rect.x + EDIT_PAD_X + item.gutter_w() + horizontal_space;
+        let text_right = rect.x + rect.w - horizontal_space;
+        let delta_columns = if x < text_left {
+            -drag_autoscroll_columns(text_left - x)
+        } else if x > text_right {
+            drag_autoscroll_columns(x - text_right)
+        } else {
+            0.0
+        };
+        item.scroll_by(-delta_rows * EDIT_LINE_H);
+        item.scroll_by_x(-delta_columns * em);
+        let local_x = (x - (rect.x + EDIT_PAD_X)).max(0.0);
+        let local_y = y - (rect.y + TAB_H + EDIT_PAD_Y);
+        item.place_cursor(local_x, local_y, true);
+        true
+    }
+
     fn editor_double_click(&mut self, x: f32, y: f32) -> bool {
         let Some((path, local_x, local_y)) = self.editor_local(x, y) else {
             return false;
@@ -3045,6 +3146,55 @@ impl FunctionView for FilesView {
 }
 
 #[cfg(test)]
+mod line_layout_tests {
+    use super::*;
+
+    #[test]
+    fn display_index_expands_tabs_and_multibyte() {
+        let b = EditorBuffer::from_text("\tab\u{e9}c\n");
+        assert_eq!(FileItem::display_index(&b, 0, 0), 0);
+        assert_eq!(FileItem::display_index(&b, 0, 1), TAB_COLS);
+        assert_eq!(FileItem::display_index(&b, 0, 3), TAB_COLS + 2);
+        assert_eq!(FileItem::display_index(&b, 0, 4), TAB_COLS + 4);
+        for col in 0..=5 {
+            let index = FileItem::display_index(&b, 0, col);
+            assert_eq!(FileItem::char_col_for_display_index(&b, 0, index), col);
+        }
+        assert_eq!(FileItem::char_col_for_display_index(&b, 0, 3), 0);
+    }
+
+    #[test]
+    fn layout_hit_testing_matches_glyph_boundaries() {
+        let layout = LineLayout {
+            glyphs: vec![(0, 0.0), (1, 10.0), (2, 20.0)],
+            width: 30.0,
+            len: 3,
+        };
+        assert_eq!(layout.x_for_index(1), 10.0);
+        assert_eq!(layout.x_for_index(3), 30.0);
+        assert_eq!(layout.closest_index_for_x(4.0), 0);
+        assert_eq!(layout.closest_index_for_x(6.0), 1);
+        assert_eq!(layout.closest_index_for_x(25.0), 3);
+    }
+
+    #[test]
+    fn row_layout_spans_all_segments() {
+        let item = FileItem::new(
+            PathBuf::from("/nonexistent"),
+            "t.rs",
+            Some("fn main() {}\n".into()),
+        );
+        let layout = item.line_layout(0);
+        assert_eq!(layout.len, "fn main() {}".len());
+        assert!(layout.width > 0.0);
+        assert!(layout
+            .glyphs
+            .windows(2)
+            .all(|w| w[0].1 <= w[1].1 && w[0].0 < w[1].0));
+    }
+}
+
+#[cfg(test)]
 mod line_width_tests {
     use super::*;
 
@@ -3094,5 +3244,58 @@ mod line_width_tests {
                 full_widths(&item).into_iter().flatten().max().unwrap_or(0)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    fn item(lines: usize, visible_rows: usize) -> FileItem {
+        let text: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text));
+        item.set_body_height(visible_rows as f32 * EDIT_LINE_H);
+        item
+    }
+
+    fn top_row(item: &FileItem) -> f32 {
+        item.scroll_y / EDIT_LINE_H
+    }
+
+    #[test]
+    fn moving_down_keeps_a_margin_below_the_cursor() {
+        let mut item = item(100, 10);
+        for _ in 0..6 {
+            item.input_key(EditKey::Down, false);
+        }
+        assert_eq!(top_row(&item), 0.0);
+        item.input_key(EditKey::Down, false);
+        assert_eq!(top_row(&item), 1.0);
+    }
+
+    #[test]
+    fn page_down_moves_one_row_short_of_a_page() {
+        let mut item = item(100, 10);
+        item.input_key(EditKey::PageDown, false);
+        assert_eq!(item.buffer.as_ref().unwrap().line_col().0, 9);
+    }
+
+    #[test]
+    fn last_row_can_scroll_to_the_top() {
+        let mut item = item(20, 10);
+        item.scroll_by(-1000.0 * EDIT_LINE_H);
+        assert_eq!(top_row(&item), 20.0);
+    }
+
+    #[test]
+    fn view_stays_on_the_same_text_when_lines_are_inserted_above() {
+        let mut item = item(100, 10);
+        item.scroll_by(-40.0 * EDIT_LINE_H);
+        if let Some(b) = item.buffer.as_mut() {
+            b.place_cursor(0);
+            b.insert_text("new\nnew\n");
+        }
+        item.set_body_height(10.0 * EDIT_LINE_H);
+        assert_eq!(top_row(&item), 42.0);
     }
 }

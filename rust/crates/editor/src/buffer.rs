@@ -157,6 +157,26 @@ struct HistoryEntry {
     selections_after: Vec<Selection>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+    Left,
+    Right,
+    Up,
+    Down,
+    PageUp(usize),
+    PageDown(usize),
+    WordLeft,
+    WordRight,
+    Home,
+    End,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Up,
+    Down,
+}
+
 pub struct EditorBuffer {
     pub rope: Rope,
     line_ending: LineEnding,
@@ -236,7 +256,7 @@ impl EditorBuffer {
         &self.selections
     }
 
-    fn newest(&self) -> Selection {
+    pub fn newest(&self) -> Selection {
         let mut newest = self.selections[0];
         for s in &self.selections {
             if s.id > newest.id {
@@ -797,69 +817,133 @@ impl EditorBuffer {
 
     // ---- navigation (multi-cursor aware) ----
 
-    fn move_each(&mut self, f: impl Fn(&Self, &Selection) -> usize) {
-        let next: Vec<Selection> = self
-            .selections
-            .iter()
-            .map(|s| {
-                let mut s = *s;
-                let to = f(self, &s);
-                s.collapse_to(to, SelectionGoal::None);
-                s
-            })
-            .collect();
-        self.select(next);
+    /// Snap an offset strictly inside a fold to its start (`Left`) or end (`Right`); `folds` are merged, sorted.
+    fn clip_to_folds(off: usize, bias: Bias, folds: &[Range<usize>]) -> usize {
+        match folds.iter().find(|f| f.start < off && off < f.end) {
+            Some(fold) => match bias {
+                Bias::Left => fold.start,
+                Bias::Right => fold.end,
+            },
+            None => off,
+        }
     }
 
-    fn extend_each(&mut self, f: impl Fn(&Self, usize) -> usize) {
-        let next: Vec<Selection> = self
-            .selections
-            .iter()
-            .map(|s| {
-                let mut s = *s;
-                let to = f(self, s.head());
-                s.set_head(to, SelectionGoal::None);
-                s
-            })
-            .collect();
-        self.select(next);
+    /// Start of the display row holding `off`: a row hidden by a fold belongs to the fold's header row.
+    fn display_row_start(&self, off: usize, folds: &[Range<usize>]) -> usize {
+        let mut start = self.line_start_of(off);
+        while let Some(fold) = folds.iter().find(|f| f.start < start && start <= f.end) {
+            start = self.line_start_of(fold.start);
+        }
+        start
     }
 
-    fn move_vertical(&mut self, dir: isize, extend: bool) {
-        let next: Vec<Selection> = self
-            .selections
-            .iter()
-            .map(|s| {
-                let mut s = *s;
-                let from = if extend {
-                    s.head()
-                } else if !s.is_empty() {
-                    s.goal = SelectionGoal::None;
-                    if dir < 0 {
-                        s.start
-                    } else {
-                        s.end
+    fn display_row_end(&self, off: usize, folds: &[Range<usize>]) -> usize {
+        let mut end = self.line_end_of(off);
+        while let Some(fold) = folds.iter().find(|f| f.start <= end && end < f.end) {
+            end = self.line_end_of(fold.end);
+        }
+        end
+    }
+
+    fn vertical_target(
+        &self,
+        from: usize,
+        goal: usize,
+        dir: Direction,
+        rows: usize,
+        folds: &[Range<usize>],
+    ) -> usize {
+        match dir {
+            Direction::Up => {
+                let mut row_start = self.display_row_start(from, folds);
+                if row_start == 0 {
+                    return 0;
+                }
+                for _ in 0..rows {
+                    if row_start == 0 {
+                        break;
                     }
-                } else {
-                    s.head()
-                };
-                let (line, col) = self.line_col_of(from);
-                let goal = match s.goal {
-                    SelectionGoal::Column(c) => c,
-                    SelectionGoal::None => col,
-                };
-                let target = line as isize + dir;
-                let to = if target < 0 {
-                    0
-                } else if target as usize >= self.rope.len_lines() {
-                    self.rope.len_chars()
-                } else {
-                    self.clamp_to_line(target as usize, goal)
+                    row_start = self.display_row_start(row_start - 1, folds);
+                }
+                self.clamp_to_line(self.rope.char_to_line(row_start), goal)
+            }
+            Direction::Down => {
+                let len = self.rope.len_chars();
+                let mut row_end = self.display_row_end(from, folds);
+                if row_end >= len {
+                    return len;
+                }
+                let mut line = self.rope.char_to_line(from);
+                for _ in 0..rows {
+                    if row_end >= len {
+                        break;
+                    }
+                    line = self.rope.char_to_line(row_end + 1);
+                    row_end = self.display_row_end(row_end + 1, folds);
+                }
+                Self::clip_to_folds(self.clamp_to_line(line, goal), Bias::Left, folds)
+            }
+        }
+    }
+
+    /// Move (or, with `extend`, grow) every selection by `motion`, treating each fold as one unit.
+    pub fn apply_motion(&mut self, motion: Motion, extend: bool, folds: &[Range<usize>]) {
+        let len = self.rope.len_chars();
+        let next: Vec<Selection> = self
+            .selections
+            .iter()
+            .map(|s| {
+                let mut s = *s;
+                let collapsing = !extend && !s.is_empty();
+                let head = s.head();
+                let (to, goal) = match motion {
+                    Motion::Left if collapsing => (s.start, SelectionGoal::None),
+                    Motion::Right if collapsing => (s.end, SelectionGoal::None),
+                    Motion::Left => (
+                        Self::clip_to_folds(head.saturating_sub(1), Bias::Left, folds),
+                        SelectionGoal::None,
+                    ),
+                    Motion::Right => (
+                        Self::clip_to_folds((head + 1).min(len), Bias::Right, folds),
+                        SelectionGoal::None,
+                    ),
+                    Motion::WordLeft => (
+                        Self::clip_to_folds(self.word_left(head), Bias::Left, folds),
+                        SelectionGoal::None,
+                    ),
+                    Motion::WordRight => (
+                        Self::clip_to_folds(self.word_right(head), Bias::Right, folds),
+                        SelectionGoal::None,
+                    ),
+                    Motion::Home => (self.display_row_start(head, folds), SelectionGoal::None),
+                    Motion::End => (self.display_row_end(head, folds), SelectionGoal::None),
+                    Motion::Up | Motion::Down | Motion::PageUp(_) | Motion::PageDown(_) => {
+                        let (dir, rows, page) = match motion {
+                            Motion::Up => (Direction::Up, 1, false),
+                            Motion::PageUp(rows) => (Direction::Up, rows, true),
+                            Motion::PageDown(rows) => (Direction::Down, rows, true),
+                            _ => (Direction::Down, 1, false),
+                        };
+                        // Page moves start from the selection end in both directions.
+                        let from = match (collapsing, page, dir) {
+                            (true, true, _) | (true, false, Direction::Down) => s.end,
+                            (true, false, Direction::Up) => s.start,
+                            _ => head,
+                        };
+                        let goal = match s.goal {
+                            SelectionGoal::Column(column) if !collapsing => column,
+                            _ => self.line_col_of(from).1,
+                        };
+                        (
+                            self.vertical_target(from, goal, dir, rows, folds),
+                            SelectionGoal::Column(goal),
+                        )
+                    }
                 };
                 if extend {
-                    s.set_head(to, SelectionGoal::Column(goal));
+                    s.set_head(to, goal);
                 } else {
-                    s.collapse_to(to, SelectionGoal::Column(goal));
+                    s.collapse_to(to, goal);
                 }
                 s
             })
@@ -868,67 +952,53 @@ impl EditorBuffer {
     }
 
     pub fn move_left(&mut self) {
-        self.move_each(|_, s| {
-            if s.is_empty() {
-                s.head().saturating_sub(1)
-            } else {
-                s.start
-            }
-        });
+        self.apply_motion(Motion::Left, false, &[]);
     }
     pub fn move_right(&mut self) {
-        let n = self.rope.len_chars();
-        self.move_each(move |_, s| {
-            if s.is_empty() {
-                (s.head() + 1).min(n)
-            } else {
-                s.end
-            }
-        });
+        self.apply_motion(Motion::Right, false, &[]);
     }
     pub fn move_up(&mut self) {
-        self.move_vertical(-1, false);
+        self.apply_motion(Motion::Up, false, &[]);
     }
     pub fn move_down(&mut self) {
-        self.move_vertical(1, false);
+        self.apply_motion(Motion::Down, false, &[]);
     }
     pub fn move_word_left(&mut self) {
-        self.move_each(|b, s| b.word_left(s.head()));
+        self.apply_motion(Motion::WordLeft, false, &[]);
     }
     pub fn move_word_right(&mut self) {
-        self.move_each(|b, s| b.word_right(s.head()));
+        self.apply_motion(Motion::WordRight, false, &[]);
     }
     pub fn move_home(&mut self) {
-        self.move_each(|b, s| b.line_start_of(s.head()));
+        self.apply_motion(Motion::Home, false, &[]);
     }
     pub fn move_end(&mut self) {
-        self.move_each(|b, s| b.line_end_of(s.head()));
+        self.apply_motion(Motion::End, false, &[]);
     }
 
     pub fn extend_left(&mut self) {
-        self.extend_each(|_, c| c.saturating_sub(1));
+        self.apply_motion(Motion::Left, true, &[]);
     }
     pub fn extend_right(&mut self) {
-        let n = self.rope.len_chars();
-        self.extend_each(move |_, c| (c + 1).min(n));
+        self.apply_motion(Motion::Right, true, &[]);
     }
     pub fn extend_up(&mut self) {
-        self.move_vertical(-1, true);
+        self.apply_motion(Motion::Up, true, &[]);
     }
     pub fn extend_down(&mut self) {
-        self.move_vertical(1, true);
+        self.apply_motion(Motion::Down, true, &[]);
     }
     pub fn extend_word_left(&mut self) {
-        self.extend_each(|b, c| b.word_left(c));
+        self.apply_motion(Motion::WordLeft, true, &[]);
     }
     pub fn extend_word_right(&mut self) {
-        self.extend_each(|b, c| b.word_right(c));
+        self.apply_motion(Motion::WordRight, true, &[]);
     }
     pub fn extend_home(&mut self) {
-        self.extend_each(|b, c| b.line_start_of(c));
+        self.apply_motion(Motion::Home, true, &[]);
     }
     pub fn extend_end(&mut self) {
-        self.extend_each(|b, c| b.line_end_of(c));
+        self.apply_motion(Motion::End, true, &[]);
     }
 
     #[cfg(test)]
@@ -1178,5 +1248,21 @@ mod tests {
         assert_eq!(edit.start_byte, 4);
         assert_eq!(edit.new_end_byte, 5);
         assert_eq!(edit.start_position, Point { row: 1, column: 1 });
+    }
+
+    #[test]
+    fn page_moves_by_rows_and_stops_at_the_ends() {
+        let text: String = (0..10).map(|i| format!("line{i}\n")).collect();
+        let mut b = buffer(&text);
+        b.place_cursor(2);
+        b.apply_motion(Motion::PageDown(4), false, &[]);
+        assert_eq!(b.line_col(), (4, 2));
+        b.apply_motion(Motion::PageDown(20), false, &[]);
+        assert_eq!(b.line_col(), (10, 0));
+        b.apply_motion(Motion::PageUp(4), false, &[]);
+        assert_eq!(b.line_col(), (6, 2));
+        b.apply_motion(Motion::PageUp(20), true, &[]);
+        assert_eq!(b.line_col(), (0, 2));
+        assert_eq!(b.selected_text().as_deref().map(str::len), Some(6 * 6));
     }
 }

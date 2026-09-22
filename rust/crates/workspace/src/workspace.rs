@@ -319,6 +319,8 @@ pub enum EditKey {
     End,
     WordLeft,
     WordRight,
+    PageUp,
+    PageDown,
     Backspace,
     Delete,
     Enter,
@@ -426,6 +428,10 @@ pub trait FunctionView: 'static {
     }
     fn editor_click(&mut self, _x: f32, _y: f32, _extend: bool) -> bool {
         false
+    }
+    /// Extend the selection to a drag point, which may lie outside the pane.
+    fn editor_drag(&mut self, x: f32, y: f32) -> bool {
+        self.editor_click(x, y, true)
     }
     fn editor_double_click(&mut self, _x: f32, _y: f32) -> bool {
         false
