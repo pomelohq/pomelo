@@ -152,6 +152,34 @@ impl Syntax {
         }
     }
 
+    /// End byte of the smallest named node spanning `range`.
+    pub fn enclosing_node_end(&self, range: Range<usize>) -> Option<usize> {
+        let tree = self.tree.as_ref()?;
+        let mut node = tree
+            .root_node()
+            .named_descendant_for_byte_range(range.start, range.end)?;
+        while node.start_byte() > range.start || node.end_byte() < range.end {
+            node = node.parent()?;
+        }
+        Some(node.end_byte())
+    }
+
+    /// Whether `byte` lies inside a string or comment node.
+    pub fn in_string_or_comment(&self, byte: usize) -> bool {
+        let Some(tree) = self.tree.as_ref() else {
+            return false;
+        };
+        let mut node = tree.root_node().descendant_for_byte_range(byte, byte);
+        while let Some(n) = node {
+            let kind = n.kind();
+            if kind.contains("string") || kind.contains("comment") {
+                return true;
+            }
+            node = n.parent();
+        }
+        false
+    }
+
     /// Highlight runs covering `range` (bytes) contiguously; uncaptured text gets `capture: None`.
     pub fn highlight(&self, rope: &Rope, range: Range<usize>) -> Vec<HighlightRun> {
         let mut runs = Vec::new();

@@ -739,6 +739,8 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::ArrowDown) => key(EditKey::Down),
                     Key::Named(NamedKey::Home) => key(EditKey::Home),
                     Key::Named(NamedKey::End) => key(EditKey::End),
+                    Key::Named(NamedKey::PageUp) => key(EditKey::PageUp),
+                    Key::Named(NamedKey::PageDown) => key(EditKey::PageDown),
                     Key::Named(NamedKey::Backspace) => key(EditKey::Backspace),
                     Key::Named(NamedKey::Delete) => key(EditKey::Delete),
                     Key::Named(NamedKey::Enter) => key(EditKey::Enter),

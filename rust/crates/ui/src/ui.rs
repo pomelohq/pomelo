@@ -435,7 +435,11 @@ struct Measurer {
     cache: std::collections::HashMap<(String, u32, bool), f32>,
     // Wrapped (width, height) keyed additionally by wrap width (half-px buckets).
     wrap_cache: std::collections::HashMap<(String, u32, bool, u32), (f32, f32)>,
+    glyph_cache: std::collections::HashMap<(String, u32, bool), GlyphOffsets>,
 }
+
+/// Each glyph's starting byte index into the shaped text with its x offset, plus the total advance.
+pub type GlyphOffsets = (std::rc::Rc<[(usize, f32)]>, f32);
 
 thread_local! {
     // A standalone font context (our bundled fonts only) used to measure text widths during element layout,
@@ -463,6 +467,7 @@ pub fn measure_text_width(text: &str, size: f32, mono: bool, weight: u16) -> f32
                 mono,
                 cache: std::collections::HashMap::new(),
                 wrap_cache: std::collections::HashMap::new(),
+                glyph_cache: std::collections::HashMap::new(),
             }
         });
         let family_name = if mono {
@@ -506,6 +511,73 @@ pub fn measure_text_width(text: &str, size: f32, mono: bool, weight: u16) -> f32
     })
 }
 
+/// Glyph offsets of `text` shaped exactly like a single-line label (same font, size, weight, scale as
+/// `measure_text_width`): each glyph's starting byte index with its x, and the total advance. A ligature is one
+/// glyph, so indices inside it have no entry of their own.
+pub fn measure_glyphs(text: &str, size: f32, mono: bool, weight: u16) -> GlyphOffsets {
+    if text.is_empty() {
+        return (std::rc::Rc::from(Vec::new()), 0.0);
+    }
+    let size = size * theme::ui_text_scale();
+    MEASURER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let m = slot.get_or_insert_with(|| {
+            let mut font_system = FontSystem::new();
+            let (sans, mono) = load_ui_fonts(&mut font_system);
+            Measurer {
+                font_system,
+                sans,
+                mono,
+                cache: std::collections::HashMap::new(),
+                wrap_cache: std::collections::HashMap::new(),
+                glyph_cache: std::collections::HashMap::new(),
+            }
+        });
+        let family_name = if mono {
+            m.mono.clone()
+        } else {
+            theme::active_ui_font().or_else(|| m.sans.clone())
+        };
+        let weight = theme::snap_weight(family_name.as_deref(), weight);
+        let key = (
+            format!(
+                "{}\u{0}{}\u{0}{}",
+                family_name.as_deref().unwrap_or(""),
+                weight,
+                text
+            ),
+            (size * 4.0).round() as u32,
+            mono,
+        );
+        if let Some(hit) = m.glyph_cache.get(&key) {
+            return hit.clone();
+        }
+        let family = match &family_name {
+            Some(name) => Family::Name(name),
+            None => Family::SansSerif,
+        };
+        let mut buffer = Buffer::new(&mut m.font_system, Metrics::new(size, size * 1.3));
+        buffer.set_size(&mut m.font_system, None, None);
+        buffer.set_text(
+            &mut m.font_system,
+            text,
+            Attrs::new().family(family).weight(Weight(weight)),
+            Shaping::Advanced,
+        );
+        buffer.shape_until_scroll(&mut m.font_system, false);
+        let mut glyphs = Vec::new();
+        let mut width = 0.0_f32;
+        for run in buffer.layout_runs() {
+            glyphs.extend(run.glyphs.iter().map(|g| (g.start, g.x)));
+            width = width.max(run.line_w);
+        }
+        glyphs.sort_by_key(|(start, _)| *start);
+        let offsets: GlyphOffsets = (std::rc::Rc::from(glyphs), width);
+        m.glyph_cache.insert(key, offsets.clone());
+        offsets
+    })
+}
+
 /// Shaped size of `text` wrapped to `max_w` logical (design) px at `size`, as (widest line, total height).
 /// Used to lay out multi-line setting descriptions.
 pub fn measure_wrapped(text: &str, size: f32, mono: bool, weight: u16, max_w: f32) -> (f32, f32) {
@@ -528,6 +600,7 @@ pub fn measure_wrapped(text: &str, size: f32, mono: bool, weight: u16, max_w: f3
                 mono,
                 cache: std::collections::HashMap::new(),
                 wrap_cache: std::collections::HashMap::new(),
+                glyph_cache: std::collections::HashMap::new(),
             }
         });
         let family_name = if mono {
@@ -1795,5 +1868,21 @@ impl UiRenderer {
             &mut self.swash_cache,
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measures_glyph_offsets() {
+        let (glyphs, width) = measure_glyphs("abc", 14.0, true, 400);
+        assert_eq!(
+            glyphs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(glyphs.windows(2).all(|w| w[0].1 < w[1].1));
+        assert!((width - measure_text_width("abc", 14.0, true, 400)).abs() < 0.01);
     }
 }
