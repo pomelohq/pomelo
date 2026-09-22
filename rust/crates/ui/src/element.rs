@@ -51,8 +51,12 @@ pub enum IconKind {
     Check,
     Plus,
     Folder,
+    FolderOpen,
+    File,
     Monitor,
     ArrowUpRight,
+    ArrowLeft,
+    ArrowRight,
     Window,
     Grid,
     Branch,
@@ -65,6 +69,30 @@ pub enum IconKind {
     PanelRight,
     PanelBottom,
     Server,
+    Undo,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MaterialIcon {
+    Rust,
+    Go,
+    TypeScript,
+    React,
+    JavaScript,
+    Json,
+    Markdown,
+    Toml,
+    Yaml,
+    Html,
+    Css,
+    Sass,
+    Python,
+    Lock,
+    Console,
+    Document,
+    Image,
+    Git,
+    NodeJs,
 }
 
 #[derive(Clone, Copy)]
@@ -72,6 +100,7 @@ pub struct Icon {
     kind: IconKind,
     size: f32,
     color: Rgba,
+    material: Option<MaterialIcon>,
 }
 
 /// Build an icon of any `kind` at the default size/muted color (chain `.size`/`.color`).
@@ -80,6 +109,16 @@ pub fn icon(kind: IconKind) -> Icon {
         kind,
         size: 14.0,
         color: theme().icon_muted,
+        material: None,
+    }
+}
+
+pub fn material_icon(material: MaterialIcon) -> Icon {
+    Icon {
+        kind: IconKind::File,
+        size: 14.0,
+        color: theme().icon_muted,
+        material: Some(material),
     }
 }
 
@@ -88,6 +127,7 @@ pub fn chevron_right() -> Icon {
         kind: IconKind::ChevronRight,
         size: 12.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -96,6 +136,7 @@ pub fn chevron_down() -> Icon {
         kind: IconKind::ChevronDown,
         size: 12.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -105,6 +146,7 @@ pub fn chevron_up_down() -> Icon {
         kind: IconKind::ChevronUpDown,
         size: 12.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -114,6 +156,7 @@ pub fn search_icon() -> Icon {
         kind: IconKind::Search,
         size: 14.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -123,6 +166,7 @@ pub fn close_icon() -> Icon {
         kind: IconKind::Close,
         size: 14.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -132,6 +176,7 @@ pub fn check_icon() -> Icon {
         kind: IconKind::Check,
         size: 14.0,
         color: theme().icon_accent,
+        material: None,
     }
 }
 
@@ -141,6 +186,7 @@ pub fn plus_icon() -> Icon {
         kind: IconKind::Plus,
         size: 14.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -150,6 +196,7 @@ pub fn folder_icon() -> Icon {
         kind: IconKind::Folder,
         size: 14.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -159,6 +206,7 @@ pub fn monitor_icon() -> Icon {
         kind: IconKind::Monitor,
         size: 14.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -168,6 +216,7 @@ pub fn arrow_up_right_icon() -> Icon {
         kind: IconKind::ArrowUpRight,
         size: 14.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -177,6 +226,7 @@ pub fn window_icon() -> Icon {
         kind: IconKind::Window,
         size: 14.0,
         color: theme().icon_muted,
+        material: None,
     }
 }
 
@@ -207,6 +257,7 @@ pub struct Div {
     border_color: Rgba,
     click: Option<u64>,
     debug: Option<&'static str>,
+    image: Option<u64>,
     children: Vec<Node>,
 }
 
@@ -237,6 +288,7 @@ pub fn div() -> Div {
         border_color: Rgba::TRANSPARENT,
         click: None,
         debug: None,
+        image: None,
         children: Vec::new(),
     }
 }
@@ -369,6 +421,10 @@ impl Div {
     }
     pub fn on_click(mut self, id: u64) -> Self {
         self.click = Some(id);
+        self
+    }
+    pub fn image(mut self, id: u64) -> Self {
+        self.image = Some(id);
         self
     }
     /// Tag this div's laid-out bounds under `name` so tests can assert layout headlessly (the framework's
@@ -560,6 +616,8 @@ pub struct IconQuad {
     pub h: f32,
     pub kind: IconKind,
     pub color: Rgba,
+    pub material: Option<MaterialIcon>,
+    pub image: Option<u64>,
 }
 
 #[derive(Default)]
@@ -736,6 +794,18 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
             if let Some(id) = d.click {
                 out.hits.push((area, id));
             }
+            if let Some(img) = d.image {
+                out.icons.push(IconQuad {
+                    x: area.x,
+                    y: area.y,
+                    w: area.w,
+                    h: area.h,
+                    kind: IconKind::Close, // unused for images
+                    color: Rgba::TRANSPARENT,
+                    material: None,
+                    image: Some(img),
+                });
+            }
             if let Some(name) = d.debug {
                 out.debug_bounds.push((name, area));
             }
@@ -754,6 +824,8 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                 h: s,
                 kind: i.kind,
                 color: i.color,
+                material: i.material,
+                image: None,
             });
         }
     }

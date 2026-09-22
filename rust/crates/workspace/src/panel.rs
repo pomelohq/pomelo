@@ -13,7 +13,6 @@ pub enum DockPosition {
 }
 
 impl DockPosition {
-    /// A stable index for per-side arrays (each dock tracks its own active panel, Zed-style).
     pub fn index(self) -> usize {
         match self {
             DockPosition::Left => 0,
@@ -179,7 +178,6 @@ pub fn function_dock_body(active: PaneKind) -> Node {
         .into()
 }
 
-/// A panel's header row: just the title. Docks are toggled from the status-bar panel buttons (Zed-style), so
 /// the header carries no collapse control.
 pub fn panel_header(title: &str) -> Node {
     div()

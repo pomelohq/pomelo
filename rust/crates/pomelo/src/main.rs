@@ -15,7 +15,12 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
-use workspace::{DockPosition, Layout};
+use workspace::{DockPosition, EditKey, Layout};
+
+enum EditorInput {
+    Key(EditKey),
+    Text(String),
+}
 
 /// Apply the persisted dock layout (widths, collapsed state, and the side/hidden of every button) onto a fresh
 /// `Layout`, so the user's arrangement is restored on launch and for windows opened later.
@@ -40,6 +45,34 @@ fn apply_dock_settings(s: &Settings, layout: &mut Layout) {
             *slot = *hidden;
         }
     }
+}
+
+fn files_root() -> std::path::PathBuf {
+    use std::path::{Path, PathBuf};
+    if let Some(p) = std::env::var_os("POMELO_FILES_ROOT") {
+        return PathBuf::from(p);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd != Path::new("/") {
+            return cwd;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.as_path();
+        while let Some(parent) = dir.parent() {
+            if parent.join("Cargo.toml").is_file() {
+                return parent.to_path_buf();
+            }
+            dir = parent;
+        }
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn install_features(layout: &mut Layout) {
+    layout.files_view = Some(Box::new(files_ui::FilesView::new(files_root())));
 }
 
 /// Read the current dock layout back into settings for persistence.
@@ -92,6 +125,30 @@ struct App {
     settings_dirty: bool,
     settings_cursor: (f64, f64),
     super_down: bool,
+    shift_down: bool,
+    alt_down: bool,
+    clipboard: Option<arboard::Clipboard>,
+}
+
+impl App {
+    fn clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        self.clipboard.as_mut()
+    }
+
+    fn clipboard_get(&mut self) -> String {
+        self.clipboard()
+            .and_then(|cb| cb.get_text().ok())
+            .unwrap_or_default()
+    }
+
+    fn clipboard_set(&mut self, text: String) {
+        if let Some(cb) = self.clipboard() {
+            let _ = cb.set_text(text);
+        }
+    }
 }
 
 impl App {
@@ -401,6 +458,7 @@ impl App {
             // Real multi-window: clone the current dock layout and open another OS window for the session.
             let mut layout = Layout::default();
             apply_dock_settings(&self.settings, &mut layout);
+            install_features(&mut layout);
             if session < layout.sessions.len() {
                 layout.current_session = session;
             }
@@ -439,7 +497,7 @@ impl App {
     }
 }
 
-const CARET_BLINK: Duration = Duration::from_millis(530);
+const CARET_BLINK: Duration = Duration::from_millis(500);
 
 impl ApplicationHandler for App {
     // Blink the settings caret: while the settings window is open, wake on a timer to toggle caret visibility.
@@ -457,10 +515,30 @@ impl ApplicationHandler for App {
             }
             self.draw_main(id);
         }
-        // A caret blinks whenever a text field is focused: the settings window, or a main window's open
-        // session menu (its search field).
-        let needs_caret = self.settings_window.is_some() || self.any_menu_open();
-        if !needs_caret {
+        let ticking: Vec<WindowId> = match self.main_app.as_ref() {
+            Some(a) => self
+                .mains
+                .iter()
+                .filter(|(_, m)| m.entity.read(a.app()).ticking())
+                .map(|(id, _)| *id)
+                .collect(),
+            None => Vec::new(),
+        };
+        for id in &ticking {
+            self.draw_main(*id);
+        }
+        let editor_windows: Vec<WindowId> = match self.main_app.as_ref() {
+            Some(a) => self
+                .mains
+                .iter()
+                .filter(|(_, m)| m.entity.read(a.app()).editor_focused())
+                .map(|(id, _)| *id)
+                .collect(),
+            None => Vec::new(),
+        };
+        let needs_caret =
+            self.settings_window.is_some() || self.any_menu_open() || !editor_windows.is_empty();
+        if !needs_caret && ticking.is_empty() {
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         }
@@ -471,25 +549,40 @@ impl ApplicationHandler for App {
             self.draw_settings();
         }
         let now = Instant::now();
-        let last = self.caret_last_toggle.unwrap_or(now);
-        if now.duration_since(last) >= CARET_BLINK {
-            self.caret_last_toggle = Some(now);
-            ui::set_caret_phase(!ui::caret_phase());
-            if self.settings_window.is_some() {
-                self.draw_settings();
-            }
-            let menu_windows: Vec<WindowId> = self
-                .mains
-                .keys()
-                .copied()
-                .filter(|id| self.main_menu_open(*id))
-                .collect();
-            for id in menu_windows {
-                self.draw_main(id);
-            }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(now + CARET_BLINK));
+        let mut wake = if ticking.is_empty() {
+            None
         } else {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(last + CARET_BLINK));
+            Some(now + Duration::from_millis(33))
+        };
+        if needs_caret {
+            let last = *self.caret_last_toggle.get_or_insert(now);
+            let caret_wake = if now.duration_since(last) >= CARET_BLINK {
+                self.caret_last_toggle = Some(now);
+                ui::set_caret_phase(!ui::caret_phase());
+                if self.settings_window.is_some() {
+                    self.draw_settings();
+                }
+                let menu_windows: Vec<WindowId> = self
+                    .mains
+                    .keys()
+                    .copied()
+                    .filter(|id| self.main_menu_open(*id))
+                    .collect();
+                for id in menu_windows {
+                    self.draw_main(id);
+                }
+                for id in &editor_windows {
+                    self.draw_main(*id);
+                }
+                now + CARET_BLINK
+            } else {
+                last + CARET_BLINK
+            };
+            wake = Some(wake.map_or(caret_wake, |w| w.min(caret_wake)));
+        }
+        match wake {
+            Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 
@@ -501,12 +594,14 @@ impl ApplicationHandler for App {
         self.apply_theme();
         self.apply_font_scale();
         self.apply_font_weight();
+        ui::set_chrome(settings_ui::chrome_flags(&self.settings));
         #[cfg(target_os = "macos")]
         set_dock_icon();
         auto_update::spawn_background_check();
 
         let mut layout = Layout::default();
         apply_dock_settings(&self.settings, &mut layout);
+        install_features(&mut layout);
         self.new_main_window(event_loop, layout);
     }
 
@@ -517,6 +612,8 @@ impl ApplicationHandler for App {
         // Cmd+, toggles the Settings window from anywhere; Esc closes it if focused.
         if let WindowEvent::ModifiersChanged(mods) = &event {
             self.super_down = mods.state().super_key();
+            self.shift_down = mods.state().shift_key();
+            self.alt_down = mods.state().alt_key();
         }
         if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
             if ke.state == ElementState::Pressed {
@@ -565,6 +662,114 @@ impl ApplicationHandler for App {
                     }
                 }
                 return;
+            }
+        }
+        if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
+            if ke.state == ElementState::Pressed
+                && self.mains.contains_key(&id)
+                && self.with_workspace_view(id, |v, _| v.editor_focused()) == Some(true)
+            {
+                let (shift, cmd, alt) = (self.shift_down, self.super_down, self.alt_down);
+                if cmd {
+                    if let Key::Character(c) = &ke.logical_key {
+                        match c.as_str() {
+                            "s" => {
+                                self.with_workspace_view(id, |v, _| {
+                                    if let Some(Err(reason)) = v.editor_save() {
+                                        v.show_toast(reason, None);
+                                    }
+                                });
+                                if let Some(m) = self.mains.get_mut(&id) {
+                                    m.dirty = true;
+                                }
+                                return;
+                            }
+                            "c" => {
+                                if let Some(Some(sel)) =
+                                    self.with_workspace_view(id, |v, _| v.editor_selected_text())
+                                {
+                                    self.clipboard_set(sel);
+                                }
+                                return;
+                            }
+                            "x" => {
+                                if let Some(Some(sel)) =
+                                    self.with_workspace_view(id, |v, _| v.editor_selected_text())
+                                {
+                                    self.clipboard_set(sel);
+                                    self.reset_caret();
+                                    if self.with_workspace_view(id, |v, _| {
+                                        v.editor_key(EditKey::Backspace, false)
+                                    }) == Some(true)
+                                    {
+                                        if let Some(m) = self.mains.get_mut(&id) {
+                                            m.dirty = true;
+                                        }
+                                    }
+                                }
+                                return;
+                            }
+                            "v" => {
+                                let text = self.clipboard_get();
+                                if !text.is_empty() {
+                                    self.reset_caret();
+                                    if self.with_workspace_view(id, |v, _| v.editor_text(&text))
+                                        == Some(true)
+                                    {
+                                        if let Some(m) = self.mains.get_mut(&id) {
+                                            m.dirty = true;
+                                        }
+                                    }
+                                }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let key = |k| Some(EditorInput::Key(k));
+                let input: Option<EditorInput> = match &ke.logical_key {
+                    Key::Named(NamedKey::ArrowLeft) if cmd => key(EditKey::Home),
+                    Key::Named(NamedKey::ArrowRight) if cmd => key(EditKey::End),
+                    Key::Named(NamedKey::ArrowLeft) if alt => key(EditKey::WordLeft),
+                    Key::Named(NamedKey::ArrowRight) if alt => key(EditKey::WordRight),
+                    Key::Named(NamedKey::ArrowLeft) => key(EditKey::Left),
+                    Key::Named(NamedKey::ArrowRight) => key(EditKey::Right),
+                    Key::Named(NamedKey::ArrowUp) => key(EditKey::Up),
+                    Key::Named(NamedKey::ArrowDown) => key(EditKey::Down),
+                    Key::Named(NamedKey::Home) => key(EditKey::Home),
+                    Key::Named(NamedKey::End) => key(EditKey::End),
+                    Key::Named(NamedKey::Backspace) => key(EditKey::Backspace),
+                    Key::Named(NamedKey::Delete) => key(EditKey::Delete),
+                    Key::Named(NamedKey::Enter) => key(EditKey::Enter),
+                    Key::Named(NamedKey::Escape) => key(EditKey::Escape),
+                    Key::Named(NamedKey::Tab) => Some(EditorInput::Text("\t".into())),
+                    Key::Character(c) if cmd => match c.as_str() {
+                        "z" if shift => key(EditKey::Redo),
+                        "z" => key(EditKey::Undo),
+                        "a" => key(EditKey::SelectAll),
+                        _ => None, // leave copy/paste/other Cmd shortcuts to their own handlers
+                    },
+                    _ if cmd => None,
+                    _ => ke.text.as_ref().map(|t| EditorInput::Text(t.to_string())),
+                };
+                if let Some(input) = input {
+                    self.reset_caret();
+                    let changed = match input {
+                        EditorInput::Key(k) => {
+                            self.with_workspace_view(id, |v, _| v.editor_key(k, shift))
+                        }
+                        EditorInput::Text(t) => {
+                            self.with_workspace_view(id, |v, _| v.editor_text(&t))
+                        }
+                    };
+                    if changed == Some(true) {
+                        if let Some(m) = self.mains.get_mut(&id) {
+                            m.dirty = true;
+                        }
+                    }
+                    return;
+                }
             }
         }
 
@@ -710,21 +915,25 @@ impl ApplicationHandler for App {
                 if self.with_workspace_view(id, |v, _| v.mouse_move(lx, ly)) == Some(true) {
                     // A live divider drag repaints immediately for smoothness; hover is coalesced.
                     if dragging {
+                        self.reset_caret();
                         self.draw_main(id);
                     } else if let Some(m) = self.mains.get_mut(&id) {
                         m.dirty = true;
                     }
                 }
-                // Pointer cursor over anything clickable (header, function nav, dock toggles), arrow elsewhere.
+                let resize = self
+                    .with_workspace_view(id, |v, _| v.resize_cursor_at(lx, ly))
+                    .flatten();
                 let over = self
                     .with_workspace_view(id, |v, _| v.hit_at(lx, ly))
                     .flatten()
                     .is_some();
                 if let Some(m) = self.mains.get(&id) {
-                    m.window.set_cursor(if over {
-                        CursorIcon::Pointer
-                    } else {
-                        CursorIcon::Default
+                    m.window.set_cursor(match resize {
+                        Some(workspace::ResizeCursor::Horizontal) => CursorIcon::EwResize,
+                        Some(workspace::ResizeCursor::Vertical) => CursorIcon::NsResize,
+                        None if over => CursorIcon::Pointer,
+                        None => CursorIcon::Default,
                     });
                 }
             }
@@ -739,11 +948,8 @@ impl ApplicationHandler for App {
                 };
                 match state {
                     ElementState::Pressed => {
-                        let was_menu = self.main_menu_open(id);
                         self.with_workspace_view(id, |v, _| v.mouse_down(lx, ly));
-                        if self.main_menu_open(id) != was_menu {
-                            self.reset_caret();
-                        }
+                        self.reset_caret();
                         self.sync_workspace_effects(id, event_loop);
                     }
                     ElementState::Released => {
@@ -761,18 +967,30 @@ impl ApplicationHandler for App {
                     Some(m) => (m.cursor.0 as f32 / scale, m.cursor.1 as f32 / scale),
                     None => return,
                 };
+                self.reset_caret();
                 if self.with_workspace_view(id, |v, _| v.right_click(lx, ly)) == Some(true) {
                     if let Some(m) = self.mains.get_mut(&id) {
                         m.dirty = true;
                     }
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } if self.main_menu_open(id) => {
-                let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => y * 30.0,
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
+            WindowEvent::Focused(true) => {
+                self.with_workspace_view(id, |v, _| v.refresh_disk_state());
+                self.reset_caret();
+                if let Some(m) = self.mains.get_mut(&id) {
+                    m.dirty = true;
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 30.0, y * 30.0),
+                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
                 };
-                if self.with_workspace_view(id, |v, _| v.scroll(dy)) == Some(true) {
+                let (lx, ly) = match self.mains.get(&id) {
+                    Some(m) => (m.cursor.0 as f32 / scale, m.cursor.1 as f32 / scale),
+                    None => return,
+                };
+                if self.with_workspace_view(id, |v, _| v.scroll(lx, ly, dx, dy)) == Some(true) {
                     if let Some(m) = self.mains.get_mut(&id) {
                         m.dirty = true;
                     }
@@ -924,6 +1142,28 @@ fn center_traffic_lights(window: &Window) {
 }
 
 fn main() -> anyhow::Result<()> {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_default();
+        let line = format!("panic at {loc}: {info}\n");
+        if let Some(home) = std::env::var_os("HOME") {
+            let path = std::path::Path::new(&home).join("Library/Logs/pomelo-panic.log");
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = f.write_all(line.as_bytes());
+            }
+        }
+        eprintln!("{line}");
+        previous(info);
+    }));
+
     let event_loop = EventLoop::new()?;
     let mut app = App::default();
     event_loop.run_app(&mut app)?;

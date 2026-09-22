@@ -1,19 +1,3 @@
-//! Syntax highlighting via tree-sitter + each grammar's `highlights.scm` query. Each span
-//! carries a capture name (e.g. `keyword`, `string`); the active `Theme` maps that name to a color. Colors live in
-//! the theme, not here, so themes are user-configurable.
-
-use std::collections::HashMap;
-
-use tree_sitter_highlight::{
-    Highlight, HighlightConfiguration, HighlightEvent, Highlighter as TsHighlighter,
-};
-
-pub struct Span {
-    pub text: String,
-    /// Tree-sitter capture name (one of HIGHLIGHT_NAMES), or "" for un-captured/plain text.
-    pub capture: &'static str,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
     Rust,
@@ -23,6 +7,30 @@ pub enum Lang {
     Go,
     Python,
     Json,
+    C,
+    Cpp,
+    Bash,
+    Css,
+    Html,
+    Ruby,
+    Java,
+    Toml,
+    Yaml,
+    Lua,
+    CSharp,
+    Markdown,
+    Php,
+    Scala,
+    Elixir,
+    Haskell,
+    Ocaml,
+    Scss,
+    Nix,
+    Swift,
+    Make,
+    Xml,
+    Zig,
+    Dart,
     PlainText,
 }
 
@@ -35,7 +43,31 @@ impl Lang {
             "js" | "jsx" | "mjs" | "cjs" => Lang::JavaScript,
             "go" => Lang::Go,
             "py" | "pyi" => Lang::Python,
-            "json" => Lang::Json,
+            "json" | "jsonc" => Lang::Json,
+            "c" | "h" => Lang::C,
+            "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => Lang::Cpp,
+            "sh" | "bash" | "zsh" => Lang::Bash,
+            "css" => Lang::Css,
+            "html" | "htm" => Lang::Html,
+            "rb" | "gemspec" => Lang::Ruby,
+            "java" => Lang::Java,
+            "toml" => Lang::Toml,
+            "yaml" | "yml" => Lang::Yaml,
+            "lua" => Lang::Lua,
+            "cs" => Lang::CSharp,
+            "md" | "markdown" => Lang::Markdown,
+            "php" => Lang::Php,
+            "scala" | "sc" | "sbt" => Lang::Scala,
+            "ex" | "exs" => Lang::Elixir,
+            "hs" => Lang::Haskell,
+            "ml" | "mli" => Lang::Ocaml,
+            "scss" => Lang::Scss,
+            "nix" => Lang::Nix,
+            "swift" => Lang::Swift,
+            "mk" | "makefile" => Lang::Make,
+            "xml" | "svg" | "xaml" | "plist" => Lang::Xml,
+            "zig" => Lang::Zig,
+            "dart" => Lang::Dart,
             _ => Lang::PlainText,
         }
     }
@@ -43,7 +75,7 @@ impl Lang {
 
 // Capture names we recognize; tree-sitter maps each query capture to an index into this list. Based on the One
 // Dark syntax keys so grammar captures resolve to consistent styles.
-const HIGHLIGHT_NAMES: &[&str] = &[
+pub const HIGHLIGHT_NAMES: &[&str] = &[
     "attribute",
     "boolean",
     "comment",
@@ -85,112 +117,133 @@ const HIGHLIGHT_NAMES: &[&str] = &[
     "variant",
 ];
 
-pub struct Highlighter {
-    inner: TsHighlighter,
-    configs: HashMap<Lang, Option<HighlightConfiguration>>,
-}
-
-impl Default for Highlighter {
-    fn default() -> Self {
-        Self {
-            inner: TsHighlighter::new(),
-            configs: HashMap::new(),
-        }
-    }
-}
-
-impl Highlighter {
-    fn build(lang: Lang) -> Option<HighlightConfiguration> {
-        let (language, highlights, injections, locals): (tree_sitter::Language, &str, &str, &str) =
-            match lang {
-                Lang::Rust => (
-                    tree_sitter_rust::LANGUAGE.into(),
-                    tree_sitter_rust::HIGHLIGHTS_QUERY,
-                    "",
-                    "",
-                ),
-                Lang::TypeScript => (
-                    tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-                    tree_sitter_typescript::HIGHLIGHTS_QUERY,
-                    "",
-                    tree_sitter_typescript::LOCALS_QUERY,
-                ),
-                Lang::Tsx => (
-                    tree_sitter_typescript::LANGUAGE_TSX.into(),
-                    tree_sitter_typescript::HIGHLIGHTS_QUERY,
-                    "",
-                    tree_sitter_typescript::LOCALS_QUERY,
-                ),
-                Lang::JavaScript => (
-                    tree_sitter_javascript::LANGUAGE.into(),
-                    tree_sitter_javascript::HIGHLIGHT_QUERY,
-                    tree_sitter_javascript::INJECTIONS_QUERY,
-                    tree_sitter_javascript::LOCALS_QUERY,
-                ),
-                Lang::Go => (
-                    tree_sitter_go::LANGUAGE.into(),
-                    tree_sitter_go::HIGHLIGHTS_QUERY,
-                    "",
-                    "",
-                ),
-                Lang::Python => (
-                    tree_sitter_python::LANGUAGE.into(),
-                    tree_sitter_python::HIGHLIGHTS_QUERY,
-                    "",
-                    "",
-                ),
-                Lang::Json => (
-                    tree_sitter_json::LANGUAGE.into(),
-                    tree_sitter_json::HIGHLIGHTS_QUERY,
-                    "",
-                    "",
-                ),
-                Lang::PlainText => return None,
-            };
-        let mut config =
-            HighlightConfiguration::new(language, "src", highlights, injections, locals).ok()?;
-        config.configure(HIGHLIGHT_NAMES);
-        Some(config)
-    }
-
-    pub fn highlight(&mut self, text: &str, lang: Lang) -> Vec<Span> {
-        self.configs
-            .entry(lang)
-            .or_insert_with(|| Self::build(lang));
-        let Highlighter { inner, configs } = self;
-        let Some(Some(config)) = configs.get(&lang) else {
-            return vec![Span {
-                text: text.to_string(),
-                capture: "",
-            }];
-        };
-
-        let mut spans = Vec::new();
-        let mut stack: Vec<usize> = Vec::new();
-        let events = match inner.highlight(config, text.as_bytes(), None, None, |_| None) {
-            Ok(e) => e,
-            Err(_) => {
-                return vec![Span {
-                    text: text.to_string(),
-                    capture: "",
-                }]
-            }
-        };
-        for event in events.flatten() {
-            match event {
-                HighlightEvent::HighlightStart(Highlight(i)) => stack.push(i),
-                HighlightEvent::HighlightEnd => {
-                    stack.pop();
-                }
-                HighlightEvent::Source { start, end } => {
-                    let capture = stack.last().map(|&i| HIGHLIGHT_NAMES[i]).unwrap_or("");
-                    spans.push(Span {
-                        text: text[start..end].to_string(),
-                        capture,
-                    });
-                }
-            }
-        }
-        spans
-    }
+pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, &'static str)> {
+    let (language, highlights): (tree_sitter::Language, &'static str) = match lang {
+        Lang::Rust => (
+            tree_sitter_rust::LANGUAGE.into(),
+            tree_sitter_rust::HIGHLIGHTS_QUERY,
+        ),
+        Lang::TypeScript => (
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Tsx => (
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+        ),
+        Lang::JavaScript => (
+            tree_sitter_javascript::LANGUAGE.into(),
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
+        ),
+        Lang::Go => (
+            tree_sitter_go::LANGUAGE.into(),
+            tree_sitter_go::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Python => (
+            tree_sitter_python::LANGUAGE.into(),
+            tree_sitter_python::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Json => (
+            tree_sitter_json::LANGUAGE.into(),
+            tree_sitter_json::HIGHLIGHTS_QUERY,
+        ),
+        Lang::C => (
+            tree_sitter_c::LANGUAGE.into(),
+            tree_sitter_c::HIGHLIGHT_QUERY,
+        ),
+        Lang::Cpp => (
+            tree_sitter_cpp::LANGUAGE.into(),
+            tree_sitter_cpp::HIGHLIGHT_QUERY,
+        ),
+        Lang::Bash => (
+            tree_sitter_bash::LANGUAGE.into(),
+            tree_sitter_bash::HIGHLIGHT_QUERY,
+        ),
+        Lang::Css => (
+            tree_sitter_css::LANGUAGE.into(),
+            tree_sitter_css::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Html => (
+            tree_sitter_html::LANGUAGE.into(),
+            tree_sitter_html::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Ruby => (
+            tree_sitter_ruby::LANGUAGE.into(),
+            tree_sitter_ruby::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Java => (
+            tree_sitter_java::LANGUAGE.into(),
+            tree_sitter_java::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Toml => (
+            tree_sitter_toml_ng::LANGUAGE.into(),
+            tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Yaml => (
+            tree_sitter_yaml::LANGUAGE.into(),
+            tree_sitter_yaml::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Lua => (
+            tree_sitter_lua::LANGUAGE.into(),
+            tree_sitter_lua::HIGHLIGHTS_QUERY,
+        ),
+        Lang::CSharp => (
+            tree_sitter_c_sharp::LANGUAGE.into(),
+            tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Markdown => (
+            tree_sitter_md::LANGUAGE.into(),
+            tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+        ),
+        Lang::Php => (
+            tree_sitter_php::LANGUAGE_PHP.into(),
+            tree_sitter_php::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Scala => (
+            tree_sitter_scala::LANGUAGE.into(),
+            tree_sitter_scala::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Elixir => (
+            tree_sitter_elixir::LANGUAGE.into(),
+            tree_sitter_elixir::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Haskell => (
+            tree_sitter_haskell::LANGUAGE.into(),
+            tree_sitter_haskell::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Ocaml => (
+            tree_sitter_ocaml::LANGUAGE_OCAML.into(),
+            tree_sitter_ocaml::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Scss => (
+            tree_sitter_scss::language(),
+            tree_sitter_scss::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Nix => (
+            tree_sitter_nix::LANGUAGE.into(),
+            tree_sitter_nix::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Swift => (
+            tree_sitter_swift::LANGUAGE.into(),
+            tree_sitter_swift::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Make => (
+            tree_sitter_make::LANGUAGE.into(),
+            tree_sitter_make::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Xml => (
+            tree_sitter_xml::LANGUAGE_XML.into(),
+            tree_sitter_xml::XML_HIGHLIGHT_QUERY,
+        ),
+        Lang::Zig => (
+            tree_sitter_zig::LANGUAGE.into(),
+            tree_sitter_zig::HIGHLIGHTS_QUERY,
+        ),
+        Lang::Dart => (
+            tree_sitter_dart::LANGUAGE.into(),
+            tree_sitter_dart::HIGHLIGHTS_QUERY,
+        ),
+        Lang::PlainText => return None,
+    };
+    Some((language, highlights))
 }

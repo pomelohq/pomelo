@@ -98,13 +98,17 @@ fn nav_item_box(active: bool, hovered: bool) -> Div {
 // The Appearance page's section headers, in order. Single source of truth: the navbar lists them as jump
 // entries and `appearance_page` emits the same headers, so the two never drift.
 const APPEARANCE_SECTIONS: [&str; 2] = ["Theme", "UI Font"];
+const WINDOW_LAYOUT_SECTIONS: [&str; 5] = ["Status Bar", "Title Bar", "Window", "Docks", "Panels"];
 
-const CATEGORIES: [(&str, &[&str]); 4] = [
+const CATEGORIES: [(&str, &[&str]); 5] = [
     ("General", &[]),
     ("Appearance", &APPEARANCE_SECTIONS),
+    ("Window & Layout", &WINDOW_LAYOUT_SECTIONS),
     ("Editor", &[]),
     ("Terminal", &[]),
 ];
+
+pub const WINDOW_LAYOUT: usize = 2;
 
 /// Index of the Appearance category (the only page with real content for now).
 pub const APPEARANCE: usize = 1;
@@ -119,9 +123,8 @@ pub const CTRL_FONT_FAMILY: u64 = 102;
 pub const CTRL_SEARCH: u64 = 103;
 /// The clear (x) button in the search box; clicking it empties the query.
 pub const CTRL_SEARCH_CLEAR: u64 = 104;
-/// A sidebar navbar sub-entry (a page section): clicking id `NAV_JUMP_BASE + section_index` scrolls the page
-/// to that section, like the reference's `open_and_scroll_to_navbar_entry`.
 pub const NAV_JUMP_BASE: u64 = 400;
+pub const NAV_JUMP_STRIDE: u64 = 10;
 /// A category's disclosure toggle (the chevron): clicking id `NAV_TOGGLE_BASE + category_index` expands or
 /// collapses it. Only the chevron toggles; clicking the row selects the category (reference behavior).
 pub const NAV_TOGGLE_BASE: u64 = 500;
@@ -139,6 +142,29 @@ pub const CTRL_FONT_WEIGHT_EDIT: u64 = 205;
 /// "Edit in settings.json" buttons for the not-yet-implemented font fields (features/fallbacks).
 pub const CTRL_FONT_FEATURES: u64 = 206;
 pub const CTRL_FONT_FALLBACKS: u64 = 207;
+pub const CTRL_OPEN_JSON: u64 = 108;
+pub const CTRL_MODE: u64 = 210;
+pub const CTRL_SIDEBAR_SIDE: u64 = 211;
+pub const CTRL_AGENT_SIDE: u64 = 212;
+pub const CTRL_TERMINAL_SIDE: u64 = 213;
+pub const CTRL_SHOW_AGENT: u64 = 214;
+pub const CTRL_SHOW_TERMINAL: u64 = 215;
+pub const CTRL_WIN_W_DEC: u64 = 216;
+pub const CTRL_WIN_W_INC: u64 = 217;
+pub const CTRL_WIN_W_EDIT: u64 = 218;
+pub const CTRL_WIN_H_DEC: u64 = 219;
+pub const CTRL_WIN_H_INC: u64 = 220;
+pub const CTRL_WIN_H_EDIT: u64 = 221;
+pub const CTRL_SHOW_DIAGNOSTICS: u64 = 222;
+pub const CTRL_SHOW_CURSOR: u64 = 223;
+pub const CTRL_SHOW_LANGUAGE: u64 = 224;
+pub const CTRL_SHOW_BRANCH: u64 = 225;
+pub const CTRL_SHOW_SESSION: u64 = 226;
+pub const WIN_W_MIN: f32 = 640.0;
+pub const WIN_W_MAX: f32 = 4000.0;
+pub const WIN_H_MIN: f32 = 480.0;
+pub const WIN_H_MAX: f32 = 3000.0;
+pub const RESET_OFFSET: u64 = 100_000;
 
 /// Font-size bounds, matching the reference's `FontSize` stepper (min 6, max 72).
 pub const FONT_SIZE_MIN: f32 = 6.0;
@@ -163,6 +189,16 @@ pub fn set_font_weight(s: &mut Settings, value: f32) -> bool {
     changed
 }
 
+pub fn chrome_flags(s: &Settings) -> ui::ChromeFlags {
+    ui::ChromeFlags {
+        diagnostics: s.show_diagnostics,
+        cursor_position: s.show_cursor_position,
+        language: s.show_language,
+        branch: s.show_branch,
+        session_name: s.show_session_name,
+    }
+}
+
 const THEMES: [&str; 4] = ["One Dark", "One Light", "Ayu Mirage", "Gruvbox Dark"];
 
 /// Popover-item click ids start here (an item's id = POPOVER_BASE + its index in the option list).
@@ -170,14 +206,33 @@ pub const POPOVER_BASE: u64 = 3000;
 
 /// True if a control opens a popover list (dropdown) rather than acting immediately (stepper).
 pub fn is_dropdown(id: u64) -> bool {
-    matches!(id, CTRL_THEME | CTRL_FONT_FAMILY)
+    matches!(
+        id,
+        CTRL_THEME
+            | CTRL_FONT_FAMILY
+            | CTRL_MODE
+            | CTRL_SIDEBAR_SIDE
+            | CTRL_AGENT_SIDE
+            | CTRL_TERMINAL_SIDE
+    )
 }
 
-/// The option list a dropdown control shows. `fonts` is the system font list (for Font Family).
+fn cap(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
 pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
+    let sv = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect();
     match id {
         CTRL_THEME => THEMES.iter().map(|s| s.to_string()).collect(),
         CTRL_FONT_FAMILY => fonts.to_vec(),
+        CTRL_MODE => sv(&["System", "Light", "Dark"]),
+        CTRL_SIDEBAR_SIDE | CTRL_AGENT_SIDE => sv(&["Left", "Right"]),
+        CTRL_TERMINAL_SIDE => sv(&["Left", "Right", "Bottom"]),
         _ => Vec::new(),
     }
 }
@@ -187,6 +242,10 @@ pub fn control_value(id: u64, s: &Settings) -> String {
     match id {
         CTRL_THEME => s.theme.clone(),
         CTRL_FONT_FAMILY => s.ui_font.clone(),
+        CTRL_MODE => cap(&s.theme_mode),
+        CTRL_SIDEBAR_SIDE => cap(&s.sidebar_side),
+        CTRL_AGENT_SIDE => cap(&s.agent_side),
+        CTRL_TERMINAL_SIDE => cap(&s.terminal_side),
         _ => String::new(),
     }
 }
@@ -200,9 +259,63 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
     match id {
         CTRL_THEME => s.theme = val.clone(),
         CTRL_FONT_FAMILY => s.ui_font = val.clone(),
+        CTRL_MODE => s.theme_mode = val.to_lowercase(),
+        CTRL_SIDEBAR_SIDE => s.sidebar_side = val.to_lowercase(),
+        CTRL_AGENT_SIDE => s.agent_side = val.to_lowercase(),
+        CTRL_TERMINAL_SIDE => s.terminal_side = val.to_lowercase(),
         _ => return false,
     }
     true
+}
+
+pub fn is_default(id: u64, s: &Settings) -> bool {
+    let d = Settings::default();
+    match id {
+        CTRL_THEME => s.theme == d.theme,
+        CTRL_FONT_FAMILY => s.ui_font == d.ui_font,
+        CTRL_FONT_SIZE_EDIT => s.ui_font_size == d.ui_font_size,
+        CTRL_FONT_WEIGHT_EDIT => s.ui_font_weight == d.ui_font_weight,
+        CTRL_MODE => s.theme_mode == d.theme_mode,
+        CTRL_SIDEBAR_SIDE => s.sidebar_side == d.sidebar_side,
+        CTRL_AGENT_SIDE => s.agent_side == d.agent_side,
+        CTRL_TERMINAL_SIDE => s.terminal_side == d.terminal_side,
+        CTRL_SHOW_AGENT => s.agent_hidden == d.agent_hidden,
+        CTRL_SHOW_TERMINAL => s.terminal_hidden == d.terminal_hidden,
+        CTRL_SHOW_DIAGNOSTICS => s.show_diagnostics == d.show_diagnostics,
+        CTRL_SHOW_CURSOR => s.show_cursor_position == d.show_cursor_position,
+        CTRL_SHOW_LANGUAGE => s.show_language == d.show_language,
+        CTRL_SHOW_BRANCH => s.show_branch == d.show_branch,
+        CTRL_SHOW_SESSION => s.show_session_name == d.show_session_name,
+        CTRL_WIN_W_EDIT => s.window_width == d.window_width,
+        CTRL_WIN_H_EDIT => s.window_height == d.window_height,
+        _ => true,
+    }
+}
+
+pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
+    let d = Settings::default();
+    let changed = !is_default(id, s);
+    match id {
+        CTRL_THEME => s.theme = d.theme,
+        CTRL_FONT_FAMILY => s.ui_font = d.ui_font,
+        CTRL_FONT_SIZE_EDIT => s.ui_font_size = d.ui_font_size,
+        CTRL_FONT_WEIGHT_EDIT => s.ui_font_weight = d.ui_font_weight,
+        CTRL_MODE => s.theme_mode = d.theme_mode,
+        CTRL_SIDEBAR_SIDE => s.sidebar_side = d.sidebar_side,
+        CTRL_AGENT_SIDE => s.agent_side = d.agent_side,
+        CTRL_TERMINAL_SIDE => s.terminal_side = d.terminal_side,
+        CTRL_SHOW_AGENT => s.agent_hidden = d.agent_hidden,
+        CTRL_SHOW_TERMINAL => s.terminal_hidden = d.terminal_hidden,
+        CTRL_SHOW_DIAGNOSTICS => s.show_diagnostics = d.show_diagnostics,
+        CTRL_SHOW_CURSOR => s.show_cursor_position = d.show_cursor_position,
+        CTRL_SHOW_LANGUAGE => s.show_language = d.show_language,
+        CTRL_SHOW_BRANCH => s.show_branch = d.show_branch,
+        CTRL_SHOW_SESSION => s.show_session_name = d.show_session_name,
+        CTRL_WIN_W_EDIT => s.window_width = d.window_width,
+        CTRL_WIN_H_EDIT => s.window_height = d.window_height,
+        _ => return false,
+    }
+    changed
 }
 
 /// Apply a stepper control click to settings; returns true if a value changed (so the app persists).
@@ -212,8 +325,47 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         CTRL_FONT_SIZE_INC => set_font_size(s, s.ui_font_size + 1.0),
         CTRL_FONT_WEIGHT_DEC => set_font_weight(s, s.ui_font_weight - 100.0),
         CTRL_FONT_WEIGHT_INC => set_font_weight(s, s.ui_font_weight + 100.0),
+        CTRL_WIN_W_DEC => set_clamped(&mut s.window_width, -20.0, WIN_W_MIN, WIN_W_MAX),
+        CTRL_WIN_W_INC => set_clamped(&mut s.window_width, 20.0, WIN_W_MIN, WIN_W_MAX),
+        CTRL_WIN_H_DEC => set_clamped(&mut s.window_height, -20.0, WIN_H_MIN, WIN_H_MAX),
+        CTRL_WIN_H_INC => set_clamped(&mut s.window_height, 20.0, WIN_H_MIN, WIN_H_MAX),
+        CTRL_SHOW_AGENT => {
+            s.agent_hidden = !s.agent_hidden;
+            true
+        }
+        CTRL_SHOW_TERMINAL => {
+            s.terminal_hidden = !s.terminal_hidden;
+            true
+        }
+        CTRL_SHOW_DIAGNOSTICS => {
+            s.show_diagnostics = !s.show_diagnostics;
+            true
+        }
+        CTRL_SHOW_CURSOR => {
+            s.show_cursor_position = !s.show_cursor_position;
+            true
+        }
+        CTRL_SHOW_LANGUAGE => {
+            s.show_language = !s.show_language;
+            true
+        }
+        CTRL_SHOW_BRANCH => {
+            s.show_branch = !s.show_branch;
+            true
+        }
+        CTRL_SHOW_SESSION => {
+            s.show_session_name = !s.show_session_name;
+            true
+        }
         _ => false,
     }
+}
+
+fn set_clamped(field: &mut f32, delta: f32, min: f32, max: f32) -> bool {
+    let next = (*field + delta).clamp(min, max);
+    let changed = next != *field;
+    *field = next;
+    changed
 }
 
 /// How many item rows the popover shows at once; longer lists scroll a window of this size.
@@ -391,9 +543,6 @@ pub fn popover(
         let it = &items[orig];
         let this_id = POPOVER_BASE + orig as u64;
         let highlighted = cursor_id == Some(this_id);
-        // Reference ListItem(inset, Sparse): outer inset padding, inner rounded highlight (ghost_element_
-        // selected) inset from the menu edges rather than a full-bleed bar.
-        let is_current = it == current;
         let mut inner = div()
             .row()
             .flex(1.0)
@@ -406,10 +555,6 @@ pub fn popover(
                     .size(13.0)
                     .color(if highlighted { title_c() } else { dim_c() }),
             );
-        // The current value gets a trailing checkmark, like the reference's selected menu item.
-        if is_current {
-            inner = inner.child(ui::check_icon().size(14.0));
-        }
         if highlighted {
             inner = inner.bg(sel_c());
         }
@@ -610,6 +755,8 @@ pub fn page(
     };
     let tree: Node = if selected == APPEARANCE {
         render_page(&appearance_page(s), search, editing, w)
+    } else if selected == WINDOW_LAYOUT {
+        render_page(&window_layout_page(s), search, editing, w)
     } else {
         stub_body(CATEGORIES[selected].0)
     };
@@ -729,11 +876,7 @@ fn sidebar(
     for (i, (name, subs)) in CATEGORIES.iter().enumerate() {
         // While searching, the navbar shows only categories with matching sections (or a matching name), and
         // lists just the matching sections -- mirroring the reference's filtered navbar.
-        let sections: Vec<(usize, &str)> = if i == APPEARANCE {
-            matching_sections(&q)
-        } else {
-            Vec::new()
-        };
+        let sections: Vec<(usize, &str)> = matching_sections(i, &q);
         let name_matches = !searching || name.to_lowercase().contains(&q);
         if searching && sections.is_empty() && !name_matches {
             continue;
@@ -776,17 +919,13 @@ fn sidebar(
         let inner = nav_item_box(cat_active, is_hovered)
             .on_click(i as u64)
             .child(lead)
-            .child(
-                label(*name)
-                    .size(13.0)
-                    .color(if is_selected { title_c() } else { dim_c() }),
-            );
+            .child(label(*name).size(14.0).color(title_c()));
         col = col.child(inner);
 
         if has_subs && is_expanded {
             for (section_idx, sub) in sections {
-                let id = NAV_JUMP_BASE + section_idx as u64;
-                let is_active = !searching && active_section == Some(section_idx);
+                let id = NAV_JUMP_BASE + i as u64 * NAV_JUMP_STRIDE + section_idx as u64;
+                let is_active = !searching && is_selected && active_section == Some(section_idx);
                 col = col.child(sub_item(sub, id, hovered == Some(id), is_active));
             }
         }
@@ -794,10 +933,18 @@ fn sidebar(
     col.into()
 }
 
-/// Appearance sections (with their section index) whose header or any row matches `query`. Empty query returns
-/// all. Used to filter the navbar like the reference's per-section search.
-fn matching_sections(query: &str) -> Vec<(usize, &'static str)> {
-    let page = appearance_page(&Settings::default());
+fn page_for(cat: usize) -> Option<Page> {
+    match cat {
+        APPEARANCE => Some(appearance_page(&Settings::default())),
+        WINDOW_LAYOUT => Some(window_layout_page(&Settings::default())),
+        _ => None,
+    }
+}
+
+fn matching_sections(cat: usize, query: &str) -> Vec<(usize, &'static str)> {
+    let Some(page) = page_for(cat) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     let mut cur: Option<(usize, &'static str, bool)> = None; // (section index, name, matched)
     let mut idx = 0usize;
@@ -908,12 +1055,17 @@ enum Control {
     EditInJson {
         id: u64,
     },
+    Toggle {
+        id: u64,
+        on: bool,
+    },
 }
 
 struct SettingRow {
     title: &'static str,
     description: &'static str,
     control: Control,
+    reset: Option<u64>,
 }
 
 enum PageItem {
@@ -924,6 +1076,10 @@ enum PageItem {
 struct Page {
     title: &'static str,
     items: Vec<PageItem>,
+}
+
+fn reset_if_changed(id: u64, s: &Settings) -> Option<u64> {
+    (!is_default(id, s)).then_some(id)
 }
 
 fn appearance_page(s: &Settings) -> Page {
@@ -938,6 +1094,7 @@ fn appearance_page(s: &Settings) -> Page {
                     id: CTRL_THEME,
                     value: s.theme.clone(),
                 },
+                reset: reset_if_changed(CTRL_THEME, s),
             }),
             PageItem::Header("UI Font"),
             PageItem::Row(SettingRow {
@@ -947,6 +1104,7 @@ fn appearance_page(s: &Settings) -> Page {
                     id: CTRL_FONT_FAMILY,
                     value: s.ui_font.clone(),
                 },
+                reset: reset_if_changed(CTRL_FONT_FAMILY, s),
             }),
             PageItem::Row(SettingRow {
                 title: "Font Size",
@@ -957,6 +1115,7 @@ fn appearance_page(s: &Settings) -> Page {
                     edit: CTRL_FONT_SIZE_EDIT,
                     value: format!("{:.0}", s.ui_font_size),
                 },
+                reset: reset_if_changed(CTRL_FONT_SIZE_EDIT, s),
             }),
             PageItem::Row(SettingRow {
                 title: "Font Weight",
@@ -967,6 +1126,7 @@ fn appearance_page(s: &Settings) -> Page {
                     edit: CTRL_FONT_WEIGHT_EDIT,
                     value: format!("{:.0}", s.ui_font_weight),
                 },
+                reset: reset_if_changed(CTRL_FONT_WEIGHT_EDIT, s),
             }),
             PageItem::Row(SettingRow {
                 title: "Font Features",
@@ -974,6 +1134,7 @@ fn appearance_page(s: &Settings) -> Page {
                 control: Control::EditInJson {
                     id: CTRL_FONT_FEATURES,
                 },
+                reset: None,
             }),
             PageItem::Row(SettingRow {
                 title: "Font Fallbacks",
@@ -981,6 +1142,132 @@ fn appearance_page(s: &Settings) -> Page {
                 control: Control::EditInJson {
                     id: CTRL_FONT_FALLBACKS,
                 },
+                reset: None,
+            }),
+        ],
+    }
+}
+
+fn window_layout_page(s: &Settings) -> Page {
+    Page {
+        title: "Window & Layout",
+        items: vec![
+            PageItem::Header("Status Bar"),
+            PageItem::Row(SettingRow {
+                title: "Show Diagnostics",
+                description: "Show the error/warning count in the status bar.",
+                control: Control::Toggle {
+                    id: CTRL_SHOW_DIAGNOSTICS,
+                    on: s.show_diagnostics,
+                },
+                reset: reset_if_changed(CTRL_SHOW_DIAGNOSTICS, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Show Cursor Position",
+                description: "Show the line and column of the cursor in the status bar.",
+                control: Control::Toggle {
+                    id: CTRL_SHOW_CURSOR,
+                    on: s.show_cursor_position,
+                },
+                reset: reset_if_changed(CTRL_SHOW_CURSOR, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Show Language",
+                description: "Show the active language of the editor in the status bar.",
+                control: Control::Toggle {
+                    id: CTRL_SHOW_LANGUAGE,
+                    on: s.show_language,
+                },
+                reset: reset_if_changed(CTRL_SHOW_LANGUAGE, s),
+            }),
+            PageItem::Header("Title Bar"),
+            PageItem::Row(SettingRow {
+                title: "Show Branch",
+                description: "Show the current git branch in the title bar.",
+                control: Control::Toggle {
+                    id: CTRL_SHOW_BRANCH,
+                    on: s.show_branch,
+                },
+                reset: reset_if_changed(CTRL_SHOW_BRANCH, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Show Session Name",
+                description: "Show the current session name in the title bar.",
+                control: Control::Toggle {
+                    id: CTRL_SHOW_SESSION,
+                    on: s.show_session_name,
+                },
+                reset: reset_if_changed(CTRL_SHOW_SESSION, s),
+            }),
+            PageItem::Header("Window"),
+            PageItem::Row(SettingRow {
+                title: "Window Width",
+                description: "Default width (px) of a new window.",
+                control: Control::Stepper {
+                    dec: CTRL_WIN_W_DEC,
+                    inc: CTRL_WIN_W_INC,
+                    edit: CTRL_WIN_W_EDIT,
+                    value: format!("{:.0}", s.window_width),
+                },
+                reset: reset_if_changed(CTRL_WIN_W_EDIT, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Window Height",
+                description: "Default height (px) of a new window.",
+                control: Control::Stepper {
+                    dec: CTRL_WIN_H_DEC,
+                    inc: CTRL_WIN_H_INC,
+                    edit: CTRL_WIN_H_EDIT,
+                    value: format!("{:.0}", s.window_height),
+                },
+                reset: reset_if_changed(CTRL_WIN_H_EDIT, s),
+            }),
+            PageItem::Header("Docks"),
+            PageItem::Row(SettingRow {
+                title: "Sidebar Side",
+                description: "Which side the WORKSPACES sidebar docks on.",
+                control: Control::Dropdown {
+                    id: CTRL_SIDEBAR_SIDE,
+                    value: cap(&s.sidebar_side),
+                },
+                reset: reset_if_changed(CTRL_SIDEBAR_SIDE, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Agent Dock Side",
+                description: "Which side of the editor the agent dock renders on.",
+                control: Control::Dropdown {
+                    id: CTRL_AGENT_SIDE,
+                    value: cap(&s.agent_side),
+                },
+                reset: reset_if_changed(CTRL_AGENT_SIDE, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Terminal Dock Side",
+                description: "Which content area the terminal renders in.",
+                control: Control::Dropdown {
+                    id: CTRL_TERMINAL_SIDE,
+                    value: cap(&s.terminal_side),
+                },
+                reset: reset_if_changed(CTRL_TERMINAL_SIDE, s),
+            }),
+            PageItem::Header("Panels"),
+            PageItem::Row(SettingRow {
+                title: "Show Agent Button",
+                description: "Show the agent toggle in the status bar.",
+                control: Control::Toggle {
+                    id: CTRL_SHOW_AGENT,
+                    on: !s.agent_hidden,
+                },
+                reset: reset_if_changed(CTRL_SHOW_AGENT, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Show Terminal Button",
+                description: "Show the terminal toggle in the status bar.",
+                control: Control::Toggle {
+                    id: CTRL_SHOW_TERMINAL,
+                    on: !s.terminal_hidden,
+                },
+                reset: reset_if_changed(CTRL_SHOW_TERMINAL, s),
             }),
         ],
     }
@@ -999,7 +1286,7 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
     // running under the control. Widths are in design px (the element builders re-apply the UI scale).
     let scale = ui::ui_text_scale();
     let content_design_w = (w / scale - 240.0 - 64.0).max(200.0);
-    let left_col_w = content_design_w * 0.62;
+    let left_col_w = content_design_w * 2.0 / 3.0;
     let q = query.to_lowercase();
     let n = page.items.len();
     let mut visible = vec![false; n];
@@ -1076,8 +1363,15 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
                         stepper(value, *dec, *inc, *edit, buf)
                     }
                     Control::EditInJson { id } => edit_in_json_button(*id),
+                    Control::Toggle { id, on } => toggle_switch(*on, *id),
                 };
-                col = col.child(row_frame(row.title, row.description, control, left_col_w));
+                col = col.child(row_frame(
+                    row.title,
+                    row.description,
+                    control,
+                    row.reset,
+                    left_col_w,
+                ));
                 col = col.child(divider());
             }
         }
@@ -1104,28 +1398,70 @@ fn divider() -> Node {
     ui::divider().into()
 }
 
-/// A setting row: title + wrapped muted description in a fixed-width left column, the `control` on the right.
-fn row_frame(title: &str, desc: &str, control: Node, left_col_w: f32) -> Node {
+fn row_frame(title: &str, desc: &str, control: Node, reset: Option<u64>, left_col_w: f32) -> Node {
+    let mut title_row = div()
+        .row()
+        .items_center()
+        .gap(6.0)
+        .child(label(title).label_size(LabelSize::Default).color(title_c()));
+    if let Some(primary) = reset {
+        title_row = title_row.child(reset_button(primary + RESET_OFFSET));
+    }
+    let left = div()
+        .col()
+        .w_px(left_col_w)
+        .gap(5.0)
+        .child(title_row)
+        .child(description_node(desc, left_col_w));
     div()
         .row()
         .py(14.0)
         .items_center()
         .justify_between()
-        .child(
-            div()
-                .col()
-                .w_px(left_col_w)
-                .gap(5.0)
-                .child(label(title).label_size(LabelSize::Default).color(title_c()))
-                .child(
-                    label(desc)
-                        .label_size(LabelSize::Small)
-                        .color(dim_c())
-                        .wrap(left_col_w),
-                ),
-        )
+        .child(left)
         .child(control)
         .into()
+}
+
+fn reset_button(id: u64) -> Node {
+    div()
+        .w_px(18.0)
+        .h_px(18.0)
+        .rounded(4.0)
+        .items_center()
+        .justify_center()
+        .on_click(id)
+        .child(ui::icon(ui::IconKind::Undo).size(12.0).color(dim_c()))
+        .into()
+}
+
+fn description_node(desc: &str, wrap_w: f32) -> Node {
+    if !desc.contains('`') {
+        return label(desc)
+            .label_size(LabelSize::Small)
+            .color(dim_c())
+            .wrap(wrap_w)
+            .into();
+    }
+    let mut row = div().row().items_center();
+    for (i, part) in desc.split('`').enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if i % 2 == 1 {
+            row = row.child(
+                div().px(4.0).rounded(3.0).bg(chip_c()).child(
+                    label(part)
+                        .label_size(LabelSize::Small)
+                        .mono()
+                        .color(title_c()),
+                ),
+            );
+        } else {
+            row = row.child(label(part).label_size(LabelSize::Small).color(dim_c()));
+        }
+    }
+    row.into()
 }
 
 /// A subtle-bordered dropdown control: value + up/down chevron; clicking cycles the value (app-side).
@@ -1142,6 +1478,27 @@ fn dropdown(value: &str, id: u64) -> Node {
         .child(label(value).size(12.0).color(title_c()))
         .child(chevron_up_down().size(11.0).color(dim_c()))
         .into()
+}
+
+fn toggle_switch(on: bool, id: u64) -> Node {
+    let track = if on { theme().icon_accent } else { chip_c() };
+    let knob = div().w_px(14.0).h_px(14.0).rounded(7.0).bg(bg_c());
+    let mut row = div()
+        .row()
+        .w_px(36.0)
+        .h_px(20.0)
+        .px(3.0)
+        .items_center()
+        .rounded(10.0)
+        .bg(track)
+        .border(1.0, border_c())
+        .on_click(id);
+    if on {
+        row = row.child(div().flex(1.0)).child(knob);
+    } else {
+        row = row.child(knob).child(div().flex(1.0));
+    }
+    row.into()
 }
 
 /// A stepper control: one bordered rounded box `[- | value | +]`, the end segments clickable, with thin

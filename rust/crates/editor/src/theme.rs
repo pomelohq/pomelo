@@ -118,6 +118,47 @@ impl Theme {
             syntax,
         }
     }
+
+    pub fn one_light() -> Theme {
+        let mut syntax = HashMap::new();
+        let mut put = |k: &str, c: Color| {
+            syntax.insert(k.to_string(), c);
+        };
+        put("keyword", Color::rgb(166, 38, 164));
+        put("preproc", Color::rgb(166, 38, 164));
+        put("function", Color::rgb(64, 120, 242));
+        put("constructor", Color::rgb(64, 120, 242));
+        put("type", Color::rgb(1, 132, 188));
+        put("operator", Color::rgb(1, 132, 188));
+        put("enum", Color::rgb(1, 132, 188));
+        put("string", Color::rgb(80, 161, 79));
+        put("comment", Color::rgb(160, 161, 167));
+        put("number", Color::rgb(152, 104, 1));
+        put("boolean", Color::rgb(152, 104, 1));
+        put("constant", Color::rgb(152, 104, 1));
+        put("property", Color::rgb(228, 86, 73));
+        put("title", Color::rgb(228, 86, 73));
+        put("tag", Color::rgb(64, 120, 242));
+        put("attribute", Color::rgb(64, 120, 242));
+        put("label", Color::rgb(64, 120, 242));
+        put("variable", Color::rgb(56, 58, 66));
+        put("punctuation", Color::rgb(56, 58, 66));
+        put("punctuation.bracket", Color::rgb(56, 58, 66));
+        put("punctuation.delimiter", Color::rgb(56, 58, 66));
+        put("variable.special", Color::rgb(152, 104, 1));
+        put("string.special.symbol", Color::rgb(152, 104, 1));
+        Theme {
+            background: Color::rgb(250, 250, 250),
+            foreground: Color::rgb(56, 58, 66),
+            gutter: Color::rgb(160, 161, 167),
+            tab_bar: Color::rgb(236, 236, 236),
+            tab_border: Color::rgb(214, 214, 215),
+            caret: Color::rgb(64, 120, 242),
+            selection: Color::rgb(64, 120, 242),
+            selection_alpha: 0.2,
+            syntax,
+        }
+    }
 }
 
 impl Default for Theme {

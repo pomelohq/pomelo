@@ -10,7 +10,7 @@ pub use panel::{
 };
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
-pub use workspace_view::{WorkspaceEffects, WorkspaceView};
+pub use workspace_view::{ResizeCursor, WorkspaceEffects, WorkspaceView};
 
 use ui::{div, folder_icon, label, plus_icon, render, theme, Node, Painted, Rect, Rgba, Text};
 
@@ -18,6 +18,10 @@ pub const TOP_BAR_H: f32 = 38.0;
 pub const STATUS_BAR_H: f32 = 24.0; // the thin status strip at the very bottom (a component, not a dock)
 pub const RAIL_W: f32 = 48.0; // collapsed dock width — the icon rail; the dock never goes narrower than this
 pub const FUNC_BASE: u64 = 700; // function-nav click ids (bottom bar): FUNC_BASE + PaneKind index
+pub const FUNC_VIEW_BASE: u64 = 10000; // click ids owned by a feature's `FunctionView` (routed to it)
+pub const FILES_TREE_W: f32 = 260.0; // default width of the Files tree dock (left of the center editor)
+pub const FILES_TREE_MIN: f32 = 160.0;
+pub const FILES_TREE_MAX: f32 = 560.0;
 pub const DOCK_MIN: f32 = 180.0; // narrowest expanded width
 pub const DOCK_MAX: f32 = 520.0;
 pub const BOTTOM_MIN: f32 = 100.0; // shortest expanded bottom-dock height
@@ -128,11 +132,42 @@ pub const BOTTOM_TOGGLE: u64 = 6;
 pub const RIGHT_TOGGLE: u64 = 7;
 /// The agent panel button: activates the agent in the right dock (a panel like the others), toggling it.
 pub const AGENT_TOGGLE: u64 = 8;
+pub const TOAST_ACTION: u64 = 9;
+pub const TOAST_CLOSE: u64 = 10;
 /// Agent right-click menu item ids.
 pub const MENU_DOCK_LEFT: u64 = 810;
 pub const MENU_DOCK_RIGHT: u64 = 811;
 pub const MENU_DOCK_BOTTOM: u64 = 813;
 pub const MENU_HIDE: u64 = 812;
+pub const MENU_COPY_PATH: u64 = 820;
+pub const MENU_COPY_REL_PATH: u64 = 821;
+pub const MENU_REVEAL: u64 = 822;
+pub const MENU_TREE_OPEN: u64 = 823;
+pub const MENU_EDIT_CUT: u64 = 830;
+pub const MENU_EDIT_COPY: u64 = 831;
+pub const MENU_EDIT_PASTE: u64 = 832;
+pub const MENU_EDIT_SELECT_ALL: u64 = 833;
+pub const MENU_COPY_NAME: u64 = 824;
+pub const TREE_MENU_TARGET: u64 = 850;
+pub const EDITOR_MENU_TARGET: u64 = 851;
+pub const MENU_SUBMENU_BASE: u64 = 860;
+pub const MENU_SUBMENU_COPY: u64 = 860;
+
+pub fn is_submenu(id: u64) -> bool {
+    (MENU_SUBMENU_BASE..MENU_SUBMENU_BASE + 10).contains(&id)
+}
+
+pub fn menu_key(id: u64) -> &'static str {
+    match id {
+        MENU_EDIT_CUT => "⌘X",
+        MENU_EDIT_COPY | MENU_COPY_PATH => "⌘C",
+        MENU_EDIT_PASTE => "⌘V",
+        MENU_EDIT_SELECT_ALL => "⌘A",
+        MENU_COPY_REL_PATH => "⌘⇧C",
+        MENU_REVEAL => "⌘⌥R",
+        _ => "",
+    }
+}
 /// A session row: id = `SESSION_ITEM_BASE + original index`.
 pub const SESSION_ITEM_BASE: u64 = 100;
 /// A session row's delete (x) button: id = `SESSION_DELETE_BASE + original index`.
@@ -179,6 +214,254 @@ pub struct Layout {
     pub session_menu: bool,
     /// Pixel scroll offset of the (scrollable) session menu list.
     pub session_scroll: f32,
+    pub files_view: Option<Box<dyn FunctionView>>,
+    pub files_tree_w: f32,
+}
+
+pub struct TreePanel {
+    pub tree: Node,
+    pub sticky: Node,
+    pub scroll_x: f32,
+    pub content_w: f32,
+    pub y_offset: f32,
+}
+
+pub trait Item: 'static {
+    fn id(&self) -> Option<String> {
+        None
+    }
+    fn title(&self) -> String;
+    fn icon(&self) -> Option<ui::MaterialIcon> {
+        None
+    }
+    fn render(&mut self) -> Node;
+    fn clone_on_split(&self) -> Option<Box<dyn Item>> {
+        None
+    }
+
+    fn is_editable(&self) -> bool {
+        false
+    }
+    fn set_focused(&mut self, _focused: bool) {}
+    fn input_text(&mut self, _text: &str) {}
+    fn input_key(&mut self, _key: EditKey, _shift: bool) {}
+    fn place_cursor(&mut self, _local_x: f32, _local_y: f32, _extend: bool) {}
+    fn select_word_at(&mut self, _local_x: f32, _local_y: f32) {}
+    fn selected_text(&self) -> Option<String> {
+        None
+    }
+    fn set_body_height(&mut self, _h: f32) {}
+    fn scroll_by(&mut self, _dy: f32) -> bool {
+        false
+    }
+    fn carets(&self, _content: ui::Rect) -> Vec<ui::Rect> {
+        Vec::new()
+    }
+    fn back_rects(&self, _content: ui::Rect) -> Vec<ui::Rect> {
+        Vec::new()
+    }
+    fn selection_tris(&self, _content: ui::Rect) -> Vec<ui::Tri> {
+        Vec::new()
+    }
+    fn scrollbar(&self, _content: ui::Rect) -> Option<ui::Rect> {
+        None
+    }
+    fn body_y_offset(&self) -> f32 {
+        0.0
+    }
+
+    fn gutter(&mut self, _fold_base: u64) -> Option<Node> {
+        None
+    }
+    fn gutter_w(&self) -> f32 {
+        0.0
+    }
+    fn toggle_fold(&mut self, _line: usize) {}
+    fn save(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    fn is_dirty(&self) -> bool {
+        false
+    }
+    fn has_conflict(&self) -> bool {
+        false
+    }
+    fn refresh_disk_state(&mut self) {}
+    fn is_busy(&self) -> bool {
+        false
+    }
+    fn right_press(&mut self, _local_x: f32, _local_y: f32) {}
+    fn buffer_line_at(&self, _local_y: f32) -> Option<usize> {
+        None
+    }
+    fn line_screen_y(&self, _content: ui::Rect, _line: usize) -> Option<f32> {
+        None
+    }
+    fn body_x_offset(&self) -> f32 {
+        0.0
+    }
+    fn set_body_width(&mut self, _w: f32) {}
+    fn scroll_by_x(&mut self, _dx: f32) -> bool {
+        false
+    }
+    fn h_scrollbar(&self, _content: ui::Rect) -> Option<ui::Rect> {
+        None
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EditKey {
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    WordLeft,
+    WordRight,
+    Backspace,
+    Delete,
+    Enter,
+    Undo,
+    Redo,
+    SelectAll,
+    Escape,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DividerAxis {
+    Horizontal,
+    Vertical,
+}
+
+pub struct PanePlacement {
+    pub rect: ui::Rect,
+    pub node: Node,
+    pub body: Option<PaneBody>,
+    pub back: Vec<ui::Rect>,
+    pub back_tris: Vec<ui::Tri>,
+    pub carets: Vec<ui::Rect>,
+    pub scrollbar: Option<ui::Rect>,
+    pub h_scrollbar: Option<ui::Rect>,
+}
+
+pub struct PaneBody {
+    pub node: Node,
+    pub rect: ui::Rect,
+    pub y_offset: f32,
+    pub text_left: f32,
+    pub x_offset: f32,
+    pub text_clip: ui::Rect,
+    pub gutter: Option<Node>,
+    pub gutter_clip: ui::Rect,
+}
+
+pub struct DividerPlacement {
+    pub rect: ui::Rect,
+    pub id: u64,
+    pub axis: DividerAxis,
+}
+
+#[derive(Default)]
+pub struct EditorLayout {
+    pub panes: Vec<PanePlacement>,
+    pub dividers: Vec<DividerPlacement>,
+}
+
+pub trait FunctionView: 'static {
+    fn editor_layout(&mut self, area: ui::Rect) -> EditorLayout;
+    fn render_tree(&mut self) -> Option<TreePanel> {
+        None
+    }
+    fn on_click(&mut self, _id: u64) -> bool {
+        false
+    }
+    fn on_scroll(&mut self, _dx: f32, _dy: f32, _vw: f32, _vh: f32) -> bool {
+        false
+    }
+    fn scroll_offset(&self) -> f32 {
+        0.0
+    }
+    fn content_height(&self) -> f32 {
+        0.0
+    }
+    fn set_viewport(&mut self, _w: f32, _h: f32) {}
+    fn divider_axis(&self, _id: u64) -> Option<DividerAxis> {
+        None
+    }
+    fn drag_divider(&mut self, _id: u64, _dx: f32, _dy: f32) -> bool {
+        false
+    }
+    fn set_hover(&mut self, _id: Option<u64>) -> bool {
+        false
+    }
+    fn is_tab(&self, _id: u64) -> bool {
+        false
+    }
+    fn begin_tab_drag(&mut self, _id: u64) -> bool {
+        false
+    }
+    fn update_tab_drag(&mut self, _x: f32, _y: f32) -> bool {
+        false
+    }
+    fn drop_tab(&mut self) -> bool {
+        false
+    }
+    fn cancel_tab_drag(&mut self) {}
+    fn dragging_tab(&self) -> bool {
+        false
+    }
+    fn tab_drag_overlay(&self) -> Option<ui::Rect> {
+        None
+    }
+    fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)> {
+        None
+    }
+
+    fn editor_text(&mut self, _text: &str) -> bool {
+        false
+    }
+    fn editor_key(&mut self, _key: EditKey, _shift: bool) -> bool {
+        false
+    }
+    fn editor_click(&mut self, _x: f32, _y: f32, _extend: bool) -> bool {
+        false
+    }
+    fn editor_double_click(&mut self, _x: f32, _y: f32) -> bool {
+        false
+    }
+    fn editor_selected_text(&self) -> Option<String> {
+        None
+    }
+    fn editor_scroll(&mut self, _x: f32, _y: f32, _dx: f32, _dy: f32) -> bool {
+        false
+    }
+    fn editor_focused(&self) -> bool {
+        false
+    }
+    fn row_path(&self, _id: u64) -> Option<(String, bool)> {
+        None
+    }
+    fn root_dir(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn open_path(&mut self, _path: &str) {}
+    fn editor_save(&mut self) -> Option<Result<(), String>> {
+        None
+    }
+    fn refresh_disk_state(&mut self) {}
+    fn is_busy(&self) -> bool {
+        false
+    }
+    fn editor_menu_anchor_at(&self, _x: f32, _y: f32) -> Option<(Vec<usize>, usize)> {
+        None
+    }
+    fn editor_menu_y(&self, _path: &[usize], _line: usize) -> Option<f32> {
+        None
+    }
+    fn editor_right_press(&mut self, _x: f32, _y: f32) -> bool {
+        false
+    }
 }
 
 /// The session switcher popover, split so the app can scroll the list smoothly: `fixed` (shadow, panel, search,
@@ -242,6 +525,8 @@ impl Default for Layout {
             current_session: 0,
             session_menu: false,
             session_scroll: 0.0,
+            files_view: None,
+            files_tree_w: FILES_TREE_W,
         }
     }
 }
@@ -334,6 +619,29 @@ impl Layout {
         }
     }
 
+    pub fn files_side(&self) -> Option<DockPosition> {
+        self.files_view.as_ref()?;
+        let side = self
+            .func_side
+            .first()
+            .copied()
+            .unwrap_or(DockPosition::Left);
+        (self.dock_open(side) && self.shown_on(side) == Some(Shown::Func(PaneKind::Files)))
+            .then_some(side)
+    }
+
+    pub fn files_tree_active(&self) -> bool {
+        self.files_side() == Some(DockPosition::Left)
+    }
+
+    fn tree_w(&self) -> f32 {
+        if self.files_tree_active() {
+            self.files_tree_w.clamp(FILES_TREE_MIN, FILES_TREE_MAX)
+        } else {
+            0.0
+        }
+    }
+
     /// Left edge of the editor area (right of the sidebar when docked left; 0 when the sidebar is on the right).
     fn editor_l(&self) -> f32 {
         if self.sidebar_left() {
@@ -341,6 +649,10 @@ impl Layout {
         } else {
             0.0
         }
+    }
+
+    fn block_l(&self) -> f32 {
+        self.editor_l() + self.tree_w()
     }
     /// Right edge of the editor area (window edge when the sidebar is left; left of the sidebar when it's right).
     fn editor_r(&self, w: f32) -> f32 {
@@ -365,7 +677,7 @@ impl Layout {
     /// Drag the agent divider; width from the window edge on its side (right: `w - x`, left: `x - left_w`).
     pub fn set_right_divider(&mut self, x: f32, w: f32) {
         let rw = if self.agent_left() {
-            x - self.editor_l()
+            x - self.block_l()
         } else {
             self.editor_r(w) - x
         };
@@ -401,11 +713,23 @@ impl Layout {
             return false;
         }
         let edge = if self.agent_left() {
-            self.editor_l() + self.right_w()
+            self.block_l() + self.right_w()
         } else {
             self.editor_r(w) - self.right_w()
         };
         y > TOP_BAR_H && (x - edge).abs() <= DIVIDER_HIT
+    }
+
+    pub fn on_tree_divider(&self, x: f32, y: f32, _w: f32) -> bool {
+        if !self.files_tree_active() {
+            return false;
+        }
+        let edge = self.editor_l() + self.files_tree_w.clamp(FILES_TREE_MIN, FILES_TREE_MAX);
+        y > TOP_BAR_H && (x - edge).abs() <= DIVIDER_HIT
+    }
+
+    pub fn set_tree_divider(&mut self, x: f32) {
+        self.files_tree_w = (x - self.editor_l()).clamp(FILES_TREE_MIN, FILES_TREE_MAX);
     }
     /// The bottom dock's top divider (only over the center x-range, when the dock is open).
     pub fn on_bottom_divider(&self, x: f32, y: f32, w: f32, h: f32) -> bool {
@@ -424,86 +748,103 @@ impl Layout {
         // Only the WORKSPACES panel is full height (`dock_h`); the editor-area panels sit above the status strip.
         let dock_h = (h - TOP_BAR_H).max(0.0);
         let content_bottom = h - STATUS_BAR_H;
-        let mut rects = Vec::new();
-        let mut texts = Vec::new();
-
-        // top bar
-        rects.push(Rect {
-            x: 0.0,
-            y: 0.0,
-            w,
-            h: TOP_BAR_H,
-            color: top_bar_c(),
-            radius: 0.0,
-            border: 0.0,
-            border_color: Rgba::TRANSPARENT,
-        });
-        // The session switcher trigger (left) is rendered by `header()` as an interactive overlay; keep the
-        // branch label centered here.
-        texts.push(Text {
-            x: w / 2.0 - 34.0,
-            y: 10.0,
-            size: 14.0,
-            color: text_dim_c(),
-            text: "main  -  8".into(),
-            mono: false,
-            weight: ui::ui_font_weight(),
-            wrap: 0.0,
-        });
-
-        // The WORKSPACES panel (special, switches project) is full height. Everything to its right is the editor
-        // area: its panels sit ABOVE the status strip, and the status strip spans the whole editor width.
+        let mut out = Painted::default();
+        let mut band = |node: Node, rect: Rect| {
+            let p = render(&node, rect);
+            out.rects.extend(p.rects);
+            out.texts.extend(p.texts);
+        };
         let editor_h = (content_bottom - by).max(0.0);
-
         let zl = self.editor_l();
         let zr = self.editor_r(w);
-        // WORKSPACES sidebar — full height, on its docked side
+
+        let mut top = div().items_center().justify_center().bg(top_bar_c());
+        if ui::chrome().branch {
+            top = top.child(label("main  -  8").size(14.0).color(text_dim_c()));
+        }
+        band(
+            top.into(),
+            Rect::new(0.0, 0.0, w, TOP_BAR_H, Rgba::TRANSPARENT),
+        );
+
         let sx = if self.sidebar_left() { 0.0 } else { w - lw };
-        rects.push(Rect::new(
-            sx,
-            by,
-            lw,
-            dock_h,
-            if self.left.collapsed {
-                rail_c()
-            } else {
-                dock_c()
-            },
-        ));
-        // agent dock — either side of the editor area per `agent_side`, above the status strip
+        let side_bg = if self.left.collapsed {
+            rail_c()
+        } else {
+            dock_c()
+        };
+        band(
+            div().bg(side_bg).into(),
+            Rect::new(sx, by, lw, dock_h, Rgba::TRANSPARENT),
+        );
+
+        let tw = self.tree_w();
+        if tw > 0.0 {
+            band(
+                div().bg(dock_c()).into(),
+                Rect::new(zl, by, tw, editor_h, Rgba::TRANSPARENT),
+            );
+        }
+        let bl = zl + tw;
+
         if rw > 0.0 {
-            let ax = if self.agent_left() { zl } else { zr - rw };
-            rects.push(Rect::new(ax, by, rw, editor_h, dock_c()));
+            let ax = if self.agent_left() { bl } else { zr - rw };
+            band(
+                div().bg(dock_c()).into(),
+                Rect::new(ax, by, rw, editor_h, Rgba::TRANSPARENT),
+            );
         }
 
         let cx0 = self.center_l();
         let cw = (self.center_r(w) - cx0).max(0.0);
-
-        // bottom dock: center width, above the status strip, with a divider on top.
         let bd_h = self.bottom_h();
         if bd_h > 0.0 {
-            let bd_y = content_bottom - bd_h;
-            rects.push(Rect::new(cx0, bd_y, cw, bd_h, dock_c()));
-            rects.push(Rect::new(cx0, bd_y - 1.0, cw, 1.0, divider_c()));
+            band(
+                div().bg(dock_c()).into(),
+                Rect::new(cx0, content_bottom - bd_h, cw, bd_h, Rgba::TRANSPARENT),
+            );
         }
 
-        // status strip: spans the whole editor area, never over the sidebar; with a top border.
         let sw = (zr - zl).max(0.0);
-        rects.push(Rect::new(zl, content_bottom, sw, STATUS_BAR_H, top_bar_c()));
-        rects.push(Rect::new(zl, content_bottom - 1.0, sw, 1.0, divider_c()));
+        band(
+            div().bg(top_bar_c()).into(),
+            Rect::new(zl, content_bottom, sw, STATUS_BAR_H, Rgba::TRANSPARENT),
+        );
 
-        // The center + dock interiors render through the element tree in `WorkspaceView`.
+        (out.rects, out.texts)
+    }
 
-        // column dividers: the sidebar edge (full height), and the agent dock's inner edge.
+    pub fn border_lines(&self, w: f32, h: f32) -> Vec<Rect> {
+        let by = TOP_BAR_H;
+        let content_bottom = self.content_bottom(h);
+        let dock_h = (h - TOP_BAR_H).max(0.0);
+        let editor_h = (content_bottom - by).max(0.0);
+        let lw = self.left_w();
+        let rw = self.right_w();
+        let tw = self.tree_w();
+        let zl = self.editor_l();
+        let zr = self.editor_r(w);
+        let bl = zl + tw;
+        let cx0 = self.center_l();
+        let cw = (self.center_r(w) - cx0).max(0.0);
+        let c = divider_c();
+        let mut v = Vec::new();
         let sidebar_edge = if self.sidebar_left() { lw } else { w - lw };
-        rects.push(Rect::new(sidebar_edge - 1.0, by, 1.0, dock_h, divider_c()));
-        if rw > 0.0 {
-            let edge = if self.agent_left() { zl + rw } else { zr - rw };
-            rects.push(Rect::new(edge - 1.0, by, 1.0, editor_h, divider_c()));
+        v.push(Rect::new(sidebar_edge - 1.0, by, 1.0, dock_h, c));
+        if tw > 0.0 {
+            v.push(Rect::new(bl - 1.0, by, 1.0, editor_h, c));
         }
-
-        // All dock toggles live in the status bar (conventional): the sidebar toggle is its leftmost button.
-        (rects, texts)
+        if rw > 0.0 {
+            let edge = if self.agent_left() { bl + rw } else { zr - rw };
+            v.push(Rect::new(edge - 1.0, by, 1.0, editor_h, c));
+        }
+        let bd_h = self.bottom_h();
+        if bd_h > 0.0 {
+            v.push(Rect::new(cx0, content_bottom - bd_h - 1.0, cw, 1.0, c));
+        }
+        let sw = (zr - zl).max(0.0);
+        v.push(Rect::new(zl, content_bottom - 1.0, sw, 1.0, c));
+        v
     }
 
     /// Bottom edge of the center/bottom-dock content (above the fixed status strip).
@@ -515,9 +856,8 @@ impl Layout {
         self.agent_side == DockPosition::Left
     }
 
-    /// Left edge of the center: the editor-area left, plus the agent dock if it's docked at that edge.
     fn center_l(&self) -> f32 {
-        self.editor_l()
+        self.block_l()
             + if self.agent_left() {
                 self.right_w()
             } else {
@@ -551,11 +891,22 @@ impl Layout {
         let rw = self.right_w();
         let ch = (self.content_bottom(h) - TOP_BAR_H).max(0.0);
         let x = if self.agent_left() {
-            self.editor_l()
+            self.block_l()
         } else {
             self.editor_r(w) - rw
         };
         Rect::new(x, TOP_BAR_H, rw, ch, Rgba::TRANSPARENT)
+    }
+
+    pub fn tree_region(&self, _w: f32, h: f32) -> Rect {
+        let ch = (self.content_bottom(h) - TOP_BAR_H).max(0.0);
+        Rect::new(
+            self.editor_l(),
+            TOP_BAR_H,
+            self.tree_w(),
+            ch,
+            Rgba::TRANSPARENT,
+        )
     }
 
     /// The center content region, above the bottom dock and the status strip.
@@ -612,12 +963,11 @@ impl Layout {
         if active {
             trigger = trigger.bg(theme().ghost_element_hover);
         }
-        let bar: Node = div()
-            .row()
-            .items_center()
-            .h_px(TOP_BAR_H)
-            .child(trigger)
-            .into();
+        let mut bar_row = div().row().items_center().h_px(TOP_BAR_H);
+        if ui::chrome().session_name {
+            bar_row = bar_row.child(trigger);
+        }
+        let bar: Node = bar_row.into();
         render(
             &bar,
             Rect::new(
@@ -1061,18 +1411,23 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             if let Some(g) = dock_group(DockPosition::Left) {
                 row = row.child(g).child(vsep());
             }
-            row.child(label("0 errors").size(12.0).color(dim))
+            if ui::chrome().diagnostics {
+                row = row.child(label("0 errors").size(12.0).color(dim));
+            }
+            row
         })
-        // Right tools: cursor + language info, then the bottom and right dock buttons pushed to the far edge,
-        // each preceded by a divider (editor's Right/Bottom-dock rule: divider before the buttons).
         .child({
-            let mut row = div()
-                .row()
-                .gap(6.0)
-                .items_center()
-                .child(label("Ln 1, Col 1").size(12.0).color(dim))
-                .child(vsep())
-                .child(label("Rust").size(12.0).color(dim));
+            let ch = ui::chrome();
+            let mut row = div().row().gap(6.0).items_center();
+            if ch.cursor_position {
+                row = row.child(label("Ln 1, Col 1").size(12.0).color(dim));
+            }
+            if ch.language {
+                if ch.cursor_position {
+                    row = row.child(vsep());
+                }
+                row = row.child(label("Rust").size(12.0).color(dim));
+            }
             if let Some(g) = dock_group(DockPosition::Bottom) {
                 row = row.child(vsep()).child(g);
             }
@@ -1093,6 +1448,7 @@ pub struct MenuItem {
 }
 
 /// A right-click context menu anchored above `(ax, ay)`, clamped to stay inside `viewport_w`.
+#[allow(clippy::too_many_arguments)]
 pub fn context_menu(
     ax: f32,
     atop: f32,
@@ -1101,11 +1457,28 @@ pub fn context_menu(
     viewport_h: f32,
     items: &[MenuItem],
     hovered: Option<u64>,
+    flip_left_at: Option<f32>,
 ) -> Painted {
     let scale = ui::ui_text_scale();
     let row_h = 26.0_f32;
     let pad = 4.0_f32;
-    let mw = 168.0_f32;
+    let wght = ui::ui_font_weight();
+    let mut content_w = 0.0_f32;
+    for it in items {
+        let label_w = ui::measure_text_width(it.label, 13.0, false, wght);
+        let right = if is_submenu(it.id) {
+            14.0
+        } else {
+            let k = menu_key(it.id);
+            if k.is_empty() {
+                0.0
+            } else {
+                ui::measure_text_width(k, 12.0, false, wght) + 24.0
+            }
+        };
+        content_w = content_w.max(label_w + right);
+    }
+    let mw = (16.0 + 6.0 + content_w + 16.0 + 2.0 * pad).max(200.0);
     // Count only the separators actually drawn (a leading `sep` on the first item is skipped).
     let seps = items
         .iter()
@@ -1113,10 +1486,12 @@ pub fn context_menu(
         .filter(|(i, it)| it.sep && *i > 0)
         .count() as f32;
     let mh = pad * 2.0 + row_h * items.len() as f32 + 5.0 * seps;
-    // Clamp within the window so the menu never spills off the right edge.
-    let x = ax
-        .min(viewport_w - mw * scale - 6.0 * scale)
-        .max(6.0 * scale);
+    let margin = 6.0 * scale;
+    let mwpx = mw * scale;
+    let x = match flip_left_at {
+        Some(left) if ax + mwpx + margin > viewport_w => (left - mwpx).max(margin),
+        _ => ax.min(viewport_w - mwpx - margin).max(margin),
+    };
     // Open below the anchored button when there is room; flip above if it would spill off the bottom (editor).
     let gap = 4.0 * scale;
     let mhpx = mh * scale;
@@ -1162,6 +1537,20 @@ pub fn context_menu(
         row = row
             .child(mark)
             .child(label(item.label).size(13.0).color(text_c()));
+        if is_submenu(item.id) {
+            row = row.child(div().flex(1.0)).child(
+                ui::icon(ui::IconKind::ChevronRight)
+                    .size(12.0)
+                    .color(theme().icon_muted),
+            );
+        } else {
+            let key = menu_key(item.id);
+            if !key.is_empty() {
+                row = row
+                    .child(div().flex(1.0))
+                    .child(label(key).size(12.0).color(theme().text_muted));
+            }
+        }
         col = col.child(row);
     }
     let mut out = Painted::default();
