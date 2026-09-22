@@ -87,8 +87,213 @@ pub type Clip = Option<(f32, f32, f32, f32)>;
 /// One back-to-front compositing layer for `render_frame`: its rects, triangles, text runs, icons, and clip.
 pub type Layer<'a> = (&'a [Rect], &'a [Tri], &'a [Text], &'a [IconQuad], Clip);
 
-/// One icon draw within a layer: the `(kind, pixel-size)` cache key and the vertex range to draw.
-type IconDraw = ((IconKind, u32), u32, u32);
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum IconTexKey {
+    Mono(IconKind, u32),
+    Material(MaterialIcon, u32),
+    Image(u64),
+}
+
+type ImageData = (u32, u32, Vec<u8>);
+
+static IMAGES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, ImageData>>> =
+    std::sync::OnceLock::new();
+
+fn images() -> &'static std::sync::Mutex<std::collections::HashMap<u64, ImageData>> {
+    IMAGES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+pub fn set_image(id: u64, width: u32, height: u32, rgba: Vec<u8>) {
+    if let Ok(mut m) = images().lock() {
+        m.insert(id, (width, height, rgba));
+    }
+}
+
+pub fn has_image(id: u64) -> bool {
+    images()
+        .lock()
+        .map(|m| m.contains_key(&id))
+        .unwrap_or(false)
+}
+
+pub fn selection_path(
+    rows: &[(f32, f32)],
+    top_y: f32,
+    line_h: f32,
+    radius: f32,
+    color: Rgba,
+) -> Vec<Tri> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    if rows.len() >= 2 && rows[0].0 > rows[1].1 {
+        let mut out = selection_band(&rows[0..1], top_y, line_h, radius, color);
+        out.extend(selection_band(
+            &rows[1..],
+            top_y + line_h,
+            line_h,
+            radius,
+            color,
+        ));
+        return out;
+    }
+    selection_band(rows, top_y, line_h, radius, color)
+}
+
+fn selection_band(
+    rows: &[(f32, f32)],
+    top_y: f32,
+    line_h: f32,
+    radius: f32,
+    color: Rgba,
+) -> Vec<Tri> {
+    let n = rows.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let y = |i: usize| top_y + i as f32 * line_h;
+    let mut ring: Vec<(f32, f32)> = Vec::with_capacity(n * 4);
+    ring.push((rows[0].0, y(0)));
+    ring.push((rows[0].1, y(0)));
+    for i in 0..n {
+        ring.push((rows[i].1, y(i + 1)));
+        if i + 1 < n {
+            ring.push((rows[i + 1].1, y(i + 1)));
+        }
+    }
+    ring.push((rows[n - 1].0, y(n)));
+    for i in (0..n).rev() {
+        ring.push((rows[i].0, y(i)));
+        if i > 0 {
+            ring.push((rows[i - 1].0, y(i)));
+        }
+    }
+    dedup_ring(&mut ring);
+    let rounded = round_ring(&ring, radius);
+    earclip(&rounded, color)
+}
+
+fn dedup_ring(ring: &mut Vec<(f32, f32)>) {
+    ring.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3);
+    while ring.len() >= 2 {
+        let (f, l) = (ring[0], ring[ring.len() - 1]);
+        if (f.0 - l.0).abs() < 1e-3 && (f.1 - l.1).abs() < 1e-3 {
+            ring.pop();
+        } else {
+            break;
+        }
+    }
+}
+
+fn round_ring(ring: &[(f32, f32)], radius: f32) -> Vec<(f32, f32)> {
+    let n = ring.len();
+    if n < 3 || radius <= 0.0 {
+        return ring.to_vec();
+    }
+    const SEG: usize = 3;
+    let mut out = Vec::with_capacity(n * (SEG + 1));
+    for i in 0..n {
+        let p = ring[(i + n - 1) % n];
+        let v = ring[i];
+        let nx = ring[(i + 1) % n];
+        let to_p = (p.0 - v.0, p.1 - v.1);
+        let to_n = (nx.0 - v.0, nx.1 - v.1);
+        let len_p = (to_p.0 * to_p.0 + to_p.1 * to_p.1).sqrt();
+        let len_n = (to_n.0 * to_n.0 + to_n.1 * to_n.1).sqrt();
+        if len_p < 1e-3 || len_n < 1e-3 {
+            out.push(v);
+            continue;
+        }
+        let rp = radius.min(len_p * 0.5);
+        let rn = radius.min(len_n * 0.5);
+        let a = (v.0 + to_p.0 / len_p * rp, v.1 + to_p.1 / len_p * rp);
+        let b = (v.0 + to_n.0 / len_n * rn, v.1 + to_n.1 / len_n * rn);
+        out.push(a);
+        for s in 1..SEG {
+            let t = s as f32 / SEG as f32;
+            let mt = 1.0 - t;
+            out.push((
+                mt * mt * a.0 + 2.0 * mt * t * v.0 + t * t * b.0,
+                mt * mt * a.1 + 2.0 * mt * t * v.1 + t * t * b.1,
+            ));
+        }
+        out.push(b);
+    }
+    out
+}
+
+fn signed_area(poly: &[(f32, f32)]) -> f32 {
+    let mut a = 0.0;
+    for i in 0..poly.len() {
+        let p = poly[i];
+        let q = poly[(i + 1) % poly.len()];
+        a += p.0 * q.1 - q.0 * p.1;
+    }
+    a * 0.5
+}
+
+fn earclip(poly: &[(f32, f32)], color: Rgba) -> Vec<Tri> {
+    if poly.len() < 3 {
+        return Vec::new();
+    }
+    let mut idx: Vec<usize> = (0..poly.len()).collect();
+    if signed_area(poly) < 0.0 {
+        idx.reverse();
+    }
+    let cross = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    let in_tri = |p: (f32, f32), a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
+        let d1 = cross(a, b, p);
+        let d2 = cross(b, c, p);
+        let d3 = cross(c, a, p);
+        let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+        let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+        !(neg && pos)
+    };
+    let mut tris = Vec::new();
+    let mut guard = 0;
+    while idx.len() >= 3 && guard < 20_000 {
+        guard += 1;
+        let m = idx.len();
+        let mut clipped = false;
+        for i in 0..m {
+            let i0 = idx[(i + m - 1) % m];
+            let i1 = idx[i];
+            let i2 = idx[(i + 1) % m];
+            let (a, b, c) = (poly[i0], poly[i1], poly[i2]);
+            if cross(a, b, c) <= 0.0 {
+                continue; // reflex/collinear -> not an ear
+            }
+            let mut contains = false;
+            for &j in &idx {
+                if j == i0 || j == i1 || j == i2 {
+                    continue;
+                }
+                if in_tri(poly[j], a, b, c) {
+                    contains = true;
+                    break;
+                }
+            }
+            if contains {
+                continue;
+            }
+            tris.push(Tri {
+                p: [[a.0, a.1], [b.0, b.1], [c.0, c.1]],
+                color,
+            });
+            idx.remove(i);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            break;
+        }
+    }
+    tris
+}
+
+type IconDraw = (IconTexKey, u32, u32);
 
 fn ui_config(width: u32, height: u32) -> SurfaceConfiguration {
     SurfaceConfiguration {
@@ -133,6 +338,7 @@ pub struct UiRenderer {
     viewport: Viewport,
     // One text renderer per composited layer (base, overlay, top, ...); grown on demand.
     text_renderers: Vec<TextRenderer>,
+    shaped_cache: std::collections::HashMap<u64, Buffer>,
     ui_font: Option<String>,     // active family used for rendering
     sans_family: Option<String>, // resolves ".PomeloSans"
     mono_family: Option<String>, // resolves ".PomeloMono"
@@ -140,7 +346,34 @@ pub struct UiRenderer {
     icon_pipeline: wgpu::RenderPipeline,
     icon_bgl: wgpu::BindGroupLayout,
     icon_sampler: wgpu::Sampler,
-    icon_cache: std::collections::HashMap<(IconKind, u32), wgpu::BindGroup>,
+    icon_cache: std::collections::HashMap<IconTexKey, wgpu::BindGroup>,
+    msaa: wgpu::TextureView,
+}
+
+const SAMPLES: u32 = 4;
+
+fn make_msaa(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: TextureFormat,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("ui-msaa"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: SAMPLES,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&TextureViewDescriptor::default())
 }
 
 // Bundle our UI font (IBM Plex, OFL) so labels render crisp and identical on every machine, instead of a
@@ -185,13 +418,8 @@ fn load_ui_fonts(font_system: &mut FontSystem) -> (Option<String>, Option<String
     let mono = load_font(
         font_system,
         &[
-            include_bytes!("../assets/IBMPlexMono-Thin.ttf"),
-            include_bytes!("../assets/IBMPlexMono-ExtraLight.ttf"),
-            include_bytes!("../assets/IBMPlexMono-Light.ttf"),
-            include_bytes!("../assets/IBMPlexMono-Regular.ttf"),
-            include_bytes!("../assets/IBMPlexMono-Medium.ttf"),
-            include_bytes!("../assets/IBMPlexMono-SemiBold.ttf"),
-            include_bytes!("../assets/IBMPlexMono-Bold.ttf"),
+            include_bytes!("../assets/Lilex-Regular.ttf"),
+            include_bytes!("../assets/Lilex-Bold.ttf"),
         ],
     );
     theme::set_bundled_fonts(sans.clone(), mono.clone());
@@ -363,8 +591,12 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Check => svg!("check.svg"),
         IconKind::Plus => svg!("plus.svg"),
         IconKind::Folder => svg!("folder.svg"),
+        IconKind::FolderOpen => svg!("folder_open.svg"),
+        IconKind::File => svg!("file.svg"),
         IconKind::Monitor => svg!("monitor.svg"),
         IconKind::ArrowUpRight => svg!("arrow_up_right.svg"),
+        IconKind::ArrowLeft => svg!("arrow_left.svg"),
+        IconKind::ArrowRight => svg!("arrow_right.svg"),
         IconKind::Window => svg!("window.svg"),
         IconKind::Grid => svg!("grid.svg"),
         IconKind::Branch => svg!("branch.svg"),
@@ -377,6 +609,7 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::PanelRight => svg!("panel_right.svg"),
         IconKind::PanelBottom => svg!("panel_bottom.svg"),
         IconKind::Server => svg!("server.svg"),
+        IconKind::Undo => svg!("undo.svg"),
     }
 }
 
@@ -400,6 +633,63 @@ fn rasterize_icon(kind: IconKind, px: u32) -> Vec<u8> {
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     // tiny-skia stores premultiplied RGBA; the alpha channel is the coverage we tint later.
     pixmap.data().chunks_exact(4).map(|p| p[3]).collect()
+}
+
+fn material_svg(m: MaterialIcon) -> &'static [u8] {
+    macro_rules! svg {
+        ($f:literal) => {
+            include_bytes!(concat!("../assets/icons/material/", $f))
+        };
+    }
+    match m {
+        MaterialIcon::Rust => svg!("rust.svg"),
+        MaterialIcon::Go => svg!("go.svg"),
+        MaterialIcon::TypeScript => svg!("typescript.svg"),
+        MaterialIcon::React => svg!("react.svg"),
+        MaterialIcon::JavaScript => svg!("javascript.svg"),
+        MaterialIcon::Json => svg!("json.svg"),
+        MaterialIcon::Markdown => svg!("markdown.svg"),
+        MaterialIcon::Toml => svg!("toml.svg"),
+        MaterialIcon::Yaml => svg!("yaml.svg"),
+        MaterialIcon::Html => svg!("html.svg"),
+        MaterialIcon::Css => svg!("css.svg"),
+        MaterialIcon::Sass => svg!("sass.svg"),
+        MaterialIcon::Python => svg!("python.svg"),
+        MaterialIcon::Lock => svg!("lock.svg"),
+        MaterialIcon::Console => svg!("console.svg"),
+        MaterialIcon::Document => svg!("document.svg"),
+        MaterialIcon::Image => svg!("image.svg"),
+        MaterialIcon::Git => svg!("git.svg"),
+        MaterialIcon::NodeJs => svg!("nodejs.svg"),
+    }
+}
+
+fn rasterize_material(m: MaterialIcon, px: u32) -> Vec<u8> {
+    let blank = || vec![0u8; (px * px * 4) as usize];
+    let opt = resvg::usvg::Options::default();
+    let Ok(tree) = resvg::usvg::Tree::from_data(material_svg(m), &opt) else {
+        return blank();
+    };
+    let Some(mut pixmap) = resvg::tiny_skia::Pixmap::new(px, px) else {
+        return blank();
+    };
+    let size = tree.size();
+    let scale = (px as f32 / size.width()).min(px as f32 / size.height());
+    let tx = (px as f32 - size.width() * scale) / 2.0;
+    let ty = (px as f32 - size.height() * scale) / 2.0;
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale).post_translate(tx, ty);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let mut out = Vec::with_capacity((px * px * 4) as usize);
+    for p in pixmap.data().chunks_exact(4) {
+        let a = p[3];
+        if a == 0 {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+        } else {
+            let un = |c: u8| ((c as u32 * 255 + (a as u32) / 2) / a as u32).min(255) as u8;
+            out.extend_from_slice(&[un(p[0]), un(p[1]), un(p[2]), a]);
+        }
+    }
+    out
 }
 
 impl UiRenderer {
@@ -567,7 +857,11 @@ impl UiRenderer {
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: MultisampleState::default(),
+            multisample: MultisampleState {
+                count: SAMPLES,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });
@@ -587,7 +881,18 @@ impl UiRenderer {
         let viewport = Viewport::new(&device, &cache);
         let mut atlas = TextAtlas::new(&device, &queue, &cache, format);
         let text_renderers = (0..4)
-            .map(|_| TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None))
+            .map(|_| {
+                TextRenderer::new(
+                    &mut atlas,
+                    &device,
+                    MultisampleState {
+                        count: SAMPLES,
+                        mask: !0,
+                        alpha_to_coverage_enabled: false,
+                    },
+                    None,
+                )
+            })
             .collect();
 
         // Icon pipeline: a textured quad sampling an alpha mask (R8), tinted by the per-vertex color.
@@ -599,22 +904,27 @@ impl UiRenderer {
                     @builtin(position) pos: vec4<f32>,
                     @location(0) uv: vec2<f32>,
                     @location(1) color: vec4<f32>,
+                    @location(2) mode: f32,
                 };
                 @vertex fn vs(
                     @location(0) p: vec2<f32>,
                     @location(1) uv: vec2<f32>,
                     @location(2) c: vec4<f32>,
+                    @location(3) mode: f32,
                 ) -> VOut {
                     var o: VOut;
                     o.pos = vec4<f32>(p, 0.0, 1.0);
-                    o.uv = uv; o.color = c;
+                    o.uv = uv; o.color = c; o.mode = mode;
                     return o;
                 }
                 @group(0) @binding(0) var tex: texture_2d<f32>;
                 @group(0) @binding(1) var samp: sampler;
                 @fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
-                    let cov = textureSample(tex, samp, in.uv).r;
-                    return vec4<f32>(in.color.rgb, in.color.a * cov);
+                    let t = textureSample(tex, samp, in.uv);
+                    if (in.mode < 0.5) {
+                        return vec4<f32>(in.color.rgb, in.color.a * t.r);
+                    }
+                    return t;
                 }
                 "#
                 .into(),
@@ -654,7 +964,7 @@ impl UiRenderer {
                 entry_point: "vs",
                 compilation_options: Default::default(),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: 32,
+                    array_stride: 36,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute {
@@ -672,6 +982,11 @@ impl UiRenderer {
                             offset: 16,
                             shader_location: 2,
                         },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32,
+                            offset: 32,
+                            shader_location: 3,
+                        },
                     ],
                 }],
             },
@@ -687,7 +1002,11 @@ impl UiRenderer {
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: MultisampleState::default(),
+            multisample: MultisampleState {
+                count: SAMPLES,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });
@@ -698,6 +1017,7 @@ impl UiRenderer {
             ..Default::default()
         });
 
+        let msaa = make_msaa(&device, config.width, config.height, format);
         Ok(Self {
             device,
             queue,
@@ -705,6 +1025,7 @@ impl UiRenderer {
             offscreen,
             config,
             scale,
+            msaa,
             pipeline,
             vbuf,
             capacity,
@@ -713,6 +1034,7 @@ impl UiRenderer {
             atlas,
             viewport,
             text_renderers,
+            shaped_cache: std::collections::HashMap::new(),
             ui_font,
             sans_family,
             mono_family,
@@ -723,23 +1045,44 @@ impl UiRenderer {
         })
     }
 
-    /// Ensure the (icon, px) alpha mask is uploaded and a bind group cached; return nothing (cache side effect).
-    fn ensure_icon(&mut self, kind: IconKind, px: u32) {
-        if px == 0 || self.icon_cache.contains_key(&(kind, px)) {
+    fn ensure_tex(&mut self, key: IconTexKey) {
+        if self.icon_cache.contains_key(&key) {
             return;
         }
-        let alpha = rasterize_icon(kind, px);
+        let (width, height, format, bytes, bytes_per_row) = match key {
+            IconTexKey::Mono(kind, px) => (
+                px,
+                px,
+                wgpu::TextureFormat::R8Unorm,
+                rasterize_icon(kind, px),
+                px,
+            ),
+            IconTexKey::Material(m, px) => (
+                px,
+                px,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                rasterize_material(m, px),
+                px * 4,
+            ),
+            IconTexKey::Image(id) => match images().lock().ok().and_then(|m| m.get(&id).cloned()) {
+                Some((w, h, rgba)) => (w, h, wgpu::TextureFormat::Rgba8UnormSrgb, rgba, w * 4),
+                None => return,
+            },
+        };
+        if width == 0 || height == 0 {
+            return;
+        }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ui-icon-tex"),
             size: wgpu::Extent3d {
-                width: px,
-                height: px,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
+            format,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -750,15 +1093,15 @@ impl UiRenderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &alpha,
+            &bytes,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(px),
-                rows_per_image: Some(px),
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
             },
             wgpu::Extent3d {
-                width: px,
-                height: px,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -777,7 +1120,7 @@ impl UiRenderer {
                 },
             ],
         });
-        self.icon_cache.insert((kind, px), bind_group);
+        self.icon_cache.insert(key, bind_group);
     }
 
     /// Set the active UI font family. Accepts the ".PomeloSans"/".PomeloMono" aliases or any real family
@@ -800,6 +1143,7 @@ impl UiRenderer {
             }
         };
         theme::set_active_ui_font(self.ui_font.clone());
+        self.shaped_cache.clear();
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -808,6 +1152,12 @@ impl UiRenderer {
         if let Some(surface) = &self.surface {
             surface.configure(&self.device, &self.config);
         }
+        self.msaa = make_msaa(
+            &self.device,
+            self.config.width,
+            self.config.height,
+            self.config.format,
+        );
     }
 
     pub fn size(&self) -> (f32, f32) {
@@ -967,8 +1317,8 @@ impl UiRenderer {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("ui"),
                 color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.msaa,
+                    resolve_target: Some(&view),
                     ops: Operations {
                         load: LoadOp::Clear(wgpu::Color::BLACK),
                         store: StoreOp::Store,
@@ -1128,7 +1478,7 @@ impl UiRenderer {
         }
         // Icons: rasterize/cache each needed (icon, px) mask, then build a textured-quad vertex buffer with a
         // per-layer draw list of (bind-group key, vertex range).
-        const IPV: usize = 8; // pos2 + uv2 + color4
+        const IPV: usize = 9; // pos2 + uv2 + color4 + mode1
         let mut icon_verts: Vec<f32> = Vec::new();
         let mut icon_draws: Vec<Vec<IconDraw>> = Vec::with_capacity(layers.len());
         {
@@ -1139,16 +1489,40 @@ impl UiRenderer {
                 let mut draws = Vec::new();
                 for q in icons.iter() {
                     let px = (q.w * s).round().max(1.0) as u32;
-                    self.ensure_icon(q.kind, px);
+                    let (key, mode, c, rect) = if let Some(id) = q.image {
+                        let (iw, ih) = images()
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(&id).map(|(w, h, _)| (*w as f32, *h as f32)))
+                            .unwrap_or((q.w.max(1.0), q.h.max(1.0)));
+                        let fit = (q.w / iw).min(q.h / ih).clamp(0.0, 1.0);
+                        let (fw, fh) = (iw * fit, ih * fit);
+                        let rect = (q.x + (q.w - fw) / 2.0, q.y + (q.h - fh) / 2.0, fw, fh);
+                        (IconTexKey::Image(id), 1.0f32, [1.0, 1.0, 1.0, 1.0], rect)
+                    } else if let Some(m) = q.material {
+                        (
+                            IconTexKey::Material(m, px),
+                            1.0f32,
+                            [1.0, 1.0, 1.0, 1.0],
+                            (q.x, q.y, q.w, q.h),
+                        )
+                    } else {
+                        (
+                            IconTexKey::Mono(q.kind, px),
+                            0.0,
+                            [
+                                srgb_to_linear(q.color.r as f64) as f32,
+                                srgb_to_linear(q.color.g as f64) as f32,
+                                srgb_to_linear(q.color.b as f64) as f32,
+                                q.color.a,
+                            ],
+                            (q.x, q.y, q.w, q.h),
+                        )
+                    };
+                    self.ensure_tex(key);
                     let ndc = |x: f32, y: f32| ((x * s) / vw * 2.0 - 1.0, 1.0 - (y * s) / vh * 2.0);
-                    let (l, t) = ndc(q.x, q.y);
-                    let (r, b) = ndc(q.x + q.w, q.y + q.h);
-                    let c = [
-                        srgb_to_linear(q.color.r as f64) as f32,
-                        srgb_to_linear(q.color.g as f64) as f32,
-                        srgb_to_linear(q.color.b as f64) as f32,
-                        q.color.a,
-                    ];
+                    let (l, t) = ndc(rect.0, rect.1);
+                    let (r, b) = ndc(rect.0 + rect.2, rect.1 + rect.3);
                     let start = (icon_verts.len() / IPV) as u32;
                     for (px_, py_, u, v) in [
                         (l, t, 0.0, 0.0),
@@ -1158,10 +1532,11 @@ impl UiRenderer {
                         (r, b, 1.0, 1.0),
                         (l, b, 0.0, 1.0),
                     ] {
-                        icon_verts.extend_from_slice(&[px_, py_, u, v, c[0], c[1], c[2], c[3]]);
+                        icon_verts
+                            .extend_from_slice(&[px_, py_, u, v, c[0], c[1], c[2], c[3], mode]);
                     }
                     let end = (icon_verts.len() / IPV) as u32;
-                    draws.push(((q.kind, px), start, end));
+                    draws.push((key, start, end));
                 }
                 icon_draws.push(draws);
             }
@@ -1222,8 +1597,8 @@ impl UiRenderer {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("ui-layer"),
                 color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.msaa,
+                    resolve_target: Some(&view),
                     ops: Operations {
                         load,
                         store: StoreOp::Store,
@@ -1324,7 +1699,6 @@ impl UiRenderer {
     }
 
     fn prepare_layer(&mut self, texts: &[Text], layer: u8) -> Result<()> {
-        let vw = self.config.width as f32;
         let bounds = TextBounds {
             left: 0,
             top: 0,
@@ -1333,33 +1707,50 @@ impl UiRenderer {
         };
         let sans = self.ui_font.clone();
         let mono = self.mono_family.clone().or_else(|| sans.clone());
-        let mut buffers: Vec<Buffer> = Vec::with_capacity(texts.len());
+        let scale_ui = theme::ui_text_scale();
+
+        if self.shaped_cache.len() > 20_000 {
+            self.shaped_cache.clear();
+        }
+
+        let mut keys: Vec<u64> = Vec::with_capacity(texts.len());
         for t in texts {
             let fam = if t.mono { &mono } else { &sans };
-            let family = match fam {
-                Some(name) => Family::Name(name),
-                None => Family::SansSerif,
-            };
-            let sz = t.size * theme::ui_text_scale();
-            let wrap_w = if t.wrap > 0.0 {
-                t.wrap * theme::ui_text_scale()
-            } else {
-                vw / self.scale
-            };
+            let sz = t.size * scale_ui;
             let weight = theme::snap_weight(fam.as_deref(), t.weight);
-            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
-            buf.set_size(&mut self.font_system, Some(wrap_w), None);
-            buf.set_text(
-                &mut self.font_system,
-                &t.text,
-                Attrs::new()
-                    .family(family)
-                    .weight(Weight(weight))
-                    .color(glyph_color(t.color)),
-                Shaping::Advanced,
-            );
-            buf.shape_until_scroll(&mut self.font_system, false);
-            buffers.push(buf);
+            let wrap_w = if t.wrap > 0.0 {
+                Some(t.wrap * scale_ui)
+            } else {
+                None
+            };
+            let key = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                t.text.hash(&mut h);
+                sz.to_bits().hash(&mut h);
+                weight.hash(&mut h);
+                t.mono.hash(&mut h);
+                wrap_w.map(f32::to_bits).hash(&mut h);
+                fam.hash(&mut h);
+                h.finish()
+            };
+            keys.push(key);
+            if !self.shaped_cache.contains_key(&key) {
+                let family = match fam {
+                    Some(name) => Family::Name(name),
+                    None => Family::SansSerif,
+                };
+                let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
+                buf.set_size(&mut self.font_system, wrap_w, None);
+                buf.set_text(
+                    &mut self.font_system,
+                    &t.text,
+                    Attrs::new().family(family).weight(Weight(weight)),
+                    Shaping::Advanced,
+                );
+                buf.shape_until_scroll(&mut self.font_system, false);
+                self.shaped_cache.insert(key, buf);
+            }
         }
         self.viewport.update(
             &self.queue,
@@ -1368,11 +1759,23 @@ impl UiRenderer {
                 height: self.config.height,
             },
         );
+        while self.text_renderers.len() <= layer as usize {
+            self.text_renderers.push(TextRenderer::new(
+                &mut self.atlas,
+                &self.device,
+                MultisampleState {
+                    count: SAMPLES,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                None,
+            ));
+        }
         let areas: Vec<TextArea> = texts
             .iter()
-            .zip(&buffers)
-            .map(|(t, buf)| TextArea {
-                buffer: buf,
+            .zip(&keys)
+            .map(|(t, key)| TextArea {
+                buffer: &self.shaped_cache[key],
                 left: (t.x * self.scale).round(),
                 top: (t.y * self.scale).round(),
                 scale: self.scale,
@@ -1381,14 +1784,6 @@ impl UiRenderer {
                 custom_glyphs: &[],
             })
             .collect();
-        while self.text_renderers.len() <= layer as usize {
-            self.text_renderers.push(TextRenderer::new(
-                &mut self.atlas,
-                &self.device,
-                MultisampleState::default(),
-                None,
-            ));
-        }
         let renderer = &mut self.text_renderers[layer as usize];
         renderer.prepare(
             &self.device,

@@ -10,3 +10,4 @@ path = "src/workspace.rs"
 
 [dependencies]
 ui = { path = "../ui" }
+arboard = "3.6.1"

@@ -30,6 +30,11 @@ pub struct Settings {
     pub func_hidden: Vec<bool>,
     pub agent_hidden: bool,
     pub terminal_hidden: bool,
+    pub show_diagnostics: bool,
+    pub show_cursor_position: bool,
+    pub show_language: bool,
+    pub show_branch: bool,
+    pub show_session_name: bool,
 }
 
 impl Default for Settings {
@@ -54,6 +59,11 @@ impl Default for Settings {
             func_hidden: Vec::new(),
             agent_hidden: false,
             terminal_hidden: false,
+            show_diagnostics: true,
+            show_cursor_position: true,
+            show_language: true,
+            show_branch: true,
+            show_session_name: true,
         }
     }
 }

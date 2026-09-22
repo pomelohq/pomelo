@@ -432,6 +432,48 @@ impl SettingsView {
     }
 
     fn click(&mut self, id: u64) {
+        if id >= settings_ui::RESET_OFFSET {
+            self.commit_edit();
+            self.close_popover();
+            let base = id - settings_ui::RESET_OFFSET;
+            if settings_ui::reset_to_default(base, &mut self.settings) {
+                let _ = self.settings.save();
+                match base {
+                    settings_ui::CTRL_THEME => {
+                        ui::set_theme(ui::by_name(&self.settings.theme));
+                        self.pending.redraw_others = true;
+                    }
+                    settings_ui::CTRL_FONT_FAMILY => self.pending.reapply_font = true,
+                    settings_ui::CTRL_FONT_WEIGHT_EDIT => {
+                        ui::set_ui_font_weight(self.settings.ui_font_weight as u16);
+                        self.pending.redraw_others = true;
+                    }
+                    settings_ui::CTRL_FONT_SIZE_EDIT => {
+                        ui::set_ui_text_scale(self.settings.ui_font_size / ui::UI_FONT_BASE);
+                        self.pending.redraw_others = true;
+                    }
+                    settings_ui::CTRL_SHOW_DIAGNOSTICS
+                    | settings_ui::CTRL_SHOW_CURSOR
+                    | settings_ui::CTRL_SHOW_LANGUAGE
+                    | settings_ui::CTRL_SHOW_BRANCH
+                    | settings_ui::CTRL_SHOW_SESSION => {
+                        ui::set_chrome(settings_ui::chrome_flags(&self.settings));
+                        self.pending.redraw_others = true;
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+        if id == settings_ui::CTRL_OPEN_JSON {
+            self.commit_edit();
+            self.close_popover();
+            if let Some(home) = std::env::var_os("HOME") {
+                let path = std::path::Path::new(&home).join(".config/pomelo/settings.json");
+                let _ = std::process::Command::new("open").arg(path).spawn();
+            }
+            return;
+        }
         if id >= settings_ui::POPOVER_BASE {
             let idx = (id - settings_ui::POPOVER_BASE) as usize;
             if let Some(cid) = self.popover {
@@ -458,12 +500,14 @@ impl SettingsView {
             if let Some(e) = self.expanded.get_mut(ci) {
                 *e = !*e;
             }
-        } else if (settings_ui::NAV_JUMP_BASE..settings_ui::NAV_JUMP_BASE + 100).contains(&id) {
+        } else if (settings_ui::NAV_JUMP_BASE..settings_ui::NAV_TOGGLE_BASE).contains(&id) {
             self.commit_edit();
             self.popover = None;
-            let si = (id - settings_ui::NAV_JUMP_BASE) as usize;
-            self.selected = settings_ui::APPEARANCE;
-            if let Some(e) = self.expanded.get_mut(settings_ui::APPEARANCE) {
+            let rel = id - settings_ui::NAV_JUMP_BASE;
+            let cat = (rel / settings_ui::NAV_JUMP_STRIDE) as usize;
+            let si = (rel % settings_ui::NAV_JUMP_STRIDE) as usize;
+            self.selected = cat;
+            if let Some(e) = self.expanded.get_mut(cat) {
                 *e = true;
             }
             self.active_section = Some(si);
@@ -497,12 +541,21 @@ impl SettingsView {
                 }
             } else if settings_ui::handle_control(id, &mut self.settings) {
                 let _ = self.settings.save();
-                if id == settings_ui::CTRL_FONT_WEIGHT_DEC
-                    || id == settings_ui::CTRL_FONT_WEIGHT_INC
-                {
-                    ui::set_ui_font_weight(self.settings.ui_font_weight as u16);
-                } else {
-                    ui::set_ui_text_scale(self.settings.ui_font_size / ui::UI_FONT_BASE);
+                match id {
+                    settings_ui::CTRL_FONT_WEIGHT_DEC | settings_ui::CTRL_FONT_WEIGHT_INC => {
+                        ui::set_ui_font_weight(self.settings.ui_font_weight as u16);
+                    }
+                    settings_ui::CTRL_FONT_SIZE_DEC | settings_ui::CTRL_FONT_SIZE_INC => {
+                        ui::set_ui_text_scale(self.settings.ui_font_size / ui::UI_FONT_BASE);
+                    }
+                    settings_ui::CTRL_SHOW_DIAGNOSTICS
+                    | settings_ui::CTRL_SHOW_CURSOR
+                    | settings_ui::CTRL_SHOW_LANGUAGE
+                    | settings_ui::CTRL_SHOW_BRANCH
+                    | settings_ui::CTRL_SHOW_SESSION => {
+                        ui::set_chrome(settings_ui::chrome_flags(&self.settings));
+                    }
+                    _ => {}
                 }
                 self.pending.redraw_others = true;
             }

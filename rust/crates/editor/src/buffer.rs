@@ -1,61 +1,175 @@
-//! The editor's text model: a rope plus one-or-more selections (multi-cursor), with coalesced undo/redo.
-//! Platform-independent — no GPU, no windowing. Multi-selection: edits apply to every
-//! selection (processed right-to-left so earlier offsets stay valid), and overlapping selections merge.
-
 use ropey::Rope;
+use std::ops::Range;
+use std::time::{Duration, Instant};
+use tree_sitter::{InputEdit, Point};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EditKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bias {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LineEnding {
+    #[default]
+    Unix,
+    Windows,
+}
+
+impl LineEnding {
+    pub fn detect(text: &str) -> Self {
+        let mut max = text.len().min(1000);
+        while !text.is_char_boundary(max) {
+            max -= 1;
+        }
+        match text[..max].find('\n') {
+            Some(ix) if ix > 0 && text.as_bytes()[ix - 1] == b'\r' => LineEnding::Windows,
+            _ => LineEnding::Unix,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LineEnding::Unix => "\n",
+            LineEnding::Windows => "\r\n",
+        }
+    }
+}
+
+pub fn normalize_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\r') {
+        std::borrow::Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SelectionGoal {
+    #[default]
     None,
-    Insert,
-    Delete,
+    Column(usize),
 }
 
-/// One selection: an anchor and a cursor (head). A caret is a selection with anchor == cursor.
-#[derive(Clone, Copy)]
-pub struct Sel {
-    pub anchor: usize,
-    pub cursor: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub id: usize,
+    pub start: usize,
+    pub end: usize,
+    pub reversed: bool,
+    pub goal: SelectionGoal,
 }
 
-impl Sel {
-    fn caret(off: usize) -> Self {
-        Sel {
-            anchor: off,
-            cursor: off,
-        }
-    }
-    pub fn start(&self) -> usize {
-        self.anchor.min(self.cursor)
-    }
-    pub fn end(&self) -> usize {
-        self.anchor.max(self.cursor)
-    }
-    fn is_empty(&self) -> bool {
-        self.anchor == self.cursor
-    }
-    pub fn range(&self) -> Option<(usize, usize)> {
-        if self.is_empty() {
-            None
+impl Selection {
+    pub fn head(&self) -> usize {
+        if self.reversed {
+            self.start
         } else {
-            Some((self.start(), self.end()))
+            self.end
         }
+    }
+
+    pub fn tail(&self) -> usize {
+        if self.reversed {
+            self.end
+        } else {
+            self.start
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+
+    pub fn range(&self) -> Option<(usize, usize)> {
+        (!self.is_empty()).then_some((self.start, self.end))
+    }
+
+    pub fn set_head(&mut self, head: usize, goal: SelectionGoal) {
+        let tail = self.tail();
+        if head < tail {
+            self.start = head;
+            self.end = tail;
+            self.reversed = true;
+        } else {
+            self.start = tail;
+            self.end = head;
+            self.reversed = false;
+        }
+        self.goal = goal;
+    }
+
+    pub fn collapse_to(&mut self, offset: usize, goal: SelectionGoal) {
+        self.start = offset;
+        self.end = offset;
+        self.reversed = false;
+        self.goal = goal;
     }
 }
 
-#[derive(Clone)]
-struct Snapshot {
-    rope: Rope,
-    sels: Vec<Sel>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edit {
+    pub old: Range<usize>,
+    pub new: Range<usize>,
+}
+
+pub fn map_offset(edits: &[Edit], offset: usize, bias: Bias) -> usize {
+    let mut delta: isize = 0;
+    for edit in edits {
+        if offset < edit.old.start {
+            break;
+        }
+        if offset == edit.old.start {
+            return match bias {
+                Bias::Left => edit.new.start,
+                Bias::Right => edit.new.end,
+            };
+        }
+        if offset <= edit.old.end {
+            return edit.new.end;
+        }
+        delta = edit.new.end as isize - edit.old.end as isize;
+    }
+    (offset as isize + delta).max(0) as usize
+}
+
+#[derive(Clone, Debug)]
+struct Replacement {
+    old: Range<usize>,
+    new: Range<usize>,
+    old_text: String,
+    new_text: String,
+}
+
+struct LogEntry {
+    version: u64,
+    edits: Vec<Edit>,
+    syntax: Vec<InputEdit>,
+}
+
+struct HistoryEntry {
+    id: usize,
+    batches: Vec<Vec<Replacement>>,
+    first_edit_at: Instant,
+    last_edit_at: Instant,
+    suppress_grouping: bool,
+    selections_before: Vec<Selection>,
+    selections_after: Vec<Selection>,
 }
 
 pub struct EditorBuffer {
     pub rope: Rope,
-    /// Non-empty; the last element is the primary/newest selection (drives caret-follow).
-    sels: Vec<Sel>,
-    undo_stack: Vec<Snapshot>,
-    redo_stack: Vec<Snapshot>,
-    last_edit: EditKind,
+    line_ending: LineEnding,
+    selections: Vec<Selection>,
+    next_selection_id: usize,
+    version: u64,
+    log: Vec<LogEntry>,
+    undo_stack: Vec<HistoryEntry>,
+    redo_stack: Vec<HistoryEntry>,
+    transaction_depth: usize,
+    next_transaction_id: usize,
+    group_interval: Duration,
+    saved_transaction: Option<usize>,
 }
 
 impl Default for EditorBuffer {
@@ -66,12 +180,26 @@ impl Default for EditorBuffer {
 
 impl EditorBuffer {
     pub fn from_text(text: &str) -> Self {
+        let line_ending = LineEnding::detect(text);
         Self {
-            rope: Rope::from_str(text),
-            sels: vec![Sel::caret(0)],
+            rope: Rope::from_str(&normalize_newlines(text)),
+            line_ending,
+            selections: vec![Selection {
+                id: 0,
+                start: 0,
+                end: 0,
+                reversed: false,
+                goal: SelectionGoal::None,
+            }],
+            next_selection_id: 1,
+            version: 0,
+            log: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            last_edit: EditKind::None,
+            transaction_depth: 0,
+            next_transaction_id: 0,
+            group_interval: Duration::from_millis(300),
+            saved_transaction: None,
         }
     }
 
@@ -79,16 +207,99 @@ impl EditorBuffer {
         self.rope.to_string()
     }
 
-    pub fn selections(&self) -> &[Sel] {
-        &self.sels
+    pub fn text_for_save(&self) -> String {
+        match self.line_ending {
+            LineEnding::Unix => self.text(),
+            LineEnding::Windows => self.text().replace('\n', "\r\n"),
+        }
     }
 
-    fn primary(&self) -> Sel {
-        *self.sels.last().unwrap()
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn set_group_interval(&mut self, interval: Duration) {
+        self.group_interval = interval;
+    }
+
+    pub fn edits_since(&self, since: u64) -> impl Iterator<Item = &[Edit]> {
+        let start = self.log.partition_point(|e| e.version <= since);
+        self.log[start..].iter().map(|e| e.edits.as_slice())
+    }
+
+    pub fn syntax_edits_since(&self, since: u64) -> impl Iterator<Item = &InputEdit> {
+        let start = self.log.partition_point(|e| e.version <= since);
+        self.log[start..].iter().flat_map(|e| e.syntax.iter())
+    }
+
+    pub fn selections(&self) -> &[Selection] {
+        &self.selections
+    }
+
+    fn newest(&self) -> Selection {
+        let mut newest = self.selections[0];
+        for s in &self.selections {
+            if s.id > newest.id {
+                newest = *s;
+            }
+        }
+        newest
+    }
+
+    fn oldest(&self) -> Selection {
+        let mut oldest = self.selections[0];
+        for s in &self.selections {
+            if s.id < oldest.id {
+                oldest = *s;
+            }
+        }
+        oldest
     }
 
     pub fn cursor(&self) -> usize {
-        self.primary().cursor
+        self.newest().head()
+    }
+
+    fn new_selection(&mut self, start: usize, end: usize, reversed: bool) -> Selection {
+        let id = self.next_selection_id;
+        self.next_selection_id += 1;
+        Selection {
+            id,
+            start,
+            end,
+            reversed,
+            goal: SelectionGoal::None,
+        }
+    }
+
+    fn select(&mut self, mut selections: Vec<Selection>) {
+        let len = self.rope.len_chars();
+        for s in &mut selections {
+            s.start = s.start.min(len);
+            s.end = s.end.min(len);
+            if s.start > s.end {
+                std::mem::swap(&mut s.start, &mut s.end);
+                s.reversed = !s.reversed;
+            }
+        }
+        selections.sort_by_key(|s| s.start);
+        let mut i = 1;
+        while i < selections.len() {
+            let (prev, cur) = (selections[i - 1], selections[i]);
+            if should_merge(prev.start, prev.end, cur.start, cur.end) {
+                let removed = selections.remove(i);
+                let keep = &mut selections[i - 1];
+                keep.start = keep.start.min(removed.start);
+                keep.end = keep.end.max(removed.end);
+            } else {
+                i += 1;
+            }
+        }
+        if selections.is_empty() {
+            let caret = self.new_selection(0, 0, false);
+            selections.push(caret);
+        }
+        self.selections = selections;
     }
 
     // ---- position helpers ----
@@ -108,8 +319,9 @@ impl EditorBuffer {
         if line >= self.rope.len_lines() {
             return 0;
         }
-        let mut len = self.rope.line(line).len_chars();
-        if self.rope.line(line).chars().last() == Some('\n') {
+        let slice = self.rope.line(line);
+        let mut len = slice.len_chars();
+        if len > 0 && slice.char(len - 1) == '\n' {
             len -= 1;
         }
         len
@@ -121,8 +333,7 @@ impl EditorBuffer {
     }
 
     fn clamp_to_line(&self, line: usize, col: usize) -> usize {
-        let start = self.rope.line_to_char(line);
-        start + col.min(self.line_len(line))
+        self.rope.line_to_char(line) + col.min(self.line_len(line))
     }
 
     fn is_word(c: char) -> bool {
@@ -160,24 +371,6 @@ impl EditorBuffer {
         self.rope.line_to_char(line) + self.line_len(line)
     }
 
-    fn up_offset(&self, off: usize) -> usize {
-        let (line, col) = self.line_col_of(off);
-        if line == 0 {
-            off
-        } else {
-            self.clamp_to_line(line - 1, col)
-        }
-    }
-
-    fn down_offset(&self, off: usize) -> usize {
-        let (line, col) = self.line_col_of(off);
-        if line + 1 >= self.rope.len_lines() {
-            off
-        } else {
-            self.clamp_to_line(line + 1, col)
-        }
-    }
-
     fn word_range_at(&self, off: usize) -> (usize, usize) {
         let n = self.rope.len_chars();
         let off = off.min(n);
@@ -198,307 +391,518 @@ impl EditorBuffer {
     }
 
     pub fn selected_text(&self) -> Option<String> {
-        let mut parts: Vec<(usize, String)> = self
-            .sels
+        let parts: Vec<String> = self
+            .selections
             .iter()
-            .filter_map(|s| {
-                s.range()
-                    .map(|(a, b)| (a, self.rope.slice(a..b).to_string()))
-            })
+            .filter_map(|s| s.range().map(|(a, b)| self.rope.slice(a..b).to_string()))
             .collect();
-        if parts.is_empty() {
-            return None;
-        }
-        parts.sort_by_key(|(a, _)| *a);
-        Some(
-            parts
-                .into_iter()
-                .map(|(_, t)| t)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
+        (!parts.is_empty()).then(|| parts.join("\n"))
     }
 
-    // ---- undo/redo ----
-
-    fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            rope: self.rope.clone(),
-            sels: self.sels.clone(),
+    pub fn start_transaction_at(&mut self, now: Instant) {
+        self.transaction_depth += 1;
+        if self.transaction_depth == 1 {
+            let id = self.next_transaction_id;
+            self.next_transaction_id += 1;
+            self.undo_stack.push(HistoryEntry {
+                id,
+                batches: Vec::new(),
+                first_edit_at: now,
+                last_edit_at: now,
+                suppress_grouping: false,
+                selections_before: self.selections.clone(),
+                selections_after: Vec::new(),
+            });
         }
     }
 
-    fn record(&mut self, kind: EditKind) {
-        if self.last_edit != kind {
-            self.undo_stack.push(self.snapshot());
-            self.redo_stack.clear();
-            self.last_edit = kind;
+    pub fn end_transaction_at(&mut self, now: Instant) {
+        if self.transaction_depth == 0 {
+            return;
         }
-    }
-
-    fn break_run(&mut self) {
-        self.last_edit = EditKind::None;
-    }
-
-    fn restore(&mut self, snap: Snapshot) {
-        self.rope = snap.rope;
-        let n = self.rope.len_chars();
-        self.sels = snap
-            .sels
-            .into_iter()
-            .map(|s| Sel {
-                anchor: s.anchor.min(n),
-                cursor: s.cursor.min(n),
-            })
-            .collect();
-        if self.sels.is_empty() {
-            self.sels.push(Sel::caret(0));
+        self.transaction_depth -= 1;
+        if self.transaction_depth > 0 {
+            return;
         }
-        self.last_edit = EditKind::None;
-    }
-
-    pub fn undo(&mut self) {
-        if let Some(prev) = self.undo_stack.pop() {
-            let cur = self.snapshot();
-            self.redo_stack.push(cur);
-            self.restore(prev);
+        let empty = self
+            .undo_stack
+            .last()
+            .is_none_or(|entry| entry.batches.is_empty());
+        if empty {
+            self.undo_stack.pop();
+            return;
         }
-    }
-
-    pub fn redo(&mut self) {
-        if let Some(next) = self.redo_stack.pop() {
-            let cur = self.snapshot();
-            self.undo_stack.push(cur);
-            self.restore(next);
+        self.redo_stack.clear();
+        let selections = self.selections.clone();
+        if let Some(entry) = self.undo_stack.last_mut() {
+            entry.last_edit_at = now;
+            entry.selections_after = selections;
         }
+        self.group();
     }
 
-    // ---- selection bookkeeping ----
-
-    /// Sort by position and merge overlapping/touching selections; keep the primary (nearest the old primary cursor) last.
-    fn merge(&mut self) {
-        if self.sels.len() > 1 {
-            let primary_cursor = self.primary().cursor;
-            self.sels.sort_by_key(|s| s.start());
-            let mut merged: Vec<Sel> = Vec::with_capacity(self.sels.len());
-            for s in std::mem::take(&mut self.sels) {
-                if let Some(last) = merged.last_mut() {
-                    if s.start() <= last.end() {
-                        *last = Sel {
-                            anchor: last.start().min(s.start()),
-                            cursor: last.end().max(s.end()),
-                        };
-                        continue;
-                    }
+    fn group(&mut self) {
+        let mut count = 0;
+        let mut entries = self.undo_stack.iter();
+        if let Some(mut entry) = entries.next_back() {
+            while let Some(prev) = entries.next_back() {
+                if !prev.suppress_grouping
+                    && entry
+                        .first_edit_at
+                        .saturating_duration_since(prev.last_edit_at)
+                        < self.group_interval
+                {
+                    entry = prev;
+                    count += 1;
+                } else {
+                    break;
                 }
-                merged.push(s);
-            }
-            self.sels = merged;
-            if let Some(pi) = self
-                .sels
-                .iter()
-                .position(|s| s.start() <= primary_cursor && primary_cursor <= s.end())
-            {
-                let p = self.sels.remove(pi);
-                self.sels.push(p);
             }
         }
-        if self.sels.is_empty() {
-            self.sels.push(Sel::caret(0));
+        let keep = self.undo_stack.len() - count;
+        let merged: Vec<HistoryEntry> = self.undo_stack.drain(keep..).collect();
+        if let Some(target) = self.undo_stack.last_mut() {
+            for entry in merged {
+                target.batches.extend(entry.batches);
+                target.last_edit_at = entry.last_edit_at;
+                target.selections_after = entry.selections_after;
+            }
         }
     }
 
-    // Move each selection's cursor via `f`, collapsing the anchor (plain arrow), then merge.
-    fn move_each(&mut self, f: impl Fn(&Self, usize) -> usize) {
-        let next: Vec<Sel> = self
-            .sels
-            .iter()
-            .map(|s| Sel::caret(f(self, s.cursor)))
+    pub fn finalize_last_transaction(&mut self) {
+        if let Some(entry) = self.undo_stack.last_mut() {
+            entry.suppress_grouping = true;
+        }
+    }
+
+    fn transact<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let now = Instant::now();
+        self.start_transaction_at(now);
+        let result = f(self);
+        self.end_transaction_at(now);
+        result
+    }
+
+    pub fn edit(&mut self, edits: Vec<(Range<usize>, String)>) -> Vec<Edit> {
+        let len = self.rope.len_chars();
+        let mut edits: Vec<(Range<usize>, String)> = edits
+            .into_iter()
+            .map(|(r, t)| {
+                (
+                    r.start.min(len)..r.end.min(len),
+                    normalize_newlines(&t).into_owned(),
+                )
+            })
+            .filter(|(r, t)| !(r.is_empty() && t.is_empty()))
             .collect();
-        self.sels = next;
-        self.merge();
-        self.break_run();
-    }
-
-    // Move each selection's cursor via `f`, keeping the anchor (shift+arrow), then merge.
-    fn extend_each(&mut self, f: impl Fn(&Self, usize) -> usize) {
-        let next: Vec<Sel> = self
-            .sels
+        edits.sort_by_key(|(r, _)| r.start);
+        let mut merged: Vec<(Range<usize>, String)> = Vec::with_capacity(edits.len());
+        for (range, text) in edits {
+            match merged.last_mut() {
+                Some((last, last_text)) if range.start < last.end => {
+                    last.end = last.end.max(range.end);
+                    last_text.push_str(&text);
+                }
+                _ => merged.push((range, text)),
+            }
+        }
+        if merged.is_empty() {
+            return Vec::new();
+        }
+        let replacements = self.apply(&merged);
+        let applied = replacements
             .iter()
-            .map(|s| Sel {
-                anchor: s.anchor,
-                cursor: f(self, s.cursor),
+            .map(|r| Edit {
+                old: r.old.clone(),
+                new: r.new.clone(),
             })
             .collect();
-        self.sels = next;
-        self.merge();
-        self.break_run();
+        self.transact(|this| {
+            if let Some(entry) = this.undo_stack.last_mut() {
+                entry.batches.push(replacements);
+            }
+        });
+        applied
     }
 
-    // ---- editing (applies to every selection, right-to-left) ----
-
-    fn edit_each(&mut self, f: impl Fn(&mut Rope, Sel) -> Sel) {
-        // Apply left-to-right, shifting each later selection by the net length change of the earlier edits so their
-        // positions stay valid. (Right-to-left is wrong: a left edit still shifts the already-placed right cursors.)
-        let mut order: Vec<usize> = (0..self.sels.len()).collect();
-        order.sort_by_key(|&i| self.sels[i].start());
+    fn apply(&mut self, edits: &[(Range<usize>, String)]) -> Vec<Replacement> {
+        let mut replacements = Vec::with_capacity(edits.len());
         let mut delta: isize = 0;
-        for &i in &order {
-            let s = self.sels[i];
-            let shifted = Sel {
-                anchor: (s.anchor as isize + delta).max(0) as usize,
-                cursor: (s.cursor as isize + delta).max(0) as usize,
-            };
-            let before = self.rope.len_chars() as isize;
-            let ns = f(&mut self.rope, shifted);
-            delta += self.rope.len_chars() as isize - before;
-            self.sels[i] = ns;
+        for (range, text) in edits {
+            let new_start = (range.start as isize + delta) as usize;
+            let new_len = text.chars().count();
+            replacements.push(Replacement {
+                old: range.clone(),
+                new: new_start..new_start + new_len,
+                old_text: self.rope.slice(range.clone()).to_string(),
+                new_text: text.clone(),
+            });
+            delta += new_len as isize - range.len() as isize;
         }
-        self.merge();
+        let mut syntax = Vec::with_capacity(edits.len());
+        for (range, text) in edits.iter().rev() {
+            let start_byte = self.rope.char_to_byte(range.start);
+            let old_end_byte = self.rope.char_to_byte(range.end);
+            let start_position = self.point_at_byte(start_byte);
+            let old_end_position = self.point_at_byte(old_end_byte);
+            self.rope.remove(range.clone());
+            self.rope.insert(range.start, text);
+            let new_end_byte = start_byte + text.len();
+            syntax.push(InputEdit {
+                start_byte,
+                old_end_byte,
+                new_end_byte,
+                start_position,
+                old_end_position,
+                new_end_position: self.point_at_byte(new_end_byte),
+            });
+        }
+        self.version += 1;
+        self.log.push(LogEntry {
+            version: self.version,
+            edits: replacements
+                .iter()
+                .map(|r| Edit {
+                    old: r.old.clone(),
+                    new: r.new.clone(),
+                })
+                .collect(),
+            syntax,
+        });
+        replacements
+    }
+
+    fn point_at_byte(&self, byte: usize) -> Point {
+        let byte = byte.min(self.rope.len_bytes());
+        let row = self.rope.byte_to_line(byte);
+        Point {
+            row,
+            column: byte - self.rope.line_to_byte(row),
+        }
+    }
+
+    pub fn insert_text(&mut self, text: &str) {
+        let edits = self
+            .selections
+            .iter()
+            .map(|s| (s.start..s.end, text.to_string()))
+            .collect();
+        self.transact(|this| {
+            let applied = this.edit(edits);
+            this.remap_selections(&applied, |s, map| {
+                let head = map(s.end, Bias::Right);
+                s.collapse_to(head, SelectionGoal::None);
+            });
+        });
     }
 
     pub fn insert_char(&mut self, ch: char) {
-        self.record(EditKind::Insert);
-        self.edit_each(|rope, sel| {
-            let (s, e) = (sel.start(), sel.end());
-            if e > s {
-                rope.remove(s..e);
-            }
-            rope.insert_char(s, ch);
-            Sel::caret(s + 1)
-        });
+        let mut buf = [0u8; 4];
+        self.insert_text(ch.encode_utf8(&mut buf));
     }
 
     pub fn backspace(&mut self) {
-        self.record(EditKind::Delete);
-        self.edit_each(|rope, sel| {
-            let (s, e) = (sel.start(), sel.end());
-            if e > s {
-                rope.remove(s..e);
-                Sel::caret(s)
-            } else if s > 0 {
-                rope.remove(s - 1..s);
-                Sel::caret(s - 1)
+        self.delete_each(|s| {
+            if s.start > 0 {
+                s.start - 1..s.start
             } else {
-                Sel::caret(0)
+                0..0
             }
         });
     }
 
-    // ---- single-cursor gestures (from the mouse / simple keys) ----
+    pub fn delete_forward(&mut self) {
+        let len = self.rope.len_chars();
+        self.delete_each(|s| s.start..(s.start + 1).min(len));
+    }
+
+    fn delete_each(&mut self, caret_range: impl Fn(&Selection) -> Range<usize>) {
+        let edits = self
+            .selections
+            .iter()
+            .map(|s| {
+                let range = if s.is_empty() {
+                    caret_range(s)
+                } else {
+                    s.start..s.end
+                };
+                (range, String::new())
+            })
+            .collect();
+        self.transact(|this| {
+            let applied = this.edit(edits);
+            this.remap_selections(&applied, |s, map| {
+                let at = map(s.start, Bias::Left);
+                s.collapse_to(at, SelectionGoal::None);
+            });
+        });
+    }
+
+    fn remap_selections(
+        &mut self,
+        applied: &[Edit],
+        f: impl Fn(&mut Selection, &dyn Fn(usize, Bias) -> usize),
+    ) {
+        let map = |offset: usize, bias: Bias| map_offset(applied, offset, bias);
+        let mut next = self.selections.clone();
+        for s in &mut next {
+            f(s, &map);
+        }
+        self.select(next);
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn undo(&mut self) {
+        if self.transaction_depth > 0 {
+            return;
+        }
+        let Some(entry) = self.undo_stack.pop() else {
+            return;
+        };
+        for batch in entry.batches.iter().rev() {
+            let inverse: Vec<(Range<usize>, String)> = batch
+                .iter()
+                .map(|r| (r.new.clone(), r.old_text.clone()))
+                .collect();
+            self.apply(&inverse);
+        }
+        let selections = entry.selections_before.clone();
+        self.redo_stack.push(entry);
+        self.select(selections);
+    }
+
+    pub fn redo(&mut self) {
+        if self.transaction_depth > 0 {
+            return;
+        }
+        let Some(entry) = self.redo_stack.pop() else {
+            return;
+        };
+        for batch in &entry.batches {
+            let forward: Vec<(Range<usize>, String)> = batch
+                .iter()
+                .map(|r| (r.old.clone(), r.new_text.clone()))
+                .collect();
+            self.apply(&forward);
+        }
+        let selections = entry.selections_after.clone();
+        self.undo_stack.push(entry);
+        self.select(selections);
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.undo_stack.last().map(|e| e.id) != self.saved_transaction
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.finalize_last_transaction();
+        self.saved_transaction = self.undo_stack.last().map(|e| e.id);
+    }
 
     pub fn place_cursor(&mut self, off: usize) {
-        let off = off.min(self.rope.len_chars());
-        self.sels = vec![Sel::caret(off)];
-        self.break_run();
+        let caret = self.new_selection(off, off, false);
+        self.select(vec![caret]);
     }
 
     pub fn extend_cursor(&mut self, off: usize) {
-        let off = off.min(self.rope.len_chars());
-        self.sels.last_mut().unwrap().cursor = off;
-        self.break_run();
+        let mut newest = self.newest();
+        newest.set_head(off.min(self.rope.len_chars()), SelectionGoal::None);
+        let mut next: Vec<Selection> = self
+            .selections
+            .iter()
+            .copied()
+            .filter(|s| s.id != newest.id)
+            .collect();
+        next.push(newest);
+        self.select(next);
     }
 
-    /// Add a caret at `off` (Cmd+click multi-cursor).
     pub fn add_cursor(&mut self, off: usize) {
-        let off = off.min(self.rope.len_chars());
-        self.sels.push(Sel::caret(off));
-        self.merge();
-        self.break_run();
+        let caret = self.new_selection(off, off, false);
+        let mut next = self.selections.clone();
+        next.push(caret);
+        self.select(next);
     }
 
-    /// Collapse to a single caret at the primary (Esc).
     pub fn collapse_cursors(&mut self) {
-        let c = self.primary().cursor;
-        self.sels = vec![Sel::caret(c)];
-        self.break_run();
+        let mut oldest = self.oldest();
+        if self.selections.len() == 1 {
+            let head = oldest.head();
+            oldest.collapse_to(head, SelectionGoal::None);
+        }
+        self.select(vec![oldest]);
     }
 
     pub fn select_word_at(&mut self, off: usize) {
         let (a, b) = self.word_range_at(off);
-        self.sels = vec![Sel {
-            anchor: a,
-            cursor: b,
-        }];
-        self.break_run();
+        let s = self.new_selection(a, b, false);
+        self.select(vec![s]);
     }
 
     pub fn select_all(&mut self) {
-        self.sels = vec![Sel {
-            anchor: 0,
-            cursor: self.rope.len_chars(),
-        }];
-        self.break_run();
+        let s = self.new_selection(0, self.rope.len_chars(), false);
+        self.select(vec![s]);
     }
 
-    /// Cmd+D: first press selects the word at the primary; further presses add the next occurrence as a new cursor.
     pub fn select_next(&mut self) {
-        let p = self.primary();
-        if p.is_empty() {
-            let (a, b) = self.word_range_at(p.cursor);
-            *self.sels.last_mut().unwrap() = Sel {
-                anchor: a,
-                cursor: b,
-            };
-        } else {
-            let needle = self.rope.slice(p.start()..p.end()).to_string();
-            if !needle.is_empty() {
-                if let Some(pos) = self.find_from(&needle, p.end()) {
-                    let len = needle.chars().count();
-                    self.sels.push(Sel {
-                        anchor: pos,
-                        cursor: pos + len,
-                    });
-                    self.merge();
-                }
-            }
+        let newest = self.newest();
+        if newest.is_empty() {
+            let (a, b) = self.word_range_at(newest.head());
+            let mut next: Vec<Selection> = self
+                .selections
+                .iter()
+                .copied()
+                .filter(|s| s.id != newest.id)
+                .collect();
+            next.push(Selection {
+                start: a,
+                end: b,
+                reversed: false,
+                ..newest
+            });
+            self.select(next);
+            return;
         }
-        self.break_run();
+        let needle = self.rope.slice(newest.start..newest.end).to_string();
+        if let Some(pos) = self.find_from(&needle, newest.end) {
+            let len = needle.chars().count();
+            let s = self.new_selection(pos, pos + len, false);
+            let mut next = self.selections.clone();
+            next.push(s);
+            self.select(next);
+        }
     }
 
     fn find_from(&self, needle: &str, start_char: usize) -> Option<usize> {
+        if needle.is_empty() {
+            return None;
+        }
         let text = self.rope.to_string();
-        let start_byte = text
-            .char_indices()
-            .nth(start_char)
-            .map(|(b, _)| b)
-            .unwrap_or(text.len());
+        let start_byte = self
+            .rope
+            .char_to_byte(start_char.min(self.rope.len_chars()));
         let after = text[start_byte..]
             .find(needle)
-            .map(|b| text[..start_byte + b].chars().count());
+            .map(|b| self.rope.byte_to_char(start_byte + b));
         after.or_else(|| {
             text[..start_byte]
                 .find(needle)
-                .map(|b| text[..b].chars().count())
+                .map(|b| self.rope.byte_to_char(b))
         })
     }
 
     // ---- navigation (multi-cursor aware) ----
 
+    fn move_each(&mut self, f: impl Fn(&Self, &Selection) -> usize) {
+        let next: Vec<Selection> = self
+            .selections
+            .iter()
+            .map(|s| {
+                let mut s = *s;
+                let to = f(self, &s);
+                s.collapse_to(to, SelectionGoal::None);
+                s
+            })
+            .collect();
+        self.select(next);
+    }
+
+    fn extend_each(&mut self, f: impl Fn(&Self, usize) -> usize) {
+        let next: Vec<Selection> = self
+            .selections
+            .iter()
+            .map(|s| {
+                let mut s = *s;
+                let to = f(self, s.head());
+                s.set_head(to, SelectionGoal::None);
+                s
+            })
+            .collect();
+        self.select(next);
+    }
+
+    fn move_vertical(&mut self, dir: isize, extend: bool) {
+        let next: Vec<Selection> = self
+            .selections
+            .iter()
+            .map(|s| {
+                let mut s = *s;
+                let from = if extend {
+                    s.head()
+                } else if !s.is_empty() {
+                    s.goal = SelectionGoal::None;
+                    if dir < 0 {
+                        s.start
+                    } else {
+                        s.end
+                    }
+                } else {
+                    s.head()
+                };
+                let (line, col) = self.line_col_of(from);
+                let goal = match s.goal {
+                    SelectionGoal::Column(c) => c,
+                    SelectionGoal::None => col,
+                };
+                let target = line as isize + dir;
+                let to = if target < 0 {
+                    0
+                } else if target as usize >= self.rope.len_lines() {
+                    self.rope.len_chars()
+                } else {
+                    self.clamp_to_line(target as usize, goal)
+                };
+                if extend {
+                    s.set_head(to, SelectionGoal::Column(goal));
+                } else {
+                    s.collapse_to(to, SelectionGoal::Column(goal));
+                }
+                s
+            })
+            .collect();
+        self.select(next);
+    }
+
     pub fn move_left(&mut self) {
-        self.move_each(|_, c| c.saturating_sub(1));
+        self.move_each(|_, s| {
+            if s.is_empty() {
+                s.head().saturating_sub(1)
+            } else {
+                s.start
+            }
+        });
     }
     pub fn move_right(&mut self) {
         let n = self.rope.len_chars();
-        self.move_each(move |_, c| (c + 1).min(n));
+        self.move_each(move |_, s| {
+            if s.is_empty() {
+                (s.head() + 1).min(n)
+            } else {
+                s.end
+            }
+        });
     }
     pub fn move_up(&mut self) {
-        self.move_each(|b, c| b.up_offset(c));
+        self.move_vertical(-1, false);
     }
     pub fn move_down(&mut self) {
-        self.move_each(|b, c| b.down_offset(c));
+        self.move_vertical(1, false);
     }
     pub fn move_word_left(&mut self) {
-        self.move_each(|b, c| b.word_left(c));
+        self.move_each(|b, s| b.word_left(s.head()));
     }
     pub fn move_word_right(&mut self) {
-        self.move_each(|b, c| b.word_right(c));
+        self.move_each(|b, s| b.word_right(s.head()));
     }
     pub fn move_home(&mut self) {
-        self.move_each(|b, c| b.line_start_of(c));
+        self.move_each(|b, s| b.line_start_of(s.head()));
     }
     pub fn move_end(&mut self) {
-        self.move_each(|b, c| b.line_end_of(c));
+        self.move_each(|b, s| b.line_end_of(s.head()));
     }
 
     pub fn extend_left(&mut self) {
@@ -509,10 +913,10 @@ impl EditorBuffer {
         self.extend_each(move |_, c| (c + 1).min(n));
     }
     pub fn extend_up(&mut self) {
-        self.extend_each(|b, c| b.up_offset(c));
+        self.move_vertical(-1, true);
     }
     pub fn extend_down(&mut self) {
-        self.extend_each(|b, c| b.down_offset(c));
+        self.move_vertical(1, true);
     }
     pub fn extend_word_left(&mut self) {
         self.extend_each(|b, c| b.word_left(c));
@@ -528,18 +932,31 @@ impl EditorBuffer {
     }
 
     #[cfg(test)]
-    fn cursors(&self) -> Vec<usize> {
-        self.sels.iter().map(|s| s.cursor).collect()
+    fn heads(&self) -> Vec<usize> {
+        self.selections.iter().map(|s| s.head()).collect()
     }
     #[cfg(test)]
     fn ranges(&self) -> Vec<(usize, usize)> {
-        self.sels.iter().map(|s| (s.start(), s.end())).collect()
+        self.selections.iter().map(|s| (s.start, s.end)).collect()
     }
+}
+
+fn should_merge(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
+    let overlapping = b_start < a_end;
+    let same_start = a_start == b_start;
+    let caret_at_boundary = a_end == b_end && (a_start == a_end || b_start == b_end);
+    overlapping || same_start || caret_at_boundary
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn buffer(text: &str) -> EditorBuffer {
+        let mut b = EditorBuffer::from_text(text);
+        b.set_group_interval(Duration::ZERO);
+        b
+    }
 
     #[test]
     fn typing_and_undo() {
@@ -548,55 +965,218 @@ mod tests {
             b.insert_char(ch);
         }
         assert_eq!(b.text(), "abc");
-        b.undo(); // one coalesced typing run
+        b.undo();
         assert_eq!(b.text(), "");
         b.redo();
         assert_eq!(b.text(), "abc");
     }
 
     #[test]
+    fn undo_groups_by_interval() {
+        let mut b = EditorBuffer::from_text("");
+        let t0 = Instant::now();
+        b.start_transaction_at(t0);
+        b.insert_char('a');
+        b.end_transaction_at(t0);
+        b.start_transaction_at(t0 + Duration::from_millis(100));
+        b.insert_char('b');
+        b.end_transaction_at(t0 + Duration::from_millis(100));
+        b.start_transaction_at(t0 + Duration::from_millis(1000));
+        b.insert_char('c');
+        b.end_transaction_at(t0 + Duration::from_millis(1000));
+        b.undo();
+        assert_eq!(b.text(), "ab");
+        b.undo();
+        assert_eq!(b.text(), "");
+    }
+
+    #[test]
+    fn finalize_breaks_grouping() {
+        let mut b = EditorBuffer::from_text("");
+        let t0 = Instant::now();
+        b.start_transaction_at(t0);
+        b.insert_char('a');
+        b.end_transaction_at(t0);
+        b.finalize_last_transaction();
+        b.start_transaction_at(t0);
+        b.insert_char('b');
+        b.end_transaction_at(t0);
+        b.undo();
+        assert_eq!(b.text(), "a");
+    }
+
+    #[test]
+    fn undo_restores_selections() {
+        let mut b = buffer("hello world");
+        b.place_cursor(5);
+        b.insert_text("!");
+        b.place_cursor(0);
+        b.undo();
+        assert_eq!(b.text(), "hello world");
+        assert_eq!(b.heads(), vec![5]);
+        b.redo();
+        assert_eq!(b.heads(), vec![6]);
+    }
+
+    #[test]
     fn add_cursor_types_at_all() {
-        let mut b = EditorBuffer::from_text("a\nb\n");
-        b.place_cursor(0); // before 'a'
-        b.add_cursor(2); // before 'b'
+        let mut b = buffer("a\nb\n");
+        b.place_cursor(0);
+        b.add_cursor(2);
         b.insert_char('X');
         assert_eq!(b.text(), "Xa\nXb\n");
-        assert_eq!(b.cursors(), vec![1, 4]);
+        assert_eq!(b.heads(), vec![1, 4]);
     }
 
     #[test]
     fn select_next_occurrence() {
-        let mut b = EditorBuffer::from_text("total = total + total");
-        b.place_cursor(2); // inside the first "total"
-        b.select_next(); // selects first "total"
+        let mut b = buffer("total = total + total");
+        b.place_cursor(2);
+        b.select_next();
         assert_eq!(b.ranges(), vec![(0, 5)]);
-        b.select_next(); // add second
-        b.select_next(); // add third
+        b.select_next();
+        b.select_next();
         assert_eq!(b.ranges().len(), 3);
-        // typing replaces all three occurrences
-        for ch in "sum".chars() {
-            b.insert_char(ch);
-        }
+        b.insert_text("sum");
         assert_eq!(b.text(), "sum = sum + sum");
     }
 
     #[test]
     fn overlapping_cursors_merge() {
-        let mut b = EditorBuffer::from_text("hello");
+        let mut b = buffer("hello");
         b.place_cursor(2);
-        b.add_cursor(2); // same spot -> should dedup
+        b.add_cursor(2);
         assert_eq!(b.selections().len(), 1);
     }
 
     #[test]
+    fn touching_selections_stay_separate() {
+        assert!(!should_merge(0, 3, 3, 6));
+        assert!(should_merge(0, 3, 3, 3));
+        assert!(should_merge(0, 3, 2, 6));
+    }
+
+    #[test]
+    fn backspace_across_cursors_merges_deletions() {
+        let mut b = buffer("ab");
+        b.place_cursor(1);
+        b.add_cursor(2);
+        b.backspace();
+        assert_eq!(b.text(), "");
+        assert_eq!(b.heads(), vec![0]);
+    }
+
+    #[test]
     fn word_and_home_end() {
-        let mut b = EditorBuffer::from_text("foo bar");
+        let mut b = buffer("foo bar");
         b.place_cursor(0);
         b.move_word_right();
-        assert_eq!(b.cursor(), 3); // end of "foo"
+        assert_eq!(b.cursor(), 3);
         b.move_end();
         assert_eq!(b.cursor(), 7);
         b.move_home();
         assert_eq!(b.cursor(), 0);
+    }
+
+    #[test]
+    fn vertical_move_keeps_goal_column() {
+        let mut b = buffer("abcdefgh\nxy\nABCDEFGH");
+        b.place_cursor(6);
+        b.move_down();
+        assert_eq!(b.line_col(), (1, 2));
+        b.move_down();
+        assert_eq!(b.line_col(), (2, 6));
+        b.move_up();
+        assert_eq!(b.line_col(), (1, 2));
+        b.move_up();
+        assert_eq!(b.line_col(), (0, 6));
+    }
+
+    #[test]
+    fn horizontal_move_clears_goal_column() {
+        let mut b = buffer("abcdefgh\nxy\nABCDEFGH");
+        b.place_cursor(6);
+        b.move_down();
+        b.move_left();
+        b.move_down();
+        assert_eq!(b.line_col(), (2, 1));
+    }
+
+    #[test]
+    fn escape_collapses_to_oldest() {
+        let mut b = buffer("one two three");
+        b.place_cursor(0);
+        b.add_cursor(4);
+        b.add_cursor(8);
+        b.collapse_cursors();
+        assert_eq!(b.heads(), vec![0]);
+    }
+
+    #[test]
+    fn map_offset_follows_bias() {
+        let edits = [Edit {
+            old: 2..4,
+            new: 2..5,
+        }];
+        assert_eq!(map_offset(&edits, 1, Bias::Right), 1);
+        assert_eq!(map_offset(&edits, 2, Bias::Left), 2);
+        assert_eq!(map_offset(&edits, 2, Bias::Right), 5);
+        assert_eq!(map_offset(&edits, 3, Bias::Left), 5);
+        assert_eq!(map_offset(&edits, 6, Bias::Left), 7);
+    }
+
+    #[test]
+    fn edits_since_reports_batches() {
+        let mut b = buffer("abc");
+        let v = b.version();
+        b.place_cursor(1);
+        b.insert_text("XY");
+        let batches: Vec<Vec<Edit>> = b.edits_since(v).map(|e| e.to_vec()).collect();
+        assert_eq!(
+            batches,
+            vec![vec![Edit {
+                old: 1..1,
+                new: 1..3
+            }]]
+        );
+    }
+
+    #[test]
+    fn dirty_tracks_undo_to_saved_point() {
+        let mut b = buffer("x");
+        assert!(!b.is_dirty());
+        b.place_cursor(1);
+        b.insert_char('y');
+        assert!(b.is_dirty());
+        b.mark_saved();
+        assert!(!b.is_dirty());
+        b.insert_char('z');
+        assert!(b.is_dirty());
+        b.undo();
+        assert!(!b.is_dirty());
+        b.undo();
+        assert!(b.is_dirty());
+        b.redo();
+        assert!(!b.is_dirty());
+    }
+
+    #[test]
+    fn line_endings_round_trip() {
+        let b = EditorBuffer::from_text("a\r\nb\r\n");
+        assert_eq!(b.text(), "a\nb\n");
+        assert_eq!(b.text_for_save(), "a\r\nb\r\n");
+        assert_eq!(LineEnding::detect("x\ny"), LineEnding::Unix);
+    }
+
+    #[test]
+    fn syntax_edits_use_byte_positions() {
+        let mut b = buffer("é\nx");
+        let v = b.version();
+        b.place_cursor(3);
+        b.insert_char('y');
+        let edit = *b.syntax_edits_since(v).next().unwrap();
+        assert_eq!(edit.start_byte, 4);
+        assert_eq!(edit.new_end_byte, 5);
+        assert_eq!(edit.start_position, Point { row: 1, column: 1 });
     }
 }

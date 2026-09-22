@@ -1,0 +1,252 @@
+//! Files feature — pure logic ported from the Go core's file endpoints (`internal/core/files.go`): list a
+//! workspace's files as a flat entry list, build the nested tree the UI shows, and read a file's contents with
+//! text/binary detection. No rendering — the `files_ui` crate draws this.
+
+use std::path::{Path, PathBuf};
+
+/// Directory names never descended into (the Go walk's `skipDirNames` plus `target`: the walk is eager and
+/// recursive, and a Rust `target/` has enough files to stall the synchronous rebuild on window open).
+const SKIP_DIRS: &[&str] = &[".git", ".pom", "node_modules", ".ddata", "target"];
+
+/// One file or directory, mirroring the Go `FileEntry`. `path` is forward-slash-relative to the workspace root
+/// (the Go model also carries a `repo`; a single-root workspace uses `""`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileEntry {
+    pub repo: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// A node in the tree the UI renders: a name plus children (empty for files). `path` is the full
+/// forward-slash-relative path (the node id in the Swift tree is `repo/path`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileNode {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub children: Vec<FileNode>,
+}
+
+/// Walk `root` recursively and return a flat, sorted entry list (directories included), skipping `SKIP_DIRS`.
+/// Faithful to the Go `WalkDir` listing: no hidden-file or gitignore filtering, sorted by path.
+pub fn list(root: &Path) -> Vec<FileEntry> {
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+fn walk(root: &Path, dir: &Path, out: &mut Vec<FileEntry>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let is_dir = meta.is_dir();
+        if is_dir && SKIP_DIRS.contains(&name.as_ref()) {
+            continue;
+        }
+        let full = entry.path();
+        let Some(rel) = rel_path(root, &full) else {
+            continue;
+        };
+        out.push(FileEntry {
+            repo: String::new(),
+            path: rel,
+            is_dir,
+            size: if is_dir { 0 } else { meta.len() },
+        });
+        if is_dir {
+            walk(root, &full, out);
+        }
+    }
+}
+
+/// The forward-slash path of `full` relative to `root` (`None` if `full` is not under `root`).
+fn rel_path(root: &Path, full: &Path) -> Option<String> {
+    let rel = full.strip_prefix(root).ok()?;
+    let mut parts = Vec::new();
+    for comp in rel.components() {
+        parts.push(comp.as_os_str().to_string_lossy().into_owned());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
+/// Build the nested tree from a flat entry list, mirroring the Swift `WFileTreeBuilder`: split each path on
+/// `/`, create intermediate directory nodes, and sort each level directories-first then by name.
+pub fn build_tree(entries: &[FileEntry]) -> Vec<FileNode> {
+    let mut roots: Vec<FileNode> = Vec::new();
+    for e in entries {
+        insert(&mut roots, "", &e.path, e.is_dir);
+    }
+    sort_level(&mut roots);
+    roots
+}
+
+fn insert(level: &mut Vec<FileNode>, prefix: &str, rel: &str, is_dir_leaf: bool) {
+    let (head, tail) = match rel.split_once('/') {
+        Some((h, t)) => (h, Some(t)),
+        None => (rel, None),
+    };
+    if head.is_empty() {
+        return;
+    }
+    let path = if prefix.is_empty() {
+        head.to_string()
+    } else {
+        format!("{prefix}/{head}")
+    };
+    let idx = match level.iter().position(|n| n.name == head) {
+        Some(i) => i,
+        None => {
+            level.push(FileNode {
+                name: head.to_string(),
+                path: path.clone(),
+                // A node with children (or a non-leaf segment) is a directory.
+                is_dir: tail.is_some() || is_dir_leaf,
+                children: Vec::new(),
+            });
+            level.len() - 1
+        }
+    };
+    if let Some(rest) = tail {
+        level[idx].is_dir = true;
+        insert(&mut level[idx].children, &path, rest, is_dir_leaf);
+    }
+}
+
+fn sort_level(level: &mut [FileNode]) {
+    level.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir) // directories first
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    for node in level.iter_mut() {
+        sort_level(&mut node.children);
+    }
+}
+
+/// A file's contents, mirroring the Go `ReadFile` response: decoded `text` for text files, or `binary` set for
+/// non-text (images/blobs the UI can't show as text yet).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileContent {
+    pub text: Option<String>,
+    pub binary: bool,
+}
+
+/// Bytes scanned for a NUL when classifying a file as binary (matches the Go head-read threshold).
+const BINARY_SNIFF: usize = 8192;
+
+/// Read `root/rel` and classify it as text or binary. A NUL byte in the first `BINARY_SNIFF` bytes marks binary
+/// (the Go core's heuristic); otherwise the bytes are decoded lossily as UTF-8.
+pub fn read(root: &Path, rel: &str) -> std::io::Result<FileContent> {
+    let full = safe_join(root, rel)?;
+    let bytes = std::fs::read(&full)?;
+    let binary = bytes.iter().take(BINARY_SNIFF).any(|b| *b == 0);
+    Ok(FileContent {
+        text: if binary {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&bytes).into_owned())
+        },
+        binary,
+    })
+}
+
+/// Write `text` to `root/rel`, creating missing parent directories, and return the file's new mtime.
+pub fn write(root: &Path, rel: &str, text: &str) -> std::io::Result<std::time::SystemTime> {
+    let full = safe_join(root, rel)?;
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&full, text)?;
+    std::fs::metadata(&full)?.modified()
+}
+
+/// The last-modified time of `root/rel`.
+pub fn mtime(root: &Path, rel: &str) -> std::io::Result<std::time::SystemTime> {
+    std::fs::metadata(safe_join(root, rel)?)?.modified()
+}
+
+/// Join `rel` onto `root`, rejecting `..` traversal so a path can never escape the workspace root.
+fn safe_join(root: &Path, rel: &str) -> std::io::Result<PathBuf> {
+    if rel.split('/').any(|c| c == ".." || c == ".") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path traversal rejected",
+        ));
+    }
+    Ok(root.join(rel))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let base =
+            std::env::temp_dir().join(format!("pom-files-test-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::create_dir_all(base.join(".git")).unwrap();
+        std::fs::write(base.join("Cargo.toml"), b"[package]").unwrap();
+        std::fs::write(base.join("src/main.rs"), b"fn main() {}").unwrap();
+        std::fs::write(base.join(".git/HEAD"), b"ref: x").unwrap();
+        std::fs::write(base.join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
+        base
+    }
+
+    #[test]
+    fn lists_files_skipping_git() {
+        let root = tmp("list");
+        let entries = list(&root);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"Cargo.toml"));
+        assert!(paths.contains(&"src"));
+        assert!(paths.contains(&"src/main.rs"));
+        assert!(!paths.iter().any(|p| p.starts_with(".git")));
+    }
+
+    #[test]
+    fn builds_tree_dirs_first() {
+        let root = tmp("tree");
+        let tree = build_tree(&list(&root));
+        // `src` (dir) sorts before `Cargo.toml` (file) at the top level.
+        assert_eq!(tree[0].name, "src");
+        assert!(tree[0].is_dir);
+        assert_eq!(tree[0].children[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn reads_text_and_detects_binary() {
+        let root = tmp("read");
+        assert_eq!(
+            read(&root, "src/main.rs").unwrap().text.as_deref(),
+            Some("fn main() {}")
+        );
+        assert!(read(&root, "blob.bin").unwrap().binary);
+        assert!(read(&root, "../escape").is_err());
+    }
+
+    #[test]
+    fn writes_creating_parents() {
+        let root = tmp("write");
+        let written = write(&root, "new/dir/a.txt", "hi").unwrap();
+        assert_eq!(
+            read(&root, "new/dir/a.txt").unwrap().text.as_deref(),
+            Some("hi")
+        );
+        assert_eq!(mtime(&root, "new/dir/a.txt").unwrap(), written);
+        assert!(write(&root, "../escape", "x").is_err());
+    }
+}

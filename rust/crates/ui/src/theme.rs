@@ -78,6 +78,7 @@ pub struct ThemeColors {
     pub text_muted: Rgba,
     pub text_placeholder: Rgba,
     pub text_accent: Rgba,
+    pub warning: Rgba,
     pub text_disabled: Rgba,
 
     pub icon: Rgba,
@@ -92,6 +93,7 @@ pub struct ThemeColors {
 
     pub editor_background: Rgba,
     pub editor_foreground: Rgba,
+    pub editor_active_line: Rgba,
 
     pub scrollbar_thumb_background: Rgba,
     pub scrollbar_thumb_hover_background: Rgba,
@@ -127,6 +129,7 @@ pub fn one_dark() -> ThemeColors {
         text_muted: h("#a9afbc"),
         text_placeholder: h("#878a98"),
         text_accent: h("#74ade8"),
+        warning: h("#dec184"),
         text_disabled: h("#878a98"),
         icon: h("#dce0e5"),
         icon_muted: h("#a9afbc"),
@@ -138,6 +141,7 @@ pub fn one_dark() -> ThemeColors {
         tab_inactive_background: h("#2f343e"),
         editor_background: h("#282c33"),
         editor_foreground: h("#acb2be"),
+        editor_active_line: h("#2f343ebf"),
         scrollbar_thumb_background: h("#c8ccd44c"),
         scrollbar_thumb_hover_background: h("#363c46"),
         search_match_background: h("#74ade866"),
@@ -170,6 +174,7 @@ pub fn one_light() -> ThemeColors {
         text_muted: h("#58585a"),
         text_placeholder: h("#7e8086"),
         text_accent: h("#5c78e2"),
+        warning: h("#a48819"),
         text_disabled: h("#7e8086"),
         icon: h("#242529"),
         icon_muted: h("#58585a"),
@@ -181,6 +186,7 @@ pub fn one_light() -> ThemeColors {
         tab_inactive_background: h("#ebebec"),
         editor_background: h("#fafafa"),
         editor_foreground: h("#242529"),
+        editor_active_line: h("#ebebecbf"),
         scrollbar_thumb_background: h("#383a414c"),
         scrollbar_thumb_hover_background: h("#dfdfe0"),
         search_match_background: h("#5c79e266"),
@@ -213,6 +219,7 @@ pub fn gruvbox_dark() -> ThemeColors {
         text_muted: h("#c5b597"),
         text_placeholder: h("#998b78"),
         text_accent: h("#83a598"),
+        warning: h("#f9bd2f"),
         text_disabled: h("#998b78"),
         icon: h("#fbf1c7"),
         icon_muted: h("#c5b597"),
@@ -224,6 +231,7 @@ pub fn gruvbox_dark() -> ThemeColors {
         tab_inactive_background: h("#3a3735"),
         editor_background: h("#282828"),
         editor_foreground: h("#ebdbb2"),
+        editor_active_line: h("#3c3836bf"),
         scrollbar_thumb_background: h("#a899844c"),
         scrollbar_thumb_hover_background: h("#fbf1c74c"),
         search_match_background: h("#83a59866"),
@@ -256,6 +264,7 @@ pub fn ayu_mirage() -> ThemeColors {
         text_muted: h("#9a9a98"),
         text_placeholder: h("#7b7d7f"),
         text_accent: h("#72cffe"),
+        warning: h("#fecf72"),
         text_disabled: h("#7b7d7f"),
         icon: h("#cccac2"),
         icon_muted: h("#9a9a98"),
@@ -267,6 +276,7 @@ pub fn ayu_mirage() -> ThemeColors {
         tab_inactive_background: h("#353944"),
         editor_background: h("#242835"),
         editor_foreground: h("#cccac2"),
+        editor_active_line: h("#2f3547bf"),
         scrollbar_thumb_background: h("#cccac24c"),
         scrollbar_thumb_hover_background: h("#43464f"),
         search_match_background: h("#73cffe66"),
@@ -308,6 +318,39 @@ pub fn set_ui_font_weight(weight: u16) {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct ChromeFlags {
+    pub diagnostics: bool,
+    pub cursor_position: bool,
+    pub language: bool,
+    pub branch: bool,
+    pub session_name: bool,
+}
+
+static CHROME: RwLock<ChromeFlags> = RwLock::new(ChromeFlags {
+    diagnostics: true,
+    cursor_position: true,
+    language: true,
+    branch: true,
+    session_name: true,
+});
+
+pub fn chrome() -> ChromeFlags {
+    CHROME.read().map(|g| *g).unwrap_or(ChromeFlags {
+        diagnostics: true,
+        cursor_position: true,
+        language: true,
+        branch: true,
+        session_name: true,
+    })
+}
+
+pub fn set_chrome(flags: ChromeFlags) {
+    if let Ok(mut g) = CHROME.write() {
+        *g = flags;
+    }
+}
+
 static BUNDLED_FONTS: RwLock<(Option<String>, Option<String>)> = RwLock::new((None, None));
 
 /// Record the real family names of the bundled fonts (sans, mono) so `snap_weight` can tell them apart from
@@ -323,10 +366,19 @@ pub fn set_bundled_fonts(sans: Option<String>, mono: Option<String>) {
 /// (the mono font silently becomes a sans one); clamping keeps the chosen family. Within [100,700] fontdb picks
 /// the nearest available face. System families, which carry their own range, pass through unchanged.
 pub fn snap_weight(family: Option<&str>, weight: u16) -> u16 {
-    let is_bundled = BUNDLED_FONTS.read().ok().is_some_and(|g| {
-        family.is_some() && (family == g.0.as_deref() || family == g.1.as_deref())
-    });
-    if is_bundled {
+    let Some(fam) = family else {
+        return weight;
+    };
+    let Ok(g) = BUNDLED_FONTS.read() else {
+        return weight;
+    };
+    if g.1.as_deref() == Some(fam) {
+        if weight <= 550 {
+            400
+        } else {
+            700
+        }
+    } else if g.0.as_deref() == Some(fam) {
         weight.clamp(100, 700)
     } else {
         weight
