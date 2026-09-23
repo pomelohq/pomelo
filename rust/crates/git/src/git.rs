@@ -8,6 +8,9 @@ use std::process::{Command, Stdio};
 
 use imara_diff::{sources::lines, Algorithm, Diff, InternedInput};
 
+mod blame;
+pub use blame::{blame, entry_for_row, inline_text, relative_timestamp, BlameEntry};
+
 /// What the buffer is compared against. `None` means the file has no version there (new, or not staged).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiffBases {
@@ -228,7 +231,7 @@ pub fn index_after(
     Some(Some(out))
 }
 
-fn git_with_input(dir: &Path, args: &[&str], input: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn git_with_input(dir: &Path, args: &[&str], input: &[u8]) -> Option<Vec<u8>> {
     use std::io::Write;
     let mut child = Command::new("git")
         .arg("-C")

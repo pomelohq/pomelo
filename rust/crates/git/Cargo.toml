@@ -10,3 +10,7 @@ path = "src/git.rs"
 
 [dependencies]
 imara-diff = "0.2.0"
+time = { version = "0.3", features = ["local-offset"] }
+
+[dev-dependencies]
+time = { version = "0.3", features = ["local-offset", "macros"] }

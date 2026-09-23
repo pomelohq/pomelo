@@ -43,6 +43,8 @@ const VERTICAL_SCROLL_MARGIN: f32 = 3.0;
 const HORIZONTAL_SCROLL_MARGIN: f32 = 5.0;
 /// With soft wrap off, lines still break past this many columns so pathological lines stay cheap to lay out.
 const UNWRAPPED_MAX_COLUMNS: f32 = 512.0;
+/// Blank columns between a line's end and its blame annotation.
+const INLINE_BLAME_PADDING: f32 = 7.0;
 const FOLD_PILL_PAD: f32 = 4.0;
 /// Line numbers reserve at least this many digits so the gutter doesn't resize as a file grows past 999 lines.
 const MIN_LINE_NUMBER_DIGITS: usize = 4;
@@ -1560,6 +1562,26 @@ impl FileItem {
             .unwrap_or_default()
     }
 
+    /// The display row the blame annotation trails: the newest caret's, while focused and off a blank line.
+    fn inline_blame_row(&self) -> Option<usize> {
+        let b = self.buffer.as_ref()?;
+        if !self.focused || self.git.blame().is_empty() {
+            return None;
+        }
+        let head = b.newest().head();
+        let line = b.rope.char_to_line(head.min(b.rope.len_chars()));
+        (b.line_len(line) > 0).then(|| self.position(head).0)
+    }
+
+    /// `author, when` for the newest caret's line.
+    fn inline_blame_text(&self) -> Option<String> {
+        let b = self.buffer.as_ref()?;
+        let line = b
+            .rope
+            .char_to_line(b.newest().head().min(b.rope.len_chars()));
+        git::entry_for_row(self.git.blame(), line).map(git::inline_text)
+    }
+
     /// Hunks touching any selection's lines; a deletion counts when it sits right above or below them.
     fn hunks_in_selections(&self) -> Vec<git::DiffHunk> {
         let Some(b) = self.buffer.as_ref() else {
@@ -2264,6 +2286,7 @@ impl Item for FileItem {
         let last = (first + visible).min(dcount);
         // Text rows only (no gutter): the shell shifts this node left by `scroll_x`. The gutter is a separate
         // fixed overlay (see `gutter`), so long lines scroll under a stationary line-number column.
+        let blame_row = self.inline_blame_row();
         let mut body = div().col().flex(1.0);
         for row_index in first..last {
             let Some(row) = self.row(row_index) else {
@@ -2303,6 +2326,16 @@ impl Item for FileItem {
             }
             if empty && row.indent == 0 {
                 r = r.child(label(" ").size(EDIT_FONT).mono());
+            }
+            if Some(row_index) == blame_row {
+                if let Some(text) = self.inline_blame_text() {
+                    let hint = theme().hint;
+                    r = r
+                        .child(div().w_px(INLINE_BLAME_PADDING * char_advance()))
+                        .child(icon(IconKind::FileGit).size(16.0).color(hint))
+                        .child(div().w_px(8.0))
+                        .child(label(text).size(EDIT_FONT).mono().color(hint));
+                }
             }
             // The row resumes after the placeholder with the text following the fold's end, so a block reads `{...}`.
             if !self.soft_break_after(row_index) {
@@ -6783,6 +6816,19 @@ mod hunk_action_tests {
         assert_eq!(item.disp_count(), 4);
         assert_eq!(item.row(1).and_then(|r| r.deleted), Some(1));
         assert_eq!(item.row(2).map(|r| (r.line, r.deleted)), Some((1, None)));
+    }
+
+    #[test]
+    fn caret_line_shows_its_blame_while_focused() {
+        let repo = Repo::new("blame", "one\n\nthree\n");
+        let mut item = repo.open("one\n\nthree\n");
+        assert_eq!(item.inline_blame_row(), None);
+        item.focused = true;
+        item.buffer.as_mut().unwrap().place_cursor(0);
+        assert_eq!(item.inline_blame_row(), Some(0));
+        assert_eq!(item.inline_blame_text().as_deref(), Some("test, Just now"));
+        item.buffer.as_mut().unwrap().place_cursor(4);
+        assert_eq!(item.inline_blame_row(), None);
     }
 
     #[test]
