@@ -195,6 +195,24 @@ const COMMANDS: &[(&str, PaletteAction, &[&str])] = &[
         Key(EditKey::MoveToEnclosingBracket),
         &["ctrl-m"],
     ),
+    ("editor::GoToHunk", Key(EditKey::GoToHunk), &["cmd-f8"]),
+    (
+        "editor::GoToPreviousHunk",
+        Key(EditKey::GoToPreviousHunk),
+        &["cmd-shift-f8"],
+    ),
+    ("git::Restore", Key(EditKey::GitRestore), &["cmd-alt-z"]),
+    (
+        "git::ToggleStaged",
+        Key(EditKey::ToggleStaged),
+        &["cmd-alt-y"],
+    ),
+    ("git::StageAndNext", Key(EditKey::StageAndNext), &["cmd-y"]),
+    (
+        "git::UnstageAndNext",
+        Key(EditKey::UnstageAndNext),
+        &["cmd-shift-y"],
+    ),
     ("editor::Undo", Key(EditKey::Undo), &["cmd-z"]),
     ("editor::Redo", Key(EditKey::Redo), &["cmd-shift-z"]),
     (

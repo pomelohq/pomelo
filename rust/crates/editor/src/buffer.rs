@@ -931,6 +931,17 @@ impl EditorBuffer {
         }
     }
 
+    /// Replace several ranges in one undo step; carets move with the text before them.
+    pub fn replace_ranges(&mut self, edits: Vec<(Range<usize>, String)>) {
+        self.transact(|this| {
+            let applied = this.edit(edits);
+            this.remap_selections(&applied, |s, map| {
+                s.start = map(s.start, Bias::Left);
+                s.end = map(s.end, Bias::Left);
+            });
+        });
+    }
+
     pub fn insert_text(&mut self, text: &str) {
         let edits = self
             .selections
