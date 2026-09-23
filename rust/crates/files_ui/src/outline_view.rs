@@ -117,6 +117,8 @@ pub struct OutlineView {
     /// Scrolled distance not yet worth a whole row.
     scroll_remainder: f32,
     pub scrollbar: crate::list_scrollbar::ScrollbarReveal,
+    /// The click id under the pointer.
+    pub hovered: Option<u64>,
     cursor: usize,
     /// The window size in design px, which the picker and its preview size themselves by.
     viewport: (f32, f32),
@@ -160,6 +162,7 @@ impl OutlineView {
             scroll_top: 0,
             scroll_remainder: 0.0,
             scrollbar: Default::default(),
+            hovered: None,
             cursor,
             viewport,
             preview,
@@ -509,7 +512,7 @@ impl OutlineView {
             "Preview",
             PREVIEW_KEY,
             text_color,
-            false,
+            self.hovered == Some(id_base + OutlineClick::TogglePreview.offset()),
         ));
         if visible {
             let layout_button = |click: OutlineClick, kind: IconKind, selected: bool| -> Node {
@@ -522,7 +525,9 @@ impl OutlineView {
                     .rounded(4.0)
                     .on_click(id_base + click.offset())
                     .child(icon(kind).size(14.0).color(colors.icon));
-                if selected {
+                if self.hovered == Some(id_base + click.offset()) {
+                    button = button.bg(colors.ghost_element_hover);
+                } else if selected {
                     button = button.bg(colors.element_selected);
                 }
                 button.into()
@@ -566,7 +571,9 @@ impl OutlineView {
             .py(4.0)
             .rounded(4.0)
             .on_click(id_base + OutlineClick::Row(row).offset());
-        if row == self.selected {
+        if self.hovered == Some(id_base + OutlineClick::Row(row).offset()) {
+            item = item.bg(colors.ghost_element_hover);
+        } else if row == self.selected {
             item = item.bg(colors.element_selected);
         }
         let text = div()

@@ -4999,12 +4999,33 @@ impl FunctionView for FilesView {
     }
 
     fn set_hover(&mut self, id: Option<u64>) -> bool {
-        // Only tab hits reveal a close button, so only a change in the hovered tab needs a repaint.
+        // Tab hits reveal a close button and modal rows light up, so only changes there need a repaint.
         let tabbish =
             |x: Option<u64>| x.is_some_and(|v| (TAB_ACTIVATE_BASE..STICKY_BASE).contains(&v));
-        let changed = self.hover != id && (tabbish(self.hover) || tabbish(id));
+        let modal = |x: Option<u64>| x.is_some_and(|v| (PALETTE_BASE..SEARCH_BASE).contains(&v));
+        let changed = self.hover != id
+            && (tabbish(self.hover) || tabbish(id) || modal(self.hover) || modal(id));
         self.hover = id;
-        changed
+        let over_modal = id.filter(|v| (PALETTE_BASE..SEARCH_BASE).contains(v));
+        if let Some((_, view)) = self.outline.as_mut() {
+            view.hovered = over_modal;
+            // Pointing into the list shows its scrollbar, as scrolling does.
+            if over_modal.is_some_and(|v| {
+                matches!(
+                    outline_view::OutlineClick::from_offset(v.saturating_sub(OUTLINE_BASE)),
+                    outline_view::OutlineClick::Row(_)
+                )
+            }) {
+                view.scrollbar.reveal();
+            }
+        }
+        if let Some((_, palette)) = self.palette.as_mut() {
+            palette.hovered = over_modal;
+            if over_modal.is_some_and(|v| v > PALETTE_BASE && v < OUTLINE_BASE) {
+                palette.scrollbar.reveal();
+            }
+        }
+        changed || over_modal.is_some()
     }
 
     fn divider_axis(&self, id: u64) -> Option<DividerAxis> {
@@ -6025,6 +6046,25 @@ mod outline_tests {
 
         view.editor_key(EditKey::TogglePickerPreview, false);
         assert_eq!(view.outline_preview, outline_view::PreviewLayout::Hidden);
+    }
+
+    #[test]
+    fn hovering_a_row_lights_it_and_reveals_the_scrollbar() {
+        let mut view = rust_view("fn a() {}\nfn b() {}\n");
+        view.editor_key(EditKey::ToggleOutline, false);
+        let row = OUTLINE_BASE + outline_view::OutlineClick::Row(1).offset();
+        assert!(view.set_hover(Some(row)));
+        let (_, outline) = view.outline.as_ref().unwrap();
+        assert_eq!(outline.hovered, Some(row));
+        assert!(outline.scrollbar.is_animating());
+        let node = outline.render(OUTLINE_BASE, None);
+        let painted = ui::render(&node, Rect::new(0.0, 0.0, 600.0, 800.0, Rgba::TRANSPARENT));
+        assert!(painted
+            .rects
+            .iter()
+            .any(|r| r.color == theme().ghost_element_hover));
+        view.set_hover(None);
+        assert_eq!(view.outline.as_ref().unwrap().1.hovered, None);
     }
 
     #[test]
