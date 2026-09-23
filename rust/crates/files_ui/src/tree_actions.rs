@@ -492,6 +492,19 @@ impl FilesView {
         self.flat_dirty = true;
     }
 
+    /// Expand the folders above `path` and scroll its row into the tree's view.
+    pub(crate) fn reveal_row(&mut self, path: &str) {
+        self.reveal_in_tree(path);
+        let rows = self.visible_rows();
+        let Some(index) = rows.iter().position(|row| row.path == path) else {
+            return;
+        };
+        let top = 4.0 + index as f32 * ROW_H;
+        if top < self.scroll || top + ROW_H > self.scroll + self.viewport_h {
+            self.scroll = (top - self.viewport_h / 2.0).max(0.0);
+        }
+    }
+
     fn scroll_edit_row_into_view(&mut self) {
         let rows = self.visible_rows();
         let Some(index) = rows.iter().position(|row| row.edit) else {

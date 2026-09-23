@@ -2574,6 +2574,10 @@ impl Searchable for FileItem {
 }
 
 impl Item for FileItem {
+    fn abs_path(&self) -> Option<PathBuf> {
+        Some(self.root.join(&self.path))
+    }
+
     fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
         self.saved_state()
     }
@@ -4029,6 +4033,10 @@ impl ImageItem {
 }
 
 impl Item for ImageItem {
+    fn abs_path(&self) -> Option<PathBuf> {
+        Some(self.root.join(&self.path))
+    }
+
     fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
         self.saved_state()
     }
@@ -5478,6 +5486,22 @@ impl FunctionView for FilesView {
 
     fn zoom_shown(&self) -> bool {
         self.panes.zoom_shown()
+    }
+
+    fn pane_group(&self) -> Option<&PaneGroupView> {
+        Some(&self.panes)
+    }
+
+    fn pane_group_mut(&mut self) -> Option<&mut PaneGroupView> {
+        Some(&mut self.panes)
+    }
+
+    fn reveal_in_tree(&mut self, path: &Path) {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
+            return;
+        };
+        let relative = relative.to_string_lossy().into_owned();
+        self.reveal_row(&relative);
     }
 
     fn claims_key(&self, key: EditKey) -> bool {

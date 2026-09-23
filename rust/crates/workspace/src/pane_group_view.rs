@@ -63,6 +63,28 @@ pub struct PaneGroupConfig {
     pub zoom_whole_group: bool,
 }
 
+/// Which tabs a tab context-menu close acts on, relative to the tab it was opened on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseTabs {
+    This,
+    Others,
+    Left,
+    Right,
+    /// Tabs without unsaved changes.
+    Clean,
+    All,
+}
+
+/// What a tab's context menu offers: which closes apply, and the tab's file if it shows one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabMenuState {
+    pub has_others: bool,
+    pub has_left: bool,
+    pub has_right: bool,
+    pub has_clean: bool,
+    pub path: Option<std::path::PathBuf>,
+}
+
 /// A click the group leaves to its owner, which decides what the action means for its items.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GroupClick {
@@ -879,6 +901,72 @@ impl PaneGroupView {
             (offset / PANE_STRIDE) as usize,
             (offset % PANE_STRIDE) as usize,
         ))
+    }
+
+    /// The pane (by id) and index of the tab a click id names.
+    pub fn tab_at_id(&self, id: u64) -> Option<(u64, usize)> {
+        let (p, index) = self.tab_of(id)?;
+        let pane = self.group.leaf_at(self.pane_order.get(p)?)?;
+        (index < pane.open.len()).then_some((pane.id, index))
+    }
+
+    pub fn tab_menu_state(&self, pane_id: u64, index: usize) -> Option<TabMenuState> {
+        let pane = self.group.leaf_at(&self.group.path_of(pane_id)?)?;
+        let item = pane.open.get(index)?;
+        Some(TabMenuState {
+            has_others: pane.open.len() > 1,
+            has_left: index > 0,
+            has_right: index + 1 < pane.open.len(),
+            has_clean: pane.open.iter().any(|item| !item.is_dirty()),
+            path: item.abs_path(),
+        })
+    }
+
+    /// Close tabs of the pane `pane_id` relative to its tab `index`; the tab stays active when it remains, and
+    /// a pane left empty leaves the group unless it is the last one.
+    pub fn close_tabs(&mut self, pane_id: u64, index: usize, which: CloseTabs) {
+        let Some(path) = self.group.path_of(pane_id) else {
+            return;
+        };
+        let Some(pane) = self.group.leaf_at_mut(&path) else {
+            return;
+        };
+        let keep: Vec<bool> = pane
+            .open
+            .iter()
+            .enumerate()
+            .map(|(at, item)| match which {
+                CloseTabs::This => at != index,
+                CloseTabs::Others => at == index,
+                CloseTabs::Left => at >= index,
+                CloseTabs::Right => at <= index,
+                CloseTabs::Clean => item.is_dirty(),
+                CloseTabs::All => false,
+            })
+            .collect();
+        let active = pane.active;
+        let target = pane.open.get(index).and_then(|item| item.id());
+        let mut at = 0;
+        pane.open.retain(|_| {
+            let kept = keep.get(at).copied().unwrap_or(true);
+            at += 1;
+            kept
+        });
+        let kept_before =
+            |position: usize| keep.iter().take(position).filter(|kept| **kept).count();
+        pane.active = if pane.open.is_empty() {
+            None
+        } else if let Some(position) = target.and_then(|id| pane.index_of_id(&id)) {
+            Some(position)
+        } else {
+            let fallback = active.map_or(0, kept_before);
+            Some(fallback.min(pane.open.len() - 1))
+        };
+        if pane.open.is_empty() && self.group.leaf_count() > 1 {
+            self.remove_pane(&path);
+        } else {
+            self.active = path;
+        }
     }
 
     pub fn begin_tab_drag(&mut self, id: u64) -> bool {
@@ -2086,5 +2174,65 @@ mod tests {
         assert_eq!(view.layout(area()).0.len(), 2);
         assert!(view.pane_command(PaneCommand::ToggleZoom));
         assert!(!view.zoom_shown());
+    }
+
+    fn titles_of(view: &PaneGroupView) -> Vec<String> {
+        view.pane_at(&[])
+            .map(|pane| pane.open.iter().map(|item| item.title()).collect())
+            .unwrap_or_default()
+    }
+
+    fn three_tabs() -> (PaneGroupView, u64) {
+        let mut view = view();
+        if let Some(pane) = view.active_pane_mut() {
+            pane.add_item(Box::new(Plain("c")));
+        }
+        view.layout(area());
+        let pane = view.pane_at(&[]).map(|pane| pane.id).unwrap_or_default();
+        (view, pane)
+    }
+
+    #[test]
+    fn the_tab_menu_closes_relative_to_its_tab() {
+        let (view, pane) = three_tabs();
+        assert_eq!(view.tab_at_id(view.tab_id(0, 1)), Some((pane, 1)));
+        let state = view.tab_menu_state(pane, 0);
+        assert_eq!(
+            state
+                .as_ref()
+                .map(|s| (s.has_left, s.has_right, s.has_others)),
+            Some((false, true, true))
+        );
+
+        let (mut view, pane) = three_tabs();
+        view.close_tabs(pane, 1, CloseTabs::Others);
+        assert_eq!(titles_of(&view), ["b"]);
+        assert_eq!(
+            view.active_item().map(|item| item.title()),
+            Some("b".into())
+        );
+
+        let (mut view, pane) = three_tabs();
+        view.close_tabs(pane, 1, CloseTabs::Left);
+        assert_eq!(titles_of(&view), ["b", "c"]);
+
+        let (mut view, pane) = three_tabs();
+        view.close_tabs(pane, 1, CloseTabs::Right);
+        assert_eq!(titles_of(&view), ["a", "b"]);
+
+        let (mut view, pane) = three_tabs();
+        view.close_tabs(pane, 1, CloseTabs::This);
+        assert_eq!(titles_of(&view), ["a", "c"]);
+
+        let (mut view, pane) = three_tabs();
+        view.close_tabs(pane, 0, CloseTabs::Clean);
+        assert!(titles_of(&view).is_empty());
+        assert!(view.active_item().is_none());
+
+        let (mut view, pane) = three_tabs();
+        let item = view.clone_active_of(&[]);
+        view.split(&[], SplitDirection::Right, item);
+        view.close_tabs(pane, 0, CloseTabs::All);
+        assert_eq!(view.group.leaf_count(), 1);
     }
 }
