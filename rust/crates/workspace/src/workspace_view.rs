@@ -53,6 +53,7 @@ enum Drag {
     None,
     Terminal,
     TerminalDivider(u64),
+    TerminalTab,
     Left,
     Right,
     Bottom,
@@ -586,6 +587,33 @@ impl WorkspaceView {
 
         let mut overlays: Vec<Overlay> = Vec::new();
         overlays.append(&mut center_overlays);
+        if self.dragging == Drag::TerminalTab {
+            if let Some(view) = self.layout.terminal_view.as_ref() {
+                let mut drag = Painted::default();
+                if let Some(preview) = view.tab_drag_overlay() {
+                    drag.rects.push(Rect::new(
+                        preview.x,
+                        preview.y,
+                        preview.w,
+                        preview.h,
+                        ui::theme().text_accent.alpha(0.22),
+                    ));
+                }
+                if let (Some((gx, gy)), Some((node, gw, gh))) =
+                    (self.tab_ghost_at, view.tab_drag_ghost())
+                {
+                    let area = Rect::new(gx - 14.0, gy - gh / 2.0, gw, gh, Rgba::TRANSPARENT);
+                    let ghost = ui::render(&node, area);
+                    drag.rects.extend(ghost.rects);
+                    drag.texts.extend(ghost.texts);
+                    drag.icons.extend(ghost.icons);
+                }
+                overlays.push(Overlay {
+                    painted: drag,
+                    clip: None,
+                });
+            }
+        }
         {
             let bp = Painted {
                 rects: self.layout.border_lines(w, h),
@@ -875,11 +903,15 @@ impl WorkspaceView {
     }
 
     fn hit(&self, x: f32, y: f32) -> Option<u64> {
+        self.hit_with_rect(x, y).map(|(id, _)| id)
+    }
+
+    fn hit_with_rect(&self, x: f32, y: f32) -> Option<(u64, Rect)> {
         self.header_hits
             .iter()
             .rev()
             .find(|(r, _)| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
-            .map(|(_, id)| *id)
+            .map(|(r, id)| (*id, *r))
     }
 
     /// Whether `(x, y)` is over a clickable region (for the shell to show a pointer cursor).
@@ -892,7 +924,7 @@ impl WorkspaceView {
             Drag::Left | Drag::Right | Drag::Tree => return Some(ResizeCursor::Horizontal),
             Drag::Bottom => return Some(ResizeCursor::Vertical),
             Drag::Center(id) | Drag::TerminalDivider(id) => return self.center_divider_cursor(id),
-            Drag::Tab | Drag::EditorSel | Drag::Terminal => return None,
+            Drag::Tab | Drag::EditorSel | Drag::Terminal | Drag::TerminalTab => return None,
             Drag::None => {}
         }
         let (w, h) = self.viewport;
@@ -1458,8 +1490,16 @@ impl WorkspaceView {
     }
 
     fn mouse_move_inner(&mut self, x: f32, y: f32) -> bool {
+        let over = self.hit_with_rect(x, y);
         match self.dragging {
             Drag::Terminal => false,
+            Drag::TerminalTab => {
+                self.tab_ghost_at = Some((x, y));
+                self.layout
+                    .terminal_view
+                    .as_mut()
+                    .is_some_and(|v| v.update_tab_drag(x, y, over))
+            }
             Drag::TerminalDivider(id) => self
                 .layout
                 .terminal_view
@@ -1492,7 +1532,7 @@ impl WorkspaceView {
                 self.layout
                     .files_view
                     .as_mut()
-                    .map(|v| v.update_tab_drag(x, y))
+                    .map(|v| v.update_tab_drag(x, y, over))
                     .unwrap_or(false)
             }
             Drag::EditorSel => self
@@ -1505,10 +1545,19 @@ impl WorkspaceView {
                 if let Some((id, px, py)) = self.pending_tab {
                     if (x - px).abs() > 5.0 || (y - py).abs() > 5.0 {
                         self.pending_tab = None;
-                        if let Some(v) = self.layout.files_view.as_mut() {
+                        if (crate::TERMINAL_VIEW_BASE..FUNC_VIEW_BASE).contains(&id) {
+                            if let Some(v) = self.layout.terminal_view.as_mut() {
+                                if v.begin_tab_drag(id) {
+                                    self.dragging = Drag::TerminalTab;
+                                    v.update_tab_drag(x, y, over);
+                                    self.tab_ghost_at = Some((x, y));
+                                    return true;
+                                }
+                            }
+                        } else if let Some(v) = self.layout.files_view.as_mut() {
                             if v.begin_tab_drag(id) {
                                 self.dragging = Drag::Tab;
-                                v.update_tab_drag(x, y);
+                                v.update_tab_drag(x, y, over);
                                 self.tab_ghost_at = Some((x, y));
                                 return true;
                             }
@@ -1635,6 +1684,14 @@ impl WorkspaceView {
                 .as_ref()
                 .is_some_and(|v| v.is_tab(id))
             {
+                self.pending_tab = Some((id, x, y));
+            } else if self
+                .layout
+                .terminal_view
+                .as_ref()
+                .is_some_and(|v| v.is_tab(id))
+            {
+                self.set_terminal_focus(true);
                 self.pending_tab = Some((id, x, y));
             } else {
                 self.header_click(id);
@@ -1826,10 +1883,16 @@ impl WorkspaceView {
             if let Some(v) = self.layout.files_view.as_mut() {
                 v.drop_tab();
             }
+        } else if self.dragging == Drag::TerminalTab {
+            if let Some(v) = self.layout.terminal_view.as_mut() {
+                v.drop_tab();
+            }
         } else if self.dragging != Drag::None {
             self.pending.persist = true;
         } else if let Some((id, _, _)) = self.pending_tab.take() {
-            if let Some(v) = self.layout.files_view.as_mut() {
+            if (crate::TERMINAL_VIEW_BASE..FUNC_VIEW_BASE).contains(&id) {
+                self.header_click(id);
+            } else if let Some(v) = self.layout.files_view.as_mut() {
                 v.on_click(id);
             }
         }

@@ -5,10 +5,11 @@ use std::path::PathBuf;
 
 use editor::search::Direction;
 use terminal::{Keystroke, Modifiers, Palette, TerminalHost, Waker};
-use ui::{label, theme, IconKind, Painted, Rect, Rgba};
+use ui::{label, theme, IconKind, Node, Painted, Rect, Rgba};
 use workspace::pane::{render_pane, Pane, PaneClickIds, TabBarButton, TabBarConfig};
 use workspace::pane_group::{self, DividerRef, LeafPlacement, Member, SplitDirection};
 use workspace::search_bar::{SearchBar, SearchClick, SearchField, SearchSupport};
+use workspace::tab_drag::{self, DropTarget, TabDrag, TabDrop};
 use workspace::{
     DividerAxis, EditKey, TerminalKeyOutcome, TerminalOpenTarget, TerminalPanelView,
     TerminalSyncOutcome, FUNC_VIEW_BASE, TERMINAL_VIEW_BASE,
@@ -126,6 +127,7 @@ pub struct TerminalPanel {
     spawn_error: Option<String>,
     /// The user closed the last terminal; reported on the next sync so the panel closes like when shells exit.
     closed_last: bool,
+    tab_drag: Option<TabDrag>,
 }
 
 impl TerminalPanel {
@@ -147,6 +149,7 @@ impl TerminalPanel {
             focused: false,
             spawn_error: None,
             closed_last: false,
+            tab_drag: None,
         }
     }
 
@@ -331,6 +334,16 @@ impl TerminalPanel {
         }
     }
 
+    /// The pane (render index) and tab index a tab click id points at.
+    fn tab_of(&self, id: u64) -> Option<(usize, usize)> {
+        if id >= DIVIDER_BASE {
+            return None;
+        }
+        let offset = id.checked_sub(TERMINAL_VIEW_BASE)?;
+        let within = offset % PANE_STRIDE;
+        (within < TAB_CLOSE_OFFSET).then_some(((offset / PANE_STRIDE) as usize, within as usize))
+    }
+
     fn all_terminals(&mut self, f: &mut dyn FnMut(&mut TerminalItem)) {
         self.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {
@@ -478,6 +491,87 @@ impl TerminalPanelView for TerminalPanel {
             return false;
         };
         self.group.resize_divider(&divider, x, y)
+    }
+
+    fn is_tab(&self, id: u64) -> bool {
+        self.tab_of(id).is_some_and(|(p, index)| {
+            self.leaves
+                .get(p)
+                .and_then(|leaf| self.group.leaf_at(&leaf.path))
+                .is_some_and(|pane| index < pane.open.len())
+        })
+    }
+
+    fn begin_tab_drag(&mut self, id: u64) -> bool {
+        let Some((p, index)) = self.tab_of(id) else {
+            return false;
+        };
+        self.tab_drag = self
+            .leaves
+            .get(p)
+            .and_then(|leaf| self.group.leaf_at(&leaf.path))
+            .and_then(|pane| TabDrag::begin(pane, index));
+        self.tab_drag.is_some()
+    }
+
+    fn update_tab_drag(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool {
+        if self.tab_drag.is_none() {
+            return false;
+        }
+        let full = self.group.leaf_count() >= MAX_PANES;
+        let resolved = self
+            .leaves
+            .iter()
+            .enumerate()
+            .find(|(_, leaf)| contains(&leaf.rect, x, y))
+            .and_then(|(p, leaf)| {
+                let pane = self.group.leaf_at(&leaf.path)?;
+                let over_tab = over.and_then(|(id, rect)| {
+                    let (tab_pane, index) = self.tab_of(id)?;
+                    (tab_pane == p).then_some((index, rect))
+                });
+                let (mut target, preview) =
+                    tab_drag::resolve_drop(leaf.rect, pane.open.len(), x, y, over_tab);
+                if full && matches!(target, DropTarget::Split(_)) {
+                    target = DropTarget::Append;
+                }
+                Some((
+                    TabDrop {
+                        pane: pane.id,
+                        target,
+                    },
+                    preview,
+                ))
+            });
+        if let Some(drag) = self.tab_drag.as_mut() {
+            drag.drop = resolved.map(|(drop, _)| drop);
+            drag.preview = resolved.map(|(_, preview)| preview);
+        }
+        true
+    }
+
+    fn drop_tab(&mut self) -> bool {
+        let Some(drag) = self.tab_drag.take() else {
+            return false;
+        };
+        let Some(drop) = drag.drop else {
+            return false;
+        };
+        let pane = self.new_pane();
+        if let Some(path) = tab_drag::apply_drop(&mut self.group, &drag, drop, || pane) {
+            self.set_active(path);
+        } else if self.group.leaf_at(&self.active).is_none() {
+            self.active = self.group.first_leaf_path();
+        }
+        true
+    }
+
+    fn tab_drag_overlay(&self) -> Option<Rect> {
+        self.tab_drag.as_ref()?.preview
+    }
+
+    fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)> {
+        Some(self.tab_drag.as_ref()?.ghost())
     }
 
     fn grid_contains(&self, x: f32, y: f32) -> bool {
@@ -826,5 +920,29 @@ mod tests {
         assert_eq!(panel.group.leaf_count(), 2);
         assert!(!panel.is_empty());
         assert!(!panel.sync(&|| None).closed_all);
+    }
+
+    #[test]
+    fn dragging_a_tab_to_an_edge_splits_and_back_merges() {
+        let mut panel = panel();
+        panel.open(None);
+        panel.open(None);
+        let region = Rect::new(0.0, 0.0, 800.0, 400.0, Rgba::TRANSPARENT);
+        panel.render(region, true);
+        let first_tab = TERMINAL_VIEW_BASE;
+        assert!(panel.is_tab(first_tab));
+        assert!(panel.begin_tab_drag(first_tab));
+        assert!(panel.update_tab_drag(790.0, 250.0, None));
+        assert!(panel.tab_drag_overlay().is_some());
+        assert!(panel.drop_tab());
+        assert_eq!(panel.group.leaf_count(), 2);
+        assert_eq!(panel.active, vec![1]);
+        panel.render(region, true);
+        let right_tab = TERMINAL_VIEW_BASE + PANE_STRIDE;
+        assert!(panel.begin_tab_drag(right_tab));
+        assert!(panel.update_tab_drag(200.0, 250.0, None));
+        assert!(panel.drop_tab());
+        assert_eq!(panel.group.leaf_count(), 1);
+        assert_eq!(panel.group.leaf_at(&[]).map(|p| p.open.len()), Some(2));
     }
 }
