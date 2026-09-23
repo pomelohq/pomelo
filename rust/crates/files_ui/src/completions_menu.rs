@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use editor::snippet::{boundary_suffixes, SnippetDefinition};
-use ui::{div, label, theme, LabelSize, Node};
+use ui::{div, label, theme, LabelSize, Node, Rgba};
 
 use crate::fuzzy::fuzzy_match;
 use crate::list_scrollbar::{self, ScrollbarReveal};
@@ -21,6 +21,11 @@ pub enum CompletionKind {
         replaced: usize,
     },
     Choice,
+    /// From the language server, with the buffer version its ranges are in.
+    Lsp {
+        item: Box<lsp::LspCompletion>,
+        synced_version: u64,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -30,8 +35,49 @@ pub struct Completion {
     pub kind: CompletionKind,
 }
 
+impl Completion {
+    fn filter_text(&self) -> &str {
+        match &self.kind {
+            CompletionKind::Lsp { item, .. } => &item.filter_text,
+            _ => &self.label,
+        }
+    }
+
+    fn sort_text(&self) -> Option<&str> {
+        match &self.kind {
+            CompletionKind::Lsp { item, .. } => item.sort_text.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Keywords, then variables, constants and properties, then everything else.
+    fn sort_kind(&self) -> usize {
+        use lsp::lsp_types::CompletionItemKind as Kind;
+        match &self.kind {
+            CompletionKind::Lsp { item, .. } => match item.kind {
+                Some(Kind::KEYWORD) => 0,
+                Some(Kind::VARIABLE) => 1,
+                Some(Kind::CONSTANT) => 2,
+                Some(Kind::PROPERTY) => 3,
+                _ => 4,
+            },
+            _ => 4,
+        }
+    }
+
+    fn is_snippet(&self) -> bool {
+        match &self.kind {
+            CompletionKind::Snippet { .. } => true,
+            CompletionKind::Lsp { item, .. } => {
+                item.kind == Some(lsp::lsp_types::CompletionItemKind::SNIPPET)
+            }
+            _ => false,
+        }
+    }
+}
+
 struct Entry {
-    completion: Completion,
+    candidate: usize,
     positions: Vec<usize>,
     score: f64,
     query: String,
@@ -119,21 +165,31 @@ pub fn match_snippets(
 }
 
 pub struct CompletionsMenu {
+    candidates: Vec<Completion>,
     entries: Vec<Entry>,
     pub selected: usize,
     scroll_top: usize,
     pub scrollbar: ScrollbarReveal,
     pub hovered: Option<u64>,
+    /// For a menu from the language server: the word typed when it was asked, where the caret was (and the
+    /// buffer version that offset is in), and whether more typing must ask again instead of filtering.
+    pub initial_query: Option<String>,
+    pub initial_position: Option<(usize, u64)>,
+    pub is_incomplete: bool,
 }
 
 impl CompletionsMenu {
-    fn from_entries(entries: Vec<Entry>) -> Option<Self> {
+    fn from_parts(candidates: Vec<Completion>, entries: Vec<Entry>) -> Option<Self> {
         (!entries.is_empty()).then(|| Self {
+            candidates,
             entries,
             selected: 0,
             scroll_top: 0,
             scrollbar: ScrollbarReveal::default(),
             hovered: None,
+            initial_query: None,
+            initial_position: None,
+            is_incomplete: false,
         })
     }
 
@@ -141,45 +197,92 @@ impl CompletionsMenu {
         let names: Vec<&str> = words.iter().map(String::as_str).collect();
         let mut entries: Vec<Entry> = fuzzy_match(&names, query)
             .into_iter()
-            .filter_map(|m| {
-                Some(Entry {
-                    completion: Completion {
-                        label: words.get(m.candidate)?.clone(),
-                        detail: None,
-                        kind: CompletionKind::Word,
-                    },
-                    positions: m.positions,
-                    score: m.score,
-                    query: query.to_string(),
-                })
+            .map(|m| Entry {
+                candidate: m.candidate,
+                positions: m.positions,
+                score: m.score,
+                query: query.to_string(),
             })
             .collect();
-        entries.extend(snippets.into_iter().map(|m| Entry {
-            completion: m.completion,
-            positions: m.positions,
-            score: m.score,
-            query: m.query,
-        }));
-        sort_entries(&mut entries);
-        Self::from_entries(entries)
+        let mut candidates: Vec<Completion> = words
+            .into_iter()
+            .map(|word| Completion {
+                label: word,
+                detail: None,
+                kind: CompletionKind::Word,
+            })
+            .collect();
+        for snippet in snippets {
+            entries.push(Entry {
+                candidate: candidates.len(),
+                positions: snippet.positions,
+                score: snippet.score,
+                query: snippet.query,
+            });
+            candidates.push(snippet.completion);
+        }
+        sort_entries(&candidates, &mut entries);
+        Self::from_parts(candidates, entries)
+    }
+
+    /// Every candidate matching `query`, ranked; `None` when none does.
+    pub fn from_candidates(candidates: Vec<Completion>, query: &str) -> Option<Self> {
+        let mut menu = Self::from_parts(
+            candidates,
+            vec![Entry {
+                candidate: 0,
+                positions: Vec::new(),
+                score: 0.0,
+                query: String::new(),
+            }],
+        )?;
+        menu.filter(query);
+        (!menu.entries.is_empty()).then_some(menu)
+    }
+
+    /// Match the candidates against `query` again, e.g. after more typing.
+    pub fn filter(&mut self, query: &str) {
+        let names: Vec<&str> = self
+            .candidates
+            .iter()
+            .map(Completion::filter_text)
+            .collect();
+        self.entries = fuzzy_match(&names, query)
+            .into_iter()
+            .map(|m| Entry {
+                candidate: m.candidate,
+                positions: m.positions,
+                score: m.score,
+                query: query.to_string(),
+            })
+            .collect();
+        sort_entries(&self.candidates, &mut self.entries);
+        self.selected = 0;
+        self.scroll_top = 0;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub fn choices(choices: Vec<String>) -> Option<Self> {
-        Self::from_entries(
-            choices
-                .into_iter()
-                .map(|choice| Entry {
-                    completion: Completion {
-                        label: choice,
-                        detail: None,
-                        kind: CompletionKind::Choice,
-                    },
-                    positions: Vec::new(),
-                    score: 0.0,
-                    query: String::new(),
-                })
-                .collect(),
-        )
+        let entries = (0..choices.len())
+            .map(|candidate| Entry {
+                candidate,
+                positions: Vec::new(),
+                score: 0.0,
+                query: String::new(),
+            })
+            .collect();
+        let candidates = choices
+            .into_iter()
+            .map(|choice| Completion {
+                label: choice,
+                detail: None,
+                kind: CompletionKind::Choice,
+            })
+            .collect();
+        Self::from_parts(candidates, entries)
     }
 
     pub fn selected_completion(&self) -> Option<&Completion> {
@@ -187,13 +290,15 @@ impl CompletionsMenu {
     }
 
     pub fn completion_at(&self, row: usize) -> Option<&Completion> {
-        self.entries.get(row).map(|entry| &entry.completion)
+        self.entries
+            .get(row)
+            .and_then(|entry| self.candidates.get(entry.candidate))
     }
 
     pub fn is_choices(&self) -> bool {
-        self.entries
+        self.candidates
             .iter()
-            .all(|entry| matches!(entry.completion.kind, CompletionKind::Choice))
+            .all(|completion| matches!(completion.kind, CompletionKind::Choice))
     }
 
     #[cfg(test)]
@@ -277,14 +382,24 @@ impl CompletionsMenu {
             } else if row == self.selected {
                 item = item.bg(colors.element_selected);
             }
-            let (word, positions, detail) =
-                self.entries.get(row).map_or(("", &[][..], None), |e| {
-                    (
-                        e.completion.label.as_str(),
-                        e.positions.as_slice(),
-                        e.completion.detail.as_deref(),
-                    )
-                });
+            let Some((entry, completion)) = self
+                .entries
+                .get(row)
+                .and_then(|entry| Some((entry, self.candidates.get(entry.candidate)?)))
+            else {
+                return Node::from(div());
+            };
+            if let CompletionKind::Lsp { item: lsp_item, .. } = &completion.kind {
+                for (text, color, bold) in lsp_row_runs(lsp_item, &entry.positions) {
+                    item = item.child(code_run(text, color, bold));
+                }
+                return Node::from(div().row().px(4.0).child(item));
+            }
+            let (word, positions, detail) = (
+                completion.label.as_str(),
+                entry.positions.as_slice(),
+                completion.detail.as_deref(),
+            );
             let mut run = String::new();
             let mut run_bold = false;
             for (index, c) in word.chars().enumerate() {
@@ -330,29 +445,42 @@ impl CompletionsMenu {
     }
 }
 
-fn sort_entries(entries: &mut [Entry]) {
+/// Candidates where the query's first letter starts one of the label's parts come first (snippets do their
+/// own first-letter matching); among them an exact match, then score, earlier match positions, more exact-case
+/// letters, the server's sort text, the item kind, and the label decide. The rest go by score.
+fn sort_entries(candidates: &[Completion], entries: &mut [Entry]) {
+    let completion = |entry: &Entry| candidates.get(entry.candidate);
     let tier = |entry: &Entry| {
+        let Some(completion) = completion(entry) else {
+            return false;
+        };
         let first = entry
             .query
             .chars()
             .next()
             .and_then(|c| c.to_lowercase().next());
-        first.is_some_and(|first| {
-            editor::completion::split_words(&entry.completion.label).any(|part| {
-                part.chars().next().and_then(|c| c.to_lowercase().next()) == Some(first)
+        completion.is_snippet()
+            || first.is_none_or(|first| {
+                editor::completion::split_words(completion.filter_text()).any(|part| {
+                    part.chars().next().and_then(|c| c.to_lowercase().next()) == Some(first)
+                })
             })
-        })
     };
-    let exact = |entry: &Entry| entry.completion.label == entry.query;
+    let exact = |entry: &Entry| completion(entry).is_some_and(|c| c.filter_text() == entry.query);
     let exact_case = |entry: &Entry| {
-        let label: Vec<char> = entry.completion.label.chars().collect();
+        let text: Vec<char> = completion(entry)
+            .map(|c| c.filter_text().chars().collect())
+            .unwrap_or_default();
         entry
             .query
             .chars()
             .zip(&entry.positions)
-            .filter(|(q, p)| label.get(**p) == Some(q))
+            .filter(|(q, p)| text.get(**p) == Some(q))
             .count()
     };
+    let sort_text = |entry: &Entry| completion(entry).and_then(Completion::sort_text);
+    let sort_kind = |entry: &Entry| completion(entry).map_or(4, Completion::sort_kind);
+    let label = |entry: &Entry| completion(entry).map_or("", Completion::filter_text);
     entries.sort_by(|a, b| match (tier(a), tier(b)) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
@@ -362,8 +490,83 @@ fn sort_entries(entries: &mut [Entry]) {
             .then(b.score.total_cmp(&a.score))
             .then_with(|| a.positions.cmp(&b.positions))
             .then_with(|| exact_case(b).cmp(&exact_case(a)))
-            .then_with(|| a.completion.label.cmp(&b.completion.label)),
+            .then_with(|| sort_text(a).cmp(&sort_text(b)))
+            .then_with(|| sort_kind(a).cmp(&sort_kind(b)))
+            .then_with(|| label(a).cmp(label(b))),
     });
+}
+
+/// The row text available to a label and its detail, in design px.
+const ROW_TEXT_WIDTH: f32 = WIDTH - 8.0 - 12.0;
+
+/// A server item's row: its label in the kind's syntax color (muted when deprecated), then its detail, the
+/// matched letters bold, cut to fit the row.
+fn lsp_row_runs(item: &lsp::LspCompletion, positions: &[usize]) -> Vec<(String, Rgba, bool)> {
+    use lsp::lsp_types::CompletionItemKind as Kind;
+    let text = match item.detail.as_deref() {
+        Some(detail) => format!("{} {detail}", item.label),
+        None => item.label.clone(),
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let label_chars = item.label.chars().count();
+    let filter_start = text
+        .find(item.filter_text.as_str())
+        .map(|byte| text[..byte].chars().count())
+        .unwrap_or(0);
+    let colors = theme();
+    let syntax = crate::syntax_theme();
+    let capture = match item.kind {
+        Some(Kind::CLASS | Kind::INTERFACE | Kind::STRUCT) => "type",
+        Some(Kind::CONSTANT) => "constant",
+        Some(Kind::CONSTRUCTOR) => "constructor",
+        Some(Kind::ENUM) => "enum",
+        Some(Kind::ENUM_MEMBER) => "variant",
+        Some(Kind::FIELD | Kind::PROPERTY) => "property",
+        Some(Kind::FUNCTION) => "function",
+        Some(Kind::METHOD) => "function.method",
+        Some(Kind::OPERATOR) => "operator",
+        Some(Kind::VARIABLE) => "variable",
+        Some(Kind::KEYWORD) => "keyword",
+        _ => "",
+    };
+    let label_color = crate::color_of(&syntax, capture);
+    let char_width = ui::measure_text_width("M", crate::EDIT_FONT, true, 400) / ui::ui_text_scale();
+    let fits = (ROW_TEXT_WIDTH / char_width.max(1.0)).floor() as usize;
+    let shown: Vec<char> = if chars.len() > fits {
+        let mut cut: Vec<char> = chars.iter().take(fits.saturating_sub(3)).copied().collect();
+        cut.extend("...".chars());
+        cut
+    } else {
+        chars
+    };
+    let mut runs: Vec<(String, Rgba, bool)> = Vec::new();
+    for (index, c) in shown.iter().enumerate() {
+        let color = if item.deprecated {
+            colors.text_muted
+        } else if index < label_chars {
+            label_color
+        } else {
+            colors.editor_foreground
+        };
+        let bold =
+            index >= filter_start && positions.binary_search(&(index - filter_start)).is_ok();
+        match runs.last_mut() {
+            Some((text, last_color, last_bold)) if *last_color == color && *last_bold == bold => {
+                text.push(*c)
+            }
+            _ => runs.push((c.to_string(), color, bold)),
+        }
+    }
+    runs
+}
+
+fn code_run(text: String, color: Rgba, bold: bool) -> Node {
+    let run = label(text).size(crate::EDIT_FONT).mono().color(color);
+    if bold {
+        run.weight(700).into()
+    } else {
+        run.into()
+    }
 }
 
 fn word_run(text: String, bold: bool) -> Node {

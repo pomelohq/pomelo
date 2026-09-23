@@ -43,6 +43,8 @@ pub struct DiagnosticsUpdate {
 pub enum StoreEvent {
     Diagnostics(DiagnosticsUpdate),
     Hover(HoverResponse),
+    Completions(crate::CompletionsResponse),
+    CompletionResolved(crate::ResolvedCompletion),
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +97,8 @@ pub struct LspStore {
     unopened_diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
     updates: Vec<StoreEvent>,
     hovers: HashMap<(&'static str, i64), (u64, SyncedText)>,
+    completions: HashMap<(&'static str, i64), (u64, SyncedText, usize)>,
+    resolves: HashMap<(&'static str, i64), (u64, SyncedText)>,
     next_request: u64,
 }
 
@@ -110,6 +114,8 @@ impl LspStore {
             unopened_diagnostics: HashMap::new(),
             updates: Vec::new(),
             hovers: HashMap::new(),
+            completions: HashMap::new(),
+            resolves: HashMap::new(),
             next_request: 0,
         }
     }
@@ -392,6 +398,86 @@ impl LspStore {
         Some(request)
     }
 
+    fn document_server(
+        &mut self,
+        path: &Path,
+    ) -> Option<(&mut LanguageServer, &ServerCapabilities, &Document)> {
+        let document = self.documents.get(path)?;
+        match self.servers.get_mut(document.adapter) {
+            Some(Server {
+                server: Some(server),
+                state: ServerState::Running { capabilities },
+            }) => Some((server, capabilities, document)),
+            _ => None,
+        }
+    }
+
+    /// `None` when no running server completes `path`; else the characters that ask it to without a word.
+    pub fn completion_triggers(&mut self, path: &Path) -> Option<Vec<String>> {
+        let (_, capabilities, _) = self.document_server(path)?;
+        let provider = capabilities.completion_provider.as_ref()?;
+        Some(provider.trigger_characters.clone().unwrap_or_default())
+    }
+
+    pub fn completion(
+        &mut self,
+        path: &Path,
+        lang: Lang,
+        buffer: &EditorBuffer,
+        offset: usize,
+        trigger: Option<&str>,
+    ) -> Option<u64> {
+        self.sync_document(path, lang, buffer);
+        let (server, capabilities, document) = self.document_server(path)?;
+        let triggers = capabilities
+            .completion_provider
+            .as_ref()?
+            .trigger_characters
+            .clone()
+            .unwrap_or_default();
+        let synced = document.versions.back()?.clone();
+        if synced.buffer_version != buffer.version() {
+            return None;
+        }
+        let context = match trigger.filter(|t| triggers.iter().any(|known| known == t)) {
+            Some(character) => json!({"triggerKind": 2, "triggerCharacter": character}),
+            None => json!({"triggerKind": 1}),
+        };
+        let adapter = document.adapter;
+        let id = server.request(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": document.uri},
+                "position": char_to_position(&synced.rope, offset),
+                "context": context,
+            }),
+        );
+        let request = self.next_request;
+        self.next_request += 1;
+        self.completions
+            .insert((adapter, id), (request, synced, offset));
+        Some(request)
+    }
+
+    pub fn resolve_completion(&mut self, path: &Path, raw: &Value) -> Option<u64> {
+        let (server, capabilities, document) = self.document_server(path)?;
+        let resolves = capabilities
+            .completion_provider
+            .as_ref()?
+            .resolve_provider
+            .unwrap_or(false);
+        if !resolves {
+            return None;
+        }
+        let synced = document.versions.back()?.clone();
+        let adapter = document.adapter;
+        let id = server.request("completionItem/resolve", raw.clone());
+        let request = self.next_request;
+        self.next_request += 1;
+        self.resolves.insert((adapter, id), (request, synced));
+        Some(request)
+    }
+
     pub fn poll(&mut self) -> Vec<StoreEvent> {
         let names: Vec<&'static str> = self.servers.keys().copied().collect();
         for name in names {
@@ -413,6 +499,40 @@ impl LspStore {
     fn handle_event(&mut self, name: &'static str, event: ServerEvent) {
         match event {
             ServerEvent::Response { id, result, .. } => {
+                if let Some((request, synced, offset)) = self.completions.remove(&(name, id)) {
+                    let (items, is_incomplete) = crate::completion::parse_completions(
+                        result.unwrap_or(Value::Null),
+                        &synced.rope,
+                        offset,
+                    );
+                    self.updates
+                        .push(StoreEvent::Completions(crate::CompletionsResponse {
+                            request,
+                            items,
+                            is_incomplete,
+                            synced,
+                        }));
+                    return;
+                }
+                if let Some((request, synced)) = self.resolves.remove(&(name, id)) {
+                    let additional_edits = result
+                        .ok()
+                        .and_then(|value| {
+                            serde_json::from_value::<Vec<lsp_types::TextEdit>>(
+                                value.get("additionalTextEdits")?.clone(),
+                            )
+                            .ok()
+                        })
+                        .map(|edits| crate::completion::text_edits(&synced.rope, &edits))
+                        .unwrap_or_default();
+                    self.updates
+                        .push(StoreEvent::CompletionResolved(crate::ResolvedCompletion {
+                            request,
+                            additional_edits,
+                            synced,
+                        }));
+                    return;
+                }
                 if let Some((request, synced)) = self.hovers.remove(&(name, id)) {
                     let hover = result
                         .ok()
@@ -702,6 +822,24 @@ fn initialize_params(root: &Path) -> Value {
             "textDocument": {
                 "synchronization": {"didSave": true, "dynamicRegistration": true},
                 "hover": {"contentFormat": ["markdown"], "dynamicRegistration": true},
+                "completion": {
+                    "completionItem": {
+                        "snippetSupport": true,
+                        "resolveSupport": {"properties": ["additionalTextEdits", "detail", "documentation"]},
+                        "deprecatedSupport": true,
+                        "tagSupport": {"valueSet": [1]},
+                        "insertReplaceSupport": true,
+                        "labelDetailsSupport": true,
+                        "insertTextModeSupport": {"valueSet": [1, 2]},
+                        "documentationFormat": ["markdown", "plaintext"],
+                    },
+                    "insertTextMode": 2,
+                    "completionList": {
+                        "itemDefaults": ["commitCharacters", "editRange", "insertTextMode", "insertTextFormat", "data"],
+                    },
+                    "contextSupport": true,
+                    "dynamicRegistration": true,
+                },
                 "publishDiagnostics": {
                     "relatedInformation": true,
                     "versionSupport": true,
@@ -862,6 +1000,52 @@ mod tests {
         buffer.extend_cursor(at + "missing".len());
         buffer.insert_text("0");
         assert!(wait_for(&mut store, &buffer, &|d| !has_error(d)));
+        drop(store);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn a_real_server_completes_a_keyword() {
+        let root = std::env::temp_dir().join(format!("pomelo-lsp-complete-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.c");
+        let text = "int main(void) {\n    ret\n}\n";
+        std::fs::write(&path, text).unwrap();
+        let env = crate::capture_login_env(&root).unwrap();
+        let mut store =
+            LspStore::new(root.clone(), std::sync::Arc::new(|| {})).with_environment(env);
+        let buffer = EditorBuffer::from_text(text);
+        let offset = text.find("ret").unwrap() + 3;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut token = None;
+        let mut answer = None;
+        while answer.is_none() && std::time::Instant::now() < deadline {
+            if token.is_none() {
+                token = store.completion(&path, Lang::C, &buffer, offset, None);
+            }
+            for event in store.poll() {
+                if let StoreEvent::Completions(response) = event {
+                    if Some(response.request) == token {
+                        // The first answer can come before the server has parsed the file.
+                        if response.items.is_empty() {
+                            token = None;
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        } else {
+                            answer = Some(response);
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let answer = answer.unwrap();
+        let item = answer
+            .items
+            .iter()
+            .find(|item| item.filter_text == "return")
+            .unwrap();
+        assert_eq!(item.replace_range, offset - 3..offset);
         drop(store);
         std::fs::remove_dir_all(&root).unwrap();
     }

@@ -3,6 +3,7 @@
 //! thread drains them each frame with `poll`, answering the server's own requests there.
 
 mod adapters;
+mod completion;
 mod position;
 mod shell_env;
 mod store;
@@ -18,6 +19,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 pub use adapters::{adapter_for, Adapter};
+pub use completion::{CompletionsResponse, LspCompletion, ResolvedCompletion};
 pub use lsp_types;
 pub use position::{char_to_position, diagnostic_char_range, position_to_char};
 pub use shell_env::capture_login_env;

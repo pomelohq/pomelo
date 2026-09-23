@@ -26,6 +26,7 @@ mod git_diff;
 mod go_to_line;
 mod hover;
 mod list_scrollbar;
+mod lsp_completion;
 mod markdown_view;
 mod outline_view;
 mod search_bar;
@@ -371,6 +372,10 @@ struct FileItem {
     /// Saved since the language server last heard about it.
     saved_unannounced: bool,
     hover: hover::HoverState,
+    /// The server's trigger characters, when a server completes this file.
+    lsp_triggers: Option<Vec<String>>,
+    completion_request: Option<lsp_completion::PendingCompletion>,
+    pending_resolve: Option<lsp_completion::PendingResolve>,
 }
 
 /// A problem a language server reported, over a char range of the buffer.
@@ -404,6 +409,8 @@ fn diagnostic_color(severity: lsp::lsp_types::DiagnosticSeverity) -> Rgba {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CompletionTrigger {
     Typed,
+    /// A single non-word char, which may be one of the server's trigger characters.
+    Character(char),
     Refilter,
     Show,
     ShowWords,
@@ -479,6 +486,9 @@ impl FileItem {
             diagnostics: Vec::new(),
             saved_unannounced: false,
             hover: hover::HoverState::default(),
+            lsp_triggers: None,
+            completion_request: None,
+            pending_resolve: None,
         }
     }
 
@@ -1730,9 +1740,16 @@ impl FileItem {
     fn close_completions(&mut self) {
         self.completions = None;
         self.completions_forced = false;
+        self.completion_request = None;
     }
 
     fn update_completions(&mut self, trigger: CompletionTrigger) {
+        let trigger = match trigger {
+            CompletionTrigger::Character(_) if self.lsp_triggers.is_none() => {
+                CompletionTrigger::Refilter
+            }
+            trigger => trigger,
+        };
         if self
             .completions
             .as_ref()
@@ -1742,6 +1759,9 @@ impl FileItem {
             if trigger == CompletionTrigger::Refilter {
                 return;
             }
+        }
+        if self.lsp_triggers.is_some() && trigger != CompletionTrigger::ShowWords {
+            return self.update_server_completions(trigger);
         }
         let menu_open = self.completions.is_some();
         if trigger == CompletionTrigger::Refilter && !menu_open {
@@ -1855,6 +1875,13 @@ impl FileItem {
                 if let Some(choices) = b.insert_snippet(&ranges, &snippet.body) {
                     self.completions = completions_menu::CompletionsMenu::choices(choices);
                 }
+            }
+            completions_menu::CompletionKind::Lsp {
+                item,
+                synced_version,
+            } => {
+                self.confirm_server_completion(&item, synced_version);
+                return;
             }
             completions_menu::CompletionKind::Choice => {
                 let edits = b
@@ -3026,11 +3053,10 @@ impl Item for FileItem {
         self.ensure_visible();
         self.ensure_cursor_visible();
         let mut chars = text.chars();
-        let typed_word_char = matches!((chars.next(), chars.next()), (Some(c), None) if c.is_alphanumeric() || c == '_');
-        self.update_completions(if typed_word_char {
-            CompletionTrigger::Typed
-        } else {
-            CompletionTrigger::Refilter
+        self.update_completions(match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_alphanumeric() || c == '_' => CompletionTrigger::Typed,
+            (Some(c), None) => CompletionTrigger::Character(c),
+            _ => CompletionTrigger::Refilter,
         });
     }
 
@@ -4398,10 +4424,14 @@ impl FilesView {
         let events = lsp.poll();
         let mut updates = Vec::new();
         let mut hovers = Vec::new();
+        let mut completion_answers = Vec::new();
+        let mut resolutions = Vec::new();
         for event in events {
             match event {
                 lsp::StoreEvent::Diagnostics(update) => updates.push(update),
                 lsp::StoreEvent::Hover(response) => hovers.push(response),
+                lsp::StoreEvent::Completions(response) => completion_answers.push(response),
+                lsp::StoreEvent::CompletionResolved(resolved) => resolutions.push(resolved),
             }
         }
         let root = self.root.clone();
@@ -4416,6 +4446,12 @@ impl FilesView {
                 };
                 for response in &hovers {
                     file.hover_answered(response);
+                }
+                for response in &completion_answers {
+                    file.completions_answered(response);
+                }
+                for resolved in &resolutions {
+                    file.resolve_answered(resolved);
                 }
                 let path = root.join(&file.path);
                 if let (Some(offset), Some(b)) = (file.hover_request_due(now), file.buffer.as_ref())
@@ -4436,6 +4472,17 @@ impl FilesView {
                     if std::mem::take(&mut file.saved_unannounced) {
                         lsp.did_save(&path, b);
                     }
+                }
+                file.lsp_triggers = lsp.completion_triggers(&path);
+                if let Some((offset, trigger)) = file.completion_request_due() {
+                    let token = file.buffer.as_ref().and_then(|b| {
+                        lsp.completion(&path, file.lang, b, offset, trigger.as_deref())
+                    });
+                    file.completion_requested(token);
+                }
+                if let Some(raw) = file.resolve_due() {
+                    let token = lsp.resolve_completion(&path, &raw);
+                    file.resolve_requested(token);
                 }
             }
         });
