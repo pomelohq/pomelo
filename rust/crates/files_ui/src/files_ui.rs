@@ -19,6 +19,7 @@ use search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 
 mod command_palette;
 mod fuzzy;
+mod git_diff;
 mod go_to_line;
 mod outline_view;
 mod search_bar;
@@ -337,6 +338,7 @@ struct FileItem {
     active_search_highlight: Option<usize>,
     /// Buffer lines (first, last) previewed by a modal.
     highlighted_rows: Option<(usize, usize)>,
+    git: git_diff::GitDiff,
 }
 
 impl FileItem {
@@ -346,6 +348,11 @@ impl FileItem {
         let buffer = text.map(|t| EditorBuffer::from_text(&t));
         let syntax = buffer.as_ref().and_then(|_| Syntax::new(lang));
         let saved_mtime = files::mtime(&root, path).ok();
+        let git = if buffer.is_some() {
+            git_diff::GitDiff::load(root.join(path))
+        } else {
+            git_diff::GitDiff::default()
+        };
         Self {
             root,
             path: path.to_string(),
@@ -383,6 +390,7 @@ impl FileItem {
             search_highlights: Vec::new(),
             active_search_highlight: None,
             highlighted_rows: None,
+            git,
         }
     }
 
@@ -1473,6 +1481,63 @@ impl FileItem {
             .unwrap_or_default()
     }
 
+    fn diff_hunk_rects(&self, content: Rect, first: usize, last: usize) -> Vec<Rect> {
+        let strip_width = (0.275 * EDIT_LINE_H).floor();
+        let deleted_width = (0.35 * EDIT_LINE_H).floor();
+        let colors = theme();
+        let row_y = |row: usize| content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
+        let line_count = self.line_count();
+        let display_row = |line: usize| {
+            if line >= line_count {
+                self.disp_count()
+            } else {
+                self.disp_of(line)
+            }
+        };
+        let mut rects = Vec::new();
+        for hunk in self.git.hunks() {
+            let color = match hunk.kind {
+                git::HunkKind::Added => colors.version_control_added,
+                git::HunkKind::Modified => colors.version_control_modified,
+                git::HunkKind::Deleted => colors.version_control_deleted,
+            };
+            let top = display_row(hunk.rows.start);
+            let bottom = display_row(hunk.rows.end);
+            let mut rect = if hunk.rows.is_empty() {
+                if top + 1 < first || top > last {
+                    continue;
+                }
+                let mut pill = Rect::new(
+                    content.x - deleted_width,
+                    row_y(top) - EDIT_LINE_H / 2.0,
+                    deleted_width * 2.0,
+                    EDIT_LINE_H,
+                    color,
+                );
+                pill.radius = EDIT_LINE_H;
+                pill
+            } else {
+                if bottom <= first || top >= last {
+                    continue;
+                }
+                Rect::new(
+                    content.x,
+                    row_y(top),
+                    strip_width,
+                    (bottom - top) as f32 * EDIT_LINE_H,
+                    color,
+                )
+            };
+            if hunk.staged {
+                rect.color = blend(colors.editor_background, color.alpha(color.a * 0.3));
+                rect.border = 1.0;
+                rect.border_color = color;
+            }
+            rects.push(rect);
+        }
+        rects
+    }
+
     /// The file's symbols in chars, labels colored like the code.
     fn outline_symbols(&self) -> Vec<outline_view::Symbol> {
         let (Some(syntax), Some(b)) = (self.syntax.as_ref(), self.buffer.as_ref()) else {
@@ -1784,6 +1849,9 @@ impl Item for FileItem {
 
     fn gutter(&mut self, fold_base: u64) -> Option<Node> {
         self.ensure_visible();
+        if let Some(b) = self.buffer.as_ref() {
+            self.git.poll(&b.rope, b.version());
+        }
         let buf = self.buffer.as_ref()?;
         let dims = GutterDimensions::for_lines(self.line_count());
         let active = self.active_rows();
@@ -1875,6 +1943,7 @@ impl Item for FileItem {
         b.mark_saved();
         self.saved_mtime = Some(mtime);
         self.conflict = false;
+        self.git.reload_bases(self.root.join(&self.path));
         Ok(())
     }
 
@@ -1910,6 +1979,7 @@ impl Item for FileItem {
             b.mark_saved();
             b.place_cursor(cursor.min(b.rope.len_chars()));
         }
+        self.git.reload_bases(self.root.join(&self.path));
         self.saved_mtime = Some(disk);
         self.refresh();
         self.ensure_visible();
@@ -1917,7 +1987,9 @@ impl Item for FileItem {
 
     fn is_busy(&self) -> bool {
         // Keep repainting while a parse runs or the scrollbars wait to hide.
-        self.syntax.as_ref().is_some_and(|s| s.is_parsing()) || self.scrollbars_revealed()
+        self.syntax.as_ref().is_some_and(|s| s.is_parsing())
+            || self.scrollbars_revealed()
+            || self.git.is_busy()
     }
 
     fn right_press(&mut self, local_x: f32, local_y: f32) {
@@ -2446,6 +2518,8 @@ impl Item for FileItem {
                 guide,
             ));
         }
+
+        rects.extend(self.diff_hunk_rects(content, first, last));
         rects
     }
 
@@ -4022,6 +4096,16 @@ fn flatten(nodes: &[FileNode], depth: usize, expanded: &HashSet<String>, out: &m
             flatten(&n.children, depth + 1, expanded, out);
         }
     }
+}
+
+fn blend(base: Rgba, over: Rgba) -> Rgba {
+    let mix = |b: f32, o: f32| b * (1.0 - over.a) + o * over.a;
+    Rgba::new(
+        mix(base.r, over.r),
+        mix(base.g, over.g),
+        mix(base.b, over.b),
+        1.0,
+    )
 }
 
 fn color_of(theme: &Theme, capture: &str) -> Rgba {
@@ -5762,5 +5846,72 @@ mod outline_tests {
         assert_eq!(item.scroll_position(), before);
         assert_eq!(item.highlighted_rows, None);
         assert_eq!(caret_line(&mut view), 0);
+    }
+}
+
+#[cfg(test)]
+mod git_gutter_tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+
+    fn settle(item: &mut FileItem) {
+        for _ in 0..2000 {
+            if let Some(b) = item.buffer.as_ref() {
+                item.git.poll(&b.rope, b.version());
+            }
+            if !item.git.is_busy() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn uncommitted_changes_show_as_gutter_strips() {
+        let root = std::env::temp_dir().join(format!("pomelo-gutter-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        assert!(git(&["init", "-q"]));
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        assert!(git(&["add", "a.txt"]));
+        assert!(git(&["commit", "-q", "-m", "init"]));
+
+        let mut item = FileItem::new(root.clone(), "a.txt", Some("one\nTWO\nthree\n".into()));
+        item.set_body_height(10.0 * EDIT_LINE_H);
+        settle(&mut item);
+        let kinds: Vec<(Range<usize>, git::HunkKind)> = item
+            .git
+            .hunks()
+            .iter()
+            .map(|h| (h.rows.clone(), h.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (1..2, git::HunkKind::Modified),
+                (3..3, git::HunkKind::Deleted)
+            ]
+        );
+        let content = Rect::new(0.0, 0.0, 400.0, 10.0 * EDIT_LINE_H, Rgba::TRANSPARENT);
+        let strips = item.diff_hunk_rects(content, 0, 10);
+        assert_eq!(strips.len(), 2);
+        assert_eq!(strips[0].y, EDIT_LINE_H);
+        assert_eq!(strips[0].w, (0.275 * EDIT_LINE_H).floor());
+        assert!(strips[1].x < 0.0);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

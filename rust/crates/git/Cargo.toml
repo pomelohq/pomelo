@@ -1,0 +1,12 @@
+[package]
+name = "git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Git feature (logic): a file's committed and staged text read through the git CLI, and its uncommitted changes as line hunks. No rendering."
+
+[lib]
+path = "src/git.rs"
+
+[dependencies]
+imara-diff = "0.2.0"
