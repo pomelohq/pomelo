@@ -45,6 +45,40 @@ pub enum StoreEvent {
     Hover(HoverResponse),
     Completions(crate::CompletionsResponse),
     CompletionResolved(crate::ResolvedCompletion),
+    Definitions(DefinitionsResponse),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefinitionKind {
+    Definition,
+    Declaration,
+    TypeDefinition,
+    Implementation,
+}
+
+impl DefinitionKind {
+    fn method(self) -> &'static str {
+        match self {
+            DefinitionKind::Definition => "textDocument/definition",
+            DefinitionKind::Declaration => "textDocument/declaration",
+            DefinitionKind::TypeDefinition => "textDocument/typeDefinition",
+            DefinitionKind::Implementation => "textDocument/implementation",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DefinitionTarget {
+    pub path: PathBuf,
+    pub range: lsp_types::Range,
+}
+
+#[derive(Clone, Debug)]
+pub struct DefinitionsResponse {
+    pub request: u64,
+    pub origin: Option<std::ops::Range<usize>>,
+    pub targets: Vec<DefinitionTarget>,
+    pub synced: SyncedText,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +133,7 @@ pub struct LspStore {
     hovers: HashMap<(&'static str, i64), (u64, SyncedText)>,
     completions: HashMap<(&'static str, i64), (u64, SyncedText, usize)>,
     resolves: HashMap<(&'static str, i64), (u64, SyncedText)>,
+    definitions: HashMap<(&'static str, i64), (u64, SyncedText)>,
     next_request: u64,
 }
 
@@ -116,6 +151,7 @@ impl LspStore {
             hovers: HashMap::new(),
             completions: HashMap::new(),
             resolves: HashMap::new(),
+            definitions: HashMap::new(),
             next_request: 0,
         }
     }
@@ -478,6 +514,56 @@ impl LspStore {
         Some(request)
     }
 
+    pub fn definitions(
+        &mut self,
+        path: &Path,
+        lang: Lang,
+        buffer: &EditorBuffer,
+        offset: usize,
+        kind: DefinitionKind,
+    ) -> Option<u64> {
+        use lsp_types::{
+            DeclarationCapability, ImplementationProviderCapability, OneOf,
+            TypeDefinitionProviderCapability,
+        };
+        self.sync_document(path, lang, buffer);
+        let (server, capabilities, document) = self.document_server(path)?;
+        let supported = match kind {
+            DefinitionKind::Definition => !matches!(
+                capabilities.definition_provider,
+                None | Some(OneOf::Left(false))
+            ),
+            DefinitionKind::Declaration => !matches!(
+                capabilities.declaration_provider,
+                None | Some(DeclarationCapability::Simple(false))
+            ),
+            DefinitionKind::TypeDefinition => !matches!(
+                capabilities.type_definition_provider,
+                None | Some(TypeDefinitionProviderCapability::Simple(false))
+            ),
+            DefinitionKind::Implementation => !matches!(
+                capabilities.implementation_provider,
+                None | Some(ImplementationProviderCapability::Simple(false))
+            ),
+        };
+        let synced = document.versions.back()?.clone();
+        if !supported || synced.buffer_version != buffer.version() {
+            return None;
+        }
+        let adapter = document.adapter;
+        let id = server.request(
+            kind.method(),
+            json!({
+                "textDocument": {"uri": document.uri},
+                "position": char_to_position(&synced.rope, offset),
+            }),
+        );
+        let request = self.next_request;
+        self.next_request += 1;
+        self.definitions.insert((adapter, id), (request, synced));
+        Some(request)
+    }
+
     pub fn poll(&mut self) -> Vec<StoreEvent> {
         let names: Vec<&'static str> = self.servers.keys().copied().collect();
         for name in names {
@@ -510,6 +596,17 @@ impl LspStore {
                             request,
                             items,
                             is_incomplete,
+                            synced,
+                        }));
+                    return;
+                }
+                if let Some((request, synced)) = self.definitions.remove(&(name, id)) {
+                    let (origin, targets) = parse_definitions(result.ok(), &synced.rope);
+                    self.updates
+                        .push(StoreEvent::Definitions(DefinitionsResponse {
+                            request,
+                            origin,
+                            targets,
                             synced,
                         }));
                     return;
@@ -736,6 +833,46 @@ fn code_fence_for(text: &str) -> String {
     "`".repeat((longest + 1).max(3))
 }
 
+fn parse_definitions(
+    result: Option<Value>,
+    rope: &Rope,
+) -> (Option<std::ops::Range<usize>>, Vec<DefinitionTarget>) {
+    use lsp_types::GotoDefinitionResponse;
+    let response =
+        result.and_then(|value| serde_json::from_value::<GotoDefinitionResponse>(value).ok());
+    let target = |uri: &Url, range: lsp_types::Range| {
+        Some(DefinitionTarget {
+            path: uri.to_file_path().ok()?,
+            range,
+        })
+    };
+    match response {
+        None => (None, Vec::new()),
+        Some(GotoDefinitionResponse::Scalar(location)) => (
+            None,
+            target(&location.uri, location.range).into_iter().collect(),
+        ),
+        Some(GotoDefinitionResponse::Array(locations)) => (
+            None,
+            locations
+                .iter()
+                .filter_map(|location| target(&location.uri, location.range))
+                .collect(),
+        ),
+        Some(GotoDefinitionResponse::Link(links)) => {
+            let origin = links.iter().find_map(|link| {
+                let range = link.origin_selection_range?;
+                Some(position_to_char(rope, range.start)..position_to_char(rope, range.end))
+            });
+            let targets = links
+                .iter()
+                .filter_map(|link| target(&link.target_uri, link.target_selection_range))
+                .collect();
+            (origin, targets)
+        }
+    }
+}
+
 fn sync_kind(capabilities: &ServerCapabilities) -> Option<TextDocumentSyncKind> {
     match capabilities.text_document_sync.as_ref()? {
         TextDocumentSyncCapability::Kind(kind) => Some(*kind),
@@ -822,6 +959,10 @@ fn initialize_params(root: &Path) -> Value {
             "textDocument": {
                 "synchronization": {"didSave": true, "dynamicRegistration": true},
                 "hover": {"contentFormat": ["markdown"], "dynamicRegistration": true},
+                "definition": {"linkSupport": true, "dynamicRegistration": true},
+                "declaration": {"linkSupport": true, "dynamicRegistration": true},
+                "typeDefinition": {"linkSupport": true, "dynamicRegistration": true},
+                "implementation": {"linkSupport": true, "dynamicRegistration": true},
                 "completion": {
                     "completionItem": {
                         "snippetSupport": true,
@@ -921,6 +1062,25 @@ mod tests {
             "```rust\nfn a() -> u8\n```\n\nDoc text."
         );
         assert_eq!(code_fence_for("uses ``` inside"), "````");
+    }
+
+    #[test]
+    fn definitions_come_from_locations_or_links() {
+        let rope = Rope::from_str("let a = b;\n");
+        let links = json!([{
+            "originSelectionRange": {"start": {"line": 0, "character": 8}, "end": {"line": 0, "character": 9}},
+            "targetUri": "file:///tmp/x.rs",
+            "targetRange": {"start": {"line": 3, "character": 0}, "end": {"line": 5, "character": 1}},
+            "targetSelectionRange": {"start": {"line": 3, "character": 4}, "end": {"line": 3, "character": 5}},
+        }]);
+        let (origin, targets) = parse_definitions(Some(links), &rope);
+        assert_eq!(origin, Some(8..9));
+        assert_eq!(targets[0].path, PathBuf::from("/tmp/x.rs"));
+        assert_eq!(targets[0].range.start.character, 4);
+        let location = json!({"uri": "file:///tmp/y.rs", "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 2}}});
+        let (origin, targets) = parse_definitions(Some(location), &rope);
+        assert_eq!((origin, targets.len()), (None, 1));
+        assert!(parse_definitions(Some(Value::Null), &rope).1.is_empty());
     }
 
     #[test]
@@ -1046,6 +1206,48 @@ mod tests {
             .find(|item| item.filter_text == "return")
             .unwrap();
         assert_eq!(item.replace_range, offset - 3..offset);
+        drop(store);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn a_real_server_finds_a_definition() {
+        let root =
+            std::env::temp_dir().join(format!("pomelo-lsp-definition-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.c");
+        let text = "int helper(void) { return 0; }\nint main(void) { return helper(); }\n";
+        std::fs::write(&path, text).unwrap();
+        let env = crate::capture_login_env(&root).unwrap();
+        let mut store =
+            LspStore::new(root.clone(), std::sync::Arc::new(|| {})).with_environment(env);
+        let buffer = EditorBuffer::from_text(text);
+        let offset = text.rfind("helper").unwrap() + 2;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut token = None;
+        let mut answer = None;
+        while answer.is_none() && std::time::Instant::now() < deadline {
+            if token.is_none() {
+                token =
+                    store.definitions(&path, Lang::C, &buffer, offset, DefinitionKind::Definition);
+            }
+            for event in store.poll() {
+                if let StoreEvent::Definitions(response) = event {
+                    if Some(response.request) == token {
+                        answer = Some(response);
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let answer = answer.unwrap();
+        let target = answer.targets.first().unwrap();
+        assert_eq!(target.path.file_name(), path.file_name());
+        assert_eq!(
+            (target.range.start.line, target.range.start.character),
+            (0, 4)
+        );
         drop(store);
         std::fs::remove_dir_all(&root).unwrap();
     }

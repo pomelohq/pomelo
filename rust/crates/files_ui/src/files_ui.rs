@@ -21,6 +21,7 @@ use search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 
 mod command_palette;
 mod completions_menu;
+mod definition;
 mod fuzzy;
 mod git_diff;
 mod go_to_line;
@@ -376,6 +377,8 @@ struct FileItem {
     lsp_triggers: Option<Vec<String>>,
     completion_request: Option<lsp_completion::PendingCompletion>,
     pending_resolve: Option<lsp_completion::PendingResolve>,
+    definition_request: Option<definition::PendingDefinition>,
+    link: Option<definition::LinkState>,
 }
 
 /// A problem a language server reported, over a char range of the buffer.
@@ -489,6 +492,8 @@ impl FileItem {
             lsp_triggers: None,
             completion_request: None,
             pending_resolve: None,
+            definition_request: None,
+            link: None,
         }
     }
 
@@ -2666,7 +2671,9 @@ impl Item for FileItem {
             }
             let mut byte = 0usize;
             let mut empty = true;
-            for (segment, color) in self.line_segments(row.line, &colors) {
+            for (segment, color) in
+                self.with_link_color(row.line, self.line_segments(row.line, &colors))
+            {
                 let segment_end = byte + segment.len();
                 let from = row.start.clamp(byte, segment_end) - byte;
                 let to = row.end.clamp(byte, segment_end) - byte;
@@ -3120,6 +3127,17 @@ impl Item for FileItem {
             }
             return;
         }
+        let definition_kind = match key {
+            EditKey::GoToDefinition => Some(lsp::DefinitionKind::Definition),
+            EditKey::GoToDeclaration => Some(lsp::DefinitionKind::Declaration),
+            EditKey::GoToTypeDefinition => Some(lsp::DefinitionKind::TypeDefinition),
+            EditKey::GoToImplementation => Some(lsp::DefinitionKind::Implementation),
+            _ => None,
+        };
+        if let Some(kind) = definition_kind {
+            self.hide_hover();
+            return self.go_to_definition(kind);
+        }
         self.hide_hover();
         if let Some(menu) = self.completions.as_mut() {
             match key {
@@ -3499,6 +3517,7 @@ impl Item for FileItem {
         }
 
         rects.extend(self.diagnostic_rects(content, first, last));
+        rects.extend(self.link_underline_rects(content, first, last));
 
         // Text an input method is still composing is underlined.
         for marked in b.marked_ranges() {
@@ -4415,6 +4434,9 @@ impl FilesView {
                         if file.hover_request_due(now).is_some() {
                             file.hover_requested(None);
                         }
+                        while file.definition_request_due().is_some() {
+                            file.definition_requested(None);
+                        }
                         file.tick_hover(now);
                     }
                 }
@@ -4426,15 +4448,17 @@ impl FilesView {
         let mut hovers = Vec::new();
         let mut completion_answers = Vec::new();
         let mut resolutions = Vec::new();
+        let mut definition_answers = Vec::new();
+        let mut navigations: Vec<(Vec<lsp::DefinitionTarget>, Option<f32>)> = Vec::new();
         for event in events {
             match event {
                 lsp::StoreEvent::Diagnostics(update) => updates.push(update),
                 lsp::StoreEvent::Hover(response) => hovers.push(response),
                 lsp::StoreEvent::Completions(response) => completion_answers.push(response),
                 lsp::StoreEvent::CompletionResolved(resolved) => resolutions.push(resolved),
+                lsp::StoreEvent::Definitions(response) => definition_answers.push(response),
             }
         }
-        let root = self.root.clone();
         let mut synced: HashSet<PathBuf> = HashSet::new();
         self.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {
@@ -4453,7 +4477,12 @@ impl FilesView {
                 for resolved in &resolutions {
                     file.resolve_answered(resolved);
                 }
-                let path = root.join(&file.path);
+                for response in &definition_answers {
+                    if let Some(targets) = file.definitions_answered(response) {
+                        navigations.push((targets, file.caret_top()));
+                    }
+                }
+                let path = file.root.join(&file.path);
                 if let (Some(offset), Some(b)) = (file.hover_request_due(now), file.buffer.as_ref())
                 {
                     let token = lsp.hover(&path, file.lang, b, offset);
@@ -4484,6 +4513,13 @@ impl FilesView {
                     let token = lsp.resolve_completion(&path, &raw);
                     file.resolve_requested(token);
                 }
+                while let Some((offset, kind)) = file.definition_request_due() {
+                    let token = file
+                        .buffer
+                        .as_ref()
+                        .and_then(|b| lsp.definitions(&path, file.lang, b, offset, kind));
+                    file.definition_requested(token);
+                }
             }
         });
         let closed: Vec<PathBuf> = lsp
@@ -4494,6 +4530,39 @@ impl FilesView {
         for path in closed {
             lsp.close_document(&path);
         }
+        for (targets, caret_top) in navigations {
+            self.navigate_to_definition(&targets, caret_top);
+        }
+    }
+
+    fn navigate_to_definition(
+        &mut self,
+        targets: &[lsp::DefinitionTarget],
+        caret_top: Option<f32>,
+    ) {
+        let Some(target) = targets.first().cloned() else {
+            return;
+        };
+        self.track_nav(|view| {
+            let (root, relative) = match target.path.strip_prefix(&view.root) {
+                Ok(relative) => (view.root.clone(), relative.to_string_lossy().into_owned()),
+                Err(_) => (
+                    PathBuf::from("/"),
+                    target
+                        .path
+                        .to_string_lossy()
+                        .trim_start_matches('/')
+                        .to_string(),
+                ),
+            };
+            if let Some(pane) = view.active_pane_mut() {
+                pane.open_file(&root, &relative);
+            }
+            let active = view.active.clone();
+            if let Some(item) = view.go_to_line_item(&active) {
+                item.select_target_range(target.range, caret_top);
+            }
+        });
     }
 
     fn go_to_line_item(&mut self, path: &[usize]) -> Option<&mut FileItem> {
@@ -4898,6 +4967,18 @@ impl FilesView {
         let Some((path, local_x, local_y)) = self.editor_local(x, y) else {
             return false;
         };
+        if ui::modifiers().cmd && !extend {
+            self.active = path.clone();
+            let clicked = self
+                .go_to_line_item(&path)
+                .map(|item| (item.cmd_click(local_x, local_y), item.caret_top()));
+            if let Some((targets, caret_top)) = clicked {
+                if let Some(targets) = targets {
+                    self.navigate_to_definition(&targets, caret_top);
+                }
+                return true;
+            }
+        }
         if !extend {
             self.active = path;
         }

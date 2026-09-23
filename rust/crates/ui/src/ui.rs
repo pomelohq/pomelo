@@ -404,6 +404,34 @@ fn shader_radius(r: &Rect, scale: f32, half_w: f32, half_h: f32) -> f32 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub cmd: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub ctrl: bool,
+}
+
+static MODIFIERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_modifiers(modifiers: Modifiers) {
+    let bits = u8::from(modifiers.cmd)
+        | u8::from(modifiers.shift) << 1
+        | u8::from(modifiers.alt) << 2
+        | u8::from(modifiers.ctrl) << 3;
+    MODIFIERS.store(bits, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn modifiers() -> Modifiers {
+    let bits = MODIFIERS.load(std::sync::atomic::Ordering::Relaxed);
+    Modifiers {
+        cmd: bits & 1 != 0,
+        shift: bits & 2 != 0,
+        alt: bits & 4 != 0,
+        ctrl: bits & 8 != 0,
+    }
+}
+
 static WAKER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 
 /// Install how background work asks the event loop for a frame.
