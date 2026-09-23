@@ -17,7 +17,8 @@ use editor::buffer::{
 use editor::fold::FoldMap;
 use editor::search::{Direction, SearchQuery};
 use editor::transform::{LineTransform, TextTransform};
-use workspace::pane_group::{self, DividerRef, Member, PaneId, SplitDirection};
+use workspace::pane::{NavMode, Pane, PaneClickIds, TabBarButton, TabBarConfig, TAB_H};
+use workspace::pane_group::{self, DividerRef, Member, SplitDirection};
 use workspace::search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 use workspace::text_field;
 
@@ -115,7 +116,6 @@ fn gutter_width(line_count: usize) -> f32 {
 
 const INDENT: f32 = 16.0; // per-depth indent (~20 in the design; trimmed for the narrower panel)
 const ROW_H: f32 = 22.0;
-const TAB_H: f32 = 32.0; // editor tab-bar height
 const MAX_PANES: usize = 6; // ceiling on total leaf panes in the group
 
 // Click-id ranges within the feature-view space (`FUNC_VIEW_BASE`). Tree rows use the low range; the editor's
@@ -198,23 +198,7 @@ impl LineLayout {
     }
 }
 
-const MAX_NAVIGATION_HISTORY_LEN: usize = 1024;
 const MIN_NAVIGATION_HISTORY_ROW_DELTA: usize = 10;
-
-#[derive(Clone, Debug, PartialEq)]
-struct NavEntry {
-    id: String,
-    cursor: Option<usize>,
-    scroll: Option<(f32, f32)>,
-    row: Option<usize>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NavMode {
-    Normal,
-    GoingBack,
-    GoingForward,
-}
 
 /// One screen row: a slice `[start, end)` of `line`'s tab-expanded text (`end` is `usize::MAX` on a line's last
 /// row), drawn after `indent` blank columns (non-zero only on soft-wrap continuation rows).
@@ -2504,25 +2488,6 @@ impl FileItem {
         (line + 1, column + 1)
     }
 
-    fn nav_position(&self) -> Option<(usize, usize, (f32, f32))> {
-        let b = self.buffer.as_ref()?;
-        let head = b.newest().head();
-        Some((head, b.rope.char_to_line(head), self.scroll_position()))
-    }
-
-    fn navigate(&mut self, cursor: usize, scroll: (f32, f32)) -> bool {
-        let Some(b) = self.buffer.as_mut() else {
-            return false;
-        };
-        let cursor = cursor.min(b.rope.len_chars());
-        if b.newest().head() == cursor {
-            return false;
-        }
-        b.place_cursor(cursor);
-        self.set_scroll_position(scroll);
-        true
-    }
-
     fn scroll_position(&self) -> (f32, f32) {
         (self.scroll_y, self.scroll_x)
     }
@@ -2634,6 +2599,29 @@ impl Searchable for FileItem {
 impl Item for FileItem {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    fn searchable(&mut self) -> Option<&mut dyn Searchable> {
+        Some(self)
+    }
+
+    fn nav_position(&self) -> Option<(usize, usize, (f32, f32))> {
+        let b = self.buffer.as_ref()?;
+        let head = b.newest().head();
+        Some((head, b.rope.char_to_line(head), self.scroll_position()))
+    }
+
+    fn navigate_to(&mut self, cursor: usize, scroll: (f32, f32)) -> bool {
+        let Some(b) = self.buffer.as_mut() else {
+            return false;
+        };
+        let cursor = cursor.min(b.rope.len_chars());
+        if b.newest().head() == cursor {
+            return false;
+        }
+        b.place_cursor(cursor);
+        self.set_scroll_position(scroll);
+        true
     }
 
     fn cursor_status(&self) -> Option<String> {
@@ -4055,140 +4043,12 @@ impl Item for ImageItem {
     }
 }
 
-/// One editor pane: a set of open tabs (`Item`s) and the active one (the pane model). A leaf of the pane group.
-/// `id` is stable across re-layouts so a drag-and-drop that restructures the tree can still find source/target
-/// panes after their paths shift.
-#[derive(Default)]
-struct Pane {
-    id: u64,
-    open: Vec<Box<dyn Item>>,
-    active: Option<usize>,
-    back: Vec<NavEntry>,
-    fwd: Vec<NavEntry>,
-    search: Box<SearchBar>,
+/// Opening files is the files view's business, so it extends the shared pane rather than living in it.
+trait OpenFile {
+    fn open_file(&mut self, root: &std::path::Path, path: &str);
 }
 
-impl Pane {
-    fn header_h(&self) -> f32 {
-        if self.open.is_empty() {
-            0.0
-        } else {
-            TAB_H + self.search.height()
-        }
-    }
-
-    fn search_target(&mut self) -> Option<(&mut SearchBar, &mut FileItem)> {
-        let index = self.active?;
-        let item = self
-            .open
-            .get_mut(index)?
-            .as_any_mut()?
-            .downcast_mut::<FileItem>()?;
-        Some((self.search.as_mut(), item))
-    }
-
-    fn index_of_id(&self, id: &str) -> Option<usize> {
-        self.open.iter().position(|o| o.id().as_deref() == Some(id))
-    }
-
-    fn nav_entry_for(&mut self, index: usize) -> Option<NavEntry> {
-        let item = self.open.get_mut(index)?;
-        let id = item.id()?;
-        let file = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>());
-        Some(match file.and_then(|f| f.nav_position()) {
-            Some((cursor, row, scroll)) => NavEntry {
-                id,
-                cursor: Some(cursor),
-                scroll: Some(scroll),
-                row: Some(row),
-            },
-            None => NavEntry {
-                id,
-                cursor: None,
-                scroll: None,
-                row: None,
-            },
-        })
-    }
-
-    fn push_nav(&mut self, entry: NavEntry, mode: NavMode) {
-        let same = |e: &NavEntry| e.id == entry.id && e.row == entry.row;
-        let stack = match mode {
-            NavMode::GoingBack => &mut self.fwd,
-            NavMode::Normal | NavMode::GoingForward => &mut self.back,
-        };
-        stack.retain(|e| !same(e));
-        if stack.len() >= MAX_NAVIGATION_HISTORY_LEN {
-            stack.remove(0);
-        }
-        stack.push(entry);
-        if mode == NavMode::Normal {
-            self.fwd.clear();
-        }
-    }
-
-    fn deactivate_active(&mut self, mode: NavMode) {
-        if let Some(entry) = self.active.and_then(|i| self.nav_entry_for(i)) {
-            self.push_nav(entry, mode);
-        }
-    }
-
-    fn activate_user(&mut self, i: usize) {
-        if self.active == Some(i) {
-            return;
-        }
-        self.deactivate_active(NavMode::Normal);
-        self.active = Some(i);
-    }
-
-    fn can_back(&self) -> bool {
-        self.back.iter().any(|e| self.index_of_id(&e.id).is_some())
-    }
-
-    fn can_forward(&self) -> bool {
-        self.fwd.iter().any(|e| self.index_of_id(&e.id).is_some())
-    }
-
-    fn navigate(&mut self, mode: NavMode) {
-        loop {
-            let entry = match mode {
-                NavMode::GoingBack => self.back.pop(),
-                NavMode::GoingForward => self.fwd.pop(),
-                NavMode::Normal => None,
-            };
-            let Some(entry) = entry else {
-                return;
-            };
-            let Some(index) = self.index_of_id(&entry.id) else {
-                continue;
-            };
-            self.deactivate_active(mode);
-            let previous = self.active.replace(index);
-            let mut navigated = previous != Some(index);
-            if let (Some(cursor), Some(scroll)) = (entry.cursor, entry.scroll) {
-                if let Some(file) = self
-                    .open
-                    .get_mut(index)
-                    .and_then(|item| item.as_any_mut())
-                    .and_then(|a| a.downcast_mut::<FileItem>())
-                {
-                    navigated |= file.navigate(cursor, scroll);
-                }
-            }
-            if navigated {
-                return;
-            }
-        }
-    }
-
-    fn nav_back(&mut self) {
-        self.navigate(NavMode::GoingBack);
-    }
-
-    fn nav_forward(&mut self) {
-        self.navigate(NavMode::GoingForward);
-    }
-
+impl OpenFile for Pane {
     fn open_file(&mut self, root: &std::path::Path, path: &str) {
         if let Some(i) = self
             .open
@@ -4208,30 +4068,6 @@ impl Pane {
         self.open
             .push(Box::new(FileItem::new(root.to_path_buf(), path, text)));
         self.activate_user(self.open.len() - 1);
-    }
-
-    fn close_tab(&mut self, i: usize) {
-        if i >= self.open.len() {
-            return;
-        }
-        self.open.remove(i);
-        self.active = if self.open.is_empty() {
-            None
-        } else {
-            Some(self.active.unwrap_or(0).min(self.open.len() - 1))
-        };
-    }
-
-    fn active_item(&self) -> Option<&dyn Item> {
-        self.active
-            .and_then(|i| self.open.get(i))
-            .map(|b| b.as_ref())
-    }
-}
-
-impl PaneId for Pane {
-    fn pane_id(&self) -> u64 {
-        self.id
     }
 }
 
@@ -5048,7 +4884,7 @@ impl FilesView {
         true
     }
 
-    fn focused_search(&mut self) -> Option<(&mut SearchBar, &mut FileItem)> {
+    fn focused_search(&mut self) -> Option<(&mut SearchBar, &mut dyn Searchable)> {
         let pane = self.active_pane_mut()?;
         if pane.search.dismissed || pane.search.focus.is_none() {
             return None;
@@ -5443,167 +5279,31 @@ fn divider_axis(axis: pane_group::Axis) -> DividerAxis {
     }
 }
 
-/// One leaf pane: a tab bar (each tab a column [content | 1px underline]) plus the active item's body, filling
-/// its clipped rect. `p` is the pane's render-order index (keys its tab/split ids); `hover` is the pointer's
-/// current hit id, so a tab shows its close button only while hovered.
+/// The editor pane's chrome: history arrows and split buttons around its tabs. `p` is the pane's render-order
+/// index, which keys its click ids.
 fn render_pane(pane: &Pane, p: usize, hover: Option<u64>, width: f32) -> Node {
-    // Tab bar: a full-width bottom border that the active tab punches through -- the active tab's bottom line
-    // matches the editor so it merges into the body below; inactive tabs keep the border and sit on the line.
-    let mut tab_bar = div().row().h_px(TAB_H).bg(theme().tab_bar_background);
-    // Leading nav group (back/forward through this pane's activation history) + a vertical separator, mirroring
-    // the reference's tab-bar start slot.
-    tab_bar = tab_bar
-        .child(nav_button(
-            IconKind::ArrowLeft,
-            NAV_BACK_BASE + p as u64,
-            pane.can_back(),
-        ))
-        .child(nav_button(
-            IconKind::ArrowRight,
-            NAV_FWD_BASE + p as u64,
-            pane.can_forward(),
-        ))
-        .child(div().w_px(1.0).h_px(TAB_H).bg(theme().border));
-    for (t, o) in pane.open.iter().enumerate() {
-        let is_active = pane.active == Some(t);
-        let activate_id = TAB_ACTIVATE_BASE + p as u64 * PANE_STRIDE + t as u64;
-        let close_id = TAB_CLOSE_BASE + p as u64 * PANE_STRIDE + t as u64;
-        let hovered = hover == Some(activate_id) || hover == Some(close_id);
-        let underline = if is_active {
-            theme().editor_background
-        } else {
-            theme().border
-        };
-        // The close slot keeps its 16px whether or not the glyph shows, so revealing it on hover never shifts
-        // the tab's width.
-        let mut close_slot = div()
-            .w_px(16.0)
-            .h_px(16.0)
-            .rounded(4.0)
-            .items_center()
-            .justify_center()
-            .on_click(close_id);
-        if hovered {
-            close_slot =
-                close_slot.child(icon(IconKind::Close).size(11.0).color(theme().icon_muted));
-        }
-        // Leading slot: a dot while the item has unsaved edits (warning color on a disk conflict).
-        let mut dirty_slot = div().w_px(12.0).h_px(12.0).items_center().justify_center();
-        if o.is_dirty() {
-            let color = if o.has_conflict() {
-                theme().warning
-            } else {
-                theme().text_accent
-            };
-            dirty_slot = dirty_slot.child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(color));
-        }
-        let content = div()
-            .row()
-            .flex(1.0)
-            .px(10.0)
-            .gap(6.0)
-            .items_center()
-            .child(dirty_slot)
-            .child(material_icon(o.icon().unwrap_or(MaterialIcon::Document)).size(14.0))
-            .child(label(o.title()).size(13.0).color(if is_active {
-                theme().text
-            } else {
-                theme().text_muted
-            }))
-            .child(close_slot);
-        let cell = div()
-            .col()
-            .h_px(TAB_H)
-            .bg(if is_active {
-                theme().tab_active_background
-            } else {
-                theme().tab_inactive_background
-            })
-            .on_click(activate_id)
-            .child(content)
-            .child(div().h_px(1.0).bg(underline));
-        tab_bar = tab_bar
-            .child(cell)
-            .child(div().w_px(1.0).h_px(TAB_H).bg(theme().border));
-    }
-    // The empty remainder carries the tab bar's bottom border; the split-right / split-down actions sit at its
-    // trailing edge.
-    tab_bar = tab_bar
-        .child(
-            div()
-                .col()
-                .flex(1.0)
-                .h_px(TAB_H)
-                .child(div().flex(1.0))
-                .child(div().h_px(1.0).bg(theme().border)),
-        )
-        .child(div().w_px(1.0).h_px(TAB_H).bg(theme().border))
-        .child(split_button(
-            IconKind::PanelRight,
-            SPLIT_RIGHT_BASE + p as u64,
-        ))
-        .child(split_button(
-            IconKind::PanelBottom,
-            SPLIT_DOWN_BASE + p as u64,
-        ));
-
-    // Just the pane chrome (the tab bar). The scrollable body is rendered separately by the shell so it can be
-    // offset for smooth scroll; an empty pane has no chrome (the base editor-background fill shows).
-    if pane.open.is_empty() {
-        return div().col().flex(1.0).into();
-    }
-    let mut chrome = div().col().flex(1.0).child(tab_bar);
-    if !pane.search.dismissed {
-        chrome = chrome.child(
-            pane.search
-                .render(SEARCH_BASE + p as u64 * PANE_STRIDE, width),
-        );
-    }
-    chrome.into()
-}
-
-/// A back/forward nav button in the pane's tab bar. Dimmed and non-clickable when there's nowhere to go.
-fn nav_button(kind: IconKind, id: u64, enabled: bool) -> Node {
-    let color = if enabled {
-        theme().icon_muted
-    } else {
-        theme().icon_muted.alpha(0.35)
+    let p = p as u64;
+    let config = TabBarConfig {
+        show_nav: true,
+        buttons: vec![
+            TabBarButton {
+                icon: IconKind::PanelRight,
+                id: SPLIT_RIGHT_BASE + p,
+            },
+            TabBarButton {
+                icon: IconKind::PanelBottom,
+                id: SPLIT_DOWN_BASE + p,
+            },
+        ],
     };
-    let mut inner = div()
-        .row()
-        .flex(1.0)
-        .items_center()
-        .justify_center()
-        .child(icon(kind).size(15.0).color(color));
-    if enabled {
-        inner = inner.on_click(id);
-    }
-    div()
-        .col()
-        .w_px(26.0)
-        .h_px(TAB_H)
-        .child(inner)
-        .child(div().h_px(1.0).bg(theme().border))
-        .into()
-}
-
-/// A split-action button in the pane's tab bar (still carrying the bar's bottom border).
-fn split_button(kind: IconKind, id: u64) -> Node {
-    div()
-        .col()
-        .w_px(26.0)
-        .h_px(TAB_H)
-        .child(
-            div()
-                .row()
-                .flex(1.0)
-                .items_center()
-                .justify_center()
-                .on_click(id)
-                .child(icon(kind).size(13.0).color(theme().icon_muted)),
-        )
-        .child(div().h_px(1.0).bg(theme().border))
-        .into()
+    let ids = PaneClickIds {
+        tab_activate: TAB_ACTIVATE_BASE + p * PANE_STRIDE,
+        tab_close: TAB_CLOSE_BASE + p * PANE_STRIDE,
+        nav_back: NAV_BACK_BASE + p,
+        nav_forward: NAV_FWD_BASE + p,
+        search: SEARCH_BASE + p * PANE_STRIDE,
+    };
+    workspace::pane::render_pane(pane, &config, ids, hover, width)
 }
 
 impl FunctionView for FilesView {
