@@ -2124,6 +2124,45 @@ impl WorkspaceView {
         count
     }
 
+    /// Run a pane key on the focused pane group. Moving focus past the group's edge crosses between the center
+    /// and the terminal panel when the panel sits on that side. Returns false when the key should fall through.
+    pub fn pane_command(&mut self, command: crate::pane::PaneCommand) -> bool {
+        use crate::pane::PaneCommand;
+        use crate::pane_group::SplitDirection;
+        let toward_panel = match self.layout.terminal_side {
+            DockPosition::Left => SplitDirection::Left,
+            DockPosition::Right => SplitDirection::Right,
+            DockPosition::Bottom => SplitDirection::Down,
+        };
+        if self.panel_has_focus() {
+            let handled = self
+                .layout
+                .terminal_view
+                .as_mut()
+                .is_some_and(|panel| panel.pane_command(command));
+            if !handled && command == PaneCommand::ActivatePane(toward_panel.opposite()) {
+                self.set_terminal_focus(false);
+                return true;
+            }
+            return handled;
+        }
+        let Some(files) = self.layout.files_view.as_mut() else {
+            return false;
+        };
+        if !files.accepts_pane_keys() {
+            return false;
+        }
+        let handled = files.pane_command(command);
+        if !handled
+            && command == PaneCommand::ActivatePane(toward_panel)
+            && self.layout.terminal_visible()
+        {
+            self.set_terminal_focus(true);
+            return true;
+        }
+        handled
+    }
+
     fn panel_has_focus(&self) -> bool {
         self.terminal_focused && self.layout.terminal_visible()
     }

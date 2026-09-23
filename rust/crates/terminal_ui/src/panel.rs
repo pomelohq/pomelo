@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use editor::search::Direction;
 use terminal::{Keystroke, Modifiers, Waker};
 use ui::{label, theme, IconKind, Node, Painted, Rect, Rgba};
-use workspace::pane::{render_pane, Pane, PaneClickIds, TabBarButton, TabBarConfig};
+use workspace::pane::{render_pane, Pane, PaneClickIds, PaneCommand, TabBarButton, TabBarConfig};
 use workspace::pane_group::{self, DividerRef, LeafPlacement, Member, SplitDirection};
 use workspace::search_bar::{SearchBar, SearchClick, SearchField, SearchSupport};
 use workspace::tab_drag::{self, DropTarget, TabDrag, TabDrop};
@@ -573,6 +573,44 @@ impl TerminalPanelView for TerminalPanel {
         Some(self.tab_drag.as_ref()?.ghost())
     }
 
+    fn pane_command(&mut self, command: PaneCommand) -> bool {
+        match command {
+            PaneCommand::Split(direction) => {
+                let path = self.active.clone();
+                self.split(&path, direction);
+                true
+            }
+            PaneCommand::ActivatePane(direction) => {
+                match pane_group::find_pane_in_direction(
+                    &self.leaves,
+                    &self.active,
+                    direction,
+                    None,
+                ) {
+                    Some(path) => {
+                        self.set_active(path);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            PaneCommand::SwapPane(direction) => {
+                let Some(path) =
+                    pane_group::find_pane_in_direction(&self.leaves, &self.active, direction, None)
+                else {
+                    return false;
+                };
+                if self.group.swap(&self.active, &path) {
+                    self.active = path;
+                }
+                true
+            }
+            item_command => self
+                .active_pane()
+                .is_some_and(|pane| pane.apply_item_command(item_command)),
+        }
+    }
+
     fn dragged_item(&self) -> Option<&dyn workspace::Item> {
         let drag = self.tab_drag.as_ref()?;
         let path = self.group.path_of(drag.source)?;
@@ -1002,6 +1040,25 @@ mod tests {
         assert!(panel.drop_tab());
         assert_eq!(panel.group.leaf_count(), 1);
         assert_eq!(panel.group.leaf_at(&[]).map(|p| p.open.len()), Some(2));
+    }
+
+    #[test]
+    fn pane_keys_split_move_focus_and_swap() {
+        let region = Rect::new(0.0, 0.0, 800.0, 400.0, Rgba::TRANSPARENT);
+        let mut panel = panel();
+        panel.open(None);
+        panel.render(region, true);
+        assert!(panel.pane_command(PaneCommand::Split(SplitDirection::Right)));
+        assert_eq!(panel.group.leaf_count(), 2);
+        assert_eq!(panel.active, vec![1]);
+        panel.render(region, true);
+        assert!(!panel.pane_command(PaneCommand::ActivatePane(SplitDirection::Right)));
+        assert!(panel.pane_command(PaneCommand::ActivatePane(SplitDirection::Left)));
+        assert_eq!(panel.active, vec![0]);
+        let left_id = panel.group.leaf_at(&[0]).map(|pane| pane.id);
+        assert!(panel.pane_command(PaneCommand::SwapPane(SplitDirection::Right)));
+        assert_eq!(panel.active, vec![1]);
+        assert_eq!(panel.group.leaf_at(&[1]).map(|pane| pane.id), left_id);
     }
 
     #[test]

@@ -16,6 +16,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{CursorIcon, Window, WindowId};
+use workspace::pane::PaneCommand;
+use workspace::pane_group::SplitDirection;
 use workspace::{DockPosition, EditKey, Layout};
 
 enum EditorInput {
@@ -79,6 +81,86 @@ fn install_features(layout: &mut Layout) {
         root,
         std::sync::Arc::new(ui::wake),
     )));
+}
+
+/// Which pane group focus the key arrives in: the terminal claims ctrl-alt-arrows and cmd-d for splitting and
+/// leaves the cmd-k chord to its own clear, the editor uses the cmd-k chord and cmd-backslash.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PaneKeyContext {
+    Editor { after_cmd_k: bool },
+    Terminal,
+}
+
+fn pane_key(
+    event: &winit::event::KeyEvent,
+    modifiers: terminal::Modifiers,
+    context: PaneKeyContext,
+) -> Option<PaneCommand> {
+    let terminal::Modifiers {
+        shift,
+        alt,
+        ctrl,
+        cmd,
+    } = modifiers;
+    let arrow = match &event.logical_key {
+        Key::Named(NamedKey::ArrowLeft) => Some(SplitDirection::Left),
+        Key::Named(NamedKey::ArrowRight) => Some(SplitDirection::Right),
+        Key::Named(NamedKey::ArrowUp) => Some(SplitDirection::Up),
+        Key::Named(NamedKey::ArrowDown) => Some(SplitDirection::Down),
+        _ => None,
+    };
+    let plain = match event.key_without_modifiers() {
+        Key::Character(c) => Some(c.to_string()),
+        _ => None,
+    };
+    if let (PaneKeyContext::Editor { after_cmd_k: true }, Some(direction)) = (context, arrow) {
+        return match (cmd, shift, alt, ctrl) {
+            (false, false, false, false) => Some(PaneCommand::Split(direction)),
+            (true, false, false, false) => Some(PaneCommand::ActivatePane(direction)),
+            (false, true, false, false) => Some(PaneCommand::SwapPane(direction)),
+            _ => None,
+        };
+    }
+    if cmd && alt && !ctrl && !shift {
+        match arrow {
+            Some(SplitDirection::Left) => return Some(PaneCommand::ActivatePreviousItem),
+            Some(SplitDirection::Right) => return Some(PaneCommand::ActivateNextItem),
+            _ => {}
+        }
+    }
+    if context == PaneKeyContext::Terminal && ctrl && alt && !cmd && !shift {
+        if let Some(direction) = arrow {
+            return Some(PaneCommand::Split(direction));
+        }
+    }
+    let plain = plain?;
+    if ctrl && !cmd && !alt && !shift {
+        return match plain.as_str() {
+            "0" => Some(PaneCommand::ActivateLastItem),
+            digit => digit
+                .parse::<usize>()
+                .ok()
+                .filter(|n| (1..=9).contains(n))
+                .map(|n| PaneCommand::ActivateItem(n - 1)),
+        };
+    }
+    if cmd && shift && !alt && !ctrl {
+        return match plain.as_str() {
+            "[" => Some(PaneCommand::ActivatePreviousItem),
+            "]" => Some(PaneCommand::ActivateNextItem),
+            _ => None,
+        };
+    }
+    if cmd && !shift && !alt && !ctrl {
+        return match (context, plain.as_str()) {
+            (PaneKeyContext::Editor { .. }, "\\") => {
+                Some(PaneCommand::Split(SplitDirection::Right))
+            }
+            (PaneKeyContext::Terminal, "d") => Some(PaneCommand::Split(SplitDirection::Right)),
+            _ => None,
+        };
+    }
+    None
 }
 
 /// A key press in the terminal's terms: named keys by name, character keys as typed without modifiers (so
@@ -788,6 +870,14 @@ impl ApplicationHandler for App {
                     cmd: self.super_down,
                 };
                 self.reset_caret();
+                if let Some(command) = pane_key(ke, modifiers, PaneKeyContext::Terminal) {
+                    if self.with_workspace_view(id, |v, _| v.pane_command(command)) == Some(true) {
+                        if let Some(m) = self.mains.get_mut(&id) {
+                            m.dirty = true;
+                        }
+                        return;
+                    }
+                }
                 let consumed = terminal_keystroke(ke, modifiers).is_some_and(|keystroke| {
                     self.with_workspace_view(id, |v, _| v.terminal_key(&keystroke)) == Some(true)
                 });
@@ -884,6 +974,23 @@ impl ApplicationHandler for App {
                 {
                     self.pending_cmd_k = true;
                     return;
+                }
+                let modifiers = terminal::Modifiers {
+                    shift,
+                    alt,
+                    ctrl,
+                    cmd,
+                };
+                if let Some(command) =
+                    pane_key(ke, modifiers, PaneKeyContext::Editor { after_cmd_k })
+                {
+                    if self.with_workspace_view(id, |v, _| v.pane_command(command)) == Some(true) {
+                        self.reset_caret();
+                        if let Some(m) = self.mains.get_mut(&id) {
+                            m.dirty = true;
+                        }
+                        return;
+                    }
                 }
                 let key = |k| Some(EditorInput::Key(k));
                 let input: Option<EditorInput> = match &ke.logical_key {

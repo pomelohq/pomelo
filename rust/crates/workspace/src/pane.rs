@@ -4,7 +4,7 @@
 
 use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node};
 
-use crate::pane_group::PaneId;
+use crate::pane_group::{PaneId, SplitDirection};
 use crate::search_bar::{SearchBar, Searchable};
 use crate::Item;
 
@@ -24,6 +24,18 @@ pub enum NavMode {
     Normal,
     GoingBack,
     GoingForward,
+}
+
+/// A keyboard command aimed at the focused pane group: split, move focus or swap between panes, or pick a tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneCommand {
+    Split(SplitDirection),
+    ActivatePane(SplitDirection),
+    SwapPane(SplitDirection),
+    ActivateItem(usize),
+    ActivateLastItem,
+    ActivatePreviousItem,
+    ActivateNextItem,
 }
 
 #[derive(Default)]
@@ -181,6 +193,24 @@ impl Pane {
         } else {
             Some(self.active.unwrap_or(0).min(self.open.len() - 1))
         };
+    }
+
+    /// Apply a tab-picking command; returns false for commands that act on the pane group instead.
+    /// Previous/next wrap around the ends.
+    pub fn apply_item_command(&mut self, command: PaneCommand) -> bool {
+        let len = self.open.len();
+        let current = self.active.unwrap_or(0);
+        let index = match command {
+            PaneCommand::ActivateItem(index) => index.min(len.saturating_sub(1)),
+            PaneCommand::ActivateLastItem => len.saturating_sub(1),
+            PaneCommand::ActivatePreviousItem => (current + len.max(1) - 1) % len.max(1),
+            PaneCommand::ActivateNextItem => (current + 1) % len.max(1),
+            _ => return false,
+        };
+        if len > 0 {
+            self.activate_user(index);
+        }
+        true
     }
 
     pub fn active_item(&self) -> Option<&dyn Item> {
@@ -406,6 +436,29 @@ mod tests {
             nav_forward: 301,
             search: 400,
         }
+    }
+
+    #[test]
+    fn item_commands_pick_tabs_and_wrap() {
+        let mut pane = Pane::new(1);
+        for name in ["a", "b", "c"] {
+            pane.add_item(Box::new(Plain(name)));
+        }
+        assert!(pane.apply_item_command(PaneCommand::ActivateNextItem));
+        assert_eq!(pane.active, Some(0));
+        assert!(pane.apply_item_command(PaneCommand::ActivatePreviousItem));
+        assert_eq!(pane.active, Some(2));
+        assert!(pane.apply_item_command(PaneCommand::ActivateItem(0)));
+        assert_eq!(pane.active, Some(0));
+        assert!(pane.apply_item_command(PaneCommand::ActivateItem(7)));
+        assert_eq!(pane.active, Some(2));
+        pane.activate_user(0);
+        assert!(pane.apply_item_command(PaneCommand::ActivateLastItem));
+        assert_eq!(pane.active, Some(2));
+        assert!(!pane.apply_item_command(PaneCommand::Split(SplitDirection::Right)));
+        let mut empty = Pane::new(2);
+        assert!(empty.apply_item_command(PaneCommand::ActivateNextItem));
+        assert_eq!(empty.active, None);
     }
 
     #[test]
