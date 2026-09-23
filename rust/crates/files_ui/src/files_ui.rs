@@ -6845,6 +6845,29 @@ impl FunctionView for FilesView {
         Some(self.root.join(id))
     }
 
+    fn open_file_at(&mut self, path: &Path, row: Option<u32>, column: Option<u32>) {
+        let path = path.to_path_buf();
+        self.track_nav(|view| {
+            let (root, relative) = match path.strip_prefix(&view.root) {
+                Ok(relative) => (view.root.clone(), relative.to_string_lossy().into_owned()),
+                Err(_) => (
+                    PathBuf::from("/"),
+                    path.to_string_lossy().trim_start_matches('/').to_string(),
+                ),
+            };
+            if let Some(pane) = view.active_pane_mut() {
+                pane.open_file(&root, &relative);
+            }
+            if let Some(row) = row {
+                let active = view.active.clone();
+                if let Some(item) = view.go_to_line_item(&active) {
+                    let column = column.unwrap_or(1).saturating_sub(1) as usize;
+                    item.go_to(row.saturating_sub(1) as usize, column);
+                }
+            }
+        });
+    }
+
     fn editor_copy_trimmed(&self) -> Option<CopiedText> {
         self.active_item_ref().and_then(|item| item.copy_trimmed())
     }

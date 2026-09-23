@@ -1,6 +1,7 @@
 //! Terminal core: a shell running on a PTY, its output parsed by a VT emulator into a scrollback grid, and a
 //! snapshot of that grid for a view to draw. No rendering here; `terminal_ui` draws `Content`.
 
+pub mod hyperlinks;
 pub mod input;
 pub mod mouse;
 pub mod pty_info;
@@ -24,6 +25,7 @@ use alacritty_terminal::tty;
 pub use alacritty_terminal::term::cell::Flags;
 pub use alacritty_terminal::term::TermMode;
 pub use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
+pub use hyperlinks::{HyperlinkMatch, PathWithPosition};
 pub use input::{Keystroke, Modifiers, TerminalAction};
 pub use mouse::{GridPoint, MouseButton, Side};
 
@@ -190,6 +192,8 @@ pub struct Content {
     pub screen_lines: usize,
     pub columns: usize,
     pub selection: Option<SelectionRange>,
+    /// The link under the pointer while the modifier is held, drawn underlined.
+    pub hovered_link: Option<HyperlinkMatch>,
     /// Colors a program redefined (OSC 4/10/11); `None` falls back to the palette.
     pub colors: Vec<Option<Rgb>>,
     pub bounds: TerminalBounds,
@@ -269,6 +273,8 @@ pub struct Terminal {
     keyboard_input_sent: bool,
     child_exit: Option<ExitStatus>,
     process: pty_info::PtyProcessInfo,
+    links: hyperlinks::LinkSearch,
+    hovered_link: Option<HyperlinkMatch>,
     process_checked: Option<Instant>,
     scroll_px: f32,
     selecting: bool,
@@ -341,6 +347,8 @@ impl Terminal {
             keyboard_input_sent: false,
             child_exit: None,
             process,
+            links: hyperlinks::LinkSearch::default(),
+            hovered_link: None,
             process_checked: None,
             scroll_px: 0.0,
             selecting: false,
@@ -624,6 +632,27 @@ impl Terminal {
         self.mouse_down_position = None;
     }
 
+    /// The link under `(x, y)` in grid design px, if any.
+    pub fn hyperlink_at(&mut self, x: f32, y: f32) -> Option<HyperlinkMatch> {
+        let (point, _) = self.cell_at(x, y);
+        let term = self.term.lock();
+        let point = BackendPoint::new(Line(point.line), Column(point.column));
+        if point.line < term.topmost_line() || point.line > term.bottommost_line() {
+            return None;
+        }
+        self.links.find(&term, point)
+    }
+
+    /// Returns whether the hovered link changed.
+    pub fn set_hovered_link(&mut self, link: Option<HyperlinkMatch>) -> bool {
+        if self.hovered_link == link {
+            return false;
+        }
+        self.hovered_link = link.clone();
+        self.content.hovered_link = link;
+        true
+    }
+
     pub fn select_all(&mut self) {
         let mut term = self.term.lock();
         let start = BackendPoint::new(term.topmost_line(), Column(0));
@@ -791,6 +820,7 @@ impl Terminal {
             total_lines: grid.total_lines(),
             screen_lines: grid.screen_lines(),
             columns: grid.columns(),
+            hovered_link: self.hovered_link.clone(),
             selection: renderable.selection.map(|range| SelectionRange {
                 start: grid_point(range.start),
                 end: grid_point(range.end),
@@ -954,6 +984,7 @@ mod tests {
             width: 400.0,
             height: 200.0,
         });
+        terminal.apply_resize();
         terminal
     }
 
@@ -991,6 +1022,29 @@ mod tests {
         terminal.mouse_up(35.0, 25.0, MouseButton::Left, Modifiers::default());
         terminal.clear();
         assert_eq!(terminal.screen_text(), "hello world");
+    }
+
+    #[test]
+    fn links_under_the_pointer() {
+        let mut terminal = sized(sh(
+            "sleep 0.2; printf 'see https://example.com/a(b). and Update(src/main.rs:12:3) ok'; sleep 5",
+        ));
+        let host = host();
+        wait_for(&mut terminal, &host, |t, _| t.screen_text().ends_with("ok"));
+        let url = terminal.hyperlink_at(105.0, 5.0).unwrap();
+        assert_eq!(
+            (url.text.as_str(), url.is_url),
+            ("https://example.com/a(b)", true)
+        );
+        assert_eq!((url.start.column, url.end.column), (4, 27));
+        let path = terminal.hyperlink_at(10.0, 25.0).unwrap();
+        assert_eq!(
+            (path.text.as_str(), path.is_url),
+            ("src/main.rs:12:3", false)
+        );
+        assert!(terminal.hyperlink_at(15.0, 5.0).unwrap().text == "see");
+        assert!(terminal.set_hovered_link(Some(url.clone())));
+        assert!(!terminal.set_hovered_link(Some(url)));
     }
 
     #[test]

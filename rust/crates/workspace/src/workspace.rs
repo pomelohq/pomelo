@@ -648,6 +648,17 @@ pub enum TerminalKeyOutcome {
     Paste,
 }
 
+/// A cmd-clicked link from the terminal: a URL for the browser, or an existing file (1-based position).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalOpenTarget {
+    Url(String),
+    Path {
+        path: std::path::PathBuf,
+        row: Option<u32>,
+        column: Option<u32>,
+    },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerminalSyncOutcome {
     pub changed: bool,
@@ -684,6 +695,9 @@ pub trait TerminalPanelView: 'static {
     /// Start a shell in `cwd` (the project root when `None`) as a new active tab.
     fn open(&mut self, cwd: Option<std::path::PathBuf>);
     fn is_empty(&self) -> bool;
+    fn take_open_request(&mut self) -> Option<TerminalOpenTarget>;
+    /// Whether the pointer is over a link that a click would open (pointing-hand cursor).
+    fn link_hovered(&self) -> bool;
 }
 
 pub trait FunctionView: 'static {
@@ -716,6 +730,8 @@ pub trait FunctionView: 'static {
     fn active_file_path(&self) -> Option<std::path::PathBuf> {
         None
     }
+    /// Open an absolute path in the editor, placing the caret at a 1-based row/column when given.
+    fn open_file_at(&mut self, _path: &std::path::Path, _row: Option<u32>, _column: Option<u32>) {}
     fn editor_copy_trimmed(&self) -> Option<CopiedText> {
         None
     }
