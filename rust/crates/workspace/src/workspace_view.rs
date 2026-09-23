@@ -1044,29 +1044,13 @@ impl WorkspaceView {
         if target == EDITOR_MENU_TARGET {
             match item {
                 MENU_EDIT_COPY => {
-                    if let Some(t) = self
-                        .layout
-                        .files_view
-                        .as_ref()
-                        .and_then(|v| v.editor_selected_text())
-                    {
-                        Self::clip_set(&t);
-                    }
+                    self.editor_copy_to_clipboard();
                 }
                 MENU_EDIT_CUT => {
-                    if let Some(v) = self.layout.files_view.as_mut() {
-                        if let Some(t) = v.editor_selected_text() {
-                            Self::clip_set(&t);
-                            v.editor_key(EditKey::Backspace, false);
-                        }
-                    }
+                    self.editor_cut_to_clipboard();
                 }
                 MENU_EDIT_PASTE => {
-                    if let Some(t) = Self::clip_get() {
-                        if let Some(v) = self.layout.files_view.as_mut() {
-                            v.editor_text(&t);
-                        }
-                    }
+                    self.editor_paste_from_clipboard();
                 }
                 MENU_EDIT_SELECT_ALL => {
                     if let Some(v) = self.layout.files_view.as_mut() {
@@ -1401,6 +1385,66 @@ impl WorkspaceView {
                 self.session_search_query.clear();
             }
         }
+    }
+
+    pub fn editor_copy_to_clipboard(&mut self) -> bool {
+        let copied = self
+            .layout
+            .files_view
+            .as_ref()
+            .and_then(|v| v.editor_copy());
+        match copied {
+            Some(copied) => {
+                Self::clip_set(&copied.text);
+                crate::remember_copy(&copied);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn editor_cut_to_clipboard(&mut self) -> bool {
+        let copied = self.layout.files_view.as_mut().and_then(|v| v.editor_cut());
+        match copied {
+            Some(copied) => {
+                Self::clip_set(&copied.text);
+                crate::remember_copy(&copied);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn editor_paste_from_clipboard(&mut self) -> bool {
+        let Some(text) = Self::clip_get().filter(|t| !t.is_empty()) else {
+            return false;
+        };
+        let slices = crate::slices_for(&text);
+        self.layout
+            .files_view
+            .as_mut()
+            .map(|v| v.editor_paste(&text, slices.as_deref()))
+            .unwrap_or(false)
+    }
+
+    pub fn editor_ime_preedit(
+        &mut self,
+        text: &str,
+        selected: Option<std::ops::Range<usize>>,
+    ) -> bool {
+        self.layout
+            .files_view
+            .as_mut()
+            .map(|v| v.editor_ime_preedit(text, selected))
+            .unwrap_or(false)
+    }
+
+    pub fn editor_ime_commit(&mut self, text: &str) -> bool {
+        self.layout
+            .files_view
+            .as_mut()
+            .map(|v| v.editor_ime_commit(text))
+            .unwrap_or(false)
     }
 
     pub fn editor_text(&mut self, text: &str) -> bool {

@@ -11,15 +11,15 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use editor::buffer::{Bias, DisplayRows, Motion, Selection};
+use editor::buffer::{Bias, ClipboardSelection, Deletion, DisplayRows, Motion, Selection};
 use editor::fold::FoldMap;
 use editor::wrap::Boundary;
 use editor::{EditorBuffer, Lang, Syntax, Theme};
 use files::FileNode;
 use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
 use workspace::{
-    DividerAxis, DividerPlacement, EditKey, EditorLayout, FunctionView, Item, PaneBody,
-    PanePlacement, FUNC_VIEW_BASE,
+    ClipboardSlice, CopiedText, DividerAxis, DividerPlacement, EditKey, EditorLayout, FunctionView,
+    Item, PaneBody, PanePlacement, FUNC_VIEW_BASE,
 };
 
 // Editor text metrics (design px). The body pads by `EDIT_PAD_*`; each source line is `EDIT_LINE_H` tall with
@@ -203,6 +203,13 @@ struct DisplayRow {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineCommand {
+    Delete,
+    Duplicate { up: bool },
+    Move { up: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SoftWrap {
     None,
     EditorWidth,
@@ -246,6 +253,7 @@ struct FileItem {
     /// Soft-wrap breaks per buffer line (`None` = not computed), spliced on edits like `line_widths`.
     wraps: Vec<Option<Rc<[Boundary]>>>,
     wrap_width: f32,
+    lang: Lang,
     soft_wrap: SoftWrap,
     soft_wrap_override: Option<SoftWrap>,
     /// Widest row in columns, sizing horizontal scroll.
@@ -283,6 +291,7 @@ impl FileItem {
             line_rows: Vec::new(),
             wraps: Vec::new(),
             wrap_width: 0.0,
+            lang,
             soft_wrap: if lang == Lang::Markdown {
                 SoftWrap::EditorWidth
             } else {
@@ -690,6 +699,116 @@ impl FileItem {
         } else {
             offset
         }
+    }
+
+    /// Multi-cursor and syntax-selection commands; returns whether `key` was one of them.
+    fn run_selection_command(&mut self, key: EditKey) -> bool {
+        let add = match key {
+            EditKey::AddCursorAbove => Some((true, true)),
+            EditKey::AddCursorBelow => Some((false, true)),
+            EditKey::AddCursorAboveRow => Some((true, false)),
+            EditKey::AddCursorBelowRow => Some((false, false)),
+            _ => None,
+        };
+        if !matches!(
+            key,
+            EditKey::SelectNext
+                | EditKey::SelectAllMatches
+                | EditKey::SelectLargerSyntaxNode
+                | EditKey::SelectSmallerSyntaxNode
+        ) && add.is_none()
+        {
+            return false;
+        }
+        self.refresh();
+        self.ensure_visible();
+        let mut revealed = Vec::new();
+        if let Some((above, skip_soft_wrap)) = add {
+            let plan = self
+                .buffer
+                .as_ref()
+                .map(|b| b.plan_add_selection(above, skip_soft_wrap, &EditorRows::new(self)));
+            if let (Some(b), Some(plan)) = (self.buffer.as_mut(), plan) {
+                b.apply_add_selection(plan);
+            }
+        } else if let Some(b) = self.buffer.as_mut() {
+            match key {
+                EditKey::SelectNext => revealed.extend(b.select_next(false)),
+                EditKey::SelectAllMatches => revealed = b.select_all_matches(),
+                EditKey::SelectSmallerSyntaxNode => {
+                    b.select_smaller_syntax_node();
+                }
+                _ => {
+                    let folds = self.folds.merged();
+                    let syntax = &self.syntax;
+                    let rope = b.rope.clone();
+                    let ancestor = |range: Range<usize>| {
+                        let bytes = rope.char_to_byte(range.start)..rope.char_to_byte(range.end);
+                        syntax.as_ref()?.syntax_ancestor(bytes).map(|node| {
+                            let chars = rope.byte_to_char(node.range.start)
+                                ..rope.byte_to_char(node.range.end);
+                            (chars, node.kind, node.named)
+                        })
+                    };
+                    let intersects_fold =
+                        |offset: usize| folds.iter().any(|f| f.start < offset && offset < f.end);
+                    b.select_larger_syntax_node(&ancestor, &intersects_fold);
+                }
+            }
+        }
+        // A match hidden inside a fold is revealed.
+        let mut unfolded = false;
+        for range in revealed {
+            unfolded |= !self.folds.take_overlapping(range).is_empty();
+        }
+        if unfolded {
+            self.rows = None;
+            self.ensure_visible();
+        }
+        self.ensure_cursor_visible();
+        true
+    }
+
+    /// Plan a line-wise command against the display rows, apply it, and carry folds inside moved lines along.
+    fn run_line_command(&mut self, command: LineCommand) {
+        self.refresh();
+        self.ensure_visible();
+        let plan = self.buffer.as_ref().map(|b| {
+            let rows = EditorRows::new(self);
+            match command {
+                LineCommand::Delete => b.plan_delete_lines(&rows),
+                LineCommand::Duplicate { up } => b.plan_duplicate(up, true, &rows),
+                LineCommand::Move { up } => b.plan_move_lines(up, &rows),
+            }
+        });
+        let Some(plan) = plan else {
+            return;
+        };
+        let mut refolds = Vec::new();
+        if let Some(b) = self.buffer.as_ref() {
+            for (range, delta) in &plan.moved {
+                for fold in self.folds.take_overlapping(range.clone()) {
+                    let shift = |offset: usize| {
+                        let (row, column) = b.line_col_of(offset);
+                        ((row as isize + delta).max(0) as usize, column)
+                    };
+                    refolds.push((shift(fold.start), shift(fold.end)));
+                }
+            }
+        }
+        if let Some(b) = self.buffer.as_mut() {
+            b.apply_line_plan(plan);
+        }
+        self.refresh();
+        if let Some(b) = self.buffer.as_ref() {
+            for ((start_row, start_col), (end_row, end_col)) in refolds {
+                let range = b.offset_at(start_row, start_col)..b.offset_at(end_row, end_col);
+                self.folds.fold(b, range);
+            }
+        }
+        self.rows = None;
+        self.ensure_visible();
+        self.ensure_cursor_visible();
     }
 
     fn do_toggle_fold(&mut self, row: usize) {
@@ -1344,8 +1463,64 @@ impl Item for FileItem {
     }
 
     fn input_text(&mut self, text: &str) {
+        self.refresh();
+        let language = editor::language::config(self.lang);
+        let scope_at = scope_lookup(&self.syntax);
         if let Some(b) = self.buffer.as_mut() {
-            b.insert_text(text);
+            b.unmark_text();
+            b.handle_input(text, &language, &scope_at);
+        }
+        self.refresh();
+        self.ensure_visible();
+        self.ensure_cursor_visible();
+    }
+
+    fn ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) {
+        if let Some(b) = self.buffer.as_mut() {
+            b.replace_and_mark_text(text, selected);
+        }
+        self.refresh();
+        self.ensure_visible();
+        self.ensure_cursor_visible();
+    }
+
+    fn ime_commit(&mut self, text: &str) {
+        self.refresh();
+        let language = editor::language::config(self.lang);
+        let scope_at = scope_lookup(&self.syntax);
+        if let Some(b) = self.buffer.as_mut() {
+            b.commit_text(text, &language, &scope_at);
+        }
+        self.refresh();
+        self.ensure_visible();
+        self.ensure_cursor_visible();
+    }
+
+    fn copy(&self) -> Option<CopiedText> {
+        self.buffer.as_ref().map(|b| copied_text(b.copy()))
+    }
+
+    fn cut(&mut self) -> Option<CopiedText> {
+        let copied = self.buffer.as_mut().map(|b| copied_text(b.cut()));
+        self.refresh();
+        self.ensure_visible();
+        self.ensure_cursor_visible();
+        copied
+    }
+
+    fn paste(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) {
+        let slices: Option<Vec<ClipboardSelection>> = slices.map(|slices| {
+            slices
+                .iter()
+                .map(|s| ClipboardSelection {
+                    len: s.len,
+                    is_entire_line: s.is_entire_line,
+                    first_line_indent: s.first_line_indent,
+                })
+                .collect()
+        });
+        if let Some(b) = self.buffer.as_mut() {
+            b.paste(text, slices.as_deref());
         }
         self.refresh();
         self.ensure_visible();
@@ -1364,6 +1539,12 @@ impl Item for FileItem {
             EditKey::End => Some(Motion::End),
             EditKey::WordLeft => Some(Motion::WordLeft),
             EditKey::WordRight => Some(Motion::WordRight),
+            EditKey::SubwordLeft => Some(Motion::SubwordLeft),
+            EditKey::SubwordRight => Some(Motion::SubwordRight),
+            EditKey::LineStart => Some(Motion::LineStart),
+            EditKey::LineEnd => Some(Motion::LineEnd),
+            EditKey::DocumentStart => Some(Motion::DocumentStart),
+            EditKey::DocumentEnd => Some(Motion::DocumentEnd),
             EditKey::PageUp => Some(Motion::PageUp(page_rows)),
             EditKey::PageDown => Some(Motion::PageDown(page_rows)),
             _ => None,
@@ -1385,19 +1566,69 @@ impl Item for FileItem {
             self.toggle_soft_wrap();
             return;
         }
+        let deletion = match key {
+            EditKey::Backspace => Some(Deletion::Backward),
+            EditKey::Delete => Some(Deletion::Forward),
+            EditKey::DeleteWordLeft => Some(Deletion::PreviousWordStart),
+            EditKey::DeleteWordRight => Some(Deletion::NextWordEnd),
+            EditKey::DeleteSubwordLeft => Some(Deletion::PreviousSubwordStart),
+            EditKey::DeleteSubwordRight => Some(Deletion::NextSubwordEnd),
+            EditKey::DeleteToLineStart => Some(Deletion::ToBeginningOfLine),
+            EditKey::DeleteToLineEnd => Some(Deletion::ToEndOfLine),
+            _ => None,
+        };
+        let line_command = match key {
+            EditKey::DeleteLine => Some(LineCommand::Delete),
+            EditKey::DuplicateLineUp => Some(LineCommand::Duplicate { up: true }),
+            EditKey::DuplicateLineDown => Some(LineCommand::Duplicate { up: false }),
+            EditKey::MoveLineUp => Some(LineCommand::Move { up: true }),
+            EditKey::MoveLineDown => Some(LineCommand::Move { up: false }),
+            _ => None,
+        };
+        if self.run_selection_command(key) {
+            return;
+        }
+        if let Some(command) = line_command {
+            self.run_line_command(command);
+            return;
+        }
+        if key == EditKey::Outdent {
+            self.refresh();
+            self.ensure_visible();
+            let ranges: Option<Vec<Range<usize>>> = self
+                .buffer
+                .as_ref()
+                .map(|b| b.outdent_ranges(&EditorRows::new(self)));
+            if let (Some(b), Some(ranges)) = (self.buffer.as_mut(), ranges) {
+                b.delete_ranges(ranges);
+            }
+            self.refresh();
+            self.ensure_visible();
+            self.ensure_cursor_visible();
+            return;
+        }
+        if let Some(deletion) = deletion {
+            self.refresh();
+            self.ensure_visible();
+            let grown: Option<Vec<Selection>> = self
+                .buffer
+                .as_ref()
+                .map(|b| b.deletion_selections(deletion, &EditorRows::new(self)));
+            if let (Some(b), Some(grown)) = (self.buffer.as_mut(), grown) {
+                b.delete_selections(grown);
+            }
+            self.refresh();
+            self.ensure_visible();
+            self.ensure_cursor_visible();
+            return;
+        }
         let mut edited = false;
         if let Some(b) = self.buffer.as_mut() {
             match key {
-                EditKey::Backspace => {
-                    b.backspace();
-                    edited = true;
-                }
-                EditKey::Delete => {
-                    b.delete_forward();
-                    edited = true;
-                }
                 EditKey::Enter => {
-                    b.insert_char('\n');
+                    let language = editor::language::config(self.lang);
+                    let scope_at = scope_lookup(&self.syntax);
+                    b.newline(&language, &scope_at);
                     edited = true;
                 }
                 EditKey::Undo => {
@@ -1406,6 +1637,26 @@ impl Item for FileItem {
                 }
                 EditKey::Redo => {
                     b.redo();
+                    edited = true;
+                }
+                EditKey::Tab => {
+                    b.tab();
+                    edited = true;
+                }
+                EditKey::Indent => {
+                    b.indent();
+                    edited = true;
+                }
+                EditKey::ToggleComments => {
+                    b.toggle_comments(&editor::language::config(self.lang));
+                    edited = true;
+                }
+                EditKey::JoinLines => {
+                    b.join_lines(&editor::language::config(self.lang));
+                    edited = true;
+                }
+                EditKey::Transpose => {
+                    b.transpose();
                     edited = true;
                 }
                 EditKey::SelectAll => b.select_all(),
@@ -1496,6 +1747,27 @@ impl Item for FileItem {
                     content.w,
                     (bottom + 1 - top) as f32 * EDIT_LINE_H,
                     theme().editor_active_line,
+                ));
+            }
+        }
+
+        // Text an input method is still composing is underlined.
+        for marked in b.marked_ranges() {
+            let (start_row, start_x) = self.position(marked.start);
+            let (end_row, end_x) = self.position(marked.end);
+            for row in start_row.max(first)..=end_row.min(last.saturating_sub(1)) {
+                let left = if row == start_row { start_x } else { 0.0 };
+                let right = if row == end_row {
+                    end_x
+                } else {
+                    self.row_width(row)
+                };
+                rects.push(Rect::new(
+                    content.x + gw + left - self.scroll_x,
+                    row_y(row) + EDIT_LINE_H - 4.0,
+                    (right - left).max(1.0),
+                    1.0,
+                    theme().text,
                 ));
             }
         }
@@ -1605,6 +1877,30 @@ impl Item for FileItem {
             thumb_h,
             theme().scrollbar_thumb_background,
         ))
+    }
+}
+
+/// Syntax scope at a byte offset, for bracket rules that differ inside strings and comments.
+fn scope_lookup(syntax: &Option<Syntax>) -> impl Fn(usize) -> editor::language::Scope + Copy + '_ {
+    move |byte| {
+        syntax
+            .as_ref()
+            .map(|s| s.scope_at(byte))
+            .unwrap_or_default()
+    }
+}
+
+fn copied_text((text, selections): (String, Vec<ClipboardSelection>)) -> CopiedText {
+    CopiedText {
+        text,
+        slices: selections
+            .into_iter()
+            .map(|s| ClipboardSlice {
+                len: s.len,
+                is_entire_line: s.is_entire_line,
+                first_line_indent: s.first_line_indent,
+            })
+            .collect(),
     }
 }
 
@@ -3408,6 +3704,47 @@ impl FunctionView for FilesView {
         pane.active_item()?.line_screen_y(content, line)
     }
 
+    fn editor_paste(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool {
+        match self.active_item_mut() {
+            Some(item) if item.is_editable() => {
+                item.paste(text, slices);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn editor_ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) -> bool {
+        match self.active_item_mut() {
+            Some(item) if item.is_editable() => {
+                item.ime_preedit(text, selected);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn editor_ime_commit(&mut self, text: &str) -> bool {
+        match self.active_item_mut() {
+            Some(item) if item.is_editable() => {
+                item.ime_commit(text);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn editor_copy(&self) -> Option<CopiedText> {
+        self.active_item_ref().and_then(|item| item.copy())
+    }
+
+    fn editor_cut(&mut self) -> Option<CopiedText> {
+        match self.active_item_mut() {
+            Some(item) if item.is_editable() => item.cut(),
+            _ => None,
+        }
+    }
+
     fn editor_text(&mut self, text: &str) -> bool {
         match self.active_item_mut() {
             Some(item) if item.is_editable() => {
@@ -3767,5 +4104,27 @@ mod wrap_tests {
         assert_eq!(item.disp_count(), 4);
         item.input_key(EditKey::ToggleSoftWrap, false);
         assert_eq!(item.disp_count(), 2);
+    }
+}
+
+#[cfg(test)]
+mod line_command_tests {
+    use super::*;
+
+    #[test]
+    fn moving_a_folded_block_keeps_it_folded() {
+        let text = "x\nfn a() {\n    y;\n}\n";
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
+        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.do_toggle_fold(1);
+        item.ensure_visible();
+        if let Some(b) = item.buffer.as_mut() {
+            b.place_cursor(2);
+        }
+        item.input_key(EditKey::MoveLineUp, false);
+        let b = item.buffer.as_ref().unwrap();
+        assert_eq!(b.text(), "fn a() {\n    y;\n}\nx\n");
+        assert!(item.is_folded(0));
+        assert_eq!(item.disp_count(), 3);
     }
 }

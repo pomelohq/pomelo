@@ -155,6 +155,16 @@ impl FoldMap {
             .retain(|f| buffer.rope.char_to_line(f.start) != row);
     }
 
+    /// Remove and return the folds overlapping `range`.
+    pub fn take_overlapping(&mut self, range: Range<usize>) -> Vec<Range<usize>> {
+        let (taken, kept) = self
+            .folds
+            .drain(..)
+            .partition(|f| f.start < range.end && f.end > range.start);
+        self.folds = kept;
+        taken
+    }
+
     /// Folds with overlapping and nested ones merged, sorted by start.
     pub fn merged(&self) -> Vec<Range<usize>> {
         let mut merged: Vec<Range<usize>> = Vec::with_capacity(self.folds.len());

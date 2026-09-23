@@ -12,6 +12,40 @@ pub use panel::{
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
 pub use workspace_view::{ResizeCursor, WorkspaceEffects, WorkspaceView};
 
+/// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the
+/// first line's indentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipboardSlice {
+    pub len: usize,
+    pub is_entire_line: bool,
+    pub first_line_indent: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopiedText {
+    pub text: String,
+    pub slices: Vec<ClipboardSlice>,
+}
+
+thread_local! {
+    // The OS clipboard only holds text, so the slices of our last copy live here and apply while the
+    // clipboard still holds that same text.
+    static LAST_COPY: std::cell::RefCell<Option<CopiedText>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn remember_copy(copied: &CopiedText) {
+    LAST_COPY.with(|last| *last.borrow_mut() = Some(copied.clone()));
+}
+
+pub fn slices_for(text: &str) -> Option<Vec<ClipboardSlice>> {
+    LAST_COPY.with(|last| {
+        last.borrow()
+            .as_ref()
+            .filter(|copied| copied.text == text)
+            .map(|copied| copied.slices.clone())
+    })
+}
+
 use ui::{div, folder_icon, label, plus_icon, render, theme, Node, Painted, Rect, Rgba, Text};
 
 pub const TOP_BAR_H: f32 = 38.0;
@@ -244,6 +278,24 @@ pub trait Item: 'static {
     }
     fn set_focused(&mut self, _focused: bool) {}
     fn input_text(&mut self, _text: &str) {}
+    /// An input method's in-progress text; `selected` is its caret inside `text`, in chars.
+    fn ime_preedit(&mut self, _text: &str, _selected: Option<std::ops::Range<usize>>) {}
+    fn ime_commit(&mut self, text: &str) {
+        self.input_text(text);
+    }
+    fn copy(&self) -> Option<CopiedText> {
+        self.selected_text().map(|text| CopiedText {
+            text,
+            slices: Vec::new(),
+        })
+    }
+    fn cut(&mut self) -> Option<CopiedText> {
+        None
+    }
+    /// Insert clipboard text verbatim (no auto-closing brackets); `slices` come from our own copy.
+    fn paste(&mut self, text: &str, _slices: Option<&[ClipboardSlice]>) {
+        self.input_text(text);
+    }
     fn input_key(&mut self, _key: EditKey, _shift: bool) {}
     fn place_cursor(&mut self, _local_x: f32, _local_y: f32, _extend: bool) {}
     fn select_word_at(&mut self, _local_x: f32, _local_y: f32) {}
@@ -319,11 +371,45 @@ pub enum EditKey {
     End,
     WordLeft,
     WordRight,
+    SubwordLeft,
+    SubwordRight,
+    /// Home/End ignoring soft wraps.
+    LineStart,
+    LineEnd,
+    DocumentStart,
+    DocumentEnd,
     PageUp,
     PageDown,
     Backspace,
     Delete,
+    DeleteWordLeft,
+    DeleteWordRight,
+    DeleteSubwordLeft,
+    DeleteSubwordRight,
+    DeleteToLineStart,
+    DeleteToLineEnd,
     Enter,
+    Tab,
+    Outdent,
+    Indent,
+    ToggleComments,
+    DeleteLine,
+    DuplicateLineUp,
+    DuplicateLineDown,
+    MoveLineUp,
+    MoveLineDown,
+    JoinLines,
+    Transpose,
+    SelectNext,
+    SelectAllMatches,
+    /// Add a caret on the next buffer line above/below (skipping soft-wrapped rows).
+    AddCursorAbove,
+    AddCursorBelow,
+    /// Add a caret on the next display row above/below.
+    AddCursorAboveRow,
+    AddCursorBelowRow,
+    SelectLargerSyntaxNode,
+    SelectSmallerSyntaxNode,
     Undo,
     Redo,
     SelectAll,
@@ -423,6 +509,25 @@ pub trait FunctionView: 'static {
 
     fn editor_text(&mut self, _text: &str) -> bool {
         false
+    }
+    fn editor_paste(&mut self, text: &str, _slices: Option<&[ClipboardSlice]>) -> bool {
+        self.editor_text(text)
+    }
+    fn editor_ime_preedit(
+        &mut self,
+        _text: &str,
+        _selected: Option<std::ops::Range<usize>>,
+    ) -> bool {
+        false
+    }
+    fn editor_ime_commit(&mut self, _text: &str) -> bool {
+        false
+    }
+    fn editor_copy(&self) -> Option<CopiedText> {
+        None
+    }
+    fn editor_cut(&mut self) -> Option<CopiedText> {
+        None
     }
     fn editor_key(&mut self, _key: EditKey, _shift: bool) -> bool {
         false

@@ -18,7 +18,6 @@ files_ui = { path = "../files_ui" }
 auto_update = { path = "../auto_update" }
 winit.workspace = true
 anyhow.workspace = true
-arboard = "3.6.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
