@@ -127,6 +127,8 @@ pub struct WorkspaceView {
     menu_path: Option<(String, bool)>,
     submenu: Option<(f32, f32, f32, u64)>,
     menu_editor_anchor: Option<(Vec<usize>, usize)>,
+    /// The tab a tab context menu was opened on: its group, pane id and index.
+    menu_tab: Option<(InputGroup, u64, usize)>,
     toast: Option<Toast>,
     pending: WorkspaceEffects,
 }
@@ -147,6 +149,7 @@ impl WorkspaceView {
             menu_path: None,
             submenu: None,
             menu_editor_anchor: None,
+            menu_tab: None,
             modal_rect: None,
             popover_rects: Vec::new(),
             popover_groups: Vec::new(),
@@ -1059,6 +1062,177 @@ impl WorkspaceView {
     }
 
     /// Whether a status-bar button id can be right-clicked for a context menu.
+    /// The tab a click id names in either pane group: its group, pane id and index.
+    fn tab_under(&self, id: u64) -> Option<(InputGroup, u64, usize)> {
+        if crate::is_terminal_id(id) {
+            let panes = self.layout.terminal_view.as_ref()?.panes_ref();
+            let (pane, index) = panes.tab_at_id(id)?;
+            return Some((InputGroup::Panel, pane, index));
+        }
+        let panes = self.layout.files_view.as_ref()?.pane_group()?;
+        let (pane, index) = panes.tab_at_id(id)?;
+        Some((InputGroup::Center, pane, index))
+    }
+
+    fn group_view(&self, group: InputGroup) -> Option<&crate::pane_group_view::PaneGroupView> {
+        match group {
+            InputGroup::Center => self.layout.files_view.as_ref()?.pane_group(),
+            InputGroup::Panel => Some(self.layout.terminal_view.as_ref()?.panes_ref()),
+        }
+    }
+
+    fn group_view_mut(
+        &mut self,
+        group: InputGroup,
+    ) -> Option<&mut crate::pane_group_view::PaneGroupView> {
+        match group {
+            InputGroup::Center => self.layout.files_view.as_mut()?.pane_group_mut(),
+            InputGroup::Panel => Some(self.layout.terminal_view.as_mut()?.panes()),
+        }
+    }
+
+    /// The tab context menu, after the reference's: closes, then the tab's file (paths, Finder, the tree, a
+    /// terminal there).
+    fn tab_menu_items(&self) -> Vec<MenuItem> {
+        let Some(state) = self
+            .menu_tab
+            .and_then(|(group, pane, index)| self.group_view(group)?.tab_menu_state(pane, index))
+        else {
+            return Vec::new();
+        };
+        let entry = |id: u64, label: &'static str, sep: bool, disabled: bool| MenuItem {
+            id,
+            label,
+            checked: false,
+            sep,
+            disabled,
+        };
+        let mut items = vec![
+            entry(crate::MENU_TAB_CLOSE, "Close", false, false),
+            entry(
+                crate::MENU_TAB_CLOSE_OTHERS,
+                "Close Others",
+                false,
+                !state.has_others,
+            ),
+            entry(
+                crate::MENU_TAB_CLOSE_LEFT,
+                "Close Left",
+                true,
+                !state.has_left,
+            ),
+            entry(
+                crate::MENU_TAB_CLOSE_RIGHT,
+                "Close Right",
+                false,
+                !state.has_right,
+            ),
+            entry(
+                crate::MENU_TAB_CLOSE_CLEAN,
+                "Close Clean",
+                true,
+                !state.has_clean,
+            ),
+            entry(crate::MENU_TAB_CLOSE_ALL, "Close All", false, false),
+        ];
+        if let Some(path) = state.path {
+            let in_project = self.relative_to_root(&path).is_some();
+            items.push(entry(crate::MENU_TAB_COPY_PATH, "Copy Path", true, false));
+            if in_project {
+                items.push(entry(
+                    crate::MENU_TAB_COPY_REL_PATH,
+                    "Copy Relative Path",
+                    false,
+                    false,
+                ));
+            }
+            items.push(entry(
+                crate::MENU_TAB_REVEAL,
+                "Reveal in Finder",
+                true,
+                false,
+            ));
+            if in_project {
+                items.push(entry(
+                    crate::MENU_TAB_REVEAL_IN_TREE,
+                    "Reveal In Project Panel",
+                    false,
+                    false,
+                ));
+            }
+            if path.parent().is_some() {
+                items.push(entry(
+                    crate::MENU_TAB_OPEN_TERMINAL,
+                    "Open in Terminal",
+                    false,
+                    false,
+                ));
+            }
+        }
+        items
+    }
+
+    fn relative_to_root(&self, path: &std::path::Path) -> Option<String> {
+        let root = self.layout.files_view.as_ref()?.root_dir()?;
+        let relative = path.strip_prefix(root).ok()?;
+        Some(relative.to_string_lossy().into_owned())
+    }
+
+    fn apply_tab_menu(&mut self, item: u64) {
+        let Some((group, pane, index)) = self.menu_tab.take() else {
+            return;
+        };
+        let close = match item {
+            crate::MENU_TAB_CLOSE => Some(crate::pane_group_view::CloseTabs::This),
+            crate::MENU_TAB_CLOSE_OTHERS => Some(crate::pane_group_view::CloseTabs::Others),
+            crate::MENU_TAB_CLOSE_LEFT => Some(crate::pane_group_view::CloseTabs::Left),
+            crate::MENU_TAB_CLOSE_RIGHT => Some(crate::pane_group_view::CloseTabs::Right),
+            crate::MENU_TAB_CLOSE_CLEAN => Some(crate::pane_group_view::CloseTabs::Clean),
+            crate::MENU_TAB_CLOSE_ALL => Some(crate::pane_group_view::CloseTabs::All),
+            _ => None,
+        };
+        if let Some(which) = close {
+            if let Some(panes) = self.group_view_mut(group) {
+                panes.close_tabs(pane, index, which);
+            }
+            return;
+        }
+        let Some(path) = self
+            .group_view(group)
+            .and_then(|panes| panes.tab_menu_state(pane, index))
+            .and_then(|state| state.path)
+        else {
+            return;
+        };
+        match item {
+            crate::MENU_TAB_COPY_PATH => Self::clip_set(&path.to_string_lossy()),
+            crate::MENU_TAB_COPY_REL_PATH => {
+                if let Some(relative) = self.relative_to_root(&path) {
+                    Self::clip_set(&relative);
+                }
+            }
+            crate::MENU_TAB_REVEAL => {
+                if let Err(error) = std::process::Command::new("open")
+                    .arg("-R")
+                    .arg(&path)
+                    .spawn()
+                {
+                    eprintln!("reveal in Finder: {error}");
+                }
+            }
+            crate::MENU_TAB_REVEAL_IN_TREE => {
+                self.show_files_tree();
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    files.reveal_in_tree(&path);
+                }
+            }
+            crate::MENU_TAB_OPEN_TERMINAL => {
+                self.open_terminal_at(path.parent().map(std::path::Path::to_path_buf));
+            }
+            _ => {}
+        }
+    }
+
     fn menuable(id: u64) -> bool {
         id == SIDEBAR_TOGGLE
             || id == AGENT_TOGGLE
@@ -1068,6 +1242,9 @@ impl WorkspaceView {
 
     /// The context-menu items for a given status-bar button (dock positions valid for it + Hide Button).
     fn menu_items(&self, target: u64) -> Vec<MenuItem> {
+        if target == crate::TAB_MENU_TARGET {
+            return self.tab_menu_items();
+        }
         let hide = MenuItem {
             id: MENU_HIDE,
             label: "Hide Button",
@@ -1293,6 +1470,10 @@ impl WorkspaceView {
 
     /// Apply a context-menu item to its target button.
     fn apply_menu(&mut self, target: u64, item: u64) {
+        if target == crate::TAB_MENU_TARGET {
+            self.apply_tab_menu(item);
+            return;
+        }
         if target == TREE_MENU_TARGET {
             let Some((rel, _)) = self.menu_path.clone() else {
                 return;
@@ -1503,6 +1684,14 @@ impl WorkspaceView {
     /// Right-click: open the context menu for a status-bar button; elsewhere closes any menu. Returns true if
     /// something changed (repaint).
     pub fn right_click(&mut self, x: f32, y: f32) -> bool {
+        if let Some(tab) = self.hit(x, y).and_then(|id| self.tab_under(id)) {
+            self.menu = Some((x, y, y, crate::TAB_MENU_TARGET));
+            self.menu_tab = Some(tab);
+            self.menu_path = None;
+            self.submenu = None;
+            self.menu_editor_anchor = None;
+            return true;
+        }
         if let Some(id) = self.hit(x, y).filter(|id| Self::menuable(*id)) {
             // Anchor at the actual button clicked (the rect under the cursor), not just the first with this id.
             let anchor = self
@@ -2485,6 +2674,23 @@ impl WorkspaceView {
             .terminal_view
             .as_ref()
             .map(|view| view.link_hovered())
+    }
+
+    /// Make the file tree the visible panel of its dock.
+    fn show_files_tree(&mut self) {
+        let side = self
+            .layout
+            .func_side
+            .first()
+            .copied()
+            .unwrap_or(DockPosition::Left);
+        self.layout.active_panels[side.index()] = Some(Shown::Func(PaneKind::Files));
+        match side {
+            DockPosition::Right => self.layout.right.collapsed = false,
+            DockPosition::Bottom => self.layout.bottom.collapsed = false,
+            DockPosition::Left => {}
+        }
+        self.pending.persist = true;
     }
 
     fn show_terminal(&mut self) {

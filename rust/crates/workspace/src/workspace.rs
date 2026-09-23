@@ -230,6 +230,18 @@ pub const MENU_EDIT_COPY_TRIM: u64 = 894;
 pub const MENU_EDIT_REVEAL: u64 = 895;
 pub const MENU_TREE_OPEN_TERMINAL: u64 = 884;
 pub const MENU_EDIT_OPEN_TERMINAL: u64 = 896;
+pub const TAB_MENU_TARGET: u64 = 852;
+pub const MENU_TAB_CLOSE: u64 = 900;
+pub const MENU_TAB_CLOSE_OTHERS: u64 = 901;
+pub const MENU_TAB_CLOSE_LEFT: u64 = 902;
+pub const MENU_TAB_CLOSE_RIGHT: u64 = 903;
+pub const MENU_TAB_CLOSE_CLEAN: u64 = 904;
+pub const MENU_TAB_CLOSE_ALL: u64 = 905;
+pub const MENU_TAB_COPY_PATH: u64 = 906;
+pub const MENU_TAB_COPY_REL_PATH: u64 = 907;
+pub const MENU_TAB_REVEAL: u64 = 908;
+pub const MENU_TAB_REVEAL_IN_TREE: u64 = 909;
+pub const MENU_TAB_OPEN_TERMINAL: u64 = 910;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeAction {
@@ -443,6 +455,10 @@ pub trait Item: 'static {
         None
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+    /// The file this item shows, for tab actions like copying its path.
+    fn abs_path(&self) -> Option<std::path::PathBuf> {
         None
     }
     /// This item's state to restore it from next session; `None` for items that are not restored.
@@ -998,6 +1014,18 @@ pub trait FunctionView: ItemInput + 'static {
     /// Moving a tab across pane groups: the item being dragged here, taking it out, whether this view takes
     /// such an item, where it would land when the pointer is over this view, and placing it.
     /// False while a modal (picker, palette, inline rename) owns the keyboard, so pane keys fall through to it.
+    /// The editor area's panes, for actions that work on any pane group (the tab context menu).
+    fn pane_group(&self) -> Option<&pane_group_view::PaneGroupView> {
+        None
+    }
+
+    fn pane_group_mut(&mut self) -> Option<&mut pane_group_view::PaneGroupView> {
+        None
+    }
+
+    /// Show `path` in the file tree: expand its folders and scroll its row into view.
+    fn reveal_in_tree(&mut self, _path: &std::path::Path) {}
+
     /// Whether the editor area's zoomed pane is showing (it is zoomed and focused).
     fn zoom_shown(&self) -> bool {
         false
