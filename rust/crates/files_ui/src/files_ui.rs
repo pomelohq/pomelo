@@ -15,14 +15,16 @@ use editor::buffer::{
     Bias, ClipboardSelection, Deletion, DisplayRows, Motion, Selection, SelectionGoal,
 };
 use editor::fold::FoldMap;
-use editor::search::{Direction, SearchQuery};
+use editor::search::SearchQuery;
 use editor::transform::{LineTransform, TextTransform};
-use workspace::pane::{
-    NavMode, Pane, PaneClickIds, PaneCommand, TabBarButton, TabBarConfig, TAB_H,
+use workspace::pane::{NavMode, Pane, PaneCommand, TAB_H};
+#[cfg(test)]
+use workspace::pane_group::Member;
+use workspace::pane_group::SplitDirection;
+use workspace::pane_group_view::{
+    self, GroupClick, PaneButton, PaneButtonAction, PaneGroupConfig, PaneGroupView,
 };
-use workspace::pane_group::{self, DividerRef, LeafPlacement, Member, SplitDirection};
-use workspace::search_bar::{SearchBar, SearchClick, SearchField, Searchable};
-use workspace::tab_drag::{self, TabDrag, TabDrop};
+use workspace::search_bar::{SearchField, Searchable};
 use workspace::text_field;
 
 mod command_palette;
@@ -44,8 +46,8 @@ use editor::{EditorBuffer, Lang, Syntax, Theme};
 use files::FileNode;
 use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
 use workspace::{
-    ClipboardSlice, CopiedText, DividerAxis, DividerPlacement, EditKey, EditorLayout, Elevation,
-    FunctionView, Item, ModalView, PaneBody, PanePlacement, FUNC_VIEW_BASE,
+    ClipboardSlice, CopiedText, DividerAxis, EditKey, EditorLayout, Elevation, FunctionView, Item,
+    ModalView, FUNC_VIEW_BASE,
 };
 
 // Editor text metrics (design px). Each source line is `EDIT_LINE_H` tall with `EDIT_FONT` mono text. Caret/selection geometry uses these plus the mono advance so it aligns with the glyphs.
@@ -121,27 +123,14 @@ const INDENT: f32 = 16.0; // per-depth indent (~20 in the design; trimmed for th
 const ROW_H: f32 = 22.0;
 const MAX_PANES: usize = 6; // ceiling on total leaf panes in the group
 
-// Click-id ranges within the feature-view space (`FUNC_VIEW_BASE`). Tree rows use the low range; the editor's
-// pane tabs + split/divider affordances use higher offsets. Tab ids are keyed by `pane_index * PANE_STRIDE +
-// tab`, where `pane_index` is the pane's position in render order (rebuilt every frame). Checked high-to-low
-// in `on_click`, so the ranges must not overlap.
-const TAB_ACTIVATE_BASE: u64 = FUNC_VIEW_BASE + 1_000_000;
-const TAB_CLOSE_BASE: u64 = FUNC_VIEW_BASE + 3_000_000;
-const STICKY_BASE: u64 = FUNC_VIEW_BASE + 4_000_000;
-const SPLIT_RIGHT_BASE: u64 = FUNC_VIEW_BASE + 5_000_000;
-const SPLIT_DOWN_BASE: u64 = FUNC_VIEW_BASE + 6_000_000;
-const NAV_BACK_BASE: u64 = FUNC_VIEW_BASE + 7_000_000;
-const NAV_FWD_BASE: u64 = FUNC_VIEW_BASE + 8_000_000;
-const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 8_500_000; // + PaletteClick
-const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 8_600_000; // + row
-const COMPLETION_BASE: u64 = FUNC_VIEW_BASE + 8_700_000; // + row
-const HOVER_BASE: u64 = FUNC_VIEW_BASE + 8_800_000; // + popover
-const SEARCH_BASE: u64 = FUNC_VIEW_BASE + 9_000_000; // + pane*PANE_STRIDE + SearchClick
-const FOLD_BASE: u64 = FUNC_VIEW_BASE + 10_000_000; // + pane*PANE_STRIDE + buffer_line
-const HUNK_BASE: u64 = FUNC_VIEW_BASE + 11_000_000; // + pane*PANE_STRIDE + buffer_line
-const HUNK_FROM_FOLD: u64 = HUNK_BASE - FOLD_BASE;
-const DIVIDER_BASE: u64 = FUNC_VIEW_BASE + 12_000_000;
-const PANE_STRIDE: u64 = 100_000;
+// Click ids in the feature-view space: tree rows below FUNC_VIEW_BASE + 1M, the editor pane group from there up
+// to pane_group_view::ID_SPAN, then the ranges below (checked high-to-low in `on_click`, so they must not overlap).
+const STICKY_BASE: u64 = FUNC_VIEW_BASE + pane_group_view::ID_SPAN;
+const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 14_500_000; // + PaletteClick
+const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 14_600_000; // + row
+const COMPLETION_BASE: u64 = FUNC_VIEW_BASE + 14_700_000; // + row
+const HOVER_BASE: u64 = FUNC_VIEW_BASE + 14_800_000; // + popover
+const MODAL_END: u64 = FUNC_VIEW_BASE + 15_000_000;
 
 /// An open file as a center `Item` (an editor item): path/name + decoded text + language (`None` text =
 /// binary) + its own syntax highlighter. Any center tab is a `Box<dyn Item>`, so a terminal/search/etc. can
@@ -2780,7 +2769,7 @@ impl Item for FileItem {
             let line = row.line;
             let hunk_click = self
                 .hunk_at_line(line)
-                .then_some(fold_base + HUNK_FROM_FOLD + line as u64);
+                .then_some(fold_base + pane_group_view::HUNK_FROM_FOLD + line as u64);
             if row.is_virtual() || row.start > 0 {
                 let mut cell = div().w_px(dims.full_width()).h_px(EDIT_LINE_H);
                 if let Some(id) = hunk_click {
@@ -4071,24 +4060,10 @@ pub struct FilesView {
     root: PathBuf,
     tree: Vec<FileNode>,
     expanded: HashSet<String>,
-    /// The editor pane group: a recursive tree of split panes, and the path (child indices from the root) of
-    /// the focused leaf (an empty path = the group is itself a single pane).
-    group: Member<Pane>,
-    active: Vec<usize>,
-    /// Monotonic source of stable pane ids (see `Pane::id`).
-    next_pane_id: u64,
-    /// Rebuilt each `editor_layout`: pane render-index -> that pane's path, its stable id, and its screen rect;
-    /// plus the divider metadata keyed by `DIVIDER_BASE + i`.
-    pane_order: Vec<Vec<usize>>,
-    pane_ids: Vec<u64>,
-    pane_rects: Vec<Rect>,
-    divider_order: Vec<DividerRef>,
-    /// The hit id the pointer is over, so a tab reveals its close button only while hovered.
+    /// The editor area's split panes and their tabs.
+    panes: PaneGroupView,
+    /// The hit id under the pointer, for modal rows that light up on hover.
     hover: Option<u64>,
-    /// An in-progress tab drag and the highlight rect previewing where it would land.
-    tab_drag: Option<TabDrag>,
-    /// Where a tab dragged in from another pane group would land.
-    foreign_drop: Option<(TabDrop, Rect)>,
     /// Rebuilt each render: click id `FUNC_VIEW_BASE + i` maps to `(path, is_dir)`.
     click_targets: Vec<(String, bool)>,
     /// Rebuilt each render: the folder path for each pinned sticky-breadcrumb row (click to collapse it).
@@ -4116,8 +4091,6 @@ pub struct FilesView {
     outline_preview: outline_view::PreviewLayout,
     /// The window size last seen by `modal`, for sizing a modal as it opens.
     window_size: (f32, f32),
-    /// The focused pane's text area as last laid out, for placing popovers at its caret.
-    focused_content: Option<Rect>,
     /// The project's language servers; none in tests, which must not start real servers.
     lsp: Option<lsp::LspStore>,
     popover_sources: Vec<PopoverSource>,
@@ -4147,16 +4120,21 @@ impl FilesView {
             root,
             tree,
             expanded: HashSet::new(),
-            group: Member::Leaf(Pane {
-                id: 0,
-                ..Pane::default()
+            panes: PaneGroupView::new(PaneGroupConfig {
+                id_base: FUNC_VIEW_BASE,
+                show_nav: true,
+                buttons: vec![
+                    PaneButton {
+                        icon: IconKind::PanelRight,
+                        action: PaneButtonAction::Split(SplitDirection::Right),
+                    },
+                    PaneButton {
+                        icon: IconKind::PanelBottom,
+                        action: PaneButtonAction::Split(SplitDirection::Down),
+                    },
+                ],
+                max_panes: MAX_PANES,
             }),
-            active: Vec::new(),
-            next_pane_id: 1,
-            pane_order: Vec::new(),
-            pane_ids: Vec::new(),
-            pane_rects: Vec::new(),
-            divider_order: Vec::new(),
             hover: None,
             go_to_line: None,
             palette: None,
@@ -4164,14 +4142,11 @@ impl FilesView {
             outline: None,
             outline_preview: outline_view::PreviewLayout::Hidden,
             window_size: (1200.0, 800.0),
-            focused_content: None,
             lsp,
             popover_sources: Vec::new(),
             tree_ops: tree_actions::TreeOps::default(),
             request: None,
             pointer_pane: None,
-            tab_drag: None,
-            foreign_drop: None,
             click_targets: Vec::new(),
             sticky_paths: Vec::new(),
             flat_cache: Vec::new(),
@@ -4185,23 +4160,11 @@ impl FilesView {
         }
     }
 
-    /// The focused pane, resolving the active path (falling back to the first leaf if the path went stale).
-    fn active_pane_mut(&mut self) -> Option<&mut Pane> {
-        if self.group.leaf_at_mut(&self.active).is_none() {
-            self.active = self.group.first_leaf_path();
-        }
-        let path = self.active.clone();
-        self.group.leaf_at_mut(&path)
-    }
-
     /// The focused pane's active item id (a file path), for highlighting its row in the tree.
     fn active_path(&self) -> Option<String> {
         // A shared read-only walk (no `&mut`), so it can't self-heal a stale path -- the render always calls a
         // `&mut` method first, so by the time this runs the active path is valid.
-        self.group
-            .leaf_at(&self.active)?
-            .active_item()
-            .and_then(|it| it.id())
+        self.panes.active_item()?.id()
     }
 
     /// Open a file in the focused pane.
@@ -4216,16 +4179,9 @@ impl FilesView {
 
     fn open_file(&mut self, path: &str) {
         let root = self.root.clone();
-        if let Some(pane) = self.active_pane_mut() {
+        if let Some(pane) = self.panes.active_pane_mut() {
             pane.open_file(&root, path);
         }
-    }
-
-    /// The active item of the focused pane (for keyboard input).
-    fn active_item_mut(&mut self) -> Option<&mut dyn Item> {
-        let pane = self.active_pane_mut()?;
-        let i = pane.active?;
-        pane.open.get_mut(i).map(|b| b.as_mut())
     }
 
     /// Bring the language servers up to date with the open files, and give each file its diagnostics. A file
@@ -4233,7 +4189,7 @@ impl FilesView {
     fn sync_language_servers(&mut self) {
         let now = std::time::Instant::now();
         let Some(lsp) = self.lsp.as_mut() else {
-            self.group.for_each_pane_mut(&mut |pane| {
+            self.panes.group.for_each_pane_mut(&mut |pane| {
                 for item in pane.open.iter_mut() {
                     if let Some(file) = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>())
                     {
@@ -4266,7 +4222,7 @@ impl FilesView {
             }
         }
         let mut synced: HashSet<PathBuf> = HashSet::new();
-        self.group.for_each_pane_mut(&mut |pane| {
+        self.panes.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {
                 let Some(file) = item
                     .as_any_mut()
@@ -4365,10 +4321,10 @@ impl FilesView {
                         .to_string(),
                 ),
             };
-            if let Some(pane) = view.active_pane_mut() {
+            if let Some(pane) = view.panes.active_pane_mut() {
                 pane.open_file(&root, &relative);
             }
-            let active = view.active.clone();
+            let active = view.panes.active.clone();
             if let Some(item) = view.go_to_line_item(&active) {
                 item.select_target_range(target.range, caret_top);
             }
@@ -4376,7 +4332,7 @@ impl FilesView {
     }
 
     fn go_to_line_item(&mut self, path: &[usize]) -> Option<&mut FileItem> {
-        let pane = self.group.leaf_at_mut(path)?;
+        let pane = self.panes.group.leaf_at_mut(path)?;
         let index = pane.active?;
         pane.open
             .get_mut(index)?
@@ -4385,7 +4341,7 @@ impl FilesView {
     }
 
     fn open_go_to_line(&mut self) {
-        let path = self.active.clone();
+        let path = self.panes.active.clone();
         let Some(item) = self.go_to_line_item(&path) else {
             return;
         };
@@ -4451,7 +4407,7 @@ impl FilesView {
         if self.outline.is_some() {
             return self.close_outline(false);
         }
-        let path = self.active.clone();
+        let path = self.panes.active.clone();
         let (window_size, preview) = (self.window_size, self.outline_preview);
         let Some(item) = self.go_to_line_item(&path) else {
             return;
@@ -4571,7 +4527,7 @@ impl FilesView {
         if self.palette.take().is_some() {
             return;
         }
-        let path = self.active.clone();
+        let path = self.panes.active.clone();
         if self.go_to_line_item(&path).is_some() {
             let palette = command_palette::CommandPalette::new(&self.palette_memory);
             self.palette = Some((path, palette));
@@ -4618,7 +4574,7 @@ impl FilesView {
         let Some(action) = palette.confirm(&mut self.palette_memory) else {
             return;
         };
-        self.active = path.clone();
+        self.panes.active = path.clone();
         match action {
             command_palette::PaletteAction::Key(key) => {
                 self.editor_key_untracked(key, false);
@@ -4634,7 +4590,7 @@ impl FilesView {
                 }
             }
         }
-        if let Some(pane) = self.group.leaf_at_mut(&path) {
+        if let Some(pane) = self.panes.group.leaf_at_mut(&path) {
             if let Some((bar, item)) = pane.search_target() {
                 bar.refresh(item);
             }
@@ -4642,13 +4598,14 @@ impl FilesView {
     }
 
     fn track_nav<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let path = self.active.clone();
+        let path = self.panes.active.clone();
         let before = self
+            .panes
             .group
             .leaf_at_mut(&path)
             .and_then(|p| p.active.and_then(|i| p.nav_entry_for(i)));
         let result = f(self);
-        if let (Some(before), Some(pane)) = (before, self.group.leaf_at_mut(&path)) {
+        if let (Some(before), Some(pane)) = (before, self.panes.group.leaf_at_mut(&path)) {
             let after = pane.active.and_then(|i| pane.nav_entry_for(i));
             let jumped = after.filter(|a| a.id == before.id).is_some_and(|a| {
                 matches!((before.row, a.row), (Some(old), Some(new))
@@ -4699,7 +4656,7 @@ impl FilesView {
             return true;
         }
         if matches!(key, EditKey::GoBack | EditKey::GoForward) {
-            if let Some(pane) = self.active_pane_mut() {
+            if let Some(pane) = self.panes.active_pane_mut() {
                 if key == EditKey::GoBack {
                     pane.nav_back();
                 } else {
@@ -4708,21 +4665,21 @@ impl FilesView {
             }
             return true;
         }
-        if self.search_command(key) {
+        if self.panes.search_command(key) {
             return true;
         }
-        if let Some((bar, item)) = self.focused_search() {
+        if let Some((bar, item)) = self.panes.focused_search() {
             bar.key(item, key, shift);
             return true;
         }
-        let changed = match self.active_item_mut() {
+        let changed = match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => {
                 item.input_key(key, shift);
                 true
             }
             _ => false,
         };
-        if let Some(pane) = self.active_pane_mut() {
+        if let Some(pane) = self.panes.active_pane_mut() {
             if let Some((bar, item)) = pane.search_target() {
                 bar.refresh(item);
             }
@@ -4747,11 +4704,11 @@ impl FilesView {
             self.go_to_line_input(text);
             return true;
         }
-        if let Some((bar, item)) = self.focused_search() {
+        if let Some((bar, item)) = self.panes.focused_search() {
             bar.input(item, text);
             return true;
         }
-        match self.active_item_mut() {
+        match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => {
                 item.input_text(text);
                 true
@@ -4777,11 +4734,11 @@ impl FilesView {
             self.go_to_line_input(text);
             return true;
         }
-        if let Some((bar, item)) = self.focused_search() {
+        if let Some((bar, item)) = self.panes.focused_search() {
             bar.input(item, text);
             return true;
         }
-        match self.active_item_mut() {
+        match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => {
                 item.paste(text, slices);
                 true
@@ -4792,11 +4749,11 @@ impl FilesView {
 
     fn editor_click_untracked(&mut self, x: f32, y: f32, extend: bool) -> bool {
         self.confirm_tree_edit(true);
-        let Some((path, local_x, local_y)) = self.editor_local(x, y) else {
+        let Some((path, local_x, local_y)) = self.panes.body_point(x, y) else {
             return false;
         };
         if ui::modifiers().cmd && !extend {
-            self.active = path.clone();
+            self.panes.active = path.clone();
             let clicked = self
                 .go_to_line_item(&path)
                 .map(|item| (item.cmd_click(local_x, local_y), item.caret_top()));
@@ -4808,12 +4765,12 @@ impl FilesView {
             }
         }
         if !extend {
-            self.active = path;
+            self.panes.active = path;
         }
-        if let Some(pane) = self.active_pane_mut() {
+        if let Some(pane) = self.panes.active_pane_mut() {
             pane.search.focus = None;
         }
-        match self.active_item_mut() {
+        match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => {
                 item.place_cursor(local_x, local_y, extend);
                 true
@@ -4823,11 +4780,11 @@ impl FilesView {
     }
 
     fn editor_double_click_untracked(&mut self, x: f32, y: f32) -> bool {
-        let Some((path, local_x, local_y)) = self.editor_local(x, y) else {
+        let Some((path, local_x, local_y)) = self.panes.body_point(x, y) else {
             return false;
         };
-        self.active = path;
-        match self.active_item_mut() {
+        self.panes.active = path;
+        match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => {
                 item.select_word_at(local_x, local_y);
                 true
@@ -4837,14 +4794,20 @@ impl FilesView {
     }
 
     fn editor_drag_untracked(&mut self, x: f32, y: f32) -> bool {
-        let Some(index) = self.pane_order.iter().position(|p| *p == self.active) else {
+        let Some(index) = self
+            .panes
+            .pane_order()
+            .iter()
+            .position(|p| *p == self.panes.active)
+        else {
             return false;
         };
-        let Some(rect) = self.pane_rects.get(index).copied() else {
+        let Some(rect) = self.panes.pane_rects().get(index).copied() else {
             return false;
         };
         let header_h = self
-            .pane_at(&self.active.clone())
+            .panes
+            .pane_at(&self.panes.active)
             .map_or(TAB_H, Pane::header_h);
         let text_top = rect.y + header_h;
         let text_bottom = rect.y + rect.h;
@@ -4858,7 +4821,7 @@ impl FilesView {
         };
         let em = char_advance();
         let horizontal_space = HORIZONTAL_SCROLL_MARGIN * em;
-        let Some(item) = self.active_item_mut() else {
+        let Some(item) = self.panes.active_item_mut() else {
             return false;
         };
         if !item.is_editable() {
@@ -4881,209 +4844,8 @@ impl FilesView {
         true
     }
 
-    fn focused_search(&mut self) -> Option<(&mut SearchBar, &mut dyn Searchable)> {
-        let pane = self.active_pane_mut()?;
-        if pane.search.dismissed || pane.search.focus.is_none() {
-            return None;
-        }
-        pane.search_target()
-    }
-
-    fn search_command(&mut self, key: EditKey) -> bool {
-        let Some(pane) = self.active_pane_mut() else {
-            return false;
-        };
-        let Some((bar, item)) = pane.search_target() else {
-            return false;
-        };
-        let deployed = !bar.dismissed;
-        match key {
-            EditKey::DeploySearch => bar.deploy(item, false),
-            EditKey::ToggleSearchReplace if deployed => bar.toggle_replace(),
-            EditKey::ToggleSearchReplace => bar.deploy(item, true),
-            EditKey::SelectNextMatch if deployed => bar.select_match(item, Direction::Next),
-            EditKey::SelectPreviousMatch if deployed => bar.select_match(item, Direction::Prev),
-            EditKey::SelectAllMatchesInSearch if deployed => bar.select_all_matches(item),
-            EditKey::ToggleSearchCaseSensitive if deployed => {
-                bar.toggle_option(item, SearchClick::CaseSensitive)
-            }
-            EditKey::ToggleSearchWholeWord if deployed => {
-                bar.toggle_option(item, SearchClick::WholeWord)
-            }
-            EditKey::ToggleSearchRegex if deployed => bar.toggle_option(item, SearchClick::Regex),
-            EditKey::UseSelectionForFind => bar.use_selection_for_find(item),
-            _ => return false,
-        }
-        true
-    }
-
-    fn search_click(&mut self, p: usize, click: SearchClick) {
-        let Some(path) = self.pane_order.get(p).cloned() else {
-            return;
-        };
-        self.active = path.clone();
-        let Some(pane) = self.group.leaf_at_mut(&path) else {
-            return;
-        };
-        let Some((bar, item)) = pane.search_target() else {
-            return;
-        };
-        match click {
-            SearchClick::Query => bar.focus = Some(SearchField::Query),
-            SearchClick::Replacement => bar.focus = Some(SearchField::Replacement),
-            SearchClick::CaseSensitive | SearchClick::WholeWord | SearchClick::Regex => {
-                bar.toggle_option(item, click)
-            }
-            SearchClick::ToggleReplace => bar.toggle_replace(),
-            SearchClick::SelectAll => bar.select_all_matches(item),
-            SearchClick::Previous => bar.select_match(item, Direction::Prev),
-            SearchClick::Next => bar.select_match(item, Direction::Next),
-            SearchClick::Close => bar.dismiss(item),
-            SearchClick::ReplaceNext => bar.replace_next(item),
-            SearchClick::ReplaceAll => bar.replace_all(item),
-        }
-    }
-
-    fn pane_at(&self, path: &[usize]) -> Option<&Pane> {
-        self.group.leaf_at(path)
-    }
-
-    fn active_item_ref(&self) -> Option<&dyn Item> {
-        let pane = self.pane_at(&self.active)?;
-        let i = pane.active?;
-        pane.open.get(i).map(|b| b.as_ref())
-    }
-
-    fn editor_local(&self, x: f32, y: f32) -> Option<(Vec<usize>, f32, f32)> {
-        let idx = self
-            .pane_rects
-            .iter()
-            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)?;
-        let rect = self.pane_rects[idx];
-        let path = self.pane_order[idx].clone();
-        let tab_h = self.pane_at(&path).map_or(0.0, Pane::header_h);
-        let local_x = (x - rect.x).max(0.0);
-        let local_y = y - (rect.y + tab_h);
-        if local_y < 0.0 {
-            return None; // tab bar
-        }
-        Some((path, local_x, local_y))
-    }
-
     fn focused_editable(&self) -> bool {
-        self.group
-            .leaf_at(&self.active)
-            .and_then(Pane::active_item)
-            .is_some_and(|it| it.is_editable())
-    }
-
-    fn pane_path_at(&self, x: f32, y: f32) -> Option<Vec<usize>> {
-        let index = self
-            .pane_rects
-            .iter()
-            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)?;
-        self.pane_order.get(index).cloned()
-    }
-
-    fn clone_active_of(&mut self, path: &[usize]) -> Option<Box<dyn Item>> {
-        self.group
-            .leaf_at_mut(path)
-            .and_then(|p| p.active_item())
-            .and_then(|it| it.clone_on_split())
-    }
-
-    fn pane_in_direction(&self, direction: SplitDirection) -> Option<Vec<usize>> {
-        let leaves: Vec<LeafPlacement> = self
-            .pane_order
-            .iter()
-            .zip(&self.pane_rects)
-            .map(|(path, rect)| LeafPlacement {
-                path: path.clone(),
-                rect: *rect,
-            })
-            .collect();
-        pane_group::find_pane_in_direction(&leaves, &self.active, direction, None)
-    }
-
-    /// Where a tab drop at `(x, y)` lands in the center, or `None` over no pane.
-    fn resolve_drop_at(
-        &self,
-        x: f32,
-        y: f32,
-        over: Option<(u64, Rect)>,
-    ) -> Option<(TabDrop, Rect)> {
-        let full = self.group.leaf_count() >= MAX_PANES;
-        let index = self
-            .pane_rects
-            .iter()
-            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)?;
-        let pane = self.group.leaf_at(self.pane_order.get(index)?)?;
-        let over_tab = over.and_then(|(id, rect)| {
-            let n = id
-                .checked_sub(TAB_ACTIVATE_BASE)
-                .filter(|_| self.is_tab(id))?;
-            ((n / PANE_STRIDE) as usize == index).then_some(((n % PANE_STRIDE) as usize, rect))
-        });
-        let (mut target, preview) = tab_drag::resolve_drop(
-            *self.pane_rects.get(index)?,
-            pane.open.len(),
-            x,
-            y,
-            over_tab,
-        );
-        if full && matches!(target, tab_drag::DropTarget::Split(_)) {
-            target = tab_drag::DropTarget::Append;
-        }
-        Some((
-            TabDrop {
-                pane: pane.id,
-                target,
-            },
-            preview,
-        ))
-    }
-
-    fn do_split(
-        &mut self,
-        path: &[usize],
-        direction: SplitDirection,
-        item: Option<Box<dyn Item>>,
-    ) -> Option<Vec<usize>> {
-        if self.group.leaf_count() >= MAX_PANES {
-            return None;
-        }
-        let mut new_pane = Pane {
-            id: self.next_pane_id,
-            ..Pane::default()
-        };
-        self.next_pane_id += 1;
-        if let Some(item) = item {
-            new_pane.open = vec![item];
-            new_pane.active = Some(0);
-        }
-        let new_path = self.group.split(path, direction, new_pane).ok()?;
-        self.active = new_path.clone();
-        Some(new_path)
-    }
-
-    /// Close tab `t` in the pane at `path`; if the pane empties and it isn't the only one, remove it and collapse
-    /// any now-single-child split.
-    fn close_tab(&mut self, path: &[usize], t: usize) {
-        let Some(pane) = self.group.leaf_at_mut(path) else {
-            return;
-        };
-        pane.close_tab(t);
-        if pane.open.is_empty() && self.group.leaf_count() > 1 {
-            self.remove_pane(path);
-        }
-    }
-
-    /// Remove the leaf pane at `path` from its parent split, renormalize the parent's flexes, then collapse any
-    /// single-child split and re-anchor the focus to the first remaining leaf.
-    fn remove_pane(&mut self, path: &[usize]) {
-        if self.group.remove(path) {
-            self.active = self.group.first_leaf_path();
-        }
+        self.panes.active_item().is_some_and(|it| it.is_editable())
     }
 }
 
@@ -5159,169 +4921,9 @@ fn color_of(theme: &Theme, capture: &str) -> Rgba {
     Rgba::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
 }
 
-/// One leaf pane's placement: the active item sized to the body below the tab bar, its caret/selection geometry,
-/// and the pane chrome. `p` is the pane's render-order index (keys its tab/split ids).
-fn layout_leaf(
-    pane: &mut Pane,
-    rect: Rect,
-    is_focused: bool,
-    p: usize,
-    hover: Option<u64>,
-    panes: &mut Vec<PanePlacement>,
-) {
-    // The active item's text content area (below the tab bar, inside the body padding) is where its
-    // caret/selection geometry is anchored. Focus (caret visibility) follows the group's active pane.
-    if let Some((bar, item)) = pane.search_target() {
-        bar.refresh(item);
-    }
-    let tab_h = pane.header_h();
-    let body_rect = Rect::new(
-        rect.x,
-        rect.y + tab_h,
-        rect.w,
-        (rect.h - tab_h).max(0.0),
-        Rgba::TRANSPARENT,
-    );
-    // The text content area (inside the body padding) is where caret/selection/guides are anchored.
-    let content = Rect::new(
-        rect.x,
-        rect.y + tab_h,
-        rect.w.max(0.0),
-        (rect.h - tab_h).max(0.0),
-        Rgba::TRANSPARENT,
-    );
-    let self_painted = pane
-        .active
-        .and_then(|i| pane.open.get_mut(i))
-        .and_then(|item| item.paint_body(body_rect, is_focused));
-    if let Some(painted) = self_painted {
-        let node = render_pane(pane, p, hover, rect.w / ui::ui_text_scale());
-        panes.push(PanePlacement {
-            rect,
-            node,
-            painted: Some((painted, body_rect)),
-            body: None,
-            back: Vec::new(),
-            back_tris: Vec::new(),
-            carets: Vec::new(),
-            scrollbar: Vec::new(),
-            h_scrollbar: Vec::new(),
-        });
-        return;
-    }
-    let (back, back_tris, carets, scrollbar, h_scrollbar, body) =
-        match pane.active.and_then(|i| pane.open.get_mut(i)) {
-            Some(item) => {
-                item.set_focused(is_focused);
-                item.set_body_height(content.h);
-                item.set_body_width(content.w);
-                let back = item.back_rects(content);
-                let back_tris = item.selection_tris(content);
-                let carets = item.carets(content);
-                let scrollbar = item.scrollbar(content);
-                let h_scrollbar = item.h_scrollbar(content);
-                let y_offset = item.body_y_offset();
-                let x_offset = item.body_x_offset();
-                let gw = item.gutter_w();
-                let gutter = item.gutter(FOLD_BASE + p as u64 * PANE_STRIDE);
-                let node = item.render();
-                // Text starts right of the fixed gutter; it (plus caret/selection) clips to that region so
-                // scrolled glyphs never paint over the line numbers. The gutter clips to the left strip.
-                let text_left = (content.x + gw).min(body_rect.x + body_rect.w);
-                let text_clip = Rect::new(
-                    text_left,
-                    body_rect.y,
-                    (body_rect.x + body_rect.w - text_left).max(0.0),
-                    body_rect.h,
-                    Rgba::TRANSPARENT,
-                );
-                let gutter_clip = Rect::new(
-                    body_rect.x,
-                    body_rect.y,
-                    (text_left - body_rect.x).max(0.0),
-                    body_rect.h,
-                    Rgba::TRANSPARENT,
-                );
-                (
-                    back,
-                    back_tris,
-                    carets,
-                    scrollbar,
-                    h_scrollbar,
-                    Some(PaneBody {
-                        node,
-                        rect: body_rect,
-                        y_offset,
-                        text_left,
-                        x_offset,
-                        text_clip,
-                        gutter,
-                        gutter_clip,
-                    }),
-                )
-            }
-            None => (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                None,
-            ),
-        };
-    let node = render_pane(pane, p, hover, rect.w / ui::ui_text_scale());
-    panes.push(PanePlacement {
-        rect,
-        node,
-        painted: None,
-        body,
-        back,
-        back_tris,
-        carets,
-        scrollbar,
-        h_scrollbar,
-    });
-}
-
-fn divider_axis(axis: pane_group::Axis) -> DividerAxis {
-    match axis {
-        pane_group::Axis::Horizontal => DividerAxis::Horizontal,
-        pane_group::Axis::Vertical => DividerAxis::Vertical,
-    }
-}
-
-/// The editor pane's chrome: history arrows and split buttons around its tabs. `p` is the pane's render-order
-/// index, which keys its click ids.
-fn render_pane(pane: &Pane, p: usize, hover: Option<u64>, width: f32) -> Node {
-    let p = p as u64;
-    let config = TabBarConfig {
-        show_nav: true,
-        buttons: vec![
-            TabBarButton {
-                icon: IconKind::PanelRight,
-                id: SPLIT_RIGHT_BASE + p,
-            },
-            TabBarButton {
-                icon: IconKind::PanelBottom,
-                id: SPLIT_DOWN_BASE + p,
-            },
-        ],
-    };
-    let ids = PaneClickIds {
-        tab_activate: TAB_ACTIVATE_BASE + p * PANE_STRIDE,
-        tab_close: TAB_CLOSE_BASE + p * PANE_STRIDE,
-        nav_back: NAV_BACK_BASE + p,
-        nav_forward: NAV_FWD_BASE + p,
-        search: SEARCH_BASE + p * PANE_STRIDE,
-    };
-    workspace::pane::render_pane(pane, &config, ids, hover, width)
-}
-
 impl FunctionView for FilesView {
     fn cursor_position(&self) -> Option<String> {
-        let pane = self.pane_at(&self.active)?;
-        let item = pane.open.get(pane.active?)?;
-        item.cursor_status()
+        self.panes.active_item()?.cursor_status()
     }
 
     fn modal(&mut self, viewport: (f32, f32)) -> Option<ModalView> {
@@ -5377,8 +4979,8 @@ impl FunctionView for FilesView {
             .as_ref()
             .map_or((0, 0), |lsp| lsp.diagnostic_summary());
         let current = self
-            .pane_at(&self.active)
-            .and_then(|pane| pane.active.and_then(|i| pane.open.get(i)))
+            .panes
+            .active_item()
             .and_then(|item| item.diagnostic_message())
             .map(|message| message.lines().next().unwrap_or_default().to_string());
         Some(workspace::DiagnosticSummary {
@@ -5394,18 +4996,17 @@ impl FunctionView for FilesView {
             return Vec::new();
         }
         let mut popovers = Vec::new();
-        let completion = self.focused_content.and_then(|content| {
-            let pane = self.pane_at(&self.active)?;
-            pane.open.get(pane.active?)?.completion_popover(content)
-        });
+        let completion = self
+            .panes
+            .focused_content()
+            .and_then(|content| self.panes.active_item()?.completion_popover(content));
         if let Some(completion) = completion {
             popovers.push(completion);
             self.popover_sources.push(PopoverSource::Completion);
             let viewport = self.window_size;
-            let aside = self.focused_content.and_then(|content| {
-                let pane = self.pane_at(&self.active)?;
-                pane.open
-                    .get(pane.active?)?
+            let aside = self.panes.focused_content().and_then(|content| {
+                self.panes
+                    .active_item()?
                     .completion_aside(content, viewport)
             });
             if let Some(aside) = aside {
@@ -5413,11 +5014,11 @@ impl FunctionView for FilesView {
                 self.popover_sources.push(PopoverSource::CompletionAside);
             }
         }
-        for (index, rect) in self.pane_rects.iter().enumerate() {
-            let Some(path) = self.pane_order.get(index) else {
+        for (index, rect) in self.panes.pane_rects().iter().enumerate() {
+            let Some(path) = self.panes.pane_order().get(index) else {
                 continue;
             };
-            let Some(pane) = self.pane_at(path) else {
+            let Some(pane) = self.panes.pane_at(path) else {
                 continue;
             };
             let Some(item) = pane.active.and_then(|i| pane.open.get(i)) else {
@@ -5445,12 +5046,15 @@ impl FunctionView for FilesView {
     fn popover_scroll(&mut self, index: usize, dy: f32) -> bool {
         match self.popover_sources.get(index).cloned() {
             Some(PopoverSource::Completion) => self
+                .panes
                 .active_item_mut()
                 .is_some_and(|item| item.scroll_completion(dy)),
             Some(PopoverSource::CompletionAside) => self
+                .panes
                 .active_item_mut()
                 .is_some_and(|item| item.scroll_completion_aside(dy)),
             Some(PopoverSource::Hover { pane, index }) => self
+                .panes
                 .group
                 .leaf_at_mut(&pane)
                 .and_then(|pane| pane.active.and_then(|i| pane.open.get_mut(i)))
@@ -5477,50 +5081,8 @@ impl FunctionView for FilesView {
 
     fn editor_layout(&mut self, area: Rect) -> EditorLayout {
         self.sync_language_servers();
-        let mut el = EditorLayout::default();
-        let mut pane_order = Vec::new();
-        let mut pane_ids = Vec::new();
-        let mut pane_rects = Vec::new();
-        let (leaves, dividers) = self.group.layout(area);
-        for (p, leaf) in leaves.into_iter().enumerate() {
-            let is_focused = leaf.path == self.active;
-            let Some(pane) = self.group.leaf_at_mut(&leaf.path) else {
-                continue;
-            };
-            pane_ids.push(pane.id);
-            layout_leaf(pane, leaf.rect, is_focused, p, self.hover, &mut el.panes);
-            pane_rects.push(leaf.rect);
-            pane_order.push(leaf.path);
-        }
-        let mut divider_order = Vec::with_capacity(dividers.len());
-        for (index, divider) in dividers.into_iter().enumerate() {
-            el.dividers.push(DividerPlacement {
-                rect: divider.rect,
-                id: DIVIDER_BASE + index as u64,
-                axis: divider_axis(divider.reference.axis),
-            });
-            divider_order.push(divider.reference);
-        }
-        self.pane_order = pane_order;
-        self.pane_ids = pane_ids;
-        self.pane_rects = pane_rects;
-        self.focused_content = self
-            .pane_order
-            .iter()
-            .position(|path| *path == self.active)
-            .and_then(|index| {
-                let rect = *self.pane_rects.get(index)?;
-                let header = self.pane_at(&self.active)?.header_h();
-                Some(Rect::new(
-                    rect.x,
-                    rect.y + header,
-                    rect.w.max(0.0),
-                    (rect.h - header).max(0.0),
-                    Rgba::TRANSPARENT,
-                ))
-            });
-        self.divider_order = divider_order;
-        el
+        let (panes, dividers) = self.panes.layout(area);
+        EditorLayout { panes, dividers }
     }
 
     fn render_tree(&mut self) -> Option<workspace::TreePanel> {
@@ -5720,50 +5282,23 @@ impl FunctionView for FilesView {
     }
 
     fn on_click(&mut self, id: u64) -> bool {
-        // Dividers are dragged, not clicked (the shell begins a drag on mouse-down); a bare click is a no-op.
-        if id >= DIVIDER_BASE {
-            return false;
-        }
-        // Change strip in the gutter: expand or collapse that change.
-        if id >= HUNK_BASE {
-            let n = id - HUNK_BASE;
-            let (p, line) = ((n / PANE_STRIDE) as usize, (n % PANE_STRIDE) as usize);
-            if let Some(path) = self.pane_order.get(p).cloned() {
-                if let Some(item) = self
-                    .group
-                    .leaf_at_mut(&path)
-                    .and_then(|pane| pane.active.and_then(|i| pane.open.get_mut(i)))
-                {
-                    item.toggle_diff_hunk(line);
+        match self.panes.click(id) {
+            GroupClick::NotMine => {}
+            GroupClick::Handled => return true,
+            GroupClick::Search { pane, click } => {
+                self.track_nav(|v| v.panes.search_click(pane, click));
+                return true;
+            }
+            GroupClick::Button { path, action } => {
+                if let PaneButtonAction::Split(direction) = action {
+                    let item = self.panes.clone_active_of(&path);
+                    self.panes.split(&path, direction, item);
                 }
+                return true;
             }
-            return true;
-        }
-        // Fold chevron in the gutter: toggle the code fold on that pane's active item.
-        if id >= FOLD_BASE {
-            let n = id - FOLD_BASE;
-            let (p, line) = ((n / PANE_STRIDE) as usize, (n % PANE_STRIDE) as usize);
-            if let Some(path) = self.pane_order.get(p).cloned() {
-                if let Some(item) = self
-                    .group
-                    .leaf_at_mut(&path)
-                    .and_then(|pane| pane.active.and_then(|i| pane.open.get_mut(i)))
-                {
-                    item.toggle_fold(line);
-                }
-            }
-            return true;
-        }
-        if id >= SEARCH_BASE {
-            let n = id - SEARCH_BASE;
-            let (p, offset) = ((n / PANE_STRIDE) as usize, n % PANE_STRIDE);
-            if let Some(click) = SearchClick::from_offset(offset) {
-                self.track_nav(|v| v.search_click(p, click));
-            }
-            return true;
         }
         if id >= HOVER_BASE {
-            self.group.for_each_pane_mut(&mut |pane| {
+            self.panes.group.for_each_pane_mut(&mut |pane| {
                 for item in pane.open.iter_mut() {
                     if let Some(file) = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>())
                     {
@@ -5774,7 +5309,7 @@ impl FunctionView for FilesView {
             return true;
         }
         if id >= COMPLETION_BASE {
-            if let Some(item) = self.active_item_mut() {
+            if let Some(item) = self.panes.active_item_mut() {
                 item.click_completion((id - COMPLETION_BASE) as usize);
             }
             return true;
@@ -5805,48 +5340,6 @@ impl FunctionView for FilesView {
             ));
             return true;
         }
-        // Nav forward / back arrows: walk that pane's activation history.
-        if id >= NAV_FWD_BASE {
-            if let Some(path) = self.pane_order.get((id - NAV_FWD_BASE) as usize).cloned() {
-                if let Some(pane) = self.group.leaf_at_mut(&path) {
-                    pane.nav_forward();
-                    self.active = path;
-                }
-            }
-            return true;
-        }
-        if id >= NAV_BACK_BASE {
-            if let Some(path) = self.pane_order.get((id - NAV_BACK_BASE) as usize).cloned() {
-                if let Some(pane) = self.group.leaf_at_mut(&path) {
-                    pane.nav_back();
-                    self.active = path;
-                }
-            }
-            return true;
-        }
-        // Split-down / split-right buttons: split the pane at that render index (a clone of its active item).
-        if id >= SPLIT_DOWN_BASE {
-            if let Some(path) = self
-                .pane_order
-                .get((id - SPLIT_DOWN_BASE) as usize)
-                .cloned()
-            {
-                let item = self.clone_active_of(&path);
-                self.do_split(&path, SplitDirection::Down, item);
-            }
-            return true;
-        }
-        if id >= SPLIT_RIGHT_BASE {
-            if let Some(path) = self
-                .pane_order
-                .get((id - SPLIT_RIGHT_BASE) as usize)
-                .cloned()
-            {
-                let item = self.clone_active_of(&path);
-                self.do_split(&path, SplitDirection::Right, item);
-            }
-            return true;
-        }
         // A pinned sticky breadcrumb folder: collapse it and scroll so it becomes the top row.
         if id >= STICKY_BASE {
             let k = (id - STICKY_BASE) as usize;
@@ -5858,29 +5351,6 @@ impl FunctionView for FilesView {
                 flatten(&self.tree, 0, &self.expanded, &mut flat);
                 if let Some(idx) = flat.iter().position(|r| r.path == path) {
                     self.scroll = idx as f32 * ROW_H;
-                }
-            }
-            return true;
-        }
-        // Tab close (higher range so it wins the nested hit over activate).
-        if id >= TAB_CLOSE_BASE {
-            let n = id - TAB_CLOSE_BASE;
-            let (p, t) = ((n / PANE_STRIDE) as usize, (n % PANE_STRIDE) as usize);
-            if let Some(path) = self.pane_order.get(p).cloned() {
-                self.close_tab(&path, t);
-            }
-            return true;
-        }
-        // Tab activate: focus that pane + activate the tab.
-        if id >= TAB_ACTIVATE_BASE {
-            let n = id - TAB_ACTIVATE_BASE;
-            let (p, t) = ((n / PANE_STRIDE) as usize, (n % PANE_STRIDE) as usize);
-            if let Some(path) = self.pane_order.get(p).cloned() {
-                if let Some(pane) = self.group.leaf_at_mut(&path) {
-                    if t < pane.open.len() {
-                        pane.activate_user(t);
-                        self.active = path;
-                    }
                 }
             }
             return true;
@@ -5923,14 +5393,12 @@ impl FunctionView for FilesView {
 
     fn set_hover(&mut self, id: Option<u64>) -> bool {
         // Tab hits reveal a close button and modal rows light up, so only changes there need a repaint.
-        let tabbish =
-            |x: Option<u64>| x.is_some_and(|v| (TAB_ACTIVATE_BASE..STICKY_BASE).contains(&v));
-        let modal = |x: Option<u64>| x.is_some_and(|v| (PALETTE_BASE..SEARCH_BASE).contains(&v));
+        let tab_changed = self.panes.set_hover(id);
+        let modal = |x: Option<u64>| x.is_some_and(|v| (PALETTE_BASE..MODAL_END).contains(&v));
         let entered = self.hover != id;
-        let changed =
-            entered && (tabbish(self.hover) || tabbish(id) || modal(self.hover) || modal(id));
+        let changed = tab_changed || (entered && (modal(self.hover) || modal(id)));
         self.hover = id;
-        let over_modal = id.filter(|v| (PALETTE_BASE..SEARCH_BASE).contains(v));
+        let over_modal = id.filter(|v| (PALETTE_BASE..MODAL_END).contains(v));
         let mut outline_hovered_row = None;
         if let Some((_, view)) = self.outline.as_mut() {
             view.hovered = over_modal;
@@ -5951,7 +5419,7 @@ impl FunctionView for FilesView {
             self.preview_outline(false);
         }
         let over_completion = id.filter(|v| (COMPLETION_BASE..HOVER_BASE).contains(v));
-        if let Some(item) = self.active_item_mut() {
+        if let Some(item) = self.panes.active_item_mut() {
             item.hover_completion(over_completion);
         }
         if let Some((_, palette)) = self.palette.as_mut() {
@@ -5970,93 +5438,43 @@ impl FunctionView for FilesView {
     }
 
     fn divider_axis(&self, id: u64) -> Option<DividerAxis> {
-        if id < DIVIDER_BASE {
-            return None;
-        }
-        let d = self.divider_order.get((id - DIVIDER_BASE) as usize)?;
-        Some(divider_axis(d.axis))
+        self.panes.divider_axis(id)
     }
 
     fn drag_divider(&mut self, id: u64, x: f32, y: f32) -> bool {
-        let Some(divider) = id
-            .checked_sub(DIVIDER_BASE)
-            .and_then(|index| self.divider_order.get(index as usize))
-            .cloned()
-        else {
-            return false;
-        };
-        self.group.resize_divider(&divider, x, y)
+        self.panes.drag_divider(id, x, y)
     }
 
     fn is_tab(&self, id: u64) -> bool {
-        (TAB_ACTIVATE_BASE..TAB_CLOSE_BASE).contains(&id)
+        self.panes.is_tab(id)
     }
 
     fn begin_tab_drag(&mut self, id: u64) -> bool {
-        if !self.is_tab(id) {
-            return false;
-        }
-        let n = id - TAB_ACTIVATE_BASE;
-        let (p, t) = ((n / PANE_STRIDE) as usize, (n % PANE_STRIDE) as usize);
-        let Some(path) = self.pane_order.get(p) else {
-            return false;
-        };
-        self.tab_drag = self
-            .group
-            .leaf_at(path)
-            .and_then(|pane| TabDrag::begin(pane, t));
-        self.tab_drag.is_some()
+        self.panes.begin_tab_drag(id)
     }
 
     fn update_tab_drag(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool {
-        if self.tab_drag.is_none() {
-            return false;
-        }
-        let resolved = self.resolve_drop_at(x, y, over);
-        if let Some(drag) = self.tab_drag.as_mut() {
-            drag.drop = resolved.map(|(drop, _)| drop);
-            drag.preview = resolved.map(|(_, preview)| preview);
-        }
-        true
+        self.panes.update_tab_drag(x, y, over)
     }
 
     fn drop_tab(&mut self) -> bool {
-        let Some(drag) = self.tab_drag.take() else {
-            return false;
-        };
-        let Some(drop) = drag.drop else {
-            return false;
-        };
-        let next_id = self.next_pane_id;
-        let landed = tab_drag::apply_drop(&mut self.group, &drag, drop, || Pane::new(next_id));
-        if landed.is_some() && self.group.path_of(next_id).is_some() {
-            self.next_pane_id += 1;
-        }
-        if let Some(path) = landed {
-            self.active = path;
-        } else if self.group.leaf_at(&self.active).is_none() {
-            self.active = self.group.first_leaf_path();
-        }
-        true
+        self.panes.drop_tab()
     }
 
     fn cancel_tab_drag(&mut self) {
-        self.tab_drag = None;
+        self.panes.cancel_tab_drag();
     }
 
     fn dragging_tab(&self) -> bool {
-        self.tab_drag.is_some()
+        self.panes.dragging_tab()
     }
 
     fn tab_drag_overlay(&self) -> Option<Rect> {
-        self.tab_drag
-            .as_ref()
-            .and_then(|drag| drag.preview)
-            .or(self.foreign_drop.map(|(_, preview)| preview))
+        self.panes.tab_drag_overlay()
     }
 
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)> {
-        Some(self.tab_drag.as_ref()?.ghost())
+        self.panes.tab_drag_ghost()
     }
 
     fn accepts_pane_keys(&self) -> bool {
@@ -6069,50 +5487,21 @@ impl FunctionView for FilesView {
     fn pane_command(&mut self, command: PaneCommand) -> bool {
         match command {
             PaneCommand::Split(direction) => {
-                let path = self.active.clone();
-                let item = self.clone_active_of(&path);
-                self.do_split(&path, direction, item);
+                let path = self.panes.active.clone();
+                let item = self.panes.clone_active_of(&path);
+                self.panes.split(&path, direction, item);
                 true
             }
-            PaneCommand::ActivatePane(direction) => match self.pane_in_direction(direction) {
-                Some(path) => {
-                    self.active = path;
-                    true
-                }
-                None => false,
-            },
-            PaneCommand::SwapPane(direction) => {
-                let Some(path) = self.pane_in_direction(direction) else {
-                    return false;
-                };
-                if self.group.swap(&self.active, &path) {
-                    self.active = path;
-                }
-                true
-            }
-            item_command => self
-                .active_pane_mut()
-                .is_some_and(|pane| pane.apply_item_command(item_command)),
+            command => self.panes.pane_command(command),
         }
     }
 
     fn dragged_item(&self) -> Option<&dyn Item> {
-        let drag = self.tab_drag.as_ref()?;
-        let path = self.group.path_of(drag.source)?;
-        self.group
-            .leaf_at(&path)?
-            .open
-            .get(drag.index)
-            .map(|item| item.as_ref())
+        self.panes.dragged_item()
     }
 
     fn take_dragged_item(&mut self) -> Option<Box<dyn Item>> {
-        let drag = self.tab_drag.take()?;
-        let item = tab_drag::take_item(&mut self.group, &drag)?;
-        if self.group.leaf_at(&self.active).is_none() {
-            self.active = self.group.first_leaf_path();
-        }
-        Some(item)
+        self.panes.take_dragged_item()
     }
 
     fn accepts_item(&self, _item: &dyn Item) -> bool {
@@ -6120,42 +5509,26 @@ impl FunctionView for FilesView {
     }
 
     fn update_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool {
-        self.foreign_drop = self.resolve_drop_at(x, y, over);
-        self.foreign_drop.is_some()
+        self.panes.update_foreign_drop(x, y, over)
     }
 
     fn clear_foreign_drop(&mut self) {
-        self.foreign_drop = None;
+        self.panes.clear_foreign_drop();
     }
 
     fn accept_foreign_item(&mut self, item: Box<dyn Item>) {
-        let drop = self.foreign_drop.take().map(|(drop, _)| drop);
-        let next_id = self.next_pane_id;
-        let placed = match drop {
-            Some(drop) => tab_drag::insert_item(&mut self.group, drop, item, || Pane::new(next_id)),
-            None => Err(Some(item)),
-        };
-        match placed {
-            Ok(path) => {
-                if self.group.path_of(next_id).is_some() {
-                    self.next_pane_id += 1;
-                }
-                self.active = path;
-            }
-            Err(Some(item)) => self.add_center_item(item),
-            Err(None) => {}
-        }
+        self.panes.accept_foreign_item(item);
     }
 
     fn editor_save(&mut self) -> Option<Result<(), String>> {
-        match self.active_item_mut() {
+        match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => Some(item.save()),
             _ => None,
         }
     }
 
     fn refresh_disk_state(&mut self) {
-        self.group.for_each_pane_mut(&mut |pane| {
+        self.panes.group.for_each_pane_mut(&mut |pane| {
             pane.open
                 .iter_mut()
                 .for_each(|item| item.refresh_disk_state())
@@ -6172,7 +5545,8 @@ impl FunctionView for FilesView {
                 .palette
                 .as_ref()
                 .is_some_and(|(_, palette)| palette.scrollbar.is_animating());
-        self.group
+        self.panes
+            .group
             .for_each_pane(&mut |pane| busy |= pane.open.iter().any(|item| item.is_busy()));
         busy
     }
@@ -6207,18 +5581,20 @@ impl FunctionView for FilesView {
     }
 
     fn add_center_item(&mut self, item: Box<dyn Item>) {
-        if let Some(pane) = self.active_pane_mut() {
+        if let Some(pane) = self.panes.active_pane_mut() {
             pane.add_item(item);
         }
     }
 
     fn active_wants_keystrokes(&self) -> bool {
-        self.active_item_ref()
+        self.panes
+            .active_item()
             .is_some_and(|item| item.wants_keystrokes())
     }
 
     fn item_keystroke(&mut self, keystroke: &terminal::Keystroke) -> workspace::TerminalKeyOutcome {
-        self.active_item_mut()
+        self.panes
+            .active_item_mut()
             .map_or(workspace::TerminalKeyOutcome::Ignored, |item| {
                 item.keystroke(keystroke)
             })
@@ -6226,6 +5602,7 @@ impl FunctionView for FilesView {
 
     fn item_text(&mut self, text: &str) {
         if let Some(item) = self
+            .panes
             .active_item_mut()
             .filter(|item| item.wants_keystrokes())
         {
@@ -6235,6 +5612,7 @@ impl FunctionView for FilesView {
 
     fn item_focus_changed(&mut self, focused: bool) {
         if let Some(item) = self
+            .panes
             .active_item_mut()
             .filter(|item| item.wants_keystrokes())
         {
@@ -6249,16 +5627,17 @@ impl FunctionView for FilesView {
         click_count: u32,
         modifiers: terminal::Modifiers,
     ) -> bool {
-        let Some(path) = self.pane_path_at(x, y) else {
+        let Some(path) = self.panes.pane_path_at(x, y) else {
             return false;
         };
         let handled = self
+            .panes
             .group
             .leaf_at_mut(&path)
             .and_then(Pane::active_item_mut)
             .is_some_and(|item| item.pointer_down(x, y, click_count, modifiers));
         if handled {
-            self.active = path.clone();
+            self.panes.active = path.clone();
             self.pointer_pane = Some(path);
         }
         handled
@@ -6268,18 +5647,20 @@ impl FunctionView for FilesView {
         let Some(path) = self.pointer_pane.clone() else {
             return false;
         };
-        self.group
+        self.panes
+            .group
             .leaf_at_mut(&path)
             .and_then(Pane::active_item_mut)
             .is_some_and(|item| item.pointer_drag(x, y, modifiers))
     }
 
     fn item_pointer_move(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool {
-        let active = self.active.clone();
+        let active = self.panes.active.clone();
         let mut changed = false;
-        for path in self.pane_order.clone() {
+        for path in self.panes.pane_order().to_vec() {
             let focused = path == active;
             if let Some(item) = self
+                .panes
                 .group
                 .leaf_at_mut(&path)
                 .and_then(Pane::active_item_mut)
@@ -6295,6 +5676,7 @@ impl FunctionView for FilesView {
             return;
         };
         if let Some(item) = self
+            .panes
             .group
             .leaf_at_mut(&path)
             .and_then(Pane::active_item_mut)
@@ -6310,10 +5692,11 @@ impl FunctionView for FilesView {
         delta_y: f32,
         modifiers: terminal::Modifiers,
     ) -> bool {
-        let Some(path) = self.pane_path_at(x, y) else {
+        let Some(path) = self.panes.pane_path_at(x, y) else {
             return false;
         };
-        self.group
+        self.panes
+            .group
             .leaf_at_mut(&path)
             .and_then(Pane::active_item_mut)
             .is_some_and(|item| item.pointer_scroll(x, y, delta_y, modifiers))
@@ -6322,7 +5705,7 @@ impl FunctionView for FilesView {
     fn tick_items(&mut self, clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
         let mut outcome = workspace::ItemTick::default();
         let mut closed: Vec<(u64, String)> = Vec::new();
-        self.group.for_each_pane_mut(&mut |pane| {
+        self.panes.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {
                 let tick = item.tick(clipboard);
                 outcome.changed |= tick.changed;
@@ -6337,15 +5720,16 @@ impl FunctionView for FilesView {
             }
         });
         for (pane_id, item_id) in closed {
-            let Some(path) = self.group.path_of(pane_id) else {
+            let Some(path) = self.panes.group.path_of(pane_id) else {
                 continue;
             };
             let index = self
+                .panes
                 .group
                 .leaf_at(&path)
                 .and_then(|pane| pane.index_of_id(&item_id));
             if let Some(index) = index {
-                self.close_tab(&path, index);
+                self.panes.close_tab(&path, index);
                 outcome.changed = true;
             }
         }
@@ -6354,7 +5738,7 @@ impl FunctionView for FilesView {
 
     fn take_item_open_request(&mut self) -> Option<workspace::TerminalOpenTarget> {
         let mut request = None;
-        self.group.for_each_pane_mut(&mut |pane| {
+        self.panes.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {
                 if request.is_none() {
                     request = item.take_open_request();
@@ -6366,14 +5750,14 @@ impl FunctionView for FilesView {
 
     fn item_link_hovered(&self) -> bool {
         let mut hovered = false;
-        self.group.for_each_pane(&mut |pane| {
+        self.panes.group.for_each_pane(&mut |pane| {
             hovered |= pane.active_item().is_some_and(|item| item.link_hovered());
         });
         hovered
     }
 
     fn active_file_path(&self) -> Option<PathBuf> {
-        let id = self.active_item_ref()?.id()?;
+        let id = self.panes.active_item()?.id()?;
         Some(self.root.join(id))
     }
 
@@ -6387,11 +5771,11 @@ impl FunctionView for FilesView {
                     path.to_string_lossy().trim_start_matches('/').to_string(),
                 ),
             };
-            if let Some(pane) = view.active_pane_mut() {
+            if let Some(pane) = view.panes.active_pane_mut() {
                 pane.open_file(&root, &relative);
             }
             if let Some(row) = row {
-                let active = view.active.clone();
+                let active = view.panes.active.clone();
                 if let Some(item) = view.go_to_line_item(&active) {
                     let column = column.unwrap_or(1).saturating_sub(1) as usize;
                     item.go_to(row.saturating_sub(1) as usize, column);
@@ -6401,7 +5785,9 @@ impl FunctionView for FilesView {
     }
 
     fn editor_copy_trimmed(&self) -> Option<CopiedText> {
-        self.active_item_ref().and_then(|item| item.copy_trimmed())
+        self.panes
+            .active_item()
+            .and_then(|item| item.copy_trimmed())
     }
 
     fn row_path(&self, id: u64) -> Option<(String, bool)> {
@@ -6424,11 +5810,11 @@ impl FunctionView for FilesView {
     }
 
     fn editor_right_press(&mut self, x: f32, y: f32) -> bool {
-        let Some((path, lx, ly)) = self.editor_local(x, y) else {
+        let Some((path, lx, ly)) = self.panes.body_point(x, y) else {
             return false;
         };
-        self.active = path;
-        match self.active_item_mut() {
+        self.panes.active = path;
+        match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => {
                 item.right_press(lx, ly);
                 true
@@ -6438,15 +5824,23 @@ impl FunctionView for FilesView {
     }
 
     fn editor_menu_anchor_at(&self, x: f32, y: f32) -> Option<(Vec<usize>, usize)> {
-        let (path, _lx, ly) = self.editor_local(x, y)?;
-        let line = self.pane_at(&path)?.active_item()?.buffer_line_at(ly)?;
+        let (path, _lx, ly) = self.panes.body_point(x, y)?;
+        let line = self
+            .panes
+            .pane_at(&path)?
+            .active_item()?
+            .buffer_line_at(ly)?;
         Some((path, line))
     }
 
     fn editor_menu_y(&self, path: &[usize], line: usize) -> Option<f32> {
-        let idx = self.pane_order.iter().position(|p| p.as_slice() == path)?;
-        let rect = *self.pane_rects.get(idx)?;
-        let pane = self.pane_at(path)?;
+        let idx = self
+            .panes
+            .pane_order()
+            .iter()
+            .position(|p| p.as_slice() == path)?;
+        let rect = *self.panes.pane_rects().get(idx)?;
+        let pane = self.panes.pane_at(path)?;
         let tab_h = pane.header_h();
         let content = Rect::new(
             rect.x,
@@ -6463,11 +5857,11 @@ impl FunctionView for FilesView {
     }
     fn editor_hover(&mut self, x: f32, y: f32) -> bool {
         let mut changed = false;
-        for (index, rect) in self.pane_rects.clone().into_iter().enumerate() {
-            let Some(path) = self.pane_order.get(index).cloned() else {
+        for (index, rect) in self.panes.pane_rects().to_vec().into_iter().enumerate() {
+            let Some(path) = self.panes.pane_order().get(index).cloned() else {
                 continue;
             };
-            let Some(pane) = self.group.leaf_at_mut(&path) else {
+            let Some(pane) = self.panes.group.leaf_at_mut(&path) else {
                 continue;
             };
             let tab_h = pane.header_h();
@@ -6488,7 +5882,7 @@ impl FunctionView for FilesView {
     }
 
     fn editor_ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) -> bool {
-        match self.active_item_mut() {
+        match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => {
                 item.ime_preedit(text, selected);
                 true
@@ -6498,7 +5892,7 @@ impl FunctionView for FilesView {
     }
 
     fn editor_ime_commit(&mut self, text: &str) -> bool {
-        match self.active_item_mut() {
+        match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => {
                 item.ime_commit(text);
                 true
@@ -6514,7 +5908,7 @@ impl FunctionView for FilesView {
                 slices: Vec::new(),
             });
         }
-        if let Some(pane) = self.pane_at(&self.active) {
+        if let Some(pane) = self.panes.pane_at(&self.panes.active) {
             let field = match pane.search.focus {
                 Some(SearchField::Query) => Some(&pane.search.query),
                 Some(SearchField::Replacement) => Some(&pane.search.replacement),
@@ -6527,11 +5921,11 @@ impl FunctionView for FilesView {
                 });
             }
         }
-        self.active_item_ref().and_then(|item| item.copy())
+        self.panes.active_item().and_then(|item| item.copy())
     }
 
     fn editor_cut(&mut self) -> Option<CopiedText> {
-        if let Some((bar, item)) = self.focused_search() {
+        if let Some((bar, item)) = self.panes.focused_search() {
             let text = match bar.focus {
                 Some(SearchField::Replacement) => bar.replacement.selected_text(),
                 _ => bar.query.selected_text(),
@@ -6542,7 +5936,7 @@ impl FunctionView for FilesView {
                 slices: Vec::new(),
             });
         }
-        match self.active_item_mut() {
+        match self.panes.active_item_mut() {
             Some(item) if item.is_editable() => item.cut(),
             _ => None,
         }
@@ -6567,17 +5961,19 @@ impl FunctionView for FilesView {
         self.track_nav(|v| v.editor_double_click_untracked(x, y))
     }
     fn editor_selected_text(&self) -> Option<String> {
-        self.active_item_ref().and_then(|it| it.selected_text())
+        self.panes.active_item().and_then(|it| it.selected_text())
     }
 
     fn editor_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
         let idx = self
-            .pane_rects
+            .panes
+            .pane_rects()
             .iter()
             .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
         let Some(idx) = idx else { return false };
-        let path = self.pane_order[idx].clone();
+        let path = self.panes.pane_order()[idx].clone();
         match self
+            .panes
             .group
             .leaf_at_mut(&path)
             .and_then(|p| p.active.and_then(|i| p.open.get_mut(i)))
@@ -6872,6 +6268,8 @@ mod indent_guide_tests {
 #[cfg(test)]
 mod search_bar_tests {
     use super::*;
+    use editor::search::Direction;
+    use workspace::search_bar::{SearchBar, SearchClick};
 
     fn item(text: &str) -> FileItem {
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
@@ -6935,7 +6333,7 @@ mod go_to_line_tests {
         let mut view = FilesView::new(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
         item.set_body_height(4.0 * EDIT_LINE_H);
-        if let Member::Leaf(pane) = &mut view.group {
+        if let Member::Leaf(pane) = &mut view.panes.group {
             pane.open.push(Box::new(item));
             pane.active = Some(0);
         }
@@ -6943,7 +6341,7 @@ mod go_to_line_tests {
     }
 
     fn cursor(view: &mut FilesView) -> (usize, usize) {
-        let path = view.active.clone();
+        let path = view.panes.active.clone();
         let item = view.go_to_line_item(&path).unwrap();
         item.buffer.as_ref().unwrap().line_col()
     }
@@ -6954,7 +6352,7 @@ mod go_to_line_tests {
         let mut view = view_with(&text);
         view.editor_key(EditKey::ToggleGoToLine, false);
         view.editor_text("20:3");
-        let path = view.active.clone();
+        let path = view.panes.active.clone();
         assert_eq!(
             view.go_to_line_item(&path).unwrap().highlighted_rows,
             Some((19, 19))
@@ -6982,7 +6380,7 @@ mod navigation_tests {
         let mut view = FilesView::new(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
         item.set_body_height(4.0 * EDIT_LINE_H);
-        if let Member::Leaf(pane) = &mut view.group {
+        if let Member::Leaf(pane) = &mut view.panes.group {
             pane.open.push(Box::new(item));
             pane.active = Some(0);
         }
@@ -6990,7 +6388,7 @@ mod navigation_tests {
     }
 
     fn line(view: &mut FilesView) -> usize {
-        let path = view.active.clone();
+        let path = view.panes.active.clone();
         view.go_to_line_item(&path)
             .unwrap()
             .buffer
@@ -7029,7 +6427,7 @@ mod navigation_tests {
         for _ in 0..5 {
             view.editor_key(EditKey::Down, false);
         }
-        if let Member::Leaf(pane) = &view.group {
+        if let Member::Leaf(pane) = &view.panes.group {
             assert!(pane.back.is_empty());
         }
     }
@@ -7074,7 +6472,7 @@ mod command_palette_tests {
         let mut view = FilesView::new(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
         item.set_body_height(4.0 * EDIT_LINE_H);
-        if let Member::Leaf(pane) = &mut view.group {
+        if let Member::Leaf(pane) = &mut view.panes.group {
             pane.open.push(Box::new(item));
             pane.active = Some(0);
         }
@@ -7082,7 +6480,7 @@ mod command_palette_tests {
     }
 
     fn text(view: &mut FilesView) -> String {
-        let path = view.active.clone();
+        let path = view.panes.active.clone();
         let item = view.go_to_line_item(&path).unwrap();
         item.buffer.as_ref().unwrap().text()
     }
@@ -7136,7 +6534,7 @@ mod outline_tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
             item.refresh();
         }
-        if let Member::Leaf(pane) = &mut view.group {
+        if let Member::Leaf(pane) = &mut view.panes.group {
             pane.open.push(Box::new(item));
             pane.active = Some(0);
         }
@@ -7144,7 +6542,7 @@ mod outline_tests {
     }
 
     fn caret_line(view: &mut FilesView) -> usize {
-        let path = view.active.clone();
+        let path = view.panes.active.clone();
         let item = view.go_to_line_item(&path).unwrap();
         item.buffer.as_ref().unwrap().line_col().0
     }
@@ -7156,7 +6554,7 @@ mod outline_tests {
         view.editor_key(EditKey::ToggleOutline, false);
         assert!(view.modal((1200.0, 800.0)).is_some());
         view.editor_text("omega");
-        let path = view.active.clone();
+        let path = view.panes.active.clone();
         assert_eq!(
             view.go_to_line_item(&path).unwrap().highlighted_rows,
             Some((41, 41))
@@ -7181,7 +6579,7 @@ mod outline_tests {
         assert_eq!(view.modal(viewport).map(|m| m.width.round()), Some(720.0));
         assert_eq!(view.outline_preview, outline_view::PreviewLayout::Right);
 
-        let path = view.active.clone();
+        let path = view.panes.active.clone();
         let symbol = view
             .outline
             .as_ref()
@@ -7229,7 +6627,7 @@ mod outline_tests {
     fn escape_restores_the_scroll() {
         let filler: String = (0..40).map(|i| format!("// line {i}\n")).collect();
         let mut view = rust_view(&format!("fn alpha() {{}}\n{filler}fn omega() {{}}\n"));
-        let path = view.active.clone();
+        let path = view.panes.active.clone();
         let before = view.go_to_line_item(&path).unwrap().scroll_position();
         view.editor_key(EditKey::ToggleOutline, false);
         view.editor_text("omega");

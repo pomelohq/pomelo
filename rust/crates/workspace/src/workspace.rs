@@ -4,6 +4,7 @@
 
 pub mod pane;
 pub mod pane_group;
+pub mod pane_group_view;
 mod panel;
 pub mod search_bar;
 pub mod tab_drag;
