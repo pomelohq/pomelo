@@ -1,8 +1,13 @@
+use crate::indent::{
+    edit_for_indent_adjustment, indent_size_for_line, indent_size_for_text, AutoindentEntry,
+    AutoindentRequest, IndentSize,
+};
 use crate::language::{BracketPair, LanguageConfig, Scope};
 use crate::movement;
 use crate::search::SearchQuery;
 use crate::transform::{LineTransform, TextTransform};
 use ropey::Rope;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 use tree_sitter::{InputEdit, Point};
@@ -204,6 +209,31 @@ pub enum Deletion {
 
 pub const TAB_SIZE: usize = 4;
 
+/// A bracket pair's (open, close) char ranges.
+pub type BracketPairRanges = (Range<usize>, Range<usize>);
+
+/// How an edit's lines get re-indented after it lands.
+#[derive(Clone, Debug)]
+pub enum AutoindentMode {
+    /// Each line of the edit on its own.
+    EachLine,
+    /// Only each insertion's first line, the rest shifted by the same amount so pasted code keeps its shape;
+    /// holds the column each insertion's first line was copied from.
+    Block {
+        original_indent_columns: Vec<Option<usize>>,
+    },
+}
+
+fn line_len_of(rope: &Rope, row: usize) -> usize {
+    if row >= rope.len_lines() {
+        return 0;
+    }
+    rope.line(row)
+        .chars()
+        .take_while(|c| *c != '\n' && *c != '\r')
+        .count()
+}
+
 /// How one selection's piece sits in copied text: its length in chars, whether it was a whole line (copied from
 /// an empty selection), and the first line's indentation when copied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,6 +345,8 @@ pub struct EditorBuffer {
     marked_ranges: Vec<Range<usize>>,
     /// Undo-stack depth when the current composition started; its edits merge into one entry.
     ime_undo_base: Option<usize>,
+    /// Edited spans waiting to be re-indented once the syntax tree reflects the edit.
+    autoindent_requests: Vec<AutoindentRequest>,
 }
 
 #[derive(Clone, Debug)]
@@ -384,6 +416,7 @@ impl EditorBuffer {
             syntax_node_history: Vec::new(),
             marked_ranges: Vec::new(),
             ime_undo_base: None,
+            autoindent_requests: Vec::new(),
         }
     }
 
@@ -702,6 +735,127 @@ impl EditorBuffer {
         applied
     }
 
+    /// `edit`, then queue the edited lines for syntax-aware re-indentation.
+    fn edit_autoindented(
+        &mut self,
+        edits: Vec<(Range<usize>, String)>,
+        mode: AutoindentMode,
+    ) -> Vec<Edit> {
+        let before = self.rope.clone();
+        let before_version = self.version;
+        let applied = self.edit(edits);
+        let entries: Vec<AutoindentEntry> = applied
+            .iter()
+            .enumerate()
+            .map(|(index, edit)| {
+                let new_text: String = self.rope.slice(edit.new.clone()).chars().collect();
+                let old_start_row = before.char_to_line(edit.old.start);
+                let old_start_column = edit.old.start - before.line_to_char(old_start_row);
+                let old_end_row = before.char_to_line(edit.old.end);
+                let old_line_start = indent_size_for_line(&before, old_start_row).len;
+                let old_line_end = line_len_of(&before, old_start_row);
+                let mut indented = 0..new_text.chars().count();
+                // An edit that starts inside a line's text (or doesn't add lines) changes that existing line.
+                let mut first_line_is_new = old_start_column <= old_line_start;
+                if !new_text.contains('\n')
+                    && (old_end_row == old_start_row || old_line_end == old_line_start)
+                {
+                    first_line_is_new = false;
+                }
+                // Text starting with a line break leaves the line it was typed at alone.
+                if new_text.starts_with('\n') {
+                    indented.start += 1;
+                    first_line_is_new = true;
+                }
+                let mut original_indent_column = None;
+                if let AutoindentMode::Block {
+                    original_indent_columns,
+                } = &mode
+                {
+                    let inserted =
+                        || indent_size_for_text(new_text.chars().skip(indented.start)).len;
+                    original_indent_column = Some(if new_text.starts_with('\n') {
+                        inserted()
+                    } else {
+                        original_indent_columns
+                            .get(index)
+                            .copied()
+                            .flatten()
+                            .unwrap_or_else(inserted)
+                    });
+                    if new_text.ends_with('\n') && indented.end > indented.start {
+                        indented.end -= 1;
+                    }
+                }
+                AutoindentEntry {
+                    range: edit.new.start + indented.start..edit.new.start + indented.end,
+                    old_row: (!first_line_is_new).then_some(old_start_row),
+                    original_indent_column,
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            self.autoindent_requests.push(AutoindentRequest {
+                before,
+                before_version,
+                entries,
+                block_mode: matches!(mode, AutoindentMode::Block { .. }),
+                ignore_empty_lines: false,
+            });
+        }
+        applied
+    }
+
+    pub fn take_autoindent_requests(&mut self) -> Vec<AutoindentRequest> {
+        std::mem::take(&mut self.autoindent_requests)
+    }
+
+    /// Re-indent rows to the computed sizes as part of the edit that asked for it (one undo step).
+    pub fn apply_autoindents(&mut self, sizes: BTreeMap<usize, IndentSize>) {
+        let edits: Vec<(Range<usize>, String)> = sizes
+            .into_iter()
+            .filter(|(row, _)| *row < self.rope.len_lines())
+            .filter_map(|(row, size)| {
+                let line_start = self.rope.line_to_char(row);
+                edit_for_indent_adjustment(line_start, indent_size_for_line(&self.rope, row), size)
+            })
+            .collect();
+        if edits.is_empty() {
+            return;
+        }
+        let replacements = self.apply(&edits);
+        let batch: Vec<Edit> = replacements
+            .iter()
+            .map(|r| Edit {
+                old: r.old.clone(),
+                new: r.new.clone(),
+            })
+            .collect();
+        let mut next = self.selections.clone();
+        for selection in &mut next {
+            selection.start = map_offset(&batch, selection.start, Bias::Right);
+            selection.end = map_offset(&batch, selection.end, Bias::Right);
+        }
+        self.selections = next;
+        let selections = self.selections.clone();
+        match self.undo_stack.last_mut() {
+            Some(entry) => {
+                entry.batches.push(replacements);
+                entry.selections_after = selections;
+            }
+            None => self.undo_stack.push(HistoryEntry {
+                id: self.next_transaction_id,
+                batches: vec![replacements],
+                first_edit_at: Instant::now(),
+                last_edit_at: Instant::now(),
+                suppress_grouping: false,
+                selections_before: selections.clone(),
+                selections_after: selections,
+            }),
+        }
+        self.redo_stack.clear();
+    }
+
     fn apply(&mut self, edits: &[(Range<usize>, String)]) -> Vec<Replacement> {
         let mut replacements = Vec::with_capacity(edits.len());
         let mut delta: isize = 0;
@@ -734,16 +888,24 @@ impl EditorBuffer {
                 new_end_position: self.point_at_byte(new_end_byte),
             });
         }
+        let batch: Vec<Edit> = replacements
+            .iter()
+            .map(|r| Edit {
+                old: r.old.clone(),
+                new: r.new.clone(),
+            })
+            .collect();
         for region in &mut self.autoclose_regions {
-            let batch: Vec<Edit> = replacements
-                .iter()
-                .map(|r| Edit {
-                    old: r.old.clone(),
-                    new: r.new.clone(),
-                })
-                .collect();
             region.range.start = map_offset(&batch, region.range.start, Bias::Left);
             region.range.end = map_offset(&batch, region.range.end, Bias::Right);
+        }
+        for entry in self
+            .autoindent_requests
+            .iter_mut()
+            .flat_map(|request| request.entries.iter_mut())
+        {
+            entry.range.start = map_offset(&batch, entry.range.start, Bias::Left);
+            entry.range.end = map_offset(&batch, entry.range.end, Bias::Right);
         }
         self.version += 1;
         self.log.push(LogEntry {
@@ -899,6 +1061,55 @@ impl EditorBuffer {
         let (a, b) = self.word_range_at(off);
         let s = self.new_selection(a, b, false);
         self.select(vec![s]);
+    }
+
+    /// Jump each caret to the other side of its bracket pair: from beside an opener to beside its closer and
+    /// back, or from inside a pair to its closer. `enclosing` lists the (open, close) char ranges around a range.
+    pub fn enclosing_bracket_selections(
+        &self,
+        enclosing: &dyn Fn(Range<usize>) -> Vec<BracketPairRanges>,
+    ) -> Vec<Selection> {
+        let mut next = self.selections.clone();
+        for selection in &mut next {
+            let mut best_length = usize::MAX;
+            let mut best_inside = false;
+            let mut best_beside = false;
+            let mut destination = None;
+            for (open, close) in enclosing(selection.start..selection.end) {
+                let close = close.start..=close.end;
+                let length = *close.end() - open.start;
+                let inside = selection.start >= open.end && selection.end <= *close.start();
+                let head = selection.head();
+                let beside = (open.start..=open.end).contains(&head) || close.contains(&head);
+                if !beside && best_beside {
+                    continue;
+                }
+                // Smaller pairs win unless the best so far holds the selection and this one doesn't.
+                if length > best_length && (best_inside || !inside) {
+                    continue;
+                }
+                best_length = length;
+                best_inside = inside;
+                best_beside = beside;
+                destination = Some(
+                    if close.contains(&selection.start) && close.contains(&selection.end) {
+                        if inside {
+                            open.end
+                        } else {
+                            open.start
+                        }
+                    } else if inside {
+                        *close.start()
+                    } else {
+                        *close.end()
+                    },
+                );
+            }
+            if let Some(destination) = destination {
+                selection.collapse_to(destination, SelectionGoal::None);
+            }
+        }
+        next
     }
 
     pub fn select_all(&mut self) {
@@ -1585,7 +1796,7 @@ impl EditorBuffer {
             ));
         }
         self.transact(|this| {
-            let applied = this.edit(edits);
+            let applied = this.edit_autoindented(edits, AutoindentMode::EachLine);
             let map = |offset: usize, bias: Bias| map_offset(&applied, offset, bias);
             let next: Vec<Selection> = targets
                 .iter()
@@ -1657,7 +1868,7 @@ impl EditorBuffer {
             targets.push((*selection, extra_line));
         }
         self.transact(|this| {
-            let applied = this.edit(edits);
+            let applied = this.edit_autoindented(edits, AutoindentMode::EachLine);
             let next: Vec<Selection> = targets
                 .into_iter()
                 .map(|(selection, extra_line)| {
@@ -2772,7 +2983,6 @@ impl EditorBuffer {
             }
         }
     }
-
 
     pub fn search(&self, query: &SearchQuery) -> Vec<Range<usize>> {
         let text = self.rope.to_string();

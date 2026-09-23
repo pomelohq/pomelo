@@ -806,21 +806,20 @@ impl ApplicationHandler for App {
                         "-" => key(EditKey::GoBack),
                         "_" => key(EditKey::GoForward),
                         "j" => key(EditKey::JoinLines),
+                        "m" => key(EditKey::MoveToEnclosingBracket),
                         _ => None,
                     },
                     Key::Named(NamedKey::Tab) if shift => key(EditKey::Outdent),
                     Key::Named(NamedKey::Tab) => key(EditKey::Tab),
-                    Key::Character(_) if cmd && alt => {
-                        match ke.key_without_modifiers() {
-                            Key::Character(c) => match c.as_str() {
-                                "c" => key(EditKey::ToggleSearchCaseSensitive),
-                                "w" => key(EditKey::ToggleSearchWholeWord),
-                                "x" => key(EditKey::ToggleSearchRegex),
-                                _ => None,
-                            },
+                    Key::Character(_) if cmd && alt => match ke.key_without_modifiers() {
+                        Key::Character(c) => match c.as_str() {
+                            "c" => key(EditKey::ToggleSearchCaseSensitive),
+                            "w" => key(EditKey::ToggleSearchWholeWord),
+                            "x" => key(EditKey::ToggleSearchRegex),
                             _ => None,
-                        }
-                    }
+                        },
+                        _ => None,
+                    },
                     Key::Character(c) if cmd => match c.as_str() {
                         "f" => key(EditKey::DeploySearch),
                         "g" | "G" if shift => key(EditKey::SelectPreviousMatch),
@@ -831,6 +830,7 @@ impl ApplicationHandler for App {
                         "k" | "K" if shift => key(EditKey::DeleteLine),
                         "l" | "L" if shift => key(EditKey::SelectAllMatches),
                         "p" | "P" if shift && !ctrl => key(EditKey::ToggleCommandPalette),
+                        "o" | "O" if shift => key(EditKey::ToggleOutline),
                         "p" if ctrl => key(EditKey::AddCursorAboveRow),
                         "n" if ctrl => key(EditKey::AddCursorBelowRow),
                         "d" if !ctrl => key(EditKey::SelectNext),
@@ -839,6 +839,7 @@ impl ApplicationHandler for App {
                         "[" => key(EditKey::Outdent),
                         "]" => key(EditKey::Indent),
                         "/" => key(EditKey::ToggleComments),
+                        "|" | "\\" if shift => key(EditKey::MoveToEnclosingBracket),
                         _ => None, // leave copy/paste/other Cmd shortcuts to their own handlers
                     },
                     _ if cmd => None,

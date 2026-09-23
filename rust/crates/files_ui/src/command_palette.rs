@@ -5,18 +5,15 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 
 use editor::transform::{LineTransform, TextTransform};
-use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 use workspace::EditKey;
 
+use crate::fuzzy::{fuzzy_match, Match};
 use crate::text_field::{TextField, INPUT_FONT};
 
 pub const WIDTH: f32 = 608.0;
 const MAX_RESULTS_HEIGHT: f32 = 384.0;
 const HEAD_HEIGHT: f32 = 36.0;
-const LENGTH_PENALTY: f64 = 0.01;
-const SMART_CASE_PENALTY_PER_MISMATCH: f64 = 0.9;
 const PLACEHOLDER: &str = "Execute a command...";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,12 +190,22 @@ const COMMANDS: &[(&str, PaletteAction, &[&str])] = &[
         Key(EditKey::SelectSmallerSyntaxNode),
         &["ctrl-shift-left"],
     ),
+    (
+        "editor::MoveToEnclosingBracket",
+        Key(EditKey::MoveToEnclosingBracket),
+        &["ctrl-m"],
+    ),
     ("editor::Undo", Key(EditKey::Undo), &["cmd-z"]),
     ("editor::Redo", Key(EditKey::Redo), &["cmd-shift-z"]),
     (
         "editor::ToggleSoftWrap",
         Key(EditKey::ToggleSoftWrap),
         &["cmd-k", "z"],
+    ),
+    (
+        "outline::Toggle",
+        Key(EditKey::ToggleOutline),
+        &["cmd-shift-o"],
     ),
     (
         "go_to_line::Toggle",
@@ -409,85 +416,6 @@ pub struct Command {
     usage: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Match {
-    pub command: usize,
-    /// Char indices of the matched query chars in the command name.
-    pub positions: Vec<usize>,
-    score: f64,
-}
-
-/// Fuzzy-match `query` against `names` (case-insensitive; an upper-case query char still ranks exact-case
-/// matches higher), best first, with shorter names winning ties.
-pub fn fuzzy_match(names: &[&str], query: &str) -> Vec<Match> {
-    if query.chars().all(char::is_whitespace) {
-        return (0..names.len())
-            .map(|command| Match {
-                command,
-                positions: Vec::new(),
-                score: 0.0,
-            })
-            .collect();
-    }
-    let normalized = query.split_whitespace().collect::<Vec<_>>().join(" ");
-    let pattern = Pattern::new(
-        &normalized,
-        CaseMatching::Ignore,
-        Normalization::Smart,
-        AtomKind::Fuzzy,
-    );
-    let query_chars: Option<Vec<char>> = query
-        .chars()
-        .any(char::is_uppercase)
-        .then(|| query.chars().filter(|c| !c.is_whitespace()).collect());
-    let mut matcher = Matcher::new(Config::DEFAULT);
-    let mut buffer = Vec::new();
-    let mut indices = Vec::new();
-    let mut matches = Vec::new();
-    for (command, name) in names.iter().enumerate() {
-        indices.clear();
-        let haystack = Utf32Str::new(name, &mut buffer);
-        let Some(score) = pattern.indices(haystack, &mut matcher, &mut indices) else {
-            continue;
-        };
-        let mismatches = case_mismatches(query_chars.as_deref(), &indices, name);
-        indices.sort_unstable();
-        indices.dedup();
-        let score = score as f64 * SMART_CASE_PENALTY_PER_MISMATCH.powi(mismatches)
-            - name.len() as f64 * LENGTH_PENALTY;
-        matches.push(Match {
-            command,
-            positions: indices.iter().map(|&i| i as usize).collect(),
-            score,
-        });
-    }
-    matches.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| b.command.cmp(&a.command))
-    });
-    matches
-}
-
-fn case_mismatches(query_chars: Option<&[char]>, matched: &[u32], name: &str) -> i32 {
-    let Some(query_chars) = query_chars else {
-        return 0;
-    };
-    if query_chars.len() != matched.len() {
-        return 0;
-    }
-    let name_chars: Vec<char> = name.chars().collect();
-    query_chars
-        .iter()
-        .zip(matched)
-        .filter(|(&query_char, &position)| {
-            name_chars
-                .get(position as usize)
-                .is_some_and(|&c| c != query_char && c.eq_ignore_ascii_case(&query_char))
-        })
-        .count() as i32
-}
-
 /// Past queries, walked with Up/Down; only entries starting with what was typed before walking are visited.
 #[derive(Default)]
 pub struct QueryHistory {
@@ -600,8 +528,8 @@ impl CommandPalette {
         let mut matches = fuzzy_match(&names, &normalize_action_query(&self.field.text()));
         let used_count = self.used_count;
         matches.sort_by_key(|m| {
-            if m.command < used_count {
-                m.command
+            if m.candidate < used_count {
+                m.candidate
             } else {
                 usize::MAX
             }
@@ -681,7 +609,7 @@ impl CommandPalette {
     /// The chosen command's action, recording the run; `None` when nothing matches.
     pub fn confirm(&self, memory: &mut PaletteMemory) -> Option<PaletteAction> {
         let found = self.matches.get(self.selected)?;
-        let command = self.commands.get(found.command)?;
+        let command = self.commands.get(found.candidate)?;
         let query = self.field.text();
         if !query.is_empty() {
             memory.history.add(query);
@@ -775,7 +703,7 @@ impl CommandPalette {
         let Some((found, command)) = self
             .matches
             .get(row)
-            .and_then(|m| Some((m, self.commands.get(m.command)?)))
+            .and_then(|m| Some((m, self.commands.get(m.candidate)?)))
         else {
             return div().into();
         };
@@ -967,22 +895,6 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_ranks_tighter_and_shorter_names_first() {
-        let names = [
-            "editor: sort lines by length",
-            "editor: select all",
-            "editor: undo",
-        ];
-        let matches = fuzzy_match(&names, "undo");
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].command, 2);
-        assert_eq!(matches[0].positions, vec![8, 9, 10, 11]);
-        let matches = fuzzy_match(&names, "sel");
-        assert_eq!(matches.first().map(|m| m.command), Some(1));
-        assert_eq!(fuzzy_match(&names, "").len(), 3);
-    }
-
-    #[test]
     fn parses_keystrokes() {
         assert_eq!(parse_keystroke("cmd-shift-k"), (vec!["cmd", "shift"], "k"));
         assert_eq!(parse_keystroke("ctrl--"), (vec!["ctrl"], "-"));
@@ -1003,7 +915,7 @@ mod tests {
         assert_eq!(action, Some(Text(TextTransform::UpperCase)));
 
         let mut palette = CommandPalette::new(&memory);
-        let first = palette.matches()[0].command;
+        let first = palette.matches()[0].candidate;
         assert_eq!(
             palette.command(first).map(|c| c.name.as_str()),
             Some("editor: convert to upper case")
