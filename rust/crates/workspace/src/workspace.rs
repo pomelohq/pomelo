@@ -784,6 +784,8 @@ pub trait TerminalPanelView: 'static {
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)>;
     /// Moving a tab across pane groups: the item being dragged here, taking it out, whether this view takes
     /// such an item, where it would land when the pointer is over this view, and placing it.
+    /// Returns false when the command had nothing to act on (no pane in that direction, ...).
+    fn pane_command(&mut self, command: pane::PaneCommand) -> bool;
     fn dragged_item(&self) -> Option<&dyn Item>;
     fn take_dragged_item(&mut self) -> Option<Box<dyn Item>>;
     fn accepts_item(&self, item: &dyn Item) -> bool;
@@ -957,6 +959,15 @@ pub trait FunctionView: 'static {
     }
     /// Moving a tab across pane groups: the item being dragged here, taking it out, whether this view takes
     /// such an item, where it would land when the pointer is over this view, and placing it.
+    /// False while a modal (picker, palette, inline rename) owns the keyboard, so pane keys fall through to it.
+    fn accepts_pane_keys(&self) -> bool {
+        false
+    }
+
+    fn pane_command(&mut self, _command: pane::PaneCommand) -> bool {
+        false
+    }
+
     fn dragged_item(&self) -> Option<&dyn Item> {
         None
     }

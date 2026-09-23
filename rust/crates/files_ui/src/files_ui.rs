@@ -17,8 +17,10 @@ use editor::buffer::{
 use editor::fold::FoldMap;
 use editor::search::{Direction, SearchQuery};
 use editor::transform::{LineTransform, TextTransform};
-use workspace::pane::{NavMode, Pane, PaneClickIds, TabBarButton, TabBarConfig, TAB_H};
-use workspace::pane_group::{self, DividerRef, Member, SplitDirection};
+use workspace::pane::{
+    NavMode, Pane, PaneClickIds, PaneCommand, TabBarButton, TabBarConfig, TAB_H,
+};
+use workspace::pane_group::{self, DividerRef, LeafPlacement, Member, SplitDirection};
 use workspace::search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 use workspace::tab_drag::{self, TabDrag, TabDrop};
 use workspace::text_field;
@@ -4990,6 +4992,19 @@ impl FilesView {
             .and_then(|it| it.clone_on_split())
     }
 
+    fn pane_in_direction(&self, direction: SplitDirection) -> Option<Vec<usize>> {
+        let leaves: Vec<LeafPlacement> = self
+            .pane_order
+            .iter()
+            .zip(&self.pane_rects)
+            .map(|(path, rect)| LeafPlacement {
+                path: path.clone(),
+                rect: *rect,
+            })
+            .collect();
+        pane_group::find_pane_in_direction(&leaves, &self.active, direction, None)
+    }
+
     /// Where a tab drop at `(x, y)` lands in the center, or `None` over no pane.
     fn resolve_drop_at(
         &self,
@@ -6042,6 +6057,43 @@ impl FunctionView for FilesView {
 
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)> {
         Some(self.tab_drag.as_ref()?.ghost())
+    }
+
+    fn accepts_pane_keys(&self) -> bool {
+        self.outline.is_none()
+            && self.palette.is_none()
+            && self.go_to_line.is_none()
+            && !self.tree_edit_active()
+    }
+
+    fn pane_command(&mut self, command: PaneCommand) -> bool {
+        match command {
+            PaneCommand::Split(direction) => {
+                let path = self.active.clone();
+                let item = self.clone_active_of(&path);
+                self.do_split(&path, direction, item);
+                true
+            }
+            PaneCommand::ActivatePane(direction) => match self.pane_in_direction(direction) {
+                Some(path) => {
+                    self.active = path;
+                    true
+                }
+                None => false,
+            },
+            PaneCommand::SwapPane(direction) => {
+                let Some(path) = self.pane_in_direction(direction) else {
+                    return false;
+                };
+                if self.group.swap(&self.active, &path) {
+                    self.active = path;
+                }
+                true
+            }
+            item_command => self
+                .active_pane_mut()
+                .is_some_and(|pane| pane.apply_item_command(item_command)),
+        }
     }
 
     fn dragged_item(&self) -> Option<&dyn Item> {
