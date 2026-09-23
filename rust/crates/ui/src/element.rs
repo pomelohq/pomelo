@@ -72,6 +72,7 @@ pub enum IconKind {
     PanelBottom,
     Maximize,
     Minimize,
+    Pin,
     Server,
     Undo,
     ChevronLeft,

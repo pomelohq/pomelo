@@ -242,6 +242,7 @@ pub const MENU_TAB_COPY_REL_PATH: u64 = 907;
 pub const MENU_TAB_REVEAL: u64 = 908;
 pub const MENU_TAB_REVEAL_IN_TREE: u64 = 909;
 pub const MENU_TAB_OPEN_TERMINAL: u64 = 910;
+pub const MENU_TAB_TOGGLE_PIN: u64 = 911;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeAction {
