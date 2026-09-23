@@ -491,6 +491,8 @@ pub struct CommandPalette {
     /// Scrolled distance not yet worth a whole row.
     scroll_remainder: f32,
     pub scrollbar: crate::list_scrollbar::ScrollbarReveal,
+    /// The click id under the pointer.
+    pub hovered: Option<u64>,
 }
 
 /// Move a row list's first visible row by a wheel delta (positive = toward the top), carrying partial rows over
@@ -547,6 +549,7 @@ impl CommandPalette {
             scroll_top: 0,
             scroll_remainder: 0.0,
             scrollbar: Default::default(),
+            hovered: None,
         };
         palette.update_matches();
         palette
@@ -738,7 +741,7 @@ impl CommandPalette {
                 "Run",
                 "enter",
                 colors.text,
-                false,
+                self.hovered == Some(id_base + PaletteClick::Run.offset()),
             ));
         div()
             .col()
@@ -770,7 +773,9 @@ impl CommandPalette {
             .py(4.0)
             .rounded(4.0)
             .on_click(id_base + PaletteClick::Row(row).offset());
-        if row == self.selected {
+        if self.hovered == Some(id_base + PaletteClick::Row(row).offset()) {
+            item = item.bg(colors.ghost_element_hover);
+        } else if row == self.selected {
             item = item.bg(colors.element_selected);
         }
         let keys = div().row().items_center().gap(4.0).children(
@@ -885,7 +890,7 @@ pub(crate) fn footer_button(
     text: &str,
     keystroke: &str,
     color: ui::Rgba,
-    selected: bool,
+    hovered: bool,
 ) -> Node {
     let mut button = div()
         .row()
@@ -897,8 +902,8 @@ pub(crate) fn footer_button(
         .on_click(id)
         .child(label(text).label_size(LabelSize::Default).color(color))
         .child(render_keystroke(keystroke, 12.0));
-    if selected {
-        button = button.bg(theme().element_selected);
+    if hovered {
+        button = button.bg(theme().ghost_element_hover);
     }
     button.into()
 }
