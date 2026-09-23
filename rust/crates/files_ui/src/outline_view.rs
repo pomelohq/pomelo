@@ -376,7 +376,9 @@ impl OutlineView {
 
     /// Code lines the preview pane has room for, and columns across.
     pub fn preview_capacity(&self, gutter_width: f32) -> (usize, usize) {
+        // The pane gives up the picker's border and the divider beside or above it.
         let (width, height) = self.size().preview;
+        let (width, height) = (width - 3.0, height - 3.0);
         let rows = (height / crate::EDIT_LINE_H).floor().max(1.0) as usize;
         let columns = ((width - gutter_width) / crate::char_advance())
             .floor()
@@ -402,7 +404,7 @@ impl OutlineView {
                         .flex(1.0)
                         .child(results)
                         .child(div().w_px(1.0).bg(colors.border_variant))
-                        .child(render_preview(preview, size.preview)),
+                        .child(render_preview(preview)),
                 );
             }
             (PreviewLayout::Below, Some(height)) => {
@@ -410,7 +412,7 @@ impl OutlineView {
                     .h_px(height)
                     .child(results)
                     .child(div().h_px(1.0).bg(colors.border_variant))
-                    .child(render_preview(preview, size.preview));
+                    .child(render_preview(preview));
             }
             _ => root = root.child(results),
         }
@@ -459,9 +461,12 @@ impl OutlineView {
             .child(list)
             .child(div().h_px(1.0).bg(colors.border_variant))
             .child(self.render_footer(id_base));
-        if fixed {
-            column = column.w_px(size.results.0).h_px(size.results.1);
-        }
+        // The preview fills what the results leave, so borders and dividers never push it past the edge.
+        column = match self.preview {
+            PreviewLayout::Right if fixed => column.w_px(size.results.0),
+            PreviewLayout::Below if fixed => column.h_px(size.results.1),
+            _ => column,
+        };
         column.into()
     }
 
@@ -549,12 +554,12 @@ impl OutlineView {
 
 /// A read-only look at the code around the selected symbol: line numbers, its lines tinted like the active
 /// line, its name marked like a search match.
-fn render_preview(content: Option<PreviewContent>, (width, height): (f32, f32)) -> Node {
+fn render_preview(content: Option<PreviewContent>) -> Node {
     let colors = theme();
     let pane = div()
         .col()
-        .w_px(width)
-        .h_px(height)
+        .flex(1.0)
+        .rounded(6.0)
         .bg(colors.editor_background);
     let Some(content) = content else {
         return pane
@@ -753,6 +758,43 @@ mod tests {
         assert!(view.scroll_by(row * 1000.0));
         assert_eq!(view.scroll_top, 0);
         assert_eq!(view.selected, 0);
+    }
+
+    #[test]
+    fn preview_stays_inside_the_picker() {
+        for layout in [PreviewLayout::Right, PreviewLayout::Below] {
+            let mut view = view(0);
+            view.set_viewport((1200.0 * ui::ui_text_scale(), 800.0 * ui::ui_text_scale()));
+            view.set_preview(layout);
+            let (rows, columns) = view.preview_capacity(40.0);
+            let content = PreviewContent {
+                rows: (0..rows)
+                    .map(|number| PreviewRow {
+                        number,
+                        segments: vec![("x".repeat(columns), Rgba::TRANSPARENT)],
+                        in_symbol: number == 0,
+                        name_columns: None,
+                    })
+                    .collect(),
+                gutter_width: 40.0,
+            };
+            let size = view.size();
+            let scale = ui::ui_text_scale();
+            let node: Node = div().col().child(view.render(0, Some(content))).into();
+            let area = ui::Rect::new(0.0, 0.0, size.width * scale, 2000.0, Rgba::TRANSPARENT);
+            let painted = ui::render(&node, area);
+            let right = painted.rects.iter().map(|r| r.x + r.w).fold(0.0, f32::max);
+            let bottom = painted.rects.iter().map(|r| r.y + r.h).fold(0.0, f32::max);
+            assert!(
+                right <= size.width * scale + 0.5,
+                "{layout:?} right {right}"
+            );
+            let height = size.height.unwrap_or(0.0) * scale;
+            assert!(
+                bottom <= height + 0.5,
+                "{layout:?} bottom {bottom} > {height}"
+            );
+        }
     }
 
     #[test]
