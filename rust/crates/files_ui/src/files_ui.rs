@@ -2893,8 +2893,20 @@ impl Item for FileItem {
 
     fn hover_completion(&mut self, id: Option<u64>) {
         if let Some(menu) = self.completions.as_mut() {
-            menu.hovered = id;
+            menu.hovered = id.filter(|id| (COMPLETION_BASE..HOVER_BASE).contains(id));
         }
+    }
+
+    fn popover_click(&mut self, id: u64) -> bool {
+        if (COMPLETION_BASE..HOVER_BASE).contains(&id) {
+            self.click_completion((id - COMPLETION_BASE) as usize);
+            return true;
+        }
+        if (HOVER_BASE..MODAL_END).contains(&id) {
+            self.hover_clicked();
+            return true;
+        }
+        false
     }
 
     fn save(&mut self) -> Result<(), String> {
@@ -4158,6 +4170,7 @@ impl FilesView {
                     },
                 ],
                 max_panes: MAX_PANES,
+                split_filter: None,
             }),
             hover: None,
             go_to_line: None,
@@ -4916,6 +4929,14 @@ impl ItemInput for FilesView {
         self.panes.popover_scroll(index, dy)
     }
 
+    fn popover_click(&mut self, id: u64) -> bool {
+        self.panes.popover_click(id)
+    }
+
+    fn popover_hover(&mut self, id: Option<u64>) {
+        self.panes.popover_hover(id);
+    }
+
     fn active_wants_keystrokes(&self) -> bool {
         self.panes.active_wants_keystrokes()
     }
@@ -5271,23 +5292,6 @@ impl FunctionView for FilesView {
                 return true;
             }
         }
-        if id >= HOVER_BASE {
-            self.panes.group.for_each_pane_mut(&mut |pane| {
-                for item in pane.open.iter_mut() {
-                    if let Some(file) = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>())
-                    {
-                        file.hover_clicked();
-                    }
-                }
-            });
-            return true;
-        }
-        if id >= COMPLETION_BASE {
-            if let Some(item) = self.panes.active_item_mut() {
-                item.click_completion((id - COMPLETION_BASE) as usize);
-            }
-            return true;
-        }
         if id >= OUTLINE_BASE {
             match outline_view::OutlineClick::from_offset(id - OUTLINE_BASE) {
                 outline_view::OutlineClick::Row(row) => {
@@ -5392,10 +5396,6 @@ impl FunctionView for FilesView {
         if outline_hovered_row.is_some() {
             self.preview_outline(false);
         }
-        let over_completion = id.filter(|v| (COMPLETION_BASE..HOVER_BASE).contains(v));
-        if let Some(item) = self.panes.active_item_mut() {
-            item.hover_completion(over_completion);
-        }
         if let Some((_, palette)) = self.palette.as_mut() {
             palette.hovered = over_modal;
             if over_modal.is_some_and(|v| v > PALETTE_BASE && v < OUTLINE_BASE) {
@@ -5451,6 +5451,17 @@ impl FunctionView for FilesView {
         self.panes.tab_drag_ghost()
     }
 
+    fn claims_key(&self, key: EditKey) -> bool {
+        !self.accepts_pane_keys()
+            || matches!(
+                key,
+                EditKey::NewCenterTerminal
+                    | EditKey::ToggleCommandPalette
+                    | EditKey::ToggleOutline
+                    | EditKey::ToggleGoToLine
+            )
+    }
+
     fn accepts_pane_keys(&self) -> bool {
         self.outline.is_none()
             && self.palette.is_none()
@@ -5482,8 +5493,14 @@ impl FunctionView for FilesView {
         true
     }
 
-    fn update_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool {
-        self.panes.update_foreign_drop(x, y, over)
+    fn update_foreign_drop(
+        &mut self,
+        x: f32,
+        y: f32,
+        over: Option<(u64, Rect)>,
+        item: &dyn Item,
+    ) -> bool {
+        self.panes.update_foreign_drop(x, y, over, item)
     }
 
     fn clear_foreign_drop(&mut self) {

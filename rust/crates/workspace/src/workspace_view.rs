@@ -82,6 +82,8 @@ pub struct WorkspaceView {
     modal_rect: Option<Rect>,
     /// Where the caret popover was drawn last frame, so scrolling over it scrolls it.
     popover_rects: Vec<Rect>,
+    /// For each drawn popover, the pane group it belongs to and its index there.
+    popover_groups: Vec<(InputGroup, usize)>,
     pending_prompt: Option<crate::Prompt>,
     terminal_focused: bool,
     pointer: (f32, f32),
@@ -123,6 +125,7 @@ impl WorkspaceView {
             menu_editor_anchor: None,
             modal_rect: None,
             popover_rects: Vec::new(),
+            popover_groups: Vec::new(),
             pending_prompt: None,
             terminal_focused: false,
             pointer: (0.0, 0.0),
@@ -683,12 +686,19 @@ impl WorkspaceView {
         }
 
         self.popover_rects.clear();
-        let popovers = self
-            .layout
-            .files_view
-            .as_mut()
-            .map(|v| v.editor_popovers(self.viewport))
-            .unwrap_or_default();
+        self.popover_groups.clear();
+        let viewport = self.viewport;
+        let mut popovers = Vec::new();
+        for group in self.visible_groups() {
+            let group_popovers = self
+                .input(group)
+                .map(|input| input.editor_popovers(viewport))
+                .unwrap_or_default();
+            for (index, popover) in group_popovers.into_iter().enumerate() {
+                popovers.push(popover);
+                self.popover_groups.push((group, index));
+            }
+        }
         for (node, px, py) in popovers {
             let area = Rect::new(px, py, w - px, h - py, Rgba::TRANSPARENT);
             let p = ui::render(&ui::div().col().child(node).into(), area);
@@ -1404,30 +1414,46 @@ impl WorkspaceView {
                     .is_some_and(|input| input.item_pointer_move(x, y, modifiers));
             }
         }
+        let over_popover = self.popover_group_at(x, y);
+        for group in self.visible_groups() {
+            let popover_hit = hit.filter(|_| over_popover == Some(group));
+            if let Some(input) = self.input(group) {
+                input.popover_hover(popover_hit);
+            }
+        }
         repaint | self.mouse_move_inner(x, y)
     }
 
     /// A terminal-panel tab dragged over the center previews where it would land there.
     fn update_center_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) {
-        if let Some(files) = self.layout.files_view.as_mut() {
-            files.update_foreign_drop(x, y, over);
+        if let (Some(files), Some(panel)) = (
+            self.layout.files_view.as_mut(),
+            self.layout.terminal_view.as_ref(),
+        ) {
+            match panel.dragged_item() {
+                Some(item) => {
+                    files.update_foreign_drop(x, y, over, item);
+                }
+                None => files.clear_foreign_drop(),
+            }
         }
     }
 
-    /// A center tab dragged over the terminal panel previews there, but only for items the panel can host.
+    /// A center tab dragged over the terminal panel previews there, when the panel can host the item.
     fn update_panel_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) {
-        let accepts = self.layout.terminal_visible()
-            && match (&self.layout.files_view, &self.layout.terminal_view) {
-                (Some(files), Some(panel)) => files
-                    .dragged_item()
-                    .is_some_and(|item| panel.accepts_item(item)),
-                _ => false,
-            };
-        if let Some(panel) = self.layout.terminal_view.as_mut() {
-            if accepts {
-                panel.update_foreign_drop(x, y, over);
-            } else {
-                panel.clear_foreign_drop();
+        let visible = self.layout.terminal_visible();
+        if let (Some(files), Some(panel)) = (
+            self.layout.files_view.as_ref(),
+            self.layout.terminal_view.as_mut(),
+        ) {
+            match files
+                .dragged_item()
+                .filter(|item| visible && panel.accepts_item(*item))
+            {
+                Some(item) => {
+                    panel.update_foreign_drop(x, y, over, item);
+                }
+                None => panel.clear_foreign_drop(),
             }
         }
     }
@@ -1668,6 +1694,14 @@ impl WorkspaceView {
             self.menu_editor_anchor = None;
             return;
         }
+        if let Some(group) = self.popover_group_at(x, y) {
+            if let Some(id) = self.hit(x, y) {
+                if let Some(input) = self.input(group) {
+                    input.popover_click(id);
+                }
+            }
+            return;
+        }
         let w = self.width();
         if self.layout.on_left_divider(x, y, w) {
             self.dragging = Drag::Left;
@@ -1797,7 +1831,8 @@ impl WorkspaceView {
             return false;
         };
         let slices = crate::slices_for(&text);
-        self.input(self.focused_group())
+        let group = self.text_group();
+        self.input(group)
             .map(|v| v.editor_paste(&text, slices.as_deref()))
             .unwrap_or(false)
     }
@@ -1819,14 +1854,39 @@ impl WorkspaceView {
     }
 
     pub fn editor_text(&mut self, text: &str) -> bool {
-        self.input(self.focused_group())
+        let group = self.text_group();
+        self.input(group)
             .map(|v| v.editor_text(text))
             .unwrap_or(false)
     }
 
+    /// Where typed text goes: an open modal of the editor area takes it even while the panel has focus.
+    fn text_group(&self) -> InputGroup {
+        let modal = self
+            .layout
+            .files_view
+            .as_ref()
+            .is_some_and(|view| !view.accepts_pane_keys());
+        if modal {
+            InputGroup::Center
+        } else {
+            self.focused_group()
+        }
+    }
+
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
+        let claimed = self
+            .layout
+            .files_view
+            .as_ref()
+            .is_some_and(|view| view.claims_key(key));
+        let group = if claimed {
+            InputGroup::Center
+        } else {
+            self.focused_group()
+        };
         let changed = self
-            .input(self.focused_group())
+            .input(group)
             .map(|v| v.editor_key(key, shift))
             .unwrap_or(false);
         self.show_view_toast();
@@ -1991,6 +2051,14 @@ impl WorkspaceView {
         } else {
             InputGroup::Center
         }
+    }
+
+    fn popover_group_at(&self, x: f32, y: f32) -> Option<InputGroup> {
+        let at = self
+            .popover_rects
+            .iter()
+            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)?;
+        self.popover_groups.get(at).map(|(group, _)| *group)
     }
 
     fn visible_groups(&self) -> Vec<InputGroup> {
@@ -2223,12 +2291,10 @@ impl WorkspaceView {
             .popover_rects
             .iter()
             .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
-        if let Some(index) = over_popover {
+        if let Some(&(group, index)) = over_popover.and_then(|at| self.popover_groups.get(at)) {
             return self
-                .layout
-                .files_view
-                .as_mut()
-                .is_some_and(|v| v.popover_scroll(index, dy));
+                .input(group)
+                .is_some_and(|input| input.popover_scroll(index, dy));
         }
         // An open modal swallows scrolling over it so the editor underneath stays put.
         if let Some(rect) = self.modal_rect {
@@ -2540,6 +2606,18 @@ fn push_pane_group(
         });
         if let Some(b) = &pane.body {
             let text_clip = b.text_clip;
+            let mut fill = Painted::default();
+            fill.rects.push(Rect::new(
+                b.rect.x,
+                b.rect.y,
+                b.rect.w,
+                b.rect.h,
+                b.background,
+            ));
+            overlays.push(Overlay {
+                painted: fill,
+                clip: Some(b.rect),
+            });
             if !pane.back.is_empty() || !pane.back_tris.is_empty() {
                 let mut sp = Painted::default();
                 sp.rects.extend(pane.back.iter().copied());

@@ -533,6 +533,10 @@ pub trait Item: 'static {
     }
     /// A click on row `row` of the word menu.
     fn click_completion(&mut self, _row: usize) {}
+    /// A click on one of this item's popovers (completion rows, hover cards); returns whether it was one.
+    fn popover_click(&mut self, _id: u64) -> bool {
+        false
+    }
     fn hover_completion(&mut self, _id: Option<u64>) {}
     fn pointer_moved(&mut self, _local: Option<(f32, f32)>, _window: (f32, f32)) -> bool {
         false
@@ -702,6 +706,8 @@ pub struct PanePlacement {
 pub struct PaneBody {
     pub node: Node,
     pub rect: ui::Rect,
+    /// The item's fill under the text, so a body looks the same in any dock.
+    pub background: ui::Rgba,
     pub y_offset: f32,
     pub text_left: f32,
     pub x_offset: f32,
@@ -807,7 +813,13 @@ pub trait TerminalPanelView: 'static {
     fn dragged_item(&self) -> Option<&dyn Item>;
     fn take_dragged_item(&mut self) -> Option<Box<dyn Item>>;
     fn accepts_item(&self, item: &dyn Item) -> bool;
-    fn update_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool;
+    fn update_foreign_drop(
+        &mut self,
+        x: f32,
+        y: f32,
+        over: Option<(u64, Rect)>,
+        item: &dyn Item,
+    ) -> bool;
     fn clear_foreign_drop(&mut self);
     fn accept_foreign_item(&mut self, item: Box<dyn Item>);
     fn focus_changed(&mut self, focused: bool);
@@ -851,6 +863,9 @@ pub trait ItemInput {
     fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)>;
     /// A wheel or trackpad scroll over popover `index`.
     fn popover_scroll(&mut self, index: usize, dy: f32) -> bool;
+    fn popover_click(&mut self, id: u64) -> bool;
+    /// The hit id under the pointer while it is over one of this group's popovers.
+    fn popover_hover(&mut self, id: Option<u64>);
     /// Whether the focused item takes raw key presses (a terminal).
     fn active_wants_keystrokes(&self) -> bool;
     fn item_keystroke(&mut self, keystroke: &terminal::Keystroke) -> TerminalKeyOutcome;
@@ -974,6 +989,11 @@ pub trait FunctionView: ItemInput + 'static {
     /// Moving a tab across pane groups: the item being dragged here, taking it out, whether this view takes
     /// such an item, where it would land when the pointer is over this view, and placing it.
     /// False while a modal (picker, palette, inline rename) owns the keyboard, so pane keys fall through to it.
+    /// Whether this view handles `key` itself wherever focus is (a modal is open, or the key opens one).
+    fn claims_key(&self, _key: EditKey) -> bool {
+        false
+    }
+
     fn accepts_pane_keys(&self) -> bool {
         false
     }
@@ -991,7 +1011,13 @@ pub trait FunctionView: ItemInput + 'static {
     fn accepts_item(&self, _item: &dyn Item) -> bool {
         false
     }
-    fn update_foreign_drop(&mut self, _x: f32, _y: f32, _over: Option<(u64, ui::Rect)>) -> bool {
+    fn update_foreign_drop(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _over: Option<(u64, ui::Rect)>,
+        _item: &dyn Item,
+    ) -> bool {
         false
     }
     fn clear_foreign_drop(&mut self) {}
