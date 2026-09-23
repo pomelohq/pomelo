@@ -1,0 +1,90 @@
+//! An open file's uncommitted changes, kept current off the UI thread: the git bases load once (and again after
+//! a save), and the hunks recompute whenever the text changes, one computation in flight at a time.
+
+use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::Arc;
+
+use git::{DiffBases, DiffHunk};
+use ropey::Rope;
+
+#[derive(Default)]
+pub struct GitDiff {
+    bases: Option<Arc<DiffBases>>,
+    loading_bases: Option<Receiver<Option<DiffBases>>>,
+    hunks: Vec<DiffHunk>,
+    /// Buffer version `hunks` were computed for.
+    hunks_version: Option<u64>,
+    computing: Option<Receiver<(u64, Vec<DiffHunk>)>>,
+}
+
+impl GitDiff {
+    pub fn load(path: PathBuf) -> Self {
+        let mut diff = Self::default();
+        diff.reload_bases(path);
+        diff
+    }
+
+    /// Re-read HEAD and the index, e.g. after a save may have been followed by staging.
+    pub fn reload_bases(&mut self, path: PathBuf) {
+        let (sender, receiver) = channel();
+        std::thread::spawn(move || {
+            // The receiver is gone only if the file was closed; nothing to report then.
+            let _ = sender.send(git::load_bases(&path));
+        });
+        self.loading_bases = Some(receiver);
+    }
+
+    pub fn hunks(&self) -> &[DiffHunk] {
+        &self.hunks
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.loading_bases.is_some() || self.computing.is_some()
+    }
+
+    /// Adopt finished work and start a recomputation if the text moved on; returns whether the hunks changed.
+    pub fn poll(&mut self, rope: &Rope, version: u64) -> bool {
+        let mut changed = false;
+        if let Some(receiver) = self.loading_bases.as_ref() {
+            match receiver.try_recv() {
+                Ok(bases) => {
+                    self.bases = bases.map(Arc::new);
+                    self.loading_bases = None;
+                    self.hunks_version = None;
+                    if self.bases.is_none() {
+                        changed = !self.hunks.is_empty();
+                        self.hunks.clear();
+                    }
+                }
+                Err(TryRecvError::Disconnected) => self.loading_bases = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(receiver) = self.computing.as_ref() {
+            match receiver.try_recv() {
+                Ok((computed_for, hunks)) => {
+                    changed |= hunks != self.hunks;
+                    self.hunks = hunks;
+                    self.hunks_version = Some(computed_for);
+                    self.computing = None;
+                }
+                Err(TryRecvError::Disconnected) => self.computing = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if self.computing.is_none() && self.hunks_version != Some(version) {
+            if let Some(bases) = self.bases.clone() {
+                let rope = rope.clone();
+                let (sender, receiver) = channel();
+                std::thread::spawn(move || {
+                    let hunks = git::uncommitted_hunks(&bases, &rope.to_string());
+                    // The receiver is gone only if the file was closed; nothing to report then.
+                    let _ = sender.send((version, hunks));
+                });
+                self.computing = Some(receiver);
+            }
+        }
+        changed
+    }
+}
