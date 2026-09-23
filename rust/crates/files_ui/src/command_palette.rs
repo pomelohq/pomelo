@@ -195,6 +195,16 @@ const COMMANDS: &[(&str, PaletteAction, &[&str])] = &[
         Key(EditKey::MoveToEnclosingBracket),
         &["ctrl-m"],
     ),
+    (
+        "editor::ToggleSelectedDiffHunks",
+        Key(EditKey::ToggleSelectedDiffHunks),
+        &["cmd-'"],
+    ),
+    (
+        "editor::ExpandAllDiffHunks",
+        Key(EditKey::ExpandAllDiffHunks),
+        &["cmd-\""],
+    ),
     ("editor::GoToHunk", Key(EditKey::GoToHunk), &["cmd-f8"]),
     (
         "editor::GoToPreviousHunk",
