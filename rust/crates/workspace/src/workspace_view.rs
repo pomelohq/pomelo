@@ -29,6 +29,8 @@ use crate::{TOAST_ACTION, TOAST_CLOSE};
 const TOAST_DISMISS: Duration = Duration::from_secs(10);
 /// How long after the panes first change they are written, so a burst of changes costs one write.
 const PANES_SAVE_THROTTLE: Duration = Duration::from_millis(200);
+/// The gap a zoomed view leaves around it (on its dock's inner side only, for a dock panel).
+const ZOOM_PADDING: f32 = 8.0;
 const TOAST_ANIM: Duration = Duration::from_millis(160);
 const MODAL_TOP: f32 = 80.0;
 
@@ -48,6 +50,16 @@ struct Toast {
 pub struct WorkspaceEffects {
     pub persist: bool,
     pub open_new_window: Option<usize>,
+}
+
+/// A zoomed group drawn over the workspace: its frame (with the border on `sides`) and the content inside it.
+#[derive(Clone, Copy)]
+struct Zoom {
+    group: InputGroup,
+    outer: Rect,
+    inner: Rect,
+    /// Top, right, bottom, left.
+    sides: [bool; 4],
 }
 
 /// Which pane group input goes to: the editor area's or the terminal panel's.
@@ -94,6 +106,8 @@ pub struct WorkspaceView {
     /// When the panes were last compared with what is saved; a frame inside the throttle leaves a check owed.
     panes_checked_at: Option<Instant>,
     panes_check_owed: bool,
+    /// The zoom showing this frame, for drawing and routing input.
+    zoom: Option<Zoom>,
     pending_prompt: Option<crate::Prompt>,
     terminal_focused: bool,
     pointer: (f32, f32),
@@ -141,6 +155,7 @@ impl WorkspaceView {
             panes_write_at: None,
             panes_checked_at: None,
             panes_check_owed: false,
+            zoom: None,
             pending_prompt: None,
             terminal_focused: false,
             pointer: (0.0, 0.0),
@@ -262,6 +277,9 @@ impl WorkspaceView {
         self.restore_saved_panes();
         self.persist_panes(false);
         self.sync_terminals();
+        self.zoom = self.shown_zoom(w, h);
+        let mut zoom_overlays: Vec<Overlay> = Vec::new();
+        let mut zoom_hits: Vec<(Rect, u64)> = Vec::new();
         self.layout.sync_docks();
         let (mut rects, mut texts) = self.layout.build(w, h);
         let mut tris: Vec<ui::Tri> = Vec::new();
@@ -295,7 +313,11 @@ impl WorkspaceView {
                 let (tp, mut editor) = {
                     let v = self.layout.files_view.as_mut().unwrap();
                     v.set_viewport(tree_region.w, tree_region.h);
-                    (v.render_tree(), v.editor_layout(cr))
+                    let editor_area = match self.zoom {
+                        Some(zoom) if zoom.group == InputGroup::Center => zoom.inner,
+                        _ => cr,
+                    };
+                    (v.render_tree(), v.editor_layout(editor_area))
                 };
                 let (scroll, ch) = {
                     let v = self.layout.files_view.as_ref().unwrap();
@@ -352,7 +374,17 @@ impl WorkspaceView {
                         };
                     push_clipped(&sr.tree, tree_area, tree_region, &mut panel_hits);
                     push_clipped(&sr.sticky, sticky_area, tree_region, &mut panel_hits);
-                    push_pane_group(&mut editor, cr, &mut center_overlays, &mut panel_hits);
+                    match self.zoom {
+                        Some(zoom) if zoom.group == InputGroup::Center => push_pane_group(
+                            &mut editor,
+                            zoom.inner,
+                            &mut zoom_overlays,
+                            &mut zoom_hits,
+                        ),
+                        _ => {
+                            push_pane_group(&mut editor, cr, &mut center_overlays, &mut panel_hits)
+                        }
+                    }
                     if let Some(hl) = self
                         .layout
                         .files_view
@@ -414,7 +446,7 @@ impl WorkspaceView {
         } else {
             match self.layout.shown_on(DockPosition::Left) {
                 Some(Shown::Terminal) => {
-                    let p = self.terminal_painted(cr, &mut center_overlays, &mut panel_hits);
+                    let p = self.terminal_painted(cr, true, &mut center_overlays, &mut panel_hits);
                     panel_hits.extend(p.hits.iter().copied());
                     blit(p)
                 }
@@ -513,7 +545,7 @@ impl WorkspaceView {
             let region = self.layout.right_region(w, h);
             let p = match self.layout.shown_on(DockPosition::Right) {
                 Some(Shown::Terminal) => {
-                    self.terminal_painted(region, &mut center_overlays, &mut panel_hits)
+                    self.terminal_painted(region, true, &mut center_overlays, &mut panel_hits)
                 }
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
                 Some(Shown::Func(k)) => ui::render(&function_dock_body(k), region),
@@ -530,7 +562,7 @@ impl WorkspaceView {
             // The bottom dock has no default panel: it only shows whatever is docked there (terminal/function).
             let p = match self.layout.shown_on(DockPosition::Bottom) {
                 Some(Shown::Terminal) => {
-                    self.terminal_painted(region, &mut center_overlays, &mut panel_hits)
+                    self.terminal_painted(region, true, &mut center_overlays, &mut panel_hits)
                 }
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
                 Some(Shown::Func(k)) => ui::render(&function_dock_body(k), region),
@@ -558,6 +590,26 @@ impl WorkspaceView {
         let mut header_hits = header.hits.clone();
         header_hits.extend(panel_hits);
         header_hits.extend(status_hits);
+        if let Some(zoom) = self.zoom {
+            let rect = zoom.outer;
+            if zoom.group == InputGroup::Panel {
+                let backdrop =
+                    self.terminal_painted(zoom.inner, false, &mut zoom_overlays, &mut zoom_hits);
+                zoom_overlays.insert(
+                    0,
+                    Overlay {
+                        painted: backdrop,
+                        clip: Some(zoom.inner),
+                    },
+                );
+            }
+            // The zoomed view occludes what is under it, so only its own hits stay live there.
+            header_hits.retain(|(hit, _)| {
+                let (cx, cy) = (hit.x + hit.w / 2.0, hit.y + hit.h / 2.0);
+                !(cx >= rect.x && cx < rect.x + rect.w && cy >= rect.y && cy < rect.y + rect.h)
+            });
+            header_hits.extend(zoom_hits);
+        }
         rects.extend(header.rects);
         tris.extend(header.tris);
         texts.extend(header.texts);
@@ -574,6 +626,60 @@ impl WorkspaceView {
 
         let mut overlays: Vec<Overlay> = Vec::new();
         overlays.append(&mut center_overlays);
+        {
+            let bp = Painted {
+                rects: self.layout.border_lines(w, h),
+                ..Painted::default()
+            };
+            overlays.push(Overlay {
+                painted: bp,
+                clip: None,
+            });
+        }
+        if let Some(bar) = scrollbar_overlay {
+            overlays.push(Overlay {
+                painted: bar,
+                clip: None,
+            });
+        }
+        // Above the docks' borders and scrollbars, below drags, toasts, popovers and menus.
+        if let Some(zoom) = self.zoom {
+            let rect = zoom.outer;
+            let mut frame = Painted::default();
+            frame.rects.extend(box_shadow(rect, &LARGE_SHADOW, 0.0));
+            frame.rects.push(Rect::new(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                ui::theme().background,
+            ));
+            let [top, right, bottom, left] = zoom.sides;
+            let border = ui::theme().border;
+            let edges = [
+                (top, Rect::new(rect.x, rect.y, rect.w, 1.0, border)),
+                (
+                    right,
+                    Rect::new(rect.x + rect.w - 1.0, rect.y, 1.0, rect.h, border),
+                ),
+                (
+                    bottom,
+                    Rect::new(rect.x, rect.y + rect.h - 1.0, rect.w, 1.0, border),
+                ),
+                (left, Rect::new(rect.x, rect.y, 1.0, rect.h, border)),
+            ];
+            frame.rects.extend(
+                edges
+                    .into_iter()
+                    .filter(|(on, _)| *on)
+                    .map(|(_, edge)| edge),
+            );
+            overlays.push(Overlay {
+                painted: frame,
+                clip: None,
+            });
+            overlays.append(&mut zoom_overlays);
+        }
         {
             let mut drag = Painted::default();
             let panel_preview = self
@@ -618,22 +724,6 @@ impl WorkspaceView {
                     clip: None,
                 });
             }
-        }
-        {
-            let bp = Painted {
-                rects: self.layout.border_lines(w, h),
-                ..Painted::default()
-            };
-            overlays.push(Overlay {
-                painted: bp,
-                clip: None,
-            });
-        }
-        if let Some(bar) = scrollbar_overlay {
-            overlays.push(Overlay {
-                painted: bar,
-                clip: None,
-            });
         }
         let now = Instant::now();
         let expired = self
@@ -1791,13 +1881,15 @@ impl WorkspaceView {
             return;
         }
         let w = self.width();
-        if self.layout.on_left_divider(x, y, w) {
+        let in_zoom = self.zoom_group_at(x, y);
+        let dock_edges = in_zoom.is_none();
+        if dock_edges && self.layout.on_left_divider(x, y, w) {
             self.dragging = Drag::Left;
-        } else if self.layout.on_tree_divider(x, y, w) {
+        } else if dock_edges && self.layout.on_tree_divider(x, y, w) {
             self.dragging = Drag::Tree;
-        } else if self.layout.on_right_divider(x, y, w) {
+        } else if dock_edges && self.layout.on_right_divider(x, y, w) {
             self.dragging = Drag::Right;
-        } else if self.layout.on_bottom_divider(x, y, w, self.viewport.1) {
+        } else if dock_edges && self.layout.on_bottom_divider(x, y, w, self.viewport.1) {
             self.dragging = Drag::Bottom;
         } else if let Some(id) = self.hit(x, y) {
             if self
@@ -1838,7 +1930,9 @@ impl WorkspaceView {
             let (vw, vh) = self.viewport;
             let cr = self.layout.center_region(vw, vh);
             let in_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
-            let group = if self.panel_body_at(x, y) {
+            let group = if in_zoom.is_some() {
+                in_zoom
+            } else if self.panel_body_at(x, y) {
                 Some(InputGroup::Panel)
             } else {
                 in_center.then_some(InputGroup::Center)
@@ -2044,14 +2138,22 @@ impl WorkspaceView {
         self.dragging = Drag::None;
     }
 
-    /// The terminal panel in `region`: a backdrop to blit, with its panes pushed onto `overlays`.
+    /// The terminal panel in `region`: a backdrop to blit, with its panes pushed onto `overlays`. In its dock
+    /// (`in_dock`) while the panel is zoomed, only the dock's background shows there.
     fn terminal_painted(
         &mut self,
         region: Rect,
+        in_dock: bool,
         overlays: &mut Vec<Overlay>,
         hits: &mut Vec<(Rect, u64)>,
     ) -> Painted {
         let focused = self.terminal_focused;
+        let zoomed = self
+            .zoom
+            .is_some_and(|zoom| zoom.group == InputGroup::Panel);
+        if in_dock && zoomed {
+            return ui::render(&ui::div().bg(ui::theme().panel_background).into(), region);
+        }
         match self.layout.terminal_view.as_mut() {
             Some(view) => {
                 if view.is_empty() {
@@ -2100,6 +2202,79 @@ impl WorkspaceView {
                     .and_then(|(path, _, _)| view.panes_ref().pane_at(&path))
                     .is_some_and(|pane| !pane.open.is_empty())
             })
+    }
+
+    /// The focused group's zoom, if it shows, and the rect it covers: the editor area inset on every side for a
+    /// pane, or leaving a strip on the dock's inner side for the terminal panel.
+    fn shown_zoom(&self, w: f32, h: f32) -> Option<Zoom> {
+        let group = self.focused_group();
+        let shown = match group {
+            InputGroup::Center => self
+                .layout
+                .files_view
+                .as_ref()
+                .is_some_and(|view| view.zoom_shown()),
+            InputGroup::Panel => {
+                self.layout.terminal_visible()
+                    && self
+                        .layout
+                        .terminal_view
+                        .as_ref()
+                        .is_some_and(|view| view.panes_ref().zoom_shown())
+            }
+        };
+        if !shown {
+            return None;
+        }
+        let area = self.layout.editor_area(w, h);
+        let (mut x, mut y, mut rw, mut rh) = (area.x, area.y, area.w, area.h);
+        let side = self.layout.terminal_side;
+        let (top, right, bottom, left) = match group {
+            InputGroup::Center => (true, true, true, true),
+            InputGroup::Panel => (
+                side == DockPosition::Bottom,
+                side == DockPosition::Left,
+                false,
+                side == DockPosition::Right,
+            ),
+        };
+        if top {
+            y += ZOOM_PADDING;
+            rh -= ZOOM_PADDING;
+        }
+        if bottom {
+            rh -= ZOOM_PADDING;
+        }
+        if left {
+            x += ZOOM_PADDING;
+            rw -= ZOOM_PADDING;
+        }
+        if right {
+            rw -= ZOOM_PADDING;
+        }
+        let outer = Rect::new(x, y, rw.max(0.0), rh.max(0.0), Rgba::TRANSPARENT);
+        // The border sits on the sides that face the rest of the workspace; content stays inside it.
+        let px = |on: bool| if on { 1.0 } else { 0.0 };
+        let inner = Rect::new(
+            outer.x + px(left),
+            outer.y + px(top),
+            (outer.w - px(left) - px(right)).max(0.0),
+            (outer.h - px(top) - px(bottom)).max(0.0),
+            Rgba::TRANSPARENT,
+        );
+        Some(Zoom {
+            group,
+            outer,
+            inner,
+            sides: [top, right, bottom, left],
+        })
+    }
+
+    fn zoom_group_at(&self, x: f32, y: f32) -> Option<InputGroup> {
+        let zoom = self.zoom?;
+        let rect = zoom.outer;
+        (x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h)
+            .then_some(zoom.group)
     }
 
     fn input(&mut self, group: InputGroup) -> Option<&mut dyn crate::ItemInput> {
@@ -2394,6 +2569,12 @@ impl WorkspaceView {
                     .is_some_and(|v| v.modal_scroll(dy));
             }
         }
+        if let Some(group) = self.zoom_group_at(x, y) {
+            let modifiers = terminal_modifiers();
+            return self.input(group).is_some_and(|input| {
+                input.item_pointer_scroll(x, y, dy, modifiers) || input.editor_scroll(x, y, dx, dy)
+            });
+        }
         if !self.layout.session_menu && self.panel_body_at(x, y) {
             let modifiers = terminal_modifiers();
             return self.input(InputGroup::Panel).is_some_and(|input| {
@@ -2617,8 +2798,27 @@ fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
             (1.0, 0.12, 0.0),
         ],
     };
+    let layers: Vec<(f32, f32, f32, f32)> = shadows
+        .iter()
+        .map(|&(offset, alpha, blur)| (offset, alpha, blur, 0.0))
+        .collect();
+    box_shadow(rect, &layers, 8.0)
+}
+
+/// The large drop shadow a zoomed view casts: offset down, blurred, pulled in by a negative spread.
+const LARGE_SHADOW: [(f32, f32, f32, f32); 2] = [(10.0, 0.1, 15.0, -3.0), (4.0, 0.1, 6.0, -4.0)];
+
+/// Rects approximating CSS box shadows under `rect`, each `(offset_y, alpha, blur, spread)` in black.
+fn box_shadow(rect: Rect, shadows: &[(f32, f32, f32, f32)], radius: f32) -> Vec<Rect> {
     let mut rects = Vec::new();
-    for &(offset, alpha, blur) in shadows {
+    for &(offset, alpha, blur, grow) in shadows {
+        let rect = Rect::new(
+            rect.x - grow,
+            rect.y - grow,
+            (rect.w + grow * 2.0).max(0.0),
+            (rect.h + grow * 2.0).max(0.0),
+            Rgba::TRANSPARENT,
+        );
         // A gaussian blur with sigma = blur fades out within 3 sigma of the edge, reaching above the box even
         // though the shadow drops down; nested rects weighted by the gaussian sum to that falloff.
         let layers: Vec<(f32, f32)> = if blur <= 0.0 {
@@ -2643,7 +2843,7 @@ fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
                 w: rect.w + spread * 2.0,
                 h: rect.h + spread * 2.0,
                 color: Rgba::new(0.0, 0.0, 0.0, alpha * weight),
-                radius: (8.0 + spread).max(0.0),
+                radius: (radius + spread).max(0.0),
                 border: 0.0,
                 border_color: Rgba::TRANSPARENT,
             });

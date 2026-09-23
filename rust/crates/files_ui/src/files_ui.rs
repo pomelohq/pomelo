@@ -4180,9 +4180,14 @@ impl FilesView {
                         icon: IconKind::PanelBottom,
                         action: PaneButtonAction::Split(SplitDirection::Down),
                     },
+                    PaneButton {
+                        icon: IconKind::Maximize,
+                        action: PaneButtonAction::ToggleZoom,
+                    },
                 ],
                 max_panes: MAX_PANES,
                 split_filter: None,
+                zoom_whole_group: false,
             }),
             hover: None,
             go_to_line: None,
@@ -5469,6 +5474,10 @@ impl FunctionView for FilesView {
 
     fn restore_panes(&mut self, saved: &workspace::persistence::SerializedMember) -> bool {
         self.panes.restore(saved, &mut saved_state::restore_item)
+    }
+
+    fn zoom_shown(&self) -> bool {
+        self.panes.zoom_shown()
     }
 
     fn claims_key(&self, key: EditKey) -> bool {

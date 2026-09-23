@@ -484,6 +484,7 @@ mod tests {
                 buttons: Vec::new(),
                 max_panes: 2,
                 split_filter: None,
+                zoom_whole_group: false,
             },
         );
         let mut first = FileItem::new(root.clone(), "a.rs", Some("helper();\n".into()));

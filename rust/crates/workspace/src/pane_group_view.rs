@@ -42,6 +42,7 @@ pub const HUNK_FROM_FOLD: u64 = HUNK - FOLD;
 pub enum PaneButtonAction {
     Split(SplitDirection),
     NewItem,
+    ToggleZoom,
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +59,8 @@ pub struct PaneGroupConfig {
     /// Which dragged items may split a pane at its edge; `None` lets every item split. When restricted, a tab
     /// dragged within the group also cannot split away the only tab of its only pane.
     pub split_filter: Option<fn(&dyn Item) -> bool>,
+    /// Zooming shows the whole group (a dock panel) instead of just the zoomed pane (the editor area).
+    pub zoom_whole_group: bool,
 }
 
 /// A click the group leaves to its owner, which decides what the action means for its items.
@@ -96,6 +99,8 @@ pub struct PaneGroupView {
     pointer_pane: Option<Vec<usize>>,
     /// What each popover of the last `editor_popovers` shows, so a scroll over it reaches the right item.
     popover_sources: Vec<PopoverSource>,
+    /// The pane zoomed to cover the workspace (by id; it stays zoomed while focus is elsewhere).
+    zoomed: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -122,7 +127,40 @@ impl PaneGroupView {
             focused: true,
             pointer_pane: None,
             popover_sources: Vec::new(),
+            zoomed: None,
         }
+    }
+
+    /// Zoom the focused pane, or zoom back out. A pane without tabs does not zoom.
+    pub fn toggle_zoom(&mut self) {
+        if self.zoomed.take().is_some() {
+            return;
+        }
+        let path = self.active.clone();
+        self.zoomed = self
+            .group
+            .leaf_at(&path)
+            .filter(|pane| !pane.open.is_empty())
+            .map(|pane| pane.id);
+    }
+
+    /// Whether the zoom shows now: a zoomed group shows whole, a zoomed pane only while it is the focused one.
+    pub fn zoom_shown(&self) -> bool {
+        let Some(zoomed) = self.zoomed else {
+            return false;
+        };
+        self.config.zoom_whole_group
+            || self
+                .pane_at(&self.active)
+                .is_some_and(|pane| pane.id == zoomed)
+    }
+
+    /// The leaf laid out alone while its zoom shows (for a group that zooms one pane).
+    fn zoomed_leaf(&self) -> Option<Vec<usize>> {
+        if self.config.zoom_whole_group || !self.zoom_shown() {
+            return None;
+        }
+        self.group.path_of(self.zoomed?)
     }
 
     pub fn set_focused(&mut self, focused: bool) {
@@ -398,7 +436,10 @@ impl PaneGroupView {
                 .iter()
                 .enumerate()
                 .map(|(index, button)| TabBarButton {
-                    icon: button.icon,
+                    icon: match button.action {
+                        PaneButtonAction::ToggleZoom if self.zoomed.is_some() => IconKind::Minimize,
+                        _ => button.icon,
+                    },
                     id: base + index as u64,
                 })
                 .collect(),
@@ -414,7 +455,16 @@ impl PaneGroupView {
         let mut placements = Vec::new();
         let mut pane_order = Vec::new();
         let mut pane_rects = Vec::new();
-        let (leaves, dividers) = self.group.layout(area);
+        if self
+            .zoomed
+            .is_some_and(|id| self.group.path_of(id).is_none())
+        {
+            self.zoomed = None;
+        }
+        let (leaves, dividers) = match self.zoomed_leaf() {
+            Some(path) => (vec![LeafPlacement { path, rect: area }], Vec::new()),
+            None => self.group.layout(area),
+        };
         for (p, leaf) in leaves.into_iter().enumerate() {
             let is_focused = self.focused && leaf.path == self.active;
             let fold_base = self.config.id_base + FOLD + p as u64 * PANE_STRIDE;
@@ -523,6 +573,10 @@ impl PaneGroupView {
                 return GroupClick::Handled;
             };
             self.active = path.clone();
+            if button.action == PaneButtonAction::ToggleZoom {
+                self.toggle_zoom();
+                return GroupClick::Handled;
+            }
             return GroupClick::Button {
                 path,
                 action: button.action,
@@ -788,6 +842,10 @@ impl PaneGroupView {
     pub fn pane_command(&mut self, command: PaneCommand) -> bool {
         match command {
             PaneCommand::Split(_) => false,
+            PaneCommand::ToggleZoom => {
+                self.toggle_zoom();
+                true
+            }
             PaneCommand::ActivatePane(direction) => match self.pane_in_direction(direction) {
                 Some(path) => {
                     self.active = path;
@@ -1798,6 +1856,7 @@ mod tests {
             }],
             max_panes: 2,
             split_filter: None,
+            zoom_whole_group: false,
         });
         if let Some(pane) = view.active_pane_mut() {
             pane.add_item(Box::new(Plain("a")));
@@ -1920,6 +1979,7 @@ mod tests {
             buttons: Vec::new(),
             max_panes: 4,
             split_filter: None,
+            zoom_whole_group: false,
         });
         assert!(restored.restore(&back, &mut make_plain));
         assert_eq!(restored.group.leaf_count(), 2);
@@ -1974,5 +2034,57 @@ mod tests {
             view.active_item().map(|item| item.title()),
             Some("c".into())
         );
+    }
+
+    #[test]
+    fn a_zoomed_pane_covers_the_area_only_while_it_has_focus() {
+        let mut view = view();
+        let item = view.clone_active_of(&[]);
+        view.split(&[], SplitDirection::Right, item);
+        assert!(view.pane_command(PaneCommand::ToggleZoom));
+        assert!(view.zoom_shown());
+        let (panes, dividers) = view.layout(area());
+        assert_eq!(panes.len(), 1);
+        assert!(dividers.is_empty());
+        assert_eq!(view.pane_rects().first().map(|rect| rect.w), Some(800.0));
+
+        view.active = vec![0];
+        assert!(!view.zoom_shown());
+        assert_eq!(view.layout(area()).0.len(), 2);
+        view.active = vec![1];
+        assert!(view.zoom_shown());
+
+        view.layout(area());
+        assert_eq!(view.click(view.tab_close_id(0, 0)), GroupClick::Handled);
+        view.layout(area());
+        assert!(!view.zoom_shown());
+        assert_eq!(view.group.leaf_count(), 1);
+    }
+
+    #[test]
+    fn a_dock_group_zooms_whole() {
+        let mut view = PaneGroupView::new(PaneGroupConfig {
+            id_base: BASE,
+            show_nav: false,
+            buttons: vec![PaneButton {
+                icon: IconKind::Maximize,
+                action: PaneButtonAction::ToggleZoom,
+            }],
+            max_panes: 4,
+            split_filter: None,
+            zoom_whole_group: true,
+        });
+        if let Some(pane) = view.active_pane_mut() {
+            pane.add_item(Box::new(Plain("a")));
+        }
+        let item = view.clone_active_of(&[]);
+        view.split(&[], SplitDirection::Down, item);
+        view.layout(area());
+        assert_eq!(view.click(view.button_id(1, 0)), GroupClick::Handled);
+        view.active = vec![0];
+        assert!(view.zoom_shown());
+        assert_eq!(view.layout(area()).0.len(), 2);
+        assert!(view.pane_command(PaneCommand::ToggleZoom));
+        assert!(!view.zoom_shown());
     }
 }
