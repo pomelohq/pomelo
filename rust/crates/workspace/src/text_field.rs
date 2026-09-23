@@ -2,10 +2,10 @@
 
 use std::ops::Range;
 
+use crate::EditKey;
 use editor::buffer::{Deletion, LineRows, Motion};
 use editor::EditorBuffer;
 use ui::{div, label, theme, Node};
-use workspace::EditKey;
 
 pub const INPUT_FONT: f32 = 14.0;
 

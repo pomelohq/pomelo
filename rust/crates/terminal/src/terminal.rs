@@ -192,6 +192,8 @@ pub struct Content {
     pub screen_lines: usize,
     pub columns: usize,
     pub selection: Option<SelectionRange>,
+    /// Search results, inclusive, highlighted until the search closes.
+    pub search_matches: Vec<(GridPoint, GridPoint)>,
     /// The link under the pointer while the modifier is held, drawn underlined.
     pub hovered_link: Option<HyperlinkMatch>,
     /// Colors a program redefined (OSC 4/10/11); `None` falls back to the palette.
@@ -274,6 +276,9 @@ pub struct Terminal {
     child_exit: Option<ExitStatus>,
     process: pty_info::PtyProcessInfo,
     links: hyperlinks::LinkSearch,
+    search_matches: Vec<(GridPoint, GridPoint)>,
+    /// Bumped whenever the grid's text may have changed, so cached searches know to rerun.
+    content_version: u64,
     hovered_link: Option<HyperlinkMatch>,
     process_checked: Option<Instant>,
     scroll_px: f32,
@@ -348,6 +353,8 @@ impl Terminal {
             child_exit: None,
             process,
             links: hyperlinks::LinkSearch::default(),
+            search_matches: Vec::new(),
+            content_version: 0,
             hovered_link: None,
             process_checked: None,
             scroll_px: 0.0,
@@ -653,6 +660,60 @@ impl Terminal {
         true
     }
 
+    pub fn content_version(&self) -> u64 {
+        self.content_version
+    }
+
+    /// Lines of scrollback above the live screen; grid lines run from `-history_size` to the screen bottom.
+    pub fn history_size(&self) -> usize {
+        self.term.lock().grid().history_size()
+    }
+
+    /// Every match of `pattern` in the scrollback and screen, in order (case-insensitive unless the pattern has
+    /// an uppercase letter). An invalid pattern finds nothing.
+    pub fn find(&self, pattern: &str) -> Vec<(GridPoint, GridPoint)> {
+        let Ok(mut regex) = alacritty_terminal::term::search::RegexSearch::new(pattern) else {
+            return Vec::new();
+        };
+        let term = self.term.lock();
+        let start = BackendPoint::new(term.topmost_line(), Column(0));
+        let end = BackendPoint::new(term.bottommost_line(), term.last_column());
+        alacritty_terminal::term::search::RegexIter::new(
+            start,
+            end,
+            alacritty_terminal::index::Direction::Right,
+            &term,
+            &mut regex,
+        )
+        .map(|found| (grid_point(*found.start()), grid_point(*found.end())))
+        .collect()
+    }
+
+    /// Select `start..=end` and scroll it into view.
+    pub fn select_range(&mut self, start: GridPoint, end: GridPoint) {
+        let mut term = self.term.lock();
+        let mut selection = Selection::new(
+            SelectionType::Simple,
+            backend_point(start),
+            BackendSide::Left,
+        );
+        selection.update(backend_point(end), BackendSide::Right);
+        term.selection = Some(selection);
+        term.scroll_to_point(backend_point(start));
+        drop(term);
+        self.snapshot();
+    }
+
+    pub fn set_search_matches(&mut self, matches: Vec<(GridPoint, GridPoint)>) {
+        self.search_matches = matches;
+        self.content.search_matches = self.search_matches.clone();
+    }
+
+    /// Where the selection ends, if there is one; searches measure "next" from here.
+    pub fn selection_head(&self) -> Option<GridPoint> {
+        self.content.selection.map(|selection| selection.end)
+    }
+
     pub fn select_all(&mut self) {
         let mut term = self.term.lock();
         let start = BackendPoint::new(term.topmost_line(), Column(0));
@@ -705,6 +766,7 @@ impl Terminal {
             eprintln!("terminal resize: {error}");
         }
         self.term.lock().resize(bounds);
+        self.content_version += 1;
         self.snapshot();
         true
     }
@@ -762,6 +824,7 @@ impl Terminal {
             BackendEvent::Bell => outcome.bell = true,
             BackendEvent::Wakeup => {
                 outcome.changed = true;
+                self.content_version += 1;
                 let due = self
                     .process_checked
                     .is_none_or(|at| at.elapsed() >= PROCESS_REFRESH_INTERVAL);
@@ -821,6 +884,7 @@ impl Terminal {
             screen_lines: grid.screen_lines(),
             columns: grid.columns(),
             hovered_link: self.hovered_link.clone(),
+            search_matches: self.search_matches.clone(),
             selection: renderable.selection.map(|range| SelectionRange {
                 start: grid_point(range.start),
                 end: grid_point(range.end),

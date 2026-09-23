@@ -11,4 +11,5 @@ path = "src/workspace.rs"
 [dependencies]
 ui = { path = "../ui" }
 terminal = { path = "../terminal" }
+editor = { package = "pomelo-editor", path = "../editor" }
 arboard = "3.6.1"

@@ -599,7 +599,10 @@ impl ApplicationHandler for App {
             Some(a) => self
                 .mains
                 .iter()
-                .filter(|(_, m)| m.entity.read(a.app()).editor_focused())
+                .filter(|(_, m)| {
+                    let view = m.entity.read(a.app());
+                    view.editor_focused() || view.terminal_focused()
+                })
                 .map(|(id, _)| *id)
                 .collect(),
             None => Vec::new(),
@@ -784,6 +787,7 @@ impl ApplicationHandler for App {
                     ctrl: self.ctrl_down,
                     cmd: self.super_down,
                 };
+                self.reset_caret();
                 let consumed = terminal_keystroke(ke, modifiers).is_some_and(|keystroke| {
                     self.with_workspace_view(id, |v, _| v.terminal_key(&keystroke)) == Some(true)
                 });

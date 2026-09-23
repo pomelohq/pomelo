@@ -17,7 +17,8 @@ use editor::buffer::{
 use editor::fold::FoldMap;
 use editor::search::{Direction, SearchQuery};
 use editor::transform::{LineTransform, TextTransform};
-use search_bar::{SearchBar, SearchClick, SearchField, Searchable};
+use workspace::search_bar::{SearchBar, SearchClick, SearchField, Searchable};
+use workspace::text_field;
 
 mod command_palette;
 mod completions_menu;
@@ -31,9 +32,7 @@ mod list_scrollbar;
 mod lsp_completion;
 mod markdown_view;
 mod outline_view;
-mod search_bar;
 mod snippet_store;
-mod text_field;
 mod tree_actions;
 use editor::wrap::Boundary;
 use editor::{EditorBuffer, Lang, Syntax, Theme};
@@ -4475,13 +4474,7 @@ enum PopoverSource {
 
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting stays in sync with
 /// the app theme (the reference drives both UI and syntax from one theme).
-pub(crate) fn syntax_theme() -> Theme {
-    if theme().appearance == ui::Appearance::Light {
-        Theme::one_light()
-    } else {
-        Theme::one_dark()
-    }
-}
+pub(crate) use workspace::syntax_theme;
 
 impl FilesView {
     pub fn new(root: PathBuf) -> Self {
