@@ -10,7 +10,10 @@ use crate::pane::{render_pane, Pane, PaneClickIds, PaneCommand, TabBarButton, Ta
 use crate::pane_group::{self, Axis, DividerRef, LeafPlacement, Member, SplitDirection};
 use crate::search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 use crate::tab_drag::{self, DropTarget, TabDrag, TabDrop};
-use crate::{DividerAxis, DividerPlacement, EditKey, Item, PaneBody, PanePlacement};
+use crate::{
+    DividerAxis, DividerPlacement, EditKey, Item, PaneBody, PanePlacement, TerminalKeyOutcome,
+};
+use terminal::Keystroke;
 
 const TAB_ACTIVATE: u64 = 1_000_000;
 const TAB_CLOSE: u64 = 3_000_000;
@@ -78,6 +81,8 @@ pub struct PaneGroupView {
     foreign_drop: Option<(TabDrop, Rect)>,
     /// The focused pane's content area as last laid out, for placing popovers at its caret.
     focused_content: Option<Rect>,
+    /// Whether the keyboard is in this group; its active pane then draws as focused.
+    focused: bool,
 }
 
 impl PaneGroupView {
@@ -94,7 +99,16 @@ impl PaneGroupView {
             tab_drag: None,
             foreign_drop: None,
             focused_content: None,
+            focused: true,
         }
+    }
+
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    pub fn is_focused(&self) -> bool {
+        self.focused
     }
 
     pub fn new_pane(&mut self) -> Pane {
@@ -234,6 +248,23 @@ impl PaneGroupView {
         }
     }
 
+    /// Click ids by pane render index, as the chrome hands them out.
+    pub fn tab_id(&self, p: usize, index: usize) -> u64 {
+        self.pane_ids(p).tab_activate + index as u64
+    }
+
+    pub fn tab_close_id(&self, p: usize, index: usize) -> u64 {
+        self.pane_ids(p).tab_close + index as u64
+    }
+
+    pub fn button_id(&self, p: usize, button: usize) -> u64 {
+        self.config.id_base + BUTTON + p as u64 * BUTTON_STRIDE + button as u64
+    }
+
+    pub fn divider_id(&self, index: usize) -> u64 {
+        self.config.id_base + DIVIDER + index as u64
+    }
+
     fn tab_bar(&self, p: usize) -> TabBarConfig {
         let base = self.config.id_base + BUTTON + p as u64 * BUTTON_STRIDE;
         TabBarConfig {
@@ -262,7 +293,7 @@ impl PaneGroupView {
         let mut pane_rects = Vec::new();
         let (leaves, dividers) = self.group.layout(area);
         for (p, leaf) in leaves.into_iter().enumerate() {
-            let is_focused = leaf.path == self.active;
+            let is_focused = self.focused && leaf.path == self.active;
             let fold_base = self.config.id_base + FOLD + p as u64 * PANE_STRIDE;
             let Some(pane) = self.group.leaf_at_mut(&leaf.path) else {
                 continue;
@@ -468,6 +499,130 @@ impl PaneGroupView {
             SearchClick::Close => bar.dismiss(item),
             SearchClick::ReplaceNext => bar.replace_next(item),
             SearchClick::ReplaceAll => bar.replace_all(item),
+        }
+    }
+
+    fn search_focused(&mut self) -> bool {
+        self.active_pane_mut()
+            .is_some_and(|pane| !pane.search.dismissed && pane.search.focus.is_some())
+    }
+
+    /// Find-bar shortcuts for an item that takes raw key presses (a terminal); returns whether it was one.
+    fn keystroke_search_command(&mut self, keystroke: &Keystroke) -> bool {
+        let m = keystroke.modifiers;
+        let only_cmd = m.cmd && !m.alt && !m.ctrl;
+        let Some(pane) = self.active_pane_mut() else {
+            return false;
+        };
+        let dismissed = pane.search.dismissed;
+        let Some((bar, item)) = pane.search_target() else {
+            return false;
+        };
+        let supported = item.supported_options();
+        let option = |key: &str| match key {
+            "c" if supported.case => Some(SearchClick::CaseSensitive),
+            "w" if supported.word => Some(SearchClick::WholeWord),
+            "x" if supported.regex => Some(SearchClick::Regex),
+            _ => None,
+        };
+        match keystroke.key.as_str() {
+            "f" if only_cmd && !m.shift => {
+                if dismissed {
+                    bar.deploy(item, false);
+                } else {
+                    bar.focus = Some(SearchField::Query);
+                    bar.query.select_all();
+                }
+            }
+            "g" if only_cmd && !dismissed => {
+                let direction = if m.shift {
+                    Direction::Prev
+                } else {
+                    Direction::Next
+                };
+                bar.select_match(item, direction);
+            }
+            key if m.cmd && m.alt && !m.ctrl && !dismissed && option(key).is_some() => {
+                if let Some(click) = option(key) {
+                    bar.toggle_option(item, click);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// A raw key press for the focused pane's item (one that wants keystrokes): find-bar shortcuts and editing
+    /// while the find bar has focus, otherwise the item's own handling.
+    pub fn item_keystroke(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
+        if !self
+            .active_item()
+            .is_some_and(|item| item.wants_keystrokes())
+        {
+            return TerminalKeyOutcome::Ignored;
+        }
+        if self.keystroke_search_command(keystroke) {
+            return TerminalKeyOutcome::Handled;
+        }
+        if self.search_focused() {
+            let m = keystroke.modifiers;
+            if m.cmd && keystroke.key == "v" {
+                return TerminalKeyOutcome::Paste;
+            }
+            let Some(pane) = self.active_pane_mut() else {
+                return TerminalKeyOutcome::Ignored;
+            };
+            if m.cmd && keystroke.key == "c" {
+                return pane
+                    .search
+                    .query
+                    .selected_text()
+                    .map_or(TerminalKeyOutcome::Handled, TerminalKeyOutcome::Copy);
+            }
+            return match search_edit_key(keystroke) {
+                Some(key) => {
+                    let keep = pane
+                        .search_target()
+                        .is_some_and(|(bar, item)| bar.key(item, key, m.shift));
+                    if !keep {
+                        pane.search.focus = None;
+                    }
+                    TerminalKeyOutcome::Handled
+                }
+                None if m.cmd || m.ctrl => TerminalKeyOutcome::Handled,
+                None => TerminalKeyOutcome::Ignored,
+            };
+        }
+        self.active_item_mut()
+            .map_or(TerminalKeyOutcome::Ignored, |item| {
+                item.keystroke(keystroke)
+            })
+    }
+
+    /// Typed text for an item that wants keystrokes, or the find bar while it has focus.
+    pub fn item_text(&mut self, text: &str) {
+        if let Some((bar, item)) = self.focused_search() {
+            bar.input(item, text);
+            return;
+        }
+        if let Some(item) = self
+            .active_item_mut()
+            .filter(|item| item.wants_keystrokes())
+        {
+            item.input_text(text);
+        }
+    }
+
+    pub fn item_paste(&mut self, text: &str) {
+        if let Some((bar, item)) = self.focused_search() {
+            bar.input(item, text);
+            return;
+        }
+        if let Some(item) = self
+            .active_item_mut()
+            .filter(|item| item.wants_keystrokes())
+        {
+            item.paste(text, None);
         }
     }
 
@@ -691,6 +846,35 @@ impl PaneGroupView {
     }
 }
 
+/// Keys for the find bar's text field, from a raw key press.
+fn search_edit_key(keystroke: &Keystroke) -> Option<EditKey> {
+    let m = keystroke.modifiers;
+    Some(match keystroke.key.as_str() {
+        "enter" => EditKey::Enter,
+        "escape" => EditKey::Escape,
+        "tab" => EditKey::Tab,
+        "backspace" if m.cmd => EditKey::DeleteToLineStart,
+        "backspace" if m.alt => EditKey::DeleteWordLeft,
+        "backspace" => EditKey::Backspace,
+        "delete" if m.alt => EditKey::DeleteWordRight,
+        "delete" => EditKey::Delete,
+        "left" if m.cmd => EditKey::LineStart,
+        "left" if m.alt => EditKey::WordLeft,
+        "left" => EditKey::Left,
+        "right" if m.cmd => EditKey::LineEnd,
+        "right" if m.alt => EditKey::WordRight,
+        "right" => EditKey::Right,
+        "home" => EditKey::Home,
+        "end" => EditKey::End,
+        "up" => EditKey::Up,
+        "down" => EditKey::Down,
+        "a" if m.cmd => EditKey::SelectAll,
+        "z" if m.cmd && m.shift => EditKey::Redo,
+        "z" if m.cmd => EditKey::Undo,
+        _ => return None,
+    })
+}
+
 fn contains(rect: &Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
 }
@@ -803,6 +987,67 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct Shell {
+        typed: String,
+    }
+
+    impl Searchable for Shell {
+        fn search_version(&self) -> u64 {
+            0
+        }
+        fn find(&self, _query: &editor::search::SearchQuery) -> Vec<std::ops::Range<usize>> {
+            Vec::new()
+        }
+        fn query_suggestion(&self) -> String {
+            String::new()
+        }
+        fn single_cursor(&self) -> Option<usize> {
+            None
+        }
+        fn activate_match(&mut self, _range: std::ops::Range<usize>) {}
+        fn select_matches(&mut self, _ranges: &[std::ops::Range<usize>]) {}
+        fn replace_match(
+            &mut self,
+            _query: &editor::search::SearchQuery,
+            _range: std::ops::Range<usize>,
+        ) {
+        }
+        fn replace_all(
+            &mut self,
+            _query: &editor::search::SearchQuery,
+            _ranges: &[std::ops::Range<usize>],
+        ) {
+        }
+        fn set_search_highlights(
+            &mut self,
+            _matches: Vec<std::ops::Range<usize>>,
+            _active: Option<usize>,
+        ) {
+        }
+    }
+
+    impl Item for Shell {
+        fn title(&self) -> String {
+            "shell".into()
+        }
+        fn render(&mut self) -> Node {
+            ui::div().into()
+        }
+        fn searchable(&mut self) -> Option<&mut dyn Searchable> {
+            Some(self)
+        }
+        fn wants_keystrokes(&self) -> bool {
+            true
+        }
+        fn keystroke(&mut self, _keystroke: &Keystroke) -> TerminalKeyOutcome {
+            TerminalKeyOutcome::Handled
+        }
+        fn input_text(&mut self, text: &str) {
+            self.typed.push_str(text);
+        }
+    }
+
     const BASE: u64 = 50_000;
 
     fn view() -> PaneGroupView {
@@ -865,5 +1110,26 @@ mod tests {
         assert!(view.pane_command(PaneCommand::ActivatePane(SplitDirection::Left)));
         assert_eq!(view.active, vec![0]);
         assert!(!view.pane_command(PaneCommand::Split(SplitDirection::Down)));
+    }
+
+    #[test]
+    fn raw_key_items_get_the_find_bar_in_any_group() {
+        let mut view = view();
+        if let Some(pane) = view.active_pane_mut() {
+            pane.add_item(Box::new(Shell::default()));
+        }
+        assert_eq!(
+            view.item_keystroke(&Keystroke::parse("cmd-f")),
+            TerminalKeyOutcome::Handled
+        );
+        view.item_text("needle");
+        let pane = view.pane_at(&[]).map(|pane| pane.search.query.text());
+        assert_eq!(pane.as_deref(), Some("needle"));
+        assert_eq!(
+            view.item_keystroke(&Keystroke::parse("escape")),
+            TerminalKeyOutcome::Handled
+        );
+        view.item_text("ls");
+        assert!(view.pane_at(&[]).is_some_and(|pane| pane.search.dismissed));
     }
 }

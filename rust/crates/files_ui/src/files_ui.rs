@@ -5593,21 +5593,15 @@ impl FunctionView for FilesView {
     }
 
     fn item_keystroke(&mut self, keystroke: &terminal::Keystroke) -> workspace::TerminalKeyOutcome {
-        self.panes
-            .active_item_mut()
-            .map_or(workspace::TerminalKeyOutcome::Ignored, |item| {
-                item.keystroke(keystroke)
-            })
+        self.panes.item_keystroke(keystroke)
     }
 
     fn item_text(&mut self, text: &str) {
-        if let Some(item) = self
-            .panes
-            .active_item_mut()
-            .filter(|item| item.wants_keystrokes())
-        {
-            item.input_text(text);
-        }
+        self.panes.item_text(text);
+    }
+
+    fn item_paste(&mut self, text: &str) {
+        self.panes.item_paste(text);
     }
 
     fn item_focus_changed(&mut self, focused: bool) {

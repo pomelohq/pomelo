@@ -64,11 +64,12 @@ impl Pane {
 
     /// Height of the chrome above the active item's body (tab bar plus the find bar when open); an empty pane
     /// draws no chrome.
+    /// Height of the tab bar plus find bar on screen; chrome sizes grow with the UI text scale.
     pub fn header_h(&self) -> f32 {
         if self.open.is_empty() {
             0.0
         } else {
-            TAB_H + self.search.height()
+            (TAB_H + self.search.height()) * ui::ui_text_scale()
         }
     }
 

@@ -146,6 +146,10 @@ pub trait Searchable {
     fn replace_match(&mut self, query: &SearchQuery, range: Range<usize>);
     fn replace_all(&mut self, query: &SearchQuery, ranges: &[Range<usize>]);
     fn set_search_highlights(&mut self, matches: Vec<Range<usize>>, active: Option<usize>);
+    /// The bar shows only the controls the item can honor.
+    fn supported_options(&self) -> SearchSupport {
+        SearchSupport::default()
+    }
 }
 
 impl SearchBar {
@@ -182,6 +186,7 @@ impl SearchBar {
     /// Cmd+F: show the bar seeded from the selection or the word at the caret, with the query selected.
     pub fn deploy(&mut self, item: &mut dyn Searchable, replace: bool) {
         self.dismissed = false;
+        self.adopt_support(item);
         let suggestion = item.query_suggestion();
         if !suggestion.is_empty() {
             self.query.set_text(&suggestion);
@@ -211,7 +216,13 @@ impl SearchBar {
     }
 
     /// Recompute matches when the text, query or options changed since the last search.
+    fn adopt_support(&mut self, item: &dyn Searchable) {
+        self.supported = item.supported_options();
+        self.replace_enabled &= self.supported.replace;
+    }
+
     pub fn refresh(&mut self, item: &mut dyn Searchable) {
+        self.adopt_support(item);
         if self.dismissed {
             return;
         }

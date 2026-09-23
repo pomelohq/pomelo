@@ -245,124 +245,7 @@ impl WorkspaceView {
                         };
                     push_clipped(&sr.tree, tree_area, tree_region, &mut panel_hits);
                     push_clipped(&sr.sticky, sticky_area, tree_region, &mut panel_hits);
-                    for pane in &mut editor.panes {
-                        if let Some((painted, clip)) = pane.painted.take() {
-                            center_overlays.push(Overlay {
-                                painted,
-                                clip: Some(clip),
-                            });
-                        }
-                        let chrome = ui::render(&pane.node, pane.rect);
-                        for (r, id) in chrome.hits.iter().copied() {
-                            if r.x + r.w > pane.rect.x
-                                && r.x < pane.rect.x + pane.rect.w
-                                && r.y + r.h > pane.rect.y
-                                && r.y < pane.rect.y + pane.rect.h
-                            {
-                                panel_hits.push((r, id));
-                            }
-                        }
-                        center_overlays.push(Overlay {
-                            painted: chrome,
-                            clip: Some(pane.rect),
-                        });
-                        if let Some(b) = &pane.body {
-                            let text_clip = b.text_clip;
-                            if !pane.back.is_empty() || !pane.back_tris.is_empty() {
-                                let mut sp = Painted::default();
-                                sp.rects.extend(pane.back.iter().copied());
-                                sp.tris.extend(pane.back_tris.iter().copied());
-                                center_overlays.push(Overlay {
-                                    painted: sp,
-                                    clip: Some(text_clip),
-                                });
-                            }
-                            let area = Rect::new(
-                                b.text_left - b.x_offset,
-                                b.rect.y + b.y_offset,
-                                b.rect.w + b.x_offset + 64.0,
-                                b.rect.h - b.y_offset + 64.0,
-                                Rgba::TRANSPARENT,
-                            );
-                            center_overlays.push(Overlay {
-                                painted: ui::render(&b.node, area),
-                                clip: Some(text_clip),
-                            });
-                            if let Some(g) = &b.gutter {
-                                let garea = Rect::new(
-                                    b.rect.x,
-                                    b.rect.y + b.y_offset,
-                                    b.gutter_clip.w,
-                                    b.rect.h - b.y_offset + 64.0,
-                                    Rgba::TRANSPARENT,
-                                );
-                                let gpainted = ui::render(g, garea);
-                                for (r, id) in gpainted.hits.iter().copied() {
-                                    if r.y + r.h > b.gutter_clip.y
-                                        && r.y < b.gutter_clip.y + b.gutter_clip.h
-                                    {
-                                        panel_hits.push((r, id));
-                                    }
-                                }
-                                center_overlays.push(Overlay {
-                                    painted: gpainted,
-                                    clip: Some(b.gutter_clip),
-                                });
-                            }
-                            if !pane.carets.is_empty() {
-                                let mut cp = Painted::default();
-                                cp.rects.extend(pane.carets.iter().copied());
-                                center_overlays.push(Overlay {
-                                    painted: cp,
-                                    clip: Some(text_clip),
-                                });
-                            }
-                            for bar in [&pane.scrollbar, &pane.h_scrollbar] {
-                                if bar.is_empty() {
-                                    continue;
-                                }
-                                let mut bp = Painted::default();
-                                bp.rects.extend(bar.iter().copied());
-                                center_overlays.push(Overlay {
-                                    painted: bp,
-                                    clip: Some(b.rect),
-                                });
-                            }
-                        }
-                    }
-                    let mut dv = Painted::default();
-                    for d in &editor.dividers {
-                        let line = match d.axis {
-                            DividerAxis::Horizontal => Rect {
-                                x: d.rect.x + (d.rect.w - 1.0) / 2.0,
-                                y: d.rect.y,
-                                w: 1.0,
-                                h: d.rect.h,
-                                color: ui::theme().border,
-                                radius: 0.0,
-                                border: 0.0,
-                                border_color: Rgba::TRANSPARENT,
-                            },
-                            DividerAxis::Vertical => Rect {
-                                x: d.rect.x,
-                                y: d.rect.y + (d.rect.h - 1.0) / 2.0,
-                                w: d.rect.w,
-                                h: 1.0,
-                                color: ui::theme().border,
-                                radius: 0.0,
-                                border: 0.0,
-                                border_color: Rgba::TRANSPARENT,
-                            },
-                        };
-                        dv.rects.push(line);
-                        panel_hits.push((d.rect, d.id));
-                    }
-                    if !dv.rects.is_empty() {
-                        center_overlays.push(Overlay {
-                            painted: dv,
-                            clip: Some(cr),
-                        });
-                    }
+                    push_pane_group(&mut editor, cr, &mut center_overlays, &mut panel_hits);
                     if let Some(hl) = self
                         .layout
                         .files_view
@@ -424,7 +307,7 @@ impl WorkspaceView {
         } else {
             match self.layout.shown_on(DockPosition::Left) {
                 Some(Shown::Terminal) => {
-                    let p = self.terminal_painted(cr);
+                    let p = self.terminal_painted(cr, &mut center_overlays, &mut panel_hits);
                     panel_hits.extend(p.hits.iter().copied());
                     blit(p)
                 }
@@ -522,7 +405,9 @@ impl WorkspaceView {
         if !self.layout.right.collapsed {
             let region = self.layout.right_region(w, h);
             let p = match self.layout.shown_on(DockPosition::Right) {
-                Some(Shown::Terminal) => self.terminal_painted(region),
+                Some(Shown::Terminal) => {
+                    self.terminal_painted(region, &mut center_overlays, &mut panel_hits)
+                }
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
                 Some(Shown::Func(k)) => ui::render(&function_dock_body(k), region),
                 // Agent (the right dock's default panel) and the empty case both render the OutlinePanel.
@@ -537,7 +422,9 @@ impl WorkspaceView {
             let region = self.layout.bottom_region(w, h);
             // The bottom dock has no default panel: it only shows whatever is docked there (terminal/function).
             let p = match self.layout.shown_on(DockPosition::Bottom) {
-                Some(Shown::Terminal) => self.terminal_painted(region),
+                Some(Shown::Terminal) => {
+                    self.terminal_painted(region, &mut center_overlays, &mut panel_hits)
+                }
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
                 Some(Shown::Func(k)) => ui::render(&function_dock_body(k), region),
                 _ => ui::render(&ui::div().bg(ui::theme().panel_background).into(), region),
@@ -958,7 +845,7 @@ impl WorkspaceView {
     }
 
     fn center_divider_cursor(&self, id: u64) -> Option<ResizeCursor> {
-        let axis = if (crate::TERMINAL_VIEW_BASE..FUNC_VIEW_BASE).contains(&id) {
+        let axis = if crate::is_terminal_id(id) {
             self.layout.terminal_view.as_ref()?.divider_axis(id)?
         } else {
             self.layout.files_view.as_ref()?.divider_axis(id)?
@@ -1668,7 +1555,7 @@ impl WorkspaceView {
                 if let Some((id, px, py)) = self.pending_tab {
                     if (x - px).abs() > 5.0 || (y - py).abs() > 5.0 {
                         self.pending_tab = None;
-                        if (crate::TERMINAL_VIEW_BASE..FUNC_VIEW_BASE).contains(&id) {
+                        if crate::is_terminal_id(id) {
                             if let Some(v) = self.layout.terminal_view.as_mut() {
                                 if v.begin_tab_drag(id) {
                                     self.dragging = Drag::TerminalTab;
@@ -2027,7 +1914,7 @@ impl WorkspaceView {
         } else if self.dragging != Drag::None {
             self.pending.persist = true;
         } else if let Some((id, _, _)) = self.pending_tab.take() {
-            if (crate::TERMINAL_VIEW_BASE..FUNC_VIEW_BASE).contains(&id) {
+            if crate::is_terminal_id(id) {
                 self.header_click(id);
             } else if let Some(v) = self.layout.files_view.as_mut() {
                 v.on_click(id);
@@ -2038,14 +1925,22 @@ impl WorkspaceView {
         self.dragging = Drag::None;
     }
 
-    fn terminal_painted(&mut self, region: Rect) -> Painted {
+    /// The terminal panel in `region`: a backdrop to blit, with its panes pushed onto `overlays`.
+    fn terminal_painted(
+        &mut self,
+        region: Rect,
+        overlays: &mut Vec<Overlay>,
+        hits: &mut Vec<(Rect, u64)>,
+    ) -> Painted {
         let focused = self.terminal_focused;
         match self.layout.terminal_view.as_mut() {
             Some(view) => {
                 if view.is_empty() {
                     view.open(None);
                 }
-                view.render(region, focused)
+                let (backdrop, mut panes) = view.render(region, focused);
+                push_pane_group(&mut panes, region, overlays, hits);
+                backdrop
             }
             None => ui::render(&terminal_dock_body(), region),
         }
@@ -2182,7 +2077,7 @@ impl WorkspaceView {
                 }
                 crate::TerminalKeyOutcome::Paste => {
                     if let Some(text) = Self::clip_get() {
-                        view.editor_paste(&text, None);
+                        view.item_paste(&text);
                     }
                     true
                 }
@@ -2443,7 +2338,7 @@ impl WorkspaceView {
             self.toast = None;
             return;
         }
-        if (crate::TERMINAL_VIEW_BASE..FUNC_VIEW_BASE).contains(&id) {
+        if crate::is_terminal_id(id) {
             self.set_terminal_focus(true);
             if let Some(view) = self.layout.terminal_view.as_mut() {
                 view.click(id);
@@ -2620,6 +2515,133 @@ fn terminal_modifiers() -> terminal::Modifiers {
         alt: held.alt,
         ctrl: held.ctrl,
         cmd: held.cmd,
+    }
+}
+
+/// Draw a pane group's layout over `region`: each pane's body (painted by the item, or text with its selections,
+/// gutter, carets and scrollbars, each clipped to its area), its chrome, and the dividers. Collects the hit regions
+/// that land inside each pane.
+fn push_pane_group(
+    layout: &mut crate::EditorLayout,
+    region: Rect,
+    overlays: &mut Vec<Overlay>,
+    hits: &mut Vec<(Rect, u64)>,
+) {
+    for pane in &mut layout.panes {
+        if let Some((painted, clip)) = pane.painted.take() {
+            overlays.push(Overlay {
+                painted,
+                clip: Some(clip),
+            });
+        }
+        let chrome = ui::render(&pane.node, pane.rect);
+        for (r, id) in chrome.hits.iter().copied() {
+            if r.x + r.w > pane.rect.x
+                && r.x < pane.rect.x + pane.rect.w
+                && r.y + r.h > pane.rect.y
+                && r.y < pane.rect.y + pane.rect.h
+            {
+                hits.push((r, id));
+            }
+        }
+        overlays.push(Overlay {
+            painted: chrome,
+            clip: Some(pane.rect),
+        });
+        if let Some(b) = &pane.body {
+            let text_clip = b.text_clip;
+            if !pane.back.is_empty() || !pane.back_tris.is_empty() {
+                let mut sp = Painted::default();
+                sp.rects.extend(pane.back.iter().copied());
+                sp.tris.extend(pane.back_tris.iter().copied());
+                overlays.push(Overlay {
+                    painted: sp,
+                    clip: Some(text_clip),
+                });
+            }
+            let area = Rect::new(
+                b.text_left - b.x_offset,
+                b.rect.y + b.y_offset,
+                b.rect.w + b.x_offset + 64.0,
+                b.rect.h - b.y_offset + 64.0,
+                Rgba::TRANSPARENT,
+            );
+            overlays.push(Overlay {
+                painted: ui::render(&b.node, area),
+                clip: Some(text_clip),
+            });
+            if let Some(g) = &b.gutter {
+                let garea = Rect::new(
+                    b.rect.x,
+                    b.rect.y + b.y_offset,
+                    b.gutter_clip.w,
+                    b.rect.h - b.y_offset + 64.0,
+                    Rgba::TRANSPARENT,
+                );
+                let gpainted = ui::render(g, garea);
+                for (r, id) in gpainted.hits.iter().copied() {
+                    if r.y + r.h > b.gutter_clip.y && r.y < b.gutter_clip.y + b.gutter_clip.h {
+                        hits.push((r, id));
+                    }
+                }
+                overlays.push(Overlay {
+                    painted: gpainted,
+                    clip: Some(b.gutter_clip),
+                });
+            }
+            if !pane.carets.is_empty() {
+                let mut cp = Painted::default();
+                cp.rects.extend(pane.carets.iter().copied());
+                overlays.push(Overlay {
+                    painted: cp,
+                    clip: Some(text_clip),
+                });
+            }
+            for bar in [&pane.scrollbar, &pane.h_scrollbar] {
+                if bar.is_empty() {
+                    continue;
+                }
+                let mut bp = Painted::default();
+                bp.rects.extend(bar.iter().copied());
+                overlays.push(Overlay {
+                    painted: bp,
+                    clip: Some(b.rect),
+                });
+            }
+        }
+    }
+    let mut dv = Painted::default();
+    for d in &layout.dividers {
+        let line = match d.axis {
+            DividerAxis::Horizontal => Rect {
+                x: d.rect.x + (d.rect.w - 1.0) / 2.0,
+                y: d.rect.y,
+                w: 1.0,
+                h: d.rect.h,
+                color: ui::theme().border,
+                radius: 0.0,
+                border: 0.0,
+                border_color: Rgba::TRANSPARENT,
+            },
+            DividerAxis::Vertical => Rect {
+                x: d.rect.x,
+                y: d.rect.y + (d.rect.h - 1.0) / 2.0,
+                w: d.rect.w,
+                h: 1.0,
+                color: ui::theme().border,
+                radius: 0.0,
+                border: 0.0,
+                border_color: Rgba::TRANSPARENT,
+            },
+        };
+        dv.rects.push(line);
+        hits.push((d.rect, d.id));
+    }
+    if !dv.rects.is_empty() {
+        overlays.push(Overlay {
+            painted: dv,
+            clip: Some(region),
+        });
     }
 }
 
