@@ -13,6 +13,7 @@ members = [
     "crates/files_ui",
     "crates/git",
     "crates/lsp",
+    "crates/terminal",
     "crates/auto_update",
     "crates/auto_update_ui",
     "crates/settings",
