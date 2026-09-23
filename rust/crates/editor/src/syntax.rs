@@ -180,6 +180,58 @@ impl Syntax {
         false
     }
 
+    /// The smallest node that encloses the byte `range` and is larger than it. For an empty range sitting
+    /// between two nodes, the right one wins unless only the left one is named.
+    pub fn syntax_ancestor(&self, range: Range<usize>) -> Option<SyntaxNode> {
+        let tree = self.tree.as_ref()?;
+        let mut cursor = tree.root_node().walk();
+        if !goto_node_enclosing_range(&mut cursor, &range) {
+            return None;
+        }
+        let left = cursor.node();
+        let mut result = left;
+        if left.end_byte() == range.start {
+            let mut right = None;
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    break;
+                }
+            }
+            while cursor.node().start_byte() == range.start {
+                right = Some(cursor.node());
+                if !cursor.goto_first_child() {
+                    break;
+                }
+            }
+            if let Some(right) = right.filter(|r| r.is_named() || !left.is_named()) {
+                result = right;
+            }
+        }
+        Some(SyntaxNode {
+            range: result.byte_range(),
+            kind: result.kind().to_string(),
+            named: result.is_named(),
+        })
+    }
+
+    /// Whether `byte` lies strictly inside a string or comment node (a node's own edges are outside it).
+    pub fn scope_at(&self, byte: usize) -> crate::language::Scope {
+        let mut scope = crate::language::Scope::default();
+        let Some(tree) = self.tree.as_ref() else {
+            return scope;
+        };
+        let mut node = tree.root_node().descendant_for_byte_range(byte, byte);
+        while let Some(n) = node {
+            if n.start_byte() < byte && byte < n.end_byte() {
+                let kind = n.kind();
+                scope.in_string |= kind.contains("string");
+                scope.in_comment |= kind.contains("comment");
+            }
+            node = n.parent();
+        }
+        scope
+    }
+
     /// Highlight runs covering `range` (bytes) contiguously; uncaptured text gets `capture: None`.
     pub fn highlight(&self, rope: &Rope, range: Range<usize>) -> Vec<HighlightRun> {
         let mut runs = Vec::new();
@@ -234,6 +286,45 @@ impl Syntax {
             pos = end;
         }
         runs
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyntaxNode {
+    pub range: Range<usize>,
+    pub kind: String,
+    pub named: bool,
+}
+
+/// Move `cursor` to the smallest node enclosing `range` that is strictly larger than it.
+fn goto_node_enclosing_range(cursor: &mut tree_sitter::TreeCursor, range: &Range<usize>) -> bool {
+    let mut ascending = false;
+    loop {
+        let mut node_range = cursor.node().byte_range();
+        if range.is_empty() {
+            if node_range.start > range.start {
+                cursor.goto_previous_sibling();
+                node_range = cursor.node().byte_range();
+            }
+        } else if node_range.end == range.start {
+            cursor.goto_next_sibling();
+            node_range = cursor.node().byte_range();
+        }
+        let encloses = node_range.start <= range.start
+            && range.end <= node_range.end
+            && node_range.len() > range.len();
+        if !encloses {
+            ascending = true;
+            if !cursor.goto_parent() {
+                return false;
+            }
+            continue;
+        } else if ascending {
+            return true;
+        }
+        if cursor.goto_first_child_for_byte(range.start).is_none() {
+            return true;
+        }
     }
 }
 

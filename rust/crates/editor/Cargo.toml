@@ -10,6 +10,7 @@ name = "pomelo_editor"
 path = "src/lib.rs"
 
 [dependencies]
+convert_case = "0.11.0"
 ropey.workspace = true
 serde.workspace = true
 serde_json.workspace = true

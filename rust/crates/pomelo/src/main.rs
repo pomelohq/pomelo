@@ -11,7 +11,7 @@ use settings::Settings;
 use ui::UiRenderer;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
@@ -129,28 +129,7 @@ struct App {
     super_down: bool,
     shift_down: bool,
     alt_down: bool,
-    clipboard: Option<arboard::Clipboard>,
-}
-
-impl App {
-    fn clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
-        if self.clipboard.is_none() {
-            self.clipboard = arboard::Clipboard::new().ok();
-        }
-        self.clipboard.as_mut()
-    }
-
-    fn clipboard_get(&mut self) -> String {
-        self.clipboard()
-            .and_then(|cb| cb.get_text().ok())
-            .unwrap_or_default()
-    }
-
-    fn clipboard_set(&mut self, text: String) {
-        if let Some(cb) = self.clipboard() {
-            let _ = cb.set_text(text);
-        }
-    }
+    ctrl_down: bool,
 }
 
 impl App {
@@ -172,6 +151,8 @@ impl App {
                 .with_title_hidden(true);
         }
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
+        // Input methods (e.g. Vietnamese Telex) compose through Ime events; plain keys still arrive as input.
+        window.set_ime_allowed(true);
         let id = window.id();
         let mut renderer = UiRenderer::new(window.clone()).expect("ui");
         renderer.set_ui_font(&self.settings.ui_font);
@@ -616,6 +597,7 @@ impl ApplicationHandler for App {
             self.super_down = mods.state().super_key();
             self.shift_down = mods.state().shift_key();
             self.alt_down = mods.state().alt_key();
+            self.ctrl_down = mods.state().control_key();
         }
         if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
             if ke.state == ElementState::Pressed {
@@ -666,12 +648,43 @@ impl ApplicationHandler for App {
                 return;
             }
         }
+        if let WindowEvent::Ime(ime) = &event {
+            if self.mains.contains_key(&id)
+                && self.with_workspace_view(id, |v, _| v.editor_focused()) == Some(true)
+            {
+                self.reset_caret();
+                let changed = match ime {
+                    Ime::Preedit(text, cursor) => {
+                        let selected = cursor.map(|(start, end)| {
+                            text[..start.min(text.len())].chars().count()
+                                ..text[..end.min(text.len())].chars().count()
+                        });
+                        self.with_workspace_view(id, |v, _| v.editor_ime_preedit(text, selected))
+                    }
+                    Ime::Commit(text) => {
+                        self.with_workspace_view(id, |v, _| v.editor_ime_commit(text))
+                    }
+                    Ime::Enabled | Ime::Disabled => None,
+                };
+                if changed == Some(true) {
+                    if let Some(m) = self.mains.get_mut(&id) {
+                        m.dirty = true;
+                    }
+                }
+                return;
+            }
+        }
         if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
             if ke.state == ElementState::Pressed
                 && self.mains.contains_key(&id)
                 && self.with_workspace_view(id, |v, _| v.editor_focused()) == Some(true)
             {
-                let (shift, cmd, alt) = (self.shift_down, self.super_down, self.alt_down);
+                let (shift, cmd, alt, ctrl) = (
+                    self.shift_down,
+                    self.super_down,
+                    self.alt_down,
+                    self.ctrl_down,
+                );
                 if cmd {
                     if let Key::Character(c) = &ke.logical_key {
                         match c.as_str() {
@@ -687,40 +700,21 @@ impl ApplicationHandler for App {
                                 return;
                             }
                             "c" => {
-                                if let Some(Some(sel)) =
-                                    self.with_workspace_view(id, |v, _| v.editor_selected_text())
-                                {
-                                    self.clipboard_set(sel);
-                                }
+                                self.with_workspace_view(id, |v, _| v.editor_copy_to_clipboard());
                                 return;
                             }
-                            "x" => {
-                                if let Some(Some(sel)) =
-                                    self.with_workspace_view(id, |v, _| v.editor_selected_text())
-                                {
-                                    self.clipboard_set(sel);
-                                    self.reset_caret();
-                                    if self.with_workspace_view(id, |v, _| {
-                                        v.editor_key(EditKey::Backspace, false)
-                                    }) == Some(true)
-                                    {
-                                        if let Some(m) = self.mains.get_mut(&id) {
-                                            m.dirty = true;
-                                        }
+                            "x" | "v" => {
+                                self.reset_caret();
+                                let changed = self.with_workspace_view(id, |v, _| {
+                                    if c.as_str() == "x" {
+                                        v.editor_cut_to_clipboard()
+                                    } else {
+                                        v.editor_paste_from_clipboard()
                                     }
-                                }
-                                return;
-                            }
-                            "v" => {
-                                let text = self.clipboard_get();
-                                if !text.is_empty() {
-                                    self.reset_caret();
-                                    if self.with_workspace_view(id, |v, _| v.editor_text(&text))
-                                        == Some(true)
-                                    {
-                                        if let Some(m) = self.mains.get_mut(&id) {
-                                            m.dirty = true;
-                                        }
+                                });
+                                if changed == Some(true) {
+                                    if let Some(m) = self.mains.get_mut(&id) {
+                                        m.dirty = true;
                                     }
                                 }
                                 return;
@@ -730,7 +724,10 @@ impl ApplicationHandler for App {
                     }
                 }
                 let after_cmd_k = std::mem::take(&mut self.pending_cmd_k);
-                if cmd && matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "k") {
+                if cmd
+                    && !shift
+                    && matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "k")
+                {
                     self.pending_cmd_k = true;
                     return;
                 }
@@ -742,6 +739,32 @@ impl ApplicationHandler for App {
                     },
                     Key::Named(NamedKey::ArrowLeft) if cmd => key(EditKey::Home),
                     Key::Named(NamedKey::ArrowRight) if cmd => key(EditKey::End),
+                    Key::Named(NamedKey::ArrowUp) if cmd && alt => key(EditKey::AddCursorAbove),
+                    Key::Named(NamedKey::ArrowDown) if cmd && alt => key(EditKey::AddCursorBelow),
+                    Key::Named(NamedKey::ArrowRight) if cmd && ctrl => {
+                        key(EditKey::SelectLargerSyntaxNode)
+                    }
+                    Key::Named(NamedKey::ArrowLeft) if cmd && ctrl => {
+                        key(EditKey::SelectSmallerSyntaxNode)
+                    }
+                    Key::Named(NamedKey::ArrowRight) if ctrl && shift => {
+                        key(EditKey::SelectLargerSyntaxNode)
+                    }
+                    Key::Named(NamedKey::ArrowLeft) if ctrl && shift => {
+                        key(EditKey::SelectSmallerSyntaxNode)
+                    }
+                    Key::Named(NamedKey::ArrowUp) if alt && shift => key(EditKey::DuplicateLineUp),
+                    Key::Named(NamedKey::ArrowDown) if alt && shift => {
+                        key(EditKey::DuplicateLineDown)
+                    }
+                    Key::Named(NamedKey::ArrowUp) if alt => key(EditKey::MoveLineUp),
+                    Key::Named(NamedKey::ArrowDown) if alt => key(EditKey::MoveLineDown),
+                    Key::Named(NamedKey::ArrowUp) if cmd => key(EditKey::DocumentStart),
+                    Key::Named(NamedKey::ArrowDown) if cmd => key(EditKey::DocumentEnd),
+                    Key::Named(NamedKey::Home) if cmd => key(EditKey::DocumentStart),
+                    Key::Named(NamedKey::End) if cmd => key(EditKey::DocumentEnd),
+                    Key::Named(NamedKey::ArrowLeft) if ctrl && alt => key(EditKey::SubwordLeft),
+                    Key::Named(NamedKey::ArrowRight) if ctrl && alt => key(EditKey::SubwordRight),
                     Key::Named(NamedKey::ArrowLeft) if alt => key(EditKey::WordLeft),
                     Key::Named(NamedKey::ArrowRight) if alt => key(EditKey::WordRight),
                     Key::Named(NamedKey::ArrowLeft) => key(EditKey::Left),
@@ -752,15 +775,47 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::End) => key(EditKey::End),
                     Key::Named(NamedKey::PageUp) => key(EditKey::PageUp),
                     Key::Named(NamedKey::PageDown) => key(EditKey::PageDown),
+                    Key::Named(NamedKey::Backspace) if cmd => key(EditKey::DeleteToLineStart),
+                    Key::Named(NamedKey::Backspace) if ctrl && alt => {
+                        key(EditKey::DeleteSubwordLeft)
+                    }
+                    Key::Named(NamedKey::Backspace) if alt => key(EditKey::DeleteWordLeft),
                     Key::Named(NamedKey::Backspace) => key(EditKey::Backspace),
+                    Key::Named(NamedKey::Delete) if cmd => key(EditKey::DeleteToLineEnd),
+                    Key::Named(NamedKey::Delete) if ctrl && alt => key(EditKey::DeleteSubwordRight),
+                    Key::Named(NamedKey::Delete) if alt => key(EditKey::DeleteWordRight),
                     Key::Named(NamedKey::Delete) => key(EditKey::Delete),
                     Key::Named(NamedKey::Enter) => key(EditKey::Enter),
                     Key::Named(NamedKey::Escape) => key(EditKey::Escape),
-                    Key::Named(NamedKey::Tab) => Some(EditorInput::Text("\t".into())),
+                    // Emacs-style Control bindings macOS text fields share.
+                    Key::Character(c) if ctrl && !cmd && !alt => match c.as_str() {
+                        "a" => key(EditKey::LineStart),
+                        "e" => key(EditKey::LineEnd),
+                        "b" => key(EditKey::Left),
+                        "f" => key(EditKey::Right),
+                        "p" => key(EditKey::Up),
+                        "n" => key(EditKey::Down),
+                        "h" => key(EditKey::Backspace),
+                        "d" => key(EditKey::Delete),
+                        "w" => key(EditKey::DeleteWordLeft),
+                        "t" => key(EditKey::Transpose),
+                        "j" => key(EditKey::JoinLines),
+                        _ => None,
+                    },
+                    Key::Named(NamedKey::Tab) if shift => key(EditKey::Outdent),
+                    Key::Named(NamedKey::Tab) => key(EditKey::Tab),
                     Key::Character(c) if cmd => match c.as_str() {
-                        "z" if shift => key(EditKey::Redo),
+                        "z" | "Z" if shift => key(EditKey::Redo),
+                        "k" | "K" if shift => key(EditKey::DeleteLine),
+                        "l" | "L" if shift => key(EditKey::SelectAllMatches),
+                        "p" if ctrl => key(EditKey::AddCursorAboveRow),
+                        "n" if ctrl => key(EditKey::AddCursorBelowRow),
+                        "d" if !ctrl => key(EditKey::SelectNext),
                         "z" => key(EditKey::Undo),
                         "a" => key(EditKey::SelectAll),
+                        "[" => key(EditKey::Outdent),
+                        "]" => key(EditKey::Indent),
+                        "/" => key(EditKey::ToggleComments),
                         _ => None, // leave copy/paste/other Cmd shortcuts to their own handlers
                     },
                     _ if cmd => None,
