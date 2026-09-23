@@ -168,7 +168,15 @@ pub const RIGHT_TOGGLE: u64 = 7;
 pub const AGENT_TOGGLE: u64 = 8;
 pub const TOAST_ACTION: u64 = 9;
 pub const TOAST_CLOSE: u64 = 10;
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiagnosticSummary {
+    pub errors: usize,
+    pub warnings: usize,
+    pub current: Option<String>,
+}
+
 pub const CURSOR_POSITION: u64 = 11;
+pub const DIAGNOSTIC_MESSAGE: u64 = 12;
 /// Agent right-click menu item ids.
 pub const MENU_DOCK_LEFT: u64 = 810;
 pub const MENU_DOCK_RIGHT: u64 = 811;
@@ -363,6 +371,9 @@ pub trait Item: 'static {
     fn scroll_hover(&mut self, _index: usize, _dy: f32) -> bool {
         false
     }
+    fn diagnostic_message(&self) -> Option<String> {
+        None
+    }
     fn scroll_completion(&mut self, _dy: f32) -> bool {
         false
     }
@@ -473,6 +484,8 @@ pub enum EditKey {
     SelectSmallerSyntaxNode,
     MoveToEnclosingBracket,
     GoToHunk,
+    GoToDiagnostic,
+    GoToPreviousDiagnostic,
     GoToDefinition,
     GoToDeclaration,
     GoToTypeDefinition,
@@ -564,7 +577,9 @@ pub trait FunctionView: 'static {
     fn popover_scroll(&mut self, _index: usize, _dy: f32) -> bool {
         false
     }
-    /// A popover anchored at the focused editor's caret, with its window position.
+    fn diagnostic_summary(&self) -> Option<DiagnosticSummary> {
+        None
+    }
     fn editor_popovers(&mut self) -> Vec<(Node, f32, f32)> {
         Vec::new()
     }
@@ -1641,7 +1656,58 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                 row = row.child(g).child(vsep());
             }
             if ui::chrome().diagnostics {
-                row = row.child(label("0 errors").size(12.0).color(dim));
+                let summary = layout
+                    .files_view
+                    .as_ref()
+                    .and_then(|v| v.diagnostic_summary())
+                    .unwrap_or_default();
+                let colors = ui::theme();
+                let mut indicator = div().row().gap(4.0).items_center();
+                if summary.errors == 0 && summary.warnings == 0 {
+                    indicator = indicator
+                        .child(ui::icon(ui::IconKind::Check).size(14.0).color(colors.text));
+                } else {
+                    if summary.errors > 0 {
+                        indicator = indicator
+                            .child(
+                                ui::icon(ui::IconKind::XCircle)
+                                    .size(14.0)
+                                    .color(colors.error),
+                            )
+                            .child(
+                                label(summary.errors.to_string())
+                                    .size(12.0)
+                                    .color(colors.text),
+                            );
+                    }
+                    if summary.warnings > 0 {
+                        indicator = indicator
+                            .child(
+                                ui::icon(ui::IconKind::Warning)
+                                    .size(14.0)
+                                    .color(colors.warning),
+                            )
+                            .child(
+                                label(summary.warnings.to_string())
+                                    .size(12.0)
+                                    .color(colors.text),
+                            );
+                    }
+                }
+                row = row.child(indicator);
+                if let Some(message) = summary.current {
+                    let mut button = div()
+                        .h_px(20.0)
+                        .px(4.0)
+                        .rounded(4.0)
+                        .items_center()
+                        .on_click(DIAGNOSTIC_MESSAGE)
+                        .child(label(message).size(12.0).color(colors.text));
+                    if hovered == Some(DIAGNOSTIC_MESSAGE) {
+                        button = button.bg(colors.ghost_element_hover);
+                    }
+                    row = row.child(button);
+                }
             }
             row
         })
@@ -1825,6 +1891,8 @@ pub fn status_tooltip(id: u64) -> Option<String> {
         Some("Agent  ⌘I".into())
     } else if id == CURSOR_POSITION {
         Some("Go to Line/Column  ^G".into())
+    } else if id == DIAGNOSTIC_MESSAGE {
+        Some("Next Diagnostic  F8".into())
     } else if (FUNC_BASE..FUNC_BASE + PaneKind::ALL.len() as u64).contains(&id) {
         Some(PaneKind::ALL[(id - FUNC_BASE) as usize].title().to_string())
     } else {

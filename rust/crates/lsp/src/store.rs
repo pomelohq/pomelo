@@ -132,6 +132,7 @@ pub struct LspStore {
     updates: Vec<StoreEvent>,
     hovers: HashMap<(&'static str, i64), (u64, SyncedText)>,
     completions: HashMap<(&'static str, i64), (u64, SyncedText, usize)>,
+    summaries: HashMap<PathBuf, (&'static str, usize, usize)>,
     resolves: HashMap<(&'static str, i64), (u64, SyncedText)>,
     definitions: HashMap<(&'static str, i64), (u64, SyncedText)>,
     next_request: u64,
@@ -150,6 +151,7 @@ impl LspStore {
             updates: Vec::new(),
             hovers: HashMap::new(),
             completions: HashMap::new(),
+            summaries: HashMap::new(),
             resolves: HashMap::new(),
             definitions: HashMap::new(),
             next_request: 0,
@@ -689,7 +691,7 @@ impl LspStore {
             ServerEvent::Notification { method, params } => {
                 if method == "textDocument/publishDiagnostics" {
                     match serde_json::from_value::<PublishDiagnosticsParams>(params) {
-                        Ok(params) => self.receive_diagnostics(params),
+                        Ok(params) => self.receive_diagnostics(name, params),
                         Err(error) => eprintln!("lsp: bad diagnostics from {name}: {error}"),
                     }
                 }
@@ -704,6 +706,7 @@ impl LspStore {
     /// Drop a server that exited or failed, and the diagnostics it had shown.
     fn server_gone(&mut self, name: &'static str) {
         self.servers.remove(name);
+        self.summaries.retain(|_, (adapter, _, _)| *adapter != name);
         self.unavailable.insert(name);
         let closed: Vec<PathBuf> = self
             .documents
@@ -722,10 +725,35 @@ impl LspStore {
         }
     }
 
-    fn receive_diagnostics(&mut self, params: PublishDiagnosticsParams) {
+    pub fn diagnostic_summary(&self) -> (usize, usize) {
+        self.summaries
+            .values()
+            .fold((0, 0), |(errors, warnings), (_, e, w)| {
+                (errors + e, warnings + w)
+            })
+    }
+
+    fn receive_diagnostics(&mut self, name: &'static str, params: PublishDiagnosticsParams) {
         let Ok(path) = params.uri.to_file_path() else {
             return;
         };
+        let count = |severity: lsp_types::DiagnosticSeverity| {
+            params
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity.unwrap_or(lsp_types::DiagnosticSeverity::ERROR) == severity)
+                .count()
+        };
+        let (errors, warnings) = (
+            count(lsp_types::DiagnosticSeverity::ERROR),
+            count(lsp_types::DiagnosticSeverity::WARNING),
+        );
+        if errors + warnings == 0 {
+            self.summaries.remove(&path);
+        } else {
+            self.summaries
+                .insert(path.clone(), (name, errors, warnings));
+        }
         let mut diagnostics = params.diagnostics;
         diagnostics.sort_by(|a, b| {
             (a.range.start.line, a.range.start.character)

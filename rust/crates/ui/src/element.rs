@@ -49,6 +49,8 @@ pub enum IconKind {
     Search,
     Close,
     Check,
+    Warning,
+    XCircle,
     Plus,
     Folder,
     FolderOpen,

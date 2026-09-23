@@ -765,6 +765,8 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Search => svg!("search.svg"),
         IconKind::Close => svg!("close.svg"),
         IconKind::Check => svg!("check.svg"),
+        IconKind::Warning => svg!("warning.svg"),
+        IconKind::XCircle => svg!("x_circle.svg"),
         IconKind::Plus => svg!("plus.svg"),
         IconKind::Folder => svg!("folder.svg"),
         IconKind::FolderOpen => svg!("folder_open.svg"),

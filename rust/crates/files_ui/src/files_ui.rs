@@ -22,6 +22,7 @@ use search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 mod command_palette;
 mod completions_menu;
 mod definition;
+mod diagnostic_nav;
 mod fuzzy;
 mod git_diff;
 mod go_to_line;
@@ -288,6 +289,13 @@ struct DisplayRow {
     indent: usize,
     /// A committed line an expanded change removed, shown above `line` and never holding the caret.
     deleted: Option<usize>,
+    block: Option<usize>,
+}
+
+impl DisplayRow {
+    fn is_virtual(&self) -> bool {
+        self.deleted.is_some() || self.block.is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -379,6 +387,7 @@ struct FileItem {
     pending_resolve: Option<lsp_completion::PendingResolve>,
     definition_request: Option<definition::PendingDefinition>,
     link: Option<definition::LinkState>,
+    active_diagnostic: Option<diagnostic_nav::ActiveDiagnostic>,
 }
 
 /// A problem a language server reported, over a char range of the buffer.
@@ -494,6 +503,7 @@ impl FileItem {
             pending_resolve: None,
             definition_request: None,
             link: None,
+            active_diagnostic: None,
         }
     }
 
@@ -535,6 +545,7 @@ impl FileItem {
             }
         }
         self.diagnostics = entries;
+        self.refresh_active_diagnostic();
     }
 
     /// Wavy underlines under the visible diagnostics, the more severe drawn on top.
@@ -604,6 +615,12 @@ impl FileItem {
                         editor::buffer::map_offset(batch, entry.range.start, Bias::Left);
                     entry.range.end =
                         editor::buffer::map_offset(batch, entry.range.end, Bias::Left);
+                }
+                if let Some(active) = self.active_diagnostic.as_mut() {
+                    active.range.start =
+                        editor::buffer::map_offset(batch, active.range.start, Bias::Left);
+                    active.range.end =
+                        editor::buffer::map_offset(batch, active.range.end, Bias::Right);
                 }
             }
         }
@@ -785,6 +802,8 @@ impl FileItem {
             .map(|f| b.rope.char_to_line(f.start))
             .collect();
         let em = char_advance();
+        let block = self.block_placement();
+        let mut block_rows = false;
         let deletions = self.expanded_deletions();
         let mut pending_deletions = deletions.iter().peekable();
         let mut rows = Vec::with_capacity(lines.len());
@@ -798,6 +817,7 @@ impl FileItem {
                     end: usize::MAX,
                     indent: 0,
                     deleted: Some(base_line),
+                    block: None,
                 });
             }
         };
@@ -836,6 +856,7 @@ impl FileItem {
                     end: boundary.index,
                     indent,
                     deleted: None,
+                    block: None,
                 });
                 max_row_cols = max_row_cols.max(indent + boundary.index - start);
                 start = boundary.index;
@@ -847,7 +868,23 @@ impl FileItem {
                 end: usize::MAX,
                 indent,
                 deleted: None,
+                block: None,
             });
+            if let Some(diagnostic_nav::BlockPlacement::Rows { line: at, count }) = &block {
+                if *at == line {
+                    for index in 0..*count {
+                        rows.push(DisplayRow {
+                            line,
+                            start: 0,
+                            end: 0,
+                            indent: 0,
+                            deleted: None,
+                            block: Some(index),
+                        });
+                    }
+                    block_rows = true;
+                }
+            }
             let last_cols = if start == 0 {
                 columns
             } else {
@@ -860,7 +897,7 @@ impl FileItem {
                 push_deleted(&mut rows, line_count.saturating_sub(1), base_rows);
             }
         }
-        self.has_virtual_rows = !deletions.is_empty();
+        self.has_virtual_rows = !deletions.is_empty() || block_rows;
         self.rows = Some(rows);
         self.line_rows = line_rows;
         self.max_row_cols = max_row_cols;
@@ -920,7 +957,10 @@ impl FileItem {
 
     fn last_row_of_line(&self, line: usize) -> usize {
         let mut row = self.disp_of(line);
-        while self.row(row + 1).is_some_and(|next| next.line == line) {
+        while self
+            .row(row + 1)
+            .is_some_and(|next| next.line == line && !next.is_virtual())
+        {
             row += 1;
         }
         row
@@ -930,7 +970,7 @@ impl FileItem {
     fn soft_break_after(&self, row: usize) -> bool {
         match (self.row(row), self.row(row + 1)) {
             (Some(this), Some(next)) => {
-                next.line == this.line && this.deleted.is_none() && next.deleted.is_none()
+                next.line == this.line && !this.is_virtual() && !next.is_virtual()
             }
             _ => false,
         }
@@ -994,7 +1034,7 @@ impl FileItem {
         let mut row = first;
         while self
             .row(row + 1)
-            .is_some_and(|next| next.line == line && next.start <= index)
+            .is_some_and(|next| next.line == line && !next.is_virtual() && next.start <= index)
         {
             row += 1;
         }
@@ -1609,7 +1649,7 @@ impl FileItem {
             let Some(row) = self.row(row_index) else {
                 break;
             };
-            if row.deleted.is_some() {
+            if row.is_virtual() {
                 continue;
             }
             let line_start = b.rope.line_to_char(row.line);
@@ -2698,11 +2738,19 @@ impl Item for FileItem {
         // Text rows only (no gutter): the shell shifts this node left by `scroll_x`. The gutter is a separate
         // fixed overlay (see `gutter`), so long lines scroll under a stationary line-number column.
         let blame_row = self.inline_blame_row();
+        let inline_diagnostic = self.block_placement();
         let mut body = div().col().flex(1.0);
         for row_index in first..last {
             let Some(row) = self.row(row_index) else {
                 break;
             };
+            if let Some(index) = row.block {
+                body = body.child(
+                    self.block_row(index)
+                        .unwrap_or_else(|| div().h_px(EDIT_LINE_H).into()),
+                );
+                continue;
+            }
             let mut r = div().row().h_px(EDIT_LINE_H).items_center();
             if let Some(base_line) = row.deleted {
                 let segments = self.base_line_segments(base_line, &colors);
@@ -2740,7 +2788,15 @@ impl Item for FileItem {
             if empty && row.indent == 0 {
                 r = r.child(label(" ").size(EDIT_FONT).mono());
             }
-            if Some(row_index) == blame_row {
+            let inline_block = matches!(
+                &inline_diagnostic,
+                Some(diagnostic_nav::BlockPlacement::Inline { row_line }) if *row_line == row.line
+            ) && !self.soft_break_after(row_index);
+            if inline_block {
+                if let Some(block) = self.inline_block() {
+                    r = r.child(block);
+                }
+            } else if Some(row_index) == blame_row {
                 if let Some(text) = self.inline_blame_text() {
                     let hint = theme().hint;
                     r = r
@@ -2804,7 +2860,7 @@ impl Item for FileItem {
             let hunk_click = self
                 .hunk_at_line(line)
                 .then_some(fold_base + HUNK_FROM_FOLD + line as u64);
-            if row.deleted.is_some() || row.start > 0 {
+            if row.is_virtual() || row.start > 0 {
                 let mut cell = div().w_px(dims.full_width()).h_px(EDIT_LINE_H);
                 if let Some(id) = hunk_click {
                     cell = cell.on_click(id);
@@ -2917,6 +2973,11 @@ impl Item for FileItem {
 
     fn scroll_hover(&mut self, index: usize, dy: f32) -> bool {
         self.scroll_hover_popover(index, dy)
+    }
+
+    fn diagnostic_message(&self) -> Option<String> {
+        self.diagnostic_at_caret()
+            .map(|entry| entry.message.clone())
     }
 
     fn hover_completion(&mut self, id: Option<u64>) {
@@ -3197,6 +3258,13 @@ impl Item for FileItem {
             self.hide_hover();
             return self.go_to_definition(kind);
         }
+        if matches!(
+            key,
+            EditKey::GoToDiagnostic | EditKey::GoToPreviousDiagnostic
+        ) {
+            self.hide_hover();
+            return self.go_to_diagnostic(key == EditKey::GoToDiagnostic);
+        }
         self.hide_hover();
         if let Some(menu) = self.completions.as_mut() {
             match key {
@@ -3227,6 +3295,7 @@ impl Item for FileItem {
             EditKey::Tab if self.move_to_snippet_stop(true) => return,
             EditKey::Backtab if self.move_to_snippet_stop(false) => return,
             EditKey::Escape if self.buffer.as_mut().is_some_and(|b| b.exit_snippet()) => return,
+            EditKey::Escape if self.dismiss_diagnostic() => return,
             _ => {}
         }
         // One row of the previous page stays on screen.
@@ -3849,7 +3918,7 @@ impl<'a> EditorRows<'a> {
     fn new(item: &'a FileItem) -> Self {
         let text_rows = item.has_virtual_rows.then(|| {
             (0..item.disp_count())
-                .filter(|row| item.row(*row).is_some_and(|r| r.deleted.is_none()))
+                .filter(|row| item.row(*row).is_some_and(|r| !r.is_virtual()))
                 .collect()
         });
         Self {
@@ -5874,6 +5943,23 @@ impl FunctionView for FilesView {
             node: modal.render(),
             width: go_to_line::WIDTH,
             elevation: Elevation::Elevated,
+        })
+    }
+
+    fn diagnostic_summary(&self) -> Option<workspace::DiagnosticSummary> {
+        let (errors, warnings) = self
+            .lsp
+            .as_ref()
+            .map_or((0, 0), |lsp| lsp.diagnostic_summary());
+        let current = self
+            .pane_at(&self.active)
+            .and_then(|pane| pane.active.and_then(|i| pane.open.get(i)))
+            .and_then(|item| item.diagnostic_message())
+            .map(|message| message.lines().next().unwrap_or_default().to_string());
+        Some(workspace::DiagnosticSummary {
+            errors,
+            warnings,
+            current,
         })
     }
 
