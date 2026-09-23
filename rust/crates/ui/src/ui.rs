@@ -43,6 +43,21 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// A wavy line `thickness` thick along `w`, as under diagnostics; drawn in a box three times as tall.
+    pub fn wavy_underline(x: f32, y: f32, w: f32, thickness: f32, color: Rgba) -> Self {
+        Rect {
+            x,
+            y,
+            w,
+            h: thickness * 3.0,
+            color,
+            // A negative radius tells the shader to draw the wave instead of a box.
+            radius: -thickness,
+            border: 0.0,
+            border_color: Rgba::TRANSPARENT,
+        }
+    }
+
     pub fn new(x: f32, y: f32, w: f32, h: f32, color: Rgba) -> Self {
         Self {
             x,
@@ -380,6 +395,31 @@ fn make_msaa(
 // system fallback whose optical size is wrong at small sizes. We register all static weight faces under the
 // same family so `Attrs::weight` picks the matching face (cosmic-text 0.12 does not instantiate a variable
 // font's `wght` axis, so a single variable file would be stuck at Regular). Returns the registered family name.
+/// The corner radius in physical px, or the negated wave thickness for a wavy underline.
+fn shader_radius(r: &Rect, scale: f32, half_w: f32, half_h: f32) -> f32 {
+    if r.radius < 0.0 {
+        r.radius * scale
+    } else {
+        (r.radius * scale).min(half_w).min(half_h)
+    }
+}
+
+static WAKER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+/// Install how background work asks the event loop for a frame.
+pub fn set_waker(waker: impl Fn() + Send + Sync + 'static) {
+    if WAKER.set(Box::new(waker)).is_err() {
+        eprintln!("ui: waker already installed");
+    }
+}
+
+/// Ask for a frame from any thread, e.g. when a background result arrived.
+pub fn wake() {
+    if let Some(waker) = WAKER.get() {
+        waker();
+    }
+}
+
 fn load_font(font_system: &mut FontSystem, faces: &[&'static [u8]]) -> Option<String> {
     use glyphon::fontdb::Source;
     let mut first: Option<String> = None;
@@ -910,6 +950,21 @@ impl UiRenderer {
                     return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r;
                 }
                 @fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+                    if (in.radius < 0.0) {
+                        // Wavy underline: distance to a sine through the box's middle, two waves per
+                        // thickness-scaled height, peaking at 0.8 of the thickness.
+                        let thickness = -in.radius;
+                        let height = in.hsize.y * 2.0;
+                        let st = vec2<f32>((in.local.x + in.hsize.x) / height, (in.local.y + in.hsize.y) / height - 0.5);
+                        let frequency = 3.14159265 * 2.0 * thickness / height;
+                        let amplitude = thickness * 0.8 / height;
+                        let sine = sin(st.x * frequency) * amplitude;
+                        let slope = cos(st.x * frequency) * amplitude * frequency;
+                        let distance = (st.y - sine) / sqrt(1.0 + slope * slope) * height;
+                        let half = thickness * 0.5;
+                        let alpha = clamp(0.5 - max(-(distance + half), distance - half), 0.0, 1.0);
+                        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+                    }
                     let d = sd_round_box(in.local, in.hsize, in.radius);
                     let aa = fwidth(d);
                     let cov = 1.0 - smoothstep(0.0, aa, d);
@@ -1323,7 +1378,7 @@ impl UiRenderer {
             // SDF params in physical pixels: half-extent, and the corner-relative local coord per vertex.
             let hw = r.w * s / 2.0;
             let hh = r.h * s / 2.0;
-            let rad = (r.radius * s).min(hw).min(hh).max(0.0);
+            let rad = shader_radius(r, s, hw, hh);
             let corners = [
                 (l, t, -hw, -hh),
                 (rr, t, hw, -hh),
@@ -1801,7 +1856,7 @@ impl UiRenderer {
             let (rr, b) = ndc(r.x + r.w, r.y + r.h);
             let hw = r.w * s / 2.0;
             let hh = r.h * s / 2.0;
-            let rad = (r.radius * s).min(hw).min(hh).max(0.0);
+            let rad = shader_radius(r, s, hw, hh);
             for (px, py, lx, ly) in [
                 (l, t, -hw, -hh),
                 (rr, t, hw, -hh),

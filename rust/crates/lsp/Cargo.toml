@@ -1,0 +1,16 @@
+[package]
+name = "lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Language server client: runs servers over stdio, keeps open documents in sync with them, and collects their diagnostics. Pure logic, no rendering."
+
+[lib]
+path = "src/lsp.rs"
+
+[dependencies]
+editor = { package = "pomelo-editor", path = "../editor" }
+lsp-types = "0.95.1"
+ropey.workspace = true
+serde.workspace = true
+serde_json.workspace = true
