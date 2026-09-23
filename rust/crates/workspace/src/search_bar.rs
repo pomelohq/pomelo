@@ -4,11 +4,11 @@
 use std::ops::Range;
 
 use crate::text_field::{FieldFont, TextField};
+use crate::EditKey;
 use editor::search::{
     active_match_index, match_index_for_direction, Direction, SearchOptions, SearchQuery,
 };
 use ui::{div, icon, label, theme, IconKind, Node};
-use workspace::EditKey;
 
 use crate::text_field::INPUT_FONT;
 const INPUT_H: f32 = 32.0;
@@ -18,6 +18,9 @@ const TOOLBAR_PAD_X: f32 = 8.0;
 const TOOLBAR_PAD_Y: f32 = 6.0;
 const LINE_GAP: f32 = 8.0;
 const MAX_HISTORY: usize = 50;
+const COUNT_FONT: f32 = 12.0;
+const COUNT_MARGIN: f32 = 8.0;
+const COUNT_MIN_W: f32 = 40.0;
 
 /// Click targets inside the bar, offset from the pane's base id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,8 +70,31 @@ pub enum SearchField {
     Replacement,
 }
 
+/// Which of the bar's controls the searched item supports; unsupported ones are not shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchSupport {
+    pub case: bool,
+    pub word: bool,
+    pub regex: bool,
+    pub replace: bool,
+    pub select_all: bool,
+}
+
+impl Default for SearchSupport {
+    fn default() -> Self {
+        Self {
+            case: true,
+            word: true,
+            regex: true,
+            replace: true,
+            select_all: true,
+        }
+    }
+}
+
 pub struct SearchBar {
     pub dismissed: bool,
+    pub supported: SearchSupport,
     pub query: TextField,
     pub replacement: TextField,
     pub replace_enabled: bool,
@@ -87,6 +113,7 @@ impl Default for SearchBar {
     fn default() -> Self {
         Self {
             dismissed: true,
+            supported: SearchSupport::default(),
             query: TextField::default(),
             replacement: TextField::default(),
             replace_enabled: false,
@@ -117,6 +144,13 @@ pub trait Searchable {
 }
 
 impl SearchBar {
+    pub fn with_support(supported: SearchSupport) -> Self {
+        Self {
+            supported,
+            ..Self::default()
+        }
+    }
+
     pub fn height(&self) -> f32 {
         if self.dismissed {
             return 0.0;
@@ -149,7 +183,7 @@ impl SearchBar {
         } else {
             self.query.select_all();
         }
-        self.replace_enabled |= replace;
+        self.replace_enabled |= replace && self.supported.replace;
         self.focus = Some(if replace && !suggestion.is_empty() {
             SearchField::Replacement
         } else {
@@ -271,6 +305,9 @@ impl SearchBar {
     }
 
     pub fn toggle_replace(&mut self) {
+        if !self.supported.replace {
+            return;
+        }
         self.replace_enabled ^= true;
         if !self.replace_enabled && self.focus == Some(SearchField::Replacement) {
             self.focus = Some(SearchField::Query);
@@ -433,31 +470,41 @@ impl SearchBar {
             Some(index) => format!("{}/{}", index + 1, self.matches.len()),
             None => "0/0".to_string(),
         };
-        let query_column = input(
+        let count_w = (ui::measure_text_width(&count, COUNT_FONT, false, ui::ui_font_weight())
+            / ui::ui_text_scale())
+        .max(COUNT_MIN_W);
+        let supported = self.supported;
+        let mut query_column = input(
             &self.query,
             SearchField::Query,
             "Search...",
             query_border,
             SearchClick::Query,
-        )
-        .child(icon_button(
-            IconKind::CaseSensitive,
-            SearchClick::CaseSensitive,
-            self.options.case_sensitive,
-            true,
-        ))
-        .child(icon_button(
-            IconKind::WholeWord,
-            SearchClick::WholeWord,
-            self.options.whole_word,
-            true,
-        ))
-        .child(icon_button(
-            IconKind::Regex,
-            SearchClick::Regex,
-            self.options.regex,
-            true,
-        ));
+        );
+        if supported.case {
+            query_column = query_column.child(icon_button(
+                IconKind::CaseSensitive,
+                SearchClick::CaseSensitive,
+                self.options.case_sensitive,
+                true,
+            ));
+        }
+        if supported.word {
+            query_column = query_column.child(icon_button(
+                IconKind::WholeWord,
+                SearchClick::WholeWord,
+                self.options.whole_word,
+                true,
+            ));
+        }
+        if supported.regex {
+            query_column = query_column.child(icon_button(
+                IconKind::Regex,
+                SearchClick::Regex,
+                self.options.regex,
+                true,
+            ));
+        }
         let matches_column = div()
             .row()
             .items_center()
@@ -477,30 +524,35 @@ impl SearchBar {
             ))
             .child(
                 div()
-                    .w_px(40.0)
-                    .pl(8.0)
-                    .child(label(count).size(12.0).color(if has_match {
+                    .row()
+                    .h_px(BUTTON)
+                    .items_center()
+                    .w_px(COUNT_MARGIN + count_w)
+                    .pl(COUNT_MARGIN)
+                    .child(label(count).size(COUNT_FONT).color(if has_match {
                         colors.text
                     } else {
                         colors.text_disabled
                     })),
             );
-        let mode_column = div()
-            .row()
-            .items_center()
-            .gap(4.0)
-            .child(icon_button(
+        let mut mode_column = div().row().items_center().gap(4.0);
+        if supported.replace {
+            mode_column = mode_column.child(icon_button(
                 IconKind::Replace,
                 SearchClick::ToggleReplace,
                 self.replace_enabled,
                 true,
-            ))
-            .child(icon_button(
+            ));
+        }
+        if supported.select_all {
+            mode_column = mode_column.child(icon_button(
                 IconKind::SelectAll,
                 SearchClick::SelectAll,
                 false,
                 true,
-            ))
+            ));
+        }
+        let mode_column = mode_column
             .child(matches_column)
             .child(div().flex(1.0))
             .child(icon_button(

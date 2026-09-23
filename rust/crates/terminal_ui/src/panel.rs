@@ -2,13 +2,15 @@
 
 use std::path::{Path, PathBuf};
 
+use editor::search::{Direction, SearchQuery};
 use terminal::{
-    HyperlinkMatch, Keystroke, Modifiers, MouseButton, Palette, PathWithPosition, Terminal,
-    TerminalAction, TerminalHost, TerminalOptions, Waker,
+    GridPoint, HyperlinkMatch, Keystroke, Modifiers, MouseButton, Palette, PathWithPosition,
+    Terminal, TerminalAction, TerminalHost, TerminalOptions, Waker,
 };
 use ui::{div, icon, label, theme, IconKind, Node, Painted, Rect, Rgba};
+use workspace::search_bar::{SearchBar, SearchClick, SearchField, SearchSupport, Searchable};
 use workspace::{
-    TerminalKeyOutcome, TerminalOpenTarget, TerminalPanelView, TerminalSyncOutcome,
+    EditKey, TerminalKeyOutcome, TerminalOpenTarget, TerminalPanelView, TerminalSyncOutcome,
     TERMINAL_VIEW_BASE,
 };
 
@@ -19,6 +21,135 @@ const NEW_TERMINAL: u64 = TERMINAL_VIEW_BASE;
 const TAB_ACTIVATE_BASE: u64 = TERMINAL_VIEW_BASE + 100;
 const TAB_CLOSE_BASE: u64 = TERMINAL_VIEW_BASE + 2000;
 const TAB_LIMIT: u64 = 1900;
+const SEARCH_BASE: u64 = TERMINAL_VIEW_BASE + 4000;
+
+/// The search bar's view of a terminal: grid points flattened to offsets (row-major from the top of the
+/// scrollback), so the shared bar's range logic works unchanged.
+struct SearchTarget<'a> {
+    terminal: &'a mut Terminal,
+    history: usize,
+    columns: usize,
+}
+
+impl<'a> SearchTarget<'a> {
+    fn new(terminal: &'a mut Terminal) -> Self {
+        let history = terminal.history_size();
+        let columns = terminal.content().columns.max(1);
+        Self {
+            terminal,
+            history,
+            columns,
+        }
+    }
+
+    fn offset(&self, point: GridPoint) -> usize {
+        let row = (point.line + self.history as i32).max(0) as usize;
+        row * self.columns + point.column
+    }
+
+    fn point(&self, offset: usize) -> GridPoint {
+        GridPoint {
+            line: (offset / self.columns) as i32 - self.history as i32,
+            column: offset % self.columns,
+        }
+    }
+
+    fn range(&self, range: &std::ops::Range<usize>) -> (GridPoint, GridPoint) {
+        (
+            self.point(range.start),
+            self.point(range.end.saturating_sub(1).max(range.start)),
+        )
+    }
+}
+
+/// The pattern for a bar query: regex queries as written, plain text escaped. A lone `.` would match every
+/// cell, so it finds nothing.
+fn pattern_for(query: &SearchQuery) -> Option<String> {
+    let pattern = match query {
+        SearchQuery::Text { query, .. } => regex::escape(query),
+        SearchQuery::Regex { regex, .. } => regex.as_str().to_string(),
+    };
+    (pattern != "." && !pattern.is_empty()).then_some(pattern)
+}
+
+impl Searchable for SearchTarget<'_> {
+    fn search_version(&self) -> u64 {
+        self.terminal.content_version()
+    }
+
+    fn find(&self, query: &SearchQuery) -> Vec<std::ops::Range<usize>> {
+        let Some(pattern) = pattern_for(query) else {
+            return Vec::new();
+        };
+        self.terminal
+            .find(&pattern)
+            .into_iter()
+            .map(|(start, end)| self.offset(start)..self.offset(end) + 1)
+            .collect()
+    }
+
+    fn query_suggestion(&self) -> String {
+        self.terminal.selection_text().unwrap_or_default()
+    }
+
+    /// With no selection the search starts from the cursor, so the first hit is the newest one.
+    fn single_cursor(&self) -> Option<usize> {
+        let point = self.terminal.selection_head().unwrap_or(GridPoint {
+            line: self.terminal.content().cursor.line,
+            column: self.terminal.content().cursor.column,
+        });
+        Some(self.offset(point))
+    }
+
+    fn activate_match(&mut self, range: std::ops::Range<usize>) {
+        let (start, end) = self.range(&range);
+        self.terminal.select_range(start, end);
+    }
+
+    fn select_matches(&mut self, _ranges: &[std::ops::Range<usize>]) {}
+
+    fn replace_match(&mut self, _query: &SearchQuery, _range: std::ops::Range<usize>) {}
+
+    fn replace_all(&mut self, _query: &SearchQuery, _ranges: &[std::ops::Range<usize>]) {}
+
+    fn set_search_highlights(
+        &mut self,
+        matches: Vec<std::ops::Range<usize>>,
+        _active: Option<usize>,
+    ) {
+        let matches = matches.iter().map(|range| self.range(range)).collect();
+        self.terminal.set_search_matches(matches);
+    }
+}
+
+/// Keys for the search bar's text field, from a terminal key press.
+fn search_edit_key(keystroke: &Keystroke) -> Option<EditKey> {
+    let m = keystroke.modifiers;
+    Some(match keystroke.key.as_str() {
+        "enter" => EditKey::Enter,
+        "escape" => EditKey::Escape,
+        "tab" => EditKey::Tab,
+        "backspace" if m.cmd => EditKey::DeleteToLineStart,
+        "backspace" if m.alt => EditKey::DeleteWordLeft,
+        "backspace" => EditKey::Backspace,
+        "delete" if m.alt => EditKey::DeleteWordRight,
+        "delete" => EditKey::Delete,
+        "left" if m.cmd => EditKey::LineStart,
+        "left" if m.alt => EditKey::WordLeft,
+        "left" => EditKey::Left,
+        "right" if m.cmd => EditKey::LineEnd,
+        "right" if m.alt => EditKey::WordRight,
+        "right" => EditKey::Right,
+        "home" => EditKey::Home,
+        "end" => EditKey::End,
+        "up" => EditKey::Up,
+        "down" => EditKey::Down,
+        "a" if m.cmd => EditKey::SelectAll,
+        "z" if m.cmd && m.shift => EditKey::Redo,
+        "z" if m.cmd => EditKey::Undo,
+        _ => return None,
+    })
+}
 
 struct Host<'a> {
     palette: Palette,
@@ -50,6 +181,7 @@ pub struct TerminalPanel {
     spawn_error: Option<String>,
     /// The link a cmd-press landed on; releasing over the same link opens it.
     pressed_link: Option<HyperlinkMatch>,
+    search: SearchBar,
     hovered_target: Option<TerminalOpenTarget>,
     open_request: Option<TerminalOpenTarget>,
 }
@@ -69,6 +201,13 @@ impl TerminalPanel {
             focused: false,
             spawn_error: None,
             pressed_link: None,
+            search: SearchBar::with_support(SearchSupport {
+                case: false,
+                word: false,
+                regex: true,
+                replace: false,
+                select_all: false,
+            }),
             hovered_target: None,
             open_request: None,
         }
@@ -126,6 +265,51 @@ impl TerminalPanel {
             };
             found.map(|path| TerminalOpenTarget::Path { path, row, column })
         })
+    }
+
+    /// Run `f` with the search bar and the active terminal as its target.
+    fn with_search<R>(
+        &mut self,
+        f: impl FnOnce(&mut SearchBar, &mut SearchTarget) -> R,
+    ) -> Option<R> {
+        let terminal = self.tabs.get_mut(self.active)?;
+        let mut target = SearchTarget::new(terminal);
+        Some(f(&mut self.search, &mut target))
+    }
+
+    fn search_focused(&self) -> bool {
+        !self.search.dismissed && self.search.focus.is_some()
+    }
+
+    /// Search commands available whenever the terminal has focus; returns whether `keystroke` was one.
+    fn search_command(&mut self, keystroke: &Keystroke) -> bool {
+        let m = keystroke.modifiers;
+        let only_cmd = m.cmd && !m.alt && !m.ctrl;
+        match keystroke.key.as_str() {
+            "f" if only_cmd && !m.shift => {
+                if self.search.dismissed {
+                    self.with_search(|bar, target| bar.deploy(target, false));
+                } else {
+                    self.search.focus = Some(SearchField::Query);
+                    self.search.query.select_all();
+                }
+                true
+            }
+            "g" if only_cmd && !self.search.dismissed => {
+                let direction = if m.shift {
+                    Direction::Prev
+                } else {
+                    Direction::Next
+                };
+                self.with_search(|bar, target| bar.select_match(target, direction));
+                true
+            }
+            "x" if m.cmd && m.alt && !m.ctrl && !self.search.dismissed => {
+                self.with_search(|bar, target| bar.toggle_option(target, SearchClick::Regex));
+                true
+            }
+            _ => false,
+        }
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -231,7 +415,7 @@ impl TerminalPanelView for TerminalPanel {
         let scale = ui::ui_text_scale();
         self.metrics = GridMetrics::measure(FONT_SIZE, LINE_HEIGHT);
         let metrics = self.metrics;
-        let body_h = (region.h / scale - TAB_H).max(metrics.line_height);
+        let body_h = (region.h / scale - TAB_H - self.search.height()).max(metrics.line_height);
         let bounds = metrics.bounds(region.w / scale, body_h);
         let mut padding_top = 0.0;
         let mut overlays = Vec::new();
@@ -262,6 +446,12 @@ impl TerminalPanelView for TerminalPanel {
             }
         };
         let tab_bar = self.tab_bar();
+        let search_h = self.search.height();
+        let search_bar: Node = if self.search.dismissed {
+            div().into()
+        } else {
+            self.search.render(SEARCH_BASE)
+        };
         let body = div()
             .col()
             .flex(1.0)
@@ -269,17 +459,22 @@ impl TerminalPanelView for TerminalPanel {
             .pl(metrics.cell_width)
             .child(div().h_px(padding_top))
             .child(grid);
-        let node: Node = div().col().child(tab_bar).child(body).into();
+        let node: Node = div()
+            .col()
+            .child(tab_bar)
+            .child(search_bar)
+            .child(body)
+            .into();
         let mut painted = ui::render(&node, region);
         self.grid_origin = (
             region.x + metrics.cell_width * scale,
-            region.y + (TAB_H + padding_top) * scale,
+            region.y + (TAB_H + search_h + padding_top) * scale,
         );
         self.grid_rect = Rect::new(
             region.x,
-            region.y + TAB_H * scale,
+            region.y + (TAB_H + search_h) * scale,
             region.w,
-            (region.h - TAB_H * scale).max(0.0),
+            (region.h - (TAB_H + search_h) * scale).max(0.0),
             Rgba::TRANSPARENT,
         );
         painted.rects.extend(overlays.into_iter().map(|rect| {
@@ -295,6 +490,30 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn click(&mut self, id: u64) -> bool {
+        if let Some(click) = id
+            .checked_sub(SEARCH_BASE)
+            .and_then(SearchClick::from_offset)
+        {
+            match click {
+                SearchClick::Query => self.search.focus = Some(SearchField::Query),
+                SearchClick::Next | SearchClick::Previous => {
+                    let direction = if click == SearchClick::Next {
+                        Direction::Next
+                    } else {
+                        Direction::Prev
+                    };
+                    self.with_search(|bar, target| bar.select_match(target, direction));
+                }
+                SearchClick::Close => {
+                    self.with_search(|bar, target| bar.dismiss(target));
+                }
+                SearchClick::Regex => {
+                    self.with_search(|bar, target| bar.toggle_option(target, click));
+                }
+                _ => {}
+            }
+            return true;
+        }
         if id == NEW_TERMINAL {
             self.open(None);
         } else if (TAB_CLOSE_BASE..TAB_CLOSE_BASE + TAB_LIMIT).contains(&id) {
@@ -323,6 +542,7 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn mouse_down(&mut self, x: f32, y: f32, click_count: u32, modifiers: Modifiers) -> bool {
+        self.search.focus = None;
         let (x, y) = self.local(x, y);
         if modifiers.cmd {
             let link = self
@@ -411,6 +631,38 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn key(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
+        if self.tabs.is_empty() {
+            return TerminalKeyOutcome::Ignored;
+        }
+        if self.search_command(keystroke) {
+            return TerminalKeyOutcome::Handled;
+        }
+        if self.search_focused() {
+            let m = keystroke.modifiers;
+            if m.cmd && keystroke.key == "v" {
+                return TerminalKeyOutcome::Paste;
+            }
+            if m.cmd && keystroke.key == "c" {
+                return self
+                    .search
+                    .query
+                    .selected_text()
+                    .map_or(TerminalKeyOutcome::Handled, TerminalKeyOutcome::Copy);
+            }
+            return match search_edit_key(keystroke) {
+                Some(key) => {
+                    let keep = self
+                        .with_search(|bar, target| bar.key(target, key, m.shift))
+                        .unwrap_or(false);
+                    if !keep {
+                        self.search.focus = None;
+                    }
+                    TerminalKeyOutcome::Handled
+                }
+                None if m.cmd || m.ctrl => TerminalKeyOutcome::Handled,
+                None => TerminalKeyOutcome::Ignored,
+            };
+        }
         let Some(terminal) = self.active_terminal() else {
             return TerminalKeyOutcome::Ignored;
         };
@@ -434,12 +686,20 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn text(&mut self, text: &str) {
+        if self.search_focused() {
+            self.with_search(|bar, target| bar.input(target, text));
+            return;
+        }
         if let Some(terminal) = self.active_terminal() {
             terminal.input(text.as_bytes().to_vec());
         }
     }
 
     fn paste(&mut self, text: &str) {
+        if self.search_focused() {
+            self.with_search(|bar, target| bar.input(target, text));
+            return;
+        }
         if let Some(terminal) = self.active_terminal() {
             terminal.paste(text);
         }
@@ -474,6 +734,9 @@ impl TerminalPanelView for TerminalPanel {
             }
         }
         outcome.closed_all = had_tabs && self.tabs.is_empty();
+        if outcome.changed && !self.search.dismissed {
+            self.with_search(|bar, target| bar.refresh(target));
+        }
         outcome
     }
 
@@ -548,5 +811,49 @@ mod tests {
             Some(TerminalOpenTarget::Url("https://example.com".into()))
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn search_finds_newest_match_first_and_cycles() {
+        let root = std::env::temp_dir();
+        let mut panel = TerminalPanel::new(root, std::sync::Arc::new(|| {}));
+        panel.tabs.push(
+            Terminal::spawn(
+                TerminalOptions {
+                    shell: Some((
+                        "/bin/sh".into(),
+                        vec![
+                            "-c".into(),
+                            "printf 'alpha one\\nbeta\\nalpha two'; sleep 5".into(),
+                        ],
+                    )),
+                    ..TerminalOptions::default()
+                },
+                std::sync::Arc::new(|| {}),
+            )
+            .unwrap(),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !panel.tabs[0].screen_text().contains("two") {
+            assert!(std::time::Instant::now() < deadline, "no output");
+            panel.sync(&|| None);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(panel.search_command(&Keystroke::parse("cmd-f")));
+        panel.text("alpha");
+        assert_eq!(panel.search.matches.len(), 2);
+        assert_eq!(panel.search.active_match, Some(1));
+        assert_eq!(panel.tabs[0].selection_text().as_deref(), Some("alpha"));
+        let highlighted = &panel.tabs[0].content().search_matches;
+        assert_eq!(highlighted.len(), 2);
+        assert_eq!(highlighted[1].0.line - highlighted[0].0.line, 2);
+        assert!(panel.search_command(&Keystroke::parse("cmd-g")));
+        assert_eq!(panel.search.active_match, Some(0));
+        assert_eq!(
+            panel.key(&Keystroke::parse("escape")),
+            TerminalKeyOutcome::Handled
+        );
+        assert!(panel.search.dismissed);
+        assert!(panel.tabs[0].content().search_matches.is_empty());
     }
 }

@@ -183,6 +183,19 @@ fn blend(base: Rgba, over: Rgba) -> Rgba {
     )
 }
 
+/// Whether `(line, column)` falls in one of the sorted, inclusive search matches.
+fn in_search_match(
+    matches: &[(terminal::GridPoint, terminal::GridPoint)],
+    line: i32,
+    column: usize,
+) -> bool {
+    let point = (line, column);
+    let index = matches.partition_point(|(_, end)| (end.line, end.column) < point);
+    matches
+        .get(index)
+        .is_some_and(|(start, _)| (start.line, start.column) <= point)
+}
+
 /// Whether the live screen's last row has content, so a full screen sits flush against the bottom edge.
 fn bottom_row_occupied(content: &Content) -> bool {
     let bottom = content.screen_lines as i32 - 1 - content.display_offset as i32;
@@ -267,12 +280,17 @@ impl GridPainter {
                     column: cell.column,
                 })
             });
+            let matched = in_search_match(&content.search_matches, cell.line, cell.column);
             let blank = cell.c == ' ' && cell.zerowidth.is_empty();
             let default_background = matches!(bg, Color::Named(NamedColor::Background));
-            if blank && default_background && !selected && !is_cursor {
+            if blank && default_background && !selected && !is_cursor && !matched {
                 continue;
             }
             let mut background = (!default_background).then(|| convert_color(bg, theme, &palette));
+            if matched {
+                let base = background.unwrap_or(theme.terminal_background);
+                background = Some(blend(base, theme.search_match_background));
+            }
             if selected {
                 let base = background.unwrap_or(theme.terminal_background);
                 background = Some(blend(base, theme.player_selection));

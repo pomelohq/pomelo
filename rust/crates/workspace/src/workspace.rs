@@ -3,6 +3,8 @@
 //! content area. Computes rectangles, text runs and hit regions; the app drives input and rendering.
 
 mod panel;
+pub mod search_bar;
+pub mod text_field;
 mod workspace_view;
 pub use panel::{
     function_bar, function_content, function_dock_body, terminal_content, terminal_dock_body,
@@ -2167,4 +2169,14 @@ fn icon_button(icon: Node, id: u64, hovered: Option<u64>) -> Node {
         b = b.bg(theme().ghost_element_hover);
     }
     b.into()
+}
+
+/// The syntax palette matching the active UI theme's light/dark appearance, so highlighting (and selection
+/// tints in text fields) stay in sync with the app theme.
+pub fn syntax_theme() -> editor::Theme {
+    if ui::theme().appearance == ui::Appearance::Light {
+        editor::Theme::one_light()
+    } else {
+        editor::Theme::one_dark()
+    }
 }
