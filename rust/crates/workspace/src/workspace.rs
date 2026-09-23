@@ -337,6 +337,17 @@ pub trait Item: 'static {
     }
     fn toggle_fold(&mut self, _line: usize) {}
     /// A popover at the caret (the word menu) and its window position, given the text area.
+    /// Documentation of the selected completion, beside the menu; `viewport` is the window size.
+    fn completion_aside(
+        &self,
+        _content: ui::Rect,
+        _viewport: (f32, f32),
+    ) -> Option<(Node, f32, f32)> {
+        None
+    }
+    fn scroll_completion_aside(&mut self, _dy: f32) -> bool {
+        false
+    }
     fn completion_popover(&self, _content: ui::Rect) -> Option<(Node, f32, f32)> {
         None
     }

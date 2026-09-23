@@ -612,8 +612,15 @@ impl LspStore {
                     return;
                 }
                 if let Some((request, synced)) = self.resolves.remove(&(name, id)) {
+                    let result = result.ok();
+                    let documentation = result
+                        .as_ref()
+                        .and_then(|value| value.get("documentation"))
+                        .and_then(|value| {
+                            serde_json::from_value::<lsp_types::Documentation>(value.clone()).ok()
+                        })
+                        .map(crate::CompletionDocumentation::from);
                     let additional_edits = result
-                        .ok()
                         .and_then(|value| {
                             serde_json::from_value::<Vec<lsp_types::TextEdit>>(
                                 value.get("additionalTextEdits")?.clone(),
@@ -626,6 +633,7 @@ impl LspStore {
                         .push(StoreEvent::CompletionResolved(crate::ResolvedCompletion {
                             request,
                             additional_edits,
+                            documentation,
                             synced,
                         }));
                     return;

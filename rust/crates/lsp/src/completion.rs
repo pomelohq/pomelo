@@ -32,8 +32,37 @@ pub struct LspCompletion {
     pub insert_as_is: bool,
     pub deprecated: bool,
     pub additional_edits: Vec<(Range<usize>, String)>,
+    pub documentation: Option<CompletionDocumentation>,
     /// The item as the server sent it, to ask it to fill in the rest.
     pub raw: Value,
+}
+
+/// One line shows beside the item; more goes in a panel next to the menu.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompletionDocumentation {
+    SingleLine(String),
+    MultiLinePlainText(String),
+    MultiLineMarkdown(String),
+}
+
+impl From<lsp_types::Documentation> for CompletionDocumentation {
+    fn from(documentation: lsp_types::Documentation) -> Self {
+        use lsp_types::{Documentation, MarkupKind};
+        let plain = |text: String| {
+            if text.lines().count() <= 1 {
+                CompletionDocumentation::SingleLine(text.trim().to_string())
+            } else {
+                CompletionDocumentation::MultiLinePlainText(text)
+            }
+        };
+        match documentation {
+            Documentation::String(text) => plain(text),
+            Documentation::MarkupContent(content) => match content.kind {
+                MarkupKind::PlainText => plain(content.value),
+                MarkupKind::Markdown => CompletionDocumentation::MultiLineMarkdown(content.value),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +79,7 @@ pub struct CompletionsResponse {
 pub struct ResolvedCompletion {
     pub request: u64,
     pub additional_edits: Vec<(Range<usize>, String)>,
+    pub documentation: Option<CompletionDocumentation>,
     pub synced: SyncedText,
 }
 
@@ -271,6 +301,10 @@ fn to_completion(
         insert_as_is: mode == Some(InsertTextMode::AS_IS),
         deprecated,
         additional_edits,
+        documentation: item
+            .documentation
+            .clone()
+            .map(CompletionDocumentation::from),
         raw,
     }
 }
