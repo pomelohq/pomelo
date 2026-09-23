@@ -23,6 +23,9 @@ struct SavedFile {
     selections: Vec<(usize, usize)>,
     scroll: SavedScroll,
     folds: Vec<SavedFold>,
+    /// The whole text when the tab had unsaved changes, brought back unsaved.
+    #[serde(default)]
+    contents: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -88,6 +91,7 @@ impl FileItem {
                 x: self.scroll_x,
             },
             folds,
+            contents: buffer.is_dirty().then(|| rope.to_string()),
         };
         Some(SerializedItem {
             kind: FILE_KIND.into(),
@@ -101,20 +105,40 @@ impl FileItem {
         let SavedFile {
             root,
             path,
+            mtime,
             selections,
             scroll,
             folds,
-            ..
+            contents,
         } = saved;
-        if !root.join(&path).is_file() {
+        let on_disk = root.join(&path).is_file();
+        if !on_disk && contents.is_none() {
             return None;
         }
-        let text = files::read(&root, &path)
-            .ok()
-            .and_then(|contents| contents.text);
+        let text = if on_disk {
+            files::read(&root, &path).ok().and_then(|read| read.text)
+        } else {
+            Some(String::new())
+        };
         let mut file = FileItem::new(root, &path, text);
+        if let Some(contents) = contents {
+            file.restore_unsaved(&contents, mtime);
+        }
         file.restore_view(&selections, &scroll, &folds);
         Some(file)
+    }
+
+    /// Bring back text left unsaved last session. The tab keeps the disk time it was based on, so a file that
+    /// changed on disk meanwhile shows as a conflict instead of being overwritten.
+    fn restore_unsaved(&mut self, contents: &str, mtime: Option<(u64, u32)>) {
+        let Some(buffer) = self.buffer.as_mut() else {
+            return;
+        };
+        buffer.restore_unsaved(contents);
+        self.saved_mtime = mtime
+            .map(|(secs, nanos)| std::time::UNIX_EPOCH + std::time::Duration::new(secs, nanos));
+        self.rows = None;
+        self.refresh_disk_state();
     }
 
     fn restore_view(
@@ -333,6 +357,57 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(titles, ["main.rs", "lib.rs"]);
         assert_eq!(back.save_panes(), Some(saved));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn edited(root: &std::path::Path) -> SerializedItem {
+        let mut file = opened(root);
+        if let Some(buffer) = file.buffer.as_mut() {
+            buffer.edit(vec![(0..0, "// draft\n".into())]);
+        }
+        file.saved_state().unwrap()
+    }
+
+    fn text_of(file: &FileItem) -> String {
+        file.buffer
+            .as_ref()
+            .map(|buffer| buffer.rope.to_string())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn unsaved_changes_come_back_unsaved_and_not_undoable() {
+        let root = temp_root("hot-exit");
+        std::fs::write(root.join("main.rs"), SOURCE).unwrap();
+        let saved = edited(&root);
+        let mut back = FileItem::from_saved(&saved).unwrap();
+        assert_eq!(text_of(&back), format!("// draft\n{SOURCE}"));
+        assert!(back.is_dirty());
+        assert!(!back.has_conflict());
+        if let Some(buffer) = back.buffer.as_mut() {
+            buffer.undo();
+        }
+        assert_eq!(text_of(&back), format!("// draft\n{SOURCE}"));
+        let clean = opened(&root).saved_state().unwrap();
+        let reopened = FileItem::from_saved(&clean).unwrap();
+        assert!(!reopened.is_dirty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn unsaved_changes_over_a_file_changed_on_disk_show_a_conflict() {
+        let root = temp_root("hot-exit-conflict");
+        std::fs::write(root.join("main.rs"), SOURCE).unwrap();
+        let saved = edited(&root);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join("main.rs"), "fn changed() {}\n").unwrap();
+        let back = FileItem::from_saved(&saved).unwrap();
+        assert!(back.has_conflict());
+        assert_eq!(text_of(&back), format!("// draft\n{SOURCE}"));
+        std::fs::remove_file(root.join("main.rs")).unwrap();
+        let gone = FileItem::from_saved(&saved).unwrap();
+        assert!(gone.is_dirty());
+        assert_eq!(text_of(&gone), format!("// draft\n{SOURCE}"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

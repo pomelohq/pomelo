@@ -393,6 +393,9 @@ struct AutocloseRegion {
     pair: BracketPair,
 }
 
+/// A saved marker no history entry carries, for text whose saved version is not in the undo history.
+const UNREACHABLE_SAVE: Option<usize> = Some(usize::MAX);
+
 impl Default for EditorBuffer {
     fn default() -> Self {
         Self::from_text("")
@@ -1174,6 +1177,16 @@ impl EditorBuffer {
 
     pub fn is_dirty(&self) -> bool {
         self.undo_stack.last().map(|e| e.id) != self.saved_transaction
+    }
+
+    /// Replace the text with unsaved content kept from a previous session: it is not undoable (history starts
+    /// here) and the buffer stays dirty until saved.
+    pub fn restore_unsaved(&mut self, text: &str) {
+        let len = self.rope.len_chars();
+        self.edit(vec![(0..len, text.to_string())]);
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.saved_transaction = UNREACHABLE_SAVE;
     }
 
     pub fn mark_saved(&mut self) {

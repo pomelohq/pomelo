@@ -91,6 +91,9 @@ pub struct WorkspaceView {
     /// The panes as last written, and when the pending write is due.
     saved_panes: Option<String>,
     panes_write_at: Option<Instant>,
+    /// When the panes were last compared with what is saved; a frame inside the throttle leaves a check owed.
+    panes_checked_at: Option<Instant>,
+    panes_check_owed: bool,
     pending_prompt: Option<crate::Prompt>,
     terminal_focused: bool,
     pointer: (f32, f32),
@@ -136,6 +139,8 @@ impl WorkspaceView {
             panes_restored: false,
             saved_panes: None,
             panes_write_at: None,
+            panes_checked_at: None,
+            panes_check_owed: false,
             pending_prompt: None,
             terminal_focused: false,
             pointer: (0.0, 0.0),
@@ -161,6 +166,7 @@ impl WorkspaceView {
     pub fn ticking(&self) -> bool {
         self.toast.is_some()
             || self.panes_write_at.is_some()
+            || self.panes_check_owed
             || self.layout.files_view.as_ref().is_some_and(|v| v.is_busy())
             || self
                 .layout
@@ -209,6 +215,17 @@ impl WorkspaceView {
         if !self.panes_restored {
             return;
         }
+        let now = Instant::now();
+        // Saved state may carry whole unsaved files, so it is rebuilt at most once per throttle window.
+        let recent = self
+            .panes_checked_at
+            .is_some_and(|at| now.duration_since(at) < PANES_SAVE_THROTTLE);
+        if recent && !flush {
+            self.panes_check_owed = true;
+            return;
+        }
+        self.panes_checked_at = Some(now);
+        self.panes_check_owed = false;
         let Some((root, json)) = self.panes_state() else {
             return;
         };
@@ -216,7 +233,6 @@ impl WorkspaceView {
             self.panes_write_at = None;
             return;
         }
-        let now = Instant::now();
         let due = *self.panes_write_at.get_or_insert(now + PANES_SAVE_THROTTLE);
         if !flush && now < due {
             return;
