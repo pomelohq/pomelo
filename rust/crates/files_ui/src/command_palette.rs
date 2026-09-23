@@ -490,6 +490,7 @@ pub struct CommandPalette {
     scroll_top: usize,
     /// Scrolled distance not yet worth a whole row.
     scroll_remainder: f32,
+    pub scrollbar: crate::list_scrollbar::ScrollbarReveal,
 }
 
 /// Move a row list's first visible row by a wheel delta (positive = toward the top), carrying partial rows over
@@ -545,6 +546,7 @@ impl CommandPalette {
             selected: 0,
             scroll_top: 0,
             scroll_remainder: 0.0,
+            scrollbar: Default::default(),
         };
         palette.update_matches();
         palette
@@ -647,13 +649,17 @@ impl CommandPalette {
 
     pub fn scroll_by(&mut self, dy: f32) -> bool {
         let max_top = self.matches.len().saturating_sub(Self::visible_rows());
-        scroll_rows(
+        let moved = scroll_rows(
             &mut self.scroll_top,
             &mut self.scroll_remainder,
             dy,
-            row_height(),
+            row_height() * ui::ui_text_scale(),
             max_top,
-        )
+        );
+        if moved {
+            self.scrollbar.reveal();
+        }
+        moved
     }
 
     fn visible_rows() -> usize {
@@ -662,6 +668,7 @@ impl CommandPalette {
 
     fn scroll_to_selected(&mut self) {
         let visible = Self::visible_rows();
+        let before = self.scroll_top;
         if self.selected < self.scroll_top {
             self.scroll_top = self.selected;
         } else if self.selected >= self.scroll_top + visible {
@@ -669,6 +676,9 @@ impl CommandPalette {
         }
         let max_top = self.matches.len().saturating_sub(visible);
         self.scroll_top = self.scroll_top.min(max_top);
+        if self.scroll_top != before {
+            self.scrollbar.reveal();
+        }
     }
 
     pub fn render(&self, id_base: u64) -> Node {
@@ -700,10 +710,20 @@ impl CommandPalette {
                 )
                 .into()
         } else {
-            let end = (self.scroll_top + Self::visible_rows()).min(self.matches.len());
+            let visible = Self::visible_rows();
+            let end = (self.scroll_top + visible).min(self.matches.len());
+            let scrollbar = crate::list_scrollbar::render(
+                WIDTH - 1.0,
+                visible as f32 * row_height() + 8.0,
+                self.scroll_top,
+                visible,
+                self.matches.len(),
+                self.scrollbar.opacity(),
+            );
             div()
                 .col()
                 .py(4.0)
+                .children(scrollbar)
                 .children((self.scroll_top..end).map(|row| self.render_row(row, id_base)))
                 .into()
         };
@@ -779,8 +799,9 @@ impl CommandPalette {
     }
 }
 
+/// A row's height in design px: a label line plus the item padding.
 fn row_height() -> f32 {
-    LabelSize::Default.px() * ui::ui_text_scale() * 1.4 + 10.0
+    LabelSize::Default.px() * 1.4 + 10.0
 }
 
 /// The name with matched chars in the accent color.

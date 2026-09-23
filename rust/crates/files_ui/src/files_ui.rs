@@ -21,6 +21,7 @@ mod command_palette;
 mod fuzzy;
 mod git_diff;
 mod go_to_line;
+mod list_scrollbar;
 mod outline_view;
 mod search_bar;
 mod text_field;
@@ -5226,7 +5227,15 @@ impl FunctionView for FilesView {
     }
 
     fn is_busy(&self) -> bool {
-        let mut busy = false;
+        // A picker's scrollbar keeps fading out until it's gone.
+        let mut busy = self
+            .outline
+            .as_ref()
+            .is_some_and(|(_, view)| view.scrollbar.is_animating())
+            || self
+                .palette
+                .as_ref()
+                .is_some_and(|(_, palette)| palette.scrollbar.is_animating());
         self.group
             .for_each_pane(&mut |pane| busy |= pane.open.iter().any(|item| item.is_busy()));
         busy
