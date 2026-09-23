@@ -1790,6 +1790,8 @@ impl RawView for WorkspaceView {
 
 /// Layered shadows under a floating surface: (y offset, alpha, blur) per elevation. The renderer has no blur,
 /// so each blurred layer is a stack of rects growing across the blur width, the alpha split between them.
+const SHADOW_MAX_LAYERS: f32 = 48.0;
+
 fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
     let light = ui::theme().appearance == ui::Appearance::Light;
     let shadows: &[(f32, f32, f32)] = match (elevation, light) {
@@ -1810,19 +1812,30 @@ fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
     };
     let mut rects = Vec::new();
     for &(offset, alpha, blur) in shadows {
-        let steps = blur.ceil().max(1.0) as usize;
-        for step in 0..steps {
-            let spread = if steps == 1 {
-                0.0
-            } else {
-                step as f32 - blur / 2.0 + 0.5
-            };
+        // A gaussian blur with sigma = blur fades out within 3 sigma of the edge, reaching above the box even
+        // though the shadow drops down; nested rects weighted by the gaussian sum to that falloff.
+        let layers: Vec<(f32, f32)> = if blur <= 0.0 {
+            vec![(0.0, 1.0)]
+        } else {
+            let extent = 3.0 * blur;
+            let steps = (2.0 * extent).ceil().min(SHADOW_MAX_LAYERS) as usize;
+            let step = 2.0 * extent / steps as f32;
+            (0..steps)
+                .map(|index| {
+                    let spread = -extent + (index as f32 + 0.5) * step;
+                    let density = (-0.5 * (spread / blur).powi(2)).exp()
+                        / (blur * (2.0 * std::f32::consts::PI).sqrt());
+                    (spread, density * step)
+                })
+                .collect()
+        };
+        for (spread, weight) in layers {
             rects.push(Rect {
                 x: rect.x - spread,
                 y: rect.y + offset - spread,
                 w: rect.w + spread * 2.0,
                 h: rect.h + spread * 2.0,
-                color: Rgba::new(0.0, 0.0, 0.0, alpha / steps as f32),
+                color: Rgba::new(0.0, 0.0, 0.0, alpha * weight),
                 radius: (8.0 + spread).max(0.0),
                 border: 0.0,
                 border_color: Rgba::TRANSPARENT,
@@ -1836,6 +1849,23 @@ fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
 mod tests {
     use super::*;
     use ui::Application;
+
+    #[test]
+    fn modal_shadow_reaches_above_the_box_and_fades() {
+        let rect = Rect::new(100.0, 100.0, 200.0, 100.0, Rgba::TRANSPARENT);
+        let rects = elevation_shadow(rect, crate::Elevation::Modal);
+        let top = rects.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+        assert!(top < 80.0, "reaches {top}");
+        let coverage = |y: f32| -> f32 {
+            rects
+                .iter()
+                .filter(|r| r.y <= y && y <= r.y + r.h)
+                .map(|r| r.color.a)
+                .sum()
+        };
+        assert!(coverage(98.0) > coverage(90.0));
+        assert!(coverage(90.0) > 0.0);
+    }
 
     fn open() -> (Application, ui::WindowHandle, ui::Entity<WorkspaceView>) {
         let mut app = Application::new();

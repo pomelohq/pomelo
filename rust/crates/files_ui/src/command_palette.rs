@@ -524,7 +524,7 @@ pub struct CommandPalette {
     /// Commands run from the palette before, which lead the list in `commands`.
     used_count: usize,
     matches: Vec<Match>,
-    selected: usize,
+    pub(crate) selected: usize,
     scroll_top: usize,
     /// Scrolled distance not yet worth a whole row.
     scroll_remainder: f32,
@@ -811,9 +811,7 @@ impl CommandPalette {
             .py(4.0)
             .rounded(4.0)
             .on_click(id_base + PaletteClick::Row(row).offset());
-        if self.hovered == Some(id_base + PaletteClick::Row(row).offset()) {
-            item = item.bg(colors.ghost_element_hover);
-        } else if row == self.selected {
+        if row == self.selected {
             item = item.bg(colors.element_selected);
         }
         let keys = div().row().items_center().gap(4.0).children(
