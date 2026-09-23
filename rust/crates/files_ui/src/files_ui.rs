@@ -39,6 +39,7 @@ mod list_scrollbar;
 mod lsp_completion;
 mod markdown_view;
 mod outline_view;
+mod saved_state;
 mod snippet_store;
 mod tree_actions;
 use editor::wrap::Boundary;
@@ -2573,6 +2574,10 @@ impl Searchable for FileItem {
 }
 
 impl Item for FileItem {
+    fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
+        self.saved_state()
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -3989,6 +3994,7 @@ fn image_id(path: &str) -> u64 {
 /// An image file shown as a center tab: decoded once to RGBA and registered with the renderer, then drawn
 /// aspect-fit. Not editable.
 struct ImageItem {
+    root: PathBuf,
     path: String,
     name: String,
     id: u64,
@@ -4013,6 +4019,7 @@ impl ImageItem {
                 None => false,
             };
         Self {
+            root: root.to_path_buf(),
             path: path.to_string(),
             name,
             id,
@@ -4022,6 +4029,10 @@ impl ImageItem {
 }
 
 impl Item for ImageItem {
+    fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
+        self.saved_state()
+    }
+
     fn id(&self) -> Option<String> {
         Some(self.path.clone())
     }
@@ -4033,6 +4044,7 @@ impl Item for ImageItem {
     }
     fn clone_on_split(&self) -> Option<Box<dyn Item>> {
         Some(Box::new(ImageItem {
+            root: self.root.clone(),
             path: self.path.clone(),
             name: self.name.clone(),
             id: self.id,
@@ -5449,6 +5461,14 @@ impl FunctionView for FilesView {
 
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)> {
         self.panes.tab_drag_ghost()
+    }
+
+    fn save_panes(&self) -> Option<workspace::persistence::SerializedMember> {
+        Some(self.panes.serialize())
+    }
+
+    fn restore_panes(&mut self, saved: &workspace::persistence::SerializedMember) -> bool {
+        self.panes.restore(saved, &mut saved_state::restore_item)
     }
 
     fn claims_key(&self, key: EditKey) -> bool {

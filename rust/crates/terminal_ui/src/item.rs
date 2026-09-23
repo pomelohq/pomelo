@@ -405,7 +405,24 @@ impl Searchable for TerminalItem {
     }
 }
 
+pub(crate) const TERMINAL_KIND: &str = "terminal";
+
+/// The directory a saved terminal was in, to start its replacement shell there.
+pub(crate) fn saved_cwd(item: &workspace::persistence::SerializedItem) -> Option<PathBuf> {
+    (item.kind == TERMINAL_KIND)
+        .then(|| item.data.get("cwd")?.as_str().map(PathBuf::from))
+        .flatten()
+}
+
 impl Item for TerminalItem {
+    fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
+        let cwd = self.terminal.process_info()?.cwd.clone();
+        Some(workspace::persistence::SerializedItem {
+            kind: TERMINAL_KIND.into(),
+            data: serde_json::json!({ "cwd": cwd }),
+        })
+    }
+
     fn id(&self) -> Option<String> {
         Some(format!("terminal:{}", self.id))
     }

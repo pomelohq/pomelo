@@ -9,7 +9,8 @@ use ui::{IconKind, Node, Rect, Rgba};
 use crate::pane::{
     render_pane, NavEntry, NavMode, Pane, PaneClickIds, PaneCommand, TabBarButton, TabBarConfig,
 };
-use crate::pane_group::{self, Axis, DividerRef, LeafPlacement, Member, SplitDirection};
+use crate::pane_group::{self, Axis, DividerRef, LeafPlacement, Member, Split, SplitDirection};
+use crate::persistence::{SerializedAxis, SerializedItem, SerializedMember, SerializedPane};
 use crate::search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 use crate::tab_drag::{self, DropTarget, TabDrag, TabDrop};
 use crate::{
@@ -247,6 +248,96 @@ impl PaneGroupView {
         self.group
             .for_each_pane(&mut |pane| empty &= pane.open.is_empty());
         empty
+    }
+
+    /// The group's layout and tabs as saved state.
+    pub fn serialize(&self) -> SerializedMember {
+        serialize_member(&self.group, &self.active, &mut Vec::new())
+    }
+
+    /// Rebuild the group from saved state, making each tab with `make_item` (items it cannot make are skipped).
+    /// Panes left without tabs are dropped and a split left with one child gives way to it. Returns false and
+    /// keeps the current group when nothing could be restored.
+    pub fn restore(
+        &mut self,
+        saved: &SerializedMember,
+        make_item: &mut dyn FnMut(&SerializedItem) -> Option<Box<dyn Item>>,
+    ) -> bool {
+        let Some((member, active)) = self.restore_member(saved, make_item) else {
+            return false;
+        };
+        self.group = member;
+        self.active = active.unwrap_or_else(|| self.group.first_leaf_path());
+        true
+    }
+
+    fn restore_member(
+        &mut self,
+        saved: &SerializedMember,
+        make_item: &mut dyn FnMut(&SerializedItem) -> Option<Box<dyn Item>>,
+    ) -> Option<(Member<Pane>, Option<Vec<usize>>)> {
+        match saved {
+            SerializedMember::Pane(saved) => {
+                let mut pane = self.new_pane();
+                let mut active = None;
+                for (index, item) in saved.items.iter().enumerate() {
+                    if let Some(item) = make_item(item) {
+                        if saved.active_item == Some(index) {
+                            active = Some(pane.open.len());
+                        }
+                        pane.open.push(item);
+                    }
+                }
+                if pane.open.is_empty() {
+                    return None;
+                }
+                pane.active = active.or(Some(0));
+                Some((Member::Leaf(pane), saved.active.then(Vec::new)))
+            }
+            SerializedMember::Split {
+                axis,
+                flexes,
+                children,
+            } => {
+                let mut members = Vec::new();
+                let mut kept_flexes = Vec::new();
+                let mut active = None;
+                for (index, child) in children.iter().enumerate() {
+                    let Some((member, child_active)) = self.restore_member(child, make_item) else {
+                        continue;
+                    };
+                    if active.is_none() {
+                        active = child_active.map(|mut path| {
+                            path.insert(0, members.len());
+                            path
+                        });
+                    }
+                    kept_flexes.push(flexes.get(index).copied().unwrap_or(1.0));
+                    members.push(member);
+                }
+                match members.len() {
+                    0 => None,
+                    1 => {
+                        let member = members.pop()?;
+                        let active = active.and_then(|path| path.get(1..).map(<[usize]>::to_vec));
+                        Some((member, active))
+                    }
+                    _ => {
+                        pane_group::renormalize(&mut kept_flexes);
+                        let axis = match axis {
+                            SerializedAxis::Horizontal => Axis::Horizontal,
+                            SerializedAxis::Vertical => Axis::Vertical,
+                        };
+                        let split = Split {
+                            axis,
+                            members,
+                            flexes: kept_flexes,
+                        };
+                        Some((Member::Split(split), active))
+                    }
+                }
+            }
+        }
     }
 
     pub fn refresh_disk_state(&mut self) {
@@ -1429,6 +1520,50 @@ impl ItemInput for PaneGroupView {
     }
 }
 
+fn serialize_member(
+    member: &Member<Pane>,
+    active: &[usize],
+    path: &mut Vec<usize>,
+) -> SerializedMember {
+    match member {
+        Member::Leaf(pane) => {
+            let mut items = Vec::new();
+            let mut active_item = None;
+            for (index, item) in pane.open.iter().enumerate() {
+                if let Some(saved) = item.serialize() {
+                    if pane.active == Some(index) {
+                        active_item = Some(items.len());
+                    }
+                    items.push(saved);
+                }
+            }
+            SerializedMember::Pane(SerializedPane {
+                active: path.as_slice() == active,
+                items,
+                active_item,
+            })
+        }
+        Member::Split(split) => SerializedMember::Split {
+            axis: match split.axis {
+                Axis::Horizontal => SerializedAxis::Horizontal,
+                Axis::Vertical => SerializedAxis::Vertical,
+            },
+            flexes: split.flexes.clone(),
+            children: split
+                .members
+                .iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    path.push(index);
+                    let saved = serialize_member(child, active, path);
+                    path.pop();
+                    saved
+                })
+                .collect(),
+        },
+    }
+}
+
 fn contains(rect: &Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
 }
@@ -1541,6 +1676,22 @@ mod tests {
         fn clone_on_split(&self) -> Option<Box<dyn Item>> {
             Some(Box::new(Plain(self.0)))
         }
+        fn serialize(&self) -> Option<SerializedItem> {
+            Some(SerializedItem {
+                kind: "plain".into(),
+                data: serde_json::json!(self.0),
+            })
+        }
+    }
+
+    fn make_plain(item: &SerializedItem) -> Option<Box<dyn Item>> {
+        let name = match item.data.as_str()? {
+            "a" => "a",
+            "b" => "b",
+            "c" => "c",
+            _ => return None,
+        };
+        Some(Box::new(Plain(name)))
     }
 
     #[derive(Default)]
@@ -1747,5 +1898,81 @@ mod tests {
         assert!(view.editor_focused());
         assert!(!view.active_wants_keystrokes());
         assert!(!view.editor_click(40.0, 5.0, false));
+    }
+
+    #[test]
+    fn saved_layout_comes_back_with_its_tabs_flexes_and_focus() {
+        let mut view = view();
+        let item = view.clone_active_of(&[]);
+        view.split(&[], SplitDirection::Right, item);
+        if let Member::Split(split) = &mut view.group {
+            split.flexes = vec![0.5, 1.5];
+        }
+        view.active = vec![0];
+        let saved = view.serialize();
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: SerializedMember = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, saved);
+
+        let mut restored = PaneGroupView::new(PaneGroupConfig {
+            id_base: BASE,
+            show_nav: true,
+            buttons: Vec::new(),
+            max_panes: 4,
+            split_filter: None,
+        });
+        assert!(restored.restore(&back, &mut make_plain));
+        assert_eq!(restored.group.leaf_count(), 2);
+        assert_eq!(restored.active, vec![0]);
+        let Member::Split(split) = &restored.group else {
+            panic!("the split should come back");
+        };
+        assert_eq!(split.flexes, vec![0.5, 1.5]);
+        let titles: Vec<String> = restored
+            .pane_at(&[0])
+            .map(|pane| pane.open.iter().map(|item| item.title()).collect())
+            .unwrap_or_default();
+        assert_eq!(titles, ["a", "b"]);
+        assert_eq!(restored.pane_at(&[0]).and_then(|pane| pane.active), Some(1));
+    }
+
+    #[test]
+    fn panes_whose_tabs_cannot_come_back_are_dropped() {
+        let saved = SerializedMember::Split {
+            axis: SerializedAxis::Horizontal,
+            flexes: vec![1.0, 1.0],
+            children: vec![
+                SerializedMember::Pane(SerializedPane {
+                    active: false,
+                    items: vec![SerializedItem {
+                        kind: "plain".into(),
+                        data: serde_json::json!("gone"),
+                    }],
+                    active_item: Some(0),
+                }),
+                SerializedMember::Pane(SerializedPane {
+                    active: true,
+                    items: vec![SerializedItem {
+                        kind: "plain".into(),
+                        data: serde_json::json!("c"),
+                    }],
+                    active_item: Some(0),
+                }),
+            ],
+        };
+        let mut view = view();
+        assert!(view.restore(&saved, &mut make_plain));
+        assert_eq!(view.group.leaf_count(), 1);
+        assert_eq!(view.active, Vec::<usize>::new());
+        assert_eq!(
+            view.active_item().map(|item| item.title()),
+            Some("c".into())
+        );
+        let nothing = SerializedMember::Pane(SerializedPane::default());
+        assert!(!view.restore(&nothing, &mut make_plain));
+        assert_eq!(
+            view.active_item().map(|item| item.title()),
+            Some("c".into())
+        );
     }
 }

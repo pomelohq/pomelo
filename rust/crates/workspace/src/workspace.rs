@@ -6,6 +6,7 @@ pub mod pane;
 pub mod pane_group;
 pub mod pane_group_view;
 mod panel;
+pub mod persistence;
 pub mod search_bar;
 pub mod tab_drag;
 pub mod text_field;
@@ -444,6 +445,10 @@ pub trait Item: 'static {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
+    /// This item's state to restore it from next session; `None` for items that are not restored.
+    fn serialize(&self) -> Option<persistence::SerializedItem> {
+        None
+    }
     fn clone_on_split(&self) -> Option<Box<dyn Item>> {
         None
     }
@@ -793,6 +798,10 @@ pub trait TerminalPanelView: 'static {
     fn panes_ref(&self) -> &pane_group_view::PaneGroupView;
     /// A backdrop for the region (a message when there is nothing to show) and the panes to draw over it.
     fn render(&mut self, region: Rect, focused: bool) -> (ui::Painted, EditorLayout);
+    /// The panes and their terminals as saved state, and rebuilding them from it (a new shell in each saved
+    /// terminal's directory).
+    fn save_panes(&self) -> persistence::SerializedMember;
+    fn restore_panes(&mut self, saved: &persistence::SerializedMember) -> bool;
     /// Clicks on ids for which `is_terminal_id` holds.
     fn click(&mut self, id: u64) -> bool;
     /// The hit id under the pointer (tabs reveal their close button while hovered); returns whether to repaint.
@@ -995,6 +1004,15 @@ pub trait FunctionView: ItemInput + 'static {
     }
 
     fn accepts_pane_keys(&self) -> bool {
+        false
+    }
+
+    /// The editor area's panes and tabs as saved state, and rebuilding them from it.
+    fn save_panes(&self) -> Option<persistence::SerializedMember> {
+        None
+    }
+
+    fn restore_panes(&mut self, _saved: &persistence::SerializedMember) -> bool {
         false
     }
 
