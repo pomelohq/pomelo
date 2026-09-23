@@ -48,21 +48,27 @@ pub struct WorkspaceEffects {
     pub open_new_window: Option<usize>,
 }
 
+/// Which pane group input goes to: the editor area's or the terminal panel's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InputGroup {
+    Center,
+    Panel,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
     None,
-    Terminal,
     TerminalDivider(u64),
     TerminalTab,
-    /// A press on a center item that paints itself (a terminal tab in the editor area).
-    ItemPointer,
+    /// A press on an item that paints itself (a terminal); its drag and release go to the same item.
+    ItemPointer(InputGroup),
     Left,
     Right,
     Bottom,
     Tree,
     Center(u64),
     Tab,
-    EditorSel,
+    EditorSel(InputGroup),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -671,7 +677,7 @@ impl WorkspaceView {
             .layout
             .files_view
             .as_mut()
-            .map(|v| v.editor_popovers())
+            .map(|v| v.editor_popovers(self.viewport))
             .unwrap_or_default();
         for (node, px, py) in popovers {
             let area = Rect::new(px, py, w - px, h - py, Rgba::TRANSPARENT);
@@ -822,11 +828,9 @@ impl WorkspaceView {
             Drag::Left | Drag::Right | Drag::Tree => return Some(ResizeCursor::Horizontal),
             Drag::Bottom => return Some(ResizeCursor::Vertical),
             Drag::Center(id) | Drag::TerminalDivider(id) => return self.center_divider_cursor(id),
-            Drag::Tab
-            | Drag::EditorSel
-            | Drag::Terminal
-            | Drag::TerminalTab
-            | Drag::ItemPointer => return None,
+            Drag::Tab | Drag::EditorSel(_) | Drag::TerminalTab | Drag::ItemPointer(_) => {
+                return None
+            }
             Drag::None => {}
         }
         let (w, h) = self.viewport;
@@ -1370,31 +1374,27 @@ impl WorkspaceView {
     /// Cursor move: drag a divider, or hover the header/menu. Returns true if a repaint is warranted.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
         self.pointer = (x, y);
-        let over_terminal = self.terminal_grid_at(x, y);
         let hit = self.hit(x, y);
-        let terminal_repaint = match self.layout.terminal_view.as_mut() {
-            Some(view) => {
-                let modifiers = terminal_modifiers();
-                let mut repaint = view.set_hover(hit);
-                if self.dragging == Drag::Terminal {
-                    repaint |= view.mouse_drag(x, y, modifiers);
-                } else if over_terminal || view.link_hovered() {
-                    repaint |= view.mouse_move(x, y, modifiers);
-                }
-                repaint
-            }
-            None => false,
-        };
-        if self.dragging == Drag::Terminal {
-            return terminal_repaint;
+        let modifiers = terminal_modifiers();
+        let mut repaint = self
+            .layout
+            .terminal_view
+            .as_mut()
+            .is_some_and(|view| view.set_hover(hit));
+        if let Drag::ItemPointer(group) = self.dragging {
+            return repaint
+                | self
+                    .input(group)
+                    .is_some_and(|input| input.item_pointer_drag(x, y, modifiers));
         }
-        let item_repaint = self.dragging == Drag::None
-            && self
-                .layout
-                .files_view
-                .as_mut()
-                .is_some_and(|v| v.item_pointer_move(x, y, terminal_modifiers()));
-        terminal_repaint | item_repaint | self.mouse_move_inner(x, y)
+        if self.dragging == Drag::None {
+            for group in self.visible_groups() {
+                repaint |= self
+                    .input(group)
+                    .is_some_and(|input| input.item_pointer_move(x, y, modifiers));
+            }
+        }
+        repaint | self.mouse_move_inner(x, y)
     }
 
     /// A terminal-panel tab dragged over the center previews where it would land there.
@@ -1491,12 +1491,9 @@ impl WorkspaceView {
     fn mouse_move_inner(&mut self, x: f32, y: f32) -> bool {
         let over = self.hit_with_rect(x, y);
         match self.dragging {
-            Drag::Terminal => false,
-            Drag::ItemPointer => self
-                .layout
-                .files_view
-                .as_mut()
-                .is_some_and(|v| v.item_pointer_drag(x, y, terminal_modifiers())),
+            Drag::ItemPointer(group) => self
+                .input(group)
+                .is_some_and(|input| input.item_pointer_drag(x, y, terminal_modifiers())),
             Drag::TerminalTab => {
                 self.tab_ghost_at = Some((x, y));
                 let own = self
@@ -1545,12 +1542,9 @@ impl WorkspaceView {
                 self.update_panel_foreign_drop(x, y, over);
                 own
             }
-            Drag::EditorSel => self
-                .layout
-                .files_view
-                .as_mut()
-                .map(|v| v.editor_drag(x, y))
-                .unwrap_or(false),
+            Drag::EditorSel(group) => self
+                .input(group)
+                .is_some_and(|input| input.editor_drag(x, y)),
             Drag::None => {
                 if let Some((id, px, py)) = self.pending_tab {
                     if (x - px).abs() > 5.0 || (y - py).abs() > 5.0 {
@@ -1591,8 +1585,10 @@ impl WorkspaceView {
                         changed = true;
                     }
                 }
-                if let Some(v) = self.layout.files_view.as_mut() {
-                    changed |= v.editor_hover(x, y);
+                for group in self.visible_groups() {
+                    changed |= self
+                        .input(group)
+                        .is_some_and(|input| input.editor_hover(x, y));
                 }
                 let hovered = self.hit(x, y);
                 if hovered != self.session_menu_hover {
@@ -1706,70 +1702,50 @@ impl WorkspaceView {
             } else {
                 self.header_click(id);
             }
-        } else if self.terminal_grid_at(x, y) {
-            self.set_terminal_focus(true);
-            let now = Instant::now();
-            let count = match self.terminal_click {
-                Some((at, px, py, count))
-                    if now.duration_since(at) < Duration::from_millis(400)
-                        && (x - px).abs() < 4.0
-                        && (y - py).abs() < 4.0 =>
-                {
-                    count % 3 + 1
-                }
-                _ => 1,
-            };
-            self.terminal_click = Some((now, x, y, count));
-            let modifiers = terminal_modifiers();
-            if let Some(view) = self.layout.terminal_view.as_mut() {
-                if view.mouse_down(x, y, count, modifiers) {
-                    self.dragging = Drag::Terminal;
-                }
-            }
         } else {
-            self.set_terminal_focus(false);
             let (vw, vh) = self.viewport;
             let cr = self.layout.center_region(vw, vh);
             let in_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
+            let group = if self.panel_body_at(x, y) {
+                Some(InputGroup::Panel)
+            } else {
+                in_center.then_some(InputGroup::Center)
+            };
+            self.set_terminal_focus(group == Some(InputGroup::Panel));
             let mut consumed = false;
-            let item_count = self.click_count(x, y);
-            let item_pressed =
-                in_center
-                    && self.layout.files_view.as_mut().is_some_and(|v| {
-                        v.item_pointer_down(x, y, item_count, terminal_modifiers())
-                    });
-            if item_pressed {
-                self.dragging = Drag::ItemPointer;
-                consumed = true;
-            } else if in_center {
-                let now = Instant::now();
-                let double = self
-                    .last_click
-                    .map(|(t, px, py)| {
-                        now.duration_since(t) < Duration::from_millis(400)
-                            && (x - px).abs() < 4.0
-                            && (y - py).abs() < 4.0
-                    })
-                    .unwrap_or(false);
-                self.last_click = Some((now, x, y));
-                consumed = if double {
-                    self.layout
-                        .files_view
-                        .as_mut()
-                        .map(|v| v.editor_double_click(x, y))
-                        .unwrap_or(false)
+            if let Some(group) = group {
+                let count = self.click_count(x, y);
+                let modifiers = terminal_modifiers();
+                let pressed = self
+                    .input(group)
+                    .is_some_and(|input| input.item_pointer_down(x, y, count, modifiers));
+                if pressed {
+                    self.dragging = Drag::ItemPointer(group);
+                    consumed = true;
                 } else {
-                    let placed = self
-                        .layout
-                        .files_view
-                        .as_mut()
-                        .map(|v| v.editor_click(x, y, false))
+                    let now = Instant::now();
+                    let double = self
+                        .last_click
+                        .map(|(t, px, py)| {
+                            now.duration_since(t) < Duration::from_millis(400)
+                                && (x - px).abs() < 4.0
+                                && (y - py).abs() < 4.0
+                        })
                         .unwrap_or(false);
-                    if placed {
-                        self.dragging = Drag::EditorSel; // drag extends the selection
-                    }
-                    placed
-                };
+                    self.last_click = Some((now, x, y));
+                    consumed = if double {
+                        self.input(group)
+                            .is_some_and(|input| input.editor_double_click(x, y))
+                    } else {
+                        let placed = self
+                            .input(group)
+                            .is_some_and(|input| input.editor_click(x, y, false));
+                        if placed {
+                            self.dragging = Drag::EditorSel(group);
+                        }
+                        placed
+                    };
+                }
             }
             if !consumed && self.layout.session_menu {
                 self.layout.session_menu = false;
@@ -1780,9 +1756,7 @@ impl WorkspaceView {
 
     pub fn editor_copy_to_clipboard(&mut self) -> bool {
         let copied = self
-            .layout
-            .files_view
-            .as_ref()
+            .input_ref(self.focused_group())
             .and_then(|v| v.editor_copy());
         match copied {
             Some(copied) => {
@@ -1795,7 +1769,9 @@ impl WorkspaceView {
     }
 
     pub fn editor_cut_to_clipboard(&mut self) -> bool {
-        let copied = self.layout.files_view.as_mut().and_then(|v| v.editor_cut());
+        let copied = self
+            .input(self.focused_group())
+            .and_then(|v| v.editor_cut());
         match copied {
             Some(copied) => {
                 Self::clip_set(&copied.text);
@@ -1811,9 +1787,7 @@ impl WorkspaceView {
             return false;
         };
         let slices = crate::slices_for(&text);
-        self.layout
-            .files_view
-            .as_mut()
+        self.input(self.focused_group())
             .map(|v| v.editor_paste(&text, slices.as_deref()))
             .unwrap_or(false)
     }
@@ -1823,34 +1797,26 @@ impl WorkspaceView {
         text: &str,
         selected: Option<std::ops::Range<usize>>,
     ) -> bool {
-        self.layout
-            .files_view
-            .as_mut()
+        self.input(self.focused_group())
             .map(|v| v.editor_ime_preedit(text, selected))
             .unwrap_or(false)
     }
 
     pub fn editor_ime_commit(&mut self, text: &str) -> bool {
-        self.layout
-            .files_view
-            .as_mut()
+        self.input(self.focused_group())
             .map(|v| v.editor_ime_commit(text))
             .unwrap_or(false)
     }
 
     pub fn editor_text(&mut self, text: &str) -> bool {
-        self.layout
-            .files_view
-            .as_mut()
+        self.input(self.focused_group())
             .map(|v| v.editor_text(text))
             .unwrap_or(false)
     }
 
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
         let changed = self
-            .layout
-            .files_view
-            .as_mut()
+            .input(self.focused_group())
             .map(|v| v.editor_key(key, shift))
             .unwrap_or(false);
         self.show_view_toast();
@@ -1858,9 +1824,7 @@ impl WorkspaceView {
     }
 
     pub fn editor_save(&mut self) -> Option<Result<(), String>> {
-        self.layout
-            .files_view
-            .as_mut()
+        self.input(self.focused_group())
             .and_then(|v| v.editor_save())
     }
 
@@ -1871,39 +1835,33 @@ impl WorkspaceView {
     }
 
     pub fn editor_focused(&self) -> bool {
-        !self.terminal_focused
-            && self
-                .layout
-                .files_view
-                .as_ref()
-                .map(|v| v.editor_focused())
-                .unwrap_or(false)
+        self.input_ref(self.focused_group())
+            .is_some_and(|input| input.editor_focused())
     }
 
     pub fn editor_selected_text(&self) -> Option<String> {
-        self.layout
-            .files_view
-            .as_ref()
+        self.input_ref(self.focused_group())
             .and_then(|v| v.editor_selected_text())
     }
 
     pub fn mouse_up(&mut self) {
-        if self.dragging == Drag::ItemPointer {
+        if let Drag::ItemPointer(group) = self.dragging {
             let (x, y) = self.pointer;
-            let request = self.layout.files_view.as_mut().and_then(|view| {
-                view.item_pointer_up(x, y, terminal_modifiers());
-                view.take_item_open_request()
-            });
-            if let Some(request) = request {
-                self.open_terminal_target(request);
+            if let Some(input) = self.input(group) {
+                input.item_pointer_up(x, y, terminal_modifiers());
             }
-        } else if self.dragging == Drag::Terminal {
-            let (x, y) = self.pointer;
-            let modifiers = terminal_modifiers();
-            let request = self.layout.terminal_view.as_mut().and_then(|view| {
-                view.mouse_up(x, y, modifiers);
-                view.take_open_request()
-            });
+            let request = match group {
+                InputGroup::Center => self
+                    .layout
+                    .files_view
+                    .as_mut()
+                    .and_then(|view| view.take_item_open_request()),
+                InputGroup::Panel => self
+                    .layout
+                    .terminal_view
+                    .as_mut()
+                    .and_then(|view| view.take_open_request()),
+            };
             if let Some(request) = request {
                 self.open_terminal_target(request);
             }
@@ -1972,13 +1930,62 @@ impl WorkspaceView {
         }
     }
 
-    fn terminal_grid_at(&self, x: f32, y: f32) -> bool {
+    /// Over the body (below the chrome) of a pane in the visible terminal panel.
+    fn panel_body_at(&self, x: f32, y: f32) -> bool {
         self.layout.terminal_visible()
-            && self
+            && self.layout.terminal_view.as_ref().is_some_and(|view| {
+                view.panes_ref()
+                    .body_point(x, y)
+                    .and_then(|(path, _, _)| view.panes_ref().pane_at(&path))
+                    .is_some_and(|pane| !pane.open.is_empty())
+            })
+    }
+
+    fn input(&mut self, group: InputGroup) -> Option<&mut dyn crate::ItemInput> {
+        match group {
+            InputGroup::Center => self
+                .layout
+                .files_view
+                .as_mut()
+                .map(|view| &mut **view as &mut dyn crate::ItemInput),
+            InputGroup::Panel => self
+                .layout
+                .terminal_view
+                .as_mut()
+                .map(|view| view.panes() as &mut dyn crate::ItemInput),
+        }
+    }
+
+    fn input_ref(&self, group: InputGroup) -> Option<&dyn crate::ItemInput> {
+        match group {
+            InputGroup::Center => self
+                .layout
+                .files_view
+                .as_ref()
+                .map(|view| &**view as &dyn crate::ItemInput),
+            InputGroup::Panel => self
                 .layout
                 .terminal_view
                 .as_ref()
-                .is_some_and(|view| view.grid_contains(x, y))
+                .map(|view| view.panes_ref() as &dyn crate::ItemInput),
+        }
+    }
+
+    /// The group whose items take keyboard input: the terminal panel's while it has focus, else the editor's.
+    fn focused_group(&self) -> InputGroup {
+        if self.panel_has_focus() {
+            InputGroup::Panel
+        } else {
+            InputGroup::Center
+        }
+    }
+
+    fn visible_groups(&self) -> Vec<InputGroup> {
+        let mut groups = vec![InputGroup::Center];
+        if self.layout.terminal_visible() {
+            groups.push(InputGroup::Panel);
+        }
+        groups
     }
 
     fn set_terminal_focus(&mut self, focused: bool) {
@@ -1991,15 +1998,10 @@ impl WorkspaceView {
         }
     }
 
-    /// Whether key presses go raw to a terminal: the focused panel, or a terminal tab focused in the center.
+    /// Whether key presses go raw to a terminal: the focused group's active item takes raw keystrokes.
     pub fn terminal_focused(&self) -> bool {
-        if self.terminal_focused {
-            return self.layout.terminal_visible();
-        }
-        self.layout
-            .files_view
-            .as_ref()
-            .is_some_and(|v| v.active_wants_keystrokes())
+        self.input_ref(self.focused_group())
+            .is_some_and(|input| input.active_wants_keystrokes())
     }
 
     /// Presses within 400ms and 4px of the last one count up to a triple click (then wrap to single).
@@ -2064,29 +2066,11 @@ impl WorkspaceView {
 
     /// Returns whether the key was consumed; unconsumed keys arrive next as typed text.
     pub fn terminal_key(&mut self, keystroke: &terminal::Keystroke) -> bool {
-        if !self.panel_has_focus() {
-            let Some(view) = self.layout.files_view.as_mut() else {
-                return false;
-            };
-            return match view.item_keystroke(keystroke) {
-                crate::TerminalKeyOutcome::Ignored => false,
-                crate::TerminalKeyOutcome::Handled => true,
-                crate::TerminalKeyOutcome::Copy(text) => {
-                    Self::clip_set(&text);
-                    true
-                }
-                crate::TerminalKeyOutcome::Paste => {
-                    if let Some(text) = Self::clip_get() {
-                        view.item_paste(&text);
-                    }
-                    true
-                }
-            };
-        }
-        let Some(view) = self.layout.terminal_view.as_mut() else {
+        let group = self.focused_group();
+        let Some(input) = self.input(group) else {
             return false;
         };
-        match view.key(keystroke) {
+        match input.item_keystroke(keystroke) {
             crate::TerminalKeyOutcome::Ignored => false,
             crate::TerminalKeyOutcome::Handled => true,
             crate::TerminalKeyOutcome::Copy(text) => {
@@ -2095,7 +2079,7 @@ impl WorkspaceView {
             }
             crate::TerminalKeyOutcome::Paste => {
                 if let Some(text) = Self::clip_get() {
-                    view.paste(&text);
+                    input.item_paste(&text);
                 }
                 true
             }
@@ -2103,14 +2087,9 @@ impl WorkspaceView {
     }
 
     pub fn terminal_text(&mut self, text: &str) {
-        if !self.panel_has_focus() {
-            if let Some(view) = self.layout.files_view.as_mut() {
-                view.item_text(text);
-            }
-            return;
-        }
-        if let Some(view) = self.layout.terminal_view.as_mut() {
-            view.text(text);
+        let group = self.focused_group();
+        if let Some(input) = self.input(group) {
+            input.item_text(text);
         }
     }
 
@@ -2155,7 +2134,7 @@ impl WorkspaceView {
         {
             return Some(true);
         }
-        if !self.terminal_grid_at(x, y) {
+        if !self.panel_body_at(x, y) {
             return None;
         }
         self.layout
@@ -2248,13 +2227,11 @@ impl WorkspaceView {
                     .is_some_and(|v| v.modal_scroll(dy));
             }
         }
-        if !self.layout.session_menu && self.terminal_grid_at(x, y) {
+        if !self.layout.session_menu && self.panel_body_at(x, y) {
             let modifiers = terminal_modifiers();
-            return self
-                .layout
-                .terminal_view
-                .as_mut()
-                .is_some_and(|view| view.scroll(x, y, dy, modifiers));
+            return self.input(InputGroup::Panel).is_some_and(|input| {
+                input.item_pointer_scroll(x, y, dy, modifiers) || input.editor_scroll(x, y, dx, dy)
+            });
         }
         if !self.layout.session_menu {
             let (w, h) = self.viewport;

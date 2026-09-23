@@ -6,12 +6,15 @@
 use editor::search::Direction;
 use ui::{IconKind, Node, Rect, Rgba};
 
-use crate::pane::{render_pane, Pane, PaneClickIds, PaneCommand, TabBarButton, TabBarConfig};
+use crate::pane::{
+    render_pane, NavEntry, NavMode, Pane, PaneClickIds, PaneCommand, TabBarButton, TabBarConfig,
+};
 use crate::pane_group::{self, Axis, DividerRef, LeafPlacement, Member, SplitDirection};
 use crate::search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 use crate::tab_drag::{self, DropTarget, TabDrag, TabDrop};
 use crate::{
-    DividerAxis, DividerPlacement, EditKey, Item, PaneBody, PanePlacement, TerminalKeyOutcome,
+    ClipboardSlice, CopiedText, DividerAxis, DividerPlacement, EditKey, Item, ItemInput, PaneBody,
+    PanePlacement, TerminalKeyOutcome,
 };
 use terminal::Keystroke;
 
@@ -29,6 +32,8 @@ const DIVIDER: u64 = 12_000_000;
 pub const ID_SPAN: u64 = 13_000_000;
 const PANE_STRIDE: u64 = 100_000;
 const BUTTON_STRIDE: u64 = 16;
+/// A caret jump of at least this many rows within one item records a back/forward history entry.
+const MIN_NAVIGATION_HISTORY_ROW_DELTA: usize = 10;
 /// An item's gutter gets fold ids from a per-pane base; its change-strip ids sit this far above them.
 pub const HUNK_FROM_FOLD: u64 = HUNK - FOLD;
 
@@ -83,6 +88,17 @@ pub struct PaneGroupView {
     focused_content: Option<Rect>,
     /// Whether the keyboard is in this group; its active pane then draws as focused.
     focused: bool,
+    /// The pane a press on a self-painted item landed in, so its drag and release go to the same item.
+    pointer_pane: Option<Vec<usize>>,
+    /// What each popover of the last `editor_popovers` shows, so a scroll over it reaches the right item.
+    popover_sources: Vec<PopoverSource>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum PopoverSource {
+    Completion,
+    CompletionAside,
+    Hover { pane: Vec<usize>, index: usize },
 }
 
 impl PaneGroupView {
@@ -100,6 +116,8 @@ impl PaneGroupView {
             foreign_drop: None,
             focused_content: None,
             focused: true,
+            pointer_pane: None,
+            popover_sources: Vec::new(),
         }
     }
 
@@ -325,16 +343,7 @@ impl PaneGroupView {
         self.pane_order = pane_order;
         self.pane_rects = pane_rects;
         self.divider_order = divider_order;
-        self.focused_content = self.pane_rect_of(&self.active).and_then(|rect| {
-            let header = self.pane_at(&self.active)?.header_h();
-            Some(Rect::new(
-                rect.x,
-                rect.y + header,
-                rect.w.max(0.0),
-                (rect.h - header).max(0.0),
-                Rgba::TRANSPARENT,
-            ))
-        });
+        self.focused_content = self.body_rect_of(&self.active);
         (placements, divider_placements)
     }
 
@@ -552,77 +561,89 @@ impl PaneGroupView {
         true
     }
 
-    /// A raw key press for the focused pane's item (one that wants keystrokes): find-bar shortcuts and editing
-    /// while the find bar has focus, otherwise the item's own handling.
-    pub fn item_keystroke(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
-        if !self
-            .active_item()
-            .is_some_and(|item| item.wants_keystrokes())
-        {
-            return TerminalKeyOutcome::Ignored;
+    /// The focused pane and its active item's history entry, taken before an action that may jump the caret.
+    pub fn nav_snapshot(&mut self) -> Option<(Vec<usize>, NavEntry)> {
+        let path = self.active.clone();
+        let pane = self.group.leaf_at(&path)?;
+        let entry = pane.nav_entry_for(pane.active?)?;
+        Some((path, entry))
+    }
+
+    /// Record a history entry when the caret moved far within the same item since `snapshot`.
+    pub fn record_nav_jump(&mut self, snapshot: Option<(Vec<usize>, NavEntry)>) {
+        let Some((path, before)) = snapshot else {
+            return;
+        };
+        let Some(pane) = self.group.leaf_at_mut(&path) else {
+            return;
+        };
+        let after = pane.active.and_then(|index| pane.nav_entry_for(index));
+        let jumped = after.filter(|a| a.id == before.id).is_some_and(|a| {
+            matches!((before.row, a.row), (Some(old), Some(new))
+                if old.abs_diff(new) >= MIN_NAVIGATION_HISTORY_ROW_DELTA)
+        });
+        if jumped {
+            pane.push_nav(before, NavMode::Normal);
         }
-        if self.keystroke_search_command(keystroke) {
-            return TerminalKeyOutcome::Handled;
-        }
-        if self.search_focused() {
-            let m = keystroke.modifiers;
-            if m.cmd && keystroke.key == "v" {
-                return TerminalKeyOutcome::Paste;
-            }
-            let Some(pane) = self.active_pane_mut() else {
-                return TerminalKeyOutcome::Ignored;
-            };
-            if m.cmd && keystroke.key == "c" {
-                return pane
-                    .search
-                    .query
-                    .selected_text()
-                    .map_or(TerminalKeyOutcome::Handled, TerminalKeyOutcome::Copy);
-            }
-            return match search_edit_key(keystroke) {
-                Some(key) => {
-                    let keep = pane
-                        .search_target()
-                        .is_some_and(|(bar, item)| bar.key(item, key, m.shift));
-                    if !keep {
-                        pane.search.focus = None;
-                    }
-                    TerminalKeyOutcome::Handled
+    }
+
+    fn track_nav<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let snapshot = self.nav_snapshot();
+        let result = f(self);
+        self.record_nav_jump(snapshot);
+        result
+    }
+
+    /// A key for the focused item without recording a history entry (the caller tracks the jump).
+    pub fn editor_key_untracked(&mut self, key: EditKey, shift: bool) -> bool {
+        if matches!(key, EditKey::GoBack | EditKey::GoForward) {
+            if let Some(pane) = self.active_pane_mut() {
+                if key == EditKey::GoBack {
+                    pane.nav_back();
+                } else {
+                    pane.nav_forward();
                 }
-                None if m.cmd || m.ctrl => TerminalKeyOutcome::Handled,
-                None => TerminalKeyOutcome::Ignored,
-            };
+            }
+            return true;
         }
-        self.active_item_mut()
-            .map_or(TerminalKeyOutcome::Ignored, |item| {
-                item.keystroke(keystroke)
-            })
+        if self.search_command(key) {
+            return true;
+        }
+        if let Some((bar, item)) = self.focused_search() {
+            bar.key(item, key, shift);
+            return true;
+        }
+        let changed = match self.editable_item_mut() {
+            Some(item) => {
+                item.input_key(key, shift);
+                true
+            }
+            None => false,
+        };
+        self.refresh_search();
+        changed
     }
 
-    /// Typed text for an item that wants keystrokes, or the find bar while it has focus.
-    pub fn item_text(&mut self, text: &str) {
-        if let Some((bar, item)) = self.focused_search() {
-            bar.input(item, text);
-            return;
-        }
-        if let Some(item) = self
-            .active_item_mut()
-            .filter(|item| item.wants_keystrokes())
-        {
-            item.input_text(text);
-        }
+    /// The body rect (below the chrome) of the pane at `path`, as last laid out.
+    pub fn body_rect_of(&self, path: &[usize]) -> Option<Rect> {
+        let rect = self.pane_rect_of(path)?;
+        let header = self.pane_at(path)?.header_h();
+        Some(Rect::new(
+            rect.x,
+            rect.y + header,
+            rect.w.max(0.0),
+            (rect.h - header).max(0.0),
+            Rgba::TRANSPARENT,
+        ))
     }
 
-    pub fn item_paste(&mut self, text: &str) {
-        if let Some((bar, item)) = self.focused_search() {
-            bar.input(item, text);
-            return;
-        }
-        if let Some(item) = self
-            .active_item_mut()
-            .filter(|item| item.wants_keystrokes())
-        {
-            item.paste(text, None);
+    fn editable_item_mut(&mut self) -> Option<&mut dyn Item> {
+        self.active_item_mut().filter(|item| item.is_editable())
+    }
+
+    fn refresh_search(&mut self) {
+        if let Some((bar, item)) = self.active_pane_mut().and_then(Pane::search_target) {
+            bar.refresh(item);
         }
     }
 
@@ -875,6 +896,469 @@ fn search_edit_key(keystroke: &Keystroke) -> Option<EditKey> {
     })
 }
 
+impl ItemInput for PaneGroupView {
+    fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
+        if matches!(key, EditKey::GoBack | EditKey::GoForward) {
+            return self.editor_key_untracked(key, shift);
+        }
+        self.track_nav(|group| group.editor_key_untracked(key, shift))
+    }
+
+    fn editor_text(&mut self, text: &str) -> bool {
+        self.track_nav(|group| {
+            if let Some((bar, item)) = group.focused_search() {
+                bar.input(item, text);
+                return true;
+            }
+            match group.editable_item_mut() {
+                Some(item) => {
+                    item.input_text(text);
+                    true
+                }
+                None => false,
+            }
+        })
+    }
+
+    fn editor_paste(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool {
+        self.track_nav(|group| {
+            if let Some((bar, item)) = group.focused_search() {
+                bar.input(item, text);
+                return true;
+            }
+            match group.editable_item_mut() {
+                Some(item) => {
+                    item.paste(text, slices);
+                    true
+                }
+                None => false,
+            }
+        })
+    }
+
+    fn editor_ime_preedit(&mut self, text: &str, selected: Option<std::ops::Range<usize>>) -> bool {
+        match self.editable_item_mut() {
+            Some(item) => {
+                item.ime_preedit(text, selected);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn editor_ime_commit(&mut self, text: &str) -> bool {
+        match self.editable_item_mut() {
+            Some(item) => {
+                item.ime_commit(text);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn editor_click(&mut self, x: f32, y: f32, extend: bool) -> bool {
+        self.track_nav(|group| {
+            let Some((path, local_x, local_y)) = group.body_point(x, y) else {
+                return false;
+            };
+            if ui::modifiers().cmd && !extend {
+                group.active = path.clone();
+                if group
+                    .active_item_mut()
+                    .is_some_and(|item| item.cmd_click(local_x, local_y))
+                {
+                    return true;
+                }
+            }
+            if !extend {
+                group.active = path;
+            }
+            if let Some(pane) = group.active_pane_mut() {
+                pane.search.focus = None;
+            }
+            match group.editable_item_mut() {
+                Some(item) => {
+                    item.place_cursor(local_x, local_y, extend);
+                    true
+                }
+                None => false,
+            }
+        })
+    }
+
+    fn editor_double_click(&mut self, x: f32, y: f32) -> bool {
+        self.track_nav(|group| {
+            let Some((path, local_x, local_y)) = group.body_point(x, y) else {
+                return false;
+            };
+            group.active = path;
+            match group.editable_item_mut() {
+                Some(item) => {
+                    item.select_word_at(local_x, local_y);
+                    true
+                }
+                None => false,
+            }
+        })
+    }
+
+    fn editor_drag(&mut self, x: f32, y: f32) -> bool {
+        self.track_nav(|group| {
+            let Some(body) = group.body_rect_of(&group.active.clone()) else {
+                return false;
+            };
+            match group.editable_item_mut() {
+                Some(item) => {
+                    item.drag_select(x, y, body);
+                    true
+                }
+                None => false,
+            }
+        })
+    }
+
+    fn editor_hover(&mut self, x: f32, y: f32) -> bool {
+        let mut changed = false;
+        for path in self.pane_order.clone() {
+            let Some(body) = self.body_rect_of(&path) else {
+                continue;
+            };
+            let Some(item) = self
+                .group
+                .leaf_at_mut(&path)
+                .and_then(Pane::active_item_mut)
+            else {
+                continue;
+            };
+            let over_gutter =
+                x >= body.x && x < body.x + item.gutter_w() && y >= body.y && y < body.y + body.h;
+            changed |= item.set_gutter_hovered(over_gutter);
+            let local = contains(&body, x, y).then_some((x - body.x, y - body.y));
+            changed |= item.pointer_moved(local, (x, y));
+        }
+        changed
+    }
+
+    fn editor_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        let Some(path) = self.pane_path_at(x, y) else {
+            return false;
+        };
+        match self
+            .group
+            .leaf_at_mut(&path)
+            .and_then(Pane::active_item_mut)
+            .filter(|item| item.is_editable())
+        {
+            Some(item) => {
+                let moved_y = item.scroll_by(dy);
+                let moved_x = item.scroll_by_x(dx);
+                moved_x || moved_y
+            }
+            None => false,
+        }
+    }
+
+    fn editor_copy(&self) -> Option<CopiedText> {
+        if let Some(pane) = self.pane_at(&self.active) {
+            let field = match pane.search.focus {
+                Some(SearchField::Query) => Some(&pane.search.query),
+                Some(SearchField::Replacement) => Some(&pane.search.replacement),
+                None => None,
+            };
+            if let Some(field) = field.filter(|_| !pane.search.dismissed) {
+                return field.selected_text().map(|text| CopiedText {
+                    text,
+                    slices: Vec::new(),
+                });
+            }
+        }
+        self.active_item().and_then(|item| item.copy())
+    }
+
+    fn editor_cut(&mut self) -> Option<CopiedText> {
+        if let Some((bar, item)) = self.focused_search() {
+            let text = match bar.focus {
+                Some(SearchField::Replacement) => bar.replacement.selected_text(),
+                _ => bar.query.selected_text(),
+            }?;
+            bar.key(item, EditKey::Backspace, false);
+            return Some(CopiedText {
+                text,
+                slices: Vec::new(),
+            });
+        }
+        self.editable_item_mut().and_then(|item| item.cut())
+    }
+
+    fn editor_copy_trimmed(&self) -> Option<CopiedText> {
+        self.active_item().and_then(|item| item.copy_trimmed())
+    }
+
+    fn editor_selected_text(&self) -> Option<String> {
+        self.active_item().and_then(|item| item.selected_text())
+    }
+
+    fn editor_right_press(&mut self, x: f32, y: f32) -> bool {
+        let Some((path, local_x, local_y)) = self.body_point(x, y) else {
+            return false;
+        };
+        self.active = path;
+        match self.editable_item_mut() {
+            Some(item) => {
+                item.right_press(local_x, local_y);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn editor_menu_anchor_at(&self, x: f32, y: f32) -> Option<(Vec<usize>, usize)> {
+        let (path, _, local_y) = self.body_point(x, y)?;
+        let line = self
+            .pane_at(&path)?
+            .active_item()?
+            .buffer_line_at(local_y)?;
+        Some((path, line))
+    }
+
+    fn editor_menu_y(&self, path: &[usize], line: usize) -> Option<f32> {
+        let body = self.body_rect_of(path)?;
+        self.pane_at(path)?.active_item()?.line_screen_y(body, line)
+    }
+
+    fn editor_save(&mut self) -> Option<Result<(), String>> {
+        self.editable_item_mut().map(|item| item.save())
+    }
+
+    fn editor_focused(&self) -> bool {
+        self.active_item().is_some_and(|item| item.is_editable())
+    }
+
+    fn cursor_position(&self) -> Option<String> {
+        self.active_item()?.cursor_status()
+    }
+
+    fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)> {
+        self.popover_sources.clear();
+        let mut popovers = Vec::new();
+        let content = self.focused_content;
+        let completion =
+            content.and_then(|content| self.active_item()?.completion_popover(content));
+        if let Some(completion) = completion {
+            popovers.push(completion);
+            self.popover_sources.push(PopoverSource::Completion);
+            let aside =
+                content.and_then(|content| self.active_item()?.completion_aside(content, viewport));
+            if let Some(aside) = aside {
+                popovers.push(aside);
+                self.popover_sources.push(PopoverSource::CompletionAside);
+            }
+        }
+        for path in self.pane_order.clone() {
+            let Some(body) = self.body_rect_of(&path) else {
+                continue;
+            };
+            let Some(item) = self.pane_at(&path).and_then(Pane::active_item) else {
+                continue;
+            };
+            for (index, popover) in item.hover_popovers(body).into_iter().enumerate() {
+                popovers.push(popover);
+                self.popover_sources.push(PopoverSource::Hover {
+                    pane: path.clone(),
+                    index,
+                });
+            }
+        }
+        popovers
+    }
+
+    fn popover_scroll(&mut self, index: usize, dy: f32) -> bool {
+        match self.popover_sources.get(index).cloned() {
+            Some(PopoverSource::Completion) => self
+                .active_item_mut()
+                .is_some_and(|item| item.scroll_completion(dy)),
+            Some(PopoverSource::CompletionAside) => self
+                .active_item_mut()
+                .is_some_and(|item| item.scroll_completion_aside(dy)),
+            Some(PopoverSource::Hover { pane, index }) => self
+                .group
+                .leaf_at_mut(&pane)
+                .and_then(Pane::active_item_mut)
+                .is_some_and(|item| item.scroll_hover(index, dy)),
+            None => false,
+        }
+    }
+
+    fn active_wants_keystrokes(&self) -> bool {
+        self.active_item()
+            .is_some_and(|item| item.wants_keystrokes())
+    }
+
+    /// A raw key press for the focused pane's item (one that wants keystrokes): find-bar shortcuts and editing
+    /// while the find bar has focus, otherwise the item's own handling.
+    fn item_keystroke(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
+        if !self
+            .active_item()
+            .is_some_and(|item| item.wants_keystrokes())
+        {
+            return TerminalKeyOutcome::Ignored;
+        }
+        if self.keystroke_search_command(keystroke) {
+            return TerminalKeyOutcome::Handled;
+        }
+        if self.search_focused() {
+            let m = keystroke.modifiers;
+            if m.cmd && keystroke.key == "v" {
+                return TerminalKeyOutcome::Paste;
+            }
+            let Some(pane) = self.active_pane_mut() else {
+                return TerminalKeyOutcome::Ignored;
+            };
+            if m.cmd && keystroke.key == "c" {
+                return pane
+                    .search
+                    .query
+                    .selected_text()
+                    .map_or(TerminalKeyOutcome::Handled, TerminalKeyOutcome::Copy);
+            }
+            return match search_edit_key(keystroke) {
+                Some(key) => {
+                    let keep = pane
+                        .search_target()
+                        .is_some_and(|(bar, item)| bar.key(item, key, m.shift));
+                    if !keep {
+                        pane.search.focus = None;
+                    }
+                    TerminalKeyOutcome::Handled
+                }
+                None if m.cmd || m.ctrl => TerminalKeyOutcome::Handled,
+                None => TerminalKeyOutcome::Ignored,
+            };
+        }
+        self.active_item_mut()
+            .map_or(TerminalKeyOutcome::Ignored, |item| {
+                item.keystroke(keystroke)
+            })
+    }
+
+    /// Typed text for an item that wants keystrokes, or the find bar while it has focus.
+    fn item_text(&mut self, text: &str) {
+        if let Some((bar, item)) = self.focused_search() {
+            bar.input(item, text);
+            return;
+        }
+        if let Some(item) = self
+            .active_item_mut()
+            .filter(|item| item.wants_keystrokes())
+        {
+            item.input_text(text);
+        }
+    }
+
+    fn item_paste(&mut self, text: &str) {
+        if let Some((bar, item)) = self.focused_search() {
+            bar.input(item, text);
+            return;
+        }
+        if let Some(item) = self
+            .active_item_mut()
+            .filter(|item| item.wants_keystrokes())
+        {
+            item.paste(text, None);
+        }
+    }
+
+    fn item_focus_changed(&mut self, focused: bool) {
+        if let Some(item) = self
+            .active_item_mut()
+            .filter(|item| item.wants_keystrokes())
+        {
+            item.set_focused(focused);
+        }
+    }
+
+    fn item_pointer_down(
+        &mut self,
+        x: f32,
+        y: f32,
+        click_count: u32,
+        modifiers: terminal::Modifiers,
+    ) -> bool {
+        let Some(path) = self.pane_path_at(x, y) else {
+            return false;
+        };
+        let handled = self
+            .group
+            .leaf_at_mut(&path)
+            .and_then(Pane::active_item_mut)
+            .is_some_and(|item| item.pointer_down(x, y, click_count, modifiers));
+        if handled {
+            if let Some(pane) = self.group.leaf_at_mut(&path) {
+                pane.search.focus = None;
+            }
+            self.active = path.clone();
+            self.pointer_pane = Some(path);
+        }
+        handled
+    }
+
+    fn item_pointer_drag(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool {
+        let Some(path) = self.pointer_pane.clone() else {
+            return false;
+        };
+        self.group
+            .leaf_at_mut(&path)
+            .and_then(Pane::active_item_mut)
+            .is_some_and(|item| item.pointer_drag(x, y, modifiers))
+    }
+
+    fn item_pointer_move(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool {
+        let active = self.active.clone();
+        let focused = self.focused;
+        let mut changed = false;
+        for path in self.pane_order.clone() {
+            let is_focused = focused && path == active;
+            if let Some(item) = self
+                .group
+                .leaf_at_mut(&path)
+                .and_then(Pane::active_item_mut)
+            {
+                changed |= item.pointer_move(x, y, modifiers, is_focused);
+            }
+        }
+        changed
+    }
+
+    fn item_pointer_up(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) {
+        let Some(path) = self.pointer_pane.take() else {
+            return;
+        };
+        if let Some(item) = self
+            .group
+            .leaf_at_mut(&path)
+            .and_then(Pane::active_item_mut)
+        {
+            item.pointer_up(x, y, modifiers);
+        }
+    }
+
+    fn item_pointer_scroll(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_y: f32,
+        modifiers: terminal::Modifiers,
+    ) -> bool {
+        let Some(path) = self.pane_path_at(x, y) else {
+            return false;
+        };
+        self.group
+            .leaf_at_mut(&path)
+            .and_then(Pane::active_item_mut)
+            .is_some_and(|item| item.pointer_scroll(x, y, delta_y, modifiers))
+    }
+}
+
 fn contains(rect: &Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
 }
@@ -1048,6 +1532,37 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct Doc {
+        cursor: Option<(f32, f32, bool)>,
+        typed: String,
+    }
+
+    impl Item for Doc {
+        fn title(&self) -> String {
+            "doc".into()
+        }
+        fn render(&mut self) -> Node {
+            ui::div().into()
+        }
+        fn is_editable(&self) -> bool {
+            true
+        }
+        fn place_cursor(&mut self, local_x: f32, local_y: f32, extend: bool) {
+            self.cursor = Some((local_x, local_y, extend));
+        }
+        fn input_text(&mut self, text: &str) {
+            self.typed.push_str(text);
+        }
+        fn as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+    }
+
+    fn doc(view: &PaneGroupView) -> Option<&Doc> {
+        view.active_item()?.as_any()?.downcast_ref::<Doc>()
+    }
+
     const BASE: u64 = 50_000;
 
     fn view() -> PaneGroupView {
@@ -1131,5 +1646,33 @@ mod tests {
         );
         view.item_text("ls");
         assert!(view.pane_at(&[]).is_some_and(|pane| pane.search.dismissed));
+    }
+
+    #[test]
+    fn editor_input_reaches_the_item_under_the_pointer_and_the_focused_one() {
+        let mut view = view();
+        if let Some(pane) = view.active_pane_mut() {
+            pane.add_item(Box::new(Doc::default()));
+        }
+        view.layout(area());
+        let body = view
+            .body_rect_of(&[])
+            .map(|rect| rect.y)
+            .unwrap_or_default();
+        assert!(view.editor_click(40.0, body + 30.0, false));
+        assert_eq!(
+            doc(&view).and_then(|doc| doc.cursor),
+            Some((40.0, 30.0, false))
+        );
+        assert!(view.editor_drag(60.0, body + 50.0));
+        assert_eq!(
+            doc(&view).and_then(|doc| doc.cursor),
+            Some((60.0, 50.0, true))
+        );
+        assert!(view.editor_text("hi"));
+        assert_eq!(doc(&view).map(|doc| doc.typed.as_str()), Some("hi"));
+        assert!(view.editor_focused());
+        assert!(!view.active_wants_keystrokes());
+        assert!(!view.editor_click(40.0, 5.0, false));
     }
 }

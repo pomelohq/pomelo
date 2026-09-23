@@ -476,6 +476,15 @@ pub trait Item: 'static {
     }
     fn input_key(&mut self, _key: EditKey, _shift: bool) {}
     fn place_cursor(&mut self, _local_x: f32, _local_y: f32, _extend: bool) {}
+    /// A selection drag to window point `(x, y)` over the body at `body`; items that scroll may autoscroll when
+    /// the point is near or past an edge.
+    fn drag_select(&mut self, x: f32, y: f32, body: ui::Rect) {
+        self.place_cursor((x - body.x).max(0.0), y - body.y, true);
+    }
+    /// A cmd-click at a body point; returns whether the item took it (go to definition, open a link).
+    fn cmd_click(&mut self, _local_x: f32, _local_y: f32) -> bool {
+        false
+    }
     fn select_word_at(&mut self, _local_x: f32, _local_y: f32) {}
     fn selected_text(&self) -> Option<String> {
         None
@@ -773,13 +782,15 @@ pub struct TerminalSyncOutcome {
 /// The terminal panel as the workspace drives it: drawn into whichever area shows the terminal, fed pointer and
 /// keyboard input while focused, and synced with its shells on every frame.
 pub trait TerminalPanelView: 'static {
+    /// The panel's panes; pointer and key input reaches its items through them.
+    fn panes(&mut self) -> &mut pane_group_view::PaneGroupView;
+    fn panes_ref(&self) -> &pane_group_view::PaneGroupView;
     /// A backdrop for the region (a message when there is nothing to show) and the panes to draw over it.
     fn render(&mut self, region: Rect, focused: bool) -> (ui::Painted, EditorLayout);
     /// Clicks on ids for which `is_terminal_id` holds.
     fn click(&mut self, id: u64) -> bool;
     /// The hit id under the pointer (tabs reveal their close button while hovered); returns whether to repaint.
     fn set_hover(&mut self, id: Option<u64>) -> bool;
-    fn grid_contains(&self, x: f32, y: f32) -> bool;
     fn divider_axis(&self, id: u64) -> Option<DividerAxis>;
     fn drag_divider(&mut self, id: u64, x: f32, y: f32) -> bool;
     fn is_tab(&self, id: u64) -> bool;
@@ -799,20 +810,6 @@ pub trait TerminalPanelView: 'static {
     fn update_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool;
     fn clear_foreign_drop(&mut self);
     fn accept_foreign_item(&mut self, item: Box<dyn Item>);
-    fn mouse_down(
-        &mut self,
-        x: f32,
-        y: f32,
-        click_count: u32,
-        modifiers: terminal::Modifiers,
-    ) -> bool;
-    fn mouse_drag(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool;
-    fn mouse_move(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool;
-    fn mouse_up(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers);
-    fn scroll(&mut self, x: f32, y: f32, delta_y: f32, modifiers: terminal::Modifiers) -> bool;
-    fn key(&mut self, keystroke: &terminal::Keystroke) -> TerminalKeyOutcome;
-    fn text(&mut self, text: &str);
-    fn paste(&mut self, text: &str);
     fn focus_changed(&mut self, focused: bool);
     fn sync(&mut self, clipboard: &dyn Fn() -> Option<String>) -> TerminalSyncOutcome;
     /// Start a shell in `cwd` (the project root when `None`) as a new active tab.
@@ -825,7 +822,61 @@ pub trait TerminalPanelView: 'static {
     fn new_item(&mut self, cwd: Option<std::path::PathBuf>) -> Option<Box<dyn Item>>;
 }
 
-pub trait FunctionView: 'static {
+/// Pointer, keyboard and clipboard input for the items of a pane group (the editor area, the terminal panel),
+/// and what their bodies show around the caret.
+pub trait ItemInput {
+    fn editor_key(&mut self, key: EditKey, shift: bool) -> bool;
+    fn editor_text(&mut self, text: &str) -> bool;
+    fn editor_paste(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool;
+    fn editor_ime_preedit(&mut self, text: &str, selected: Option<std::ops::Range<usize>>) -> bool;
+    fn editor_ime_commit(&mut self, text: &str) -> bool;
+    fn editor_click(&mut self, x: f32, y: f32, extend: bool) -> bool;
+    fn editor_double_click(&mut self, x: f32, y: f32) -> bool;
+    /// Extend the selection to a drag point, which may lie outside the pane.
+    fn editor_drag(&mut self, x: f32, y: f32) -> bool;
+    /// The pointer moved (no button held); returns whether anything hover-dependent changed.
+    fn editor_hover(&mut self, x: f32, y: f32) -> bool;
+    fn editor_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool;
+    fn editor_copy(&self) -> Option<CopiedText>;
+    fn editor_cut(&mut self) -> Option<CopiedText>;
+    fn editor_copy_trimmed(&self) -> Option<CopiedText>;
+    fn editor_selected_text(&self) -> Option<String>;
+    fn editor_right_press(&mut self, x: f32, y: f32) -> bool;
+    fn editor_menu_anchor_at(&self, x: f32, y: f32) -> Option<(Vec<usize>, usize)>;
+    fn editor_menu_y(&self, path: &[usize], line: usize) -> Option<f32>;
+    fn editor_save(&mut self) -> Option<Result<(), String>>;
+    fn editor_focused(&self) -> bool;
+    fn cursor_position(&self) -> Option<String>;
+    /// Popovers at the caret (completions) and under the pointer (hover), placed for a window of `viewport`.
+    fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)>;
+    /// A wheel or trackpad scroll over popover `index`.
+    fn popover_scroll(&mut self, index: usize, dy: f32) -> bool;
+    /// Whether the focused item takes raw key presses (a terminal).
+    fn active_wants_keystrokes(&self) -> bool;
+    fn item_keystroke(&mut self, keystroke: &terminal::Keystroke) -> TerminalKeyOutcome;
+    fn item_text(&mut self, text: &str);
+    fn item_paste(&mut self, text: &str);
+    fn item_focus_changed(&mut self, focused: bool);
+    fn item_pointer_down(
+        &mut self,
+        x: f32,
+        y: f32,
+        click_count: u32,
+        modifiers: terminal::Modifiers,
+    ) -> bool;
+    fn item_pointer_drag(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool;
+    fn item_pointer_move(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool;
+    fn item_pointer_up(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers);
+    fn item_pointer_scroll(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_y: f32,
+        modifiers: terminal::Modifiers,
+    ) -> bool;
+}
+
+pub trait FunctionView: ItemInput + 'static {
     fn editor_layout(&mut self, area: ui::Rect) -> EditorLayout;
     fn render_tree(&mut self) -> Option<TreePanel> {
         None
@@ -835,10 +886,6 @@ pub trait FunctionView: 'static {
         None
     }
     fn dismiss_modal(&mut self) {}
-    /// A wheel or trackpad scroll over the caret popover.
-    fn popover_scroll(&mut self, _index: usize, _dy: f32) -> bool {
-        false
-    }
     fn diagnostic_summary(&self) -> Option<DiagnosticSummary> {
         None
     }
@@ -857,41 +904,6 @@ pub trait FunctionView: 'static {
     }
     /// Place an item as a new tab in the focused pane.
     fn add_center_item(&mut self, _item: Box<dyn Item>) {}
-    /// Whether the focused item takes raw key presses (a terminal in the center).
-    fn active_wants_keystrokes(&self) -> bool {
-        false
-    }
-    fn item_keystroke(&mut self, _keystroke: &terminal::Keystroke) -> TerminalKeyOutcome {
-        TerminalKeyOutcome::Ignored
-    }
-    fn item_focus_changed(&mut self, _focused: bool) {}
-    fn item_text(&mut self, _text: &str) {}
-    fn item_paste(&mut self, _text: &str) {}
-    fn item_pointer_down(
-        &mut self,
-        _x: f32,
-        _y: f32,
-        _click_count: u32,
-        _modifiers: terminal::Modifiers,
-    ) -> bool {
-        false
-    }
-    fn item_pointer_drag(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) -> bool {
-        false
-    }
-    fn item_pointer_move(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) -> bool {
-        false
-    }
-    fn item_pointer_up(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) {}
-    fn item_pointer_scroll(
-        &mut self,
-        _x: f32,
-        _y: f32,
-        _delta_y: f32,
-        _modifiers: terminal::Modifiers,
-    ) -> bool {
-        false
-    }
     /// Tick every item that works in the background; closes the tabs that asked to close.
     fn tick_items(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
         ItemTick::default()
@@ -907,18 +919,9 @@ pub trait FunctionView: 'static {
     }
     /// Open an absolute path in the editor, placing the caret at a 1-based row/column when given.
     fn open_file_at(&mut self, _path: &std::path::Path, _row: Option<u32>, _column: Option<u32>) {}
-    fn editor_copy_trimmed(&self) -> Option<CopiedText> {
-        None
-    }
-    fn editor_popovers(&mut self) -> Vec<(Node, f32, f32)> {
-        Vec::new()
-    }
     /// A wheel or trackpad scroll over the open modal; returns whether it moved.
     fn modal_scroll(&mut self, _dy: f32) -> bool {
         false
-    }
-    fn cursor_position(&self) -> Option<String> {
-        None
     }
     fn on_click(&mut self, _id: u64) -> bool {
         false
@@ -991,54 +994,6 @@ pub trait FunctionView: 'static {
     fn clear_foreign_drop(&mut self) {}
     fn accept_foreign_item(&mut self, _item: Box<dyn Item>) {}
 
-    fn editor_text(&mut self, _text: &str) -> bool {
-        false
-    }
-    fn editor_paste(&mut self, text: &str, _slices: Option<&[ClipboardSlice]>) -> bool {
-        self.editor_text(text)
-    }
-    /// The pointer moved (no button held); returns whether anything hover-dependent changed.
-    fn editor_hover(&mut self, _x: f32, _y: f32) -> bool {
-        false
-    }
-    fn editor_ime_preedit(
-        &mut self,
-        _text: &str,
-        _selected: Option<std::ops::Range<usize>>,
-    ) -> bool {
-        false
-    }
-    fn editor_ime_commit(&mut self, _text: &str) -> bool {
-        false
-    }
-    fn editor_copy(&self) -> Option<CopiedText> {
-        None
-    }
-    fn editor_cut(&mut self) -> Option<CopiedText> {
-        None
-    }
-    fn editor_key(&mut self, _key: EditKey, _shift: bool) -> bool {
-        false
-    }
-    fn editor_click(&mut self, _x: f32, _y: f32, _extend: bool) -> bool {
-        false
-    }
-    /// Extend the selection to a drag point, which may lie outside the pane.
-    fn editor_drag(&mut self, x: f32, y: f32) -> bool {
-        self.editor_click(x, y, true)
-    }
-    fn editor_double_click(&mut self, _x: f32, _y: f32) -> bool {
-        false
-    }
-    fn editor_selected_text(&self) -> Option<String> {
-        None
-    }
-    fn editor_scroll(&mut self, _x: f32, _y: f32, _dx: f32, _dy: f32) -> bool {
-        false
-    }
-    fn editor_focused(&self) -> bool {
-        false
-    }
     fn row_path(&self, _id: u64) -> Option<(String, bool)> {
         None
     }
@@ -1046,20 +1001,8 @@ pub trait FunctionView: 'static {
         None
     }
     fn open_path(&mut self, _path: &str) {}
-    fn editor_save(&mut self) -> Option<Result<(), String>> {
-        None
-    }
     fn refresh_disk_state(&mut self) {}
     fn is_busy(&self) -> bool {
-        false
-    }
-    fn editor_menu_anchor_at(&self, _x: f32, _y: f32) -> Option<(Vec<usize>, usize)> {
-        None
-    }
-    fn editor_menu_y(&self, _path: &[usize], _line: usize) -> Option<f32> {
-        None
-    }
-    fn editor_right_press(&mut self, _x: f32, _y: f32) -> bool {
         false
     }
 }
