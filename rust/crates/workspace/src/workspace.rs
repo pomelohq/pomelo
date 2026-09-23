@@ -59,7 +59,12 @@ pub const STATUS_BAR_H: f32 = 24.0; // the thin status strip at the very bottom 
 pub const RAIL_W: f32 = 48.0; // collapsed dock width — the icon rail; the dock never goes narrower than this
 pub const FUNC_BASE: u64 = 700; // function-nav click ids (bottom bar): FUNC_BASE + PaneKind index
 pub const FUNC_VIEW_BASE: u64 = 10000; // click ids owned by a feature's `FunctionView` (routed to it)
-pub const TERMINAL_VIEW_BASE: u64 = 5000; // click ids owned by the terminal panel, up to FUNC_VIEW_BASE
+/// Click ids owned by the terminal panel's pane group, above every other range.
+pub const TERMINAL_VIEW_BASE: u64 = 1_000_000_000;
+
+pub fn is_terminal_id(id: u64) -> bool {
+    (TERMINAL_VIEW_BASE..TERMINAL_VIEW_BASE + pane_group_view::ID_SPAN).contains(&id)
+}
 pub const FILES_TREE_W: f32 = 260.0; // default width of the Files tree dock (left of the center editor)
 pub const FILES_TREE_MIN: f32 = 160.0;
 pub const FILES_TREE_MAX: f32 = 560.0;
@@ -768,8 +773,9 @@ pub struct TerminalSyncOutcome {
 /// The terminal panel as the workspace drives it: drawn into whichever area shows the terminal, fed pointer and
 /// keyboard input while focused, and synced with its shells on every frame.
 pub trait TerminalPanelView: 'static {
-    fn render(&mut self, region: Rect, focused: bool) -> ui::Painted;
-    /// Tab bar clicks (ids from `TERMINAL_VIEW_BASE`).
+    /// A backdrop for the region (a message when there is nothing to show) and the panes to draw over it.
+    fn render(&mut self, region: Rect, focused: bool) -> (ui::Painted, EditorLayout);
+    /// Clicks on ids for which `is_terminal_id` holds.
     fn click(&mut self, id: u64) -> bool;
     /// The hit id under the pointer (tabs reveal their close button while hovered); returns whether to repaint.
     fn set_hover(&mut self, id: Option<u64>) -> bool;
@@ -783,10 +789,10 @@ pub trait TerminalPanelView: 'static {
     fn drop_tab(&mut self) -> bool;
     fn tab_drag_overlay(&self) -> Option<Rect>;
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)>;
-    /// Moving a tab across pane groups: the item being dragged here, taking it out, whether this view takes
-    /// such an item, where it would land when the pointer is over this view, and placing it.
     /// Returns false when the command had nothing to act on (no pane in that direction, ...).
     fn pane_command(&mut self, command: pane::PaneCommand) -> bool;
+    /// Moving a tab across pane groups: the item being dragged here, taking it out, whether this view takes
+    /// such an item, where it would land when the pointer is over this view, and placing it.
     fn dragged_item(&self) -> Option<&dyn Item>;
     fn take_dragged_item(&mut self) -> Option<Box<dyn Item>>;
     fn accepts_item(&self, item: &dyn Item) -> bool;
@@ -860,6 +866,7 @@ pub trait FunctionView: 'static {
     }
     fn item_focus_changed(&mut self, _focused: bool) {}
     fn item_text(&mut self, _text: &str) {}
+    fn item_paste(&mut self, _text: &str) {}
     fn item_pointer_down(
         &mut self,
         _x: f32,

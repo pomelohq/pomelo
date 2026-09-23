@@ -9,7 +9,7 @@ use terminal::{
     SyncOutcome, Terminal, TerminalAction, TerminalHost, TerminalOptions, Waker,
 };
 use ui::{div, theme, IconKind, Node, Painted, Rect, Rgba};
-use workspace::search_bar::Searchable;
+use workspace::search_bar::{SearchSupport, Searchable};
 use workspace::{ClipboardSlice, Item, ItemTick, TerminalKeyOutcome, TerminalOpenTarget};
 
 use crate::{anchor_to_bottom, GridMetrics, GridOptions, GridPainter, FONT_SIZE, LINE_HEIGHT};
@@ -346,6 +346,16 @@ impl TerminalItem {
 }
 
 impl Searchable for TerminalItem {
+    fn supported_options(&self) -> SearchSupport {
+        SearchSupport {
+            case: false,
+            word: false,
+            regex: true,
+            replace: false,
+            select_all: false,
+        }
+    }
+
     fn search_version(&self) -> u64 {
         self.terminal.content_version()
     }
