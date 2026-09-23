@@ -110,6 +110,11 @@ impl FoldMap {
         self.folds.is_empty()
     }
 
+    /// The collapsed ranges, sorted by start (nested and overlapping ones kept apart).
+    pub fn ranges(&self) -> &[Range<usize>] {
+        &self.folds
+    }
+
     /// Carry folds through edits since the last sync: the start sticks after text typed at the header's end,
     /// the end sticks before text typed at the closer. Folds that collapse to nothing are dropped.
     pub fn sync(&mut self, buffer: &EditorBuffer) {

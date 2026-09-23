@@ -1,7 +1,7 @@
 //! The terminal panel: a pane group of terminal items, driven by the workspace. Panes split, each with its
 //! own tabs and find bar; closing the last terminal closes the panel.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use terminal::Waker;
 use ui::{label, theme, IconKind, Node, Painted, Rect};
@@ -10,6 +10,7 @@ use workspace::pane_group::SplitDirection;
 use workspace::pane_group_view::{
     GroupClick, PaneButton, PaneButtonAction, PaneGroupConfig, PaneGroupView,
 };
+use workspace::persistence::{SerializedItem, SerializedMember};
 use workspace::{
     DividerAxis, EditorLayout, Item, TerminalOpenTarget, TerminalPanelView, TerminalSyncOutcome,
     TERMINAL_VIEW_BASE,
@@ -23,6 +24,28 @@ fn terminal_of(pane: &mut Pane) -> Option<&mut TerminalItem> {
     pane.active_item_mut()?
         .as_any_mut()?
         .downcast_mut::<TerminalItem>()
+}
+
+/// A new shell in `cwd` (the project root when `None`), noting the failure for the empty panel to show.
+fn spawn_terminal(
+    root: &Path,
+    waker: &Waker,
+    next_item_id: &mut u64,
+    spawn_error: &mut Option<String>,
+    cwd: Option<PathBuf>,
+) -> Option<TerminalItem> {
+    let id = *next_item_id;
+    *next_item_id += 1;
+    match TerminalItem::spawn(id, root.to_path_buf(), cwd, waker.clone()) {
+        Ok(item) => {
+            *spawn_error = None;
+            Some(item)
+        }
+        Err(error) => {
+            *spawn_error = Some(format!("Failed to start the shell: {error}"));
+            None
+        }
+    }
 }
 
 pub struct TerminalPanel {
@@ -74,18 +97,13 @@ impl TerminalPanel {
     }
 
     fn spawn_item(&mut self, cwd: Option<PathBuf>) -> Option<TerminalItem> {
-        let id = self.next_item_id;
-        self.next_item_id += 1;
-        match TerminalItem::spawn(id, self.root.clone(), cwd, self.waker.clone()) {
-            Ok(item) => {
-                self.spawn_error = None;
-                Some(item)
-            }
-            Err(error) => {
-                self.spawn_error = Some(format!("Failed to start the shell: {error}"));
-                None
-            }
-        }
+        spawn_terminal(
+            &self.root,
+            &self.waker,
+            &mut self.next_item_id,
+            &mut self.spawn_error,
+            cwd,
+        )
     }
 
     fn active_pane(&mut self) -> Option<&mut Pane> {
@@ -160,6 +178,22 @@ impl TerminalPanelView for TerminalPanel {
 
     fn panes_ref(&self) -> &PaneGroupView {
         &self.panes
+    }
+
+    fn save_panes(&self) -> SerializedMember {
+        self.panes.serialize()
+    }
+
+    fn restore_panes(&mut self, saved: &SerializedMember) -> bool {
+        let (root, waker) = (&self.root, &self.waker);
+        let (next_item_id, spawn_error) = (&mut self.next_item_id, &mut self.spawn_error);
+        let mut make_item = |item: &SerializedItem| -> Option<Box<dyn Item>> {
+            let cwd = crate::item::saved_cwd(item)?;
+            let cwd = cwd.is_dir().then_some(cwd);
+            spawn_terminal(root, waker, next_item_id, spawn_error, cwd)
+                .map(|terminal| Box::new(terminal) as Box<dyn Item>)
+        };
+        self.panes.restore(saved, &mut make_item)
     }
 
     fn render(&mut self, region: Rect, focused: bool) -> (Painted, EditorLayout) {
