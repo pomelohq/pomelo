@@ -126,6 +126,8 @@ const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 8_500_000; // + PaletteClick
 const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 8_600_000; // + row
 const SEARCH_BASE: u64 = FUNC_VIEW_BASE + 9_000_000; // + pane*PANE_STRIDE + SearchClick
 const FOLD_BASE: u64 = FUNC_VIEW_BASE + 10_000_000; // + pane*PANE_STRIDE + buffer_line
+const HUNK_BASE: u64 = FUNC_VIEW_BASE + 11_000_000; // + pane*PANE_STRIDE + buffer_line
+const HUNK_FROM_FOLD: u64 = HUNK_BASE - FOLD_BASE;
 const DIVIDER_BASE: u64 = FUNC_VIEW_BASE + 12_000_000;
 const PANE_STRIDE: u64 = 100_000;
 
@@ -272,6 +274,8 @@ struct DisplayRow {
     start: usize,
     end: usize,
     indent: usize,
+    /// A committed line an expanded change removed, shown above `line` and never holding the caret.
+    deleted: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -340,6 +344,19 @@ struct FileItem {
     /// Buffer lines (first, last) previewed by a modal.
     highlighted_rows: Option<(usize, usize)>,
     git: git_diff::GitDiff,
+    /// Changes shown expanded, as char ranges carried through edits.
+    expanded: Vec<Range<usize>>,
+    /// The committed text expanded changes show their removed lines from.
+    base: Option<BaseText>,
+    /// Whether `rows` holds removed lines of expanded changes.
+    has_virtual_rows: bool,
+}
+
+/// The committed version of the file, highlighted like the file, for expanded changes' removed lines.
+struct BaseText {
+    bases: std::sync::Arc<git::DiffBases>,
+    buffer: EditorBuffer,
+    syntax: Option<Syntax>,
 }
 
 impl FileItem {
@@ -392,6 +409,9 @@ impl FileItem {
             active_search_highlight: None,
             highlighted_rows: None,
             git,
+            expanded: Vec::new(),
+            base: None,
+            has_virtual_rows: false,
         }
     }
 
@@ -419,6 +439,10 @@ impl FileItem {
             for batch in b.edits_since(since) {
                 self.scroll_anchor =
                     editor::buffer::map_offset(batch, self.scroll_anchor, Bias::Left);
+                for range in &mut self.expanded {
+                    range.start = editor::buffer::map_offset(batch, range.start, Bias::Left);
+                    range.end = editor::buffer::map_offset(batch, range.end, Bias::Right);
+                }
             }
         }
         self.folds.sync(b);
@@ -458,16 +482,36 @@ impl FileItem {
 
     /// Buffer `line` as colored runs (tabs expanded onto the grid), highlighted from the syntax tree.
     fn line_segments(&self, line: usize, colors: &Theme) -> Vec<(String, Rgba)> {
-        let Some(b) = self.buffer.as_ref() else {
-            return Vec::new();
-        };
+        match self.buffer.as_ref() {
+            Some(b) => segments_of(b, self.syntax.as_ref(), line, colors),
+            None => Vec::new(),
+        }
+    }
+
+    /// A committed line an expanded change removed, colored like the code.
+    fn base_line_segments(&self, line: usize, colors: &Theme) -> Vec<(String, Rgba)> {
+        match self.base.as_ref() {
+            Some(base) => segments_of(&base.buffer, base.syntax.as_ref(), line, colors),
+            None => Vec::new(),
+        }
+    }
+}
+
+/// Buffer `line` as colored runs (tabs expanded onto the grid), highlighted from `syntax` when there is one.
+fn segments_of(
+    b: &EditorBuffer,
+    syntax: Option<&Syntax>,
+    line: usize,
+    colors: &Theme,
+) -> Vec<(String, Rgba)> {
+    {
         if line >= b.rope.len_lines() {
             return Vec::new();
         }
         let start = b.rope.line_to_byte(line);
         let end = start + b.rope.line(line).len_bytes()
             - usize::from(b.line_len(line) < b.rope.line(line).len_chars());
-        let runs = match self.syntax.as_ref() {
+        let runs = match syntax {
             Some(syntax) => syntax.highlight(&b.rope, start..end),
             None => vec![editor::syntax::HighlightRun {
                 range: start..end,
@@ -486,7 +530,9 @@ impl FileItem {
             })
             .collect()
     }
+}
 
+impl FileItem {
     fn line_count(&self) -> usize {
         self.buffer
             .as_ref()
@@ -577,10 +623,29 @@ impl FileItem {
             .map(|f| b.rope.char_to_line(f.start))
             .collect();
         let em = char_advance();
+        let deletions = self.expanded_deletions();
+        let mut pending_deletions = deletions.iter().peekable();
         let mut rows = Vec::with_capacity(lines.len());
         let mut line_rows = vec![0usize; line_count];
         let mut max_row_cols = 0usize;
+        let push_deleted = |rows: &mut Vec<DisplayRow>, line: usize, base_rows: &Range<usize>| {
+            for base_line in base_rows.clone() {
+                rows.push(DisplayRow {
+                    line,
+                    start: 0,
+                    end: usize::MAX,
+                    indent: 0,
+                    deleted: Some(base_line),
+                });
+            }
+        };
         for (i, &line) in lines.iter().enumerate() {
+            // Removed lines sit above the line their change starts at; ones under a fold stay hidden.
+            while let Some((at, base_rows)) = pending_deletions.next_if(|(at, _)| *at <= line) {
+                if *at == line {
+                    push_deleted(&mut rows, line, base_rows);
+                }
+            }
             let next = lines.get(i + 1).copied().unwrap_or(line_count);
             for slot in line_rows.iter_mut().take(next).skip(line) {
                 *slot = rows.len();
@@ -608,6 +673,7 @@ impl FileItem {
                     start,
                     end: boundary.index,
                     indent,
+                    deleted: None,
                 });
                 max_row_cols = max_row_cols.max(indent + boundary.index - start);
                 start = boundary.index;
@@ -618,6 +684,7 @@ impl FileItem {
                 start,
                 end: usize::MAX,
                 indent,
+                deleted: None,
             });
             let last_cols = if start == 0 {
                 columns
@@ -626,6 +693,12 @@ impl FileItem {
             };
             max_row_cols = max_row_cols.max(last_cols);
         }
+        for (at, base_rows) in pending_deletions {
+            if *at >= line_count {
+                push_deleted(&mut rows, line_count.saturating_sub(1), base_rows);
+            }
+        }
+        self.has_virtual_rows = !deletions.is_empty();
         self.rows = Some(rows);
         self.line_rows = line_rows;
         self.max_row_cols = max_row_cols;
@@ -694,7 +767,9 @@ impl FileItem {
     /// Whether `row` ends at a soft break (its line continues on the next row).
     fn soft_break_after(&self, row: usize) -> bool {
         match (self.row(row), self.row(row + 1)) {
-            (Some(this), Some(next)) => next.line == this.line,
+            (Some(this), Some(next)) => {
+                next.line == this.line && this.deleted.is_none() && next.deleted.is_none()
+            }
             _ => false,
         }
     }
@@ -1372,6 +1447,9 @@ impl FileItem {
             let Some(row) = self.row(row_index) else {
                 break;
             };
+            if row.deleted.is_some() {
+                continue;
+            }
             let line_start = b.rope.line_to_char(row.line);
             let layout = self.line_layout(row.line);
             let row_y = content.y + row_index as f32 * EDIT_LINE_H - self.scroll_y;
@@ -1611,6 +1689,205 @@ impl FileItem {
         self.ensure_cursor_visible();
     }
 
+    /// Where a change sits in the text, as chars: its lines, or the point its removal happened at.
+    fn hunk_char_range(&self, hunk: &git::DiffHunk) -> Range<usize> {
+        let Some(b) = self.buffer.as_ref() else {
+            return 0..0;
+        };
+        let line_start = |line: usize| {
+            if line >= b.rope.len_lines() {
+                b.rope.len_chars()
+            } else {
+                b.rope.line_to_char(line)
+            }
+        };
+        line_start(hunk.rows.start)..line_start(hunk.rows.end)
+    }
+
+    fn is_expanded(&self, hunk: &git::DiffHunk) -> bool {
+        let range = self.hunk_char_range(hunk);
+        self.expanded
+            .iter()
+            .any(|e| e.start <= range.end && range.start <= e.end)
+    }
+
+    /// For each expanded change that removed lines: the line it starts at and the committed lines it removed.
+    fn expanded_deletions(&self) -> Vec<(usize, Range<usize>)> {
+        if self.expanded.is_empty() || self.base.is_none() {
+            return Vec::new();
+        }
+        self.git
+            .hunks()
+            .iter()
+            .filter(|hunk| !hunk.base_rows.is_empty() && self.is_expanded(hunk))
+            .map(|hunk| (hunk.rows.start, hunk.base_rows.clone()))
+            .collect()
+    }
+
+    /// Whether some change covers `line` or removed lines right above it.
+    fn hunk_at_line(&self, line: usize) -> bool {
+        self.git.hunks().iter().any(|hunk| {
+            hunk.rows.contains(&line) || (hunk.rows.is_empty() && hunk.rows.start == line)
+        })
+    }
+
+    /// Keep the committed text (and its highlighting) current while any change is expanded.
+    fn sync_base_text(&mut self) {
+        if self.expanded.is_empty() {
+            return;
+        }
+        let Some(bases) = self.git.bases() else {
+            return;
+        };
+        let stale = self
+            .base
+            .as_ref()
+            .is_none_or(|base| !std::sync::Arc::ptr_eq(&base.bases, &bases));
+        if stale {
+            let buffer = EditorBuffer::from_text(bases.head.as_deref().unwrap_or(""));
+            self.base = Some(BaseText {
+                syntax: Syntax::new(self.lang),
+                buffer,
+                bases,
+            });
+            self.rows = None;
+        }
+        if let Some(base) = self.base.as_mut() {
+            if let Some(syntax) = base.syntax.as_mut() {
+                syntax.sync(&base.buffer);
+            }
+        }
+    }
+
+    /// Expand the changes under the selections, or collapse them if any already is.
+    fn toggle_selected_hunks(&mut self) {
+        let hunks = self.hunks_in_selections();
+        if hunks.is_empty() {
+            return;
+        }
+        if hunks.iter().any(|hunk| self.is_expanded(hunk)) {
+            let ranges: Vec<Range<usize>> = hunks
+                .iter()
+                .map(|hunk| self.hunk_char_range(hunk))
+                .collect();
+            self.expanded
+                .retain(|e| !ranges.iter().any(|r| e.start <= r.end && r.start <= e.end));
+        } else {
+            let ranges: Vec<Range<usize>> = hunks
+                .iter()
+                .map(|hunk| self.hunk_char_range(hunk))
+                .collect();
+            self.expanded.extend(ranges);
+        }
+        self.after_expansion_change();
+    }
+
+    fn expand_all_hunks(&mut self) {
+        let ranges: Vec<Range<usize>> = self
+            .git
+            .hunks()
+            .iter()
+            .map(|hunk| self.hunk_char_range(hunk))
+            .collect();
+        self.expanded = ranges;
+        self.after_expansion_change();
+    }
+
+    /// A click on the change strip at `line`.
+    fn toggle_hunk_at_line(&mut self, line: usize) {
+        let Some(hunk) = self
+            .git
+            .hunks()
+            .iter()
+            .find(|hunk| {
+                hunk.rows.contains(&line) || (hunk.rows.is_empty() && hunk.rows.start == line)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let range = self.hunk_char_range(&hunk);
+        if self.is_expanded(&hunk) {
+            self.expanded
+                .retain(|e| !(e.start <= range.end && range.start <= e.end));
+        } else {
+            self.expanded.push(range);
+        }
+        self.after_expansion_change();
+    }
+
+    fn after_expansion_change(&mut self) {
+        self.sync_base_text();
+        self.rows = None;
+        self.ensure_visible();
+        self.ensure_cursor_visible();
+    }
+
+    /// Expanded changes tint their lines: added ones green, removed ones (shown above) red, across the gutter.
+    /// Staged ones get a lighter tint edged top and bottom.
+    fn expanded_hunk_rects(&self, content: Rect, first: usize, last: usize) -> Vec<Rect> {
+        if self.expanded.is_empty() {
+            return Vec::new();
+        }
+        let colors = theme();
+        let light = colors.appearance == ui::Appearance::Light;
+        let (fill, hollow_fill, hollow_edge) = if light {
+            (0.16, 0.08, 0.48)
+        } else {
+            (0.12, 0.06, 0.36)
+        };
+        let row_y = |row: usize| content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
+        let line_count = self.line_count();
+        let display_row = |line: usize| {
+            if line >= line_count {
+                self.disp_count()
+            } else {
+                self.disp_of(line)
+            }
+        };
+        let mut rects = Vec::new();
+        let mut band = |top: usize, bottom: usize, color: Rgba, staged: bool| {
+            let (top, bottom) = (top.max(first), bottom.min(last));
+            if top >= bottom {
+                return;
+            }
+            let (y, h) = (row_y(top), (bottom - top) as f32 * EDIT_LINE_H);
+            let alpha = if staged { hollow_fill } else { fill };
+            rects.push(Rect::new(content.x, y, content.w, h, color.alpha(alpha)));
+            if staged {
+                let edge = color.alpha(hollow_edge);
+                rects.push(Rect::new(content.x, y, content.w, 1.0, edge));
+                rects.push(Rect::new(content.x, y + h - 1.0, content.w, 1.0, edge));
+            }
+        };
+        for hunk in self
+            .git
+            .hunks()
+            .iter()
+            .filter(|hunk| self.is_expanded(hunk))
+        {
+            let text_top = display_row(hunk.rows.start);
+            let removed = if self.base.is_some() {
+                hunk.base_rows.len()
+            } else {
+                0
+            };
+            band(
+                text_top.saturating_sub(removed),
+                text_top,
+                colors.version_control_deleted,
+                hunk.staged,
+            );
+            band(
+                text_top,
+                display_row(hunk.rows.end),
+                colors.version_control_added,
+                hunk.staged,
+            );
+        }
+        rects
+    }
+
     /// Uncommitted changes as strips at the gutter's left edge: added, modified, and a half-pill between the
     /// lines where some were deleted. Staged changes are drawn hollow.
     fn diff_hunk_rects(&self, content: Rect, first: usize, last: usize) -> Vec<Rect> {
@@ -1633,9 +1910,14 @@ impl FileItem {
                 git::HunkKind::Modified => colors.version_control_modified,
                 git::HunkKind::Deleted => colors.version_control_deleted,
             };
-            let top = display_row(hunk.rows.start);
+            let removed = if self.is_expanded(hunk) && self.base.is_some() {
+                hunk.base_rows.len()
+            } else {
+                0
+            };
             let bottom = display_row(hunk.rows.end);
-            let mut rect = if hunk.rows.is_empty() {
+            let top = display_row(hunk.rows.start) - removed.min(display_row(hunk.rows.start));
+            let mut rect = if hunk.rows.is_empty() && removed == 0 {
                 if top + 1 < first || top > last {
                     continue;
                 }
@@ -1988,6 +2270,17 @@ impl Item for FileItem {
                 break;
             };
             let mut r = div().row().h_px(EDIT_LINE_H).items_center();
+            if let Some(base_line) = row.deleted {
+                let segments = self.base_line_segments(base_line, &colors);
+                if segments.is_empty() {
+                    r = r.child(label(" ").size(EDIT_FONT).mono());
+                }
+                for (text, color) in segments {
+                    r = r.child(label(text).size(EDIT_FONT).mono().color(color));
+                }
+                body = body.child(r);
+                continue;
+            }
             if row.indent > 0 {
                 r = r.child(label(" ".repeat(row.indent)).size(EDIT_FONT).mono());
             }
@@ -2039,8 +2332,11 @@ impl Item for FileItem {
     fn gutter(&mut self, fold_base: u64) -> Option<Node> {
         self.ensure_visible();
         if let Some(b) = self.buffer.as_ref() {
-            self.git.poll(&b.rope, b.version());
+            if self.git.poll(&b.rope, b.version()) && !self.expanded.is_empty() {
+                self.rows = None;
+            }
         }
+        self.sync_base_text();
         let buf = self.buffer.as_ref()?;
         let dims = GutterDimensions::for_lines(self.line_count());
         let active = self.active_rows();
@@ -2059,8 +2355,15 @@ impl Item for FileItem {
                 break;
             };
             let line = row.line;
-            if row.start > 0 {
-                col = col.child(div().w_px(dims.full_width()).h_px(EDIT_LINE_H));
+            let hunk_click = self
+                .hunk_at_line(line)
+                .then_some(fold_base + HUNK_FROM_FOLD + line as u64);
+            if row.deleted.is_some() || row.start > 0 {
+                let mut cell = div().w_px(dims.full_width()).h_px(EDIT_LINE_H);
+                if let Some(id) = hunk_click {
+                    cell = cell.on_click(id);
+                }
+                col = col.child(cell);
                 continue;
             }
             let number_color = if active.iter().any(|(rows, _)| rows.contains(&row_index)) {
@@ -2095,7 +2398,14 @@ impl Item for FileItem {
                     .w_px(dims.full_width())
                     .h_px(EDIT_LINE_H)
                     .items_center()
-                    .child(div().w_px(dims.left_padding))
+                    .child({
+                        // The change strip sits in the left padding; clicking it expands the change.
+                        let strip = div().w_px(dims.left_padding).h_px(EDIT_LINE_H);
+                        match hunk_click {
+                            Some(id) => strip.on_click(id),
+                            None => strip,
+                        }
+                    })
                     .child(div().flex(1.0))
                     .child(
                         label((line + 1).to_string())
@@ -2121,6 +2431,10 @@ impl Item for FileItem {
 
     fn toggle_fold(&mut self, line: usize) {
         self.do_toggle_fold(line);
+    }
+
+    fn toggle_diff_hunk(&mut self, line: usize) {
+        self.toggle_hunk_at_line(line);
     }
 
     fn save(&mut self) -> Result<(), String> {
@@ -2179,6 +2493,11 @@ impl Item for FileItem {
         self.syntax.as_ref().is_some_and(|s| s.is_parsing())
             || self.scrollbars_revealed()
             || self.git.is_busy()
+            || self
+                .base
+                .as_ref()
+                .and_then(|base| base.syntax.as_ref())
+                .is_some_and(Syntax::is_parsing)
     }
 
     fn right_press(&mut self, local_x: f32, local_y: f32) {
@@ -2397,7 +2716,13 @@ impl Item for FileItem {
             self.toggle_soft_wrap();
             return;
         }
+        if key == EditKey::Escape && !self.expanded.is_empty() {
+            self.expanded.clear();
+            return self.after_expansion_change();
+        }
         match key {
+            EditKey::ToggleSelectedDiffHunks => return self.toggle_selected_hunks(),
+            EditKey::ExpandAllDiffHunks => return self.expand_all_hunks(),
             EditKey::GoToHunk | EditKey::GoToPreviousHunk => {
                 return self.go_to_hunk(key == EditKey::GoToHunk)
             }
@@ -2598,7 +2923,7 @@ impl Item for FileItem {
         let row_y = |row: usize| content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
         let first = self.first_line();
         let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
-        let mut rects = Vec::new();
+        let mut rects = self.expanded_hunk_rects(content, first, last);
 
         // Every caret's display line is highlighted across the gutter and text, except rows that also hold a
         // non-empty selection.
@@ -2938,13 +3263,36 @@ fn wrap_boundaries(
 struct EditorRows<'a> {
     item: &'a FileItem,
     folds: Vec<Range<usize>>,
+    /// With removed lines shown, the display rows that hold text: motions count only these, so the caret
+    /// steps over the removed lines.
+    text_rows: Option<Vec<usize>>,
 }
 
 impl<'a> EditorRows<'a> {
     fn new(item: &'a FileItem) -> Self {
+        let text_rows = item.has_virtual_rows.then(|| {
+            (0..item.disp_count())
+                .filter(|row| item.row(*row).is_some_and(|r| r.deleted.is_none()))
+                .collect()
+        });
         Self {
             item,
             folds: item.folds.merged(),
+            text_rows,
+        }
+    }
+
+    fn display_row_of(&self, row: usize) -> usize {
+        match &self.text_rows {
+            Some(rows) => rows.get(row).copied().unwrap_or(self.item.disp_count()),
+            None => row,
+        }
+    }
+
+    fn text_row_of(&self, row: usize) -> usize {
+        match &self.text_rows {
+            Some(rows) => rows.partition_point(|r| *r < row),
+            None => row,
         }
     }
 }
@@ -2965,29 +3313,32 @@ impl DisplayRows for EditorRows<'_> {
     }
 
     fn row_of(&self, offset: usize) -> usize {
-        self.item.position(offset).0
+        self.text_row_of(self.item.position(offset).0)
     }
 
     fn max_row(&self) -> usize {
-        self.item.disp_count().saturating_sub(1)
+        match &self.text_rows {
+            Some(rows) => rows.len().saturating_sub(1),
+            None => self.item.disp_count().saturating_sub(1),
+        }
     }
 
     fn row_start(&self, row: usize) -> usize {
-        self.item.row_start_offset(row)
+        self.item.row_start_offset(self.display_row_of(row))
     }
 
     fn row_end(&self, row: usize) -> usize {
-        self.item.row_end_offset(row)
+        self.item.row_end_offset(self.display_row_of(row))
     }
 
     fn line_start(&self, offset: usize) -> usize {
-        let line = self.item.buf_of(self.row_of(offset));
+        let line = self.item.buf_of(self.item.position(offset).0);
         self.item.display_offset(line, 0)
     }
 
     fn line_end(&self, offset: usize) -> usize {
         self.item
-            .display_line_end(self.item.buf_of(self.row_of(offset)))
+            .display_line_end(self.item.buf_of(self.item.position(offset).0))
     }
 
     fn x_of(&self, offset: usize) -> f32 {
@@ -2995,7 +3346,11 @@ impl DisplayRows for EditorRows<'_> {
     }
 
     fn offset_for_x(&self, row: usize, x: f32) -> usize {
-        self.clip(self.item.offset_for_row_x(row, x, false), Bias::Left)
+        self.clip(
+            self.item
+                .offset_for_row_x(self.display_row_of(row), x, false),
+            Bias::Left,
+        )
     }
 }
 
@@ -4990,6 +5345,21 @@ impl FunctionView for FilesView {
         if id >= DIVIDER_BASE {
             return false;
         }
+        // Change strip in the gutter: expand or collapse that change.
+        if id >= HUNK_BASE {
+            let n = id - HUNK_BASE;
+            let (p, line) = ((n / PANE_STRIDE) as usize, (n % PANE_STRIDE) as usize);
+            if let Some(path) = self.pane_order.get(p).cloned() {
+                if let Some(item) = self
+                    .group
+                    .leaf_at_mut(&path)
+                    .and_then(|pane| pane.active.and_then(|i| pane.open.get_mut(i)))
+                {
+                    item.toggle_diff_hunk(line);
+                }
+            }
+            return true;
+        }
         // Fold chevron in the gutter: toggle the code fold on that pane's active item.
         if id >= FOLD_BASE {
             let n = id - FOLD_BASE;
@@ -6366,6 +6736,53 @@ mod hunk_action_tests {
 
     fn caret_line(item: &FileItem) -> usize {
         item.buffer.as_ref().unwrap().line_col().0
+    }
+
+    #[test]
+    fn expanding_shows_removed_lines_the_caret_steps_over() {
+        let repo = Repo::new("hunk-expand", "a\nb\nc\n");
+        let mut item = repo.open("a\nB\nc\n");
+        item.buffer.as_mut().unwrap().place_cursor(2);
+        item.input_key(EditKey::ToggleSelectedDiffHunks, false);
+        item.ensure_visible();
+        assert_eq!(item.disp_count(), 5);
+        assert_eq!(item.row(1).and_then(|r| r.deleted), Some(1));
+        assert_eq!(item.base_line_segments(1, &syntax_theme())[0].0, "b");
+        assert_eq!(item.disp_of(1), 2);
+
+        item.buffer.as_mut().unwrap().place_cursor(0);
+        item.input_key(EditKey::Down, false);
+        assert_eq!(caret_line(&item), 1);
+        item.input_key(EditKey::Up, false);
+        assert_eq!(caret_line(&item), 0);
+
+        let content = Rect::new(0.0, 0.0, 400.0, 10.0 * EDIT_LINE_H, Rgba::TRANSPARENT);
+        let bands = item.expanded_hunk_rects(content, 0, 10);
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[0].y, EDIT_LINE_H);
+        assert_eq!(bands[1].y, 2.0 * EDIT_LINE_H);
+
+        item.input_key(EditKey::Escape, false);
+        item.ensure_visible();
+        assert_eq!(item.disp_count(), 4);
+
+        item.toggle_diff_hunk(1);
+        item.ensure_visible();
+        assert_eq!(item.disp_count(), 5);
+        item.toggle_diff_hunk(1);
+        item.ensure_visible();
+        assert_eq!(item.disp_count(), 4);
+    }
+
+    #[test]
+    fn a_pure_deletion_expands_above_the_following_line() {
+        let repo = Repo::new("hunk-expand-del", "a\nb\nc\n");
+        let mut item = repo.open("a\nc\n");
+        item.input_key(EditKey::ExpandAllDiffHunks, false);
+        item.ensure_visible();
+        assert_eq!(item.disp_count(), 4);
+        assert_eq!(item.row(1).and_then(|r| r.deleted), Some(1));
+        assert_eq!(item.row(2).map(|r| (r.line, r.deleted)), Some((1, None)));
     }
 
     #[test]

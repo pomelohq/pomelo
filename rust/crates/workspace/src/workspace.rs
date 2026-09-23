@@ -336,6 +336,8 @@ pub trait Item: 'static {
         0.0
     }
     fn toggle_fold(&mut self, _line: usize) {}
+    /// Expand or collapse the uncommitted change at `line`.
+    fn toggle_diff_hunk(&mut self, _line: usize) {}
     /// Whether the pointer is over this item's gutter; returns whether that changed.
     fn set_gutter_hovered(&mut self, _hovered: bool) -> bool {
         false
@@ -445,6 +447,8 @@ pub enum EditKey {
     ToggleStaged,
     StageAndNext,
     UnstageAndNext,
+    ToggleSelectedDiffHunks,
+    ExpandAllDiffHunks,
     Undo,
     Redo,
     SelectAll,

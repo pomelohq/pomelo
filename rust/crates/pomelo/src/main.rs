@@ -837,6 +837,8 @@ impl ApplicationHandler for App {
                         "z" | "Z" if shift => key(EditKey::Redo),
                         "y" | "Y" if shift => key(EditKey::UnstageAndNext),
                         "y" => key(EditKey::StageAndNext),
+                        "\"" => key(EditKey::ExpandAllDiffHunks),
+                        "'" => key(EditKey::ToggleSelectedDiffHunks),
                         "k" | "K" if shift => key(EditKey::DeleteLine),
                         "l" | "L" if shift => key(EditKey::SelectAllMatches),
                         "p" | "P" if shift && !ctrl => key(EditKey::ToggleCommandPalette),
