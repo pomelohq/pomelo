@@ -54,6 +54,9 @@ pub struct PaneGroupConfig {
     pub show_nav: bool,
     pub buttons: Vec<PaneButton>,
     pub max_panes: usize,
+    /// Which dragged items may split a pane at its edge; `None` lets every item split. When restricted, a tab
+    /// dragged within the group also cannot split away the only tab of its only pane.
+    pub split_filter: Option<fn(&dyn Item) -> bool>,
 }
 
 /// A click the group leaves to its owner, which decides what the action means for its items.
@@ -741,29 +744,57 @@ impl PaneGroupView {
         self.tab_drag.is_some()
     }
 
-    /// Where a tab drop at `(x, y)` lands, or `None` over no pane. A full group appends instead of splitting.
+    /// Whether dropping `item` at a pane edge may split it: never in a full group, and only for items the
+    /// group's split filter allows.
+    fn can_split_with(&self, item: &dyn Item, dragged_here: bool) -> bool {
+        if self.group.leaf_count() >= self.config.max_panes {
+            return false;
+        }
+        let Some(filter) = self.config.split_filter else {
+            return true;
+        };
+        let can_drag_away = !dragged_here
+            || self.group.leaf_count() > 1
+            || self
+                .tab_drag
+                .as_ref()
+                .and_then(|drag| self.group.path_of(drag.source))
+                .and_then(|path| self.group.leaf_at(&path))
+                .is_some_and(|pane| pane.open.len() > 1);
+        can_drag_away && filter(item)
+    }
+
+    /// Where a tab drop at `(x, y)` lands, or `None` over no pane. Without `can_split` an edge drop goes into
+    /// the pane instead.
     fn resolve_drop_at(
         &self,
         x: f32,
         y: f32,
         over: Option<(u64, Rect)>,
+        can_split: bool,
     ) -> Option<(TabDrop, Rect)> {
-        let full = self.group.leaf_count() >= self.config.max_panes;
         let index = self.index_at(x, y)?;
         let pane = self.group.leaf_at(self.pane_order.get(index)?)?;
         let over_tab = over.and_then(|(id, rect)| {
             let (p, tab) = self.tab_of(id)?;
             (p == index).then_some((tab, rect))
         });
-        let (mut target, preview) = tab_drag::resolve_drop(
+        let (mut target, mut preview) = tab_drag::resolve_drop(
             *self.pane_rects.get(index)?,
             pane.open.len(),
             x,
             y,
             over_tab,
         );
-        if full && matches!(target, DropTarget::Split(_)) {
+        if !can_split && matches!(target, DropTarget::Split(_)) {
             target = DropTarget::Append;
+            if let Some(body) = self
+                .pane_order
+                .get(index)
+                .and_then(|path| self.body_rect_of(path))
+            {
+                preview = body;
+            }
         }
         Some((
             TabDrop {
@@ -778,7 +809,10 @@ impl PaneGroupView {
         if self.tab_drag.is_none() {
             return false;
         }
-        let resolved = self.resolve_drop_at(x, y, over);
+        let can_split = self
+            .dragged_item()
+            .is_some_and(|item| self.can_split_with(item, true));
+        let resolved = self.resolve_drop_at(x, y, over, can_split);
         if let Some(drag) = self.tab_drag.as_mut() {
             drag.drop = resolved.map(|(drop, _)| drop);
             drag.preview = resolved.map(|(_, preview)| preview);
@@ -846,8 +880,15 @@ impl PaneGroupView {
         Some(item)
     }
 
-    pub fn update_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool {
-        self.foreign_drop = self.resolve_drop_at(x, y, over);
+    pub fn update_foreign_drop(
+        &mut self,
+        x: f32,
+        y: f32,
+        over: Option<(u64, Rect)>,
+        item: &dyn Item,
+    ) -> bool {
+        let can_split = self.can_split_with(item, false);
+        self.foreign_drop = self.resolve_drop_at(x, y, over, can_split);
         self.foreign_drop.is_some()
     }
 
@@ -1200,6 +1241,24 @@ impl ItemInput for PaneGroupView {
         }
     }
 
+    fn popover_click(&mut self, id: u64) -> bool {
+        if self
+            .active_item_mut()
+            .is_some_and(|item| item.popover_click(id))
+        {
+            return true;
+        }
+        let mut clicked = false;
+        self.for_each_item_mut(&mut |item| clicked = clicked || item.popover_click(id));
+        clicked
+    }
+
+    fn popover_hover(&mut self, id: Option<u64>) {
+        if let Some(item) = self.active_item_mut() {
+            item.hover_completion(id);
+        }
+    }
+
     fn active_wants_keystrokes(&self) -> bool {
         self.active_item()
             .is_some_and(|item| item.wants_keystrokes())
@@ -1430,6 +1489,7 @@ fn layout_body(
     let x_offset = item.body_x_offset();
     let gutter_w = item.gutter_w();
     let gutter = item.gutter(fold_base);
+    let background = item.body_background();
     let node = item.render();
     // Text starts right of the fixed gutter and clips to that region, so scrolled glyphs never paint over the
     // line numbers.
@@ -1451,6 +1511,7 @@ fn layout_body(
     placement.body = Some(PaneBody {
         node,
         rect: body_rect,
+        background,
         y_offset,
         text_left,
         x_offset,
@@ -1585,6 +1646,7 @@ mod tests {
                 action: PaneButtonAction::Split(SplitDirection::Right),
             }],
             max_panes: 2,
+            split_filter: None,
         });
         if let Some(pane) = view.active_pane_mut() {
             pane.add_item(Box::new(Plain("a")));

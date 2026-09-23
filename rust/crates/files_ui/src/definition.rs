@@ -483,6 +483,7 @@ mod tests {
                 show_nav: false,
                 buttons: Vec::new(),
                 max_panes: 2,
+                split_filter: None,
             },
         );
         let mut first = FileItem::new(root.clone(), "a.rs", Some("helper();\n".into()));

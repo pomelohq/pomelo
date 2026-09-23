@@ -58,6 +58,7 @@ impl TerminalPanel {
                 },
             ],
             max_panes: MAX_PANES,
+            split_filter: Some(|item| item.as_any().is_some_and(|any| any.is::<TerminalItem>())),
         });
         panes.set_focused(false);
         Self {
@@ -262,12 +263,18 @@ impl TerminalPanelView for TerminalPanel {
         Some(item)
     }
 
-    fn accepts_item(&self, item: &dyn Item) -> bool {
-        item.as_any().is_some_and(|any| any.is::<TerminalItem>())
+    fn accepts_item(&self, _item: &dyn Item) -> bool {
+        true
     }
 
-    fn update_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool {
-        self.panes.update_foreign_drop(x, y, over)
+    fn update_foreign_drop(
+        &mut self,
+        x: f32,
+        y: f32,
+        over: Option<(u64, Rect)>,
+        item: &dyn Item,
+    ) -> bool {
+        self.panes.update_foreign_drop(x, y, over, item)
     }
 
     fn clear_foreign_drop(&mut self) {
@@ -555,11 +562,11 @@ mod tests {
         target.render(region, true);
 
         assert!(source.begin_tab_drag(source.panes.tab_id(0, 0)));
-        let accepted = source
-            .dragged_item()
-            .is_some_and(|item| target.accepts_item(item));
-        assert!(accepted);
-        assert!(target.update_foreign_drop(790.0, 250.0, None));
+        let Some(dragged) = source.dragged_item() else {
+            panic!("a tab should be dragging");
+        };
+        assert!(target.accepts_item(dragged));
+        assert!(target.update_foreign_drop(790.0, 250.0, None, dragged));
         assert!(target.tab_drag_overlay().is_some());
         let Some(item) = source.take_dragged_item() else {
             panic!("dragged item should detach");
@@ -579,5 +586,65 @@ mod tests {
         assert_eq!(target.panes.group.leaf_count(), 1);
         source.accept_foreign_item(item);
         assert!(!source.is_empty());
+    }
+
+    struct Note;
+
+    impl Item for Note {
+        fn id(&self) -> Option<String> {
+            Some("note.md".into())
+        }
+        fn title(&self) -> String {
+            "note.md".into()
+        }
+        fn render(&mut self) -> Node {
+            ui::div().into()
+        }
+        fn is_editable(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn any_item_drops_into_the_panel_but_only_terminals_split_it() {
+        let region = Rect::new(0.0, 0.0, 800.0, 400.0, Rgba::TRANSPARENT);
+        let mut panel = panel();
+        panel.open(None);
+        panel.render(region, true);
+        assert!(panel.accepts_item(&Note));
+        assert!(panel.update_foreign_drop(790.0, 250.0, None, &Note));
+        panel.accept_foreign_item(Box::new(Note));
+        assert_eq!(panel.panes.group.leaf_count(), 1);
+        assert_eq!(
+            panel
+                .panes
+                .active_item()
+                .and_then(|item| item.id())
+                .as_deref(),
+            Some("note.md")
+        );
+        assert!(!panel.panes.active_wants_keystrokes());
+        assert!(panel.panes.editor_focused());
+
+        panel.render(region, true);
+        let Some(shell) = panel.new_item(None) else {
+            panic!("shell should start");
+        };
+        assert!(panel.update_foreign_drop(790.0, 250.0, None, shell.as_ref()));
+        panel.accept_foreign_item(shell);
+        assert_eq!(panel.panes.group.leaf_count(), 2);
+    }
+
+    #[test]
+    fn the_only_tab_of_the_only_pane_cannot_split_itself() {
+        let region = Rect::new(0.0, 0.0, 800.0, 400.0, Rgba::TRANSPARENT);
+        let mut panel = panel();
+        panel.open(None);
+        panel.render(region, true);
+        assert!(panel.begin_tab_drag(panel.panes.tab_id(0, 0)));
+        assert!(panel.update_tab_drag(790.0, 250.0, None));
+        assert!(panel.drop_tab());
+        assert_eq!(panel.panes.group.leaf_count(), 1);
+        assert!(!panel.is_empty());
     }
 }
