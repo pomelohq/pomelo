@@ -341,7 +341,7 @@ pub fn config(lang: Lang) -> LanguageConfig {
             indent: BASH_INDENT,
         },
         Lang::Markdown => code(MARKDOWN, &[], Some(("<!--", "-->"))),
-        Lang::PlainText => LanguageConfig {
+        Lang::PlainText | Lang::MarkdownInline | Lang::Regex | Lang::JsDoc => LanguageConfig {
             brackets: PLAIN_TEXT,
             autoclose_before: ")]}",
             line_comments: &[],

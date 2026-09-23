@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
     Rust,
     TypeScript,
@@ -31,6 +31,10 @@ pub enum Lang {
     Xml,
     Zig,
     Dart,
+    /// Only embedded: Markdown's inline syntax, regex literals, doc comments.
+    MarkdownInline,
+    Regex,
+    JsDoc,
     PlainText,
 }
 
@@ -71,6 +75,49 @@ impl Lang {
             _ => Lang::PlainText,
         }
     }
+
+    /// The language an injection names, by language name or file extension (`rust`, `rs`, `c++`...).
+    pub fn for_injection(name: &str) -> Option<Lang> {
+        let lang = match name.trim().to_ascii_lowercase().as_str() {
+            "rust" => Lang::Rust,
+            "typescript" => Lang::TypeScript,
+            "javascript" | "jsx" => Lang::JavaScript,
+            "python" | "python3" => Lang::Python,
+            "golang" => Lang::Go,
+            "c++" => Lang::Cpp,
+            "shell" | "shellscript" | "console" => Lang::Bash,
+            "ruby" => Lang::Ruby,
+            "csharp" | "c#" => Lang::CSharp,
+            "haskell" => Lang::Haskell,
+            "ocaml" => Lang::Ocaml,
+            "elixir" => Lang::Elixir,
+            "makefile" | "make" => Lang::Make,
+            "markdown_inline" | "markdown-inline" => Lang::MarkdownInline,
+            "regex" => Lang::Regex,
+            "jsdoc" => Lang::JsDoc,
+            ext => Lang::from_ext(ext),
+        };
+        (lang != Lang::PlainText).then_some(lang)
+    }
+}
+
+/// The injection query a grammar ships with, where it has one.
+pub fn injection_patterns(lang: Lang) -> Option<&'static str> {
+    Some(match lang {
+        Lang::Markdown => tree_sitter_md::INJECTION_QUERY_BLOCK,
+        Lang::MarkdownInline => tree_sitter_md::INJECTION_QUERY_INLINE,
+        Lang::Html => tree_sitter_html::INJECTIONS_QUERY,
+        Lang::JavaScript | Lang::TypeScript | Lang::Tsx => tree_sitter_javascript::INJECTIONS_QUERY,
+        Lang::Rust => tree_sitter_rust::INJECTIONS_QUERY,
+        Lang::Php => tree_sitter_php::INJECTIONS_QUERY,
+        Lang::Elixir => tree_sitter_elixir::INJECTIONS_QUERY,
+        Lang::Nix => tree_sitter_nix::INJECTIONS_QUERY,
+        Lang::Swift => tree_sitter_swift::INJECTIONS_QUERY,
+        Lang::Zig => tree_sitter_zig::INJECTIONS_QUERY,
+        Lang::Lua => tree_sitter_lua::INJECTIONS_QUERY,
+        Lang::Haskell => tree_sitter_haskell::INJECTIONS_QUERY,
+        _ => return None,
+    })
 }
 
 // Capture names we recognize; tree-sitter maps each query capture to an index into this list. Based on the One
@@ -242,6 +289,18 @@ pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, &'static str)> {
         Lang::Dart => (
             tree_sitter_dart::LANGUAGE.into(),
             tree_sitter_dart::HIGHLIGHTS_QUERY,
+        ),
+        Lang::MarkdownInline => (
+            tree_sitter_md::INLINE_LANGUAGE.into(),
+            tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+        ),
+        Lang::Regex => (
+            tree_sitter_regex::LANGUAGE.into(),
+            tree_sitter_regex::HIGHLIGHTS_QUERY,
+        ),
+        Lang::JsDoc => (
+            tree_sitter_jsdoc::LANGUAGE.into(),
+            tree_sitter_jsdoc::HIGHLIGHTS_QUERY,
         ),
         Lang::PlainText => return None,
     };
