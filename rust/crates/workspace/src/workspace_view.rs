@@ -146,7 +146,13 @@ impl WorkspaceView {
     }
 
     pub fn ticking(&self) -> bool {
-        self.toast.is_some() || self.layout.files_view.as_ref().is_some_and(|v| v.is_busy())
+        self.toast.is_some()
+            || self.layout.files_view.as_ref().is_some_and(|v| v.is_busy())
+            || self
+                .layout
+                .terminal_view
+                .as_ref()
+                .is_some_and(|view| view.panes_ref().is_busy())
     }
 
     pub fn layout(&self) -> &Layout {
@@ -191,6 +197,10 @@ impl WorkspaceView {
                     DockPosition::Right => self.layout.right_region(w, h),
                     DockPosition::Bottom => self.layout.bottom_region(w, h),
                 };
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    let panel = self.layout.terminal_view.as_mut().map(|view| view.panes());
+                    files.sync_items(panel);
+                }
                 let (tp, mut editor) = {
                     let v = self.layout.files_view.as_mut().unwrap();
                     v.set_viewport(tree_region.w, tree_region.h);
@@ -1831,6 +1841,9 @@ impl WorkspaceView {
     pub fn refresh_disk_state(&mut self) {
         if let Some(v) = self.layout.files_view.as_mut() {
             v.refresh_disk_state();
+        }
+        if let Some(view) = self.layout.terminal_view.as_mut() {
+            view.panes().refresh_disk_state();
         }
     }
 

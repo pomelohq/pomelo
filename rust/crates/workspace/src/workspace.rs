@@ -877,6 +877,9 @@ pub trait ItemInput {
 }
 
 pub trait FunctionView: ItemInput + 'static {
+    /// Once a frame before layout: bring the project's services (language servers, ...) up to date with the
+    /// items open here and in `other`, another pane group such as the terminal panel.
+    fn sync_items(&mut self, _other: Option<&mut pane_group_view::PaneGroupView>) {}
     fn editor_layout(&mut self, area: ui::Rect) -> EditorLayout;
     fn render_tree(&mut self) -> Option<TreePanel> {
         None

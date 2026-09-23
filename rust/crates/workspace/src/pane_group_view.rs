@@ -246,6 +246,17 @@ impl PaneGroupView {
         empty
     }
 
+    pub fn refresh_disk_state(&mut self) {
+        self.for_each_item_mut(&mut |item| item.refresh_disk_state());
+    }
+
+    pub fn is_busy(&self) -> bool {
+        let mut busy = false;
+        self.group
+            .for_each_pane(&mut |pane| busy |= pane.open.iter().any(|item| item.is_busy()));
+        busy
+    }
+
     pub fn for_each_item_mut(&mut self, f: &mut dyn FnMut(&mut dyn Item)) {
         self.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {

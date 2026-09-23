@@ -4206,25 +4206,37 @@ impl FilesView {
         }
     }
 
-    /// Bring the language servers up to date with the open files, and give each file its diagnostics. A file
-    /// open in several panes is mirrored from its first pane's buffer.
-    fn sync_language_servers(&mut self) {
+    /// Bring the language servers up to date with the files open in the editor area and in `other` (another
+    /// pane group, such as the terminal panel), give each file its diagnostics, and open definitions that
+    /// resolved. A file open in several panes is mirrored from its first pane's buffer.
+    fn sync_language_servers(&mut self, mut other: Option<&mut PaneGroupView>) {
         let now = std::time::Instant::now();
         let Some(lsp) = self.lsp.as_mut() else {
-            self.panes.group.for_each_pane_mut(&mut |pane| {
-                for item in pane.open.iter_mut() {
-                    if let Some(file) = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>())
-                    {
-                        if file.hover_request_due(now).is_some() {
-                            file.hover_requested(None);
-                        }
-                        while file.definition_request_due().is_some() {
-                            file.definition_requested(None);
-                        }
-                        file.tick_hover(now);
+            let offline = |item: &mut dyn Item, navigations: &mut Vec<Navigation>| {
+                if let Some(file) = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>()) {
+                    navigations.extend(file.navigation.take());
+                    if file.hover_request_due(now).is_some() {
+                        file.hover_requested(None);
                     }
+                    while file.definition_request_due().is_some() {
+                        file.definition_requested(None);
+                    }
+                    file.tick_hover(now);
                 }
-            });
+            };
+            let mut navigations = Vec::new();
+            self.panes
+                .for_each_item_mut(&mut |item| offline(item, &mut navigations));
+            for (targets, caret_top) in navigations {
+                open_definition(&self.root, &mut self.panes, &targets, caret_top);
+            }
+            if let Some(group) = other {
+                let mut navigations = Vec::new();
+                group.for_each_item_mut(&mut |item| offline(item, &mut navigations));
+                for (targets, caret_top) in navigations {
+                    open_definition(&self.root, group, &targets, caret_top);
+                }
+            }
             return;
         };
         let events = lsp.poll();
@@ -4233,7 +4245,6 @@ impl FilesView {
         let mut completion_answers = Vec::new();
         let mut resolutions = Vec::new();
         let mut definition_answers = Vec::new();
-        let mut navigations: Vec<(Vec<lsp::DefinitionTarget>, Option<f32>)> = Vec::new();
         for event in events {
             match event {
                 lsp::StoreEvent::Diagnostics(update) => updates.push(update),
@@ -4244,72 +4255,78 @@ impl FilesView {
             }
         }
         let mut synced: HashSet<PathBuf> = HashSet::new();
-        self.panes.group.for_each_pane_mut(&mut |pane| {
-            for item in pane.open.iter_mut() {
-                let Some(file) = item
-                    .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<FileItem>())
-                else {
-                    continue;
-                };
-                for response in &hovers {
-                    file.hover_answered(response);
-                }
-                for response in &completion_answers {
-                    file.completions_answered(response);
-                }
-                for resolved in &resolutions {
-                    file.resolve_answered(resolved);
-                }
-                for response in &definition_answers {
-                    if let Some(targets) = file.definitions_answered(response) {
-                        navigations.push((targets, file.caret_top()));
-                    }
-                }
-                let path = file.root.join(&file.path);
-                if let (Some(offset), Some(b)) = (file.hover_request_due(now), file.buffer.as_ref())
-                {
-                    let token = lsp.hover(&path, file.lang, b, offset);
-                    file.hover_requested(token);
-                }
-                file.tick_hover(now);
-                if file.buffer.is_none() || !synced.insert(path.clone()) {
-                    continue;
-                }
-                for update in updates.iter().filter(|update| update.path == path) {
-                    file.set_diagnostics(update);
-                }
-                file.refresh();
-                if let Some(b) = file.buffer.as_ref() {
-                    lsp.sync_document(&path, file.lang, b);
-                    if std::mem::take(&mut file.saved_unannounced) {
-                        lsp.did_save(&path, b);
-                    }
-                }
-                file.lsp_triggers = lsp.completion_triggers(&path);
-                if let Some((offset, trigger)) = file.completion_request_due() {
-                    let token = file.buffer.as_ref().and_then(|b| {
-                        lsp.completion(&path, file.lang, b, offset, trigger.as_deref())
-                    });
-                    file.completion_requested(token);
-                }
-                if let Some(raw) = file.resolve_due() {
-                    let token = lsp.resolve_completion(&path, &raw);
-                    file.resolve_requested(token);
-                }
-                if let Some(raw) = file.doc_resolve_due() {
-                    let token = lsp.resolve_completion(&path, &raw);
-                    file.doc_resolve_requested(token);
-                }
-                while let Some((offset, kind)) = file.definition_request_due() {
-                    let token = file
-                        .buffer
-                        .as_ref()
-                        .and_then(|b| lsp.definitions(&path, file.lang, b, offset, kind));
-                    file.definition_requested(token);
+        let mut serve = |item: &mut dyn Item, navigations: &mut Vec<Navigation>| {
+            let Some(file) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FileItem>())
+            else {
+                return;
+            };
+            navigations.extend(file.navigation.take());
+            for response in &hovers {
+                file.hover_answered(response);
+            }
+            for response in &completion_answers {
+                file.completions_answered(response);
+            }
+            for resolved in &resolutions {
+                file.resolve_answered(resolved);
+            }
+            for response in &definition_answers {
+                if let Some(targets) = file.definitions_answered(response) {
+                    navigations.push((targets, file.caret_top()));
                 }
             }
-        });
+            let path = file.root.join(&file.path);
+            if let (Some(offset), Some(b)) = (file.hover_request_due(now), file.buffer.as_ref()) {
+                let token = lsp.hover(&path, file.lang, b, offset);
+                file.hover_requested(token);
+            }
+            file.tick_hover(now);
+            if file.buffer.is_none() || !synced.insert(path.clone()) {
+                return;
+            }
+            for update in updates.iter().filter(|update| update.path == path) {
+                file.set_diagnostics(update);
+            }
+            file.refresh();
+            if let Some(b) = file.buffer.as_ref() {
+                lsp.sync_document(&path, file.lang, b);
+                if std::mem::take(&mut file.saved_unannounced) {
+                    lsp.did_save(&path, b);
+                }
+            }
+            file.lsp_triggers = lsp.completion_triggers(&path);
+            if let Some((offset, trigger)) = file.completion_request_due() {
+                let token = file
+                    .buffer
+                    .as_ref()
+                    .and_then(|b| lsp.completion(&path, file.lang, b, offset, trigger.as_deref()));
+                file.completion_requested(token);
+            }
+            if let Some(raw) = file.resolve_due() {
+                let token = lsp.resolve_completion(&path, &raw);
+                file.resolve_requested(token);
+            }
+            if let Some(raw) = file.doc_resolve_due() {
+                let token = lsp.resolve_completion(&path, &raw);
+                file.doc_resolve_requested(token);
+            }
+            while let Some((offset, kind)) = file.definition_request_due() {
+                let token = file
+                    .buffer
+                    .as_ref()
+                    .and_then(|b| lsp.definitions(&path, file.lang, b, offset, kind));
+                file.definition_requested(token);
+            }
+        };
+        let mut navigations: Vec<Navigation> = Vec::new();
+        let mut other_navigations: Vec<Navigation> = Vec::new();
+        self.panes
+            .for_each_item_mut(&mut |item| serve(item, &mut navigations));
+        if let Some(group) = other.as_deref_mut() {
+            group.for_each_item_mut(&mut |item| serve(item, &mut other_navigations));
+        }
         let closed: Vec<PathBuf> = lsp
             .open_documents()
             .filter(|path| !synced.contains(*path))
@@ -4319,38 +4336,13 @@ impl FilesView {
             lsp.close_document(&path);
         }
         for (targets, caret_top) in navigations {
-            self.navigate_to_definition(&targets, caret_top);
+            open_definition(&self.root, &mut self.panes, &targets, caret_top);
         }
-    }
-
-    fn navigate_to_definition(
-        &mut self,
-        targets: &[lsp::DefinitionTarget],
-        caret_top: Option<f32>,
-    ) {
-        let Some(target) = targets.first().cloned() else {
-            return;
-        };
-        self.track_nav(|view| {
-            let (root, relative) = match target.path.strip_prefix(&view.root) {
-                Ok(relative) => (view.root.clone(), relative.to_string_lossy().into_owned()),
-                Err(_) => (
-                    PathBuf::from("/"),
-                    target
-                        .path
-                        .to_string_lossy()
-                        .trim_start_matches('/')
-                        .to_string(),
-                ),
-            };
-            if let Some(pane) = view.panes.active_pane_mut() {
-                pane.open_file(&root, &relative);
+        if let Some(group) = other {
+            for (targets, caret_top) in other_navigations {
+                open_definition(&self.root, group, &targets, caret_top);
             }
-            let active = view.panes.active.clone();
-            if let Some(item) = view.go_to_line_item(&active) {
-                item.select_target_range(target.range, caret_top);
-            }
-        });
+        }
     }
 
     fn go_to_line_item(&mut self, path: &[usize]) -> Option<&mut FileItem> {
@@ -4699,9 +4691,46 @@ impl FilesView {
             }
         });
         for (targets, caret_top) in navigations {
-            self.navigate_to_definition(&targets, caret_top);
+            open_definition(&self.root, &mut self.panes, &targets, caret_top);
         }
     }
+}
+
+type Navigation = (Vec<lsp::DefinitionTarget>, Option<f32>);
+
+/// Open the first of `targets` in `group`'s focused pane and select it, recording the jump in its history.
+fn open_definition(
+    root: &Path,
+    group: &mut PaneGroupView,
+    targets: &[lsp::DefinitionTarget],
+    caret_top: Option<f32>,
+) {
+    let Some(target) = targets.first() else {
+        return;
+    };
+    let snapshot = group.nav_snapshot();
+    let (file_root, relative) = match target.path.strip_prefix(root) {
+        Ok(relative) => (root.to_path_buf(), relative.to_string_lossy().into_owned()),
+        Err(_) => (
+            PathBuf::from("/"),
+            target
+                .path
+                .to_string_lossy()
+                .trim_start_matches('/')
+                .to_string(),
+        ),
+    };
+    if let Some(pane) = group.active_pane_mut() {
+        pane.open_file(&file_root, &relative);
+    }
+    if let Some(file) = group
+        .active_item_mut()
+        .and_then(|item| item.as_any_mut())
+        .and_then(|any| any.downcast_mut::<FileItem>())
+    {
+        file.select_target_range(target.range, caret_top);
+    }
+    group.record_nav_jump(snapshot);
 }
 
 /// The Material file-type icon for a filename, by full name then extension (mirrors material-icon-theme's
@@ -5021,8 +5050,11 @@ impl FunctionView for FilesView {
         self.close_go_to_line(false);
     }
 
+    fn sync_items(&mut self, other: Option<&mut PaneGroupView>) {
+        self.sync_language_servers(other);
+    }
+
     fn editor_layout(&mut self, area: Rect) -> EditorLayout {
-        self.sync_language_servers();
         let (panes, dividers) = self.panes.layout(area);
         EditorLayout { panes, dividers }
     }
@@ -5463,16 +5495,12 @@ impl FunctionView for FilesView {
     }
 
     fn refresh_disk_state(&mut self) {
-        self.panes.group.for_each_pane_mut(&mut |pane| {
-            pane.open
-                .iter_mut()
-                .for_each(|item| item.refresh_disk_state())
-        });
+        self.panes.refresh_disk_state();
     }
 
     fn is_busy(&self) -> bool {
         // A picker's scrollbar keeps fading out until it's gone.
-        let mut busy = self
+        let busy = self
             .outline
             .as_ref()
             .is_some_and(|(_, view)| view.scrollbar.is_animating())
@@ -5480,10 +5508,7 @@ impl FunctionView for FilesView {
                 .palette
                 .as_ref()
                 .is_some_and(|(_, palette)| palette.scrollbar.is_animating());
-        self.panes
-            .group
-            .for_each_pane(&mut |pane| busy |= pane.open.iter().any(|item| item.is_busy()));
-        busy
+        busy || self.panes.is_busy()
     }
 
     fn tree_menu_state(&self, path: Option<&str>) -> workspace::TreeMenuState {

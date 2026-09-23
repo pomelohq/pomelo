@@ -461,12 +461,48 @@ mod tests {
             path: root.join("b.rs"),
             range: range(1, 7, 13),
         };
-        view.navigate_to_definition(&[target], Some(0.0));
+        crate::open_definition(&root, &mut view.panes, &[target], Some(0.0));
         let active = view.panes.active.clone();
         let opened = view.go_to_line_item(&active).unwrap();
         assert_eq!(opened.path, "b.rs");
         let selection = opened.buffer.as_ref().unwrap().newest();
         assert_eq!((selection.start, selection.end), (8, 14));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_definition_found_in_another_group_opens_there() {
+        let root =
+            std::env::temp_dir().join(format!("pomelo-definition-other-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("b.rs"), "\npub fn helper() {}\n").unwrap();
+        let mut view = FilesView::new(root.clone());
+        let mut other = workspace::pane_group_view::PaneGroupView::new(
+            workspace::pane_group_view::PaneGroupConfig {
+                id_base: 0,
+                show_nav: false,
+                buttons: Vec::new(),
+                max_panes: 2,
+            },
+        );
+        let mut first = FileItem::new(root.clone(), "a.rs", Some("helper();\n".into()));
+        first.navigation = Some((
+            vec![DefinitionTarget {
+                path: root.join("b.rs"),
+                range: range(1, 7, 13),
+            }],
+            Some(0.0),
+        ));
+        if let Some(pane) = other.active_pane_mut() {
+            pane.add_item(Box::new(first));
+        }
+        workspace::FunctionView::sync_items(&mut view, Some(&mut other));
+        let opened = other
+            .active_item()
+            .and_then(|item| item.id())
+            .unwrap_or_default();
+        assert_eq!(opened, "b.rs");
+        assert!(view.panes.active_item().is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
