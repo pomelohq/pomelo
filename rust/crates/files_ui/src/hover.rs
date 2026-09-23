@@ -171,7 +171,7 @@ fn severity_colors(severity: lsp::lsp_types::DiagnosticSeverity) -> (Rgba, Rgba)
 }
 
 /// A diagnostic as markdown: its message, then its source and code in parentheses.
-fn diagnostic_markdown(entry: &DiagnosticEntry) -> String {
+pub(crate) fn diagnostic_markdown(entry: &DiagnosticEntry) -> String {
     let mut markdown = markdown_view::escape(&entry.message);
     if entry.source.is_some() || entry.code.is_some() {
         markdown.push_str(" (");
@@ -209,7 +209,7 @@ impl FileItem {
             return None;
         }
         let display_row = self.row(row)?;
-        if display_row.deleted.is_some() {
+        if display_row.is_virtual() {
             return None;
         }
         let x = local_x - gutter + self.scroll_x;

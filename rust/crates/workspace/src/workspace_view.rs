@@ -1709,6 +1709,10 @@ impl WorkspaceView {
             self.layout.active_panels[side.index()] = Some(Shown::Func(PaneKind::ALL[i]));
             self.toggle_side(side, was_visible);
             self.pending.persist = true;
+        } else if id == crate::DIAGNOSTIC_MESSAGE {
+            if let Some(v) = self.layout.files_view.as_mut() {
+                v.editor_key(EditKey::GoToDiagnostic, false);
+            }
         } else if id == crate::CURSOR_POSITION {
             if let Some(v) = self.layout.files_view.as_mut() {
                 v.editor_key(EditKey::ToggleGoToLine, false);

@@ -505,7 +505,6 @@ impl MarkdownLayout {
         self.lines.len()
     }
 
-    #[cfg(test)]
     pub fn height(&self) -> f32 {
         self.lines.iter().map(|line| line.height).sum()
     }
