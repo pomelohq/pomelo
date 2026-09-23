@@ -9,8 +9,10 @@
 //! of `(end, name)`: the innermost capture wins, so each emitted run is cut at the next capture start or the
 //! top capture's end.
 
-use crate::buffer::EditorBuffer;
+use crate::buffer::{EditorBuffer, TAB_SIZE};
 use crate::highlight::{grammar, Lang, HIGHLIGHT_NAMES};
+use crate::indent::{compute_autoindents, IndentQuery, IndentRegexes, IndentSize, IndentView};
+use crate::outline::{OutlineItem, OutlineQuery};
 use ropey::Rope;
 use std::ops::{ControlFlow, Range};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
@@ -40,6 +42,14 @@ pub struct Syntax {
     /// Buffer version the tree was last actually parsed against.
     parsed_version: u64,
     background: Option<Receiver<(Option<Tree>, u64)>>,
+    indent: Option<IndentQuery>,
+    indent_regexes: IndentRegexes,
+    brackets: Option<BracketQuery>,
+    overrides: Option<OverrideQuery>,
+    outline: Option<OutlineQuery>,
+    /// The tree as of the last sync and the buffer version it reflects: the "before" side when re-indenting
+    /// lines after the next edit.
+    synced: Option<(Tree, u64)>,
 }
 
 impl Syntax {
@@ -53,6 +63,11 @@ impl Syntax {
             .map(|name| recognized_key(name))
             .collect();
         Some(Self {
+            indent: IndentQuery::new(lang, &language),
+            brackets: BracketQuery::new(&language),
+            overrides: OverrideQuery::new(lang, &language),
+            outline: OutlineQuery::new(lang, &language),
+            indent_regexes: IndentRegexes::new(&crate::language::config(lang).indent),
             language,
             query,
             capture_keys,
@@ -60,6 +75,7 @@ impl Syntax {
             interpolated_version: 0,
             parsed_version: 0,
             background: None,
+            synced: None,
         })
     }
 
@@ -68,8 +84,7 @@ impl Syntax {
         self.background.is_some()
     }
 
-    /// Bring the tree up to date with `buffer`.
-    pub fn sync(&mut self, buffer: &EditorBuffer) {
+    fn interpolate(&mut self, buffer: &EditorBuffer) {
         let version = buffer.version();
         self.collect_background(buffer);
         if let Some(tree) = self.tree.as_mut() {
@@ -80,6 +95,17 @@ impl Syntax {
             }
         }
         self.interpolated_version = version;
+    }
+
+    /// Bring the tree up to date with `buffer`.
+    pub fn sync(&mut self, buffer: &EditorBuffer) {
+        self.parse_within_budget(buffer);
+        self.synced = self.tree.clone().map(|tree| (tree, buffer.version()));
+    }
+
+    fn parse_within_budget(&mut self, buffer: &EditorBuffer) {
+        let version = buffer.version();
+        self.interpolate(buffer);
         let fresh = self.tree.is_some() && self.parsed_version == version;
         if fresh || self.background.is_some() {
             return;
@@ -110,6 +136,59 @@ impl Syntax {
             }
             None => self.parse_in_background(buffer.rope.clone(), version),
         }
+    }
+
+    /// Parse to completion on this thread, abandoning any background parse.
+    fn parse_now(&mut self, buffer: &EditorBuffer) {
+        let version = buffer.version();
+        self.interpolate(buffer);
+        if self.tree.is_some() && self.parsed_version == version {
+            return;
+        }
+        self.background = None;
+        let mut parser = Parser::new();
+        if parser.set_language(&self.language).is_err() {
+            return;
+        }
+        let rope = &buffer.rope;
+        if let Some(tree) = parser.parse_with_options(
+            &mut |byte, _| chunk_from(rope, byte),
+            self.tree.as_ref(),
+            None,
+        ) {
+            self.tree = Some(tree);
+            self.parsed_version = version;
+        }
+    }
+
+    /// Re-indent the lines `buffer`'s latest edits asked for, comparing indent suggestions on the text before
+    /// and after each edit. Call before `sync`, which records the "before" tree for the next edit.
+    pub fn autoindent(&mut self, buffer: &mut EditorBuffer) {
+        let requests = buffer.take_autoindent_requests();
+        let Some((before_tree, before_version)) = self.synced.clone() else {
+            return;
+        };
+        let requests: Vec<_> = requests
+            .into_iter()
+            .filter(|request| request.before_version == before_version)
+            .collect();
+        if requests.is_empty() || self.indent.is_none() {
+            return;
+        }
+        // Edits wait on the parse, as the indent query needs the tree for the new text.
+        self.parse_now(buffer);
+        let (Some(tree), Some(query)) = (self.tree.as_ref(), self.indent.as_ref()) else {
+            return;
+        };
+        let view = IndentView {
+            rope: &buffer.rope,
+            tree,
+            query,
+            regexes: &self.indent_regexes,
+        };
+        let sizes =
+            compute_autoindents(&requests, &before_tree, &view, IndentSize::spaces(TAB_SIZE));
+        buffer.apply_autoindents(sizes);
     }
 
     fn parse_in_background(&mut self, rope: Rope, version: u64) {
@@ -150,6 +229,71 @@ impl Syntax {
             Ok((None, _)) | Err(TryRecvError::Disconnected) => self.background = None,
             Err(TryRecvError::Empty) => {}
         }
+    }
+
+    /// Bracket pairs (open, close byte ranges) whose span covers `range`, including brackets touching it.
+    pub fn enclosing_bracket_ranges(
+        &self,
+        rope: &Rope,
+        range: Range<usize>,
+    ) -> Vec<(Range<usize>, Range<usize>)> {
+        let (Some(tree), Some(brackets)) = (self.tree.as_ref(), self.brackets.as_ref()) else {
+            return Vec::new();
+        };
+        let len = rope.len_bytes();
+        let start = range.start.min(len);
+        let end = range.end.min(len);
+        // Widen by one char either side so a caret right next to a bracket still finds its pair.
+        let before = rope.byte_to_char(start).saturating_sub(1);
+        let after = (rope.byte_to_char(end) + 1).min(rope.len_chars());
+        let query_range = rope.char_to_byte(before)..rope.char_to_byte(after);
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(query_range);
+        let text = |node: Node| rope_chunks(rope, node.byte_range());
+        let mut matches = cursor.matches(&brackets.query, tree.root_node(), text);
+        let mut pairs = Vec::new();
+        while let Some(found) = matches.next() {
+            let mut open = None;
+            let mut close = None;
+            for capture in found.captures() {
+                if capture.node.is_missing() {
+                    continue;
+                }
+                if Some(capture.index) == brackets.open_ix {
+                    open = Some(capture.node.byte_range());
+                } else if Some(capture.index) == brackets.close_ix {
+                    close = Some(capture.node.byte_range());
+                }
+            }
+            if let (Some(open), Some(close)) = (open, close) {
+                if open.start <= start
+                    && close.end >= end
+                    && !pairs.contains(&(open.clone(), close.clone()))
+                {
+                    pairs.push((open, close));
+                }
+            }
+        }
+        pairs
+    }
+
+    /// The file's symbols in source order, nested by containment.
+    pub fn outline(&self, rope: &Rope) -> Vec<OutlineItem> {
+        match (self.outline.as_ref(), self.tree.as_ref()) {
+            (Some(outline), Some(tree)) => outline.items(rope, tree),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The smallest bracket pair around `range`.
+    pub fn innermost_enclosing_bracket_ranges(
+        &self,
+        rope: &Rope,
+        range: Range<usize>,
+    ) -> Option<(Range<usize>, Range<usize>)> {
+        self.enclosing_bracket_ranges(rope, range)
+            .into_iter()
+            .min_by_key(|(open, close)| close.end - open.start)
     }
 
     /// End byte of the smallest named node spanning `range`.
@@ -214,12 +358,22 @@ impl Syntax {
         })
     }
 
-    /// Whether `byte` lies strictly inside a string or comment node (a node's own edges are outside it).
-    pub fn scope_at(&self, byte: usize) -> crate::language::Scope {
+    /// Whether `byte` is in a string or a comment. With an overrides query the smallest captured node around
+    /// `byte` decides (a `.inclusive` capture also counts its own edges); otherwise any enclosing node whose
+    /// kind names a string or comment does, edges excluded.
+    pub fn scope_at(&self, rope: &Rope, byte: usize) -> crate::language::Scope {
         let mut scope = crate::language::Scope::default();
         let Some(tree) = self.tree.as_ref() else {
             return scope;
         };
+        if let Some(overrides) = self.overrides.as_ref() {
+            match overrides.name_at(rope, tree, byte) {
+                Some("string") => scope.in_string = true,
+                Some("comment") => scope.in_comment = true,
+                _ => {}
+            }
+            return scope;
+        }
         let mut node = tree.root_node().descendant_for_byte_range(byte, byte);
         while let Some(n) = node {
             if n.start_byte() < byte && byte < n.end_byte() {
@@ -286,6 +440,120 @@ impl Syntax {
             pos = end;
         }
         runs
+    }
+}
+
+fn override_patterns(lang: Lang) -> Option<&'static str> {
+    Some(match lang {
+        Lang::Rust => include_str!("../queries/rust/overrides.scm"),
+        Lang::JavaScript => include_str!("../queries/javascript/overrides.scm"),
+        Lang::TypeScript => include_str!("../queries/typescript/overrides.scm"),
+        Lang::Tsx => include_str!("../queries/tsx/overrides.scm"),
+        Lang::Go => include_str!("../queries/go/overrides.scm"),
+        Lang::Python => include_str!("../queries/python/overrides.scm"),
+        Lang::C => include_str!("../queries/c/overrides.scm"),
+        Lang::Cpp => include_str!("../queries/cpp/overrides.scm"),
+        Lang::Bash => include_str!("../queries/bash/overrides.scm"),
+        Lang::Css => include_str!("../queries/css/overrides.scm"),
+        Lang::Json => include_str!("../queries/json/overrides.scm"),
+        Lang::Yaml => include_str!("../queries/yaml/overrides.scm"),
+        Lang::Java => include_str!("../queries/java/overrides.scm"),
+        Lang::Ruby => include_str!("../queries/ruby/overrides.scm"),
+        Lang::Lua => include_str!("../queries/lua/overrides.scm"),
+        Lang::Html => include_str!("../queries/html/overrides.scm"),
+        _ => return None,
+    })
+}
+
+/// Named syntax regions (`@string`, `@comment`, ...) that change editing behaviour inside them.
+struct OverrideQuery {
+    query: Query,
+    /// Per capture index: the region name and whether the node's own edges count as inside.
+    captures: Vec<(String, bool)>,
+}
+
+impl OverrideQuery {
+    fn new(lang: Lang, language: &Language) -> Option<Self> {
+        let query = Query::new(language, override_patterns(lang)?).ok()?;
+        let captures = query
+            .capture_names()
+            .iter()
+            .map(|name| match name.strip_suffix(".inclusive") {
+                Some(base) => (base.to_string(), true),
+                None => (name.to_string(), false),
+            })
+            .collect();
+        Some(Self { query, captures })
+    }
+
+    fn name_at(&self, rope: &Rope, tree: &Tree, byte: usize) -> Option<&str> {
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(byte.saturating_sub(1)..byte.saturating_add(1));
+        let text = |node: Node| rope_chunks(rope, node.byte_range());
+        let mut matches = cursor.matches(&self.query, tree.root_node(), text);
+        let mut smallest: Option<(u32, Range<usize>)> = None;
+        while let Some(found) = matches.next() {
+            for capture in found.captures() {
+                let Some((_, inclusive)) = self.captures.get(capture.index as usize) else {
+                    continue;
+                };
+                let range = capture.node.byte_range();
+                let inside = if *inclusive {
+                    range.start <= byte && byte <= range.end
+                } else {
+                    range.start < byte && byte < range.end
+                };
+                if inside && smallest.as_ref().is_none_or(|(_, s)| range.len() < s.len()) {
+                    smallest = Some((capture.index, range));
+                }
+            }
+        }
+        let (index, _) = smallest?;
+        self.captures
+            .get(index as usize)
+            .map(|(name, _)| name.as_str())
+    }
+}
+
+/// Delimiter pairs every grammar may have; patterns naming tokens a grammar lacks are dropped.
+const BRACKET_PATTERNS: [&str; 6] = [
+    "(\"(\" @open \")\" @close)",
+    "(\"[\" @open \"]\" @close)",
+    "(\"{\" @open \"}\" @close)",
+    "(\"<\" @open \">\" @close)",
+    "(\"\\\"\" @open \"\\\"\" @close)",
+    "(\"'\" @open \"'\" @close)",
+];
+
+struct BracketQuery {
+    query: Query,
+    open_ix: Option<u32>,
+    close_ix: Option<u32>,
+}
+
+impl BracketQuery {
+    fn new(language: &Language) -> Option<Self> {
+        let source: String = BRACKET_PATTERNS
+            .iter()
+            .filter(|pattern| Query::new(language, pattern).is_ok())
+            .map(|pattern| format!("{pattern}\n"))
+            .collect();
+        if source.is_empty() {
+            return None;
+        }
+        let query = Query::new(language, &source).ok()?;
+        let index_of = |name: &str| {
+            query
+                .capture_names()
+                .iter()
+                .position(|n| *n == name)
+                .map(|i| i as u32)
+        };
+        Some(Self {
+            open_ix: index_of("open"),
+            close_ix: index_of("close"),
+            query,
+        })
     }
 }
 
@@ -429,6 +697,55 @@ mod tests {
             .any(|r| &text[r.range.clone()] == "pub" && r.capture == Some("keyword")));
     }
 
+    fn settled(lang: Lang, text: &str) -> (EditorBuffer, Syntax) {
+        let buffer = EditorBuffer::from_text(text);
+        let mut syntax = Syntax::new(lang).unwrap();
+        syntax.sync(&buffer);
+        while syntax.is_parsing() {
+            std::thread::sleep(Duration::from_millis(1));
+            syntax.sync(&buffer);
+        }
+        (buffer, syntax)
+    }
+
+    fn innermost(lang: Lang, text: &str, at: usize) -> Option<(String, String)> {
+        let (buffer, syntax) = settled(lang, text);
+        let (open, close) = syntax.innermost_enclosing_bracket_ranges(&buffer.rope, at..at)?;
+        Some((open.start.to_string(), close.start.to_string()))
+    }
+
+    #[test]
+    fn finds_the_innermost_pair_around_or_touching_the_caret() {
+        let text = "fn a() { b(1, [2]); }";
+        let pair = |open: usize, close: usize| Some((open.to_string(), close.to_string()));
+        assert_eq!(innermost(Lang::Rust, text, 12), pair(10, 17));
+        assert_eq!(innermost(Lang::Rust, text, 15), pair(14, 16));
+        assert_eq!(innermost(Lang::Rust, text, 10), pair(10, 17));
+        assert_eq!(innermost(Lang::Rust, text, 18), pair(10, 17));
+        assert_eq!(innermost(Lang::Rust, text, 8), pair(7, 20));
+    }
+
+    #[test]
+    fn finds_pairs_far_from_the_caret() {
+        let body: String = (0..500).map(|i| format!("    let x{i} = {i};\n")).collect();
+        let text = format!("fn a() {{\n{body}}}\n");
+        let middle = text.len() / 2;
+        let close = text.rfind('}').unwrap();
+        assert_eq!(
+            innermost(Lang::Rust, &text, middle),
+            Some((7.to_string(), close.to_string()))
+        );
+    }
+
+    #[test]
+    fn quotes_pair_and_missing_closers_are_ignored() {
+        assert_eq!(
+            innermost(Lang::Rust, "let s = \"ab\";", 10),
+            Some((8.to_string(), 11.to_string()))
+        );
+        assert_eq!(innermost(Lang::Rust, "fn a() { b(", 11), None);
+    }
+
     #[test]
     fn dotted_prefix_picks_longest_key() {
         assert_eq!(
@@ -437,5 +754,134 @@ mod tests {
         );
         assert_eq!(recognized_key("keyword.control"), Some("keyword"));
         assert_eq!(recognized_key("nonsense"), None);
+    }
+}
+
+#[cfg(test)]
+mod enclosing_bracket_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn jump(text: &str, at: usize) -> usize {
+        let mut buffer = EditorBuffer::from_text(text);
+        let mut syntax = Syntax::new(Lang::Rust).unwrap();
+        syntax.sync(&buffer);
+        while syntax.is_parsing() {
+            std::thread::sleep(Duration::from_millis(1));
+            syntax.sync(&buffer);
+        }
+        buffer.place_cursor(at);
+        let rope = buffer.rope.clone();
+        let enclosing = |range: Range<usize>| syntax.enclosing_bracket_ranges(&rope, range);
+        let next = buffer.enclosing_bracket_selections(&enclosing);
+        buffer.set_selections(next);
+        buffer.cursor()
+    }
+
+    #[test]
+    fn jumps_between_a_pair_and_from_inside_to_the_closer() {
+        let text = "fn a() { b(1, 2); }";
+        assert_eq!(jump(text, 10), 16);
+        assert_eq!(jump(text, 16), 10);
+        assert_eq!(jump(text, 12), 15);
+        assert_eq!(jump(text, 7), 19);
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use crate::language::Scope;
+    use std::time::Duration;
+
+    fn scope(lang: Lang, text: &str) -> Scope {
+        let at = text.find('|').unwrap();
+        let buffer = EditorBuffer::from_text(&text.replace('|', ""));
+        let mut syntax = Syntax::new(lang).unwrap();
+        syntax.sync(&buffer);
+        while syntax.is_parsing() {
+            std::thread::sleep(Duration::from_millis(1));
+            syntax.sync(&buffer);
+        }
+        syntax.scope_at(&buffer.rope, at)
+    }
+
+    const STRING: Scope = Scope {
+        in_string: true,
+        in_comment: false,
+    };
+    const COMMENT: Scope = Scope {
+        in_string: false,
+        in_comment: true,
+    };
+    const CODE: Scope = Scope {
+        in_string: false,
+        in_comment: false,
+    };
+
+    #[test]
+    fn override_queries_compile() {
+        for lang in [
+            Lang::Rust,
+            Lang::JavaScript,
+            Lang::TypeScript,
+            Lang::Tsx,
+            Lang::Go,
+            Lang::Python,
+            Lang::C,
+            Lang::Cpp,
+            Lang::Bash,
+            Lang::Css,
+            Lang::Json,
+            Lang::Yaml,
+            Lang::Java,
+            Lang::Ruby,
+            Lang::Lua,
+            Lang::Html,
+        ] {
+            let (language, _) = grammar(lang).unwrap();
+            let source = override_patterns(lang).unwrap();
+            if let Err(error) = Query::new(&language, source) {
+                panic!("{source}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn strings_exclude_their_edges_and_comments_include_them() {
+        assert_eq!(scope(Lang::Rust, "let s = \"a|b\";"), STRING);
+        assert_eq!(scope(Lang::Rust, "let s = |\"ab\";"), CODE);
+        assert_eq!(scope(Lang::Rust, "let s = \"ab\"|;"), CODE);
+        assert_eq!(scope(Lang::Rust, "x; // note|\ny;"), COMMENT);
+        assert_eq!(scope(Lang::Rust, "x; |// note\ny;"), COMMENT);
+    }
+
+    fn typed_quote(text: &str) -> String {
+        let at = text.find('|').unwrap();
+        let mut buffer = EditorBuffer::from_text(&text.replace('|', ""));
+        let mut syntax = Syntax::new(Lang::JavaScript).unwrap();
+        syntax.sync(&buffer);
+        while syntax.is_parsing() {
+            std::thread::sleep(Duration::from_millis(1));
+            syntax.sync(&buffer);
+        }
+        buffer.place_cursor(at);
+        let rope = buffer.rope.clone();
+        let scope_at = |byte| syntax.scope_at(&rope, byte);
+        buffer.handle_input("'", &crate::language::config(Lang::JavaScript), &scope_at);
+        buffer.text()
+    }
+
+    #[test]
+    fn quotes_do_not_autoclose_inside_comments() {
+        assert_eq!(typed_quote("x; // it|\n"), "x; // it'\n");
+        assert_eq!(typed_quote("x = |;\n"), "x = '';\n");
+    }
+
+    #[test]
+    fn template_interpolations_are_code() {
+        assert_eq!(scope(Lang::JavaScript, "let s = `a|b${c}`;"), STRING);
+        assert_eq!(scope(Lang::JavaScript, "let s = `a${b|}`;"), CODE);
+        assert_eq!(scope(Lang::Python, "x = 1  # hi|"), COMMENT);
     }
 }

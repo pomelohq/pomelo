@@ -18,7 +18,9 @@ use editor::transform::{LineTransform, TextTransform};
 use search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 
 mod command_palette;
+mod fuzzy;
 mod go_to_line;
+mod outline_view;
 mod search_bar;
 mod text_field;
 use editor::wrap::Boundary;
@@ -119,6 +121,7 @@ const SPLIT_DOWN_BASE: u64 = FUNC_VIEW_BASE + 6_000_000;
 const NAV_BACK_BASE: u64 = FUNC_VIEW_BASE + 7_000_000;
 const NAV_FWD_BASE: u64 = FUNC_VIEW_BASE + 8_000_000;
 const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 8_500_000; // + PaletteClick
+const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 8_600_000; // + row
 const SEARCH_BASE: u64 = FUNC_VIEW_BASE + 9_000_000; // + pane*PANE_STRIDE + SearchClick
 const FOLD_BASE: u64 = FUNC_VIEW_BASE + 10_000_000; // + pane*PANE_STRIDE + buffer_line
 const DIVIDER_BASE: u64 = FUNC_VIEW_BASE + 12_000_000;
@@ -332,7 +335,8 @@ struct FileItem {
     scrolled_at: Option<std::time::Instant>,
     search_highlights: Vec<Range<usize>>,
     active_search_highlight: Option<usize>,
-    highlighted_row: Option<usize>,
+    /// Buffer lines (first, last) previewed by a modal.
+    highlighted_rows: Option<(usize, usize)>,
 }
 
 impl FileItem {
@@ -378,13 +382,20 @@ impl FileItem {
             scrolled_at: None,
             search_highlights: Vec::new(),
             active_search_highlight: None,
-            highlighted_row: None,
+            highlighted_rows: None,
         }
     }
 
     /// Bring dependents up to the buffer: the syntax tree, fold positions (carried through the edits since the
     /// last sync), and the widest line.
     fn refresh(&mut self) {
+        match (self.syntax.as_mut(), self.buffer.as_mut()) {
+            (Some(syntax), Some(b)) => syntax.autoindent(b),
+            (None, Some(b)) => {
+                b.take_autoindent_requests();
+            }
+            _ => {}
+        }
         let Some(b) = self.buffer.as_ref() else {
             return;
         };
@@ -1420,6 +1431,105 @@ impl FileItem {
         Some(text)
     }
 
+    /// Bracket pairs around `range` (chars), as char ranges.
+    fn enclosing_brackets(&self, range: Range<usize>) -> Vec<(Range<usize>, Range<usize>)> {
+        let (Some(syntax), Some(b)) = (self.syntax.as_ref(), self.buffer.as_ref()) else {
+            return Vec::new();
+        };
+        let rope = &b.rope;
+        let len = rope.len_chars();
+        let to_byte = |offset: usize| rope.char_to_byte(offset.min(len));
+        let to_chars =
+            |bytes: Range<usize>| rope.byte_to_char(bytes.start)..rope.byte_to_char(bytes.end);
+        syntax
+            .enclosing_bracket_ranges(rope, to_byte(range.start)..to_byte(range.end))
+            .into_iter()
+            .map(|(open, close)| (to_chars(open), to_chars(close)))
+            .collect()
+    }
+
+    /// The innermost pair around an empty newest selection, highlighted while the caret sits in it.
+    fn matching_brackets(&self) -> Vec<Range<usize>> {
+        let Some(b) = self.buffer.as_ref() else {
+            return Vec::new();
+        };
+        let newest = b.newest();
+        if !newest.is_empty() {
+            return Vec::new();
+        }
+        let head = newest.head();
+        self.enclosing_brackets(head..head)
+            .into_iter()
+            .min_by_key(|(open, close)| close.end - open.start)
+            .map(|(open, close)| vec![open, close])
+            .unwrap_or_default()
+    }
+
+    /// The text as it stands, to read syntax scopes from while the buffer itself is being edited.
+    fn rope_snapshot(&self) -> ropey::Rope {
+        self.buffer
+            .as_ref()
+            .map(|b| b.rope.clone())
+            .unwrap_or_default()
+    }
+
+    /// The file's symbols in chars, labels colored like the code.
+    fn outline_symbols(&self) -> Vec<outline_view::Symbol> {
+        let (Some(syntax), Some(b)) = (self.syntax.as_ref(), self.buffer.as_ref()) else {
+            return Vec::new();
+        };
+        let rope = &b.rope;
+        let colors = syntax_theme();
+        syntax
+            .outline(rope)
+            .into_iter()
+            .map(|item| {
+                let mut label_colors = Vec::new();
+                for (span, source_start) in &item.source_spans {
+                    let source = *source_start..*source_start + span.len();
+                    for run in syntax.highlight(rope, source) {
+                        let start = span.start + run.range.start - source_start;
+                        let end = span.start + run.range.end - source_start;
+                        label_colors
+                            .push((start..end, color_of(&colors, run.capture.unwrap_or(""))));
+                    }
+                }
+                outline_view::Symbol {
+                    depth: item.depth,
+                    range: rope.byte_to_char(item.range.start)..rope.byte_to_char(item.range.end),
+                    text: item.text,
+                    colors: label_colors,
+                }
+            })
+            .collect()
+    }
+
+    /// Highlight the lines of the char range `range` and center its first line.
+    fn preview_range(&mut self, range: Option<Range<usize>>) {
+        let Some(b) = self.buffer.as_ref() else {
+            return;
+        };
+        self.highlighted_rows = range.map(|range| {
+            (
+                b.rope.char_to_line(range.start),
+                b.rope.char_to_line(range.end),
+            )
+        });
+        if let Some((line, _)) = self.highlighted_rows {
+            self.scroll_line_to_center(line);
+        }
+    }
+
+    fn go_to_offset(&mut self, offset: usize) {
+        self.highlighted_rows = None;
+        let Some(b) = self.buffer.as_mut() else {
+            return;
+        };
+        b.place_cursor(offset);
+        let line = b.rope.char_to_line(offset.min(b.rope.len_chars()));
+        self.scroll_line_to_center(line);
+    }
+
     fn manipulate_text(&mut self, transform: TextTransform) {
         if let Some(b) = self.buffer.as_mut() {
             b.manipulate_text(transform);
@@ -1479,14 +1589,14 @@ impl FileItem {
             return;
         };
         let last = b.rope.len_lines().saturating_sub(1);
-        self.highlighted_row = target.map(|(line, _)| line.min(last));
-        if let Some(line) = self.highlighted_row {
+        self.highlighted_rows = target.map(|(line, _)| (line.min(last), line.min(last)));
+        if let Some((line, _)) = self.highlighted_rows {
             self.scroll_line_to_center(line);
         }
     }
 
     fn go_to(&mut self, line: usize, column: usize) {
-        self.highlighted_row = None;
+        self.highlighted_rows = None;
         if let Some(b) = self.buffer.as_mut() {
             let offset = b.offset_at(line, column);
             b.place_cursor(offset);
@@ -1923,7 +2033,8 @@ impl Item for FileItem {
     fn input_text(&mut self, text: &str) {
         self.refresh();
         let language = editor::language::config(self.lang);
-        let scope_at = scope_lookup(&self.syntax);
+        let rope = self.rope_snapshot();
+        let scope_at = scope_lookup(&self.syntax, &rope);
         if let Some(b) = self.buffer.as_mut() {
             b.unmark_text();
             b.handle_input(text, &language, &scope_at);
@@ -1945,7 +2056,8 @@ impl Item for FileItem {
     fn ime_commit(&mut self, text: &str) {
         self.refresh();
         let language = editor::language::config(self.lang);
-        let scope_at = scope_lookup(&self.syntax);
+        let rope = self.rope_snapshot();
+        let scope_at = scope_lookup(&self.syntax, &rope);
         if let Some(b) = self.buffer.as_mut() {
             b.commit_text(text, &language, &scope_at);
         }
@@ -2024,6 +2136,19 @@ impl Item for FileItem {
             self.toggle_soft_wrap();
             return;
         }
+        if key == EditKey::MoveToEnclosingBracket {
+            self.refresh();
+            let enclosing = |range: Range<usize>| self.enclosing_brackets(range);
+            let next = self
+                .buffer
+                .as_ref()
+                .map(|b| b.enclosing_bracket_selections(&enclosing));
+            if let (Some(b), Some(next)) = (self.buffer.as_mut(), next) {
+                b.set_selections(next);
+            }
+            self.ensure_cursor_visible();
+            return;
+        }
         let deletion = match key {
             EditKey::Backspace => Some(Deletion::Backward),
             EditKey::Delete => Some(Deletion::Forward),
@@ -2085,7 +2210,8 @@ impl Item for FileItem {
             match key {
                 EditKey::Enter => {
                     let language = editor::language::config(self.lang);
-                    let scope_at = scope_lookup(&self.syntax);
+                    let rope = b.rope.clone();
+                    let scope_at = scope_lookup(&self.syntax, &rope);
                     b.newline(&language, &scope_at);
                     edited = true;
                 }
@@ -2215,8 +2341,8 @@ impl Item for FileItem {
             }
         }
 
-        if let Some(line) = self.highlighted_row {
-            let (top, bottom) = (self.disp_of(line), self.last_row_of_line(line));
+        if let Some((first_line, last_line)) = self.highlighted_rows {
+            let (top, bottom) = (self.disp_of(first_line), self.last_row_of_line(last_line));
             if top < last && bottom >= first {
                 rects.push(Rect::new(
                     content.x,
@@ -2252,6 +2378,20 @@ impl Item for FileItem {
                     (right - left).max(1.0),
                     EDIT_LINE_H,
                     color,
+                ));
+            }
+        }
+
+        for range in self.matching_brackets() {
+            let (row, start_x) = self.position(range.start);
+            let (_, end_x) = self.position(range.end);
+            if row >= first && row < last {
+                rects.push(Rect::new(
+                    content.x + gw + start_x - self.scroll_x,
+                    row_y(row),
+                    (end_x - start_x).max(1.0),
+                    EDIT_LINE_H,
+                    theme().editor_document_highlight_bracket_background,
                 ));
             }
         }
@@ -2403,11 +2543,14 @@ fn thumb_metrics(track_len: f32, page: f32, total: f32) -> Option<(f32, f32)> {
 }
 
 /// Syntax scope at a byte offset, for bracket rules that differ inside strings and comments.
-fn scope_lookup(syntax: &Option<Syntax>) -> impl Fn(usize) -> editor::language::Scope + Copy + '_ {
+fn scope_lookup<'a>(
+    syntax: &'a Option<Syntax>,
+    rope: &'a ropey::Rope,
+) -> impl Fn(usize) -> editor::language::Scope + Copy + 'a {
     move |byte| {
         syntax
             .as_ref()
-            .map(|s| s.scope_at(byte))
+            .map(|s| s.scope_at(rope, byte))
             .unwrap_or_default()
     }
 }
@@ -3010,6 +3153,8 @@ pub struct FilesView {
     go_to_line: Option<(Vec<usize>, go_to_line::GoToLine)>,
     palette: Option<(Vec<usize>, command_palette::CommandPalette)>,
     palette_memory: command_palette::PaletteMemory,
+    /// The open symbol outline and the pane it navigates.
+    outline: Option<(Vec<usize>, outline_view::OutlineView)>,
 }
 
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting stays in sync with
@@ -3043,6 +3188,7 @@ impl FilesView {
             go_to_line: None,
             palette: None,
             palette_memory: command_palette::PaletteMemory::default(),
+            outline: None,
             tab_drag: None,
             drag_preview: None,
             click_targets: Vec::new(),
@@ -3129,7 +3275,7 @@ impl FilesView {
         match (confirm, modal.target()) {
             (true, Some((line, column))) => item.go_to(line, column),
             _ => {
-                item.highlighted_row = None;
+                item.highlighted_rows = None;
                 if let Some(scroll) = modal.prev_scroll {
                     item.set_scroll_position(scroll);
                 }
@@ -3169,6 +3315,96 @@ impl FilesView {
         if let Some(item) = self.go_to_line_item(&path) {
             item.preview_line(target);
         }
+    }
+
+    fn toggle_outline(&mut self) {
+        if self.outline.is_some() {
+            return self.close_outline(false);
+        }
+        let path = self.active.clone();
+        let max_height = self.viewport_h * 0.75;
+        let Some(item) = self.go_to_line_item(&path) else {
+            return;
+        };
+        let symbols = item.outline_symbols();
+        let cursor = item.buffer.as_ref().map_or(0, EditorBuffer::cursor);
+        let view =
+            outline_view::OutlineView::new(symbols, cursor, item.scroll_position(), max_height);
+        self.outline = Some((path, view));
+    }
+
+    /// Close the outline; confirming jumps to the selected symbol, otherwise the scroll comes back.
+    fn close_outline(&mut self, confirm: bool) {
+        let Some((path, view)) = self.outline.take() else {
+            return;
+        };
+        let target = view.selected_symbol().map(|symbol| symbol.range.start);
+        let Some(item) = self.go_to_line_item(&path) else {
+            return;
+        };
+        match (confirm, target) {
+            (true, Some(offset)) => item.go_to_offset(offset),
+            _ => {
+                item.preview_range(None);
+                if let Some(scroll) = view.prev_scroll {
+                    item.set_scroll_position(scroll);
+                }
+            }
+        }
+    }
+
+    /// Preview the selected symbol, or put the view back when the query was cleared.
+    fn preview_outline(&mut self, restore: bool) {
+        let Some((path, view)) = self.outline.as_ref() else {
+            return;
+        };
+        let (path, range, scroll) = (
+            path.clone(),
+            view.selected_symbol().map(|symbol| symbol.range.clone()),
+            view.prev_scroll,
+        );
+        let Some(item) = self.go_to_line_item(&path) else {
+            return;
+        };
+        if restore {
+            item.preview_range(None);
+            if let Some(scroll) = scroll {
+                item.set_scroll_position(scroll);
+            }
+        } else {
+            item.preview_range(range);
+        }
+    }
+
+    fn outline_key(&mut self, key: EditKey, shift: bool) {
+        let Some((_, view)) = self.outline.as_mut() else {
+            return;
+        };
+        match key {
+            EditKey::Escape | EditKey::ToggleOutline => return self.close_outline(false),
+            EditKey::Enter => return self.close_outline(true),
+            EditKey::Up => view.select_previous(),
+            EditKey::Down => view.select_next(),
+            _ => {
+                if !view.field.key(key, shift) {
+                    return;
+                }
+                view.update_matches();
+                let restore = view.query_is_empty();
+                return self.preview_outline(restore);
+            }
+        }
+        self.preview_outline(false);
+    }
+
+    fn outline_input(&mut self, text: &str) {
+        let Some((_, view)) = self.outline.as_mut() else {
+            return;
+        };
+        view.field.insert(&text.replace('\n', ""));
+        view.update_matches();
+        let restore = view.query_is_empty();
+        self.preview_outline(restore);
     }
 
     fn toggle_palette(&mut self) {
@@ -3266,6 +3502,16 @@ impl FilesView {
     }
 
     fn editor_key_untracked(&mut self, key: EditKey, shift: bool) -> bool {
+        if self.outline.is_some() {
+            self.outline_key(key, shift);
+            return true;
+        }
+        if key == EditKey::ToggleOutline {
+            self.palette = None;
+            self.close_go_to_line(false);
+            self.toggle_outline();
+            return true;
+        }
         if self.palette.is_some() {
             self.palette_key(key, shift);
             return true;
@@ -3316,6 +3562,10 @@ impl FilesView {
     }
 
     fn editor_text_untracked(&mut self, text: &str) -> bool {
+        if self.outline.is_some() {
+            self.outline_input(text);
+            return true;
+        }
         if self.palette.is_some() {
             self.palette_input(text);
             return true;
@@ -3338,6 +3588,10 @@ impl FilesView {
     }
 
     fn editor_paste_untracked(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool {
+        if self.outline.is_some() {
+            self.outline_input(text);
+            return true;
+        }
         if self.palette.is_some() {
             self.palette_input(text);
             return true;
@@ -4141,6 +4395,9 @@ impl FunctionView for FilesView {
     }
 
     fn modal(&mut self) -> Option<(Node, f32)> {
+        if let Some((_, view)) = self.outline.as_ref() {
+            return Some((view.render(OUTLINE_BASE), outline_view::WIDTH));
+        }
         if let Some((_, palette)) = self.palette.as_ref() {
             return Some((palette.render(PALETTE_BASE), command_palette::WIDTH));
         }
@@ -4149,6 +4406,7 @@ impl FunctionView for FilesView {
     }
 
     fn dismiss_modal(&mut self) {
+        self.close_outline(false);
         self.palette = None;
         self.close_go_to_line(false);
     }
@@ -4379,6 +4637,13 @@ impl FunctionView for FilesView {
             if let Some(click) = SearchClick::from_offset(offset) {
                 self.track_nav(|v| v.search_click(p, click));
             }
+            return true;
+        }
+        if id >= OUTLINE_BASE {
+            if let Some((_, view)) = self.outline.as_mut() {
+                view.select_row((id - OUTLINE_BASE) as usize);
+            }
+            self.track_nav(|v| v.close_outline(true));
             return true;
         }
         if id >= PALETTE_BASE {
@@ -5274,8 +5539,8 @@ mod go_to_line_tests {
         view.editor_text("20:3");
         let path = view.active.clone();
         assert_eq!(
-            view.go_to_line_item(&path).unwrap().highlighted_row,
-            Some(19)
+            view.go_to_line_item(&path).unwrap().highlighted_rows,
+            Some((19, 19))
         );
         view.editor_key(EditKey::Enter, false);
         assert!(view.go_to_line.is_none());
@@ -5287,7 +5552,7 @@ mod go_to_line_tests {
         view.editor_key(EditKey::Escape, false);
         let item = view.go_to_line_item(&path).unwrap();
         assert_eq!(item.scroll_position(), before);
-        assert_eq!(item.highlighted_row, None);
+        assert_eq!(item.highlighted_rows, None);
         assert_eq!(cursor(&mut view), (19, 2));
     }
 }
@@ -5438,5 +5703,64 @@ mod command_palette_tests {
         view.dismiss_modal();
         assert!(view.modal().is_none());
         assert_eq!(text(&mut view), "abc");
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::*;
+
+    fn rust_view(text: &str) -> FilesView {
+        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.rs", Some(text.into()));
+        item.set_body_height(4.0 * EDIT_LINE_H);
+        item.refresh();
+        while item.syntax.as_ref().is_some_and(Syntax::is_parsing) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            item.refresh();
+        }
+        if let Member::Leaf(pane) = &mut view.group {
+            pane.open.push(Box::new(item));
+            pane.active = Some(0);
+        }
+        view
+    }
+
+    fn caret_line(view: &mut FilesView) -> usize {
+        let path = view.active.clone();
+        let item = view.go_to_line_item(&path).unwrap();
+        item.buffer.as_ref().unwrap().line_col().0
+    }
+
+    #[test]
+    fn typing_a_name_previews_and_enter_jumps_to_it() {
+        let filler: String = (0..40).map(|i| format!("// line {i}\n")).collect();
+        let mut view = rust_view(&format!("fn alpha() {{}}\n{filler}fn omega() {{}}\n"));
+        view.editor_key(EditKey::ToggleOutline, false);
+        assert!(view.modal().is_some());
+        view.editor_text("omega");
+        let path = view.active.clone();
+        assert_eq!(
+            view.go_to_line_item(&path).unwrap().highlighted_rows,
+            Some((41, 41))
+        );
+        view.editor_key(EditKey::Enter, false);
+        assert!(view.outline.is_none());
+        assert_eq!(caret_line(&mut view), 41);
+    }
+
+    #[test]
+    fn escape_restores_the_scroll() {
+        let filler: String = (0..40).map(|i| format!("// line {i}\n")).collect();
+        let mut view = rust_view(&format!("fn alpha() {{}}\n{filler}fn omega() {{}}\n"));
+        let path = view.active.clone();
+        let before = view.go_to_line_item(&path).unwrap().scroll_position();
+        view.editor_key(EditKey::ToggleOutline, false);
+        view.editor_text("omega");
+        view.editor_key(EditKey::Escape, false);
+        let item = view.go_to_line_item(&path).unwrap();
+        assert_eq!(item.scroll_position(), before);
+        assert_eq!(item.highlighted_rows, None);
+        assert_eq!(caret_line(&mut view), 0);
     }
 }

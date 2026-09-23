@@ -37,7 +37,94 @@ pub struct LanguageConfig {
     pub autoclose_before: &'static str,
     pub line_comments: &'static [&'static str],
     pub block_comment: Option<(&'static str, &'static str)>,
+    pub indent: IndentRules,
 }
+
+/// Line-level indentation hints layered on the syntax-tree indent query.
+#[derive(Clone, Copy, Debug)]
+pub struct IndentRules {
+    /// A matching line indents the next one.
+    pub increase: Option<&'static str>,
+    /// A matching line outdents itself from the line above.
+    pub decrease: Option<&'static str>,
+    /// A matching line lines up with the nearest earlier block start (an `@start.<name>` capture) of one of
+    /// the listed names that is not indented past it.
+    pub decrease_after: &'static [(&'static str, &'static [&'static str])],
+    /// Indent relative to the last non-blank line rather than the line right above.
+    pub using_last_non_empty_line: bool,
+}
+
+const NO_INDENT_RULES: IndentRules = IndentRules {
+    increase: None,
+    decrease: None,
+    decrease_after: &[],
+    using_last_non_empty_line: true,
+};
+
+const PYTHON_INDENT: IndentRules = IndentRules {
+    increase: Some(r"^\s*[^\s#].*:\s*(#.*)?$"),
+    decrease: None,
+    decrease_after: &[
+        (r"^\s*elif\b.*:", &["if", "elif"]),
+        (
+            r"^\s*else\b.*:",
+            &["if", "elif", "for", "while", "try", "except"],
+        ),
+        (r"^\s*except\b.*:", &["try", "except"]),
+        (r"^\s*finally\b.*:", &["try", "except", "else"]),
+        (r"^\s*case\b.*:", &["case"]),
+    ],
+    using_last_non_empty_line: false,
+};
+
+const C_INDENT: IndentRules = IndentRules {
+    increase: None,
+    decrease: None,
+    decrease_after: &[
+        (r"^\s*\{", &["if", "else", "for", "while", "do", "switch"]),
+        (r"^\s*else\b", &["if"]),
+    ],
+    using_last_non_empty_line: true,
+};
+
+const BASH_INDENT: IndentRules = IndentRules {
+    increase: Some(r"(^|;|\s)(then|do|else|in)\s*$"),
+    decrease: Some(r"^\s*(fi|done|esac|else|elif)\b"),
+    decrease_after: &[],
+    using_last_non_empty_line: false,
+};
+
+const YAML_INDENT: IndentRules = IndentRules {
+    increase: Some(r"^[^#]*:\s*[|>]?[-+]?\s*$"),
+    decrease: None,
+    decrease_after: &[],
+    using_last_non_empty_line: false,
+};
+
+const RUBY_INDENT: IndentRules = IndentRules {
+    increase: Some(
+        r"^\s*(def|class|module|if|unless|else|elsif|while|until|for|case|when|begin|rescue|ensure)\b|\bdo(\s*\|[^|]*\|)?\s*$",
+    ),
+    decrease: Some(r"^\s*(end|else|elsif|when|rescue|ensure)\b"),
+    decrease_after: &[],
+    using_last_non_empty_line: true,
+};
+
+const LUA_INDENT: IndentRules = IndentRules {
+    increase: Some(
+        r"^\s*(local\s+)?function\b|\bfunction\s*\([^)]*\)\s*$|\b(then|do|else|repeat)\s*$",
+    ),
+    decrease: Some(r"^\s*(end|else|elseif|until)\b"),
+    decrease_after: &[],
+    using_last_non_empty_line: true,
+};
+
+const ELIXIR_INDENT: IndentRules = IndentRules {
+    increase: Some(r"\bdo\s*$|->\s*$"),
+    decrease: Some(r"^\s*(end|else|rescue|catch|after)\b"),
+    decrease_after: &[],
+    using_last_non_empty_line: true,
+};
 
 impl LanguageConfig {
     pub fn should_autoclose_before(&self, c: char) -> bool {
@@ -217,33 +304,41 @@ pub fn config(lang: Lang) -> LanguageConfig {
         autoclose_before: CODE_AUTOCLOSE_BEFORE,
         line_comments,
         block_comment,
+        indent: NO_INDENT_RULES,
     };
+    let with_indent = |config: LanguageConfig, indent| LanguageConfig { indent, ..config };
     match lang {
         Lang::Rust => code(RUST, &["// ", "/// ", "//! "], SLASH_BLOCK),
         Lang::JavaScript => code(JAVASCRIPT, SLASH_COMMENTS, SLASH_BLOCK),
         Lang::TypeScript | Lang::Tsx => code(TYPESCRIPT, SLASH_COMMENTS, SLASH_BLOCK),
         Lang::Go => code(GO, SLASH_COMMENTS, SLASH_BLOCK),
-        Lang::C => code(C, SLASH_COMMENTS, SLASH_BLOCK),
-        Lang::Cpp => code(C, &["// ", "/// ", "//! "], SLASH_BLOCK),
-        Lang::Python => code(PYTHON, HASH_COMMENTS, Some(("\"\"\"", "\"\"\""))),
+        Lang::C => with_indent(code(C, SLASH_COMMENTS, SLASH_BLOCK), C_INDENT),
+        Lang::Cpp => with_indent(code(C, &["// ", "/// ", "//! "], SLASH_BLOCK), C_INDENT),
+        Lang::Python => with_indent(
+            code(PYTHON, HASH_COMMENTS, Some(("\"\"\"", "\"\"\""))),
+            PYTHON_INDENT,
+        ),
         Lang::Css | Lang::Scss => code(CSS, &[], SLASH_BLOCK),
         Lang::Json => LanguageConfig {
             brackets: JSON,
             autoclose_before: ",]}",
             line_comments: SLASH_COMMENTS,
             block_comment: None,
+            indent: NO_INDENT_RULES,
         },
         Lang::Yaml => LanguageConfig {
             brackets: YAML,
             autoclose_before: ",]}",
             line_comments: HASH_COMMENTS,
             block_comment: None,
+            indent: YAML_INDENT,
         },
         Lang::Bash => LanguageConfig {
             brackets: BASH,
             autoclose_before: "}])",
             line_comments: HASH_COMMENTS,
             block_comment: None,
+            indent: BASH_INDENT,
         },
         Lang::Markdown => code(MARKDOWN, &[], Some(("<!--", "-->"))),
         Lang::PlainText => LanguageConfig {
@@ -251,11 +346,13 @@ pub fn config(lang: Lang) -> LanguageConfig {
             autoclose_before: ")]}",
             line_comments: &[],
             block_comment: None,
+            indent: NO_INDENT_RULES,
         },
-        Lang::Ruby | Lang::Toml | Lang::Elixir | Lang::Nix | Lang::Make => {
-            code(GENERIC, HASH_COMMENTS, None)
-        }
-        Lang::Lua | Lang::Haskell => code(GENERIC, DASH_COMMENTS, None),
+        Lang::Ruby => with_indent(code(GENERIC, HASH_COMMENTS, None), RUBY_INDENT),
+        Lang::Elixir => with_indent(code(GENERIC, HASH_COMMENTS, None), ELIXIR_INDENT),
+        Lang::Toml | Lang::Nix | Lang::Make => code(GENERIC, HASH_COMMENTS, None),
+        Lang::Lua => with_indent(code(GENERIC, DASH_COMMENTS, None), LUA_INDENT),
+        Lang::Haskell => code(GENERIC, DASH_COMMENTS, None),
         Lang::Html | Lang::Xml => code(GENERIC, &[], Some(("<!--", "-->"))),
         Lang::Ocaml => code(GENERIC, &[], Some(("(*", "*)"))),
         Lang::Java | Lang::CSharp | Lang::Php | Lang::Scala | Lang::Swift | Lang::Dart => {
