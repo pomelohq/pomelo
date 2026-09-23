@@ -195,6 +195,61 @@ pub const TREE_MENU_TARGET: u64 = 850;
 pub const EDITOR_MENU_TARGET: u64 = 851;
 pub const MENU_SUBMENU_BASE: u64 = 860;
 pub const MENU_SUBMENU_COPY: u64 = 860;
+pub const MENU_TREE_NEW_FILE: u64 = 870;
+pub const MENU_TREE_NEW_DIR: u64 = 871;
+pub const MENU_TREE_OPEN_SYSTEM: u64 = 872;
+pub const MENU_TREE_CUT: u64 = 873;
+pub const MENU_TREE_COPY: u64 = 874;
+pub const MENU_TREE_DUPLICATE: u64 = 875;
+pub const MENU_TREE_PASTE: u64 = 876;
+pub const MENU_TREE_RESTORE: u64 = 877;
+pub const MENU_TREE_GITIGNORE: u64 = 878;
+pub const MENU_TREE_RENAME: u64 = 879;
+pub const MENU_TREE_TRASH: u64 = 880;
+pub const MENU_TREE_DELETE: u64 = 881;
+pub const MENU_TREE_EXPAND_ALL: u64 = 882;
+pub const MENU_TREE_COLLAPSE_ALL: u64 = 883;
+pub const MENU_EDIT_GO_TO_DEFINITION: u64 = 890;
+pub const MENU_EDIT_GO_TO_DECLARATION: u64 = 891;
+pub const MENU_EDIT_GO_TO_TYPE_DEFINITION: u64 = 892;
+pub const MENU_EDIT_GO_TO_IMPLEMENTATION: u64 = 893;
+pub const MENU_EDIT_COPY_TRIM: u64 = 894;
+pub const MENU_EDIT_REVEAL: u64 = 895;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeAction {
+    NewFile,
+    NewDirectory,
+    OpenWithSystem,
+    Cut,
+    Copy,
+    Duplicate,
+    Paste,
+    RestoreFile,
+    AddToGitignore,
+    Rename,
+    Trash,
+    Delete,
+    ExpandAll,
+    CollapseAll,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeMenuState {
+    pub is_dir: bool,
+    pub is_root: bool,
+    pub has_git_repo: bool,
+    pub has_git_changes: bool,
+    pub can_paste: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Prompt {
+    pub token: u64,
+    pub message: String,
+    pub detail: Option<String>,
+    pub buttons: Vec<String>,
+}
 
 pub fn is_submenu(id: u64) -> bool {
     (MENU_SUBMENU_BASE..MENU_SUBMENU_BASE + 10).contains(&id)
@@ -207,7 +262,21 @@ pub fn menu_key(id: u64) -> &'static str {
         MENU_EDIT_PASTE => "⌘V",
         MENU_EDIT_SELECT_ALL => "⌘A",
         MENU_COPY_REL_PATH => "⌘⇧C",
-        MENU_REVEAL => "⌘⌥R",
+        MENU_REVEAL | MENU_EDIT_REVEAL => "⌘⌥R",
+        MENU_TREE_NEW_FILE => "⌘N",
+        MENU_TREE_NEW_DIR => "⌥⌘N",
+        MENU_TREE_OPEN_SYSTEM => "^⇧↩",
+        MENU_TREE_CUT => "⌘X",
+        MENU_TREE_COPY => "⌘C",
+        MENU_TREE_DUPLICATE => "⌘D",
+        MENU_TREE_PASTE => "⌘V",
+        MENU_TREE_RENAME => "↩",
+        MENU_TREE_TRASH => "⌫",
+        MENU_TREE_DELETE => "⌘⌦",
+        MENU_EDIT_GO_TO_DEFINITION => "F12",
+        MENU_EDIT_GO_TO_DECLARATION => "^F12",
+        MENU_EDIT_GO_TO_TYPE_DEFINITION => "⌘F12",
+        MENU_EDIT_GO_TO_IMPLEMENTATION => "⇧F12",
         _ => "",
     }
 }
@@ -303,6 +372,9 @@ pub trait Item: 'static {
             text,
             slices: Vec::new(),
         })
+    }
+    fn copy_trimmed(&self) -> Option<CopiedText> {
+        self.copy()
     }
     fn cut(&mut self) -> Option<CopiedText> {
         None
@@ -578,6 +650,22 @@ pub trait FunctionView: 'static {
         false
     }
     fn diagnostic_summary(&self) -> Option<DiagnosticSummary> {
+        None
+    }
+    fn tree_menu_state(&self, _path: Option<&str>) -> TreeMenuState {
+        TreeMenuState::default()
+    }
+    fn tree_action(&mut self, _path: Option<&str>, _action: TreeAction) -> Option<Prompt> {
+        None
+    }
+    fn prompt_answered(&mut self, _token: u64, _answer: usize) {}
+    fn take_toast(&mut self) -> Option<String> {
+        None
+    }
+    fn active_file_path(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn editor_copy_trimmed(&self) -> Option<CopiedText> {
         None
     }
     fn editor_popovers(&mut self) -> Vec<(Node, f32, f32)> {
@@ -1756,6 +1844,7 @@ pub struct MenuItem {
     pub label: &'static str,
     pub checked: bool,
     pub sep: bool,
+    pub disabled: bool,
 }
 
 /// A right-click context menu anchored above `(ax, ay)`, clamped to stay inside `viewport_w`.
@@ -1835,9 +1924,14 @@ pub fn context_menu(
             .items_center()
             .rounded(5.0)
             .on_click(item.id);
-        if hovered == Some(item.id) {
+        if hovered == Some(item.id) && !item.disabled {
             row = row.bg(theme().element_hover);
         }
+        let label_color = if item.disabled {
+            theme().text_disabled
+        } else {
+            text_c()
+        };
         let mark = if item.checked {
             ui::check_icon().size(12.0)
         } else {
@@ -1847,7 +1941,7 @@ pub fn context_menu(
         };
         row = row
             .child(mark)
-            .child(label(item.label).size(13.0).color(text_c()));
+            .child(label(item.label).size(13.0).color(label_color));
         if is_submenu(item.id) {
             row = row.child(div().flex(1.0)).child(
                 ui::icon(ui::IconKind::ChevronRight)

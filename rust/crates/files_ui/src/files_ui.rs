@@ -34,6 +34,7 @@ mod outline_view;
 mod search_bar;
 mod snippet_store;
 mod text_field;
+mod tree_actions;
 use editor::wrap::Boundary;
 use editor::{EditorBuffer, Lang, Syntax, Theme};
 use files::FileNode;
@@ -436,6 +437,16 @@ struct BaseText {
 }
 
 impl FileItem {
+    fn retarget(&mut self, path: &str) {
+        self.path = path.to_string();
+        self.name = path.rsplit('/').next().unwrap_or(path).to_string();
+        self.saved_mtime = files::mtime(&self.root, path).ok();
+        self.diagnostics.clear();
+        if self.buffer.is_some() {
+            self.git = git_diff::GitDiff::load(self.root.join(path));
+        }
+    }
+
     fn new(root: PathBuf, path: &str, text: Option<String>) -> Self {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         let lang = Lang::detect(path, text.as_deref().and_then(|t| t.lines().next()));
@@ -3213,6 +3224,10 @@ impl Item for FileItem {
         self.buffer.as_ref().map(|b| copied_text(b.copy()))
     }
 
+    fn copy_trimmed(&self) -> Option<CopiedText> {
+        self.buffer.as_ref().map(|b| copied_text(b.copy_trimmed()))
+    }
+
     fn cut(&mut self) -> Option<CopiedText> {
         let copied = self.buffer.as_mut().map(|b| copied_text(b.cut()));
         self.refresh();
@@ -4392,6 +4407,7 @@ struct Row {
     is_dir: bool,
     depth: usize,
     open: bool,
+    edit: bool,
 }
 
 pub struct FilesView {
@@ -4447,6 +4463,7 @@ pub struct FilesView {
     /// The project's language servers; none in tests, which must not start real servers.
     lsp: Option<lsp::LspStore>,
     popover_sources: Vec<PopoverSource>,
+    tree_ops: tree_actions::TreeOps,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4495,6 +4512,7 @@ impl FilesView {
             focused_content: None,
             lsp,
             popover_sources: Vec::new(),
+            tree_ops: tree_actions::TreeOps::default(),
             tab_drag: None,
             drag_preview: None,
             click_targets: Vec::new(),
@@ -4537,6 +4555,15 @@ impl FilesView {
     }
 
     /// Open a file in the focused pane.
+    fn visible_rows(&self) -> Vec<Row> {
+        let mut rows = Vec::new();
+        flatten(&self.tree, 0, &self.expanded, &mut rows);
+        if let Some(edit) = self.tree_ops.edit.as_ref() {
+            tree_actions::place_edit_row(&mut rows, &edit.target);
+        }
+        rows
+    }
+
     fn open_file(&mut self, path: &str) {
         let root = self.root.clone();
         if let Some(pane) = self.active_pane_mut() {
@@ -4985,6 +5012,10 @@ impl FilesView {
     }
 
     fn editor_key_untracked(&mut self, key: EditKey, shift: bool) -> bool {
+        if self.tree_edit_active() {
+            self.tree_edit_key(key, shift);
+            return true;
+        }
         if self.outline.is_some() {
             self.outline_key(key, shift);
             return true;
@@ -5045,6 +5076,10 @@ impl FilesView {
     }
 
     fn editor_text_untracked(&mut self, text: &str) -> bool {
+        if self.tree_edit_active() {
+            self.tree_edit_input(text);
+            return true;
+        }
         if self.outline.is_some() {
             self.outline_input(text);
             return true;
@@ -5071,6 +5106,10 @@ impl FilesView {
     }
 
     fn editor_paste_untracked(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool {
+        if self.tree_edit_active() {
+            self.tree_edit_input(text);
+            return true;
+        }
         if self.outline.is_some() {
             self.outline_input(text);
             return true;
@@ -5097,6 +5136,7 @@ impl FilesView {
     }
 
     fn editor_click_untracked(&mut self, x: f32, y: f32, extend: bool) -> bool {
+        self.confirm_tree_edit(true);
         let Some((path, local_x, local_y)) = self.editor_local(x, y) else {
             return false;
         };
@@ -5512,6 +5552,7 @@ fn flatten(nodes: &[FileNode], depth: usize, expanded: &HashSet<String>, out: &m
             is_dir: n.is_dir,
             depth,
             open,
+            edit: false,
         });
         if open {
             flatten(&n.children, depth + 1, expanded, out);
@@ -6098,8 +6139,7 @@ impl FunctionView for FilesView {
         // Left: the file tree. Rebuild the flattened visible rows + the click-id mapping.
         // Re-flatten only when the tree structure changed (expand/collapse), not on scroll.
         if self.flat_dirty {
-            let mut f = Vec::new();
-            flatten(&self.tree, 0, &self.expanded, &mut f);
+            let f = self.visible_rows();
             self.click_targets = f.iter().map(|r| (r.path.clone(), r.is_dir)).collect();
             self.flat_cache = f;
             self.flat_dirty = false;
@@ -6169,15 +6209,38 @@ impl FunctionView for FilesView {
             } else {
                 material_icon(file_icon(&row.name)).size(15.0).into()
             };
+            let edit = self.tree_ops.edit.as_ref().filter(|_| row.edit);
+            let glyph = match edit {
+                Some(edit) if !row.is_dir => {
+                    let typed = edit.field.text();
+                    let name = if typed.chars().count() > 2 {
+                        typed
+                    } else {
+                        row.name.clone()
+                    };
+                    material_icon(file_icon(&name)).size(15.0).into()
+                }
+                _ => glyph,
+            };
+            let name: Node = match edit {
+                Some(edit) => edit.field.render(
+                    "",
+                    true,
+                    theme().text,
+                    ROW_H - 2.0,
+                    text_field::FieldFont::Ui,
+                ),
+                None => label(row.name.clone()).color(theme().text).into(),
+            };
             let content = div()
                 .row()
                 .gap(5.0)
                 .pr(6.0)
                 .items_center()
+                .flex(if edit.is_some() { 1.0 } else { 0.0 })
                 .child(lead_row)
                 .child(glyph)
-                // Folder and file names share the same color (one filename color for both).
-                .child(label(row.name.clone()).color(theme().text));
+                .child(name);
             let mut r = div()
                 .row()
                 .h_px(ROW_H)
@@ -6186,7 +6249,9 @@ impl FunctionView for FilesView {
                 .rounded(4.0)
                 .on_click(id)
                 .child(content);
-            if selected {
+            if row.edit {
+                r = r.border(1.0, theme().panel_focused_border);
+            } else if selected {
                 r = r.bg(theme().element_selected);
             }
             tree_col = tree_col.child(r);
@@ -6434,6 +6499,13 @@ impl FunctionView for FilesView {
         }
         // Otherwise a tree row.
         let idx = (id - FUNC_VIEW_BASE) as usize;
+        if self.flat_cache.get(idx).is_some_and(|row| row.edit) {
+            return true;
+        }
+        if self.tree_edit_active() {
+            self.confirm_tree_edit(true);
+            return true;
+        }
         let Some((path, is_dir)) = self.click_targets.get(idx).cloned() else {
             return false;
         };
@@ -6744,7 +6816,37 @@ impl FunctionView for FilesView {
     }
 
     fn editor_focused(&self) -> bool {
-        self.focused_editable()
+        self.tree_edit_active() || self.focused_editable()
+    }
+
+    fn tree_menu_state(&self, path: Option<&str>) -> workspace::TreeMenuState {
+        self.menu_state(path)
+    }
+
+    fn tree_action(
+        &mut self,
+        path: Option<&str>,
+        action: workspace::TreeAction,
+    ) -> Option<workspace::Prompt> {
+        self.cancel_tree_edit();
+        self.run_tree_action(path, action)
+    }
+
+    fn prompt_answered(&mut self, token: u64, answer: usize) {
+        self.tree_prompt_answered(token, answer);
+    }
+
+    fn take_toast(&mut self) -> Option<String> {
+        self.take_tree_toast()
+    }
+
+    fn active_file_path(&self) -> Option<PathBuf> {
+        let id = self.active_item_ref()?.id()?;
+        Some(self.root.join(id))
+    }
+
+    fn editor_copy_trimmed(&self) -> Option<CopiedText> {
+        self.active_item_ref().and_then(|item| item.copy_trimmed())
     }
 
     fn row_path(&self, id: u64) -> Option<(String, bool)> {
@@ -6752,6 +6854,9 @@ impl FunctionView for FilesView {
             return None;
         }
         let idx = (id - FUNC_VIEW_BASE) as usize;
+        if self.flat_cache.get(idx).is_some_and(|row| row.edit) {
+            return None;
+        }
         self.click_targets.get(idx).cloned()
     }
 
@@ -6848,6 +6953,12 @@ impl FunctionView for FilesView {
     }
 
     fn editor_copy(&self) -> Option<CopiedText> {
+        if let Some(edit) = self.tree_ops.edit.as_ref() {
+            return edit.field.selected_text().map(|text| CopiedText {
+                text,
+                slices: Vec::new(),
+            });
+        }
         if let Some(pane) = self.pane_at(&self.active) {
             let field = match pane.search.focus {
                 Some(SearchField::Query) => Some(&pane.search.query),

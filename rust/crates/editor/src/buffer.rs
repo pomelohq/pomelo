@@ -2838,10 +2838,48 @@ impl EditorBuffer {
     /// Cmd+C: the selected text, where an empty selection copies its whole line (with its newline). Pieces
     /// from several selections are joined with newlines; the slices record how to split them again.
     pub fn copy(&self) -> (String, Vec<ClipboardSelection>) {
+        self.copy_with(false)
+    }
+
+    pub fn copy_trimmed(&self) -> (String, Vec<ClipboardSelection>) {
+        self.copy_with(true)
+    }
+
+    fn trimmed_pieces(&self, start: usize, end: usize) -> Option<Vec<Range<usize>>> {
+        let (start_row, start_col) = self.line_col_of(start);
+        let (end_row, _) = self.line_col_of(end);
+        let first_indent = self.indent_len(start_row);
+        if first_indent == 0 || start_col > first_indent {
+            return None;
+        }
+        let mut pieces = Vec::with_capacity(end_row - start_row + 1);
+        pieces.push(
+            self.rope.line_to_char(start_row) + first_indent..self.line_end_offset(start_row),
+        );
+        for row in start_row + 1..=end_row {
+            let line_start = self.rope.line_to_char(row);
+            let line_end = if row == end_row {
+                end
+            } else {
+                self.line_end_offset(row)
+            };
+            if line_end == line_start {
+                pieces.push(line_start..line_end);
+            } else if self.indent_len(row) >= first_indent {
+                pieces.push((line_start + first_indent).min(line_end)..line_end);
+            } else {
+                return None;
+            }
+        }
+        Some(pieces)
+    }
+
+    fn copy_with(&self, strip_indents: bool) -> (String, Vec<ClipboardSelection>) {
         let mut text = String::new();
         let mut slices = Vec::with_capacity(self.selections.len());
         let mut previous_was_entire_line = false;
-        for (index, selection) in self.selections.iter().enumerate() {
+        let mut is_first = true;
+        for selection in &self.selections {
             let is_entire_line = selection.is_empty();
             let (mut start, mut end) = (selection.start, selection.end);
             let mut trailing_newline = false;
@@ -2855,17 +2893,33 @@ impl EditorBuffer {
                     trailing_newline = true;
                 }
             }
-            if index > 0 && !previous_was_entire_line {
-                text.push('\n');
+            let spans_rows = self.line_col_of(end).0 > self.line_col_of(start).0;
+            let trimmed = if strip_indents && spans_rows {
+                self.trimmed_pieces(start, end)
+            } else {
+                None
+            };
+            let pieces = trimmed.unwrap_or_else(|| std::iter::once(start..end).collect());
+            let multiline_trim = pieces.len() > 1;
+            let mut len = 0;
+            for piece in pieces {
+                if is_first {
+                    is_first = false;
+                } else if multiline_trim || !previous_was_entire_line {
+                    text.push('\n');
+                    if multiline_trim {
+                        len += 1;
+                    }
+                }
+                let chunk = self.rope.slice(piece).to_string();
+                len += chunk.chars().count();
+                text.push_str(&chunk);
+                if trailing_newline {
+                    text.push('\n');
+                    len += 1;
+                }
             }
-            let piece = self.rope.slice(start..end).to_string();
-            let mut len = piece.chars().count();
-            text.push_str(&piece);
-            if trailing_newline {
-                text.push('\n');
-                len += 1;
-            }
-            previous_was_entire_line = is_entire_line;
+            previous_was_entire_line = is_entire_line && !multiline_trim;
             slices.push(ClipboardSelection {
                 len,
                 is_entire_line,
@@ -3564,7 +3618,24 @@ fn should_merge(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> b
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+
+    #[test]
+    fn copy_trimmed_strips_the_shared_indent() {
+        let mut b = EditorBuffer::from_text("fn f() {\n    let a = 1;\n\n        a\n}\n");
+        let start = b.rope.line_to_char(1);
+        let end = b.rope.line_to_char(3) + 9;
+        let body = start..end;
+        b.select_ranges(&[body]);
+        assert_eq!(b.copy_trimmed().0, "let a = 1;\n\n    a");
+        let whole = b.rope.line_to_char(0)..end;
+        b.select_ranges(&[whole]);
+        assert_eq!(b.copy_trimmed().0, b.copy().0);
+        let inside_text = start + 6..end;
+        b.select_ranges(&[inside_text]);
+        assert_eq!(b.copy_trimmed().0, b.copy().0);
+    }
 
     fn buffer(text: &str) -> EditorBuffer {
         let mut b = EditorBuffer::from_text(text);

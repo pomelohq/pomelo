@@ -30,6 +30,7 @@ impl FieldFont {
 #[derive(Default)]
 pub struct TextField {
     buffer: EditorBuffer,
+    font_size: Option<f32>,
 }
 
 impl TextField {
@@ -40,6 +41,14 @@ impl TextField {
     pub fn set_text(&mut self, text: &str) {
         self.buffer = EditorBuffer::from_text(text);
         self.buffer.select_all();
+    }
+
+    pub fn set_font_size(&mut self, size: f32) {
+        self.font_size = Some(size);
+    }
+
+    pub fn select_range(&mut self, range: Range<usize>) {
+        self.buffer.select_ranges(&[range]);
     }
 
     pub fn select_all(&mut self) {
@@ -114,9 +123,10 @@ impl TextField {
         font: FieldFont,
     ) -> Node {
         let text = self.buffer.text();
+        let size = self.font_size.unwrap_or(INPUT_FONT);
         let mut row = div().row().items_center().flex(1.0).h_px(height);
         let styled = |text: String| {
-            let label = label(text).size(INPUT_FONT);
+            let label = label(text).size(size);
             if font == FieldFont::Mono {
                 label.mono()
             } else {
@@ -126,7 +136,7 @@ impl TextField {
         let caret = |visible: bool| {
             div()
                 .w_px(2.0)
-                .h_px(INPUT_FONT * font.line_height())
+                .h_px(size * font.line_height())
                 .bg(if visible {
                     theme().player_cursor
                 } else {

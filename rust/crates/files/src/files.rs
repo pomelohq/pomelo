@@ -189,6 +189,77 @@ fn safe_join(root: &Path, rel: &str) -> std::io::Result<PathBuf> {
     Ok(root.join(rel))
 }
 
+pub fn create_file(root: &Path, rel: &str) -> std::io::Result<()> {
+    let full = safe_join(root, rel)?;
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(full)
+        .map(|_| ())
+}
+
+pub fn create_dir(root: &Path, rel: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(safe_join(root, rel)?)
+}
+
+pub fn rename(root: &Path, from: &str, to: &str) -> std::io::Result<()> {
+    let target = safe_join(root, to)?;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(safe_join(root, from)?, target)
+}
+
+pub fn copy_recursive(root: &Path, from: &str, to: &str) -> std::io::Result<()> {
+    fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
+        if from.is_dir() {
+            std::fs::create_dir_all(to)?;
+            for entry in std::fs::read_dir(from)? {
+                let entry = entry?;
+                copy(&entry.path(), &to.join(entry.file_name()))?;
+            }
+            Ok(())
+        } else {
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(from, to).map(|_| ())
+        }
+    }
+    copy(&safe_join(root, from)?, &safe_join(root, to)?)
+}
+
+pub fn remove(root: &Path, rel: &str) -> std::io::Result<()> {
+    let full = safe_join(root, rel)?;
+    if full.is_dir() {
+        std::fs::remove_dir_all(full)
+    } else {
+        std::fs::remove_file(full)
+    }
+}
+
+pub fn trash(root: &Path, rel: &str) -> std::io::Result<()> {
+    trash::delete(safe_join(root, rel)?).map_err(std::io::Error::other)
+}
+
+pub fn exists(root: &Path, rel: &str) -> bool {
+    safe_join(root, rel).is_ok_and(|full| full.symlink_metadata().is_ok())
+}
+
+pub fn append_to_gitignore(root: &Path, pattern: &str) -> std::io::Result<()> {
+    let path = root.join(".gitignore");
+    let mut contents = std::fs::read_to_string(&path).unwrap_or_default();
+    if !contents.is_empty() && !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents.push_str(pattern);
+    contents.push('\n');
+    std::fs::write(path, contents)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
