@@ -14,6 +14,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Ime, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
+use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{CursorIcon, Window, WindowId};
 use workspace::{DockPosition, EditKey, Layout};
 
@@ -785,6 +786,8 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::Delete) if ctrl && alt => key(EditKey::DeleteSubwordRight),
                     Key::Named(NamedKey::Delete) if alt => key(EditKey::DeleteWordRight),
                     Key::Named(NamedKey::Delete) => key(EditKey::Delete),
+                    Key::Named(NamedKey::Enter) if alt => key(EditKey::SelectAllMatchesInSearch),
+                    Key::Named(NamedKey::Enter) if cmd => key(EditKey::ReplaceAll),
                     Key::Named(NamedKey::Enter) => key(EditKey::Enter),
                     Key::Named(NamedKey::Escape) => key(EditKey::Escape),
                     // Emacs-style Control bindings macOS text fields share.
@@ -799,15 +802,35 @@ impl ApplicationHandler for App {
                         "d" => key(EditKey::Delete),
                         "w" => key(EditKey::DeleteWordLeft),
                         "t" => key(EditKey::Transpose),
+                        "g" => key(EditKey::ToggleGoToLine),
+                        "-" => key(EditKey::GoBack),
+                        "_" => key(EditKey::GoForward),
                         "j" => key(EditKey::JoinLines),
                         _ => None,
                     },
                     Key::Named(NamedKey::Tab) if shift => key(EditKey::Outdent),
                     Key::Named(NamedKey::Tab) => key(EditKey::Tab),
+                    Key::Character(_) if cmd && alt => {
+                        match ke.key_without_modifiers() {
+                            Key::Character(c) => match c.as_str() {
+                                "c" => key(EditKey::ToggleSearchCaseSensitive),
+                                "w" => key(EditKey::ToggleSearchWholeWord),
+                                "x" => key(EditKey::ToggleSearchRegex),
+                                _ => None,
+                            },
+                            _ => None,
+                        }
+                    }
                     Key::Character(c) if cmd => match c.as_str() {
+                        "f" => key(EditKey::DeploySearch),
+                        "g" | "G" if shift => key(EditKey::SelectPreviousMatch),
+                        "g" => key(EditKey::SelectNextMatch),
+                        "h" | "H" if shift => key(EditKey::ToggleSearchReplace),
+                        "e" => key(EditKey::UseSelectionForFind),
                         "z" | "Z" if shift => key(EditKey::Redo),
                         "k" | "K" if shift => key(EditKey::DeleteLine),
                         "l" | "L" if shift => key(EditKey::SelectAllMatches),
+                        "p" | "P" if shift && !ctrl => key(EditKey::ToggleCommandPalette),
                         "p" if ctrl => key(EditKey::AddCursorAboveRow),
                         "n" if ctrl => key(EditKey::AddCursorBelowRow),
                         "d" if !ctrl => key(EditKey::SelectNext),

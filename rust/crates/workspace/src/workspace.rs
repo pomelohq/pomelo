@@ -168,6 +168,7 @@ pub const RIGHT_TOGGLE: u64 = 7;
 pub const AGENT_TOGGLE: u64 = 8;
 pub const TOAST_ACTION: u64 = 9;
 pub const TOAST_CLOSE: u64 = 10;
+pub const CURSOR_POSITION: u64 = 11;
 /// Agent right-click menu item ids.
 pub const MENU_DOCK_LEFT: u64 = 810;
 pub const MENU_DOCK_RIGHT: u64 = 811;
@@ -269,6 +270,12 @@ pub trait Item: 'static {
         None
     }
     fn render(&mut self) -> Node;
+    fn cursor_status(&self) -> Option<String> {
+        None
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     fn clone_on_split(&self) -> Option<Box<dyn Item>> {
         None
     }
@@ -365,7 +372,7 @@ pub trait Item: 'static {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditKey {
     Left,
     Right,
@@ -404,6 +411,20 @@ pub enum EditKey {
     MoveLineDown,
     JoinLines,
     Transpose,
+    ToggleGoToLine,
+    ToggleCommandPalette,
+    GoBack,
+    GoForward,
+    DeploySearch,
+    ToggleSearchReplace,
+    SelectNextMatch,
+    SelectPreviousMatch,
+    SelectAllMatchesInSearch,
+    ToggleSearchCaseSensitive,
+    ToggleSearchWholeWord,
+    ToggleSearchRegex,
+    UseSelectionForFind,
+    ReplaceAll,
     SelectNext,
     SelectAllMatches,
     /// Add a caret on the next buffer line above/below (skipping soft-wrapped rows).
@@ -464,6 +485,13 @@ pub struct EditorLayout {
 pub trait FunctionView: 'static {
     fn editor_layout(&mut self, area: ui::Rect) -> EditorLayout;
     fn render_tree(&mut self) -> Option<TreePanel> {
+        None
+    }
+    fn modal(&mut self) -> Option<(Node, f32)> {
+        None
+    }
+    fn dismiss_modal(&mut self) {}
+    fn cursor_position(&self) -> Option<String> {
         None
     }
     fn on_click(&mut self, _id: u64) -> bool {
@@ -1539,11 +1567,27 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
         .child({
             let ch = ui::chrome();
             let mut row = div().row().gap(6.0).items_center();
-            if ch.cursor_position {
-                row = row.child(label("Ln 1, Col 1").size(12.0).color(dim));
+            let position = layout
+                .files_view
+                .as_ref()
+                .and_then(|v| v.cursor_position())
+                .filter(|_| ch.cursor_position);
+            let shows_position = position.is_some();
+            if let Some(text) = position {
+                let mut button = div()
+                    .h_px(20.0)
+                    .px(4.0)
+                    .rounded(4.0)
+                    .items_center()
+                    .on_click(CURSOR_POSITION)
+                    .child(label(text).size(12.0).color(theme().text));
+                if hovered == Some(CURSOR_POSITION) {
+                    button = button.bg(theme().ghost_element_hover);
+                }
+                row = row.child(button);
             }
             if ch.language {
-                if ch.cursor_position {
+                if shows_position {
                     row = row.child(vsep());
                 }
                 row = row.child(label("Rust").size(12.0).color(dim));
@@ -1698,6 +1742,8 @@ pub fn status_tooltip(id: u64) -> Option<String> {
         Some("Terminal  ⌘J".into())
     } else if id == RIGHT_TOGGLE {
         Some("Agent  ⌘I".into())
+    } else if id == CURSOR_POSITION {
+        Some("Go to Line/Column  ^G".into())
     } else if (FUNC_BASE..FUNC_BASE + PaneKind::ALL.len() as u64).contains(&id) {
         Some(PaneKind::ALL[(id - FUNC_BASE) as usize].title().to_string())
     } else {

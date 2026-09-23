@@ -21,6 +21,7 @@ use crate::{TOAST_ACTION, TOAST_CLOSE};
 
 const TOAST_DISMISS: Duration = Duration::from_secs(10);
 const TOAST_ANIM: Duration = Duration::from_millis(160);
+const MODAL_TOP: f32 = 80.0;
 
 struct Toast {
     message: String,
@@ -59,6 +60,7 @@ pub enum ResizeCursor {
 }
 
 pub struct WorkspaceView {
+    modal_rect: Option<Rect>,
     layout: Layout,
     session_menu_hover: Option<u64>,
     session_search_query: String,
@@ -93,6 +95,7 @@ impl WorkspaceView {
             menu_path: None,
             submenu: None,
             menu_editor_anchor: None,
+            modal_rect: None,
             toast: None,
             pending: WorkspaceEffects::default(),
         }
@@ -710,6 +713,36 @@ impl WorkspaceView {
             });
         }
 
+        self.modal_rect = None;
+        if let Some((node, modal_w)) = self.layout.files_view.as_mut().and_then(|v| v.modal()) {
+            let x = ((w - modal_w) / 2.0).max(8.0);
+            let area = Rect::new(x, MODAL_TOP, modal_w, h - MODAL_TOP, Rgba::TRANSPARENT);
+            let p = ui::render(&node, area);
+            let bottom = p.rects.iter().map(|r| r.y + r.h).fold(MODAL_TOP, f32::max);
+            let rect = Rect::new(x, MODAL_TOP, modal_w, bottom - MODAL_TOP, Rgba::TRANSPARENT);
+            self.modal_rect = Some(rect);
+            header_hits.extend(p.hits.iter().copied());
+            let mut painted = Painted::default();
+            painted.rects.push(Rect {
+                x: x - 2.0,
+                y: MODAL_TOP,
+                w: modal_w + 4.0,
+                h: rect.h + 6.0,
+                color: Rgba::new(0.0, 0.0, 0.0, 0.12),
+                radius: 10.0,
+                border: 0.0,
+                border_color: Rgba::TRANSPARENT,
+            });
+            painted.rects.extend(p.rects);
+            painted.tris.extend(p.tris);
+            painted.texts.extend(p.texts);
+            painted.icons.extend(p.icons);
+            overlays.push(Overlay {
+                painted,
+                clip: None,
+            });
+        }
+
         // The right-click context menu (topmost overlay; its hits win in `hit`).
         if let Some((mx, mtop, mbottom, target)) = self.menu {
             let (mtop, mbottom, keep) = if target == EDITOR_MENU_TARGET {
@@ -1283,6 +1316,16 @@ impl WorkspaceView {
 
     /// Left-button press: route a header/menu click, close the menu, toggle a dock, or begin a divider drag.
     pub fn mouse_down(&mut self, x: f32, y: f32) {
+        if let Some(rect) = self.modal_rect.take() {
+            let inside = x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
+            if !inside {
+                if let Some(v) = self.layout.files_view.as_mut() {
+                    v.dismiss_modal();
+                }
+                return;
+            }
+            self.modal_rect = Some(rect);
+        }
         // A click while a context menu is open either picks an item or dismisses it.
         if let Some((_, _, _, target)) = self.menu {
             let hit = self.hit(x, y);
@@ -1610,6 +1653,10 @@ impl WorkspaceView {
             self.layout.active_panels[side.index()] = Some(Shown::Func(PaneKind::ALL[i]));
             self.toggle_side(side, was_visible);
             self.pending.persist = true;
+        } else if id == crate::CURSOR_POSITION {
+            if let Some(v) = self.layout.files_view.as_mut() {
+                v.editor_key(EditKey::ToggleGoToLine, false);
+            }
         } else if id == BOTTOM_TOGGLE {
             // The terminal button: activate the terminal on its side, toggling the dock if already visible.
             let side = self.layout.terminal_side;

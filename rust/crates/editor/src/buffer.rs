@@ -1,5 +1,6 @@
 use crate::language::{BracketPair, LanguageConfig, Scope};
 use crate::movement;
+use crate::search::SearchQuery;
 use crate::transform::{LineTransform, TextTransform};
 use ropey::Rope;
 use std::ops::Range;
@@ -2772,6 +2773,86 @@ impl EditorBuffer {
         }
     }
 
+
+    pub fn search(&self, query: &SearchQuery) -> Vec<Range<usize>> {
+        let text = self.rope.to_string();
+        query
+            .find_in(&text)
+            .into_iter()
+            .map(|r| self.rope.byte_to_char(r.start)..self.rope.byte_to_char(r.end))
+            .collect()
+    }
+
+    pub fn query_suggestion(&self) -> String {
+        let newest = self.newest();
+        if !newest.is_empty() {
+            return self.rope.slice(newest.start..newest.end).to_string();
+        }
+        let word = self.surrounding_word(newest.start);
+        let text = self.rope.slice(word.clone()).to_string();
+        let is_word = text
+            .chars()
+            .next()
+            .is_some_and(|c| movement::char_kind(c) == movement::CharKind::Word);
+        if is_word && !text.trim().is_empty() {
+            text
+        } else {
+            String::new()
+        }
+    }
+
+    pub fn select_ranges(&mut self, ranges: &[Range<usize>]) {
+        let next: Vec<Selection> = ranges
+            .iter()
+            .map(|r| self.new_selection(r.start, r.end, false))
+            .collect();
+        self.select(next);
+    }
+
+    fn replacement_edit(
+        &self,
+        query: &SearchQuery,
+        range: &Range<usize>,
+    ) -> Option<(Range<usize>, String)> {
+        let first = self.rope.char_to_line(range.start);
+        let last = self.rope.char_to_line(range.end);
+        let line_start = self.rope.line_to_char(first);
+        let line_end = self.line_end_offset(last);
+        let line = self
+            .rope
+            .slice(line_start..line_end.max(range.end))
+            .to_string();
+        let start_byte = self.rope.char_to_byte(line_start);
+        let hit = self.rope.char_to_byte(range.start) - start_byte
+            ..self.rope.char_to_byte(range.end) - start_byte;
+        query
+            .replacement_for(&line, hit)
+            .map(|text| (range.clone(), text))
+    }
+
+    pub fn replace_match(&mut self, query: &SearchQuery, range: Range<usize>) {
+        if let Some(edit) = self.replacement_edit(query, &range) {
+            self.transact(|this| {
+                let applied = this.edit(vec![edit]);
+                this.remap_anchored(&applied);
+            });
+        }
+    }
+
+    pub fn replace_all(&mut self, query: &SearchQuery, ranges: &[Range<usize>]) {
+        let edits: Vec<(Range<usize>, String)> = ranges
+            .iter()
+            .filter_map(|range| self.replacement_edit(query, range))
+            .collect();
+        if edits.is_empty() {
+            return;
+        }
+        self.transact(|this| {
+            let applied = this.edit(edits);
+            this.remap_anchored(&applied);
+        });
+    }
+
     /// Leading whitespace of `line`, in chars.
     pub fn indent_len(&self, line: usize) -> usize {
         self.rope
@@ -3835,5 +3916,36 @@ mod tests {
         assert_eq!(b.cursor(), 4);
         b.undo();
         assert_eq!(b.text(), "x ");
+    }
+
+    #[test]
+    fn search_and_replace_all_with_groups() {
+        use crate::search::SearchOptions;
+        let mut b = buffer("let a = 1;\nlet b = 2;");
+        let q = SearchQuery::new(
+            r"let (\w)",
+            SearchOptions {
+                regex: true,
+                ..Default::default()
+            },
+            Some("var $1".into()),
+        )
+        .unwrap();
+        let hits = b.search(&q);
+        assert_eq!(hits, vec![0..5, 11..16]);
+        b.replace_all(&q, &hits);
+        assert_eq!(b.text(), "var a = 1;\nvar b = 2;");
+        b.undo();
+        assert_eq!(b.text(), "let a = 1;\nlet b = 2;");
+    }
+
+    #[test]
+    fn query_suggestion_prefers_selection_then_word() {
+        let mut b = buffer("alpha beta");
+        b.place_cursor(7);
+        assert_eq!(b.query_suggestion(), "beta");
+        b.place_cursor(0);
+        b.extend_cursor(3);
+        assert_eq!(b.query_suggestion(), "alp");
     }
 }
