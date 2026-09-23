@@ -221,13 +221,14 @@ impl<P> Member<P> {
     }
 
     /// Put `new_pane` beside the leaf at `path`: in the parent's own axis it is inserted next to the leaf,
-    /// otherwise the leaf becomes a two-member split. Returns the new pane's path.
+    /// otherwise the leaf becomes a two-member split. Returns the new pane's path, or the pane back when
+    /// `path` is not a leaf.
     pub fn split(
         &mut self,
         path: &[usize],
         direction: SplitDirection,
         new_pane: P,
-    ) -> Option<Vec<usize>> {
+    ) -> Result<Vec<usize>, P> {
         let axis = direction.axis();
         let after = direction.increasing();
         let pair = |old: Member<P>, new: P| {
@@ -244,27 +245,29 @@ impl<P> Member<P> {
         };
         let Some((&index, parent_path)) = path.split_last() else {
             if !matches!(self, Member::Leaf(_)) {
-                return None;
+                return Err(new_pane);
             }
             let old = std::mem::replace(self, Member::Split(empty_split(axis)));
             *self = pair(old, new_pane);
-            return Some(vec![usize::from(after)]);
+            return Ok(vec![usize::from(after)]);
         };
-        let parent = self.split_at_mut(parent_path)?;
-        if index >= parent.members.len() {
-            return None;
+        let Some(parent) = self.split_at_mut(parent_path) else {
+            return Err(new_pane);
+        };
+        if index >= parent.members.len() || !matches!(parent.members[index], Member::Leaf(_)) {
+            return Err(new_pane);
         }
         if parent.axis == axis {
             let at = if after { index + 1 } else { index };
             parent.members.insert(at, Member::Leaf(new_pane));
             parent.flexes.insert(at, 1.0);
             renormalize(&mut parent.flexes);
-            Some([parent_path, &[at]].concat())
+            Ok([parent_path, &[at]].concat())
         } else {
             let old =
                 std::mem::replace(&mut parent.members[index], Member::Split(empty_split(axis)));
             parent.members[index] = pair(old, new_pane);
-            Some([parent_path, &[index, usize::from(after)]].concat())
+            Ok([parent_path, &[index, usize::from(after)]].concat())
         }
     }
 
@@ -569,12 +572,12 @@ mod tests {
     #[test]
     fn splits_nest_by_axis_and_collapse_on_remove() {
         let mut group: Member<u64> = Member::Leaf(1);
-        assert_eq!(group.split(&[], SplitDirection::Right, 2), Some(vec![1]));
-        assert_eq!(group.split(&[1], SplitDirection::Right, 3), Some(vec![2]));
-        assert_eq!(group.split(&[1], SplitDirection::Down, 4), Some(vec![1, 1]));
+        assert_eq!(group.split(&[], SplitDirection::Right, 2), Ok(vec![1]));
+        assert_eq!(group.split(&[1], SplitDirection::Right, 3), Ok(vec![2]));
+        assert_eq!(group.split(&[1], SplitDirection::Down, 4), Ok(vec![1, 1]));
         assert_eq!(group.leaf_count(), 4);
         assert_eq!(group.path_of(4), Some(vec![1, 1]));
-        assert_eq!(group.split(&[0], SplitDirection::Left, 5), Some(vec![0]));
+        assert_eq!(group.split(&[0], SplitDirection::Left, 5), Ok(vec![0]));
         assert_eq!(group.path_of(1), Some(vec![1]));
         assert!(group.remove(&[2, 0]));
         assert_eq!(group.path_of(4), Some(vec![2]));
@@ -585,8 +588,8 @@ mod tests {
     #[test]
     fn layout_shares_the_container_and_places_dividers() {
         let mut group: Member<u64> = Member::Leaf(1);
-        group.split(&[], SplitDirection::Right, 2);
-        group.split(&[1], SplitDirection::Down, 3);
+        assert!(group.split(&[], SplitDirection::Right, 2).is_ok());
+        assert!(group.split(&[1], SplitDirection::Down, 3).is_ok());
         let (leaves, dividers) = group.layout(area());
         assert_eq!(leaves.len(), 3);
         assert_eq!(dividers.len(), 2);
@@ -605,7 +608,7 @@ mod tests {
     #[test]
     fn dragging_a_divider_respects_minimum_sizes() {
         let mut group: Member<u64> = Member::Leaf(1);
-        group.split(&[], SplitDirection::Right, 2);
+        assert!(group.split(&[], SplitDirection::Right, 2).is_ok());
         let (_, dividers) = group.layout(area());
         let divider = dividers[0].reference.clone();
         assert!(group.resize_divider(&divider, 700.0, 0.0));
@@ -624,8 +627,8 @@ mod tests {
     #[test]
     fn neighbours_swap_and_drop_zones() {
         let mut group: Member<u64> = Member::Leaf(1);
-        group.split(&[], SplitDirection::Right, 2);
-        group.split(&[1], SplitDirection::Down, 3);
+        assert!(group.split(&[], SplitDirection::Right, 2).is_ok());
+        assert!(group.split(&[1], SplitDirection::Down, 3).is_ok());
         let (leaves, _) = group.layout(area());
         assert_eq!(
             find_pane_in_direction(&leaves, &[0], SplitDirection::Right, Some((100.0, 100.0))),

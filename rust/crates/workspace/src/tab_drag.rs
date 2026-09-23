@@ -137,56 +137,89 @@ pub fn apply_drop(
             return Some(source_path);
         }
     }
-    let item: Box<dyn Item> = {
-        let pane = group.leaf_at_mut(&source_path)?;
-        if drag.index >= pane.open.len() {
-            return None;
-        }
-        let item = pane.open.remove(drag.index);
-        pane.active = if pane.open.is_empty() {
-            None
-        } else {
-            Some(pane.active.unwrap_or(0).min(pane.open.len() - 1))
-        };
-        item
-    };
-    let target_path = match group.path_of(drop.pane) {
-        Some(path) => path,
-        None => {
-            if let Some(pane) = group.leaf_at_mut(&source_path) {
-                pane.add_item(item);
-            }
-            return Some(source_path);
+    let item = detach(group, drag)?;
+    let landed = match insert_item(group, drop, item, new_pane) {
+        Ok(path) => group.leaf_at(&path).map(|pane| pane.id),
+        Err(item) => {
+            let pane = group.leaf_at_mut(&source_path)?;
+            pane.add_item(item?);
+            Some(pane.id)
         }
     };
-    let landed = match drop.target {
+    prune(group, drag.source);
+    landed.and_then(|id| group.path_of(id))
+}
+
+fn detach(group: &mut Member<Pane>, drag: &TabDrag) -> Option<Box<dyn Item>> {
+    let source_path = group.path_of(drag.source)?;
+    let pane = group.leaf_at_mut(&source_path)?;
+    if drag.index >= pane.open.len() {
+        return None;
+    }
+    let item = pane.open.remove(drag.index);
+    pane.active = if pane.open.is_empty() {
+        None
+    } else {
+        Some(pane.active.unwrap_or(0).min(pane.open.len() - 1))
+    };
+    Some(item)
+}
+
+/// Drop pane `id` from the group if it has no tabs left, unless it is the last pane.
+fn prune(group: &mut Member<Pane>, id: u64) {
+    if let Some(path) = group.path_of(id) {
+        let empty = group
+            .leaf_at(&path)
+            .is_some_and(|pane| pane.open.is_empty());
+        if empty && group.leaf_count() > 1 {
+            group.remove(&path);
+        }
+    }
+}
+
+/// Remove the dragged tab from its pane for a move to another group, dropping the pane when it empties
+/// (unless it is the last one). Pair with `insert_item` on the other group.
+pub fn take_item(group: &mut Member<Pane>, drag: &TabDrag) -> Option<Box<dyn Item>> {
+    let item = detach(group, drag)?;
+    prune(group, drag.source);
+    Some(item)
+}
+
+/// Place `item` at `drop` in this group; hands the item back when the target pane is gone.
+pub fn insert_item(
+    group: &mut Member<Pane>,
+    drop: TabDrop,
+    item: Box<dyn Item>,
+    new_pane: impl FnOnce() -> Pane,
+) -> Result<Vec<usize>, Option<Box<dyn Item>>> {
+    let Some(target_path) = group.path_of(drop.pane) else {
+        return Err(Some(item));
+    };
+    match drop.target {
         DropTarget::Split(direction) => {
             let mut pane = new_pane();
             pane.add_item(item);
-            group.split(&target_path, direction, pane)?
+            group
+                .split(&target_path, direction, pane)
+                .map_err(|mut pane| pane.open.pop())
         }
         DropTarget::Insert(index) => {
-            let pane = group.leaf_at_mut(&target_path)?;
+            let Some(pane) = group.leaf_at_mut(&target_path) else {
+                return Err(Some(item));
+            };
             let at = index.min(pane.open.len());
             pane.open.insert(at, item);
             pane.active = Some(at);
-            target_path
+            Ok(target_path)
         }
         DropTarget::Append => {
-            group.leaf_at_mut(&target_path)?.add_item(item);
-            target_path
-        }
-    };
-    let landed_id = group.leaf_at(&landed).map(|pane| pane.id);
-    if let Some(source) = group.path_of(drag.source) {
-        let emptied = group
-            .leaf_at(&source)
-            .is_some_and(|pane| pane.open.is_empty());
-        if emptied && group.leaf_count() > 1 {
-            group.remove(&source);
+            let Some(pane) = group.leaf_at_mut(&target_path) else {
+                return Err(Some(item));
+            };
+            pane.add_item(item);
+            Ok(target_path)
         }
     }
-    landed_id.and_then(|id| group.path_of(id))
 }
 
 #[cfg(test)]

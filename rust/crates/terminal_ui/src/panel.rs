@@ -113,6 +113,8 @@ pub struct TerminalPanel {
     /// The user closed the last terminal; reported on the next sync so the panel closes like when shells exit.
     closed_last: bool,
     tab_drag: Option<TabDrag>,
+    /// Where a tab dragged in from another pane group would land.
+    foreign_drop: Option<(TabDrop, Rect)>,
 }
 
 impl TerminalPanel {
@@ -135,6 +137,7 @@ impl TerminalPanel {
             spawn_error: None,
             closed_last: false,
             tab_drag: None,
+            foreign_drop: None,
         }
     }
 
@@ -225,7 +228,7 @@ impl TerminalPanel {
         };
         let mut pane = self.new_pane();
         pane.add_item(Box::new(item));
-        if let Some(new_path) = self.group.split(path, direction, pane) {
+        if let Ok(new_path) = self.group.split(path, direction, pane) {
             self.set_active(new_path);
         }
     }
@@ -327,6 +330,38 @@ impl TerminalPanel {
         let offset = id.checked_sub(TERMINAL_VIEW_BASE)?;
         let within = offset % PANE_STRIDE;
         (within < TAB_CLOSE_OFFSET).then_some(((offset / PANE_STRIDE) as usize, within as usize))
+    }
+
+    /// Where a drop at `(x, y)` lands in this group, or `None` over no pane.
+    fn resolve_drop_at(
+        &self,
+        x: f32,
+        y: f32,
+        over: Option<(u64, Rect)>,
+    ) -> Option<(TabDrop, Rect)> {
+        let full = self.group.leaf_count() >= MAX_PANES;
+        let (p, leaf) = self
+            .leaves
+            .iter()
+            .enumerate()
+            .find(|(_, leaf)| contains(&leaf.rect, x, y))?;
+        let pane = self.group.leaf_at(&leaf.path)?;
+        let over_tab = over.and_then(|(id, rect)| {
+            let (tab_pane, index) = self.tab_of(id)?;
+            (tab_pane == p).then_some((index, rect))
+        });
+        let (mut target, preview) =
+            tab_drag::resolve_drop(leaf.rect, pane.open.len(), x, y, over_tab);
+        if full && matches!(target, DropTarget::Split(_)) {
+            target = DropTarget::Append;
+        }
+        Some((
+            TabDrop {
+                pane: pane.id,
+                target,
+            },
+            preview,
+        ))
     }
 
     fn all_terminals(&mut self, f: &mut dyn FnMut(&mut TerminalItem)) {
@@ -503,31 +538,7 @@ impl TerminalPanelView for TerminalPanel {
         if self.tab_drag.is_none() {
             return false;
         }
-        let full = self.group.leaf_count() >= MAX_PANES;
-        let resolved = self
-            .leaves
-            .iter()
-            .enumerate()
-            .find(|(_, leaf)| contains(&leaf.rect, x, y))
-            .and_then(|(p, leaf)| {
-                let pane = self.group.leaf_at(&leaf.path)?;
-                let over_tab = over.and_then(|(id, rect)| {
-                    let (tab_pane, index) = self.tab_of(id)?;
-                    (tab_pane == p).then_some((index, rect))
-                });
-                let (mut target, preview) =
-                    tab_drag::resolve_drop(leaf.rect, pane.open.len(), x, y, over_tab);
-                if full && matches!(target, DropTarget::Split(_)) {
-                    target = DropTarget::Append;
-                }
-                Some((
-                    TabDrop {
-                        pane: pane.id,
-                        target,
-                    },
-                    preview,
-                ))
-            });
+        let resolved = self.resolve_drop_at(x, y, over);
         if let Some(drag) = self.tab_drag.as_mut() {
             drag.drop = resolved.map(|(drop, _)| drop);
             drag.preview = resolved.map(|(_, preview)| preview);
@@ -552,11 +563,68 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn tab_drag_overlay(&self) -> Option<Rect> {
-        self.tab_drag.as_ref()?.preview
+        self.tab_drag
+            .as_ref()
+            .and_then(|drag| drag.preview)
+            .or(self.foreign_drop.map(|(_, preview)| preview))
     }
 
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)> {
         Some(self.tab_drag.as_ref()?.ghost())
+    }
+
+    fn dragged_item(&self) -> Option<&dyn workspace::Item> {
+        let drag = self.tab_drag.as_ref()?;
+        let path = self.group.path_of(drag.source)?;
+        self.group
+            .leaf_at(&path)?
+            .open
+            .get(drag.index)
+            .map(|item| item.as_ref())
+    }
+
+    fn take_dragged_item(&mut self) -> Option<Box<dyn workspace::Item>> {
+        let drag = self.tab_drag.take()?;
+        let item = tab_drag::take_item(&mut self.group, &drag)?;
+        if self.group.leaf_at(&self.active).is_none() {
+            self.active = self.group.first_leaf_path();
+        }
+        if self.is_empty() {
+            self.closed_last = true;
+        }
+        Some(item)
+    }
+
+    fn accepts_item(&self, item: &dyn workspace::Item) -> bool {
+        item.as_any().is_some_and(|any| any.is::<TerminalItem>())
+    }
+
+    fn update_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool {
+        self.foreign_drop = self.resolve_drop_at(x, y, over);
+        self.foreign_drop.is_some()
+    }
+
+    fn clear_foreign_drop(&mut self) {
+        self.foreign_drop = None;
+    }
+
+    fn accept_foreign_item(&mut self, item: Box<dyn workspace::Item>) {
+        self.closed_last = false;
+        let drop = self.foreign_drop.take().map(|(drop, _)| drop);
+        let pane = self.new_pane();
+        let placed = match drop {
+            Some(drop) => tab_drag::insert_item(&mut self.group, drop, item, || pane),
+            None => Err(Some(item)),
+        };
+        match placed {
+            Ok(path) => self.set_active(path),
+            Err(Some(item)) => {
+                if let Some(pane) = self.active_pane() {
+                    pane.add_item(item);
+                }
+            }
+            Err(None) => {}
+        }
     }
 
     fn grid_contains(&self, x: f32, y: f32) -> bool {
@@ -934,5 +1002,42 @@ mod tests {
         assert!(panel.drop_tab());
         assert_eq!(panel.group.leaf_count(), 1);
         assert_eq!(panel.group.leaf_at(&[]).map(|p| p.open.len()), Some(2));
+    }
+
+    #[test]
+    fn a_dragged_tab_moves_to_another_group_and_back() {
+        let region = Rect::new(0.0, 0.0, 800.0, 400.0, Rgba::TRANSPARENT);
+        let mut source = panel();
+        source.open(None);
+        source.render(region, true);
+        let mut target = panel();
+        target.open(None);
+        target.render(region, true);
+
+        assert!(source.begin_tab_drag(TERMINAL_VIEW_BASE));
+        let accepted = source
+            .dragged_item()
+            .is_some_and(|item| target.accepts_item(item));
+        assert!(accepted);
+        assert!(target.update_foreign_drop(790.0, 250.0, None));
+        assert!(target.tab_drag_overlay().is_some());
+        let Some(item) = source.take_dragged_item() else {
+            panic!("dragged item should detach");
+        };
+        assert!(source.is_empty());
+        target.accept_foreign_item(item);
+        assert_eq!(target.group.leaf_count(), 2);
+        assert_eq!(target.active, vec![1]);
+        assert!(target.tab_drag_overlay().is_none());
+
+        target.clear_foreign_drop();
+        target.render(region, true);
+        assert!(target.begin_tab_drag(TERMINAL_VIEW_BASE + PANE_STRIDE));
+        let Some(item) = target.take_dragged_item() else {
+            panic!("dragged item should detach");
+        };
+        assert_eq!(target.group.leaf_count(), 1);
+        source.accept_foreign_item(item);
+        assert!(!source.is_empty());
     }
 }

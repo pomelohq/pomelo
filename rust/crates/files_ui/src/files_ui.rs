@@ -4085,6 +4085,8 @@ pub struct FilesView {
     hover: Option<u64>,
     /// An in-progress tab drag and the highlight rect previewing where it would land.
     tab_drag: Option<TabDrag>,
+    /// Where a tab dragged in from another pane group would land.
+    foreign_drop: Option<(TabDrop, Rect)>,
     /// Rebuilt each render: click id `FUNC_VIEW_BASE + i` maps to `(path, is_dir)`.
     click_targets: Vec<(String, bool)>,
     /// Rebuilt each render: the folder path for each pinned sticky-breadcrumb row (click to collapse it).
@@ -4167,6 +4169,7 @@ impl FilesView {
             request: None,
             pointer_pane: None,
             tab_drag: None,
+            foreign_drop: None,
             click_targets: Vec::new(),
             sticky_paths: Vec::new(),
             flat_cache: Vec::new(),
@@ -4987,6 +4990,44 @@ impl FilesView {
             .and_then(|it| it.clone_on_split())
     }
 
+    /// Where a tab drop at `(x, y)` lands in the center, or `None` over no pane.
+    fn resolve_drop_at(
+        &self,
+        x: f32,
+        y: f32,
+        over: Option<(u64, Rect)>,
+    ) -> Option<(TabDrop, Rect)> {
+        let full = self.group.leaf_count() >= MAX_PANES;
+        let index = self
+            .pane_rects
+            .iter()
+            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)?;
+        let pane = self.group.leaf_at(self.pane_order.get(index)?)?;
+        let over_tab = over.and_then(|(id, rect)| {
+            let n = id
+                .checked_sub(TAB_ACTIVATE_BASE)
+                .filter(|_| self.is_tab(id))?;
+            ((n / PANE_STRIDE) as usize == index).then_some(((n % PANE_STRIDE) as usize, rect))
+        });
+        let (mut target, preview) = tab_drag::resolve_drop(
+            *self.pane_rects.get(index)?,
+            pane.open.len(),
+            x,
+            y,
+            over_tab,
+        );
+        if full && matches!(target, tab_drag::DropTarget::Split(_)) {
+            target = tab_drag::DropTarget::Append;
+        }
+        Some((
+            TabDrop {
+                pane: pane.id,
+                target,
+            },
+            preview,
+        ))
+    }
+
     fn do_split(
         &mut self,
         path: &[usize],
@@ -5005,7 +5046,7 @@ impl FilesView {
             new_pane.open = vec![item];
             new_pane.active = Some(0);
         }
-        let new_path = self.group.split(path, direction, new_pane)?;
+        let new_path = self.group.split(path, direction, new_pane).ok()?;
         self.active = new_path.clone();
         Some(new_path)
     }
@@ -5956,32 +5997,7 @@ impl FunctionView for FilesView {
         if self.tab_drag.is_none() {
             return false;
         }
-        let full = self.group.leaf_count() >= MAX_PANES;
-        let target = self
-            .pane_rects
-            .iter()
-            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
-        let resolved = target.and_then(|index| {
-            let pane = self.group.leaf_at(self.pane_order.get(index)?)?;
-            let over_tab = over.and_then(|(id, rect)| {
-                let n = id
-                    .checked_sub(TAB_ACTIVATE_BASE)
-                    .filter(|_| self.is_tab(id))?;
-                ((n / PANE_STRIDE) as usize == index).then_some(((n % PANE_STRIDE) as usize, rect))
-            });
-            let (mut target, preview) =
-                tab_drag::resolve_drop(self.pane_rects[index], pane.open.len(), x, y, over_tab);
-            if full && matches!(target, tab_drag::DropTarget::Split(_)) {
-                target = tab_drag::DropTarget::Append;
-            }
-            Some((
-                TabDrop {
-                    pane: pane.id,
-                    target,
-                },
-                preview,
-            ))
-        });
+        let resolved = self.resolve_drop_at(x, y, over);
         if let Some(drag) = self.tab_drag.as_mut() {
             drag.drop = resolved.map(|(drop, _)| drop);
             drag.preview = resolved.map(|(_, preview)| preview);
@@ -6018,11 +6034,65 @@ impl FunctionView for FilesView {
     }
 
     fn tab_drag_overlay(&self) -> Option<Rect> {
-        self.tab_drag.as_ref()?.preview
+        self.tab_drag
+            .as_ref()
+            .and_then(|drag| drag.preview)
+            .or(self.foreign_drop.map(|(_, preview)| preview))
     }
 
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)> {
         Some(self.tab_drag.as_ref()?.ghost())
+    }
+
+    fn dragged_item(&self) -> Option<&dyn Item> {
+        let drag = self.tab_drag.as_ref()?;
+        let path = self.group.path_of(drag.source)?;
+        self.group
+            .leaf_at(&path)?
+            .open
+            .get(drag.index)
+            .map(|item| item.as_ref())
+    }
+
+    fn take_dragged_item(&mut self) -> Option<Box<dyn Item>> {
+        let drag = self.tab_drag.take()?;
+        let item = tab_drag::take_item(&mut self.group, &drag)?;
+        if self.group.leaf_at(&self.active).is_none() {
+            self.active = self.group.first_leaf_path();
+        }
+        Some(item)
+    }
+
+    fn accepts_item(&self, _item: &dyn Item) -> bool {
+        true
+    }
+
+    fn update_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool {
+        self.foreign_drop = self.resolve_drop_at(x, y, over);
+        self.foreign_drop.is_some()
+    }
+
+    fn clear_foreign_drop(&mut self) {
+        self.foreign_drop = None;
+    }
+
+    fn accept_foreign_item(&mut self, item: Box<dyn Item>) {
+        let drop = self.foreign_drop.take().map(|(drop, _)| drop);
+        let next_id = self.next_pane_id;
+        let placed = match drop {
+            Some(drop) => tab_drag::insert_item(&mut self.group, drop, item, || Pane::new(next_id)),
+            None => Err(Some(item)),
+        };
+        match placed {
+            Ok(path) => {
+                if self.group.path_of(next_id).is_some() {
+                    self.next_pane_id += 1;
+                }
+                self.active = path;
+            }
+            Err(Some(item)) => self.add_center_item(item),
+            Err(None) => {}
+        }
     }
 
     fn editor_save(&mut self) -> Option<Result<(), String>> {
