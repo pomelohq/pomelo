@@ -1926,7 +1926,9 @@ impl FileItem {
 
     /// The word menu and its window position: under the caret's line, or above it when that has more room
     /// and the menu doesn't fit below.
-    fn completion_menu_popover(&self, content: Rect) -> Option<(Node, f32, f32)> {
+    /// Where the menu goes: `(x, y, height, above)`, above the caret's line when that has more room and the
+    /// menu doesn't fit below.
+    fn completion_menu_place(&self, content: Rect) -> Option<(f32, f32, f32, bool)> {
         let menu = self.completions.as_ref()?;
         let b = self.buffer.as_ref()?;
         let (row, x) = self.position(b.newest().head());
@@ -1936,12 +1938,59 @@ impl FileItem {
         let below = row_top + EDIT_LINE_H;
         let room_below = content.y + self.body_h - below;
         let room_above = row_top - content.y;
-        let y = if height > room_below && room_above > room_below {
-            row_top - height
+        if height > room_below && room_above > room_below {
+            Some((x, row_top - height, height, true))
         } else {
-            below
-        };
+            Some((x, below, height, false))
+        }
+    }
+
+    fn completion_menu_popover(&self, content: Rect) -> Option<(Node, f32, f32)> {
+        let menu = self.completions.as_ref()?;
+        let (x, y, _, _) = self.completion_menu_place(content)?;
         Some((menu.render(COMPLETION_BASE), x, y))
+    }
+
+    /// The selected item's documentation: right of the menu when there is room for it, else on the menu's
+    /// side of the caret line (below it first), else on the other side.
+    fn completion_aside_popover(
+        &self,
+        content: Rect,
+        viewport: (f32, f32),
+    ) -> Option<(Node, f32, f32)> {
+        use completions_menu::{ASIDE_MAX_WIDTH, ASIDE_MIN_WIDTH, MAX_VISIBLE, MENU_GAP, WIDTH};
+        let menu = self.completions.as_ref()?;
+        let (x, y, height, above) = self.completion_menu_place(content)?;
+        let scale = ui::ui_text_scale();
+        let width = WIDTH * scale;
+        let gap = MENU_GAP * scale;
+        let (mut top, mut bottom) = (y - gap, y + height + gap);
+        if above {
+            bottom += EDIT_LINE_H;
+        } else {
+            top -= EDIT_LINE_H;
+        }
+        let right = x + width + gap;
+        let max_menu_height = (MAX_VISIBLE as f32 * EDIT_LINE_H + 8.0) * scale;
+        let room_right = viewport.0 - right;
+        if room_right >= ASIDE_MIN_WIDTH * scale {
+            let max_width = (room_right - 1.0).min(ASIDE_MAX_WIDTH * scale);
+            let (node, _, _) = menu.render_aside(max_width / scale, max_menu_height / scale)?;
+            return Some((node, right, y));
+        }
+        let (room_above, room_below) = (top, viewport.1 - bottom);
+        let max_width = (width - 2.0).max(ASIDE_MIN_WIDTH * scale).min(viewport.0);
+        let max_height = max_menu_height.min(room_above.max(room_below)) - 8.0 * scale;
+        let (node, _, aside_height) = menu.render_aside(max_width / scale, max_height / scale)?;
+        let aside_height = aside_height * scale;
+        let below_fits = aside_height < room_below;
+        let above_fits = aside_height < room_above;
+        let aside_y = match (above, below_fits, above_fits) {
+            (false, true, _) | (true, true, false) => bottom,
+            (_, _, true) => top - aside_height,
+            _ => return None,
+        };
+        Some((node, x, aside_y))
     }
 
     /// Hunks touching any selection's lines; a deletion counts when it sits right above or below them.
@@ -2836,6 +2885,16 @@ impl Item for FileItem {
 
     fn completion_popover(&self, content: Rect) -> Option<(Node, f32, f32)> {
         self.completion_menu_popover(content)
+    }
+
+    fn completion_aside(&self, content: Rect, viewport: (f32, f32)) -> Option<(Node, f32, f32)> {
+        self.completion_aside_popover(content, viewport)
+    }
+
+    fn scroll_completion_aside(&mut self, dy: f32) -> bool {
+        self.completions
+            .as_mut()
+            .is_some_and(|menu| menu.scroll_aside(dy))
     }
 
     fn click_completion(&mut self, row: usize) {
@@ -4324,6 +4383,7 @@ pub struct FilesView {
 #[derive(Clone, Debug, PartialEq)]
 enum PopoverSource {
     Completion,
+    CompletionAside,
     Hover { pane: Vec<usize>, index: usize },
 }
 
@@ -4512,6 +4572,10 @@ impl FilesView {
                 if let Some(raw) = file.resolve_due() {
                     let token = lsp.resolve_completion(&path, &raw);
                     file.resolve_requested(token);
+                }
+                if let Some(raw) = file.doc_resolve_due() {
+                    let token = lsp.resolve_completion(&path, &raw);
+                    file.doc_resolve_requested(token);
                 }
                 while let Some((offset, kind)) = file.definition_request_due() {
                     let token = file
@@ -5826,6 +5890,17 @@ impl FunctionView for FilesView {
         if let Some(completion) = completion {
             popovers.push(completion);
             self.popover_sources.push(PopoverSource::Completion);
+            let viewport = self.window_size;
+            let aside = self.focused_content.and_then(|content| {
+                let pane = self.pane_at(&self.active)?;
+                pane.open
+                    .get(pane.active?)?
+                    .completion_aside(content, viewport)
+            });
+            if let Some(aside) = aside {
+                popovers.push(aside);
+                self.popover_sources.push(PopoverSource::CompletionAside);
+            }
         }
         for (index, rect) in self.pane_rects.iter().enumerate() {
             let Some(path) = self.pane_order.get(index) else {
@@ -5861,6 +5936,9 @@ impl FunctionView for FilesView {
             Some(PopoverSource::Completion) => self
                 .active_item_mut()
                 .is_some_and(|item| item.scroll_completion(dy)),
+            Some(PopoverSource::CompletionAside) => self
+                .active_item_mut()
+                .is_some_and(|item| item.scroll_completion_aside(dy)),
             Some(PopoverSource::Hover { pane, index }) => self
                 .group
                 .leaf_at_mut(&pane)

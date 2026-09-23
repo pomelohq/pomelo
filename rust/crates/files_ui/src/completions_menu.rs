@@ -176,6 +176,12 @@ pub struct CompletionsMenu {
     pub initial_query: Option<String>,
     pub initial_position: Option<(usize, u64)>,
     pub is_incomplete: bool,
+    /// The candidate whose documentation is being fetched, and the request's token once sent.
+    pub doc_request: Option<(usize, Option<u64>)>,
+    /// Candidates the server was already asked to fill in.
+    pub doc_resolved: std::collections::HashSet<usize>,
+    aside_scroll: usize,
+    aside_layout: std::cell::RefCell<Option<(usize, u32, crate::markdown_view::MarkdownLayout)>>,
 }
 
 impl CompletionsMenu {
@@ -190,6 +196,10 @@ impl CompletionsMenu {
             initial_query: None,
             initial_position: None,
             is_incomplete: false,
+            doc_request: None,
+            doc_resolved: std::collections::HashSet::new(),
+            aside_scroll: 0,
+            aside_layout: std::cell::RefCell::new(None),
         })
     }
 
@@ -311,6 +321,84 @@ impl CompletionsMenu {
         self.completion_at(row).map(|c| c.label.as_str())
     }
 
+    pub fn selected_candidate(&self) -> Option<usize> {
+        self.entries.get(self.selected).map(|entry| entry.candidate)
+    }
+
+    pub fn set_documentation(
+        &mut self,
+        candidate: usize,
+        documentation: lsp::CompletionDocumentation,
+    ) {
+        if let Some(CompletionKind::Lsp { item, .. }) =
+            self.candidates.get_mut(candidate).map(|c| &mut c.kind)
+        {
+            item.documentation = Some(documentation);
+        }
+        if let Ok(mut layout) = self.aside_layout.try_borrow_mut() {
+            *layout = None;
+        }
+    }
+
+    /// Multi-line documentation of the selected item, as markdown.
+    fn aside_markdown(&self) -> Option<String> {
+        let candidate = self.selected_candidate()?;
+        let CompletionKind::Lsp { item, .. } = &self.candidates.get(candidate)?.kind else {
+            return None;
+        };
+        match item.documentation.as_ref()? {
+            lsp::CompletionDocumentation::MultiLineMarkdown(text) if !text.is_empty() => {
+                Some(text.clone())
+            }
+            lsp::CompletionDocumentation::MultiLinePlainText(text) => {
+                Some(crate::markdown_view::escape(text))
+            }
+            _ => None,
+        }
+    }
+
+    /// The selected item's documentation laid out to fit `max_width` by `max_height` (design px), as
+    /// `(node, width, height)`; `None` when it has none.
+    pub fn render_aside(&self, max_width: f32, max_height: f32) -> Option<(Node, f32, f32)> {
+        let candidate = self.selected_candidate()?;
+        let markdown = self.aside_markdown()?;
+        let text_width = (max_width - ASIDE_PADDING_X * 2.0 - 2.0).max(1.0);
+        let key = text_width.round() as u32;
+        let mut cache = self.aside_layout.try_borrow_mut().ok()?;
+        let fresh = !matches!(cache.as_ref(), Some((c, k, _)) if *c == candidate && *k == key);
+        if fresh {
+            let layout = crate::markdown_view::Markdown::parse(&markdown)
+                .layout(text_width, crate::markdown_view::HOVER_STYLE);
+            *cache = Some((candidate, key, layout));
+        }
+        let (_, _, layout) = cache.as_ref()?;
+        let body_max = (max_height - PADDING_Y - 2.0).max(1.0);
+        let first = self.aside_scroll.min(layout.line_count().saturating_sub(1));
+        let count = layout.lines_fitting(first, body_max);
+        let body = layout.height_of(first, count);
+        let width = layout.width + ASIDE_PADDING_X * 2.0 + 2.0;
+        let height = body + PADDING_Y + 2.0;
+        let colors = theme();
+        let node = div()
+            .col()
+            .w_px(width)
+            .py(PADDING_Y / 2.0)
+            .px(ASIDE_PADDING_X)
+            .rounded(8.0)
+            .border(1.0, colors.border_variant)
+            .bg(colors.elevated_surface_background)
+            .child(layout.render(first, count, layout.width))
+            .into();
+        Some((node, width, height))
+    }
+
+    pub fn scroll_aside(&mut self, dy: f32) -> bool {
+        let rows = (-dy / (crate::EDIT_LINE_H * ui::ui_text_scale())).round() as isize;
+        let before = self.aside_scroll;
+        self.aside_scroll = (self.aside_scroll as isize + rows).max(0) as usize;
+        self.aside_scroll != before
+    }
+
     pub fn select_next(&mut self) {
         let count = self.entries.len();
         if count > 0 {
@@ -328,6 +416,7 @@ impl CompletionsMenu {
     }
 
     fn scroll_to_selected(&mut self) {
+        self.aside_scroll = 0;
         let before = self.scroll_top;
         if self.selected < self.scroll_top {
             self.scroll_top = self.selected;
@@ -390,8 +479,44 @@ impl CompletionsMenu {
                 return Node::from(div());
             };
             if let CompletionKind::Lsp { item: lsp_item, .. } = &completion.kind {
-                for (text, color, bold) in lsp_row_runs(lsp_item, &entry.positions) {
+                let single_line = match lsp_item.documentation.as_ref() {
+                    Some(lsp::CompletionDocumentation::SingleLine(text))
+                        if !text.trim().is_empty() =>
+                    {
+                        Some(text.trim().to_string())
+                    }
+                    _ => None,
+                };
+                let doc = single_line.map(|text| {
+                    let budget = ROW_TEXT_WIDTH / 3.0;
+                    let mut shown = text;
+                    while shown.chars().count() > 1
+                        && ui::measure_text_width(&shown, LabelSize::Small.px(), false, 400)
+                            / ui::ui_text_scale()
+                            > budget
+                    {
+                        shown.pop();
+                    }
+                    shown
+                });
+                let doc_width = doc.as_ref().map_or(0.0, |text| {
+                    ui::measure_text_width(text, LabelSize::Small.px(), false, 400)
+                        / ui::ui_text_scale()
+                        + DOC_MARGIN
+                });
+                for (text, color, bold) in
+                    lsp_row_runs(lsp_item, &entry.positions, ROW_TEXT_WIDTH - doc_width)
+                {
                     item = item.child(code_run(text, color, bold));
+                }
+                if let Some(doc) = doc {
+                    item = item.child(div().flex(1.0)).child(
+                        div().row().pl(DOC_MARGIN).child(
+                            label(doc)
+                                .label_size(LabelSize::Small)
+                                .color(colors.text_muted),
+                        ),
+                    );
                 }
                 return Node::from(div().row().px(4.0).child(item));
             }
@@ -498,10 +623,22 @@ fn sort_entries(candidates: &[Completion], entries: &mut [Entry]) {
 
 /// The row text available to a label and its detail, in design px.
 const ROW_TEXT_WIDTH: f32 = WIDTH - 8.0 - 12.0;
+/// Space before an item's one-line documentation.
+const DOC_MARGIN: f32 = 16.0;
+/// Horizontal padding of the documentation panel.
+const ASIDE_PADDING_X: f32 = 8.0;
+pub const ASIDE_MIN_WIDTH: f32 = 260.0;
+pub const ASIDE_MAX_WIDTH: f32 = 500.0;
+/// Space between the menu and its documentation panel.
+pub const MENU_GAP: f32 = 4.0;
 
 /// A server item's row: its label in the kind's syntax color (muted when deprecated), then its detail, the
 /// matched letters bold, cut to fit the row.
-fn lsp_row_runs(item: &lsp::LspCompletion, positions: &[usize]) -> Vec<(String, Rgba, bool)> {
+fn lsp_row_runs(
+    item: &lsp::LspCompletion,
+    positions: &[usize],
+    available: f32,
+) -> Vec<(String, Rgba, bool)> {
     use lsp::lsp_types::CompletionItemKind as Kind;
     let text = match item.detail.as_deref() {
         Some(detail) => format!("{} {detail}", item.label),
@@ -531,7 +668,7 @@ fn lsp_row_runs(item: &lsp::LspCompletion, positions: &[usize]) -> Vec<(String, 
     };
     let label_color = crate::color_of(&syntax, capture);
     let char_width = ui::measure_text_width("M", crate::EDIT_FONT, true, 400) / ui::ui_text_scale();
-    let fits = (ROW_TEXT_WIDTH / char_width.max(1.0)).floor() as usize;
+    let fits = (available / char_width.max(1.0)).floor() as usize;
     let shown: Vec<char> = if chars.len() > fits {
         let mut cut: Vec<char> = chars.iter().take(fits.saturating_sub(3)).copied().collect();
         cut.extend("...".chars());

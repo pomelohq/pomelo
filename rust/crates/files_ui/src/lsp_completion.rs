@@ -387,7 +387,44 @@ impl FileItem {
         }
     }
 
+    /// The selected server item, to ask for its documentation, when the server wasn't asked about it yet.
+    pub(crate) fn doc_resolve_due(&self) -> Option<Value> {
+        let menu = self.completions.as_ref()?;
+        let candidate = menu.selected_candidate()?;
+        if menu.doc_resolved.contains(&candidate)
+            || menu.doc_request.is_some_and(|(c, _)| c == candidate)
+        {
+            return None;
+        }
+        match &menu.completion_at(menu.selected)?.kind {
+            CompletionKind::Lsp { item, .. } if !item.raw.is_null() => Some(item.raw.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn doc_resolve_requested(&mut self, token: Option<u64>) {
+        let Some(menu) = self.completions.as_mut() else {
+            return;
+        };
+        let Some(candidate) = menu.selected_candidate() else {
+            return;
+        };
+        menu.doc_resolved.insert(candidate);
+        menu.doc_request = token.map(|token| (candidate, Some(token)));
+    }
+
     pub(crate) fn resolve_answered(&mut self, resolved: &lsp::ResolvedCompletion) {
+        if let Some(menu) = self.completions.as_mut() {
+            if let Some((candidate, Some(token))) = menu.doc_request {
+                if token == resolved.request {
+                    menu.doc_request = None;
+                    if let Some(documentation) = resolved.documentation.clone() {
+                        menu.set_documentation(candidate, documentation);
+                    }
+                    return;
+                }
+            }
+        }
         let matches = self
             .pending_resolve
             .as_ref()
@@ -443,6 +480,7 @@ mod tests {
             insert_as_is: false,
             deprecated: false,
             additional_edits: Vec::new(),
+            documentation: None,
             raw: Value::Null,
         }
     }
@@ -556,6 +594,7 @@ mod tests {
         item.resolve_answered(&lsp::ResolvedCompletion {
             request: 9,
             additional_edits: vec![(0..0, "use z;\n".into())],
+            documentation: None,
             synced,
         });
         assert_eq!(text(&item), "use z;\nx.foo");
@@ -568,5 +607,70 @@ mod tests {
         item.completion_requested(None);
         let menu = item.completions.as_ref().unwrap();
         assert_eq!(menu.selected_word(), Some("helpme"));
+    }
+
+    fn content() -> ui::Rect {
+        ui::Rect::new(
+            0.0,
+            0.0,
+            700.0,
+            10.0 * crate::EDIT_LINE_H,
+            ui::Rgba::TRANSPARENT,
+        )
+    }
+
+    #[test]
+    fn the_selected_item_documentation_is_fetched_and_shown_beside_the_menu() {
+        let mut item = item("x.fo");
+        item.input_key(EditKey::ShowCompletions, false);
+        item.completion_requested(Some(1));
+        let mut entry = server_item("foo", 2..4);
+        entry.raw = serde_json::json!({"label": "foo"});
+        answer(&mut item, 1, vec![entry], false);
+        assert!(item.completion_aside(content(), (2000.0, 1000.0)).is_none());
+        assert!(item.doc_resolve_due().is_some());
+        item.doc_resolve_requested(Some(5));
+        assert!(item.doc_resolve_due().is_none(), "asked once per item");
+        let b = item.buffer.as_ref().unwrap();
+        let synced = lsp::SyncedText {
+            lsp_version: 0,
+            buffer_version: b.version(),
+            rope: b.rope.clone(),
+        };
+        item.resolve_answered(&lsp::ResolvedCompletion {
+            request: 5,
+            additional_edits: Vec::new(),
+            documentation: Some(lsp::CompletionDocumentation::MultiLineMarkdown(
+                "Does foo.\n\n```rust\nfn foo()\n```".into(),
+            )),
+            synced,
+        });
+        let (menu_x, _, _) = item
+            .completion_popover(content())
+            .map(|(_, x, y)| (x, y, 0))
+            .unwrap();
+        let (_, aside_x, _) = item.completion_aside(content(), (2000.0, 1000.0)).unwrap();
+        assert!(aside_x > menu_x + completions_menu::WIDTH);
+        // Without room on the right it goes below the menu, at the menu's left edge.
+        let (_, narrow_x, narrow_y) = item.completion_aside(content(), (700.0, 1000.0)).unwrap();
+        assert_eq!(narrow_x, menu_x);
+        assert!(narrow_y > crate::EDIT_LINE_H);
+    }
+
+    #[test]
+    fn one_line_documentation_sits_at_the_row_end() {
+        let mut item = item("x.fo");
+        item.input_key(EditKey::ShowCompletions, false);
+        item.completion_requested(Some(1));
+        let mut entry = server_item("foo", 2..4);
+        entry.documentation = Some(lsp::CompletionDocumentation::SingleLine("Does foo".into()));
+        answer(&mut item, 1, vec![entry], false);
+        let (node, x, y) = item.completion_popover(content()).unwrap();
+        let painted = ui::render(
+            &node,
+            ui::Rect::new(x, y, 800.0, 400.0, ui::Rgba::TRANSPARENT),
+        );
+        assert!(painted.texts.iter().any(|text| text.text == "Does foo"));
+        assert!(item.completion_aside(content(), (2000.0, 1000.0)).is_none());
     }
 }
