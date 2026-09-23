@@ -22,20 +22,26 @@ use workspace::{
     Item, PaneBody, PanePlacement, FUNC_VIEW_BASE,
 };
 
-// Editor text metrics (design px). The body pads by `EDIT_PAD_*`; each source line is `EDIT_LINE_H` tall with
-// `EDIT_FONT` mono text. Caret/selection geometry uses these plus the mono advance so it aligns with the glyphs.
+// Editor text metrics (design px). Each source line is `EDIT_LINE_H` tall with `EDIT_FONT` mono text. Caret/selection geometry uses these plus the mono advance so it aligns with the glyphs.
 const EDIT_FONT: f32 = 15.0; // matches the reference's default buffer font size
 const EDIT_LINE_H: f32 = 24.0; // ~15 * 1.618 ("comfortable" line height), snapped to a whole pixel
-const EDIT_PAD_X: f32 = 8.0;
-const EDIT_PAD_Y: f32 = 8.0;
+const MESSAGE_PAD: f32 = 8.0;
 const CARET_W: f32 = 2.0;
-const GUTTER_GAP: f32 = 12.0; // space between the line-number gutter and the first text column
 const VERTICAL_SCROLL_MARGIN: f32 = 3.0;
 const HORIZONTAL_SCROLL_MARGIN: f32 = 5.0;
 /// With soft wrap off, lines still break past this many columns so pathological lines stay cheap to lay out.
 const UNWRAPPED_MAX_COLUMNS: f32 = 512.0;
 const FOLD_PILL_PAD: f32 = 4.0;
-const FOLD_COL: f32 = 14.0; // fold-chevron column, between the line number and the text
+/// Line numbers reserve at least this many digits so the gutter doesn't resize as a file grows past 999 lines.
+const MIN_LINE_NUMBER_DIGITS: usize = 4;
+const FOLD_ICON: f32 = 14.0;
+const SCROLLBAR_WIDTH: f32 = 15.0;
+const SCROLLBAR_BORDER: f32 = 1.0;
+const SCROLLBAR_MIN_THUMB: f32 = 25.0;
+const SCROLLBAR_LINE_MARKER: f32 = 2.0;
+const SCROLLBAR_CURSOR_MARKER_LIMIT: usize = 100;
+/// Scrollbars show while scrolling and hide this long after the last scroll.
+const SCROLLBAR_SHOW_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const TAB_COLS: usize = 4; // indent-guide spacing: one guide per this many leading columns
 
 /// The monospace advance of one column at the editor font (Lilex is monospace, so every column is this wide).
@@ -43,11 +49,44 @@ fn char_advance() -> f32 {
     ui::measure_text_width("M", EDIT_FONT, true, 400)
 }
 
-/// The gutter width for `line_count` lines: room for the widest line number, the fold chevron column, and a
-/// trailing gap before the text.
+/// Gutter layout: `left_padding` (room for run/breakpoint markers), right-aligned line numbers, `right_padding`
+/// (the fold toggles), then `margin` before the text.
+struct GutterDimensions {
+    left_padding: f32,
+    right_padding: f32,
+    width: f32,
+    margin: f32,
+}
+
+impl GutterDimensions {
+    fn for_lines(line_count: usize) -> Self {
+        let ch = char_advance();
+        let digits = line_count
+            .max(1)
+            .to_string()
+            .len()
+            .max(MIN_LINE_NUMBER_DIGITS);
+        let left_padding = 3.0 * ch;
+        let right_padding = 4.0 * ch;
+        Self {
+            left_padding,
+            right_padding,
+            width: digits as f32 * ch + left_padding + right_padding,
+            margin: ui::mono_descent(EDIT_FONT),
+        }
+    }
+
+    fn full_width(&self) -> f32 {
+        self.width + self.margin
+    }
+
+    fn fold_area_width(&self) -> f32 {
+        self.margin + self.right_padding
+    }
+}
+
 fn gutter_width(line_count: usize) -> f32 {
-    let digits = line_count.max(1).to_string().len().max(2);
-    digits as f32 * char_advance() + FOLD_COL + GUTTER_GAP
+    GutterDimensions::for_lines(line_count).full_width()
 }
 
 const INDENT: f32 = 16.0; // per-depth indent (~20 in the design; trimmed for the narrower panel)
@@ -259,6 +298,9 @@ struct FileItem {
     /// Widest row in columns, sizing horizontal scroll.
     max_row_cols: usize,
     char_widths: RefCell<HashMap<char, f32>>,
+    gutter_hovered: bool,
+    /// When the view last scrolled, which keeps the scrollbars visible for `SCROLLBAR_SHOW_INTERVAL`.
+    scrolled_at: Option<std::time::Instant>,
 }
 
 impl FileItem {
@@ -300,6 +342,8 @@ impl FileItem {
             soft_wrap_override: None,
             max_row_cols: 0,
             char_widths: RefCell::default(),
+            gutter_hovered: false,
+            scrolled_at: None,
         }
     }
 
@@ -408,6 +452,25 @@ impl FileItem {
             .as_ref()
             .is_some_and(|b| editor::fold::starts_indent(b, line))
             || self.is_folded(line)
+    }
+
+    /// Display rows each selection's lines cover, with whether that selection is non-empty. These rows get the
+    /// active line-number color; the ones without a non-empty selection also get the active-line background.
+    fn active_rows(&self) -> Vec<(std::ops::RangeInclusive<usize>, bool)> {
+        let Some(b) = self.buffer.as_ref() else {
+            return Vec::new();
+        };
+        b.selections()
+            .iter()
+            .map(|s| {
+                let first_line = self.buf_of(self.position(s.start).0);
+                let last_line = self.buf_of(self.position(s.end).0);
+                (
+                    self.disp_of(first_line)..=self.last_row_of_line(last_line),
+                    !s.is_empty(),
+                )
+            })
+            .collect()
     }
 
     fn soft_wrap_mode(&self) -> SoftWrap {
@@ -528,8 +591,17 @@ impl FileItem {
         self.scroll_y = (top + self.scroll_anchor_offset).clamp(0.0, self.max_scroll());
     }
 
+    fn scrollbars_revealed(&self) -> bool {
+        self.scrolled_at
+            .is_some_and(|at| at.elapsed() < SCROLLBAR_SHOW_INTERVAL)
+    }
+
     fn set_scroll_y(&mut self, scroll_y: f32) {
-        self.scroll_y = scroll_y.clamp(0.0, self.max_scroll());
+        let scroll_y = scroll_y.clamp(0.0, self.max_scroll());
+        if (scroll_y - self.scroll_y).abs() > 0.01 {
+            self.scrolled_at = Some(std::time::Instant::now());
+        }
+        self.scroll_y = scroll_y;
         let top_row = self.first_line();
         self.scroll_anchor = self.row_start_offset(top_row);
         self.scroll_anchor_offset = self.scroll_y - top_row as f32 * EDIT_LINE_H;
@@ -855,7 +927,7 @@ impl FileItem {
 
     /// The text viewport width (px): the body minus the padding and the fixed gutter.
     fn text_viewport_w(&self) -> f32 {
-        (self.body_w - 2.0 * EDIT_PAD_X - gutter_width(self.line_count())).max(0.0)
+        (self.body_w - gutter_width(self.line_count()) - SCROLLBAR_WIDTH).max(0.0)
     }
 
     /// Total text width (px) of the widest line, plus a trailing column so the last glyph isn't flush to the edge.
@@ -986,6 +1058,69 @@ impl FileItem {
         None
     }
 
+    /// The block around buffer `row` for highlighting its indent guide: the rows between the nearest
+    /// less-indented lines above and below (a row that opens a deeper block counts as inside it; a blank row
+    /// takes the deeper of its non-blank neighbours), with the guide's column.
+    fn enclosing_indent(b: &EditorBuffer, mut row: usize) -> Option<(usize, usize, usize)> {
+        const SEARCH_ROW_LIMIT: usize = 25_000;
+        const SEARCH_WHITESPACE_ROW_LIMIT: usize = 2_500;
+        let max_row = b.rope.len_lines().saturating_sub(1);
+        if row >= max_row {
+            return None;
+        }
+        let mut indent = Self::indent_cols(b, row);
+        if let (Some(current), Some(next)) = (indent, Self::indent_cols(b, row + 1)) {
+            if current < next {
+                indent = Some(next);
+                row += 1;
+            }
+        }
+        let target = match indent {
+            Some(target) => target,
+            None => {
+                let above = (row.saturating_sub(SEARCH_WHITESPACE_ROW_LIMIT)..row)
+                    .rev()
+                    .find_map(|r| Self::indent_cols(b, r).map(|i| (r, i)));
+                let below = (row..=(row + SEARCH_WHITESPACE_ROW_LIMIT).min(max_row))
+                    .find_map(|r| Self::indent_cols(b, r).map(|i| (r, i)));
+                let (found_row, found) = match (above, below) {
+                    (Some(a), Some(b)) => {
+                        if a.1 >= b.1 {
+                            a
+                        } else {
+                            b
+                        }
+                    }
+                    (Some(a), None) => a,
+                    (None, Some(b)) => b,
+                    (None, None) => return None,
+                };
+                row = found_row;
+                found
+            }
+        };
+        let (start_row, start_indent) = (row.saturating_sub(SEARCH_ROW_LIMIT)..row)
+            .rev()
+            .find_map(|r| {
+                Self::indent_cols(b, r)
+                    .filter(|i| *i < target)
+                    .map(|i| (r, i))
+            })?;
+        let limit = (row + SEARCH_ROW_LIMIT).min(max_row);
+        let (end_row, end_indent) = (row..=limit)
+            .find_map(|r| {
+                Self::indent_cols(b, r)
+                    .filter(|i| *i < target)
+                    .map(|i| (r.saturating_sub(1), Some(i)))
+            })
+            .unwrap_or((limit, None));
+        let column = match end_indent {
+            Some(end) if start_indent <= end => end,
+            _ => start_indent,
+        };
+        Some((start_row, end_row, column))
+    }
+
     /// Indent-guide segments `(start_row, end_row_inclusive, depth)` visible in `[first, last)`, ported from the
     /// reference's stack scan: a blank line inherits the depth of the next non-blank line so a guide stays
     /// continuous through blank lines; a guide closes when the indent drops below its level.
@@ -1090,29 +1225,131 @@ impl FileItem {
         self.layout_cache.borrow_mut().insert(line, layout.clone());
         layout
     }
+}
 
-    /// The visual-column range `[start, end)` selected on a buffer line (merged across cursors), for drawing
-    /// whitespace dots. `None` if the line has no selected text.
-    fn sel_vis_range_for(&self, line: usize) -> Option<(usize, usize)> {
-        let b = self.buffer.as_ref()?;
-        let mut range: Option<(usize, usize)> = None;
+impl FileItem {
+    fn selection_band_tris(&self, content: Rect) -> Vec<ui::Tri> {
+        let Some(b) = self.buffer.as_ref() else {
+            return Vec::new();
+        };
+        let gw = gutter_width(self.line_count());
+        let first = self.first_line();
+        let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
+        // Rounded connected selection shape (reference metrics): radius 0.15*line, right-edge overshoot 0.3*line.
+        let radius = 0.15 * EDIT_LINE_H;
+        let overshoot = 0.3 * EDIT_LINE_H;
+        let text_x = content.x + gw - self.scroll_x;
+        // The reference tints the selection with the player color (a translucent blue) behind the text, not the
+        // opaque gray UI-list selection.
+        let st = syntax_theme();
+        let [sr, sg, sb] = st.selection.0;
+        // Selections dim while the editor isn't focused.
+        let unfocused_opacity = if self.focused { 1.0 } else { 0.5 };
+        let sel_color = Rgba::new(
+            sr as f32 / 255.0,
+            sg as f32 / 255.0,
+            sb as f32 / 255.0,
+            st.selection_alpha * unfocused_opacity,
+        );
+        let mut tris = Vec::new();
         for s in b.selections() {
             let Some((a, e)) = s.range() else { continue };
-            let (l0, c0) = b.line_col_of(a);
-            let (l1, c1) = b.line_col_of(e);
-            if line < l0 || line > l1 {
-                continue;
+            let mut rows: Vec<(f32, f32)> = Vec::new();
+            let mut top_row = None;
+            for row in first..last {
+                let row_start = self.row_start_offset(row);
+                let soft = self.soft_break_after(row);
+                let row_next = match self.row(row + 1) {
+                    Some(next) if soft => self.display_offset(next.line, next.start),
+                    _ => self.display_line_end(self.buf_of(row)) + 1,
+                };
+                if a >= row_next || e <= row_start {
+                    continue;
+                }
+                top_row.get_or_insert(row);
+                let start_x = if a > row_start {
+                    self.position(a).1
+                } else {
+                    0.0
+                };
+                // A band running past a hard line end overshoots so the block reads as one shape.
+                let end_x = if e < row_next {
+                    self.position(e).1
+                } else if soft {
+                    self.row_width(row)
+                } else {
+                    self.row_width(row) + overshoot
+                };
+                rows.push((text_x + start_x, text_x + end_x.max(start_x + 1.0)));
             }
-            let start = if line == l0 { c0 } else { 0 };
-            let end = if line == l1 { c1 } else { b.line_len(line) };
-            let sv = Self::vis_col(b, line, start);
-            let ev = Self::vis_col(b, line, end);
-            range = Some(match range {
-                Some((lo, hi)) => (lo.min(sv), hi.max(ev)),
-                None => (sv, ev),
-            });
+            let Some(top) = top_row else { continue };
+            let top_y = content.y + top as f32 * EDIT_LINE_H - self.scroll_y;
+            tris.extend(ui::selection_path(
+                &rows,
+                top_y,
+                EDIT_LINE_H,
+                radius,
+                sel_color,
+            ));
         }
-        range
+        tris
+    }
+
+    /// Whitespace inside non-empty selections is marked: a dot centered in each space's cell and an arrow
+    /// centered in each tab's, drawn at half the text size above the selection band.
+    fn invisible_tris(&self, content: Rect) -> Vec<ui::Tri> {
+        let Some(b) = self.buffer.as_ref() else {
+            return Vec::new();
+        };
+        let selected: Vec<(usize, usize)> =
+            b.selections().iter().filter_map(|s| s.range()).collect();
+        if selected.is_empty() {
+            return Vec::new();
+        }
+        let gw = gutter_width(self.line_count());
+        let first = self.first_line();
+        let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
+        let color = theme().editor_invisible;
+        let symbol = EDIT_FONT / 2.0;
+        let mut tris = Vec::new();
+        for row_index in first..last {
+            let Some(row) = self.row(row_index) else {
+                break;
+            };
+            let line_start = b.rope.line_to_char(row.line);
+            let layout = self.line_layout(row.line);
+            let row_y = content.y + row_index as f32 * EDIT_LINE_H - self.scroll_y;
+            let center_y = row_y + EDIT_LINE_H / 2.0;
+            let origin_x = content.x + gw - self.scroll_x - layout.x_for_index(row.start)
+                + row.indent as f32 * char_advance();
+            let mut index = 0usize;
+            for (char_col, ch) in b.rope.line(row.line).chars().enumerate() {
+                if ch == '\n' || ch == '\r' {
+                    break;
+                }
+                let width = if ch == '\t' {
+                    editor::display::to_display(b.rope.line(row.line), char_col + 1, TAB_COLS).1
+                        - index
+                } else {
+                    ch.len_utf8()
+                };
+                let offset = line_start + char_col;
+                let in_row = index >= row.start && index < row.end;
+                let is_selected = selected.iter().any(|(s, e)| *s <= offset && offset < *e);
+                if in_row && is_selected && (ch == ' ' || ch == '\t') {
+                    let x0 = origin_x + layout.x_for_index(index);
+                    let x1 = origin_x + layout.x_for_index(index + width);
+                    let center_x = (x0 + x1) / 2.0;
+                    if ch == ' ' {
+                        tris.extend(dot_tris(center_x, center_y, symbol * 0.2, color));
+                    } else {
+                        tris.extend(arrow_tris(center_x, center_y, symbol * 0.6, color));
+                    }
+                }
+                index += width;
+            }
+        }
+        tris
     }
 }
 
@@ -1141,8 +1378,8 @@ impl Item for FileItem {
             return div()
                 .col()
                 .flex(1.0)
-                .px(EDIT_PAD_X)
-                .py(EDIT_PAD_Y)
+                .px(MESSAGE_PAD)
+                .py(MESSAGE_PAD)
                 .child(
                     label("Cannot preview this file")
                         .size(13.0)
@@ -1161,8 +1398,7 @@ impl Item for FileItem {
         let last = (first + visible).min(dcount);
         // Text rows only (no gutter): the shell shifts this node left by `scroll_x`. The gutter is a separate
         // fixed overlay (see `gutter`), so long lines scroll under a stationary line-number column.
-        let mut body = div().col().flex(1.0).py(EDIT_PAD_Y);
-        let dot = theme().text_muted.alpha(0.55);
+        let mut body = div().col().flex(1.0);
         for row_index in first..last {
             let Some(row) = self.row(row_index) else {
                 break;
@@ -1171,43 +1407,20 @@ impl Item for FileItem {
             if row.indent > 0 {
                 r = r.child(label(" ".repeat(row.indent)).size(EDIT_FONT).mono());
             }
-            // Whitespace inside a selection shows as faint middle dots, injected into the text flow so they sit
-            // on the glyph grid.
-            let dots = self.sel_vis_range_for(row.line);
-            let (mut byte, mut column) = (0usize, 0usize);
+            let mut byte = 0usize;
             let mut empty = true;
             for (segment, color) in self.line_segments(row.line, &colors) {
                 let segment_end = byte + segment.len();
-                if segment_end <= row.start || byte >= row.end {
-                    column += segment.chars().count();
-                    byte = segment_end;
-                    continue;
-                }
-                let mut run = String::new();
-                let mut run_color = color;
-                for (offset, ch) in segment.char_indices() {
-                    let at = byte + offset;
-                    if at < row.start || at >= row.end {
-                        column += 1;
-                        continue;
-                    }
-                    let is_dot = ch == ' ' && dots.is_some_and(|(s, e)| column >= s && column < e);
-                    let ch_color = if is_dot { dot } else { color };
-                    if ch_color != run_color && !run.is_empty() {
-                        r = r.child(
-                            label(std::mem::take(&mut run))
-                                .size(EDIT_FONT)
-                                .mono()
-                                .color(run_color),
-                        );
-                    }
-                    run_color = ch_color;
-                    run.push(if is_dot { '\u{b7}' } else { ch });
-                    column += 1;
-                }
-                if !run.is_empty() {
+                let from = row.start.clamp(byte, segment_end) - byte;
+                let to = row.end.clamp(byte, segment_end) - byte;
+                if from < to {
                     empty = false;
-                    r = r.child(label(run).size(EDIT_FONT).mono().color(run_color));
+                    r = r.child(
+                        label(segment[from..to].to_string())
+                            .size(EDIT_FONT)
+                            .mono()
+                            .color(color),
+                    );
                 }
                 byte = segment_end;
             }
@@ -1242,62 +1455,77 @@ impl Item for FileItem {
     fn gutter(&mut self, fold_base: u64) -> Option<Node> {
         self.ensure_visible();
         let buf = self.buffer.as_ref()?;
-        let (cur_line, _) = buf.line_col();
-        let gw = gutter_width(self.line_count());
+        let dims = GutterDimensions::for_lines(self.line_count());
+        let active = self.active_rows();
+        let cursor_rows: Vec<usize> = buf
+            .selections()
+            .iter()
+            .map(|s| self.position(s.head()).0)
+            .collect();
         let dcount = self.disp_count();
         let first = self.first_line().min(dcount);
         let visible = (self.body_h / EDIT_LINE_H).ceil() as usize + 2;
         let last = (first + visible).min(dcount);
-        let mut col = div().col().flex(1.0).px(EDIT_PAD_X).py(EDIT_PAD_Y);
+        let mut col = div().col().flex(1.0);
         for row_index in first..last {
             let Some(row) = self.row(row_index) else {
                 break;
             };
             let line = row.line;
             if row.start > 0 {
-                col = col.child(div().w_px(gw).h_px(EDIT_LINE_H));
+                col = col.child(div().w_px(dims.full_width()).h_px(EDIT_LINE_H));
                 continue;
             }
-            let num_color = if line == cur_line {
-                theme().text
+            let number_color = if active.iter().any(|(rows, _)| rows.contains(&row_index)) {
+                theme().editor_active_line_number
             } else {
-                theme().text_muted
+                theme().editor_line_number
             };
-            // Fold chevron: down when expanded, right when collapsed; empty (fixed width) for non-foldable lines
-            // so the numbers stay aligned.
+            // A toggle shows on folded rows always, and on foldable rows under a cursor or while the gutter is
+            // hovered.
+            let folded = self.is_folded(line);
+            let show_toggle = folded
+                || self.is_foldable(line)
+                    && (self.gutter_hovered || cursor_rows.contains(&row_index));
             let mut fold_cell = div()
-                .w_px(FOLD_COL)
+                .w_px(dims.fold_area_width())
                 .h_px(EDIT_LINE_H)
                 .items_center()
                 .justify_center();
-            if self.is_foldable(line) {
-                let kind = if self.is_folded(line) {
-                    IconKind::ChevronRight
+            if show_toggle {
+                let (kind, color) = if folded {
+                    (IconKind::ChevronRight, theme().text_accent)
                 } else {
-                    IconKind::ChevronDown
+                    (IconKind::ChevronDown, theme().text_muted)
                 };
                 fold_cell = fold_cell
                     .on_click(fold_base + line as u64)
-                    .child(icon(kind).size(12.0).color(theme().icon_muted));
+                    .child(icon(kind).size(FOLD_ICON).color(color));
             }
             col = col.child(
                 div()
                     .row()
-                    .w_px(gw)
+                    .w_px(dims.full_width())
                     .h_px(EDIT_LINE_H)
                     .items_center()
-                    .pr(GUTTER_GAP)
+                    .child(div().w_px(dims.left_padding))
                     .child(div().flex(1.0))
                     .child(
                         label((line + 1).to_string())
                             .size(EDIT_FONT)
                             .mono()
-                            .color(num_color),
+                            .color(number_color),
                     )
                     .child(fold_cell),
             );
         }
         Some(col.into())
+    }
+
+    fn set_gutter_hovered(&mut self, hovered: bool) -> bool {
+        let changed = self.gutter_hovered != hovered;
+        self.gutter_hovered = hovered;
+        changed
     }
 
     fn gutter_w(&self) -> f32 {
@@ -1358,7 +1586,8 @@ impl Item for FileItem {
     }
 
     fn is_busy(&self) -> bool {
-        self.syntax.as_ref().is_some_and(|s| s.is_parsing())
+        // Keep repainting while a parse runs or the scrollbars wait to hide.
+        self.syntax.as_ref().is_some_and(|s| s.is_parsing()) || self.scrollbars_revealed()
     }
 
     fn right_press(&mut self, local_x: f32, local_y: f32) {
@@ -1405,29 +1634,38 @@ impl Item for FileItem {
     fn scroll_by_x(&mut self, dx: f32) -> bool {
         let before = self.scroll_x;
         self.scroll_x = (self.scroll_x - dx).clamp(0.0, self.max_scroll_x());
-        (self.scroll_x - before).abs() > 0.01
+        let moved = (self.scroll_x - before).abs() > 0.01;
+        if moved {
+            self.scrolled_at = Some(std::time::Instant::now());
+        }
+        moved
     }
 
-    fn h_scrollbar(&self, content: Rect) -> Option<Rect> {
-        self.buffer.as_ref()?;
-        let max_scroll = self.max_scroll_x();
-        if max_scroll <= 0.0 {
-            return None;
+    fn h_scrollbar(&self, content: Rect) -> Vec<Rect> {
+        if self.buffer.is_none() || !self.scrollbars_revealed() {
+            return Vec::new();
         }
         let gw = gutter_width(self.line_count());
-        let track_x = content.x + gw;
-        let track_w = (content.w - gw).max(0.0);
-        let content_w = self.content_w();
-        let thumb_w = (track_w * track_w / content_w).clamp(28.0, track_w);
-        let t = (self.scroll_x / max_scroll).clamp(0.0, 1.0);
-        let x = track_x + t * (track_w - thumb_w);
-        Some(Rect::new(
-            x,
-            content.y + content.h + EDIT_PAD_Y - 6.0,
-            thumb_w,
-            4.0,
+        let track = Rect::new(
+            content.x + gw,
+            content.y + content.h - SCROLLBAR_WIDTH,
+            (content.w - gw - SCROLLBAR_WIDTH).max(0.0),
+            SCROLLBAR_WIDTH,
+            Rgba::TRANSPARENT,
+        );
+        let em = char_advance();
+        let page = self.text_viewport_w() / em;
+        let total = self.content_w() / em;
+        let Some((thumb_len, unit)) = thumb_metrics(track.w, page, total) else {
+            return Vec::new();
+        };
+        vec![Rect::new(
+            track.x + self.scroll_x / em * unit,
+            track.y,
+            thumb_len,
+            track.h,
             theme().scrollbar_thumb_background,
-        ))
+        )]
     }
 
     fn is_editable(&self) -> bool {
@@ -1719,7 +1957,7 @@ impl Item for FileItem {
                     y,
                     CARET_W,
                     EDIT_LINE_H,
-                    theme().text,
+                    theme().player_cursor,
                 ))
             })
             .collect()
@@ -1736,16 +1974,22 @@ impl Item for FileItem {
         let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
         let mut rects = Vec::new();
 
-        // The cursor's whole display line is highlighted, across its soft-wrapped rows.
-        if self.focused {
-            let line = self.buf_of(self.position(b.cursor()).0);
-            let (top, bottom) = (self.disp_of(line), self.last_row_of_line(line));
-            if top < last && bottom >= first {
+        // Every caret's display line is highlighted across the gutter and text, except rows that also hold a
+        // non-empty selection.
+        let active = self.active_rows();
+        let selected_rows: Vec<&std::ops::RangeInclusive<usize>> = active
+            .iter()
+            .filter(|(_, selected)| *selected)
+            .map(|(rows, _)| rows)
+            .collect();
+        for row in first..last {
+            let is_active = active.iter().any(|(rows, _)| rows.contains(&row));
+            if is_active && !selected_rows.iter().any(|rows| rows.contains(&row)) {
                 rects.push(Rect::new(
                     content.x,
-                    row_y(top),
+                    row_y(row),
                     content.w,
-                    (bottom + 1 - top) as f32 * EDIT_LINE_H,
+                    EDIT_LINE_H,
                     theme().editor_active_line,
                 ));
             }
@@ -1776,8 +2020,17 @@ impl Item for FileItem {
         // a block inherit its depth so the guide doesn't break -- then mapped to display rows.
         let buf_first = self.buf_of(first);
         let buf_last = self.buf_of(last.saturating_sub(1)) + 1;
-        let guide = theme().panel_indent_guide;
+        let cursor_line = b.line_col_of(b.newest().head()).0;
+        let active_block = Self::enclosing_indent(b, cursor_line);
         for (s, e, depth) in self.indent_guides(buf_first, buf_last) {
+            let active = active_block.is_some_and(|(start, end, column)| {
+                depth * TAB_COLS == column && start <= e && s <= end
+            });
+            let guide = if active {
+                theme().editor_indent_guide_active
+            } else {
+                theme().editor_indent_guide
+            };
             let top = self.disp_of(s);
             let bottom = self.last_row_of_line(e);
             // A guide starting inside a collapsed fold would draw a stub through the header's text.
@@ -1796,88 +2049,96 @@ impl Item for FileItem {
     }
 
     fn selection_tris(&self, content: Rect) -> Vec<ui::Tri> {
-        let Some(b) = self.buffer.as_ref() else {
-            return Vec::new();
-        };
-        let gw = gutter_width(self.line_count());
-        let first = self.first_line();
-        let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
-        // Rounded connected selection shape (reference metrics): radius 0.15*line, right-edge overshoot 0.3*line.
-        let radius = 0.15 * EDIT_LINE_H;
-        let overshoot = 0.3 * EDIT_LINE_H;
-        let text_x = content.x + gw - self.scroll_x;
-        // The reference tints the selection with the player color (a translucent blue) behind the text, not the
-        // opaque gray UI-list selection.
-        let st = syntax_theme();
-        let [sr, sg, sb] = st.selection.0;
-        let sel_color = Rgba::new(
-            sr as f32 / 255.0,
-            sg as f32 / 255.0,
-            sb as f32 / 255.0,
-            st.selection_alpha,
-        );
-        let mut tris = Vec::new();
-        for s in b.selections() {
-            let Some((a, e)) = s.range() else { continue };
-            let mut rows: Vec<(f32, f32)> = Vec::new();
-            let mut top_row = None;
-            for row in first..last {
-                let row_start = self.row_start_offset(row);
-                let soft = self.soft_break_after(row);
-                let row_next = match self.row(row + 1) {
-                    Some(next) if soft => self.display_offset(next.line, next.start),
-                    _ => self.display_line_end(self.buf_of(row)) + 1,
-                };
-                if a >= row_next || e <= row_start {
-                    continue;
-                }
-                top_row.get_or_insert(row);
-                let start_x = if a > row_start {
-                    self.position(a).1
-                } else {
-                    0.0
-                };
-                // A band running past a hard line end overshoots so the block reads as one shape.
-                let end_x = if e < row_next {
-                    self.position(e).1
-                } else if soft {
-                    self.row_width(row)
-                } else {
-                    self.row_width(row) + overshoot
-                };
-                rows.push((text_x + start_x, text_x + end_x.max(start_x + 1.0)));
-            }
-            let Some(top) = top_row else { continue };
-            let top_y = content.y + top as f32 * EDIT_LINE_H - self.scroll_y;
-            tris.extend(ui::selection_path(
-                &rows,
-                top_y,
-                EDIT_LINE_H,
-                radius,
-                sel_color,
-            ));
-        }
+        let mut tris = self.selection_band_tris(content);
+        tris.extend(self.invisible_tris(content));
         tris
     }
 
-    fn scrollbar(&self, content: Rect) -> Option<Rect> {
-        self.buffer.as_ref()?;
-        let max_scroll = self.max_scroll();
-        let visible = content.h;
-        if self.content_h() <= visible || max_scroll <= 0.0 {
-            return None;
+    fn scrollbar(&self, content: Rect) -> Vec<Rect> {
+        if self.buffer.is_none() || !self.scrollbars_revealed() {
+            return Vec::new();
         }
-        // The scroll range includes one page past the last row.
-        let thumb_h = (visible * visible / (self.content_h() + visible)).clamp(28.0, visible);
-        let t = (self.scroll_y / max_scroll).clamp(0.0, 1.0);
-        Some(Rect::new(
-            content.x + content.w + EDIT_PAD_X - 6.0,
-            content.y + t * (visible - thumb_h),
-            4.0,
-            thumb_h,
+        let track = Rect::new(
+            content.x + content.w - SCROLLBAR_WIDTH,
+            content.y,
+            SCROLLBAR_WIDTH,
+            content.h,
+            Rgba::TRANSPARENT,
+        );
+        // Rows are the scroll unit; the range runs one page past the last row.
+        let page = self.body_h / EDIT_LINE_H;
+        let total = (self.content_h() + self.body_h) / EDIT_LINE_H;
+        let Some((thumb_len, unit)) = thumb_metrics(track.h, page, total) else {
+            return Vec::new();
+        };
+        let mut rects = vec![Rect::new(
+            track.x,
+            track.y,
+            SCROLLBAR_BORDER,
+            track.h,
+            theme().scrollbar_track_border,
+        )];
+        let Some(b) = self.buffer.as_ref() else {
+            return rects;
+        };
+        // One 2px marker per caret row, merged where they touch.
+        let mut cursor_rows: Vec<usize> = b
+            .selections()
+            .iter()
+            .map(|s| self.position(s.head()).0)
+            .collect();
+        cursor_rows.sort_unstable();
+        cursor_rows.dedup();
+        if cursor_rows.len() <= SCROLLBAR_CURSOR_MARKER_LIMIT {
+            let mut markers: Vec<(f32, f32)> = Vec::new();
+            for row in cursor_rows {
+                let start = row as f32 * unit;
+                let end = start + SCROLLBAR_LINE_MARKER;
+                match markers.last_mut() {
+                    Some(last) if last.1 >= start - 1.0 => last.1 = last.1.max(end),
+                    _ => markers.push((start, end)),
+                }
+            }
+            rects.extend(markers.into_iter().map(|(start, end)| {
+                Rect::new(
+                    track.x + SCROLLBAR_BORDER,
+                    track.y + start,
+                    track.w - SCROLLBAR_BORDER,
+                    end - start,
+                    theme().player_cursor,
+                )
+            }));
+        }
+        let thumb_y = track.y + self.scroll_y / EDIT_LINE_H * unit;
+        rects.push(Rect::new(
+            track.x,
+            thumb_y,
+            track.w,
+            thumb_len,
             theme().scrollbar_thumb_background,
-        ))
+        ));
+        rects.push(Rect::new(
+            track.x,
+            thumb_y,
+            SCROLLBAR_BORDER,
+            thumb_len,
+            theme().scrollbar_thumb_border,
+        ));
+        rects
     }
+}
+
+/// Thumb length and px per scroll unit on a track `track_len` long, for `page` units visible out of `total`;
+/// `None` when everything fits.
+fn thumb_metrics(track_len: f32, page: f32, total: f32) -> Option<(f32, f32)> {
+    let scrollable = total - page;
+    if scrollable <= 0.0 || total <= 0.0 {
+        return None;
+    }
+    let thumb = (track_len * page / total)
+        .max(SCROLLBAR_MIN_THUMB)
+        .min(track_len);
+    Some((thumb, (track_len - thumb) / scrollable))
 }
 
 /// Syntax scope at a byte offset, for bracket rules that differ inside strings and comments.
@@ -1902,6 +2163,58 @@ fn copied_text((text, selections): (String, Vec<ClipboardSelection>)) -> CopiedT
             })
             .collect(),
     }
+}
+
+/// A filled circle as a fan of triangles.
+fn dot_tris(cx: f32, cy: f32, radius: f32, color: Rgba) -> Vec<ui::Tri> {
+    const SEGMENTS: usize = 12;
+    (0..SEGMENTS)
+        .map(|i| {
+            let angle = |k: usize| k as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            let (a, b) = (angle(i), angle(i + 1));
+            ui::Tri {
+                p: [
+                    [cx, cy],
+                    [cx + radius * a.cos(), cy + radius * a.sin()],
+                    [cx + radius * b.cos(), cy + radius * b.sin()],
+                ],
+                color,
+            }
+        })
+        .collect()
+}
+
+/// A right-pointing arrow `width` wide centered on (cx, cy): a 1px shaft and a triangular head.
+fn arrow_tris(cx: f32, cy: f32, width: f32, color: Rgba) -> Vec<ui::Tri> {
+    let (left, right) = (cx - width / 2.0, cx + width / 2.0);
+    let head = width * 0.4;
+    let half = 0.5;
+    vec![
+        ui::Tri {
+            p: [
+                [left, cy - half],
+                [right - head, cy - half],
+                [right - head, cy + half],
+            ],
+            color,
+        },
+        ui::Tri {
+            p: [
+                [left, cy - half],
+                [right - head, cy + half],
+                [left, cy + half],
+            ],
+            color,
+        },
+        ui::Tri {
+            p: [
+                [right - head, cy - head * 0.7],
+                [right, cy],
+                [right - head, cy + head * 0.7],
+            ],
+            color,
+        },
+    ]
 }
 
 /// Soft-wrap breaks for `line`, skipping the measure when an all-ASCII line clearly fits.
@@ -2084,8 +2397,8 @@ impl Item for ImageItem {
             return div()
                 .col()
                 .flex(1.0)
-                .px(EDIT_PAD_X)
-                .py(EDIT_PAD_Y)
+                .px(MESSAGE_PAD)
+                .py(MESSAGE_PAD)
                 .child(
                     label("Cannot decode this image")
                         .size(13.0)
@@ -2488,8 +2801,8 @@ impl FilesView {
             .map(|p| p.open.is_empty())
             .unwrap_or(true);
         let tab_h = if empty { 0.0 } else { TAB_H };
-        let local_x = (x - (rect.x + EDIT_PAD_X)).max(0.0);
-        let local_y = y - (rect.y + tab_h + EDIT_PAD_Y);
+        let local_x = (x - rect.x).max(0.0);
+        let local_y = y - (rect.y + tab_h);
         if local_y < 0.0 {
             return None; // tab bar
         }
@@ -2789,10 +3102,10 @@ fn layout_member(
             );
             // The text content area (inside the body padding) is where caret/selection/guides are anchored.
             let content = Rect::new(
-                rect.x + EDIT_PAD_X,
-                rect.y + tab_h + EDIT_PAD_Y,
-                (rect.w - 2.0 * EDIT_PAD_X).max(0.0),
-                (rect.h - tab_h - 2.0 * EDIT_PAD_Y).max(0.0),
+                rect.x,
+                rect.y + tab_h,
+                rect.w.max(0.0),
+                (rect.h - tab_h).max(0.0),
                 Rgba::TRANSPARENT,
             );
             let (back, back_tris, carets, scrollbar, h_scrollbar, body) =
@@ -2846,7 +3159,14 @@ fn layout_member(
                             }),
                         )
                     }
-                    None => (Vec::new(), Vec::new(), Vec::new(), None, None, None),
+                    None => (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                    ),
                 };
             let node = render_pane(pane, p, hover);
             panes.push(PanePlacement {
@@ -3695,10 +4015,10 @@ impl FunctionView for FilesView {
         let pane = self.pane_at(path)?;
         let tab_h = if pane.open.is_empty() { 0.0 } else { TAB_H };
         let content = Rect::new(
-            rect.x + EDIT_PAD_X,
-            rect.y + tab_h + EDIT_PAD_Y,
-            (rect.w - 2.0 * EDIT_PAD_X).max(0.0),
-            (rect.h - tab_h - 2.0 * EDIT_PAD_Y).max(0.0),
+            rect.x,
+            rect.y + tab_h,
+            rect.w.max(0.0),
+            (rect.h - tab_h).max(0.0),
             Rgba::TRANSPARENT,
         );
         pane.active_item()?.line_screen_y(content, line)
@@ -3712,6 +4032,28 @@ impl FunctionView for FilesView {
             }
             _ => false,
         }
+    }
+
+    fn editor_hover(&mut self, x: f32, y: f32) -> bool {
+        let mut changed = false;
+        for (index, rect) in self.pane_rects.clone().into_iter().enumerate() {
+            let Some(path) = self.pane_order.get(index).cloned() else {
+                continue;
+            };
+            let Some(pane) = self.group.leaf_at_mut(&path) else {
+                continue;
+            };
+            let tab_h = if pane.open.is_empty() { 0.0 } else { TAB_H };
+            let Some(item) = pane.active.and_then(|i| pane.open.get_mut(i)) else {
+                continue;
+            };
+            let over_gutter = x >= rect.x
+                && x < rect.x + item.gutter_w()
+                && y >= rect.y + tab_h
+                && y < rect.y + rect.h;
+            changed |= item.set_gutter_hovered(over_gutter);
+        }
+        changed
     }
 
     fn editor_ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) -> bool {
@@ -3808,7 +4150,7 @@ impl FunctionView for FilesView {
         if !item.is_editable() {
             return false;
         }
-        let text_left = rect.x + EDIT_PAD_X + item.gutter_w() + horizontal_space;
+        let text_left = rect.x + item.gutter_w() + horizontal_space;
         let text_right = rect.x + rect.w - horizontal_space;
         let delta_columns = if x < text_left {
             -drag_autoscroll_columns(text_left - x)
@@ -3819,8 +4161,8 @@ impl FunctionView for FilesView {
         };
         item.scroll_by(-delta_rows * EDIT_LINE_H);
         item.scroll_by_x(-delta_columns * em);
-        let local_x = (x - (rect.x + EDIT_PAD_X)).max(0.0);
-        let local_y = y - (rect.y + TAB_H + EDIT_PAD_Y);
+        let local_x = (x - rect.x).max(0.0);
+        let local_y = y - (rect.y + TAB_H);
         item.place_cursor(local_x, local_y, true);
         true
     }
@@ -4044,7 +4386,7 @@ mod wrap_tests {
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.md", Some(text.into()));
         let em = char_advance();
         let body_w =
-            (columns as f32 + 2.0) * em + 2.0 * EDIT_PAD_X + gutter_width(item.line_count());
+            (columns as f32 + 2.0) * em + gutter_width(item.line_count()) + SCROLLBAR_WIDTH;
         item.set_body_width(body_w);
         item.set_body_height(10.0 * EDIT_LINE_H);
         item
@@ -4126,5 +4468,18 @@ mod line_command_tests {
         assert_eq!(b.text(), "fn a() {\n    y;\n}\nx\n");
         assert!(item.is_folded(0));
         assert_eq!(item.disp_count(), 3);
+    }
+}
+
+#[cfg(test)]
+mod indent_guide_tests {
+    use super::*;
+
+    #[test]
+    fn enclosing_indent_finds_the_block_around_the_cursor() {
+        let b = EditorBuffer::from_text("fn a() {\n    if x {\n        y;\n    }\n    z;\n}\n");
+        assert_eq!(FileItem::enclosing_indent(&b, 2), Some((1, 2, 4)));
+        assert_eq!(FileItem::enclosing_indent(&b, 4), Some((0, 4, 0)));
+        assert_eq!(FileItem::enclosing_indent(&b, 1), Some((1, 2, 4)));
     }
 }
