@@ -52,6 +52,7 @@ pub struct WorkspaceEffects {
 enum Drag {
     None,
     Terminal,
+    TerminalDivider(u64),
     Left,
     Right,
     Bottom,
@@ -890,7 +891,7 @@ impl WorkspaceView {
         match self.dragging {
             Drag::Left | Drag::Right | Drag::Tree => return Some(ResizeCursor::Horizontal),
             Drag::Bottom => return Some(ResizeCursor::Vertical),
-            Drag::Center(id) => return self.center_divider_cursor(id),
+            Drag::Center(id) | Drag::TerminalDivider(id) => return self.center_divider_cursor(id),
             Drag::Tab | Drag::EditorSel | Drag::Terminal => return None,
             Drag::None => {}
         }
@@ -910,7 +911,12 @@ impl WorkspaceView {
     }
 
     fn center_divider_cursor(&self, id: u64) -> Option<ResizeCursor> {
-        match self.layout.files_view.as_ref()?.divider_axis(id)? {
+        let axis = if (crate::TERMINAL_VIEW_BASE..FUNC_VIEW_BASE).contains(&id) {
+            self.layout.terminal_view.as_ref()?.divider_axis(id)?
+        } else {
+            self.layout.files_view.as_ref()?.divider_axis(id)?
+        };
+        match axis {
             DividerAxis::Horizontal => Some(ResizeCursor::Horizontal),
             DividerAxis::Vertical => Some(ResizeCursor::Vertical),
         }
@@ -1454,6 +1460,11 @@ impl WorkspaceView {
     fn mouse_move_inner(&mut self, x: f32, y: f32) -> bool {
         match self.dragging {
             Drag::Terminal => false,
+            Drag::TerminalDivider(id) => self
+                .layout
+                .terminal_view
+                .as_mut()
+                .is_some_and(|v| v.drag_divider(id, x, y)),
             Drag::Left => {
                 self.layout.set_left_divider(x, self.width());
                 true
@@ -1603,6 +1614,14 @@ impl WorkspaceView {
             self.dragging = Drag::Bottom;
         } else if let Some(id) = self.hit(x, y) {
             if self
+                .layout
+                .terminal_view
+                .as_ref()
+                .and_then(|v| v.divider_axis(id))
+                .is_some()
+            {
+                self.dragging = Drag::TerminalDivider(id);
+            } else if self
                 .layout
                 .files_view
                 .as_ref()
