@@ -738,6 +738,9 @@ impl ApplicationHandler for App {
                         "z" => key(EditKey::ToggleSoftWrap),
                         _ => None,
                     },
+                    Key::Named(NamedKey::ArrowRight) if cmd && alt => {
+                        key(EditKey::SetPickerPreviewRight)
+                    }
                     Key::Named(NamedKey::ArrowLeft) if cmd => key(EditKey::Home),
                     Key::Named(NamedKey::ArrowRight) if cmd => key(EditKey::End),
                     Key::Named(NamedKey::ArrowUp) if cmd && alt => key(EditKey::AddCursorAbove),
@@ -814,6 +817,7 @@ impl ApplicationHandler for App {
                     Key::Character(_) if cmd && alt => match ke.key_without_modifiers() {
                         Key::Character(c) => match c.as_str() {
                             "c" => key(EditKey::ToggleSearchCaseSensitive),
+                            "p" => key(EditKey::TogglePickerPreview),
                             "w" => key(EditKey::ToggleSearchWholeWord),
                             "x" => key(EditKey::ToggleSearchRegex),
                             _ => None,

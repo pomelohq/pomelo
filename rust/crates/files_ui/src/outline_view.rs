@@ -4,22 +4,93 @@
 
 use std::ops::Range;
 
-use ui::{div, label, theme, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, Node, Rgba};
 
+use crate::command_palette::footer_button;
 use crate::fuzzy::fuzzy_match;
 use crate::text_field::{FieldFont, TextField, INPUT_FONT};
 
+/// Width with the preview hidden; showing it grows the picker to a share of the window.
 pub const WIDTH: f32 = 544.0;
 const HEAD_HEIGHT: f32 = 36.0;
+const FOOTER_HEIGHT: f32 = 35.0;
+const LIST_PADDING: f32 = 8.0;
+const PREVIEW_KEY: &str = "cmd-alt-p";
 const PLACEHOLDER: &str = "Search buffer symbols...";
 const MAX_MATCHES: usize = 100;
 const DEPTH_INDENT: f32 = 16.0;
+
+/// Where the code preview sits; hidden by default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PreviewLayout {
+    #[default]
+    Hidden,
+    Right,
+    Below,
+}
+
+/// Click targets inside the outline, as offsets from the view's id base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutlineClick {
+    TogglePreview,
+    PreviewBelow,
+    PreviewRight,
+    Row(usize),
+}
+
+impl OutlineClick {
+    pub fn offset(self) -> u64 {
+        match self {
+            OutlineClick::TogglePreview => 0,
+            OutlineClick::PreviewBelow => 1,
+            OutlineClick::PreviewRight => 2,
+            OutlineClick::Row(row) => row as u64 + 3,
+        }
+    }
+
+    pub fn from_offset(offset: u64) -> Self {
+        match offset {
+            0 => OutlineClick::TogglePreview,
+            1 => OutlineClick::PreviewBelow,
+            2 => OutlineClick::PreviewRight,
+            n => OutlineClick::Row((n - 3) as usize),
+        }
+    }
+}
+
+/// One line of the code preview: its number, colored text (already scrolled sideways and cut to the pane),
+/// whether it belongs to the symbol, and the columns of the symbol's name on it.
+pub struct PreviewRow {
+    pub number: usize,
+    pub segments: Vec<(String, Rgba)>,
+    pub in_symbol: bool,
+    pub name_columns: Option<Range<usize>>,
+}
+
+pub struct PreviewContent {
+    pub rows: Vec<PreviewRow>,
+    pub gutter_width: f32,
+}
+
+/// The picker's size for a layout, in design px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PickerSize {
+    pub width: f32,
+    /// Fixed total height with a preview; without one the picker shrinks to its rows.
+    pub height: Option<f32>,
+    /// The results column (head, list, footer).
+    pub results: (f32, f32),
+    pub preview: (f32, f32),
+    pub list_height: f32,
+}
 
 /// One outline entry, positioned in chars.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Symbol {
     pub depth: usize,
     pub range: Range<usize>,
+    /// Where its name sits.
+    pub name: Range<usize>,
     pub text: String,
     /// Byte ranges of `text` and their syntax colors.
     pub colors: Vec<(Range<usize>, Rgba)>,
@@ -44,13 +115,21 @@ pub struct OutlineView {
     selected: usize,
     scroll_top: usize,
     cursor: usize,
-    max_height: f32,
+    /// The window size in design px, which the picker and its preview size themselves by.
+    viewport: (f32, f32),
+    pub preview: PreviewLayout,
     /// Scroll to restore when the modal closes without jumping.
     pub prev_scroll: Option<(f32, f32)>,
 }
 
 impl OutlineView {
-    pub fn new(symbols: Vec<Symbol>, cursor: usize, scroll: (f32, f32), max_height: f32) -> Self {
+    pub fn new(
+        symbols: Vec<Symbol>,
+        cursor: usize,
+        scroll: (f32, f32),
+        viewport: (f32, f32),
+        preview: PreviewLayout,
+    ) -> Self {
         let mut paths = Vec::with_capacity(symbols.len());
         let mut leaf_offsets = Vec::with_capacity(symbols.len());
         let mut path = String::new();
@@ -77,7 +156,8 @@ impl OutlineView {
             selected: 0,
             scroll_top: 0,
             cursor,
-            max_height,
+            viewport,
+            preview,
             prev_scroll: Some(scroll),
         };
         view.update_matches();
@@ -215,9 +295,56 @@ impl OutlineView {
         crate::EDIT_FONT * ui::ui_text_scale() * 1.4 + 10.0
     }
 
+    /// Resize for a window of `viewport` real px.
+    pub fn set_viewport(&mut self, viewport: (f32, f32)) {
+        let scale = ui::ui_text_scale();
+        self.viewport = (viewport.0 / scale, viewport.1 / scale);
+        self.scroll_to_selected();
+    }
+
+    pub fn set_preview(&mut self, preview: PreviewLayout) {
+        self.preview = preview;
+        self.scroll_to_selected();
+    }
+
+    /// Hidden: the standard width, rows up to three quarters of the window. Shown: 60% of the window each way
+    /// (never past the space left under the modal's top offset), the preview taking 30% of the window.
+    pub fn size(&self) -> PickerSize {
+        let (window_w, window_h) = self.viewport;
+        let header_chrome = HEAD_HEIGHT + 1.0 + FOOTER_HEIGHT + LIST_PADDING;
+        if self.preview == PreviewLayout::Hidden {
+            let list_height = window_h * 0.75;
+            return PickerSize {
+                width: WIDTH,
+                height: None,
+                results: (WIDTH, list_height + header_chrome),
+                preview: (0.0, 0.0),
+                list_height,
+            };
+        }
+        let max_height = ((window_h - 160.0) * 0.95).max(320.0);
+        let width = (window_w * 0.6).min(window_w * 0.95).max(280.0 + 128.0);
+        let height = (window_h * 0.6).clamp(320.0, max_height);
+        let (results, preview) = if self.preview == PreviewLayout::Right {
+            let preview_w = (window_w * 0.3).clamp(128.0, width - 280.0);
+            ((width - preview_w, height), (preview_w, height))
+        } else {
+            let preview_h = (window_h * 0.3).clamp(96.0, height - 160.0);
+            ((width, height - preview_h), (width, preview_h))
+        };
+        PickerSize {
+            width,
+            height: Some(height),
+            results,
+            preview,
+            list_height: (results.1 - header_chrome).max(Self::row_height()),
+        }
+    }
+
     fn visible_rows(&self) -> usize {
-        let list = self.max_height - HEAD_HEIGHT - 8.0;
-        (list / Self::row_height()).floor().max(1.0) as usize
+        (self.size().list_height / Self::row_height())
+            .floor()
+            .max(1.0) as usize
     }
 
     fn scroll_to_selected(&mut self) {
@@ -232,7 +359,50 @@ impl OutlineView {
             .min(self.entries.len().saturating_sub(visible));
     }
 
-    pub fn render(&self, id_base: u64) -> Node {
+    /// Code lines the preview pane has room for, and columns across.
+    pub fn preview_capacity(&self, gutter_width: f32) -> (usize, usize) {
+        let (width, height) = self.size().preview;
+        let rows = (height / crate::EDIT_LINE_H).floor().max(1.0) as usize;
+        let columns = ((width - gutter_width) / crate::char_advance())
+            .floor()
+            .max(1.0) as usize;
+        (rows, columns)
+    }
+
+    pub fn render(&self, id_base: u64, preview: Option<PreviewContent>) -> Node {
+        let colors = theme();
+        let size = self.size();
+        let results = self.render_results(id_base, &size);
+        let mut root = div()
+            .col()
+            .w_px(size.width)
+            .rounded(8.0)
+            .border(1.0, colors.border_variant)
+            .bg(colors.elevated_surface_background);
+        match (self.preview, size.height) {
+            (PreviewLayout::Right, Some(height)) => {
+                root = root.h_px(height).child(
+                    div()
+                        .row()
+                        .flex(1.0)
+                        .child(results)
+                        .child(div().w_px(1.0).bg(colors.border_variant))
+                        .child(render_preview(preview, size.preview)),
+                );
+            }
+            (PreviewLayout::Below, Some(height)) => {
+                root = root
+                    .h_px(height)
+                    .child(results)
+                    .child(div().h_px(1.0).bg(colors.border_variant))
+                    .child(render_preview(preview, size.preview));
+            }
+            _ => root = root.child(results),
+        }
+        root.into()
+    }
+
+    fn render_results(&self, id_base: u64, size: &PickerSize) -> Node {
         let colors = theme();
         let head = div()
             .row()
@@ -246,37 +416,91 @@ impl OutlineView {
                 INPUT_FONT * FieldFont::Ui.line_height(),
                 FieldFont::Ui,
             ));
-        let list: Node = if self.entries.is_empty() {
-            div()
-                .col()
-                .py(8.0)
-                .child(
-                    div().row().px(4.0).child(
-                        div().row().flex(1.0).px(6.0).py(4.0).child(
-                            label("No matches")
-                                .label_size(ui::LabelSize::Default)
-                                .color(colors.text_muted),
-                        ),
+        let mut list = if self.entries.is_empty() {
+            div().col().py(8.0).child(
+                div().row().px(4.0).child(
+                    div().row().flex(1.0).px(6.0).py(4.0).child(
+                        label("No matches")
+                            .label_size(ui::LabelSize::Default)
+                            .color(colors.text_muted),
                     ),
-                )
-                .into()
+                ),
+            )
         } else {
             let end = (self.scroll_top + self.visible_rows()).min(self.entries.len());
             div()
                 .col()
                 .py(4.0)
                 .children((self.scroll_top..end).map(|row| self.render_row(row, id_base)))
-                .into()
         };
-        div()
+        let fixed = size.height.is_some();
+        if fixed {
+            list = list.flex(1.0);
+        }
+        let mut column = div()
             .col()
-            .w_px(WIDTH)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background)
             .child(head)
             .child(div().h_px(1.0).bg(colors.border_variant))
             .child(list)
+            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(self.render_footer(id_base));
+        if fixed {
+            column = column.w_px(size.results.0).h_px(size.results.1);
+        }
+        column.into()
+    }
+
+    fn render_footer(&self, id_base: u64) -> Node {
+        let colors = theme();
+        let visible = self.preview != PreviewLayout::Hidden;
+        let text_color = if visible {
+            colors.text_accent
+        } else {
+            colors.text
+        };
+        let mut controls = div().row().items_center().child(footer_button(
+            id_base + OutlineClick::TogglePreview.offset(),
+            "Preview",
+            PREVIEW_KEY,
+            text_color,
+            false,
+        ));
+        if visible {
+            let layout_button = |click: OutlineClick, kind: IconKind, selected: bool| -> Node {
+                let mut button = div()
+                    .row()
+                    .items_center()
+                    .justify_center()
+                    .w_px(22.0)
+                    .h_px(22.0)
+                    .rounded(4.0)
+                    .on_click(id_base + click.offset())
+                    .child(icon(kind).size(14.0).color(colors.icon));
+                if selected {
+                    button = button.bg(colors.element_selected);
+                }
+                button.into()
+            };
+            controls = controls
+                .child(div().w_px(1.0).h_px(16.0).bg(colors.border_variant))
+                .child(div().w_px(4.0))
+                .child(layout_button(
+                    OutlineClick::PreviewBelow,
+                    IconKind::DiffUnified,
+                    self.preview == PreviewLayout::Below,
+                ))
+                .child(layout_button(
+                    OutlineClick::PreviewRight,
+                    IconKind::DiffSplit,
+                    self.preview == PreviewLayout::Right,
+                ));
+        }
+        div()
+            .row()
+            .justify_between()
+            .items_center()
+            .p(6.0)
+            .child(controls)
             .into()
     }
 
@@ -295,7 +519,7 @@ impl OutlineView {
             .px(6.0)
             .py(4.0)
             .rounded(4.0)
-            .on_click(id_base + row as u64);
+            .on_click(id_base + OutlineClick::Row(row).offset());
         if row == self.selected {
             item = item.bg(colors.element_selected);
         }
@@ -305,6 +529,96 @@ impl OutlineView {
             .pl(symbol.depth as f32 * DEPTH_INDENT)
             .children(label_segments(symbol, &entry.positions));
         div().row().px(4.0).child(item.child(text)).into()
+    }
+}
+
+/// A read-only look at the code around the selected symbol: line numbers, its lines tinted like the active
+/// line, its name marked like a search match.
+fn render_preview(content: Option<PreviewContent>, (width, height): (f32, f32)) -> Node {
+    let colors = theme();
+    let pane = div()
+        .col()
+        .w_px(width)
+        .h_px(height)
+        .bg(colors.editor_background);
+    let Some(content) = content else {
+        return pane
+            .p(8.0)
+            .child(
+                label("No results to preview")
+                    .label_size(ui::LabelSize::Default)
+                    .color(colors.text_muted),
+            )
+            .into();
+    };
+    let rows = content.rows.into_iter().map(|row| {
+        let number_color = if row.in_symbol {
+            colors.editor_active_line_number
+        } else {
+            colors.editor_line_number
+        };
+        let mut line = div()
+            .row()
+            .items_center()
+            .h_px(crate::EDIT_LINE_H)
+            .child(
+                div()
+                    .row()
+                    .items_center()
+                    .justify_end()
+                    .w_px(content.gutter_width)
+                    .pr(8.0)
+                    .child(
+                        label(row.number.to_string())
+                            .size(crate::EDIT_FONT)
+                            .mono()
+                            .color(number_color),
+                    ),
+            )
+            .children(preview_segments(row.segments, row.name_columns));
+        if row.in_symbol {
+            line = line.bg(colors.editor_active_line);
+        }
+        Node::from(line)
+    });
+    pane.children(rows).into()
+}
+
+/// Split colored runs at the name's columns so it can sit on the match background.
+fn preview_segments(segments: Vec<(String, Rgba)>, name: Option<Range<usize>>) -> Vec<Node> {
+    let highlight = theme().search_match_background;
+    let mut out = Vec::new();
+    let mut column = 0;
+    for (text, color) in segments {
+        let mut run = String::new();
+        let mut run_marked = false;
+        for c in text.chars() {
+            let marked = name.as_ref().is_some_and(|n| n.contains(&column));
+            if marked != run_marked && !run.is_empty() {
+                out.push(preview_run(
+                    std::mem::take(&mut run),
+                    color,
+                    run_marked,
+                    highlight,
+                ));
+            }
+            run_marked = marked;
+            run.push(c);
+            column += 1;
+        }
+        if !run.is_empty() {
+            out.push(preview_run(run, color, run_marked, highlight));
+        }
+    }
+    out
+}
+
+fn preview_run(text: String, color: Rgba, marked: bool, highlight: Rgba) -> Node {
+    let text = label(text).size(crate::EDIT_FONT).mono().color(color);
+    if marked {
+        div().row().bg(highlight).child(text).into()
+    } else {
+        text.into()
     }
 }
 
@@ -351,6 +665,7 @@ mod tests {
     fn symbol(depth: usize, range: Range<usize>, text: &str) -> Symbol {
         Symbol {
             depth,
+            name: range.clone(),
             range,
             text: text.to_string(),
             colors: Vec::new(),
@@ -369,7 +684,8 @@ mod tests {
             ],
             cursor,
             (0.0, 0.0),
-            600.0,
+            (1200.0, 800.0),
+            PreviewLayout::Hidden,
         )
     }
 
@@ -378,6 +694,39 @@ mod tests {
             .iter()
             .map(|e| (view.symbols[e.symbol].text.as_str(), e.positions.clone()))
             .collect()
+    }
+
+    #[test]
+    fn preview_layouts_size_the_picker_from_the_window() {
+        let round = |v: f32| v.round();
+        let pair = |(a, b): (f32, f32)| (round(a), round(b));
+        let mut view = view(0);
+        view.set_viewport((1200.0 * ui::ui_text_scale(), 800.0 * ui::ui_text_scale()));
+        let hidden = view.size();
+        assert_eq!((round(hidden.width), hidden.height), (WIDTH, None));
+        assert_eq!(round(hidden.list_height), 600.0);
+        view.set_preview(PreviewLayout::Right);
+        let right = view.size();
+        assert_eq!(round(right.width), 720.0);
+        assert_eq!(right.height.map(round), Some(480.0));
+        assert_eq!(pair(right.preview), (360.0, 480.0));
+        assert_eq!(pair(right.results), (360.0, 480.0));
+        view.set_preview(PreviewLayout::Below);
+        let below = view.size();
+        assert_eq!(pair(below.preview), (720.0, 240.0));
+        assert_eq!(pair(below.results), (720.0, 240.0));
+    }
+
+    #[test]
+    fn clicks_round_trip() {
+        for click in [
+            OutlineClick::TogglePreview,
+            OutlineClick::PreviewBelow,
+            OutlineClick::PreviewRight,
+            OutlineClick::Row(7),
+        ] {
+            assert_eq!(OutlineClick::from_offset(click.offset()), click);
+        }
     }
 
     #[test]

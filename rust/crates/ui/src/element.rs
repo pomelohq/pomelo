@@ -90,6 +90,8 @@ pub enum IconKind {
     Tab,
     KeyArrowLeft,
     KeyArrowRight,
+    DiffUnified,
+    DiffSplit,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

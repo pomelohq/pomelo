@@ -738,6 +738,8 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Tab => svg!("tab.svg"),
         IconKind::KeyArrowLeft => svg!("key_arrow_left.svg"),
         IconKind::KeyArrowRight => svg!("key_arrow_right.svg"),
+        IconKind::DiffUnified => svg!("diff_unified.svg"),
+        IconKind::DiffSplit => svg!("diff_split.svg"),
     }
 }
 

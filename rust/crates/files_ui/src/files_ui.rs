@@ -29,8 +29,8 @@ use editor::{EditorBuffer, Lang, Syntax, Theme};
 use files::FileNode;
 use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
 use workspace::{
-    ClipboardSlice, CopiedText, DividerAxis, DividerPlacement, EditKey, EditorLayout, FunctionView,
-    Item, PaneBody, PanePlacement, FUNC_VIEW_BASE,
+    ClipboardSlice, CopiedText, DividerAxis, DividerPlacement, EditKey, EditorLayout, Elevation,
+    FunctionView, Item, ModalView, PaneBody, PanePlacement, FUNC_VIEW_BASE,
 };
 
 // Editor text metrics (design px). Each source line is `EDIT_LINE_H` tall with `EDIT_FONT` mono text. Caret/selection geometry uses these plus the mono advance so it aligns with the glyphs.
@@ -1562,11 +1562,68 @@ impl FileItem {
                 outline_view::Symbol {
                     depth: item.depth,
                     range: rope.byte_to_char(item.range.start)..rope.byte_to_char(item.range.end),
+                    name: rope.byte_to_char(item.selection_range.start)
+                        ..rope.byte_to_char(item.selection_range.end),
                     text: item.text,
                     colors: label_colors,
                 }
             })
             .collect()
+    }
+
+    /// The code around `symbol` for an outline preview `rows` lines tall and `columns` wide: its first line
+    /// centered, scrolled sideways only as far as needed to show its name.
+    fn preview_content(
+        &self,
+        symbol: &outline_view::Symbol,
+        rows: usize,
+        columns: usize,
+    ) -> Option<outline_view::PreviewContent> {
+        let b = self.buffer.as_ref()?;
+        let rope = &b.rope;
+        let line_of = |offset: usize| rope.char_to_line(offset.min(rope.len_chars()));
+        let column_of =
+            |offset: usize| offset.min(rope.len_chars()) - rope.line_to_char(line_of(offset));
+        let (first_line, last_line) = (line_of(symbol.range.start), line_of(symbol.range.end));
+        let name_line = line_of(symbol.name.start);
+        let (name_start, name_end) = (column_of(symbol.name.start), column_of(symbol.name.end));
+        let name_end = if line_of(symbol.name.end) == name_line {
+            name_end
+        } else {
+            name_start + 1
+        };
+        let top = first_line.saturating_sub(rows.saturating_sub(1) / 2);
+        let shift = name_start.min((name_end + 1).saturating_sub(columns));
+        let colors = syntax_theme();
+        let dims = GutterDimensions::for_lines(self.line_count());
+        let rows = (top..(top + rows).min(self.line_count()))
+            .map(|line| {
+                let mut skip = shift;
+                let mut room = columns;
+                let mut segments = Vec::new();
+                for (text, color) in self.line_segments(line, &colors) {
+                    let chars: Vec<char> = text.chars().collect();
+                    let dropped = skip.min(chars.len());
+                    skip -= dropped;
+                    let kept: String = chars[dropped..].iter().take(room).collect();
+                    room -= kept.chars().count();
+                    if !kept.is_empty() {
+                        segments.push((kept, color));
+                    }
+                }
+                outline_view::PreviewRow {
+                    number: line + 1,
+                    segments,
+                    in_symbol: (first_line..=last_line).contains(&line),
+                    name_columns: (line == name_line)
+                        .then(|| name_start.saturating_sub(shift)..name_end.saturating_sub(shift)),
+                }
+            })
+            .collect();
+        Some(outline_view::PreviewContent {
+            rows,
+            gutter_width: dims.full_width() - dims.fold_area_width(),
+        })
     }
 
     /// Highlight the lines of the char range `range` and center its first line.
@@ -3229,6 +3286,10 @@ pub struct FilesView {
     palette_memory: command_palette::PaletteMemory,
     /// The open symbol outline and the pane it navigates.
     outline: Option<(Vec<usize>, outline_view::OutlineView)>,
+    /// Where the outline's preview last sat, kept for the next time it opens.
+    outline_preview: outline_view::PreviewLayout,
+    /// The window size last seen by `modal`, for sizing a modal as it opens.
+    window_size: (f32, f32),
 }
 
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting stays in sync with
@@ -3263,6 +3324,8 @@ impl FilesView {
             palette: None,
             palette_memory: command_palette::PaletteMemory::default(),
             outline: None,
+            outline_preview: outline_view::PreviewLayout::Hidden,
+            window_size: (1200.0, 800.0),
             tab_drag: None,
             drag_preview: None,
             click_targets: Vec::new(),
@@ -3396,14 +3459,20 @@ impl FilesView {
             return self.close_outline(false);
         }
         let path = self.active.clone();
-        let max_height = self.viewport_h * 0.75;
+        let (window_size, preview) = (self.window_size, self.outline_preview);
         let Some(item) = self.go_to_line_item(&path) else {
             return;
         };
         let symbols = item.outline_symbols();
         let cursor = item.buffer.as_ref().map_or(0, EditorBuffer::cursor);
-        let view =
-            outline_view::OutlineView::new(symbols, cursor, item.scroll_position(), max_height);
+        let mut view = outline_view::OutlineView::new(
+            symbols,
+            cursor,
+            item.scroll_position(),
+            (0.0, 0.0),
+            preview,
+        );
+        view.set_viewport(window_size);
         self.outline = Some((path, view));
     }
 
@@ -3459,6 +3528,23 @@ impl FilesView {
             EditKey::Enter => return self.close_outline(true),
             EditKey::Up => view.select_previous(),
             EditKey::Down => view.select_next(),
+            EditKey::TogglePickerPreview => {
+                let next = if view.preview == outline_view::PreviewLayout::Hidden {
+                    outline_view::PreviewLayout::Right
+                } else {
+                    outline_view::PreviewLayout::Hidden
+                };
+                return self.set_outline_preview(next);
+            }
+            EditKey::SetPickerPreviewRight => {
+                return self.set_outline_preview(outline_view::PreviewLayout::Right)
+            }
+            EditKey::AddCursorBelow => {
+                return self.set_outline_preview(outline_view::PreviewLayout::Below)
+            }
+            EditKey::AddCursorAbove => {
+                return self.set_outline_preview(outline_view::PreviewLayout::Hidden)
+            }
             _ => {
                 if !view.field.key(key, shift) {
                     return;
@@ -3469,6 +3555,13 @@ impl FilesView {
             }
         }
         self.preview_outline(false);
+    }
+
+    fn set_outline_preview(&mut self, layout: outline_view::PreviewLayout) {
+        self.outline_preview = layout;
+        if let Some((_, view)) = self.outline.as_mut() {
+            view.set_preview(layout);
+        }
     }
 
     fn outline_input(&mut self, text: &str) {
@@ -4478,15 +4571,51 @@ impl FunctionView for FilesView {
         item.cursor_status()
     }
 
-    fn modal(&mut self) -> Option<(Node, f32)> {
-        if let Some((_, view)) = self.outline.as_ref() {
-            return Some((view.render(OUTLINE_BASE), outline_view::WIDTH));
+    fn modal(&mut self, viewport: (f32, f32)) -> Option<ModalView> {
+        self.window_size = viewport;
+        if let Some((path, view)) = self.outline.as_mut() {
+            view.set_viewport(viewport);
+            let path = path.clone();
+            let shown = view.preview != outline_view::PreviewLayout::Hidden;
+            let selected = view.selected_symbol().cloned();
+            let capacity =
+                |view: &outline_view::OutlineView, gutter: f32| view.preview_capacity(gutter);
+            let preview = match (shown, selected) {
+                (true, Some(symbol)) => {
+                    let gutter = {
+                        let item = self.go_to_line_item(&path)?;
+                        let dims = GutterDimensions::for_lines(item.line_count());
+                        dims.full_width() - dims.fold_area_width()
+                    };
+                    let (rows, columns) = self
+                        .outline
+                        .as_ref()
+                        .map(|(_, view)| capacity(view, gutter))?;
+                    self.go_to_line_item(&path)
+                        .and_then(|item| item.preview_content(&symbol, rows, columns))
+                }
+                _ => None,
+            };
+            let (_, view) = self.outline.as_ref()?;
+            return Some(ModalView {
+                node: view.render(OUTLINE_BASE, preview),
+                width: view.size().width,
+                elevation: Elevation::Modal,
+            });
         }
         if let Some((_, palette)) = self.palette.as_ref() {
-            return Some((palette.render(PALETTE_BASE), command_palette::WIDTH));
+            return Some(ModalView {
+                node: palette.render(PALETTE_BASE),
+                width: command_palette::WIDTH,
+                elevation: Elevation::Modal,
+            });
         }
         let (_, modal) = self.go_to_line.as_ref()?;
-        Some((modal.render(), go_to_line::WIDTH))
+        Some(ModalView {
+            node: modal.render(),
+            width: go_to_line::WIDTH,
+            elevation: Elevation::Elevated,
+        })
     }
 
     fn dismiss_modal(&mut self) {
@@ -4724,10 +4853,23 @@ impl FunctionView for FilesView {
             return true;
         }
         if id >= OUTLINE_BASE {
-            if let Some((_, view)) = self.outline.as_mut() {
-                view.select_row((id - OUTLINE_BASE) as usize);
+            match outline_view::OutlineClick::from_offset(id - OUTLINE_BASE) {
+                outline_view::OutlineClick::Row(row) => {
+                    if let Some((_, view)) = self.outline.as_mut() {
+                        view.select_row(row);
+                    }
+                    self.track_nav(|v| v.close_outline(true));
+                }
+                outline_view::OutlineClick::TogglePreview => {
+                    self.outline_key(EditKey::TogglePickerPreview, false)
+                }
+                outline_view::OutlineClick::PreviewBelow => {
+                    self.set_outline_preview(outline_view::PreviewLayout::Below)
+                }
+                outline_view::OutlineClick::PreviewRight => {
+                    self.set_outline_preview(outline_view::PreviewLayout::Right)
+                }
             }
-            self.track_nav(|v| v.close_outline(true));
             return true;
         }
         if id >= PALETTE_BASE {
@@ -5783,9 +5925,9 @@ mod command_palette_tests {
         view.editor_key(EditKey::Escape, false);
         assert!(view.palette.is_none());
         view.editor_key(EditKey::ToggleCommandPalette, false);
-        assert!(view.modal().is_some());
+        assert!(view.modal((1200.0, 800.0)).is_some());
         view.dismiss_modal();
-        assert!(view.modal().is_none());
+        assert!(view.modal((1200.0, 800.0)).is_none());
         assert_eq!(text(&mut view), "abc");
     }
 }
@@ -5821,7 +5963,7 @@ mod outline_tests {
         let filler: String = (0..40).map(|i| format!("// line {i}\n")).collect();
         let mut view = rust_view(&format!("fn alpha() {{}}\n{filler}fn omega() {{}}\n"));
         view.editor_key(EditKey::ToggleOutline, false);
-        assert!(view.modal().is_some());
+        assert!(view.modal((1200.0, 800.0)).is_some());
         view.editor_text("omega");
         let path = view.active.clone();
         assert_eq!(
@@ -5831,6 +5973,39 @@ mod outline_tests {
         view.editor_key(EditKey::Enter, false);
         assert!(view.outline.is_none());
         assert_eq!(caret_line(&mut view), 41);
+    }
+
+    #[test]
+    fn preview_toggles_and_shows_the_symbol_centered() {
+        let filler: String = (0..40).map(|i| format!("// line {i}\n")).collect();
+        let mut view = rust_view(&format!("fn alpha() {{}}\n{filler}fn omega() {{}}\n"));
+        view.editor_key(EditKey::ToggleOutline, false);
+        view.editor_text("omega");
+        let viewport = (1200.0 * ui::ui_text_scale(), 800.0 * ui::ui_text_scale());
+        assert_eq!(
+            view.modal(viewport).map(|m| m.width),
+            Some(outline_view::WIDTH)
+        );
+        view.editor_key(EditKey::TogglePickerPreview, false);
+        assert_eq!(view.modal(viewport).map(|m| m.width.round()), Some(720.0));
+        assert_eq!(view.outline_preview, outline_view::PreviewLayout::Right);
+
+        let path = view.active.clone();
+        let symbol = view
+            .outline
+            .as_ref()
+            .and_then(|(_, v)| v.selected_symbol().cloned())
+            .unwrap();
+        let item = view.go_to_line_item(&path).unwrap();
+        let content = item.preview_content(&symbol, 9, 80).unwrap();
+        let middle = &content.rows[4];
+        assert_eq!(middle.number, 42);
+        assert!(middle.in_symbol);
+        assert_eq!(middle.name_columns, Some(3..8));
+        assert!(!content.rows[0].in_symbol);
+
+        view.editor_key(EditKey::TogglePickerPreview, false);
+        assert_eq!(view.outline_preview, outline_view::PreviewLayout::Hidden);
     }
 
     #[test]

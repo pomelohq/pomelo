@@ -675,18 +675,13 @@ impl CommandPalette {
             .items_center()
             .p(6.0)
             .gap(4.0)
-            .child(
-                div()
-                    .row()
-                    .items_center()
-                    .h_px(22.0)
-                    .px(4.0)
-                    .gap(4.0)
-                    .rounded(4.0)
-                    .on_click(id_base + PaletteClick::Run.offset())
-                    .child(label("Run").label_size(LabelSize::Default))
-                    .child(render_keystroke("enter", 12.0)),
-            );
+            .child(footer_button(
+                id_base + PaletteClick::Run.offset(),
+                "Run",
+                "enter",
+                colors.text,
+                false,
+            ));
         div()
             .col()
             .w_px(WIDTH)
@@ -825,7 +820,31 @@ fn key_label(key: &str) -> String {
 }
 
 /// One keystroke as modifier glyphs (control, option, command, shift, in that order) then the key.
-fn render_keystroke(keystroke: &str, size: f32) -> Node {
+/// A picker footer button: its label then the key binding that runs it, at 12px.
+pub(crate) fn footer_button(
+    id: u64,
+    text: &str,
+    keystroke: &str,
+    color: ui::Rgba,
+    selected: bool,
+) -> Node {
+    let mut button = div()
+        .row()
+        .items_center()
+        .h_px(22.0)
+        .px(4.0)
+        .gap(4.0)
+        .rounded(4.0)
+        .on_click(id)
+        .child(label(text).label_size(LabelSize::Default).color(color))
+        .child(render_keystroke(keystroke, 12.0));
+    if selected {
+        button = button.bg(theme().element_selected);
+    }
+    button.into()
+}
+
+pub(crate) fn render_keystroke(keystroke: &str, size: f32) -> Node {
     let muted = theme().text_muted;
     let (modifiers, key) = parse_keystroke(keystroke);
     let glyph = |kind: IconKind| -> Node {
