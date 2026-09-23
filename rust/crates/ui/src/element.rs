@@ -70,6 +70,8 @@ pub enum IconKind {
     Sidebar,
     PanelRight,
     PanelBottom,
+    Maximize,
+    Minimize,
     Server,
     Undo,
     ChevronLeft,

@@ -786,6 +786,8 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Sidebar => svg!("sidebar.svg"),
         IconKind::PanelRight => svg!("panel_right.svg"),
         IconKind::PanelBottom => svg!("panel_bottom.svg"),
+        IconKind::Maximize => svg!("maximize.svg"),
+        IconKind::Minimize => svg!("minimize.svg"),
         IconKind::Server => svg!("server.svg"),
         IconKind::Undo => svg!("undo.svg"),
         IconKind::ChevronLeft => svg!("chevron_left.svg"),

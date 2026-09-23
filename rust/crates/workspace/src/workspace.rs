@@ -998,6 +998,11 @@ pub trait FunctionView: ItemInput + 'static {
     /// Moving a tab across pane groups: the item being dragged here, taking it out, whether this view takes
     /// such an item, where it would land when the pointer is over this view, and placing it.
     /// False while a modal (picker, palette, inline rename) owns the keyboard, so pane keys fall through to it.
+    /// Whether the editor area's zoomed pane is showing (it is zoomed and focused).
+    fn zoom_shown(&self) -> bool {
+        false
+    }
+
     /// Whether this view handles `key` itself wherever focus is (a modal is open, or the key opens one).
     fn claims_key(&self, _key: EditKey) -> bool {
         false
@@ -1518,6 +1523,19 @@ impl Layout {
             self.content_bottom(h) - bh,
             (cr - cl).max(0.0),
             bh,
+            Rgba::TRANSPARENT,
+        )
+    }
+
+    /// The area docks and the center share (below the header, above the status strip, beside the sidebar);
+    /// a zoomed pane covers it.
+    pub fn editor_area(&self, w: f32, h: f32) -> Rect {
+        let zl = self.editor_l();
+        Rect::new(
+            zl,
+            TOP_BAR_H,
+            (self.editor_r(w) - zl).max(0.0),
+            (self.content_bottom(h) - TOP_BAR_H).max(0.0),
             Rgba::TRANSPARENT,
         )
     }

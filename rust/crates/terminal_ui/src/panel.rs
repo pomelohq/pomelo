@@ -79,9 +79,14 @@ impl TerminalPanel {
                     icon: IconKind::PanelBottom,
                     action: PaneButtonAction::Split(SplitDirection::Down),
                 },
+                PaneButton {
+                    icon: IconKind::Maximize,
+                    action: PaneButtonAction::ToggleZoom,
+                },
             ],
             max_panes: MAX_PANES,
             split_filter: Some(|item| item.as_any().is_some_and(|any| any.is::<TerminalItem>())),
+            zoom_whole_group: true,
         });
         panes.set_focused(false);
         Self {
@@ -224,6 +229,7 @@ impl TerminalPanelView for TerminalPanel {
                         }
                     }
                 }
+                PaneButtonAction::ToggleZoom => self.panes.toggle_zoom(),
             },
         }
         if self.panes.is_empty() {

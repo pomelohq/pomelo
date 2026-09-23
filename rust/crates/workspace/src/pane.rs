@@ -36,6 +36,7 @@ pub enum PaneCommand {
     ActivateLastItem,
     ActivatePreviousItem,
     ActivateNextItem,
+    ToggleZoom,
 }
 
 #[derive(Default)]

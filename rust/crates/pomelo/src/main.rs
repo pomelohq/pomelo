@@ -102,6 +102,9 @@ fn pane_key(
         ctrl,
         cmd,
     } = modifiers;
+    if event.logical_key == Key::Named(NamedKey::Escape) && shift && !cmd && !alt && !ctrl {
+        return Some(PaneCommand::ToggleZoom);
+    }
     let arrow = match &event.logical_key {
         Key::Named(NamedKey::ArrowLeft) => Some(SplitDirection::Left),
         Key::Named(NamedKey::ArrowRight) => Some(SplitDirection::Right),
