@@ -12,6 +12,7 @@
 use crate::buffer::{EditorBuffer, TAB_SIZE};
 use crate::highlight::{grammar, Lang, HIGHLIGHT_NAMES};
 use crate::indent::{compute_autoindents, IndentQuery, IndentRegexes, IndentSize, IndentView};
+use crate::injection::{InjectionQuery, Injections, LayerCapture};
 use crate::outline::{OutlineItem, OutlineQuery};
 use ropey::Rope;
 use std::ops::{ControlFlow, Range};
@@ -47,6 +48,16 @@ pub struct Syntax {
     brackets: Option<BracketQuery>,
     overrides: Option<OverrideQuery>,
     outline: Option<OutlineQuery>,
+    injection_query: Option<InjectionQuery>,
+    injections: Injections,
+    /// Buffer version the injection layers' positions reflect.
+    injections_interpolated: u64,
+    /// Buffer version the layers were last rebuilt from a fresh parse at.
+    injections_parsed: Option<u64>,
+    /// The file's tree at that rebuild, kept in step with edits since, to find what the next parse changed.
+    injection_base: Option<Tree>,
+    /// Byte ranges edited since that rebuild.
+    injection_edits: Vec<Range<usize>>,
     /// The tree as of the last sync and the buffer version it reflects: the "before" side when re-indenting
     /// lines after the next edit.
     synced: Option<(Tree, u64)>,
@@ -67,6 +78,12 @@ impl Syntax {
             brackets: BracketQuery::new(&language),
             overrides: OverrideQuery::new(lang, &language),
             outline: OutlineQuery::new(lang, &language),
+            injection_query: InjectionQuery::new(lang, &language),
+            injections: Injections::default(),
+            injections_interpolated: 0,
+            injections_parsed: None,
+            injection_base: None,
+            injection_edits: Vec::new(),
             indent_regexes: IndentRegexes::new(&crate::language::config(lang).indent),
             language,
             query,
@@ -86,6 +103,26 @@ impl Syntax {
 
     fn interpolate(&mut self, buffer: &EditorBuffer) {
         let version = buffer.version();
+        if self.injections_interpolated < version {
+            for edit in buffer.syntax_edits_since(self.injections_interpolated) {
+                self.injections.edit(edit);
+                if let Some(base) = self.injection_base.as_mut() {
+                    base.edit(edit);
+                }
+                let delta = edit.new_end_byte as isize - edit.old_end_byte as isize;
+                for range in &mut self.injection_edits {
+                    if range.start >= edit.old_end_byte {
+                        range.start = (range.start as isize + delta).max(0) as usize;
+                        range.end = (range.end as isize + delta).max(0) as usize;
+                    } else if range.end >= edit.start_byte {
+                        range.end = (range.end as isize + delta).max(range.start as isize) as usize;
+                    }
+                }
+                self.injection_edits
+                    .push(edit.start_byte..edit.new_end_byte);
+            }
+            self.injections_interpolated = version;
+        }
         self.collect_background(buffer);
         if let Some(tree) = self.tree.as_mut() {
             if self.interpolated_version < version {
@@ -97,9 +134,33 @@ impl Syntax {
         self.interpolated_version = version;
     }
 
+    /// Rebuild the embedded-language layers once the file's own tree is parsed for the current text.
+    fn refresh_injections(&mut self, buffer: &EditorBuffer) {
+        let version = buffer.version();
+        if self.parsed_version != version || self.injections_parsed == Some(version) {
+            return;
+        }
+        if let (Some(tree), Some(query)) = (self.tree.as_ref(), self.injection_query.as_ref()) {
+            let changed: Option<Vec<Range<usize>>> = self.injection_base.as_ref().map(|base| {
+                let mut changed: Vec<Range<usize>> = base
+                    .changed_ranges(tree)
+                    .map(|range| range.start_byte..range.end_byte)
+                    .collect();
+                changed.extend(self.injection_edits.iter().cloned());
+                changed
+            });
+            self.injections
+                .update(&buffer.rope, tree, query, changed.as_deref());
+            self.injection_base = Some(tree.clone());
+        }
+        self.injection_edits.clear();
+        self.injections_parsed = Some(version);
+    }
+
     /// Bring the tree up to date with `buffer`.
     pub fn sync(&mut self, buffer: &EditorBuffer) {
         self.parse_within_budget(buffer);
+        self.refresh_injections(buffer);
         self.synced = self.tree.clone().map(|tree| (tree, buffer.version()));
     }
 
@@ -386,7 +447,8 @@ impl Syntax {
         scope
     }
 
-    /// Highlight runs covering `range` (bytes) contiguously; uncaptured text gets `capture: None`.
+    /// Highlight runs covering `range` (bytes) contiguously; uncaptured text gets `capture: None`. Embedded
+    /// languages color over the text that hosts them.
     pub fn highlight(&self, rope: &Rope, range: Range<usize>) -> Vec<HighlightRun> {
         let mut runs = Vec::new();
         let Some(tree) = self.tree.as_ref() else {
@@ -396,38 +458,45 @@ impl Syntax {
             });
             return runs;
         };
+        let mut captures: Vec<LayerCapture> = Vec::new();
         let mut cursor = QueryCursor::new();
         cursor.set_byte_range(range.clone());
         let text = |node: Node| rope_chunks(rope, node.byte_range());
-        let mut captures = cursor.captures(&self.query, tree.root_node(), text);
-        let mut stack: Vec<(usize, usize, &'static str)> = Vec::new();
-        let mut next = next_capture(&mut captures, &self.capture_keys);
+        let mut root = cursor.captures(&self.query, tree.root_node(), text);
+        while let Some((start, end, key)) = next_capture(&mut root, &self.capture_keys) {
+            captures.push((start, end, key, 0));
+        }
+        if !self.injections.is_empty() {
+            captures.extend(self.injections.captures(rope, range.clone()));
+            // Stable, so each layer keeps its own capture order; at one start the host goes first and the
+            // embedded language lands on top of it.
+            captures.sort_by_key(|(start, _, _, depth)| (*start, *depth));
+        }
+        let mut stack: Vec<LayerCapture> = Vec::new();
+        let mut pending = captures.into_iter().peekable();
         let mut pos = range.start;
         while pos < range.end {
-            while stack.last().is_some_and(|(_, end, _)| *end <= pos) {
+            while stack.last().is_some_and(|(_, end, _, _)| *end <= pos) {
                 stack.pop();
             }
-            while let Some((start, end, key)) = next {
-                if start > pos {
-                    break;
-                }
+            while let Some(capture) = pending.next_if(|(start, _, _, _)| *start <= pos) {
+                let (start, end, _, depth) = capture;
                 // Several patterns can capture the same node; the bundled queries list the most specific one
                 // first, so the first capture for a node keeps it.
                 let same_node = stack
                     .last()
-                    .is_some_and(|(s, e, _)| *s == start && *e == end);
+                    .is_some_and(|(s, e, _, d)| *s == start && *e == end && *d == depth);
                 if end > pos && !same_node {
-                    stack.push((start, end, key));
+                    stack.push(capture);
                 }
-                next = next_capture(&mut captures, &self.capture_keys);
             }
-            let next_start = next.map_or(usize::MAX, |(start, _, _)| start);
+            let next_start = pending.peek().map_or(usize::MAX, |(start, _, _, _)| *start);
             let mut end = range.end.min(next_start);
-            if let Some((_, top_end, _)) = stack.last() {
+            if let Some((_, top_end, _, _)) = stack.last() {
                 end = end.min(*top_end);
             }
             let end = end.max(pos + 1).min(range.end);
-            let capture = stack.last().map(|(_, _, key)| *key);
+            let capture = stack.last().map(|(_, _, key, _)| *key);
             match runs.last_mut() {
                 Some(last) if last.capture == capture && last.range.end == pos => {
                     last.range.end = end
@@ -440,6 +509,11 @@ impl Syntax {
             pos = end;
         }
         runs
+    }
+
+    #[cfg(test)]
+    pub(crate) fn injected_langs(&self) -> Vec<(Lang, usize)> {
+        self.injections.layer_langs()
     }
 }
 
@@ -617,7 +691,7 @@ where
 
 /// The longest recognized key that is a whole-segment dotted prefix of `name` (`function.method.call` ->
 /// `function.method`), or `None` if nothing matches.
-fn recognized_key(name: &str) -> Option<&'static str> {
+pub(crate) fn recognized_key(name: &str) -> Option<&'static str> {
     HIGHLIGHT_NAMES
         .iter()
         .filter(|key| {

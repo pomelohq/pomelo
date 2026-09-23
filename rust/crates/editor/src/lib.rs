@@ -3,6 +3,7 @@ pub mod display;
 pub mod fold;
 pub mod highlight;
 pub mod indent;
+mod injection;
 pub mod language;
 pub mod movement;
 pub mod outline;
