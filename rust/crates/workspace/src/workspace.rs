@@ -374,6 +374,60 @@ pub trait Item: 'static {
     fn navigate_to(&mut self, _cursor: usize, _scroll: (f32, f32)) -> bool {
         false
     }
+    /// Items that draw their own body (a terminal) paint it into `body` (logical px) here instead of going
+    /// through the text editor's layout.
+    fn paint_body(&mut self, _body: ui::Rect, _focused: bool) -> Option<ui::Painted> {
+        None
+    }
+    /// Whether key presses should reach this item raw (`keystroke`) rather than as editor commands.
+    fn wants_keystrokes(&self) -> bool {
+        false
+    }
+    fn keystroke(&mut self, _keystroke: &terminal::Keystroke) -> TerminalKeyOutcome {
+        TerminalKeyOutcome::Ignored
+    }
+    /// Pointer input in window coordinates, for items that paint their own body.
+    fn pointer_down(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _click_count: u32,
+        _modifiers: terminal::Modifiers,
+    ) -> bool {
+        false
+    }
+    fn pointer_drag(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) -> bool {
+        false
+    }
+    fn pointer_move(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _modifiers: terminal::Modifiers,
+        _focused: bool,
+    ) -> bool {
+        false
+    }
+    fn pointer_up(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) {}
+    fn pointer_scroll(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _delta_y: f32,
+        _modifiers: terminal::Modifiers,
+    ) -> bool {
+        false
+    }
+    /// Background work to bring in before drawing (a shell's output); `close` asks for the tab to close.
+    fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
+        ItemTick::default()
+    }
+    fn take_open_request(&mut self) -> Option<TerminalOpenTarget> {
+        None
+    }
+    fn link_hovered(&self) -> bool {
+        false
+    }
     fn render(&mut self) -> Node;
     fn cursor_status(&self) -> Option<String> {
         None
@@ -561,6 +615,7 @@ pub enum EditKey {
     ToggleGoToLine,
     ToggleCommandPalette,
     ToggleOutline,
+    NewCenterTerminal,
     TogglePickerPreview,
     SetPickerPreviewRight,
     GoBack,
@@ -619,6 +674,8 @@ pub enum DividerAxis {
 pub struct PanePlacement {
     pub rect: ui::Rect,
     pub node: Node,
+    /// A body the item painted itself (a terminal), drawn clipped to the area below the chrome.
+    pub painted: Option<(ui::Painted, ui::Rect)>,
     pub body: Option<PaneBody>,
     pub back: Vec<ui::Rect>,
     pub back_tris: Vec<ui::Tri>,
@@ -673,6 +730,19 @@ pub enum TerminalKeyOutcome {
     Handled,
     Copy(String),
     Paste,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemTick {
+    pub changed: bool,
+    pub clipboard_store: Option<String>,
+    pub close: bool,
+}
+
+/// Something a feature view asks the workspace to do that it can't do itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewRequest {
+    NewCenterTerminal,
 }
 
 /// A cmd-clicked link from the terminal: a URL for the browser, or an existing file (1-based position).
@@ -734,6 +804,8 @@ pub trait TerminalPanelView: 'static {
     fn take_open_request(&mut self) -> Option<TerminalOpenTarget>;
     /// Whether the pointer is over a link that a click would open (pointing-hand cursor).
     fn link_hovered(&self) -> bool;
+    /// A new shell as a pane item, for placing outside the panel.
+    fn new_item(&mut self, cwd: Option<std::path::PathBuf>) -> Option<Box<dyn Item>>;
 }
 
 pub trait FunctionView: 'static {
@@ -762,6 +834,55 @@ pub trait FunctionView: 'static {
     fn prompt_answered(&mut self, _token: u64, _answer: usize) {}
     fn take_toast(&mut self) -> Option<String> {
         None
+    }
+    fn take_request(&mut self) -> Option<ViewRequest> {
+        None
+    }
+    /// Place an item as a new tab in the focused pane.
+    fn add_center_item(&mut self, _item: Box<dyn Item>) {}
+    /// Whether the focused item takes raw key presses (a terminal in the center).
+    fn active_wants_keystrokes(&self) -> bool {
+        false
+    }
+    fn item_keystroke(&mut self, _keystroke: &terminal::Keystroke) -> TerminalKeyOutcome {
+        TerminalKeyOutcome::Ignored
+    }
+    fn item_focus_changed(&mut self, _focused: bool) {}
+    fn item_text(&mut self, _text: &str) {}
+    fn item_pointer_down(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _click_count: u32,
+        _modifiers: terminal::Modifiers,
+    ) -> bool {
+        false
+    }
+    fn item_pointer_drag(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) -> bool {
+        false
+    }
+    fn item_pointer_move(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) -> bool {
+        false
+    }
+    fn item_pointer_up(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) {}
+    fn item_pointer_scroll(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _delta_y: f32,
+        _modifiers: terminal::Modifiers,
+    ) -> bool {
+        false
+    }
+    /// Tick every item that works in the background; closes the tabs that asked to close.
+    fn tick_items(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
+        ItemTick::default()
+    }
+    fn take_item_open_request(&mut self) -> Option<TerminalOpenTarget> {
+        None
+    }
+    fn item_link_hovered(&self) -> bool {
+        false
     }
     fn active_file_path(&self) -> Option<std::path::PathBuf> {
         None

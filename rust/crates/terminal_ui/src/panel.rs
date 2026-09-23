@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use editor::search::Direction;
-use terminal::{Keystroke, Modifiers, Palette, TerminalHost, Waker};
+use terminal::{Keystroke, Modifiers, Waker};
 use ui::{label, theme, IconKind, Node, Painted, Rect, Rgba};
 use workspace::pane::{render_pane, Pane, PaneClickIds, TabBarButton, TabBarConfig};
 use workspace::pane_group::{self, DividerRef, LeafPlacement, Member, SplitDirection};
@@ -15,7 +15,7 @@ use workspace::{
     TerminalSyncOutcome, FUNC_VIEW_BASE, TERMINAL_VIEW_BASE,
 };
 
-use crate::item::TerminalItem;
+use crate::item::{Host, TerminalItem};
 
 /// Click ids are laid out per pane (in render order): tabs, then close buttons, then the tab bar buttons and
 /// the find bar. Dividers take the block after the last pane's.
@@ -67,21 +67,6 @@ fn search_edit_key(keystroke: &Keystroke) -> Option<EditKey> {
         "z" if m.cmd => EditKey::Undo,
         _ => return None,
     })
-}
-
-struct Host<'a> {
-    palette: Palette,
-    clipboard: &'a dyn Fn() -> Option<String>,
-}
-
-impl TerminalHost for Host<'_> {
-    fn palette(&self) -> &Palette {
-        &self.palette
-    }
-
-    fn clipboard_text(&self) -> Option<String> {
-        (self.clipboard)()
-    }
 }
 
 fn terminal_of(pane: &mut Pane) -> Option<&mut TerminalItem> {
@@ -628,7 +613,7 @@ impl TerminalPanelView for TerminalPanel {
             let Some(item) = self.group.leaf_at_mut(&path).and_then(terminal_of) else {
                 continue;
             };
-            if under.as_ref() == Some(&path) || item.link_hovered() {
+            if under.as_ref() == Some(&path) || item.hovering_link() {
                 changed |= item.mouse_move(x, y, modifiers, focused && path == active);
             }
         }
@@ -802,10 +787,15 @@ impl TerminalPanelView for TerminalPanel {
         let mut request = None;
         self.all_terminals(&mut |item| {
             if request.is_none() {
-                request = item.take_open_request();
+                request = item.take_link_request();
             }
         });
         request
+    }
+
+    fn new_item(&mut self, cwd: Option<PathBuf>) -> Option<Box<dyn workspace::Item>> {
+        self.spawn_item(cwd)
+            .map(|item| Box::new(item) as Box<dyn workspace::Item>)
     }
 
     fn link_hovered(&self) -> bool {
@@ -814,7 +804,7 @@ impl TerminalPanelView for TerminalPanel {
             hovered |= pane.active_item().is_some_and(|item| {
                 item.as_any()
                     .and_then(|any| any.downcast_ref::<TerminalItem>())
-                    .is_some_and(TerminalItem::link_hovered)
+                    .is_some_and(TerminalItem::hovering_link)
             });
         });
         hovered

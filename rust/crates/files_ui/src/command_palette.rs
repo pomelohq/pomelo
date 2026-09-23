@@ -277,6 +277,11 @@ const COMMANDS: &[(&str, PaletteAction, &[&str])] = &[
         &["cmd-shift-o"],
     ),
     (
+        "workspace::NewCenterTerminal",
+        Key(EditKey::NewCenterTerminal),
+        &[],
+    ),
+    (
         "go_to_line::Toggle",
         Key(EditKey::ToggleGoToLine),
         &["ctrl-g"],

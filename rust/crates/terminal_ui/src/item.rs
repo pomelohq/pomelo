@@ -5,14 +5,29 @@ use std::path::{Path, PathBuf};
 
 use editor::search::SearchQuery;
 use terminal::{
-    GridPoint, HyperlinkMatch, Keystroke, Modifiers, MouseButton, PathWithPosition, SyncOutcome,
-    Terminal, TerminalAction, TerminalHost, TerminalOptions, Waker,
+    GridPoint, HyperlinkMatch, Keystroke, Modifiers, MouseButton, Palette, PathWithPosition,
+    SyncOutcome, Terminal, TerminalAction, TerminalHost, TerminalOptions, Waker,
 };
 use ui::{div, theme, IconKind, Node, Painted, Rect, Rgba};
 use workspace::search_bar::Searchable;
-use workspace::{Item, TerminalKeyOutcome, TerminalOpenTarget};
+use workspace::{ClipboardSlice, Item, ItemTick, TerminalKeyOutcome, TerminalOpenTarget};
 
 use crate::{anchor_to_bottom, GridMetrics, GridOptions, GridPainter, FONT_SIZE, LINE_HEIGHT};
+
+pub(crate) struct Host<'a> {
+    pub(crate) palette: Palette,
+    pub(crate) clipboard: &'a dyn Fn() -> Option<String>,
+}
+
+impl TerminalHost for Host<'_> {
+    fn palette(&self) -> &Palette {
+        &self.palette
+    }
+
+    fn clipboard_text(&self) -> Option<String> {
+        (self.clipboard)()
+    }
+}
 
 pub struct TerminalItem {
     id: u64,
@@ -296,11 +311,11 @@ impl TerminalItem {
         self.terminal.sync(host)
     }
 
-    pub fn take_open_request(&mut self) -> Option<TerminalOpenTarget> {
+    pub fn take_link_request(&mut self) -> Option<TerminalOpenTarget> {
         self.open_request.take()
     }
 
-    pub fn link_hovered(&self) -> bool {
+    pub fn hovering_link(&self) -> bool {
         self.hovered_target.is_some()
     }
 
@@ -411,6 +426,79 @@ impl Item for TerminalItem {
 
     fn render(&mut self) -> Node {
         div().flex(1.0).bg(theme().terminal_background).into()
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        self.focus_changed(focused);
+    }
+
+    fn input_text(&mut self, text: &str) {
+        self.text(text);
+    }
+
+    fn paste(&mut self, text: &str, _slices: Option<&[ClipboardSlice]>) {
+        TerminalItem::paste(self, text);
+    }
+
+    fn paint_body(&mut self, body: Rect, focused: bool) -> Option<Painted> {
+        Some(self.paint(body, focused))
+    }
+
+    fn wants_keystrokes(&self) -> bool {
+        true
+    }
+
+    fn keystroke(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
+        self.key(keystroke)
+    }
+
+    fn pointer_down(&mut self, x: f32, y: f32, click_count: u32, modifiers: Modifiers) -> bool {
+        if !self.body_contains(x, y) {
+            return false;
+        }
+        self.mouse_down(x, y, click_count, modifiers);
+        true
+    }
+
+    fn pointer_drag(&mut self, x: f32, y: f32, modifiers: Modifiers) -> bool {
+        self.mouse_drag(x, y, modifiers)
+    }
+
+    fn pointer_move(&mut self, x: f32, y: f32, modifiers: Modifiers, focused: bool) -> bool {
+        self.mouse_move(x, y, modifiers, focused)
+    }
+
+    fn pointer_up(&mut self, x: f32, y: f32, modifiers: Modifiers) {
+        self.mouse_up(x, y, modifiers);
+    }
+
+    fn pointer_scroll(&mut self, x: f32, y: f32, delta_y: f32, modifiers: Modifiers) -> bool {
+        if !self.body_contains(x, y) {
+            return false;
+        }
+        self.scroll(x, y, delta_y, modifiers);
+        true
+    }
+
+    fn tick(&mut self, clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
+        let host = Host {
+            palette: crate::palette(&theme()),
+            clipboard,
+        };
+        let result = self.sync(&host);
+        ItemTick {
+            changed: result.changed || result.title_changed,
+            clipboard_store: result.clipboard_store,
+            close: result.close,
+        }
+    }
+
+    fn take_open_request(&mut self) -> Option<TerminalOpenTarget> {
+        self.take_link_request()
+    }
+
+    fn link_hovered(&self) -> bool {
+        self.hovering_link()
     }
 }
 

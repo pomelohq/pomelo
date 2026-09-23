@@ -54,6 +54,8 @@ enum Drag {
     Terminal,
     TerminalDivider(u64),
     TerminalTab,
+    /// A press on a center item that paints itself (a terminal tab in the editor area).
+    ItemPointer,
     Left,
     Right,
     Bottom,
@@ -183,7 +185,7 @@ impl WorkspaceView {
                     DockPosition::Right => self.layout.right_region(w, h),
                     DockPosition::Bottom => self.layout.bottom_region(w, h),
                 };
-                let (tp, editor) = {
+                let (tp, mut editor) = {
                     let v = self.layout.files_view.as_mut().unwrap();
                     v.set_viewport(tree_region.w, tree_region.h);
                     (v.render_tree(), v.editor_layout(cr))
@@ -243,7 +245,13 @@ impl WorkspaceView {
                         };
                     push_clipped(&sr.tree, tree_area, tree_region, &mut panel_hits);
                     push_clipped(&sr.sticky, sticky_area, tree_region, &mut panel_hits);
-                    for pane in &editor.panes {
+                    for pane in &mut editor.panes {
+                        if let Some((painted, clip)) = pane.painted.take() {
+                            center_overlays.push(Overlay {
+                                painted,
+                                clip: Some(clip),
+                            });
+                        }
                         let chrome = ui::render(&pane.node, pane.rect);
                         for (r, id) in chrome.hits.iter().copied() {
                             if r.x + r.w > pane.rect.x
@@ -924,7 +932,11 @@ impl WorkspaceView {
             Drag::Left | Drag::Right | Drag::Tree => return Some(ResizeCursor::Horizontal),
             Drag::Bottom => return Some(ResizeCursor::Vertical),
             Drag::Center(id) | Drag::TerminalDivider(id) => return self.center_divider_cursor(id),
-            Drag::Tab | Drag::EditorSel | Drag::Terminal | Drag::TerminalTab => return None,
+            Drag::Tab
+            | Drag::EditorSel
+            | Drag::Terminal
+            | Drag::TerminalTab
+            | Drag::ItemPointer => return None,
             Drag::None => {}
         }
         let (w, h) = self.viewport;
@@ -1486,13 +1498,24 @@ impl WorkspaceView {
         if self.dragging == Drag::Terminal {
             return terminal_repaint;
         }
-        terminal_repaint | self.mouse_move_inner(x, y)
+        let item_repaint = self.dragging == Drag::None
+            && self
+                .layout
+                .files_view
+                .as_mut()
+                .is_some_and(|v| v.item_pointer_move(x, y, terminal_modifiers()));
+        terminal_repaint | item_repaint | self.mouse_move_inner(x, y)
     }
 
     fn mouse_move_inner(&mut self, x: f32, y: f32) -> bool {
         let over = self.hit_with_rect(x, y);
         match self.dragging {
             Drag::Terminal => false,
+            Drag::ItemPointer => self
+                .layout
+                .files_view
+                .as_mut()
+                .is_some_and(|v| v.item_pointer_drag(x, y, terminal_modifiers())),
             Drag::TerminalTab => {
                 self.tab_ghost_at = Some((x, y));
                 self.layout
@@ -1722,7 +1745,16 @@ impl WorkspaceView {
             let cr = self.layout.center_region(vw, vh);
             let in_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
             let mut consumed = false;
-            if in_center {
+            let item_count = self.click_count(x, y);
+            let item_pressed =
+                in_center
+                    && self.layout.files_view.as_mut().is_some_and(|v| {
+                        v.item_pointer_down(x, y, item_count, terminal_modifiers())
+                    });
+            if item_pressed {
+                self.dragging = Drag::ItemPointer;
+                consumed = true;
+            } else if in_center {
                 let now = Instant::now();
                 let double = self
                     .last_click
@@ -1869,7 +1901,16 @@ impl WorkspaceView {
     }
 
     pub fn mouse_up(&mut self) {
-        if self.dragging == Drag::Terminal {
+        if self.dragging == Drag::ItemPointer {
+            let (x, y) = self.pointer;
+            let request = self.layout.files_view.as_mut().and_then(|view| {
+                view.item_pointer_up(x, y, terminal_modifiers());
+                view.take_item_open_request()
+            });
+            if let Some(request) = request {
+                self.open_terminal_target(request);
+            }
+        } else if self.dragging == Drag::Terminal {
             let (x, y) = self.pointer;
             let modifiers = terminal_modifiers();
             let request = self.layout.terminal_view.as_mut().and_then(|view| {
@@ -1916,6 +1957,14 @@ impl WorkspaceView {
 
     /// Bring every shell's output in before drawing; closes the panel once its last shell exits.
     fn sync_terminals(&mut self) {
+        let items = self
+            .layout
+            .files_view
+            .as_mut()
+            .map(|v| v.tick_items(&Self::clip_get));
+        if let Some(text) = items.and_then(|tick| tick.clipboard_store) {
+            Self::clip_set(&text);
+        }
         let Some(view) = self.layout.terminal_view.as_mut() else {
             return;
         };
@@ -1951,12 +2000,59 @@ impl WorkspaceView {
         }
     }
 
+    /// Whether key presses go raw to a terminal: the focused panel, or a terminal tab focused in the center.
     pub fn terminal_focused(&self) -> bool {
+        if self.terminal_focused {
+            return self.layout.terminal_visible();
+        }
+        self.layout
+            .files_view
+            .as_ref()
+            .is_some_and(|v| v.active_wants_keystrokes())
+    }
+
+    /// Presses within 400ms and 4px of the last one count up to a triple click (then wrap to single).
+    fn click_count(&mut self, x: f32, y: f32) -> u32 {
+        let now = Instant::now();
+        let count = match self.terminal_click {
+            Some((at, px, py, count))
+                if now.duration_since(at) < Duration::from_millis(400)
+                    && (x - px).abs() < 4.0
+                    && (y - py).abs() < 4.0 =>
+            {
+                count % 3 + 1
+            }
+            _ => 1,
+        };
+        self.terminal_click = Some((now, x, y, count));
+        count
+    }
+
+    fn panel_has_focus(&self) -> bool {
         self.terminal_focused && self.layout.terminal_visible()
     }
 
     /// Returns whether the key was consumed; unconsumed keys arrive next as typed text.
     pub fn terminal_key(&mut self, keystroke: &terminal::Keystroke) -> bool {
+        if !self.panel_has_focus() {
+            let Some(view) = self.layout.files_view.as_mut() else {
+                return false;
+            };
+            return match view.item_keystroke(keystroke) {
+                crate::TerminalKeyOutcome::Ignored => false,
+                crate::TerminalKeyOutcome::Handled => true,
+                crate::TerminalKeyOutcome::Copy(text) => {
+                    Self::clip_set(&text);
+                    true
+                }
+                crate::TerminalKeyOutcome::Paste => {
+                    if let Some(text) = Self::clip_get() {
+                        view.editor_paste(&text, None);
+                    }
+                    true
+                }
+            };
+        }
         let Some(view) = self.layout.terminal_view.as_mut() else {
             return false;
         };
@@ -1977,8 +2073,29 @@ impl WorkspaceView {
     }
 
     pub fn terminal_text(&mut self, text: &str) {
+        if !self.panel_has_focus() {
+            if let Some(view) = self.layout.files_view.as_mut() {
+                view.item_text(text);
+            }
+            return;
+        }
         if let Some(view) = self.layout.terminal_view.as_mut() {
             view.text(text);
+        }
+    }
+
+    fn new_center_terminal(&mut self) {
+        let Some(item) = self
+            .layout
+            .terminal_view
+            .as_mut()
+            .and_then(|view| view.new_item(None))
+        else {
+            return;
+        };
+        self.set_terminal_focus(false);
+        if let Some(view) = self.layout.files_view.as_mut() {
+            view.add_center_item(item);
         }
     }
 
@@ -2000,6 +2117,14 @@ impl WorkspaceView {
 
     /// Over the terminal grid: `Some(true)` on a link a click would open, `Some(false)` elsewhere (text).
     pub fn terminal_pointer_at(&self, x: f32, y: f32) -> Option<bool> {
+        if self
+            .layout
+            .files_view
+            .as_ref()
+            .is_some_and(|v| v.item_link_hovered())
+        {
+            return Some(true);
+        }
         if !self.terminal_grid_at(x, y) {
             return None;
         }
@@ -2057,6 +2182,14 @@ impl WorkspaceView {
         if let Some(message) = message {
             self.show_toast(message, None);
         }
+        let request = self
+            .layout
+            .files_view
+            .as_mut()
+            .and_then(|v| v.take_request());
+        if request == Some(crate::ViewRequest::NewCenterTerminal) {
+            self.new_center_terminal();
+        }
     }
 
     pub fn dragging(&self) -> bool {
@@ -2099,6 +2232,9 @@ impl WorkspaceView {
             let over_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
             if over_center {
                 if let Some(view) = self.layout.files_view.as_mut() {
+                    if view.item_pointer_scroll(x, y, dy, terminal_modifiers()) {
+                        return true;
+                    }
                     if view.editor_scroll(x, y, dx, dy) {
                         return true;
                     }
