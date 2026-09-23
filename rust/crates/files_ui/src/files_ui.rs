@@ -4118,6 +4118,9 @@ pub struct FilesView {
     lsp: Option<lsp::LspStore>,
     popover_sources: Vec<PopoverSource>,
     tree_ops: tree_actions::TreeOps,
+    request: Option<workspace::ViewRequest>,
+    /// The pane a press on a self-painted item landed in, so its drag and release go to the same item.
+    pointer_pane: Option<Vec<usize>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4161,6 +4164,8 @@ impl FilesView {
             lsp,
             popover_sources: Vec::new(),
             tree_ops: tree_actions::TreeOps::default(),
+            request: None,
+            pointer_pane: None,
             tab_drag: None,
             click_targets: Vec::new(),
             sticky_paths: Vec::new(),
@@ -4652,6 +4657,11 @@ impl FilesView {
     }
 
     fn editor_key_untracked(&mut self, key: EditKey, shift: bool) -> bool {
+        if key == EditKey::NewCenterTerminal {
+            self.palette = None;
+            self.request = Some(workspace::ViewRequest::NewCenterTerminal);
+            return true;
+        }
         if self.tree_edit_active() {
             self.tree_edit_key(key, shift);
             return true;
@@ -4962,6 +4972,14 @@ impl FilesView {
             .is_some_and(|it| it.is_editable())
     }
 
+    fn pane_path_at(&self, x: f32, y: f32) -> Option<Vec<usize>> {
+        let index = self
+            .pane_rects
+            .iter()
+            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)?;
+        self.pane_order.get(index).cloned()
+    }
+
     fn clone_active_of(&mut self, path: &[usize]) -> Option<Box<dyn Item>> {
         self.group
             .leaf_at_mut(path)
@@ -5116,6 +5134,25 @@ fn layout_leaf(
         (rect.h - tab_h).max(0.0),
         Rgba::TRANSPARENT,
     );
+    let self_painted = pane
+        .active
+        .and_then(|i| pane.open.get_mut(i))
+        .and_then(|item| item.paint_body(body_rect, is_focused));
+    if let Some(painted) = self_painted {
+        let node = render_pane(pane, p, hover, rect.w / ui::ui_text_scale());
+        panes.push(PanePlacement {
+            rect,
+            node,
+            painted: Some((painted, body_rect)),
+            body: None,
+            back: Vec::new(),
+            back_tris: Vec::new(),
+            carets: Vec::new(),
+            scrollbar: Vec::new(),
+            h_scrollbar: Vec::new(),
+        });
+        return;
+    }
     let (back, back_tris, carets, scrollbar, h_scrollbar, body) =
         match pane.active.and_then(|i| pane.open.get_mut(i)) {
             Some(item) => {
@@ -5180,6 +5217,7 @@ fn layout_leaf(
     panes.push(PanePlacement {
         rect,
         node,
+        painted: None,
         body,
         back,
         back_tris,
@@ -6040,6 +6078,176 @@ impl FunctionView for FilesView {
 
     fn take_toast(&mut self) -> Option<String> {
         self.take_tree_toast()
+    }
+
+    fn take_request(&mut self) -> Option<workspace::ViewRequest> {
+        self.request.take()
+    }
+
+    fn add_center_item(&mut self, item: Box<dyn Item>) {
+        if let Some(pane) = self.active_pane_mut() {
+            pane.add_item(item);
+        }
+    }
+
+    fn active_wants_keystrokes(&self) -> bool {
+        self.active_item_ref()
+            .is_some_and(|item| item.wants_keystrokes())
+    }
+
+    fn item_keystroke(&mut self, keystroke: &terminal::Keystroke) -> workspace::TerminalKeyOutcome {
+        self.active_item_mut()
+            .map_or(workspace::TerminalKeyOutcome::Ignored, |item| {
+                item.keystroke(keystroke)
+            })
+    }
+
+    fn item_text(&mut self, text: &str) {
+        if let Some(item) = self
+            .active_item_mut()
+            .filter(|item| item.wants_keystrokes())
+        {
+            item.input_text(text);
+        }
+    }
+
+    fn item_focus_changed(&mut self, focused: bool) {
+        if let Some(item) = self
+            .active_item_mut()
+            .filter(|item| item.wants_keystrokes())
+        {
+            item.set_focused(focused);
+        }
+    }
+
+    fn item_pointer_down(
+        &mut self,
+        x: f32,
+        y: f32,
+        click_count: u32,
+        modifiers: terminal::Modifiers,
+    ) -> bool {
+        let Some(path) = self.pane_path_at(x, y) else {
+            return false;
+        };
+        let handled = self
+            .group
+            .leaf_at_mut(&path)
+            .and_then(Pane::active_item_mut)
+            .is_some_and(|item| item.pointer_down(x, y, click_count, modifiers));
+        if handled {
+            self.active = path.clone();
+            self.pointer_pane = Some(path);
+        }
+        handled
+    }
+
+    fn item_pointer_drag(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool {
+        let Some(path) = self.pointer_pane.clone() else {
+            return false;
+        };
+        self.group
+            .leaf_at_mut(&path)
+            .and_then(Pane::active_item_mut)
+            .is_some_and(|item| item.pointer_drag(x, y, modifiers))
+    }
+
+    fn item_pointer_move(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool {
+        let active = self.active.clone();
+        let mut changed = false;
+        for path in self.pane_order.clone() {
+            let focused = path == active;
+            if let Some(item) = self
+                .group
+                .leaf_at_mut(&path)
+                .and_then(Pane::active_item_mut)
+            {
+                changed |= item.pointer_move(x, y, modifiers, focused);
+            }
+        }
+        changed
+    }
+
+    fn item_pointer_up(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) {
+        let Some(path) = self.pointer_pane.take() else {
+            return;
+        };
+        if let Some(item) = self
+            .group
+            .leaf_at_mut(&path)
+            .and_then(Pane::active_item_mut)
+        {
+            item.pointer_up(x, y, modifiers);
+        }
+    }
+
+    fn item_pointer_scroll(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_y: f32,
+        modifiers: terminal::Modifiers,
+    ) -> bool {
+        let Some(path) = self.pane_path_at(x, y) else {
+            return false;
+        };
+        self.group
+            .leaf_at_mut(&path)
+            .and_then(Pane::active_item_mut)
+            .is_some_and(|item| item.pointer_scroll(x, y, delta_y, modifiers))
+    }
+
+    fn tick_items(&mut self, clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
+        let mut outcome = workspace::ItemTick::default();
+        let mut closed: Vec<(u64, String)> = Vec::new();
+        self.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                let tick = item.tick(clipboard);
+                outcome.changed |= tick.changed;
+                if tick.clipboard_store.is_some() {
+                    outcome.clipboard_store = tick.clipboard_store;
+                }
+                if tick.close {
+                    if let Some(id) = item.id() {
+                        closed.push((pane.id, id));
+                    }
+                }
+            }
+        });
+        for (pane_id, item_id) in closed {
+            let Some(path) = self.group.path_of(pane_id) else {
+                continue;
+            };
+            let index = self
+                .group
+                .leaf_at(&path)
+                .and_then(|pane| pane.index_of_id(&item_id));
+            if let Some(index) = index {
+                self.close_tab(&path, index);
+                outcome.changed = true;
+            }
+        }
+        outcome
+    }
+
+    fn take_item_open_request(&mut self) -> Option<workspace::TerminalOpenTarget> {
+        let mut request = None;
+        self.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                if request.is_none() {
+                    request = item.take_open_request();
+                }
+            }
+        });
+        request
+    }
+
+    fn item_link_hovered(&self) -> bool {
+        let mut hovered = false;
+        self.group.for_each_pane(&mut |pane| {
+            hovered |= pane.active_item().is_some_and(|item| item.link_hovered());
+        });
+        hovered
     }
 
     fn active_file_path(&self) -> Option<PathBuf> {
@@ -7406,5 +7614,76 @@ mod completion_tests {
         item.input_key(EditKey::ShowCompletions, false);
         let (_, _, y) = item.completion_menu_popover(content).unwrap();
         assert!(y < 9.0 * EDIT_LINE_H, "{y}");
+    }
+}
+
+#[cfg(test)]
+mod self_painted_item_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct Shell {
+        keys: Rc<Cell<usize>>,
+        exit: Rc<Cell<bool>>,
+    }
+
+    impl Item for Shell {
+        fn id(&self) -> Option<String> {
+            Some("shell".into())
+        }
+        fn title(&self) -> String {
+            "shell".into()
+        }
+        fn render(&mut self) -> Node {
+            div().into()
+        }
+        fn paint_body(&mut self, body: Rect, _focused: bool) -> Option<ui::Painted> {
+            let mut painted = ui::Painted::default();
+            painted.rects.push(body);
+            Some(painted)
+        }
+        fn wants_keystrokes(&self) -> bool {
+            true
+        }
+        fn keystroke(&mut self, _keystroke: &terminal::Keystroke) -> workspace::TerminalKeyOutcome {
+            self.keys.set(self.keys.get() + 1);
+            workspace::TerminalKeyOutcome::Handled
+        }
+        fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
+            workspace::ItemTick {
+                close: self.exit.get(),
+                ..workspace::ItemTick::default()
+            }
+        }
+    }
+
+    #[test]
+    fn center_items_paint_take_keys_and_close_themselves() {
+        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        assert!(view.editor_key(EditKey::NewCenterTerminal, false));
+        assert_eq!(
+            view.take_request(),
+            Some(workspace::ViewRequest::NewCenterTerminal)
+        );
+        let keys = Rc::new(Cell::new(0));
+        let exit = Rc::new(Cell::new(false));
+        view.add_center_item(Box::new(Shell {
+            keys: keys.clone(),
+            exit: exit.clone(),
+        }));
+        assert!(view.active_wants_keystrokes());
+        assert_eq!(
+            view.item_keystroke(&terminal::Keystroke::parse("a")),
+            workspace::TerminalKeyOutcome::Handled
+        );
+        assert_eq!(keys.get(), 1);
+        let layout = view.editor_layout(Rect::new(0.0, 0.0, 600.0, 400.0, Rgba::TRANSPARENT));
+        let painted = layout.panes[0].painted.as_ref().map(|(_, clip)| *clip);
+        assert!(painted.is_some_and(|clip| clip.y > 0.0 && clip.h < 400.0));
+        assert!(!view.tick_items(&|| None).changed);
+        exit.set(true);
+        assert!(view.tick_items(&|| None).changed);
+        assert!(!view.active_wants_keystrokes());
     }
 }
