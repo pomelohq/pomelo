@@ -184,7 +184,7 @@ impl FileItem {
 
     /// A command-click at `local`: the hovered link's targets when it has them, else a request for the
     /// clicked symbol's definition, the caret placed there.
-    pub(crate) fn cmd_click(
+    pub(crate) fn definition_click(
         &mut self,
         local_x: f32,
         local_y: f32,
@@ -432,7 +432,7 @@ mod tests {
         let mut item = item("fn helper() {}\nfn main() { helper(); }\n");
         let x = crate::gutter_width(item.line_count()) + 14.25 * crate::char_advance();
         let y = EDIT_LINE_H * 1.5;
-        assert!(item.cmd_click(x, y).is_none());
+        assert!(item.definition_click(x, y).is_none());
         assert_eq!(item.buffer.as_ref().unwrap().newest().head(), 29);
         assert_eq!(
             item.definition_request_due(),

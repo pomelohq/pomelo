@@ -17,14 +17,14 @@ use editor::buffer::{
 use editor::fold::FoldMap;
 use editor::search::SearchQuery;
 use editor::transform::{LineTransform, TextTransform};
-use workspace::pane::{NavMode, Pane, PaneCommand, TAB_H};
+use workspace::pane::{Pane, PaneCommand};
 #[cfg(test)]
 use workspace::pane_group::Member;
 use workspace::pane_group::SplitDirection;
 use workspace::pane_group_view::{
     self, GroupClick, PaneButton, PaneButtonAction, PaneGroupConfig, PaneGroupView,
 };
-use workspace::search_bar::{SearchField, Searchable};
+use workspace::search_bar::Searchable;
 use workspace::text_field;
 
 mod command_palette;
@@ -47,7 +47,7 @@ use files::FileNode;
 use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
 use workspace::{
     ClipboardSlice, CopiedText, DividerAxis, EditKey, EditorLayout, Elevation, FunctionView, Item,
-    ModalView, FUNC_VIEW_BASE,
+    ItemInput, ModalView, FUNC_VIEW_BASE,
 };
 
 // Editor text metrics (design px). Each source line is `EDIT_LINE_H` tall with `EDIT_FONT` mono text. Caret/selection geometry uses these plus the mono advance so it aligns with the glyphs.
@@ -173,8 +173,6 @@ impl LineLayout {
     }
 }
 
-const MIN_NAVIGATION_HISTORY_ROW_DELTA: usize = 10;
-
 /// One screen row: a slice `[start, end)` of `line`'s tab-expanded text (`end` is `usize::MAX` on a line's last
 /// row), drawn after `indent` blank columns (non-zero only on soft-wrap continuation rows).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -282,6 +280,8 @@ struct FileItem {
     completion_request: Option<lsp_completion::PendingCompletion>,
     pending_resolve: Option<lsp_completion::PendingResolve>,
     definition_request: Option<definition::PendingDefinition>,
+    /// Definition targets a cmd-click resolved, for the editor service to open.
+    navigation: Option<(Vec<lsp::DefinitionTarget>, Option<f32>)>,
     link: Option<definition::LinkState>,
     active_diagnostic: Option<diagnostic_nav::ActiveDiagnostic>,
 }
@@ -408,6 +408,7 @@ impl FileItem {
             completion_request: None,
             pending_resolve: None,
             definition_request: None,
+            navigation: None,
             link: None,
             active_diagnostic: None,
         }
@@ -3043,6 +3044,39 @@ impl Item for FileItem {
         )]
     }
 
+    fn cmd_click(&mut self, local_x: f32, local_y: f32) -> bool {
+        if let Some(targets) = self.definition_click(local_x, local_y) {
+            self.navigation = Some((targets, self.caret_top()));
+        }
+        true
+    }
+
+    fn drag_select(&mut self, x: f32, y: f32, body: Rect) {
+        let text_bottom = body.y + body.h;
+        let vertical_margin = EDIT_LINE_H.min(body.h / 3.0);
+        let delta_rows = if y < body.y + vertical_margin {
+            -drag_autoscroll_rows(body.y + vertical_margin - y)
+        } else if y > text_bottom - vertical_margin {
+            drag_autoscroll_rows(y - (text_bottom - vertical_margin))
+        } else {
+            0.0
+        };
+        let em = char_advance();
+        let horizontal_space = HORIZONTAL_SCROLL_MARGIN * em;
+        let text_left = body.x + self.gutter_w() + horizontal_space;
+        let text_right = body.x + body.w - horizontal_space;
+        let delta_columns = if x < text_left {
+            -drag_autoscroll_columns(text_left - x)
+        } else if x > text_right {
+            drag_autoscroll_columns(x - text_right)
+        } else {
+            0.0
+        };
+        self.scroll_by(-delta_rows * EDIT_LINE_H);
+        self.scroll_by_x(-delta_columns * em);
+        self.place_cursor((x - body.x).max(0.0), y - body.y, true);
+    }
+
     fn is_editable(&self) -> bool {
         self.buffer.is_some()
     }
@@ -4093,18 +4127,8 @@ pub struct FilesView {
     window_size: (f32, f32),
     /// The project's language servers; none in tests, which must not start real servers.
     lsp: Option<lsp::LspStore>,
-    popover_sources: Vec<PopoverSource>,
     tree_ops: tree_actions::TreeOps,
     request: Option<workspace::ViewRequest>,
-    /// The pane a press on a self-painted item landed in, so its drag and release go to the same item.
-    pointer_pane: Option<Vec<usize>>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum PopoverSource {
-    Completion,
-    CompletionAside,
-    Hover { pane: Vec<usize>, index: usize },
 }
 
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting stays in sync with
@@ -4143,10 +4167,8 @@ impl FilesView {
             outline_preview: outline_view::PreviewLayout::Hidden,
             window_size: (1200.0, 800.0),
             lsp,
-            popover_sources: Vec::new(),
             tree_ops: tree_actions::TreeOps::default(),
             request: None,
-            pointer_pane: None,
             click_targets: Vec::new(),
             sticky_paths: Vec::new(),
             flat_cache: Vec::new(),
@@ -4577,7 +4599,9 @@ impl FilesView {
         self.panes.active = path.clone();
         match action {
             command_palette::PaletteAction::Key(key) => {
-                self.editor_key_untracked(key, false);
+                if !self.modal_key(key, false) {
+                    self.panes.editor_key_untracked(key, false);
+                }
             }
             command_palette::PaletteAction::Text(transform) => {
                 if let Some(item) = self.go_to_line_item(&path) {
@@ -4598,27 +4622,14 @@ impl FilesView {
     }
 
     fn track_nav<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let path = self.panes.active.clone();
-        let before = self
-            .panes
-            .group
-            .leaf_at_mut(&path)
-            .and_then(|p| p.active.and_then(|i| p.nav_entry_for(i)));
+        let snapshot = self.panes.nav_snapshot();
         let result = f(self);
-        if let (Some(before), Some(pane)) = (before, self.panes.group.leaf_at_mut(&path)) {
-            let after = pane.active.and_then(|i| pane.nav_entry_for(i));
-            let jumped = after.filter(|a| a.id == before.id).is_some_and(|a| {
-                matches!((before.row, a.row), (Some(old), Some(new))
-                    if old.abs_diff(new) >= MIN_NAVIGATION_HISTORY_ROW_DELTA)
-            });
-            if jumped {
-                pane.push_nav(before, NavMode::Normal);
-            }
-        }
+        self.panes.record_nav_jump(snapshot);
         result
     }
 
-    fn editor_key_untracked(&mut self, key: EditKey, shift: bool) -> bool {
+    /// Keys the editor service handles before the panes: modals, the tree's inline rename, and their toggles.
+    fn modal_key(&mut self, key: EditKey, shift: bool) -> bool {
         if key == EditKey::NewCenterTerminal {
             self.palette = None;
             self.request = Some(workspace::ViewRequest::NewCenterTerminal);
@@ -4655,39 +4666,11 @@ impl FilesView {
             self.open_go_to_line();
             return true;
         }
-        if matches!(key, EditKey::GoBack | EditKey::GoForward) {
-            if let Some(pane) = self.panes.active_pane_mut() {
-                if key == EditKey::GoBack {
-                    pane.nav_back();
-                } else {
-                    pane.nav_forward();
-                }
-            }
-            return true;
-        }
-        if self.panes.search_command(key) {
-            return true;
-        }
-        if let Some((bar, item)) = self.panes.focused_search() {
-            bar.key(item, key, shift);
-            return true;
-        }
-        let changed = match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.input_key(key, shift);
-                true
-            }
-            _ => false,
-        };
-        if let Some(pane) = self.panes.active_pane_mut() {
-            if let Some((bar, item)) = pane.search_target() {
-                bar.refresh(item);
-            }
-        }
-        changed
+        false
     }
 
-    fn editor_text_untracked(&mut self, text: &str) -> bool {
+    /// Text for an open modal or the tree's inline rename; returns false when none takes it.
+    fn modal_text(&mut self, text: &str) -> bool {
         if self.tree_edit_active() {
             self.tree_edit_input(text);
             return true;
@@ -4704,148 +4687,20 @@ impl FilesView {
             self.go_to_line_input(text);
             return true;
         }
-        if let Some((bar, item)) = self.panes.focused_search() {
-            bar.input(item, text);
-            return true;
-        }
-        match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.input_text(text);
-                true
-            }
-            _ => false,
-        }
+        false
     }
 
-    fn editor_paste_untracked(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool {
-        if self.tree_edit_active() {
-            self.tree_edit_input(text);
-            return true;
-        }
-        if self.outline.is_some() {
-            self.outline_input(text);
-            return true;
-        }
-        if self.palette.is_some() {
-            self.palette_input(text);
-            return true;
-        }
-        if self.go_to_line.is_some() {
-            self.go_to_line_input(text);
-            return true;
-        }
-        if let Some((bar, item)) = self.panes.focused_search() {
-            bar.input(item, text);
-            return true;
-        }
-        match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.paste(text, slices);
-                true
+    /// Open the definition a cmd-click in an editor resolved.
+    fn follow_navigation(&mut self) {
+        let mut navigations = Vec::new();
+        self.panes.for_each_item_mut(&mut |item| {
+            if let Some(file) = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>()) {
+                navigations.extend(file.navigation.take());
             }
-            _ => false,
+        });
+        for (targets, caret_top) in navigations {
+            self.navigate_to_definition(&targets, caret_top);
         }
-    }
-
-    fn editor_click_untracked(&mut self, x: f32, y: f32, extend: bool) -> bool {
-        self.confirm_tree_edit(true);
-        let Some((path, local_x, local_y)) = self.panes.body_point(x, y) else {
-            return false;
-        };
-        if ui::modifiers().cmd && !extend {
-            self.panes.active = path.clone();
-            let clicked = self
-                .go_to_line_item(&path)
-                .map(|item| (item.cmd_click(local_x, local_y), item.caret_top()));
-            if let Some((targets, caret_top)) = clicked {
-                if let Some(targets) = targets {
-                    self.navigate_to_definition(&targets, caret_top);
-                }
-                return true;
-            }
-        }
-        if !extend {
-            self.panes.active = path;
-        }
-        if let Some(pane) = self.panes.active_pane_mut() {
-            pane.search.focus = None;
-        }
-        match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.place_cursor(local_x, local_y, extend);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn editor_double_click_untracked(&mut self, x: f32, y: f32) -> bool {
-        let Some((path, local_x, local_y)) = self.panes.body_point(x, y) else {
-            return false;
-        };
-        self.panes.active = path;
-        match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.select_word_at(local_x, local_y);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn editor_drag_untracked(&mut self, x: f32, y: f32) -> bool {
-        let Some(index) = self
-            .panes
-            .pane_order()
-            .iter()
-            .position(|p| *p == self.panes.active)
-        else {
-            return false;
-        };
-        let Some(rect) = self.panes.pane_rects().get(index).copied() else {
-            return false;
-        };
-        let header_h = self
-            .panes
-            .pane_at(&self.panes.active)
-            .map_or(TAB_H, Pane::header_h);
-        let text_top = rect.y + header_h;
-        let text_bottom = rect.y + rect.h;
-        let vertical_margin = EDIT_LINE_H.min((text_bottom - text_top) / 3.0);
-        let delta_rows = if y < text_top + vertical_margin {
-            -drag_autoscroll_rows(text_top + vertical_margin - y)
-        } else if y > text_bottom - vertical_margin {
-            drag_autoscroll_rows(y - (text_bottom - vertical_margin))
-        } else {
-            0.0
-        };
-        let em = char_advance();
-        let horizontal_space = HORIZONTAL_SCROLL_MARGIN * em;
-        let Some(item) = self.panes.active_item_mut() else {
-            return false;
-        };
-        if !item.is_editable() {
-            return false;
-        }
-        let text_left = rect.x + item.gutter_w() + horizontal_space;
-        let text_right = rect.x + rect.w - horizontal_space;
-        let delta_columns = if x < text_left {
-            -drag_autoscroll_columns(text_left - x)
-        } else if x > text_right {
-            drag_autoscroll_columns(x - text_right)
-        } else {
-            0.0
-        };
-        item.scroll_by(-delta_rows * EDIT_LINE_H);
-        item.scroll_by_x(-delta_columns * em);
-        let local_x = (x - rect.x).max(0.0);
-        let local_y = y - (rect.y + header_h);
-        item.place_cursor(local_x, local_y, true);
-        true
-    }
-
-    fn focused_editable(&self) -> bool {
-        self.panes.active_item().is_some_and(|it| it.is_editable())
     }
 }
 
@@ -4921,11 +4776,171 @@ fn color_of(theme: &Theme, capture: &str) -> Rgba {
     Rgba::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
 }
 
-impl FunctionView for FilesView {
-    fn cursor_position(&self) -> Option<String> {
-        self.panes.active_item()?.cursor_status()
+impl ItemInput for FilesView {
+    fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
+        if self.track_nav(|view| view.modal_key(key, shift)) {
+            return true;
+        }
+        self.panes.editor_key(key, shift)
     }
 
+    fn editor_text(&mut self, text: &str) -> bool {
+        if self.track_nav(|view| view.modal_text(text)) {
+            return true;
+        }
+        self.panes.editor_text(text)
+    }
+
+    fn editor_paste(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool {
+        if self.track_nav(|view| view.modal_text(text)) {
+            return true;
+        }
+        self.panes.editor_paste(text, slices)
+    }
+
+    fn editor_ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) -> bool {
+        self.panes.editor_ime_preedit(text, selected)
+    }
+
+    fn editor_ime_commit(&mut self, text: &str) -> bool {
+        self.panes.editor_ime_commit(text)
+    }
+
+    fn editor_click(&mut self, x: f32, y: f32, extend: bool) -> bool {
+        self.confirm_tree_edit(true);
+        let clicked = self.panes.editor_click(x, y, extend);
+        self.follow_navigation();
+        clicked
+    }
+
+    fn editor_double_click(&mut self, x: f32, y: f32) -> bool {
+        self.panes.editor_double_click(x, y)
+    }
+
+    fn editor_drag(&mut self, x: f32, y: f32) -> bool {
+        self.panes.editor_drag(x, y)
+    }
+
+    fn editor_hover(&mut self, x: f32, y: f32) -> bool {
+        self.panes.editor_hover(x, y)
+    }
+
+    fn editor_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        self.panes.editor_scroll(x, y, dx, dy)
+    }
+
+    fn editor_copy(&self) -> Option<CopiedText> {
+        if let Some(edit) = self.tree_ops.edit.as_ref() {
+            return edit.field.selected_text().map(|text| CopiedText {
+                text,
+                slices: Vec::new(),
+            });
+        }
+        self.panes.editor_copy()
+    }
+
+    fn editor_cut(&mut self) -> Option<CopiedText> {
+        self.panes.editor_cut()
+    }
+
+    fn editor_copy_trimmed(&self) -> Option<CopiedText> {
+        self.panes.editor_copy_trimmed()
+    }
+
+    fn editor_selected_text(&self) -> Option<String> {
+        self.panes.editor_selected_text()
+    }
+
+    fn editor_right_press(&mut self, x: f32, y: f32) -> bool {
+        self.panes.editor_right_press(x, y)
+    }
+
+    fn editor_menu_anchor_at(&self, x: f32, y: f32) -> Option<(Vec<usize>, usize)> {
+        self.panes.editor_menu_anchor_at(x, y)
+    }
+
+    fn editor_menu_y(&self, path: &[usize], line: usize) -> Option<f32> {
+        self.panes.editor_menu_y(path, line)
+    }
+
+    fn editor_save(&mut self) -> Option<Result<(), String>> {
+        self.panes.editor_save()
+    }
+
+    fn editor_focused(&self) -> bool {
+        self.tree_edit_active() || self.panes.editor_focused()
+    }
+
+    fn cursor_position(&self) -> Option<String> {
+        self.panes.cursor_position()
+    }
+
+    fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)> {
+        let popovers = self.panes.editor_popovers(viewport);
+        if self.outline.is_some() || self.palette.is_some() || self.go_to_line.is_some() {
+            return Vec::new();
+        }
+        popovers
+    }
+
+    fn popover_scroll(&mut self, index: usize, dy: f32) -> bool {
+        self.panes.popover_scroll(index, dy)
+    }
+
+    fn active_wants_keystrokes(&self) -> bool {
+        self.panes.active_wants_keystrokes()
+    }
+
+    fn item_keystroke(&mut self, keystroke: &terminal::Keystroke) -> workspace::TerminalKeyOutcome {
+        self.panes.item_keystroke(keystroke)
+    }
+
+    fn item_text(&mut self, text: &str) {
+        self.panes.item_text(text);
+    }
+
+    fn item_paste(&mut self, text: &str) {
+        self.panes.item_paste(text);
+    }
+
+    fn item_focus_changed(&mut self, focused: bool) {
+        self.panes.item_focus_changed(focused);
+    }
+
+    fn item_pointer_down(
+        &mut self,
+        x: f32,
+        y: f32,
+        click_count: u32,
+        modifiers: terminal::Modifiers,
+    ) -> bool {
+        self.panes.item_pointer_down(x, y, click_count, modifiers)
+    }
+
+    fn item_pointer_drag(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool {
+        self.panes.item_pointer_drag(x, y, modifiers)
+    }
+
+    fn item_pointer_move(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool {
+        self.panes.item_pointer_move(x, y, modifiers)
+    }
+
+    fn item_pointer_up(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) {
+        self.panes.item_pointer_up(x, y, modifiers);
+    }
+
+    fn item_pointer_scroll(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_y: f32,
+        modifiers: terminal::Modifiers,
+    ) -> bool {
+        self.panes.item_pointer_scroll(x, y, delta_y, modifiers)
+    }
+}
+
+impl FunctionView for FilesView {
     fn modal(&mut self, viewport: (f32, f32)) -> Option<ModalView> {
         self.window_size = viewport;
         if let Some((path, view)) = self.outline.as_mut() {
@@ -4988,79 +5003,6 @@ impl FunctionView for FilesView {
             warnings,
             current,
         })
-    }
-
-    fn editor_popovers(&mut self) -> Vec<(Node, f32, f32)> {
-        self.popover_sources.clear();
-        if self.outline.is_some() || self.palette.is_some() || self.go_to_line.is_some() {
-            return Vec::new();
-        }
-        let mut popovers = Vec::new();
-        let completion = self
-            .panes
-            .focused_content()
-            .and_then(|content| self.panes.active_item()?.completion_popover(content));
-        if let Some(completion) = completion {
-            popovers.push(completion);
-            self.popover_sources.push(PopoverSource::Completion);
-            let viewport = self.window_size;
-            let aside = self.panes.focused_content().and_then(|content| {
-                self.panes
-                    .active_item()?
-                    .completion_aside(content, viewport)
-            });
-            if let Some(aside) = aside {
-                popovers.push(aside);
-                self.popover_sources.push(PopoverSource::CompletionAside);
-            }
-        }
-        for (index, rect) in self.panes.pane_rects().iter().enumerate() {
-            let Some(path) = self.panes.pane_order().get(index) else {
-                continue;
-            };
-            let Some(pane) = self.panes.pane_at(path) else {
-                continue;
-            };
-            let Some(item) = pane.active.and_then(|i| pane.open.get(i)) else {
-                continue;
-            };
-            let tab_h = pane.header_h();
-            let content = Rect::new(
-                rect.x,
-                rect.y + tab_h,
-                rect.w,
-                rect.h - tab_h,
-                Rgba::TRANSPARENT,
-            );
-            for (position, popover) in item.hover_popovers(content).into_iter().enumerate() {
-                popovers.push(popover);
-                self.popover_sources.push(PopoverSource::Hover {
-                    pane: path.clone(),
-                    index: position,
-                });
-            }
-        }
-        popovers
-    }
-
-    fn popover_scroll(&mut self, index: usize, dy: f32) -> bool {
-        match self.popover_sources.get(index).cloned() {
-            Some(PopoverSource::Completion) => self
-                .panes
-                .active_item_mut()
-                .is_some_and(|item| item.scroll_completion(dy)),
-            Some(PopoverSource::CompletionAside) => self
-                .panes
-                .active_item_mut()
-                .is_some_and(|item| item.scroll_completion_aside(dy)),
-            Some(PopoverSource::Hover { pane, index }) => self
-                .panes
-                .group
-                .leaf_at_mut(&pane)
-                .and_then(|pane| pane.active.and_then(|i| pane.open.get_mut(i)))
-                .is_some_and(|item| item.scroll_hover(index, dy)),
-            None => false,
-        }
     }
 
     fn modal_scroll(&mut self, dy: f32) -> bool {
@@ -5520,13 +5462,6 @@ impl FunctionView for FilesView {
         self.panes.accept_foreign_item(item);
     }
 
-    fn editor_save(&mut self) -> Option<Result<(), String>> {
-        match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => Some(item.save()),
-            _ => None,
-        }
-    }
-
     fn refresh_disk_state(&mut self) {
         self.panes.group.for_each_pane_mut(&mut |pane| {
             pane.open
@@ -5549,10 +5484,6 @@ impl FunctionView for FilesView {
             .group
             .for_each_pane(&mut |pane| busy |= pane.open.iter().any(|item| item.is_busy()));
         busy
-    }
-
-    fn editor_focused(&self) -> bool {
-        self.tree_edit_active() || self.focused_editable()
     }
 
     fn tree_menu_state(&self, path: Option<&str>) -> workspace::TreeMenuState {
@@ -5584,116 +5515,6 @@ impl FunctionView for FilesView {
         if let Some(pane) = self.panes.active_pane_mut() {
             pane.add_item(item);
         }
-    }
-
-    fn active_wants_keystrokes(&self) -> bool {
-        self.panes
-            .active_item()
-            .is_some_and(|item| item.wants_keystrokes())
-    }
-
-    fn item_keystroke(&mut self, keystroke: &terminal::Keystroke) -> workspace::TerminalKeyOutcome {
-        self.panes.item_keystroke(keystroke)
-    }
-
-    fn item_text(&mut self, text: &str) {
-        self.panes.item_text(text);
-    }
-
-    fn item_paste(&mut self, text: &str) {
-        self.panes.item_paste(text);
-    }
-
-    fn item_focus_changed(&mut self, focused: bool) {
-        if let Some(item) = self
-            .panes
-            .active_item_mut()
-            .filter(|item| item.wants_keystrokes())
-        {
-            item.set_focused(focused);
-        }
-    }
-
-    fn item_pointer_down(
-        &mut self,
-        x: f32,
-        y: f32,
-        click_count: u32,
-        modifiers: terminal::Modifiers,
-    ) -> bool {
-        let Some(path) = self.panes.pane_path_at(x, y) else {
-            return false;
-        };
-        let handled = self
-            .panes
-            .group
-            .leaf_at_mut(&path)
-            .and_then(Pane::active_item_mut)
-            .is_some_and(|item| item.pointer_down(x, y, click_count, modifiers));
-        if handled {
-            self.panes.active = path.clone();
-            self.pointer_pane = Some(path);
-        }
-        handled
-    }
-
-    fn item_pointer_drag(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool {
-        let Some(path) = self.pointer_pane.clone() else {
-            return false;
-        };
-        self.panes
-            .group
-            .leaf_at_mut(&path)
-            .and_then(Pane::active_item_mut)
-            .is_some_and(|item| item.pointer_drag(x, y, modifiers))
-    }
-
-    fn item_pointer_move(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool {
-        let active = self.panes.active.clone();
-        let mut changed = false;
-        for path in self.panes.pane_order().to_vec() {
-            let focused = path == active;
-            if let Some(item) = self
-                .panes
-                .group
-                .leaf_at_mut(&path)
-                .and_then(Pane::active_item_mut)
-            {
-                changed |= item.pointer_move(x, y, modifiers, focused);
-            }
-        }
-        changed
-    }
-
-    fn item_pointer_up(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) {
-        let Some(path) = self.pointer_pane.take() else {
-            return;
-        };
-        if let Some(item) = self
-            .panes
-            .group
-            .leaf_at_mut(&path)
-            .and_then(Pane::active_item_mut)
-        {
-            item.pointer_up(x, y, modifiers);
-        }
-    }
-
-    fn item_pointer_scroll(
-        &mut self,
-        x: f32,
-        y: f32,
-        delta_y: f32,
-        modifiers: terminal::Modifiers,
-    ) -> bool {
-        let Some(path) = self.panes.pane_path_at(x, y) else {
-            return false;
-        };
-        self.panes
-            .group
-            .leaf_at_mut(&path)
-            .and_then(Pane::active_item_mut)
-            .is_some_and(|item| item.pointer_scroll(x, y, delta_y, modifiers))
     }
 
     fn tick_items(&mut self, clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
@@ -5778,12 +5599,6 @@ impl FunctionView for FilesView {
         });
     }
 
-    fn editor_copy_trimmed(&self) -> Option<CopiedText> {
-        self.panes
-            .active_item()
-            .and_then(|item| item.copy_trimmed())
-    }
-
     fn row_path(&self, id: u64) -> Option<(String, bool)> {
         if id < FUNC_VIEW_BASE {
             return None;
@@ -5801,184 +5616,6 @@ impl FunctionView for FilesView {
 
     fn open_path(&mut self, path: &str) {
         self.open_file(path);
-    }
-
-    fn editor_right_press(&mut self, x: f32, y: f32) -> bool {
-        let Some((path, lx, ly)) = self.panes.body_point(x, y) else {
-            return false;
-        };
-        self.panes.active = path;
-        match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.right_press(lx, ly);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn editor_menu_anchor_at(&self, x: f32, y: f32) -> Option<(Vec<usize>, usize)> {
-        let (path, _lx, ly) = self.panes.body_point(x, y)?;
-        let line = self
-            .panes
-            .pane_at(&path)?
-            .active_item()?
-            .buffer_line_at(ly)?;
-        Some((path, line))
-    }
-
-    fn editor_menu_y(&self, path: &[usize], line: usize) -> Option<f32> {
-        let idx = self
-            .panes
-            .pane_order()
-            .iter()
-            .position(|p| p.as_slice() == path)?;
-        let rect = *self.panes.pane_rects().get(idx)?;
-        let pane = self.panes.pane_at(path)?;
-        let tab_h = pane.header_h();
-        let content = Rect::new(
-            rect.x,
-            rect.y + tab_h,
-            rect.w.max(0.0),
-            (rect.h - tab_h).max(0.0),
-            Rgba::TRANSPARENT,
-        );
-        pane.active_item()?.line_screen_y(content, line)
-    }
-
-    fn editor_paste(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool {
-        self.track_nav(|v| v.editor_paste_untracked(text, slices))
-    }
-    fn editor_hover(&mut self, x: f32, y: f32) -> bool {
-        let mut changed = false;
-        for (index, rect) in self.panes.pane_rects().to_vec().into_iter().enumerate() {
-            let Some(path) = self.panes.pane_order().get(index).cloned() else {
-                continue;
-            };
-            let Some(pane) = self.panes.group.leaf_at_mut(&path) else {
-                continue;
-            };
-            let tab_h = pane.header_h();
-            let Some(item) = pane.active.and_then(|i| pane.open.get_mut(i)) else {
-                continue;
-            };
-            let over_gutter = x >= rect.x
-                && x < rect.x + item.gutter_w()
-                && y >= rect.y + tab_h
-                && y < rect.y + rect.h;
-            changed |= item.set_gutter_hovered(over_gutter);
-            let in_pane =
-                x >= rect.x && x < rect.x + rect.w && y >= rect.y + tab_h && y < rect.y + rect.h;
-            let local = in_pane.then_some((x - rect.x, y - (rect.y + tab_h)));
-            changed |= item.pointer_moved(local, (x, y));
-        }
-        changed
-    }
-
-    fn editor_ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) -> bool {
-        match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.ime_preedit(text, selected);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn editor_ime_commit(&mut self, text: &str) -> bool {
-        match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.ime_commit(text);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn editor_copy(&self) -> Option<CopiedText> {
-        if let Some(edit) = self.tree_ops.edit.as_ref() {
-            return edit.field.selected_text().map(|text| CopiedText {
-                text,
-                slices: Vec::new(),
-            });
-        }
-        if let Some(pane) = self.panes.pane_at(&self.panes.active) {
-            let field = match pane.search.focus {
-                Some(SearchField::Query) => Some(&pane.search.query),
-                Some(SearchField::Replacement) => Some(&pane.search.replacement),
-                None => None,
-            };
-            if let Some(field) = field.filter(|_| !pane.search.dismissed) {
-                return field.selected_text().map(|text| CopiedText {
-                    text,
-                    slices: Vec::new(),
-                });
-            }
-        }
-        self.panes.active_item().and_then(|item| item.copy())
-    }
-
-    fn editor_cut(&mut self) -> Option<CopiedText> {
-        if let Some((bar, item)) = self.panes.focused_search() {
-            let text = match bar.focus {
-                Some(SearchField::Replacement) => bar.replacement.selected_text(),
-                _ => bar.query.selected_text(),
-            }?;
-            bar.key(item, EditKey::Backspace, false);
-            return Some(CopiedText {
-                text,
-                slices: Vec::new(),
-            });
-        }
-        match self.panes.active_item_mut() {
-            Some(item) if item.is_editable() => item.cut(),
-            _ => None,
-        }
-    }
-
-    fn editor_text(&mut self, text: &str) -> bool {
-        self.track_nav(|v| v.editor_text_untracked(text))
-    }
-    fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
-        if matches!(key, EditKey::GoBack | EditKey::GoForward) {
-            return self.editor_key_untracked(key, shift);
-        }
-        self.track_nav(|v| v.editor_key_untracked(key, shift))
-    }
-    fn editor_click(&mut self, x: f32, y: f32, extend: bool) -> bool {
-        self.track_nav(|v| v.editor_click_untracked(x, y, extend))
-    }
-    fn editor_drag(&mut self, x: f32, y: f32) -> bool {
-        self.track_nav(|v| v.editor_drag_untracked(x, y))
-    }
-    fn editor_double_click(&mut self, x: f32, y: f32) -> bool {
-        self.track_nav(|v| v.editor_double_click_untracked(x, y))
-    }
-    fn editor_selected_text(&self) -> Option<String> {
-        self.panes.active_item().and_then(|it| it.selected_text())
-    }
-
-    fn editor_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
-        let idx = self
-            .panes
-            .pane_rects()
-            .iter()
-            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
-        let Some(idx) = idx else { return false };
-        let path = self.panes.pane_order()[idx].clone();
-        match self
-            .panes
-            .group
-            .leaf_at_mut(&path)
-            .and_then(|p| p.active.and_then(|i| p.open.get_mut(i)))
-        {
-            Some(item) if item.is_editable() => {
-                let moved_y = item.scroll_by(dy);
-                let moved_x = item.scroll_by_x(dx);
-                moved_x || moved_y
-            }
-            _ => false,
-        }
     }
 
     fn on_scroll(&mut self, dx: f32, dy: f32, vw: f32, vh: f32) -> bool {
@@ -6263,7 +5900,7 @@ mod indent_guide_tests {
 mod search_bar_tests {
     use super::*;
     use editor::search::Direction;
-    use workspace::search_bar::{SearchBar, SearchClick};
+    use workspace::search_bar::{SearchBar, SearchClick, SearchField};
 
     fn item(text: &str) -> FileItem {
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));

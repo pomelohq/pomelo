@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use terminal::{Keystroke, Modifiers, Waker};
+use terminal::Waker;
 use ui::{label, theme, IconKind, Node, Painted, Rect};
 use workspace::pane::{Pane, PaneCommand};
 use workspace::pane_group::SplitDirection;
@@ -11,8 +11,8 @@ use workspace::pane_group_view::{
     GroupClick, PaneButton, PaneButtonAction, PaneGroupConfig, PaneGroupView,
 };
 use workspace::{
-    DividerAxis, EditorLayout, Item, TerminalKeyOutcome, TerminalOpenTarget, TerminalPanelView,
-    TerminalSyncOutcome, TERMINAL_VIEW_BASE,
+    DividerAxis, EditorLayout, Item, TerminalOpenTarget, TerminalPanelView, TerminalSyncOutcome,
+    TERMINAL_VIEW_BASE,
 };
 
 use crate::item::{Host, TerminalItem};
@@ -30,8 +30,6 @@ pub struct TerminalPanel {
     waker: Waker,
     panes: PaneGroupView,
     next_item_id: u64,
-    /// The pane a press landed in, so the drag and release go to the same terminal.
-    pressed_pane: Option<Vec<usize>>,
     focused: bool,
     /// The terminal last told it has focus, so a change of active tab or pane moves focus reporting along.
     focus_holder: Option<String>,
@@ -67,7 +65,6 @@ impl TerminalPanel {
             waker,
             panes,
             next_item_id: 0,
-            pressed_pane: None,
             focused: false,
             focus_holder: None,
             spawn_error: None,
@@ -96,12 +93,6 @@ impl TerminalPanel {
 
     fn active_terminal(&mut self) -> Option<&mut TerminalItem> {
         terminal_of(self.active_pane()?)
-    }
-
-    fn terminal_at(&mut self, x: f32, y: f32) -> Option<(Vec<usize>, &mut TerminalItem)> {
-        let path = self.panes.pane_path_at(x, y)?;
-        let item = terminal_of(self.panes.group.leaf_at_mut(&path)?)?;
-        item.body_contains(x, y).then_some((path, item))
     }
 
     /// Tell terminals when focus moves between them (a tab or pane switch, or the panel gaining focus), so the
@@ -162,6 +153,14 @@ impl TerminalPanel {
 }
 
 impl TerminalPanelView for TerminalPanel {
+    fn panes(&mut self) -> &mut PaneGroupView {
+        &mut self.panes
+    }
+
+    fn panes_ref(&self) -> &PaneGroupView {
+        &self.panes
+    }
+
     fn render(&mut self, region: Rect, focused: bool) -> (Painted, EditorLayout) {
         self.focused = focused;
         self.panes.set_focused(focused);
@@ -281,88 +280,6 @@ impl TerminalPanelView for TerminalPanel {
         self.reconcile_focus();
     }
 
-    fn grid_contains(&self, x: f32, y: f32) -> bool {
-        self.panes
-            .body_point(x, y)
-            .and_then(|(path, _, _)| self.panes.pane_at(&path))
-            .is_some_and(|pane| !pane.open.is_empty())
-    }
-
-    fn mouse_down(&mut self, x: f32, y: f32, click_count: u32, modifiers: Modifiers) -> bool {
-        let Some(path) = self.panes.pane_path_at(x, y) else {
-            return false;
-        };
-        self.panes.active = path.clone();
-        if let Some(pane) = self.panes.group.leaf_at_mut(&path) {
-            pane.search.focus = None;
-        }
-        self.reconcile_focus();
-        let Some((path, item)) = self.terminal_at(x, y) else {
-            return false;
-        };
-        item.mouse_down(x, y, click_count, modifiers);
-        self.pressed_pane = Some(path);
-        true
-    }
-
-    fn mouse_drag(&mut self, x: f32, y: f32, modifiers: Modifiers) -> bool {
-        let Some(path) = self.pressed_pane.clone() else {
-            return false;
-        };
-        self.panes
-            .group
-            .leaf_at_mut(&path)
-            .and_then(terminal_of)
-            .is_some_and(|item| item.mouse_drag(x, y, modifiers))
-    }
-
-    fn mouse_move(&mut self, x: f32, y: f32, modifiers: Modifiers) -> bool {
-        let focused = self.focused;
-        let active = self.panes.active.clone();
-        let under = self.panes.pane_path_at(x, y);
-        let mut changed = false;
-        for path in self.panes.pane_order().to_vec() {
-            let Some(item) = self.panes.group.leaf_at_mut(&path).and_then(terminal_of) else {
-                continue;
-            };
-            if under.as_ref() == Some(&path) || item.hovering_link() {
-                changed |= item.mouse_move(x, y, modifiers, focused && path == active);
-            }
-        }
-        changed
-    }
-
-    fn mouse_up(&mut self, x: f32, y: f32, modifiers: Modifiers) {
-        let Some(path) = self.pressed_pane.take() else {
-            return;
-        };
-        if let Some(item) = self.panes.group.leaf_at_mut(&path).and_then(terminal_of) {
-            item.mouse_up(x, y, modifiers);
-        }
-    }
-
-    fn scroll(&mut self, x: f32, y: f32, delta_y: f32, modifiers: Modifiers) -> bool {
-        match self.terminal_at(x, y) {
-            Some((_, item)) => {
-                item.scroll(x, y, delta_y, modifiers);
-                true
-            }
-            None => false,
-        }
-    }
-
-    fn key(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
-        self.panes.item_keystroke(keystroke)
-    }
-
-    fn text(&mut self, text: &str) {
-        self.panes.item_text(text);
-    }
-
-    fn paste(&mut self, text: &str) {
-        self.panes.item_paste(text);
-    }
-
     fn focus_changed(&mut self, focused: bool) {
         self.focused = focused;
         self.panes.set_focused(focused);
@@ -471,8 +388,10 @@ impl TerminalPanelView for TerminalPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use terminal::Keystroke;
     use terminal::{Terminal, TerminalOptions};
     use ui::Rgba;
+    use workspace::{ItemInput, TerminalKeyOutcome};
 
     fn panel() -> TerminalPanel {
         TerminalPanel::new(std::env::temp_dir(), std::sync::Arc::new(|| {}))
@@ -510,10 +429,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert_eq!(
-            panel.key(&Keystroke::parse("cmd-f")),
+            panel.panes.item_keystroke(&Keystroke::parse("cmd-f")),
             TerminalKeyOutcome::Handled
         );
-        panel.text("alpha");
+        panel.panes.item_text("alpha");
         let pane = panel.active_pane().unwrap();
         assert_eq!(pane.search.matches.len(), 2);
         assert_eq!(pane.search.active_match, Some(1));
@@ -523,12 +442,12 @@ mod tests {
         assert_eq!(highlighted.len(), 2);
         assert_eq!(highlighted[1].0.line - highlighted[0].0.line, 2);
         assert_eq!(
-            panel.key(&Keystroke::parse("cmd-g")),
+            panel.panes.item_keystroke(&Keystroke::parse("cmd-g")),
             TerminalKeyOutcome::Handled
         );
         assert_eq!(panel.active_pane().unwrap().search.active_match, Some(0));
         assert_eq!(
-            panel.key(&Keystroke::parse("escape")),
+            panel.panes.item_keystroke(&Keystroke::parse("escape")),
             TerminalKeyOutcome::Handled
         );
         assert!(panel.active_pane().unwrap().search.dismissed);
