@@ -414,6 +414,8 @@ pub enum EditKey {
     ToggleGoToLine,
     ToggleCommandPalette,
     ToggleOutline,
+    TogglePickerPreview,
+    SetPickerPreviewRight,
     GoBack,
     GoForward,
     DeploySearch,
@@ -484,12 +486,29 @@ pub struct EditorLayout {
     pub dividers: Vec<DividerPlacement>,
 }
 
+/// How high a surface floats, which sets its shadow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Elevation {
+    /// Popovers and small floating panels.
+    Elevated,
+    /// Modals that take over input, such as pickers.
+    Modal,
+}
+
+pub struct ModalView {
+    pub node: Node,
+    /// Width in design px.
+    pub width: f32,
+    pub elevation: Elevation,
+}
+
 pub trait FunctionView: 'static {
     fn editor_layout(&mut self, area: ui::Rect) -> EditorLayout;
     fn render_tree(&mut self) -> Option<TreePanel> {
         None
     }
-    fn modal(&mut self) -> Option<(Node, f32)> {
+    /// A modal floating over the window (e.g. go to line), given the window size.
+    fn modal(&mut self, _viewport: (f32, f32)) -> Option<ModalView> {
         None
     }
     fn dismiss_modal(&mut self) {}
