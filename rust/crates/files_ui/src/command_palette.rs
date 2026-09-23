@@ -215,6 +215,7 @@ const COMMANDS: &[(&str, PaletteAction, &[&str])] = &[
         Key(EditKey::ShowWordCompletions),
         &[],
     ),
+    ("editor::Hover", Key(EditKey::Hover), &[]),
     ("editor::GoToHunk", Key(EditKey::GoToHunk), &["cmd-f8"]),
     (
         "editor::GoToPreviousHunk",

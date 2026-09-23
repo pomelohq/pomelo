@@ -21,7 +21,7 @@ pub use adapters::{adapter_for, Adapter};
 pub use lsp_types;
 pub use position::{char_to_position, diagnostic_char_range, position_to_char};
 pub use shell_env::capture_login_env;
-pub use store::{DiagnosticsUpdate, LspStore, SyncedText};
+pub use store::{DiagnosticsUpdate, HoverResponse, LspStore, StoreEvent, SyncedText};
 
 const CONTENT_LENGTH: &str = "Content-Length: ";
 /// How long a server gets to answer `shutdown` before it is killed.

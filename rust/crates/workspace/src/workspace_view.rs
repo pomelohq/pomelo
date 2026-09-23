@@ -63,7 +63,7 @@ pub struct WorkspaceView {
     /// Where the open modal was drawn last frame, for dismissing it on outside presses.
     modal_rect: Option<Rect>,
     /// Where the caret popover was drawn last frame, so scrolling over it scrolls it.
-    popover_rect: Option<Rect>,
+    popover_rects: Vec<Rect>,
     layout: Layout,
     session_menu_hover: Option<u64>,
     session_search_query: String,
@@ -99,7 +99,7 @@ impl WorkspaceView {
             submenu: None,
             menu_editor_anchor: None,
             modal_rect: None,
-            popover_rect: None,
+            popover_rects: Vec::new(),
             toast: None,
             pending: WorkspaceEffects::default(),
         }
@@ -717,14 +717,14 @@ impl WorkspaceView {
             });
         }
 
-        // A caret popover floats above the editor, under any modal.
-        self.popover_rect = None;
-        if let Some((node, px, py)) = self
+        self.popover_rects.clear();
+        let popovers = self
             .layout
             .files_view
             .as_mut()
-            .and_then(|v| v.editor_popover())
-        {
+            .map(|v| v.editor_popovers())
+            .unwrap_or_default();
+        for (node, px, py) in popovers {
             let area = Rect::new(px, py, w - px, h - py, Rgba::TRANSPARENT);
             let p = ui::render(&ui::div().col().child(node).into(), area);
             header_hits.extend(p.hits.iter().copied());
@@ -732,7 +732,7 @@ impl WorkspaceView {
             let bottom = p.rects.iter().map(|r| r.y + r.h).fold(py, f32::max);
             let mut painted = Painted::default();
             let popover = Rect::new(px, py, right - px, bottom - py, Rgba::TRANSPARENT);
-            self.popover_rect = Some(popover);
+            self.popover_rects.push(popover);
             painted
                 .rects
                 .extend(elevation_shadow(popover, crate::Elevation::Elevated));
@@ -1589,14 +1589,16 @@ impl WorkspaceView {
     }
 
     pub fn scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
-        if let Some(rect) = self.popover_rect {
-            if x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h {
-                return self
-                    .layout
-                    .files_view
-                    .as_mut()
-                    .is_some_and(|v| v.popover_scroll(dy));
-            }
+        let over_popover = self
+            .popover_rects
+            .iter()
+            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+        if let Some(index) = over_popover {
+            return self
+                .layout
+                .files_view
+                .as_mut()
+                .is_some_and(|v| v.popover_scroll(index, dy));
         }
         // An open modal swallows scrolling over it so the editor underneath stays put.
         if let Some(rect) = self.modal_rect {

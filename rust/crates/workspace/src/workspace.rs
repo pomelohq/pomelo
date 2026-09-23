@@ -343,6 +343,15 @@ pub trait Item: 'static {
     /// A click on row `row` of the word menu.
     fn click_completion(&mut self, _row: usize) {}
     fn hover_completion(&mut self, _id: Option<u64>) {}
+    fn pointer_moved(&mut self, _local: Option<(f32, f32)>, _window: (f32, f32)) -> bool {
+        false
+    }
+    fn hover_popovers(&self, _content: ui::Rect) -> Vec<(Node, f32, f32)> {
+        Vec::new()
+    }
+    fn scroll_hover(&mut self, _index: usize, _dy: f32) -> bool {
+        false
+    }
     fn scroll_completion(&mut self, _dy: f32) -> bool {
         false
     }
@@ -462,6 +471,7 @@ pub enum EditKey {
     ExpandAllDiffHunks,
     ShowCompletions,
     ShowWordCompletions,
+    Hover,
     Undo,
     Redo,
     SelectAll,
@@ -536,12 +546,12 @@ pub trait FunctionView: 'static {
     }
     fn dismiss_modal(&mut self) {}
     /// A wheel or trackpad scroll over the caret popover.
-    fn popover_scroll(&mut self, _dy: f32) -> bool {
+    fn popover_scroll(&mut self, _index: usize, _dy: f32) -> bool {
         false
     }
     /// A popover anchored at the focused editor's caret, with its window position.
-    fn editor_popover(&mut self) -> Option<(Node, f32, f32)> {
-        None
+    fn editor_popovers(&mut self) -> Vec<(Node, f32, f32)> {
+        Vec::new()
     }
     /// A wheel or trackpad scroll over the open modal; returns whether it moved.
     fn modal_scroll(&mut self, _dy: f32) -> bool {
