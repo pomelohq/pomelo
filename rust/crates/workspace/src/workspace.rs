@@ -2,6 +2,7 @@
 //! right dock, both resizable via a divider and collapsing to a fixed icon rail instead of vanishing, plus the
 //! content area. Computes rectangles, text runs and hit regions; the app drives input and rendering.
 
+pub mod pane;
 pub mod pane_group;
 mod panel;
 pub mod search_bar;
@@ -352,6 +353,25 @@ pub trait Item: 'static {
     fn title(&self) -> String;
     fn icon(&self) -> Option<ui::MaterialIcon> {
         None
+    }
+    /// A monochrome tab icon, used instead of the file-type icon when set.
+    fn tab_icon(&self) -> Option<ui::IconKind> {
+        None
+    }
+    /// The body's fill, which the active tab's bottom edge matches so the two read as one surface.
+    fn body_background(&self) -> ui::Rgba {
+        ui::theme().editor_background
+    }
+    fn searchable(&mut self) -> Option<&mut dyn search_bar::Searchable> {
+        None
+    }
+    /// For back/forward history: the caret offset, its row and the scroll position.
+    fn nav_position(&self) -> Option<(usize, usize, (f32, f32))> {
+        None
+    }
+    /// Return to a history position; returns whether anything moved.
+    fn navigate_to(&mut self, _cursor: usize, _scroll: (f32, f32)) -> bool {
+        false
     }
     fn render(&mut self) -> Node;
     fn cursor_status(&self) -> Option<String> {
