@@ -92,6 +92,7 @@ pub enum IconKind {
     KeyArrowRight,
     DiffUnified,
     DiffSplit,
+    FileGit,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
