@@ -3,12 +3,14 @@
 
 pub mod input;
 pub mod mouse;
+pub mod pty_info;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event as BackendEvent, EventListener, Notify, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
@@ -29,6 +31,8 @@ use mouse::grid_point_and_side;
 
 /// Pointer travel (px) before a press becomes a selection drag, so a jittery click selects nothing.
 const SELECTION_DRAG_THRESHOLD: f32 = 2.0;
+/// How often output may trigger re-reading the foreground process for the tab title.
+const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
 pub const DEFAULT_SCROLL_HISTORY_LINES: usize = 10_000;
 pub const MAX_SCROLL_HISTORY_LINES: usize = 100_000;
@@ -264,6 +268,8 @@ pub struct Terminal {
     title: String,
     keyboard_input_sent: bool,
     child_exit: Option<ExitStatus>,
+    process: pty_info::PtyProcessInfo,
+    process_checked: Option<Instant>,
     scroll_px: f32,
     selecting: bool,
     mouse_down_position: Option<(f32, f32)>,
@@ -314,6 +320,10 @@ impl Terminal {
             env: terminal_env(options.env),
         };
         let pty = tty::new(&pty_options, bounds.window_size(), 0)?;
+        let process = {
+            use std::os::fd::AsRawFd;
+            pty_info::PtyProcessInfo::new(pty.file().as_raw_fd(), pty.child().id())
+        };
         let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
         let pty = Notifier(event_loop.channel());
         event_loop.spawn();
@@ -330,6 +340,8 @@ impl Terminal {
             title: String::new(),
             keyboard_input_sent: false,
             child_exit: None,
+            process,
+            process_checked: None,
             scroll_px: 0.0,
             selecting: false,
             mouse_down_position: None,
@@ -343,6 +355,19 @@ impl Terminal {
 
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// The tab title: the foreground process and its directory, or "Terminal" before it is known.
+    pub fn tab_title(&self, truncate: bool) -> String {
+        self.process
+            .current
+            .as_ref()
+            .map(|info| pty_info::title_for(info, truncate))
+            .unwrap_or_else(|| "Terminal".to_string())
+    }
+
+    pub fn process_info(&self) -> Option<&pty_info::ProcessInfo> {
+        self.process.current.as_ref()
     }
 
     pub fn child_exit(&self) -> Option<ExitStatus> {
@@ -641,17 +666,26 @@ impl Terminal {
         self.snapshot();
     }
 
+    /// Resize the grid and the PTY to the last `set_size`, if it changed; returns whether it did.
+    pub fn apply_resize(&mut self) -> bool {
+        let Some(bounds) = self.pending_resize.take() else {
+            return false;
+        };
+        self.content.bounds = bounds;
+        if let Err(error) = self.pty.0.send(Msg::Resize(bounds.window_size())) {
+            eprintln!("terminal resize: {error}");
+        }
+        self.term.lock().resize(bounds);
+        self.snapshot();
+        true
+    }
+
     /// Apply queued resizes/scrolls and backend events, then refresh the snapshot.
     pub fn sync(&mut self, host: &dyn TerminalHost) -> SyncOutcome {
-        let mut outcome = SyncOutcome::default();
-        if let Some(bounds) = self.pending_resize.take() {
-            self.content.bounds = bounds;
-            if let Err(error) = self.pty.0.send(Msg::Resize(bounds.window_size())) {
-                eprintln!("terminal resize: {error}");
-            }
-            self.term.lock().resize(bounds);
-            outcome.changed = true;
-        }
+        let mut outcome = SyncOutcome {
+            changed: self.apply_resize(),
+            ..SyncOutcome::default()
+        };
         if std::mem::take(&mut self.pending_scroll_to_bottom) {
             self.term.lock().scroll_display(Scroll::Bottom);
             outcome.changed = true;
@@ -697,7 +731,16 @@ impl Terminal {
                 self.pty.notify(format(color).into_bytes());
             }
             BackendEvent::Bell => outcome.bell = true,
-            BackendEvent::Wakeup => outcome.changed = true,
+            BackendEvent::Wakeup => {
+                outcome.changed = true;
+                let due = self
+                    .process_checked
+                    .is_none_or(|at| at.elapsed() >= PROCESS_REFRESH_INTERVAL);
+                if due {
+                    self.process_checked = Some(Instant::now());
+                    outcome.title_changed |= self.process.refresh();
+                }
+            }
             BackendEvent::Exit => outcome.close |= self.should_close(),
             BackendEvent::ChildExit(status) => {
                 self.child_exit = Some(status);

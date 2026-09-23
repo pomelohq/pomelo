@@ -73,7 +73,64 @@ fn files_root() -> std::path::PathBuf {
 }
 
 fn install_features(layout: &mut Layout) {
-    layout.files_view = Some(Box::new(files_ui::FilesView::new(files_root())));
+    let root = files_root();
+    layout.files_view = Some(Box::new(files_ui::FilesView::new(root.clone())));
+    layout.terminal_view = Some(Box::new(terminal_ui::TerminalPanel::new(
+        root,
+        std::sync::Arc::new(ui::wake),
+    )));
+}
+
+/// A key press in the terminal's terms: named keys by name, character keys as typed without modifiers (so
+/// ctrl/alt bindings see the base letter rather than a composed character).
+fn terminal_keystroke(
+    event: &winit::event::KeyEvent,
+    modifiers: terminal::Modifiers,
+) -> Option<terminal::Keystroke> {
+    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    let key = match event.key_without_modifiers() {
+        Key::Character(c) => c.to_string(),
+        Key::Named(named) => match named {
+            NamedKey::Enter => "enter".into(),
+            NamedKey::Tab => "tab".into(),
+            NamedKey::Escape => "escape".into(),
+            NamedKey::Backspace => "backspace".into(),
+            NamedKey::Delete => "delete".into(),
+            NamedKey::Insert => "insert".into(),
+            NamedKey::Home => "home".into(),
+            NamedKey::End => "end".into(),
+            NamedKey::PageUp => "pageup".into(),
+            NamedKey::PageDown => "pagedown".into(),
+            NamedKey::ArrowUp => "up".into(),
+            NamedKey::ArrowDown => "down".into(),
+            NamedKey::ArrowLeft => "left".into(),
+            NamedKey::ArrowRight => "right".into(),
+            NamedKey::Space => "space".into(),
+            NamedKey::F1 => "f1".into(),
+            NamedKey::F2 => "f2".into(),
+            NamedKey::F3 => "f3".into(),
+            NamedKey::F4 => "f4".into(),
+            NamedKey::F5 => "f5".into(),
+            NamedKey::F6 => "f6".into(),
+            NamedKey::F7 => "f7".into(),
+            NamedKey::F8 => "f8".into(),
+            NamedKey::F9 => "f9".into(),
+            NamedKey::F10 => "f10".into(),
+            NamedKey::F11 => "f11".into(),
+            NamedKey::F12 => "f12".into(),
+            NamedKey::F13 => "f13".into(),
+            NamedKey::F14 => "f14".into(),
+            NamedKey::F15 => "f15".into(),
+            NamedKey::F16 => "f16".into(),
+            NamedKey::F17 => "f17".into(),
+            NamedKey::F18 => "f18".into(),
+            NamedKey::F19 => "f19".into(),
+            NamedKey::F20 => "f20".into(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(terminal::Keystroke::new(key, modifiers))
 }
 
 /// Read the current dock layout back into settings for persistence.
@@ -692,6 +749,51 @@ impl ApplicationHandler for App {
                     if let Some(m) = self.mains.get_mut(&id) {
                         m.dirty = true;
                     }
+                }
+                return;
+            }
+        }
+        if let WindowEvent::Ime(Ime::Commit(text)) = &event {
+            if self.mains.contains_key(&id)
+                && self.with_workspace_view(id, |v, _| v.terminal_focused()) == Some(true)
+            {
+                self.with_workspace_view(id, |v, _| v.terminal_text(text));
+                if let Some(m) = self.mains.get_mut(&id) {
+                    m.dirty = true;
+                }
+                return;
+            }
+        }
+        if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
+            let toggle_terminal = ke.state == ElementState::Pressed
+                && self.ctrl_down
+                && !self.super_down
+                && matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "`");
+            if toggle_terminal && self.mains.contains_key(&id) {
+                self.with_workspace_view(id, |v, _| v.toggle_terminal());
+                self.sync_workspace_effects(id, event_loop);
+                return;
+            }
+            if ke.state == ElementState::Pressed
+                && self.mains.contains_key(&id)
+                && self.with_workspace_view(id, |v, _| v.terminal_focused()) == Some(true)
+            {
+                let modifiers = terminal::Modifiers {
+                    shift: self.shift_down,
+                    alt: self.alt_down,
+                    ctrl: self.ctrl_down,
+                    cmd: self.super_down,
+                };
+                let consumed = terminal_keystroke(ke, modifiers).is_some_and(|keystroke| {
+                    self.with_workspace_view(id, |v, _| v.terminal_key(&keystroke)) == Some(true)
+                });
+                if !consumed && !modifiers.cmd && !modifiers.ctrl {
+                    if let Some(text) = ke.text.as_ref().map(|text| text.to_string()) {
+                        self.with_workspace_view(id, |v, _| v.terminal_text(&text));
+                    }
+                }
+                if let Some(m) = self.mains.get_mut(&id) {
+                    m.dirty = true;
                 }
                 return;
             }

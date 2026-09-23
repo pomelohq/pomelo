@@ -10,4 +10,5 @@ path = "src/workspace.rs"
 
 [dependencies]
 ui = { path = "../ui" }
+terminal = { path = "../terminal" }
 arboard = "3.6.1"

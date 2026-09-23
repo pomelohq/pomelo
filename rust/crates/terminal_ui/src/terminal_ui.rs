@@ -3,6 +3,7 @@
 
 mod blocks;
 mod contrast;
+mod panel;
 
 use std::collections::HashMap;
 
@@ -12,6 +13,7 @@ use terminal::{
 use ui::{div, label, Node, Rect, Rgba, ThemeColors};
 
 pub use contrast::{apca_contrast, ensure_minimum_contrast};
+pub use panel::TerminalPanel;
 
 pub const FONT_SIZE: f32 = 15.0;
 /// The "standard" terminal line height (the comfortable one is 1.618).

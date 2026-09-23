@@ -53,6 +53,7 @@ pub const STATUS_BAR_H: f32 = 24.0; // the thin status strip at the very bottom 
 pub const RAIL_W: f32 = 48.0; // collapsed dock width — the icon rail; the dock never goes narrower than this
 pub const FUNC_BASE: u64 = 700; // function-nav click ids (bottom bar): FUNC_BASE + PaneKind index
 pub const FUNC_VIEW_BASE: u64 = 10000; // click ids owned by a feature's `FunctionView` (routed to it)
+pub const TERMINAL_VIEW_BASE: u64 = 5000; // click ids owned by the terminal panel, up to FUNC_VIEW_BASE
 pub const FILES_TREE_W: f32 = 260.0; // default width of the Files tree dock (left of the center editor)
 pub const FILES_TREE_MIN: f32 = 160.0;
 pub const FILES_TREE_MAX: f32 = 560.0;
@@ -215,6 +216,8 @@ pub const MENU_EDIT_GO_TO_TYPE_DEFINITION: u64 = 892;
 pub const MENU_EDIT_GO_TO_IMPLEMENTATION: u64 = 893;
 pub const MENU_EDIT_COPY_TRIM: u64 = 894;
 pub const MENU_EDIT_REVEAL: u64 = 895;
+pub const MENU_TREE_OPEN_TERMINAL: u64 = 884;
+pub const MENU_EDIT_OPEN_TERMINAL: u64 = 896;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeAction {
@@ -327,6 +330,7 @@ pub struct Layout {
     /// Pixel scroll offset of the (scrollable) session menu list.
     pub session_scroll: f32,
     pub files_view: Option<Box<dyn FunctionView>>,
+    pub terminal_view: Option<Box<dyn TerminalPanelView>>,
     pub files_tree_w: f32,
 }
 
@@ -635,6 +639,53 @@ pub struct ModalView {
     pub elevation: Elevation,
 }
 
+/// What a key did in the focused terminal. Copy and Paste need the system clipboard, which the workspace owns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalKeyOutcome {
+    Ignored,
+    Handled,
+    Copy(String),
+    Paste,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalSyncOutcome {
+    pub changed: bool,
+    pub clipboard_store: Option<String>,
+    /// The last terminal exited, so the panel should close.
+    pub closed_all: bool,
+}
+
+/// The terminal panel as the workspace drives it: drawn into whichever area shows the terminal, fed pointer and
+/// keyboard input while focused, and synced with its shells on every frame.
+pub trait TerminalPanelView: 'static {
+    fn render(&mut self, region: Rect, focused: bool) -> ui::Painted;
+    /// Tab bar clicks (ids from `TERMINAL_VIEW_BASE`).
+    fn click(&mut self, id: u64) -> bool;
+    /// The hit id under the pointer (tabs reveal their close button while hovered); returns whether to repaint.
+    fn set_hover(&mut self, id: Option<u64>) -> bool;
+    fn grid_contains(&self, x: f32, y: f32) -> bool;
+    fn mouse_down(
+        &mut self,
+        x: f32,
+        y: f32,
+        click_count: u32,
+        modifiers: terminal::Modifiers,
+    ) -> bool;
+    fn mouse_drag(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool;
+    fn mouse_move(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers) -> bool;
+    fn mouse_up(&mut self, x: f32, y: f32, modifiers: terminal::Modifiers);
+    fn scroll(&mut self, x: f32, y: f32, delta_y: f32, modifiers: terminal::Modifiers) -> bool;
+    fn key(&mut self, keystroke: &terminal::Keystroke) -> TerminalKeyOutcome;
+    fn text(&mut self, text: &str);
+    fn paste(&mut self, text: &str);
+    fn focus_changed(&mut self, focused: bool);
+    fn sync(&mut self, clipboard: &dyn Fn() -> Option<String>) -> TerminalSyncOutcome;
+    /// Start a shell in `cwd` (the project root when `None`) as a new active tab.
+    fn open(&mut self, cwd: Option<std::path::PathBuf>);
+    fn is_empty(&self) -> bool;
+}
+
 pub trait FunctionView: 'static {
     fn editor_layout(&mut self, area: ui::Rect) -> EditorLayout;
     fn render_tree(&mut self) -> Option<TreePanel> {
@@ -858,6 +909,7 @@ impl Default for Layout {
             session_menu: false,
             session_scroll: 0.0,
             files_view: None,
+            terminal_view: None,
             files_tree_w: FILES_TREE_W,
         }
     }

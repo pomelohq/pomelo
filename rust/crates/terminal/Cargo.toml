@@ -11,3 +11,5 @@ path = "src/terminal.rs"
 [dependencies]
 alacritty_terminal = "0.26.0"
 anyhow.workspace = true
+libc = "0.2"
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
