@@ -5,9 +5,9 @@
 
 use crate::{
     context_menu, function_content, function_dock_body, is_submenu, session_action_tooltip,
-    status_bar, status_tooltip, terminal_content, terminal_dock_body, tooltip, tooltip_above,
-    DividerAxis, DockPosition, EditKey, Layout, MenuItem, PaneKind, Shown, AGENT_TOGGLE,
-    BOTTOM_TOGGLE, EDITOR_MENU_TARGET, FUNC_BASE, FUNC_VIEW_BASE, MENU_COPY_NAME, MENU_COPY_PATH,
+    status_bar, status_tooltip, terminal_dock_body, tooltip, tooltip_above, DividerAxis,
+    DockPosition, EditKey, Layout, MenuItem, PaneKind, Shown, AGENT_TOGGLE, BOTTOM_TOGGLE,
+    EDITOR_MENU_TARGET, FUNC_BASE, FUNC_VIEW_BASE, MENU_COPY_NAME, MENU_COPY_PATH,
     MENU_COPY_REL_PATH, MENU_DOCK_BOTTOM, MENU_DOCK_LEFT, MENU_DOCK_RIGHT, MENU_EDIT_COPY,
     MENU_EDIT_CUT, MENU_EDIT_PASTE, MENU_EDIT_SELECT_ALL, MENU_HIDE, MENU_REVEAL,
     MENU_SUBMENU_COPY, MENU_TREE_OPEN, RIGHT_TOGGLE, SESSION_DELETE_BASE, SESSION_ITEM_BASE,
@@ -51,6 +51,7 @@ pub struct WorkspaceEffects {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
     None,
+    Terminal,
     Left,
     Right,
     Bottom,
@@ -72,6 +73,10 @@ pub struct WorkspaceView {
     /// Where the caret popover was drawn last frame, so scrolling over it scrolls it.
     popover_rects: Vec<Rect>,
     pending_prompt: Option<crate::Prompt>,
+    terminal_focused: bool,
+    pointer: (f32, f32),
+    /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
+    terminal_click: Option<(Instant, f32, f32, u32)>,
     layout: Layout,
     session_menu_hover: Option<u64>,
     session_search_query: String,
@@ -109,6 +114,9 @@ impl WorkspaceView {
             modal_rect: None,
             popover_rects: Vec::new(),
             pending_prompt: None,
+            terminal_focused: false,
+            pointer: (0.0, 0.0),
+            terminal_click: None,
             toast: None,
             pending: WorkspaceEffects::default(),
         }
@@ -146,6 +154,7 @@ impl WorkspaceView {
     fn build(&mut self, window: &Window) -> Frame {
         let (w, h) = (window.width, window.height);
         self.viewport = (w, h);
+        self.sync_terminals();
         self.layout.sync_docks();
         let (mut rects, mut texts) = self.layout.build(w, h);
         let mut tris: Vec<ui::Tri> = Vec::new();
@@ -419,7 +428,11 @@ impl WorkspaceView {
             }
         } else {
             match self.layout.shown_on(DockPosition::Left) {
-                Some(Shown::Terminal) => blit(ui::render(&terminal_content(), cr)),
+                Some(Shown::Terminal) => {
+                    let p = self.terminal_painted(cr);
+                    panel_hits.extend(p.hits.iter().copied());
+                    blit(p)
+                }
                 Some(Shown::Func(k)) => blit(ui::render(&function_content(k), cr)),
                 _ => blit(ui::render(
                     &ui::div().bg(ui::theme().editor_background).into(),
@@ -514,7 +527,7 @@ impl WorkspaceView {
         if !self.layout.right.collapsed {
             let region = self.layout.right_region(w, h);
             let p = match self.layout.shown_on(DockPosition::Right) {
-                Some(Shown::Terminal) => ui::render(&terminal_dock_body(), region),
+                Some(Shown::Terminal) => self.terminal_painted(region),
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
                 Some(Shown::Func(k)) => ui::render(&function_dock_body(k), region),
                 // Agent (the right dock's default panel) and the empty case both render the OutlinePanel.
@@ -529,7 +542,7 @@ impl WorkspaceView {
             let region = self.layout.bottom_region(w, h);
             // The bottom dock has no default panel: it only shows whatever is docked there (terminal/function).
             let p = match self.layout.shown_on(DockPosition::Bottom) {
-                Some(Shown::Terminal) => ui::render(&terminal_dock_body(), region),
+                Some(Shown::Terminal) => self.terminal_painted(region),
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
                 Some(Shown::Func(k)) => ui::render(&function_dock_body(k), region),
                 _ => ui::render(&ui::div().bg(ui::theme().panel_background).into(), region),
@@ -878,7 +891,7 @@ impl WorkspaceView {
             Drag::Left | Drag::Right | Drag::Tree => return Some(ResizeCursor::Horizontal),
             Drag::Bottom => return Some(ResizeCursor::Vertical),
             Drag::Center(id) => return self.center_divider_cursor(id),
-            Drag::Tab | Drag::EditorSel => return None,
+            Drag::Tab | Drag::EditorSel | Drag::Terminal => return None,
             Drag::None => {}
         }
         let (w, h) = self.viewport;
@@ -958,6 +971,7 @@ impl WorkspaceView {
                 item(MENU_TREE_NEW_DIR, "New Folder", false),
                 item(MENU_REVEAL, "Reveal in Finder", true),
                 item(MENU_TREE_OPEN_SYSTEM, "Open in Default App", false),
+                item(crate::MENU_TREE_OPEN_TERMINAL, "Open in Terminal", false),
                 item(MENU_TREE_CUT, "Cut", true),
                 item(MENU_TREE_COPY, "Copy", false),
                 item(MENU_TREE_DUPLICATE, "Duplicate", false),
@@ -1002,6 +1016,7 @@ impl WorkspaceView {
                 item(MENU_EDIT_COPY_TRIM, "Copy and Trim", false),
                 item(MENU_EDIT_PASTE, "Paste", false),
                 item(MENU_EDIT_REVEAL, "Reveal in Finder", true),
+                item(crate::MENU_EDIT_OPEN_TERMINAL, "Open in Terminal", false),
             ];
         }
         if target == SIDEBAR_TOGGLE {
@@ -1146,6 +1161,19 @@ impl WorkspaceView {
                 .as_ref()
                 .and_then(|v| v.root_dir())
                 .map(|r| r.join(&rel));
+            if item == crate::MENU_TREE_OPEN_TERMINAL {
+                let directory = abs.map(|path| {
+                    if path.is_dir() {
+                        path
+                    } else {
+                        path.parent()
+                            .map(|parent| parent.to_path_buf())
+                            .unwrap_or(path)
+                    }
+                });
+                self.open_terminal_at(directory);
+                return;
+            }
             let tree_action = match item {
                 MENU_TREE_NEW_FILE => Some(TreeAction::NewFile),
                 MENU_TREE_NEW_DIR => Some(TreeAction::NewDirectory),
@@ -1241,6 +1269,15 @@ impl WorkspaceView {
                     if let Some(v) = self.layout.files_view.as_mut() {
                         v.editor_key(key, false);
                     }
+                }
+                crate::MENU_EDIT_OPEN_TERMINAL => {
+                    let directory = self
+                        .layout
+                        .files_view
+                        .as_ref()
+                        .and_then(|v| v.active_file_path())
+                        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()));
+                    self.open_terminal_at(directory);
                 }
                 MENU_EDIT_REVEAL => {
                     let path = self
@@ -1392,7 +1429,31 @@ impl WorkspaceView {
 
     /// Cursor move: drag a divider, or hover the header/menu. Returns true if a repaint is warranted.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
+        self.pointer = (x, y);
+        let over_terminal = self.terminal_grid_at(x, y);
+        let hit = self.hit(x, y);
+        let terminal_repaint = match self.layout.terminal_view.as_mut() {
+            Some(view) => {
+                let modifiers = terminal_modifiers();
+                let mut repaint = view.set_hover(hit);
+                if self.dragging == Drag::Terminal {
+                    repaint |= view.mouse_drag(x, y, modifiers);
+                } else if over_terminal && self.terminal_focused {
+                    repaint |= view.mouse_move(x, y, modifiers);
+                }
+                repaint
+            }
+            None => false,
+        };
+        if self.dragging == Drag::Terminal {
+            return terminal_repaint;
+        }
+        terminal_repaint | self.mouse_move_inner(x, y)
+    }
+
+    fn mouse_move_inner(&mut self, x: f32, y: f32) -> bool {
         match self.dragging {
+            Drag::Terminal => false,
             Drag::Left => {
                 self.layout.set_left_divider(x, self.width());
                 true
@@ -1559,7 +1620,28 @@ impl WorkspaceView {
             } else {
                 self.header_click(id);
             }
+        } else if self.terminal_grid_at(x, y) {
+            self.set_terminal_focus(true);
+            let now = Instant::now();
+            let count = match self.terminal_click {
+                Some((at, px, py, count))
+                    if now.duration_since(at) < Duration::from_millis(400)
+                        && (x - px).abs() < 4.0
+                        && (y - py).abs() < 4.0 =>
+                {
+                    count % 3 + 1
+                }
+                _ => 1,
+            };
+            self.terminal_click = Some((now, x, y, count));
+            let modifiers = terminal_modifiers();
+            if let Some(view) = self.layout.terminal_view.as_mut() {
+                if view.mouse_down(x, y, count, modifiers) {
+                    self.dragging = Drag::Terminal;
+                }
+            }
         } else {
+            self.set_terminal_focus(false);
             let (vw, vh) = self.viewport;
             let cr = self.layout.center_region(vw, vh);
             let in_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
@@ -1694,11 +1776,13 @@ impl WorkspaceView {
     }
 
     pub fn editor_focused(&self) -> bool {
-        self.layout
-            .files_view
-            .as_ref()
-            .map(|v| v.editor_focused())
-            .unwrap_or(false)
+        !self.terminal_focused
+            && self
+                .layout
+                .files_view
+                .as_ref()
+                .map(|v| v.editor_focused())
+                .unwrap_or(false)
     }
 
     pub fn editor_selected_text(&self) -> Option<String> {
@@ -1709,7 +1793,13 @@ impl WorkspaceView {
     }
 
     pub fn mouse_up(&mut self) {
-        if self.dragging == Drag::Tab {
+        if self.dragging == Drag::Terminal {
+            let (x, y) = self.pointer;
+            let modifiers = terminal_modifiers();
+            if let Some(view) = self.layout.terminal_view.as_mut() {
+                view.mouse_up(x, y, modifiers);
+            }
+        } else if self.dragging == Drag::Tab {
             if let Some(v) = self.layout.files_view.as_mut() {
                 v.drop_tab();
             }
@@ -1723,6 +1813,119 @@ impl WorkspaceView {
         self.pending_tab = None;
         self.tab_ghost_at = None;
         self.dragging = Drag::None;
+    }
+
+    fn terminal_painted(&mut self, region: Rect) -> Painted {
+        let focused = self.terminal_focused;
+        match self.layout.terminal_view.as_mut() {
+            Some(view) => {
+                if view.is_empty() {
+                    view.open(None);
+                }
+                view.render(region, focused)
+            }
+            None => ui::render(&terminal_dock_body(), region),
+        }
+    }
+
+    /// Bring every shell's output in before drawing; closes the panel once its last shell exits.
+    fn sync_terminals(&mut self) {
+        let Some(view) = self.layout.terminal_view.as_mut() else {
+            return;
+        };
+        let outcome = view.sync(&Self::clip_get);
+        if let Some(text) = outcome.clipboard_store {
+            Self::clip_set(&text);
+        }
+        if outcome.closed_all {
+            let side = self.layout.terminal_side;
+            if self.layout.terminal_visible() {
+                self.toggle_side(side, true);
+            }
+            self.set_terminal_focus(false);
+        }
+    }
+
+    fn terminal_grid_at(&self, x: f32, y: f32) -> bool {
+        self.layout.terminal_visible()
+            && self
+                .layout
+                .terminal_view
+                .as_ref()
+                .is_some_and(|view| view.grid_contains(x, y))
+    }
+
+    fn set_terminal_focus(&mut self, focused: bool) {
+        if self.terminal_focused == focused {
+            return;
+        }
+        self.terminal_focused = focused;
+        if let Some(view) = self.layout.terminal_view.as_mut() {
+            view.focus_changed(focused);
+        }
+    }
+
+    pub fn terminal_focused(&self) -> bool {
+        self.terminal_focused && self.layout.terminal_visible()
+    }
+
+    /// Returns whether the key was consumed; unconsumed keys arrive next as typed text.
+    pub fn terminal_key(&mut self, keystroke: &terminal::Keystroke) -> bool {
+        let Some(view) = self.layout.terminal_view.as_mut() else {
+            return false;
+        };
+        match view.key(keystroke) {
+            crate::TerminalKeyOutcome::Ignored => false,
+            crate::TerminalKeyOutcome::Handled => true,
+            crate::TerminalKeyOutcome::Copy(text) => {
+                Self::clip_set(&text);
+                true
+            }
+            crate::TerminalKeyOutcome::Paste => {
+                if let Some(text) = Self::clip_get() {
+                    view.paste(&text);
+                }
+                true
+            }
+        }
+    }
+
+    pub fn terminal_text(&mut self, text: &str) {
+        if let Some(view) = self.layout.terminal_view.as_mut() {
+            view.text(text);
+        }
+    }
+
+    fn show_terminal(&mut self) {
+        let side = self.layout.terminal_side;
+        self.layout.active_panels[side.index()] = Some(Shown::Terminal);
+        match side {
+            DockPosition::Right => self.layout.right.collapsed = false,
+            DockPosition::Bottom => self.layout.bottom.collapsed = false,
+            DockPosition::Left => {}
+        }
+        self.pending.persist = true;
+    }
+
+    /// The terminal toggle: focus the terminal (showing it first), or hide it when it already has focus.
+    pub fn toggle_terminal(&mut self) {
+        if self.terminal_focused() {
+            let side = self.layout.terminal_side;
+            self.toggle_side(side, true);
+            self.set_terminal_focus(false);
+            self.pending.persist = true;
+        } else {
+            self.show_terminal();
+            self.set_terminal_focus(true);
+        }
+    }
+
+    fn open_terminal_at(&mut self, directory: Option<std::path::PathBuf>) {
+        self.show_terminal();
+        if let Some(view) = self.layout.terminal_view.as_mut() {
+            view.open(directory);
+        }
+        self.set_terminal_focus(true);
     }
 
     pub fn take_prompt(&mut self) -> Option<crate::Prompt> {
@@ -1768,6 +1971,14 @@ impl WorkspaceView {
                     .as_mut()
                     .is_some_and(|v| v.modal_scroll(dy));
             }
+        }
+        if !self.layout.session_menu && self.terminal_grid_at(x, y) {
+            let modifiers = terminal_modifiers();
+            return self
+                .layout
+                .terminal_view
+                .as_mut()
+                .is_some_and(|view| view.scroll(x, y, dy, modifiers));
         }
         if !self.layout.session_menu {
             let (w, h) = self.viewport;
@@ -1848,6 +2059,14 @@ impl WorkspaceView {
             self.toast = None;
             return;
         }
+        if (crate::TERMINAL_VIEW_BASE..FUNC_VIEW_BASE).contains(&id) {
+            self.set_terminal_focus(true);
+            if let Some(view) = self.layout.terminal_view.as_mut() {
+                view.click(id);
+            }
+            return;
+        }
+        self.set_terminal_focus(false);
         if id >= FUNC_VIEW_BASE {
             if let Some(view) = self.layout.files_view.as_mut() {
                 view.on_click(id);
@@ -2008,6 +2227,16 @@ fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
         }
     }
     rects
+}
+
+fn terminal_modifiers() -> terminal::Modifiers {
+    let held = ui::modifiers();
+    terminal::Modifiers {
+        shift: held.shift,
+        alt: held.alt,
+        ctrl: held.ctrl,
+        cmd: held.cmd,
+    }
 }
 
 #[cfg(test)]

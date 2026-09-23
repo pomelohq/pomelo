@@ -175,7 +175,7 @@ fn control_byte(key: &str, held: Held) -> Option<u8> {
     };
     match held {
         Held::Ctrl if c.is_ascii_lowercase() => Some(c as u8 - b'a' + 1),
-        Held::CtrlShift if c.is_ascii_uppercase() => Some(c as u8 - b'A' + 1),
+        Held::CtrlShift if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase() as u8 - b'A' + 1),
         Held::Ctrl => match c {
             '@' => Some(0x00),
             '[' => Some(0x1b),
