@@ -184,6 +184,8 @@ pub struct TerminalPanel {
     search: SearchBar,
     hovered_target: Option<TerminalOpenTarget>,
     open_request: Option<TerminalOpenTarget>,
+    /// The user closed the last tab; reported on the next sync so the panel closes like when shells exit.
+    closed_last: bool,
 }
 
 impl TerminalPanel {
@@ -210,6 +212,7 @@ impl TerminalPanel {
             }),
             hovered_target: None,
             open_request: None,
+            closed_last: false,
         }
     }
 
@@ -450,7 +453,7 @@ impl TerminalPanelView for TerminalPanel {
         let search_bar: Node = if self.search.dismissed {
             div().into()
         } else {
-            self.search.render(SEARCH_BASE)
+            self.search.render(SEARCH_BASE, region.w / scale)
         };
         let body = div()
             .col()
@@ -518,6 +521,7 @@ impl TerminalPanelView for TerminalPanel {
             self.open(None);
         } else if (TAB_CLOSE_BASE..TAB_CLOSE_BASE + TAB_LIMIT).contains(&id) {
             self.close_tab((id - TAB_CLOSE_BASE) as usize);
+            self.closed_last |= self.tabs.is_empty();
         } else if (TAB_ACTIVATE_BASE..TAB_ACTIVATE_BASE + TAB_LIMIT).contains(&id) {
             let index = (id - TAB_ACTIVATE_BASE) as usize;
             if index < self.tabs.len() {
@@ -733,7 +737,8 @@ impl TerminalPanelView for TerminalPanel {
                 index += 1;
             }
         }
-        outcome.closed_all = had_tabs && self.tabs.is_empty();
+        outcome.closed_all =
+            (had_tabs && self.tabs.is_empty()) || std::mem::take(&mut self.closed_last);
         if outcome.changed && !self.search.dismissed {
             self.with_search(|bar, target| bar.refresh(target));
         }
@@ -741,6 +746,7 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn open(&mut self, cwd: Option<PathBuf>) {
+        self.closed_last = false;
         let options = TerminalOptions {
             working_directory: Some(cwd.unwrap_or_else(|| self.root.clone())),
             ..TerminalOptions::default()
@@ -855,5 +861,18 @@ mod tests {
         );
         assert!(panel.search.dismissed);
         assert!(panel.tabs[0].content().search_matches.is_empty());
+    }
+
+    #[test]
+    fn closing_the_last_tab_closes_the_panel() {
+        let mut panel = TerminalPanel::new(std::env::temp_dir(), std::sync::Arc::new(|| {}));
+        panel.open(None);
+        panel.open(None);
+        assert!(panel.click(TAB_CLOSE_BASE));
+        assert!(!panel.sync(&|| None).closed_all);
+        assert!(panel.click(TAB_CLOSE_BASE));
+        assert!(panel.is_empty());
+        assert!(panel.sync(&|| None).closed_all);
+        assert!(!panel.sync(&|| None).closed_all);
     }
 }
