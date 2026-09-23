@@ -27,6 +27,9 @@ pub struct SerializedPane {
     pub active: bool,
     pub items: Vec<SerializedItem>,
     pub active_item: Option<usize>,
+    /// How many of the first items are pinned tabs.
+    #[serde(default)]
+    pub pinned_count: usize,
 }
 
 /// An item's saved state: `kind` names who can rebuild it, `data` is that item's own format.
@@ -42,6 +45,9 @@ pub struct SerializedWorkspace {
     pub root: std::path::PathBuf,
     pub center: Option<SerializedMember>,
     pub panel: Option<SerializedMember>,
+    /// The terminal panel was zoomed (only docks keep their zoom across sessions).
+    #[serde(default)]
+    pub panel_zoomed: bool,
 }
 
 /// Where a project's panes are saved: one file per project root under the config directory.
@@ -100,5 +106,16 @@ mod tests {
             .unwrap_or_default();
         assert!(name.starts_with("api-") && name.ends_with(".json"));
         assert_eq!(stable_hash(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn state_saved_before_zoom_and_pins_still_loads() {
+        let json = r#"{"root":"/work/api","center":{"pane":{"active":true,"items":[],"active_item":null}},"panel":null}"#;
+        let saved: SerializedWorkspace = serde_json::from_str(json).unwrap();
+        assert!(!saved.panel_zoomed);
+        let Some(SerializedMember::Pane(pane)) = saved.center else {
+            panic!("the center pane should load");
+        };
+        assert_eq!(pane.pinned_count, 0);
     }
 }

@@ -37,6 +37,7 @@ pub enum PaneCommand {
     ActivatePreviousItem,
     ActivateNextItem,
     ToggleZoom,
+    TogglePinTab,
 }
 
 #[derive(Default)]
@@ -47,6 +48,8 @@ pub struct Pane {
     pub back: Vec<NavEntry>,
     pub fwd: Vec<NavEntry>,
     pub search: Box<SearchBar>,
+    /// The first `pinned` tabs are pinned: they stay at the front and survive bulk closes.
+    pub pinned: usize,
 }
 
 impl PaneId for Pane {
@@ -63,9 +66,8 @@ impl Pane {
         }
     }
 
-    /// Height of the chrome above the active item's body (tab bar plus the find bar when open); an empty pane
-    /// draws no chrome.
-    /// Height of the tab bar plus find bar on screen; chrome sizes grow with the UI text scale.
+    /// Height of the tab bar plus find bar on screen (none for an empty pane); chrome sizes grow with the UI
+    /// text scale.
     pub fn header_h(&self) -> f32 {
         if self.open.is_empty() {
             0.0
@@ -185,11 +187,53 @@ impl Pane {
         self.navigate(NavMode::GoingForward);
     }
 
-    pub fn close_tab(&mut self, index: usize) {
+    pub fn is_pinned(&self, index: usize) -> bool {
+        index < self.pinned
+    }
+
+    /// Pin tab `index`, moving it to the end of the pinned tabs; unpinning moves it to just after them.
+    pub fn toggle_pin(&mut self, index: usize) {
         if index >= self.open.len() {
             return;
         }
-        self.open.remove(index);
+        let destination = if self.is_pinned(index) {
+            self.pinned -= 1;
+            self.pinned
+        } else {
+            let destination = self.pinned.min(index);
+            self.pinned += 1;
+            destination
+        };
+        if destination != index {
+            let item = self.open.remove(index);
+            self.open.insert(destination, item);
+            if self.active == Some(index) {
+                self.active = Some(destination);
+            } else if let Some(active) = self.active {
+                if destination < index && (destination..index).contains(&active) {
+                    self.active = Some(active + 1);
+                } else if index < destination && (index + 1..=destination).contains(&active) {
+                    self.active = Some(active - 1);
+                }
+            }
+        }
+    }
+
+    /// Take tab `index` out, keeping the pinned count in step.
+    pub fn remove_item(&mut self, index: usize) -> Option<Box<dyn Item>> {
+        if index >= self.open.len() {
+            return None;
+        }
+        if self.is_pinned(index) {
+            self.pinned -= 1;
+        }
+        Some(self.open.remove(index))
+    }
+
+    pub fn close_tab(&mut self, index: usize) {
+        if self.remove_item(index).is_none() {
+            return;
+        }
         self.active = if self.open.is_empty() {
             None
         } else {
@@ -298,7 +342,10 @@ pub fn render_pane(
             .items_center()
             .justify_center()
             .on_click(close_id);
-        if hovered {
+        // A pinned tab trades its close button for an always-shown pin that unpins it.
+        if pane.is_pinned(index) {
+            close_slot = close_slot.child(icon(IconKind::Pin).size(11.0).color(theme().icon_muted));
+        } else if hovered {
             close_slot =
                 close_slot.child(icon(IconKind::Close).size(11.0).color(theme().icon_muted));
         }

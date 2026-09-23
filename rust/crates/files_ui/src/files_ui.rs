@@ -4128,6 +4128,9 @@ pub struct FilesView {
     expanded: HashSet<String>,
     /// The editor area's split panes and their tabs.
     panes: PaneGroupView,
+    /// Tree moves (from, to) still to apply to the other pane group's tabs, and that group's dirty file ids.
+    pending_moves: Vec<(String, String)>,
+    other_dirty: Vec<String>,
     /// The hit id under the pointer, for modal rows that light up on hover.
     hover: Option<u64>,
     /// Rebuilt each render: click id `FUNC_VIEW_BASE + i` maps to `(path, is_dir)`.
@@ -4198,6 +4201,8 @@ impl FilesView {
                 zoom_whole_group: false,
             }),
             hover: None,
+            pending_moves: Vec::new(),
+            other_dirty: Vec::new(),
             go_to_line: None,
             palette: None,
             palette_memory: command_palette::PaletteMemory::default(),
@@ -5096,7 +5101,8 @@ impl FunctionView for FilesView {
         self.close_go_to_line(false);
     }
 
-    fn sync_items(&mut self, other: Option<&mut PaneGroupView>) {
+    fn sync_items(&mut self, mut other: Option<&mut PaneGroupView>) {
+        self.sync_other_group(other.as_deref_mut());
         self.sync_language_servers(other);
     }
 

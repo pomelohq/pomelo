@@ -34,6 +34,8 @@ enum Glyph {
 pub struct TabDrag {
     pub source: u64,
     pub index: usize,
+    /// Whether the tab was pinned where it came from.
+    pub pinned: bool,
     title: String,
     glyph: Glyph,
     pub drop: Option<TabDrop>,
@@ -50,6 +52,7 @@ impl TabDrag {
         Some(Self {
             source: pane.id,
             index,
+            pinned: pane.is_pinned(index),
             title: item.title(),
             glyph,
             drop: None,
@@ -130,15 +133,22 @@ pub fn apply_drop(
             if drag.index >= pane.open.len() {
                 return None;
             }
+            // A tab dropped among the pinned tabs becomes pinned, one dropped past them unpinned.
+            let pinned = pane.pinned;
             let item = pane.open.remove(drag.index);
             let at = if index > drag.index { index - 1 } else { index }.min(pane.open.len());
             pane.open.insert(at, item);
             pane.active = Some(at);
+            match (drag.pinned, at < pinned) {
+                (false, true) => pane.pinned += 1,
+                (true, false) => pane.pinned -= 1,
+                _ => {}
+            }
             return Some(source_path);
         }
     }
     let item = detach(group, drag)?;
-    let landed = match insert_item(group, drop, item, new_pane) {
+    let landed = match insert_item(group, drop, item, drag.pinned, new_pane) {
         Ok(path) => group.leaf_at(&path).map(|pane| pane.id),
         Err(item) => {
             let pane = group.leaf_at_mut(&source_path)?;
@@ -156,7 +166,7 @@ fn detach(group: &mut Member<Pane>, drag: &TabDrag) -> Option<Box<dyn Item>> {
     if drag.index >= pane.open.len() {
         return None;
     }
-    let item = pane.open.remove(drag.index);
+    let item = pane.remove_item(drag.index)?;
     pane.active = if pane.open.is_empty() {
         None
     } else {
@@ -186,10 +196,12 @@ pub fn take_item(group: &mut Member<Pane>, drag: &TabDrag) -> Option<Box<dyn Ite
 }
 
 /// Place `item` at `drop` in this group; hands the item back when the target pane is gone.
+/// A tab stays pinned where it lands among pinned tabs, or when it was pinned and opens a pane or lands first.
 pub fn insert_item(
     group: &mut Member<Pane>,
     drop: TabDrop,
     item: Box<dyn Item>,
+    was_pinned: bool,
     new_pane: impl FnOnce() -> Pane,
 ) -> Result<Vec<usize>, Option<Box<dyn Item>>> {
     let Some(target_path) = group.path_of(drop.pane) else {
@@ -199,6 +211,9 @@ pub fn insert_item(
         DropTarget::Split(direction) => {
             let mut pane = new_pane();
             pane.add_item(item);
+            if was_pinned {
+                pane.pinned = 1;
+            }
             group
                 .split(&target_path, direction, pane)
                 .map_err(|mut pane| pane.open.pop())
@@ -208,15 +223,23 @@ pub fn insert_item(
                 return Err(Some(item));
             };
             let at = index.min(pane.open.len());
+            let pinned = at < pane.pinned || (was_pinned && at == 0);
             pane.open.insert(at, item);
             pane.active = Some(at);
+            if pinned {
+                pane.pinned += 1;
+            }
             Ok(target_path)
         }
         DropTarget::Append => {
             let Some(pane) = group.leaf_at_mut(&target_path) else {
                 return Err(Some(item));
             };
+            let pinned = was_pinned && pane.open.is_empty();
             pane.add_item(item);
+            if pinned {
+                pane.pinned += 1;
+            }
             Ok(target_path)
         }
     }
@@ -320,5 +343,37 @@ mod tests {
         assert_eq!(landed, Some(vec![]));
         assert_eq!(group.leaf_count(), 1);
         assert_eq!(titles(&group, &[]), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn dropping_among_pinned_tabs_pins() {
+        let mut group = Member::Leaf(pane(1, &["a", "b", "c"]));
+        if let Some(pane) = group.leaf_at_mut(&[]) {
+            pane.pinned = 1;
+        }
+        let drag = TabDrag::begin(group.leaf_at(&[]).unwrap(), 2).unwrap();
+        apply_drop(
+            &mut group,
+            &drag,
+            TabDrop {
+                pane: 1,
+                target: DropTarget::Insert(0),
+            },
+            || pane(9, &[]),
+        );
+        assert_eq!(titles(&group, &[]), ["c", "a", "b"]);
+        assert_eq!(group.leaf_at(&[]).map(|pane| pane.pinned), Some(2));
+        let drag = TabDrag::begin(group.leaf_at(&[]).unwrap(), 0).unwrap();
+        apply_drop(
+            &mut group,
+            &drag,
+            TabDrop {
+                pane: 1,
+                target: DropTarget::Insert(3),
+            },
+            || pane(9, &[]),
+        );
+        assert_eq!(titles(&group, &[]), ["a", "b", "c"]);
+        assert_eq!(group.leaf_at(&[]).map(|pane| pane.pinned), Some(1));
     }
 }

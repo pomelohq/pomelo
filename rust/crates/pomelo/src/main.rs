@@ -116,6 +116,10 @@ fn pane_key(
         Key::Character(c) => Some(c.to_string()),
         _ => None,
     };
+    let chord = context == PaneKeyContext::Editor { after_cmd_k: true };
+    if chord && event.logical_key == Key::Named(NamedKey::Enter) && shift && !cmd && !alt && !ctrl {
+        return Some(PaneCommand::TogglePinTab);
+    }
     if let (PaneKeyContext::Editor { after_cmd_k: true }, Some(direction)) = (context, arrow) {
         return match (cmd, shift, alt, ctrl) {
             (false, false, false, false) => Some(PaneCommand::Split(direction)),

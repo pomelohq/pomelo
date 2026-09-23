@@ -29,6 +29,8 @@ use crate::{TOAST_ACTION, TOAST_CLOSE};
 const TOAST_DISMISS: Duration = Duration::from_secs(10);
 /// How long after the panes first change they are written, so a burst of changes costs one write.
 const PANES_SAVE_THROTTLE: Duration = Duration::from_millis(200);
+/// Prompt tokens the view hands out itself, above the ones features number from 1.
+const CLOSE_PROMPT_TOKENS: u64 = 1 << 40;
 /// The gap a zoomed view leaves around it (on its dock's inner side only, for a dock panel).
 const ZOOM_PADDING: f32 = 8.0;
 const TOAST_ANIM: Duration = Duration::from_millis(160);
@@ -109,6 +111,9 @@ pub struct WorkspaceView {
     /// The zoom showing this frame, for drawing and routing input.
     zoom: Option<Zoom>,
     pending_prompt: Option<crate::Prompt>,
+    /// A tab close waiting on the save prompt: its token, pane group and request.
+    close_prompt: Option<(u64, InputGroup, crate::pane_group_view::CloseRequest)>,
+    next_prompt_token: u64,
     terminal_focused: bool,
     pointer: (f32, f32),
     /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
@@ -129,6 +134,8 @@ pub struct WorkspaceView {
     menu_editor_anchor: Option<(Vec<usize>, usize)>,
     /// The tab a tab context menu was opened on: its group, pane id and index.
     menu_tab: Option<(InputGroup, u64, usize)>,
+    /// The pane group an editor context menu was opened in.
+    menu_group: InputGroup,
     toast: Option<Toast>,
     pending: WorkspaceEffects,
 }
@@ -150,6 +157,7 @@ impl WorkspaceView {
             submenu: None,
             menu_editor_anchor: None,
             menu_tab: None,
+            menu_group: InputGroup::Center,
             modal_rect: None,
             popover_rects: Vec::new(),
             popover_groups: Vec::new(),
@@ -160,6 +168,8 @@ impl WorkspaceView {
             panes_check_owed: false,
             zoom: None,
             pending_prompt: None,
+            close_prompt: None,
+            next_prompt_token: CLOSE_PROMPT_TOKENS,
             terminal_focused: false,
             pointer: (0.0, 0.0),
             terminal_click: None,
@@ -206,7 +216,9 @@ impl WorkspaceView {
                 files.restore_panes(center);
             }
             if let (Some(panel), Some(view)) = (&saved.panel, self.layout.terminal_view.as_mut()) {
-                view.restore_panes(panel);
+                if view.restore_panes(panel) && saved.panel_zoomed {
+                    view.panes().toggle_zoom();
+                }
             }
         }
         self.saved_panes = self.panes_state().map(|(_, json)| json);
@@ -223,6 +235,11 @@ impl WorkspaceView {
                 .terminal_view
                 .as_ref()
                 .map(|view| view.save_panes()),
+            panel_zoomed: self
+                .layout
+                .terminal_view
+                .as_ref()
+                .is_some_and(|view| view.panes_ref().is_zoomed()),
         };
         Some((root, serde_json::to_string_pretty(&state).ok()?))
     }
@@ -939,10 +956,8 @@ impl WorkspaceView {
             let (mtop, mbottom, keep) = if target == EDITOR_MENU_TARGET {
                 match self.menu_editor_anchor.clone() {
                     Some((path, line)) => match self
-                        .layout
-                        .files_view
-                        .as_ref()
-                        .and_then(|v| v.editor_menu_y(&path, line))
+                        .input_ref(self.menu_group)
+                        .and_then(|input| input.editor_menu_y(&path, line))
                     {
                         Some(ly) => (ly, ly + 20.0, true),
                         None => (mtop, mbottom, false),
@@ -1135,6 +1150,8 @@ impl WorkspaceView {
             ),
             entry(crate::MENU_TAB_CLOSE_ALL, "Close All", false, false),
         ];
+        let pin_label = if state.pinned { "Unpin Tab" } else { "Pin Tab" };
+        let pin = entry(crate::MENU_TAB_TOGGLE_PIN, pin_label, true, false);
         if let Some(path) = state.path {
             let in_project = self.relative_to_root(&path).is_some();
             items.push(entry(crate::MENU_TAB_COPY_PATH, "Copy Path", true, false));
@@ -1152,6 +1169,7 @@ impl WorkspaceView {
                 true,
                 false,
             ));
+            items.push(pin);
             if in_project {
                 items.push(entry(
                     crate::MENU_TAB_REVEAL_IN_TREE,
@@ -1168,8 +1186,14 @@ impl WorkspaceView {
                     false,
                 ));
             }
+        } else {
+            items.push(pin);
         }
         items
+    }
+
+    fn active_file_in(&self, group: InputGroup) -> Option<std::path::PathBuf> {
+        self.group_view(group)?.active_item()?.abs_path()
     }
 
     fn relative_to_root(&self, path: &std::path::Path) -> Option<String> {
@@ -1191,10 +1215,17 @@ impl WorkspaceView {
             crate::MENU_TAB_CLOSE_ALL => Some(crate::pane_group_view::CloseTabs::All),
             _ => None,
         };
+        if item == crate::MENU_TAB_TOGGLE_PIN {
+            if let Some(panes) = self.group_view_mut(group) {
+                panes.toggle_pin(pane, index);
+            }
+            return;
+        }
         if let Some(which) = close {
             if let Some(panes) = self.group_view_mut(group) {
                 panes.close_tabs(pane, index, which);
             }
+            self.ask_about_pending_close();
             return;
         }
         let Some(path) = self
@@ -1553,6 +1584,7 @@ impl WorkspaceView {
             return;
         }
         if target == EDITOR_MENU_TARGET {
+            let group = self.menu_group;
             match item {
                 MENU_EDIT_COPY => {
                     self.editor_copy_to_clipboard();
@@ -1564,16 +1596,14 @@ impl WorkspaceView {
                     self.editor_paste_from_clipboard();
                 }
                 MENU_EDIT_SELECT_ALL => {
-                    if let Some(v) = self.layout.files_view.as_mut() {
-                        v.editor_key(EditKey::SelectAll, false);
+                    if let Some(input) = self.input(group) {
+                        input.editor_key(EditKey::SelectAll, false);
                     }
                 }
                 MENU_EDIT_COPY_TRIM => {
                     let copied = self
-                        .layout
-                        .files_view
-                        .as_ref()
-                        .and_then(|v| v.editor_copy_trimmed());
+                        .input_ref(group)
+                        .and_then(|input| input.editor_copy_trimmed());
                     if let Some(copied) = copied {
                         Self::clip_set(&copied.text);
                         crate::remember_copy(&copied);
@@ -1589,25 +1619,18 @@ impl WorkspaceView {
                         MENU_EDIT_GO_TO_TYPE_DEFINITION => EditKey::GoToTypeDefinition,
                         _ => EditKey::GoToImplementation,
                     };
-                    if let Some(v) = self.layout.files_view.as_mut() {
-                        v.editor_key(key, false);
+                    if let Some(input) = self.input(group) {
+                        input.editor_key(key, false);
                     }
                 }
                 crate::MENU_EDIT_OPEN_TERMINAL => {
                     let directory = self
-                        .layout
-                        .files_view
-                        .as_ref()
-                        .and_then(|v| v.active_file_path())
+                        .active_file_in(group)
                         .and_then(|path| path.parent().map(|parent| parent.to_path_buf()));
                     self.open_terminal_at(directory);
                 }
                 MENU_EDIT_REVEAL => {
-                    let path = self
-                        .layout
-                        .files_view
-                        .as_ref()
-                        .and_then(|v| v.active_file_path());
+                    let path = self.active_file_in(group);
                     if let Some(path) = path {
                         if let Err(error) = std::process::Command::new("open")
                             .arg("-R")
@@ -1732,24 +1755,26 @@ impl WorkspaceView {
         }
         let cr = self.layout.center_region(vw, vh);
         let in_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
-        if in_center
-            && self
-                .layout
-                .files_view
-                .as_ref()
-                .is_some_and(|v| v.editor_focused())
-        {
-            if let Some(v) = self.layout.files_view.as_mut() {
-                v.editor_right_press(x, y);
+        let group = self.zoom_group_at(x, y).or_else(|| {
+            if self.panel_body_at(x, y) {
+                Some(InputGroup::Panel)
+            } else {
+                in_center.then_some(InputGroup::Center)
             }
+        });
+        let pressed = group.filter(|group| {
+            self.input(*group)
+                .is_some_and(|input| input.editor_right_press(x, y))
+        });
+        if let Some(group) = pressed {
+            self.set_terminal_focus(group == InputGroup::Panel);
+            self.menu_group = group;
             self.menu = Some((x, y, y, EDITOR_MENU_TARGET));
             self.menu_path = None;
             self.submenu = None;
             self.menu_editor_anchor = self
-                .layout
-                .files_view
-                .as_ref()
-                .and_then(|v| v.editor_menu_anchor_at(x, y));
+                .input_ref(group)
+                .and_then(|input| input.editor_menu_anchor_at(x, y));
             return true;
         }
         let had = self.menu.take().is_some();
@@ -2730,10 +2755,111 @@ impl WorkspaceView {
     }
 
     pub fn prompt_answered(&mut self, token: u64, answer: usize) {
+        if let Some((pending, group, request)) = self.close_prompt.take() {
+            if pending == token {
+                // Save, Don't Save, Cancel (or Save all, Discard all, Cancel).
+                if answer <= 1 {
+                    let errors = self
+                        .group_view_mut(group)
+                        .map(|panes| panes.finish_close(request, answer == 0))
+                        .unwrap_or_default();
+                    if let Some(error) = errors.into_iter().next() {
+                        self.show_toast(error, None);
+                    }
+                }
+                return;
+            }
+            self.close_prompt = Some((pending, group, request));
+        }
         if let Some(v) = self.layout.files_view.as_mut() {
             v.prompt_answered(token, answer);
         }
         self.show_view_toast();
+    }
+
+    /// Ask whether to save the dirty tabs a close left pending, after the reference: one file names it, several
+    /// list their names. Tabs also open in the other pane group close without asking.
+    fn ask_about_pending_close(&mut self) {
+        for group in [InputGroup::Center, InputGroup::Panel] {
+            let Some(mut request) = self
+                .group_view_mut(group)
+                .and_then(|panes| panes.take_close_request())
+            else {
+                continue;
+            };
+            let other = match group {
+                InputGroup::Center => InputGroup::Panel,
+                InputGroup::Panel => InputGroup::Center,
+            };
+            if let Some(panes) = self.group_view(other) {
+                request.dirty.retain(|dirty| !panes.has_item(&dirty.id));
+            }
+            if request.dirty.is_empty() {
+                if let Some(panes) = self.group_view_mut(group) {
+                    panes.finish_close(request, false);
+                }
+                continue;
+            }
+            let prompt = self.close_prompt_for(&request);
+            self.close_prompt = Some((prompt.token, group, request));
+            self.pending_prompt = Some(prompt);
+            return;
+        }
+    }
+
+    fn close_prompt_for(
+        &mut self,
+        request: &crate::pane_group_view::CloseRequest,
+    ) -> crate::Prompt {
+        let token = self.next_prompt_token;
+        self.next_prompt_token += 1;
+        let buttons = |labels: [&str; 3]| labels.iter().map(|label| label.to_string()).collect();
+        if let [dirty] = request.dirty.as_slice() {
+            let path = dirty
+                .path
+                .as_deref()
+                .and_then(|path| self.relative_to_root(path))
+                .filter(|path| !path.is_empty());
+            let message = match path {
+                Some(path) => format!(
+                    "`{}` contains unsaved edits. Do you want to save it?",
+                    truncate_front(&path, 80)
+                ),
+                None => "This buffer contains unsaved edits. Do you want to save it?".to_string(),
+            };
+            return crate::Prompt {
+                token,
+                message,
+                detail: None,
+                buttons: buttons(["Save", "Don't Save", "Cancel"]),
+            };
+        }
+        let mut names: Vec<String> = request
+            .dirty
+            .iter()
+            .map(|dirty| {
+                dirty
+                    .path
+                    .as_deref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "untitled".to_string())
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        let detail = if names.len() > 6 {
+            let shown: Vec<&str> = names.iter().take(5).map(String::as_str).collect();
+            format!("{}\n.. and {} more", shown.join("\n"), names.len() - 5)
+        } else {
+            names.join("\n")
+        };
+        crate::Prompt {
+            token,
+            message: "Do you want to save changes to the following files?".to_string(),
+            detail: Some(detail),
+            buttons: buttons(["Save all", "Discard all", "Cancel"]),
+        }
     }
 
     fn show_view_toast(&mut self) {
@@ -2874,6 +3000,7 @@ impl WorkspaceView {
             if let Some(view) = self.layout.terminal_view.as_mut() {
                 view.click(id);
             }
+            self.ask_about_pending_close();
             return;
         }
         self.set_terminal_focus(false);
@@ -2881,6 +3008,7 @@ impl WorkspaceView {
             if let Some(view) = self.layout.files_view.as_mut() {
                 view.on_click(id);
             }
+            self.ask_about_pending_close();
             return;
         }
         if (FUNC_BASE..FUNC_BASE + PaneKind::ALL.len() as u64).contains(&id) {
@@ -3056,6 +3184,16 @@ fn box_shadow(rect: Rect, shadows: &[(f32, f32, f32, f32)], radius: f32) -> Vec<
         }
     }
     rects
+}
+
+/// `text` cut to at most `max` characters by dropping its start, marked with a leading "...".
+fn truncate_front(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_string();
+    }
+    let tail: String = text.chars().skip(count - max.saturating_sub(3)).collect();
+    format!("...{tail}")
 }
 
 fn terminal_modifiers() -> terminal::Modifiers {

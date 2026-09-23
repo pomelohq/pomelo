@@ -78,10 +78,28 @@ pub enum CloseTabs {
 /// What a tab's context menu offers: which closes apply, and the tab's file if it shows one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TabMenuState {
+    pub pinned: bool,
     pub has_others: bool,
     pub has_left: bool,
     pub has_right: bool,
     pub has_clean: bool,
+    pub path: Option<std::path::PathBuf>,
+}
+
+/// Tabs a close is waiting to close until the user decides whether to save the dirty ones.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CloseRequest {
+    pub pane: u64,
+    pub ids: Vec<String>,
+    /// The tab to keep active afterwards, when it stays open.
+    pub focus: Option<String>,
+    pub dirty: Vec<DirtyTab>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DirtyTab {
+    pub id: String,
+    pub title: String,
     pub path: Option<std::path::PathBuf>,
 }
 
@@ -123,6 +141,7 @@ pub struct PaneGroupView {
     popover_sources: Vec<PopoverSource>,
     /// The pane zoomed to cover the workspace (by id; it stays zoomed while focus is elsewhere).
     zoomed: Option<u64>,
+    pending_close: Option<CloseRequest>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,7 +169,12 @@ impl PaneGroupView {
             pointer_pane: None,
             popover_sources: Vec::new(),
             zoomed: None,
+            pending_close: None,
         }
+    }
+
+    pub fn is_zoomed(&self) -> bool {
+        self.zoomed.is_some()
     }
 
     /// Zoom the focused pane, or zoom back out. A pane without tabs does not zoom.
@@ -344,6 +368,9 @@ impl PaneGroupView {
                     if let Some(item) = make_item(item) {
                         if saved.active_item == Some(index) {
                             active = Some(pane.open.len());
+                        }
+                        if index < saved.pinned_count {
+                            pane.pinned += 1;
                         }
                         pane.open.push(item);
                     }
@@ -606,9 +633,20 @@ impl PaneGroupView {
         }
         if offset >= TAB_CLOSE {
             let (p, index) = per_pane(TAB_CLOSE);
-            if let Some(path) = self.pane_order.get(p).cloned() {
-                self.close_tab(&path, index as usize);
+            let index = index as usize;
+            let Some(path) = self.pane_order.get(p).cloned() else {
+                return GroupClick::Handled;
+            };
+            let Some(pane) = self.group.leaf_at_mut(&path) else {
+                return GroupClick::Handled;
+            };
+            // A pinned tab's end button is the pin, which unpins it rather than closing.
+            if pane.is_pinned(index) {
+                pane.toggle_pin(index);
+                return GroupClick::Handled;
             }
+            let pane = pane.id;
+            self.close_tabs(pane, index, CloseTabs::This);
             return GroupClick::Handled;
         }
         let (p, index) = per_pane(TAB_ACTIVATE);
@@ -868,6 +906,15 @@ impl PaneGroupView {
                 self.toggle_zoom();
                 true
             }
+            PaneCommand::TogglePinTab => match self.active_pane_mut() {
+                Some(pane) => {
+                    if let Some(index) = pane.active {
+                        pane.toggle_pin(index);
+                    }
+                    true
+                }
+                None => false,
+            },
             PaneCommand::ActivatePane(direction) => match self.pane_in_direction(direction) {
                 Some(path) => {
                     self.active = path;
@@ -914,6 +961,7 @@ impl PaneGroupView {
         let pane = self.group.leaf_at(&self.group.path_of(pane_id)?)?;
         let item = pane.open.get(index)?;
         Some(TabMenuState {
+            pinned: pane.is_pinned(index),
             has_others: pane.open.len() > 1,
             has_left: index > 0,
             has_right: index + 1 < pane.open.len(),
@@ -922,45 +970,156 @@ impl PaneGroupView {
         })
     }
 
-    /// Close tabs of the pane `pane_id` relative to its tab `index`; the tab stays active when it remains, and
-    /// a pane left empty leaves the group unless it is the last one.
+    /// Close tabs of the pane `pane_id` relative to its tab `index`. Tabs with unsaved changes (not open in
+    /// another pane) are not closed yet: the request waits in `take_close_request` for the owner to ask whether
+    /// to save them.
     pub fn close_tabs(&mut self, pane_id: u64, index: usize, which: CloseTabs) {
-        let Some(path) = self.group.path_of(pane_id) else {
+        let Some(pane) = self
+            .group
+            .path_of(pane_id)
+            .and_then(|path| self.group.leaf_at(&path))
+        else {
+            return;
+        };
+        let ids: Vec<String> = pane
+            .open
+            .iter()
+            .enumerate()
+            // Only closing the tab itself takes a pinned tab; the bulk closes leave pinned tabs open.
+            .filter(|(at, item)| match which {
+                CloseTabs::This => *at == index,
+                CloseTabs::Others => *at != index && !pane.is_pinned(*at),
+                CloseTabs::Left => *at < index && !pane.is_pinned(*at),
+                CloseTabs::Right => *at > index && !pane.is_pinned(*at),
+                CloseTabs::Clean => !item.is_dirty() && !pane.is_pinned(*at),
+                CloseTabs::All => !pane.is_pinned(*at),
+            })
+            .filter_map(|(_, item)| item.id())
+            .collect();
+        let focus = pane.open.get(index).and_then(|item| item.id());
+        let dirty: Vec<DirtyTab> = pane
+            .open
+            .iter()
+            .filter(|item| item.is_dirty())
+            .filter_map(|item| {
+                let id = item.id()?;
+                (ids.contains(&id) && !self.open_elsewhere(pane_id, &id)).then(|| DirtyTab {
+                    title: item.title(),
+                    path: item.abs_path(),
+                    id,
+                })
+            })
+            .collect();
+        let request = CloseRequest {
+            pane: pane_id,
+            ids,
+            focus,
+            dirty,
+        };
+        if request.dirty.is_empty() {
+            self.close_ids(&request);
+        } else {
+            self.pending_close = Some(request);
+        }
+    }
+
+    pub fn toggle_pin(&mut self, pane_id: u64, index: usize) {
+        if let Some(pane) = self
+            .group
+            .path_of(pane_id)
+            .and_then(|path| self.group.leaf_at_mut(&path))
+        {
+            pane.toggle_pin(index);
+        }
+    }
+
+    /// Whether item `id` is also open in another pane of this group, so closing it here loses nothing.
+    fn open_elsewhere(&self, pane_id: u64, id: &str) -> bool {
+        let mut found = false;
+        self.group.for_each_pane(&mut |pane| {
+            found |= pane.id != pane_id && pane.index_of_id(id).is_some();
+        });
+        found
+    }
+
+    pub fn has_item(&self, id: &str) -> bool {
+        let mut found = false;
+        self.group
+            .for_each_pane(&mut |pane| found |= pane.index_of_id(id).is_some());
+        found
+    }
+
+    /// A close that waits on a save decision, taken by the owner to ask the user.
+    pub fn take_close_request(&mut self) -> Option<CloseRequest> {
+        self.pending_close.take()
+    }
+
+    /// Finish a close the user answered: save the dirty tabs first when `save`, then close. A tab whose save
+    /// fails stays open; the errors come back to show.
+    pub fn finish_close(&mut self, mut request: CloseRequest, save: bool) -> Vec<String> {
+        let mut errors = Vec::new();
+        if save {
+            if let Some(pane) = self
+                .group
+                .path_of(request.pane)
+                .and_then(|path| self.group.leaf_at_mut(&path))
+            {
+                for dirty in &request.dirty {
+                    let Some(item) = pane
+                        .index_of_id(&dirty.id)
+                        .and_then(|index| pane.open.get_mut(index))
+                    else {
+                        continue;
+                    };
+                    if let Err(error) = item.save() {
+                        errors.push(format!("Failed to save {}: {error}", dirty.title));
+                        request.ids.retain(|id| *id != dirty.id);
+                    }
+                }
+            }
+        }
+        self.close_ids(&request);
+        errors
+    }
+
+    fn close_ids(&mut self, request: &CloseRequest) {
+        let Some(path) = self.group.path_of(request.pane) else {
             return;
         };
         let Some(pane) = self.group.leaf_at_mut(&path) else {
             return;
         };
-        let keep: Vec<bool> = pane
+        let active = pane.active;
+        let closing: Vec<bool> = pane
             .open
             .iter()
-            .enumerate()
-            .map(|(at, item)| match which {
-                CloseTabs::This => at != index,
-                CloseTabs::Others => at == index,
-                CloseTabs::Left => at >= index,
-                CloseTabs::Right => at <= index,
-                CloseTabs::Clean => item.is_dirty(),
-                CloseTabs::All => false,
-            })
+            .map(|item| item.id().is_some_and(|id| request.ids.contains(&id)))
             .collect();
-        let active = pane.active;
-        let target = pane.open.get(index).and_then(|item| item.id());
+        pane.pinned = closing
+            .iter()
+            .take(pane.pinned)
+            .filter(|closed| !**closed)
+            .count();
         let mut at = 0;
         pane.open.retain(|_| {
-            let kept = keep.get(at).copied().unwrap_or(true);
+            let closed = closing.get(at).copied().unwrap_or(false);
             at += 1;
-            kept
+            !closed
         });
-        let kept_before =
-            |position: usize| keep.iter().take(position).filter(|kept| **kept).count();
+        let kept_before = |position: usize| {
+            closing
+                .iter()
+                .take(position)
+                .filter(|closed| !**closed)
+                .count()
+        };
         pane.active = if pane.open.is_empty() {
             None
-        } else if let Some(position) = target.and_then(|id| pane.index_of_id(&id)) {
+        } else if let Some(position) = request.focus.as_deref().and_then(|id| pane.index_of_id(id))
+        {
             Some(position)
         } else {
-            let fallback = active.map_or(0, kept_before);
-            Some(fallback.min(pane.open.len() - 1))
+            Some(active.map_or(0, kept_before).min(pane.open.len() - 1))
         };
         if pane.open.is_empty() && self.group.leaf_count() > 1 {
             self.remove_pane(&path);
@@ -1138,7 +1297,9 @@ impl PaneGroupView {
         let drop = self.foreign_drop.take().map(|(drop, _)| drop);
         let next_id = self.next_pane_id;
         let placed = match drop {
-            Some(drop) => tab_drag::insert_item(&mut self.group, drop, item, || Pane::new(next_id)),
+            Some(drop) => {
+                tab_drag::insert_item(&mut self.group, drop, item, false, || Pane::new(next_id))
+            }
             None => Err(Some(item)),
         };
         if self.group.path_of(next_id).is_some() {
@@ -1675,10 +1836,14 @@ fn serialize_member(
         Member::Leaf(pane) => {
             let mut items = Vec::new();
             let mut active_item = None;
+            let mut pinned_count = 0;
             for (index, item) in pane.open.iter().enumerate() {
                 if let Some(saved) = item.serialize() {
                     if pane.active == Some(index) {
                         active_item = Some(items.len());
+                    }
+                    if pane.is_pinned(index) {
+                        pinned_count += 1;
                     }
                     items.push(saved);
                 }
@@ -1687,6 +1852,7 @@ fn serialize_member(
                 active: path.as_slice() == active,
                 items,
                 active_item,
+                pinned_count,
             })
         }
         Member::Split(split) => SerializedMember::Split {
@@ -2097,6 +2263,7 @@ mod tests {
                         data: serde_json::json!("gone"),
                     }],
                     active_item: Some(0),
+                    pinned_count: 0,
                 }),
                 SerializedMember::Pane(SerializedPane {
                     active: true,
@@ -2105,6 +2272,7 @@ mod tests {
                         data: serde_json::json!("c"),
                     }],
                     active_item: Some(0),
+                    pinned_count: 0,
                 }),
             ],
         };
@@ -2234,5 +2402,117 @@ mod tests {
         view.split(&[], SplitDirection::Right, item);
         view.close_tabs(pane, 0, CloseTabs::All);
         assert_eq!(view.group.leaf_count(), 1);
+    }
+
+    struct Draft {
+        name: &'static str,
+        dirty: bool,
+        fails: bool,
+    }
+
+    impl Item for Draft {
+        fn id(&self) -> Option<String> {
+            Some(self.name.to_string())
+        }
+        fn title(&self) -> String {
+            self.name.to_string()
+        }
+        fn render(&mut self) -> Node {
+            ui::div().into()
+        }
+        fn is_dirty(&self) -> bool {
+            self.dirty
+        }
+        fn save(&mut self) -> Result<(), String> {
+            if self.fails {
+                return Err("read-only".into());
+            }
+            self.dirty = false;
+            Ok(())
+        }
+    }
+
+    fn drafts(fails: bool) -> (PaneGroupView, u64) {
+        let mut view = view();
+        if let Some(pane) = view.active_pane_mut() {
+            pane.add_item(Box::new(Draft {
+                name: "x",
+                dirty: true,
+                fails,
+            }));
+        }
+        view.layout(area());
+        let pane = view.pane_at(&[]).map(|pane| pane.id).unwrap_or_default();
+        (view, pane)
+    }
+
+    #[test]
+    fn closing_a_dirty_tab_waits_for_the_save_decision() {
+        let (mut view, pane) = drafts(false);
+        view.close_tabs(pane, 2, CloseTabs::This);
+        assert_eq!(titles_of(&view).len(), 3);
+        let Some(request) = view.take_close_request() else {
+            panic!("a dirty tab should ask first");
+        };
+        assert_eq!(request.dirty.len(), 1);
+        assert!(view.finish_close(request, true).is_empty());
+        assert_eq!(titles_of(&view), ["a", "b"]);
+
+        let (mut view, pane) = drafts(true);
+        view.close_tabs(pane, 0, CloseTabs::All);
+        let Some(request) = view.take_close_request() else {
+            panic!("a dirty tab should ask first");
+        };
+        assert_eq!(view.finish_close(request, true).len(), 1);
+        assert_eq!(titles_of(&view), ["x"]);
+
+        let (mut view, pane) = drafts(true);
+        view.close_tabs(pane, 0, CloseTabs::All);
+        let Some(request) = view.take_close_request() else {
+            panic!("a dirty tab should ask first");
+        };
+        assert!(view.finish_close(request, false).is_empty());
+        assert!(titles_of(&view).is_empty());
+
+        let (mut view, pane) = drafts(false);
+        view.close_tabs(pane, 0, CloseTabs::Clean);
+        assert!(view.take_close_request().is_none());
+        assert_eq!(titles_of(&view), ["x"]);
+    }
+
+    #[test]
+    fn pinned_tabs_stay_in_front_and_survive_bulk_closes() {
+        let (mut view, pane) = three_tabs();
+        view.toggle_pin(pane, 2);
+        assert_eq!(titles_of(&view), ["c", "a", "b"]);
+        assert_eq!(view.pane_at(&[]).map(|pane| pane.pinned), Some(1));
+        view.close_tabs(pane, 1, CloseTabs::All);
+        assert_eq!(titles_of(&view), ["c"]);
+
+        let (mut view, pane) = three_tabs();
+        view.toggle_pin(pane, 2);
+        view.layout(area());
+        assert_eq!(view.click(view.tab_close_id(0, 0)), GroupClick::Handled);
+        assert_eq!(view.pane_at(&[]).map(|pane| pane.pinned), Some(0));
+        assert_eq!(titles_of(&view), ["c", "a", "b"]);
+        view.toggle_pin(pane, 0);
+        view.close_tabs(pane, 0, CloseTabs::This);
+        assert_eq!(titles_of(&view), ["a", "b"]);
+        assert_eq!(view.pane_at(&[]).map(|pane| pane.pinned), Some(0));
+
+        let (mut view, pane) = three_tabs();
+        view.toggle_pin(pane, 1);
+        let saved = view.serialize();
+        let mut back = PaneGroupView::new(PaneGroupConfig {
+            id_base: BASE,
+            show_nav: true,
+            buttons: Vec::new(),
+            max_panes: 4,
+            split_filter: None,
+            zoom_whole_group: false,
+        });
+        assert!(back.restore(&saved, &mut make_plain));
+        assert_eq!(back.pane_at(&[]).map(|pane| pane.pinned), Some(1));
+        assert_eq!(titles_of(&back), ["b", "a", "c"]);
     }
 }

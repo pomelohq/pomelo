@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use workspace::pane_group_view::PaneGroupView;
 use workspace::{EditKey, FunctionView, Prompt, TreeAction, TreeMenuState};
 
 use crate::text_field::TextField;
@@ -348,7 +349,7 @@ impl FilesView {
     }
 
     fn has_dirty_items_within(&self, path: &str) -> bool {
-        let mut dirty = false;
+        let mut dirty = self.other_dirty.iter().any(|id| is_within(id, path));
         self.panes.group.for_each_pane(&mut |pane| {
             dirty |= pane
                 .open
@@ -631,24 +632,49 @@ impl FilesView {
             .drain()
             .map(|dir| moved(&dir).unwrap_or(dir))
             .collect();
-        self.panes.group.for_each_pane_mut(&mut |pane| {
-            for item in pane.open.iter_mut() {
-                let Some(file) = item
-                    .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<FileItem>())
-                else {
-                    continue;
-                };
-                if let Some(path) = moved(&file.path) {
-                    file.retarget(&path);
-                }
+        retarget_files(&mut self.panes, from, to);
+        self.pending_moves.push((from.to_string(), to.to_string()));
+    }
+
+    /// Bring another pane group (the terminal panel) up to date with the tree: tabs follow files moved since the
+    /// last frame, and its dirty files count when deleting asks about unsaved changes.
+    pub(crate) fn sync_other_group(&mut self, other: Option<&mut PaneGroupView>) {
+        let moves = std::mem::take(&mut self.pending_moves);
+        let Some(group) = other else {
+            self.other_dirty.clear();
+            return;
+        };
+        for (from, to) in &moves {
+            retarget_files(group, from, to);
+        }
+        let mut dirty = Vec::new();
+        group.for_each_item_mut(&mut |item| {
+            if item.is_dirty() {
+                dirty.extend(item.id());
             }
         });
+        self.other_dirty = dirty;
     }
 
     pub(crate) fn tree_edit_active(&self) -> bool {
         self.tree_ops.edit.is_some()
     }
+}
+
+/// Point the file tabs of `group` at or under `from` to where they moved under `to`.
+fn retarget_files(group: &mut PaneGroupView, from: &str, to: &str) {
+    group.for_each_item_mut(&mut |item| {
+        let Some(file) = item
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<FileItem>())
+        else {
+            return;
+        };
+        if is_within(&file.path, from) {
+            let moved = format!("{to}{}", file.path.get(from.len()..).unwrap_or_default());
+            file.retarget(&moved);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -725,5 +751,35 @@ mod tests {
         assert_eq!(message, "Do you want to trash `src`?");
         assert_eq!(detail, None);
         assert_eq!(confirm, "Trash");
+    }
+
+    #[test]
+    fn renames_reach_tabs_in_the_other_pane_group() {
+        let root = std::env::temp_dir().join(format!("pomelo-tree-other-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let mut view = FilesView::new(root.clone());
+        let mut other = PaneGroupView::new(workspace::pane_group_view::PaneGroupConfig {
+            id_base: 0,
+            show_nav: false,
+            buttons: Vec::new(),
+            max_panes: 2,
+            split_filter: None,
+            zoom_whole_group: false,
+        });
+        let mut file = FileItem::new(root.clone(), "src/a.rs", Some("fn a() {}\n".into()));
+        if let Some(buffer) = file.buffer.as_mut() {
+            buffer.edit(vec![(0..0, "// x\n".into())]);
+        }
+        if let Some(pane) = other.active_pane_mut() {
+            pane.add_item(Box::new(file));
+        }
+        view.retarget_paths("src", "lib");
+        view.sync_other_group(Some(&mut other));
+        let id = other.active_item().and_then(|item| item.id());
+        assert_eq!(id.as_deref(), Some("lib/a.rs"));
+        assert!(view.has_dirty_items_within("lib"));
+        view.sync_other_group(None);
+        assert!(!view.has_dirty_items_within("lib"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
