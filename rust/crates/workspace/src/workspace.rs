@@ -2,6 +2,7 @@
 //! right dock, both resizable via a divider and collapsing to a fixed icon rail instead of vanishing, plus the
 //! content area. Computes rectangles, text runs and hit regions; the app drives input and rendering.
 
+pub mod pane_group;
 mod panel;
 pub mod search_bar;
 pub mod text_field;

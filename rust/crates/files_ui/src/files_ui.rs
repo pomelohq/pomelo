@@ -17,6 +17,7 @@ use editor::buffer::{
 use editor::fold::FoldMap;
 use editor::search::{Direction, SearchQuery};
 use editor::transform::{LineTransform, TextTransform};
+use workspace::pane_group::{self, DividerRef, Member, PaneId, SplitDirection};
 use workspace::search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 use workspace::text_field;
 
@@ -115,12 +116,7 @@ fn gutter_width(line_count: usize) -> f32 {
 const INDENT: f32 = 16.0; // per-depth indent (~20 in the design; trimmed for the narrower panel)
 const ROW_H: f32 = 22.0;
 const TAB_H: f32 = 32.0; // editor tab-bar height
-const DIVIDER_LINE: f32 = 1.0; // the visible gap between panes (a 1px line fills it -- no white band)
-const DIVIDER_GRAB: f32 = 5.0; // pointer grab width: a hit strip centered on the line (overlaps panes)
-const MIN_PANE_W: f32 = 80.0; // min pane width for a horizontal split (the reference's HORIZONTAL_MIN_SIZE)
-const MIN_PANE_H: f32 = 100.0; // min pane height for a vertical split (the reference's VERTICAL_MIN_SIZE)
 const MAX_PANES: usize = 6; // ceiling on total leaf panes in the group
-const DROP_EDGE: f32 = 0.2; // a tab dropped within this fraction of a pane's smaller side splits that edge
 
 // Click-id ranges within the feature-view space (`FUNC_VIEW_BASE`). Tree rows use the low range; the editor's
 // pane tabs + split/divider affordances use higher offsets. Tab ids are keyed by `pane_index * PANE_STRIDE +
@@ -144,65 +140,6 @@ const HUNK_FROM_FOLD: u64 = HUNK_BASE - FOLD_BASE;
 const DIVIDER_BASE: u64 = FUNC_VIEW_BASE + 12_000_000;
 const PANE_STRIDE: u64 = 100_000;
 
-/// The split axis of a pane group node. `Horizontal` lays panes left-to-right (a `row`), `Vertical` stacks
-/// them top-to-bottom (a `col`).
-#[derive(Clone, Copy, PartialEq)]
-enum Axis {
-    Horizontal,
-    Vertical,
-}
-
-/// A split intent (toolbar button or a tab drop on a pane edge). Maps to an `Axis` plus whether the new pane
-/// goes after (right/down) or before (left/up) the current one.
-#[derive(Clone, Copy, PartialEq)]
-enum SplitDir {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-impl SplitDir {
-    fn axis(self) -> Axis {
-        match self {
-            SplitDir::Left | SplitDir::Right => Axis::Horizontal,
-            SplitDir::Up | SplitDir::Down => Axis::Vertical,
-        }
-    }
-    fn after(self) -> bool {
-        matches!(self, SplitDir::Right | SplitDir::Down)
-    }
-}
-
-/// A node of the center pane group: either a leaf `Pane` or a `Split` of child members along one axis. This is
-/// the recursive binary-ish tree that lets panes tile in any nesting (a row of panes, one of which is a column
-/// of panes, ...), sized by per-child flex ratios.
-enum Member {
-    Leaf(Pane),
-    Split(Split),
-}
-
-/// A split container: an axis, its child members, and a flex ratio per child. Flexes sum to `members.len()`, so
-/// each child's extent along the axis is `container * flex[i] / members.len()` (equal flexes = equal sizes).
-struct Split {
-    axis: Axis,
-    members: Vec<Member>,
-    flexes: Vec<f32>,
-}
-
-/// A rebuilt-per-frame record of a rendered divider: which split owns it (path of child indices from the root),
-/// the gap index within that split (between child `index` and `index + 1`), the split's axis, and the pixel
-/// length available to its children along that axis (so a drag turns px into flex without re-walking the tree).
-struct DividerRef {
-    split_path: Vec<usize>,
-    index: usize,
-    axis: Axis,
-    container: f32,
-    /// The along-axis pixel origin of child `index` (its left/top edge), so a drag can position the boundary
-    /// at the absolute cursor position (like the reference), not by accumulating deltas.
-    child_start: f32,
-}
-
 /// An in-progress tab drag: the source pane (by stable id) and the tab index within it, plus the current drop
 /// resolved each pointer move. `None` drop = the pointer isn't over a pane (dropping there cancels).
 struct TabDrag {
@@ -217,7 +154,7 @@ struct TabDrag {
 /// `None` (dropped in the center = move the tab into that pane).
 struct TabDrop {
     pane: u64,
-    dir: Option<SplitDir>,
+    dir: Option<SplitDirection>,
 }
 
 /// An open file as a center `Item` (an editor item): path/name + decoded text + language (`None` text =
@@ -4292,110 +4229,9 @@ impl Pane {
     }
 }
 
-/// Rescale `flexes` in place so they sum to their count (the pane-group invariant), preserving ratios. A no-op
-/// when already normalized; falls back to equal weights if the sum is degenerate.
-fn renormalize(flexes: &mut [f32]) {
-    let n = flexes.len() as f32;
-    let sum: f32 = flexes.iter().sum();
-    if sum > 0.001 {
-        let k = n / sum;
-        for f in flexes.iter_mut() {
-            *f *= k;
-        }
-    } else {
-        flexes.iter_mut().for_each(|f| *f = 1.0);
-    }
-}
-
-impl Member {
-    /// The leaf `Pane` at `path` (a sequence of child indices from this node), if `path` lands on a leaf.
-    fn leaf_at_mut(&mut self, path: &[usize]) -> Option<&mut Pane> {
-        match self {
-            Member::Leaf(p) => path.is_empty().then_some(p),
-            Member::Split(s) => {
-                let (i, rest) = path.split_first()?;
-                s.members.get_mut(*i)?.leaf_at_mut(rest)
-            }
-        }
-    }
-
-    /// The `Split` at `path` (an empty path lands on this node if it is a split).
-    fn split_at_mut(&mut self, path: &[usize]) -> Option<&mut Split> {
-        match self {
-            Member::Leaf(_) => None,
-            Member::Split(s) => match path.split_first() {
-                None => Some(s),
-                Some((i, rest)) => s.members.get_mut(*i)?.split_at_mut(rest),
-            },
-        }
-    }
-
-    /// The path to the leaf pane with the given stable `id`, if it still exists.
-    fn path_of(&self, id: u64, path: &mut Vec<usize>) -> Option<Vec<usize>> {
-        match self {
-            Member::Leaf(p) => (p.id == id).then(|| path.clone()),
-            Member::Split(s) => {
-                for (i, m) in s.members.iter().enumerate() {
-                    path.push(i);
-                    let found = m.path_of(id, path);
-                    path.pop();
-                    if found.is_some() {
-                        return found;
-                    }
-                }
-                None
-            }
-        }
-    }
-
-    /// The path to the first leaf (used as the active fallback after a structural change).
-    fn first_leaf_path(&self) -> Vec<usize> {
-        let mut path = Vec::new();
-        let mut cur = self;
-        while let Member::Split(s) = cur {
-            path.push(0);
-            match s.members.first() {
-                Some(m) => cur = m,
-                None => break,
-            }
-        }
-        path
-    }
-
-    fn for_each_pane(&self, f: &mut dyn FnMut(&Pane)) {
-        match self {
-            Member::Leaf(p) => f(p),
-            Member::Split(s) => s.members.iter().for_each(|m| m.for_each_pane(f)),
-        }
-    }
-
-    fn for_each_pane_mut(&mut self, f: &mut dyn FnMut(&mut Pane)) {
-        match self {
-            Member::Leaf(p) => f(p),
-            Member::Split(s) => s.members.iter_mut().for_each(|m| m.for_each_pane_mut(f)),
-        }
-    }
-
-    /// Total leaf panes under this node.
-    fn leaf_count(&self) -> usize {
-        match self {
-            Member::Leaf(_) => 1,
-            Member::Split(s) => s.members.iter().map(Member::leaf_count).sum(),
-        }
-    }
-
-    /// Collapse any split that has a single child into that child, bottom-up, so removing a pane never leaves a
-    /// redundant one-way split (matching the reference's group-normalization on close).
-    fn collapse(&mut self) {
-        if let Member::Split(s) = self {
-            for m in &mut s.members {
-                m.collapse();
-            }
-            if s.members.len() == 1 {
-                let only = s.members.remove(0);
-                *self = only;
-            }
-        }
+impl PaneId for Pane {
+    fn pane_id(&self) -> u64 {
+        self.id
     }
 }
 
@@ -4415,7 +4251,7 @@ pub struct FilesView {
     expanded: HashSet<String>,
     /// The editor pane group: a recursive tree of split panes, and the path (child indices from the root) of
     /// the focused leaf (an empty path = the group is itself a single pane).
-    group: Member,
+    group: Member<Pane>,
     active: Vec<usize>,
     /// Monotonic source of stable pane ids (see `Pane::id`).
     next_pane_id: u64,
@@ -4534,17 +4370,10 @@ impl FilesView {
     fn active_path(&self) -> Option<String> {
         // A shared read-only walk (no `&mut`), so it can't self-heal a stale path -- the render always calls a
         // `&mut` method first, so by the time this runs the active path is valid.
-        let mut cur = &self.group;
-        for &i in &self.active {
-            match cur {
-                Member::Split(s) => cur = s.members.get(i)?,
-                Member::Leaf(_) => return None,
-            }
-        }
-        match cur {
-            Member::Leaf(p) => p.active_item().and_then(|it| it.id()),
-            Member::Split(_) => None,
-        }
+        self.group
+            .leaf_at(&self.active)?
+            .active_item()
+            .and_then(|it| it.id())
     }
 
     /// Open a file in the focused pane.
@@ -5283,17 +5112,7 @@ impl FilesView {
     }
 
     fn pane_at(&self, path: &[usize]) -> Option<&Pane> {
-        let mut cur = &self.group;
-        for &i in path {
-            match cur {
-                Member::Split(s) => cur = s.members.get(i)?,
-                Member::Leaf(_) => return None,
-            }
-        }
-        match cur {
-            Member::Leaf(p) => Some(p),
-            Member::Split(_) => None,
-        }
+        self.group.leaf_at(path)
     }
 
     fn active_item_ref(&self) -> Option<&dyn Item> {
@@ -5319,20 +5138,10 @@ impl FilesView {
     }
 
     fn focused_editable(&self) -> bool {
-        let mut cur = &self.group;
-        for &i in &self.active {
-            match cur {
-                Member::Split(s) => match s.members.get(i) {
-                    Some(m) => cur = m,
-                    None => return false,
-                },
-                Member::Leaf(_) => return false,
-            }
-        }
-        match cur {
-            Member::Leaf(p) => p.active_item().map(|it| it.is_editable()).unwrap_or(false),
-            Member::Split(_) => false,
-        }
+        self.group
+            .leaf_at(&self.active)
+            .and_then(Pane::active_item)
+            .is_some_and(|it| it.is_editable())
     }
 
     fn clone_active_of(&mut self, path: &[usize]) -> Option<Box<dyn Item>> {
@@ -5345,7 +5154,7 @@ impl FilesView {
     fn do_split(
         &mut self,
         path: &[usize],
-        dir: SplitDir,
+        direction: SplitDirection,
         item: Option<Box<dyn Item>>,
     ) -> Option<Vec<usize>> {
         if self.group.leaf_count() >= MAX_PANES {
@@ -5356,54 +5165,13 @@ impl FilesView {
             ..Pane::default()
         };
         self.next_pane_id += 1;
-        if let Some(it) = item {
-            new_pane.open = vec![it];
+        if let Some(item) = item {
+            new_pane.open = vec![item];
             new_pane.active = Some(0);
         }
-        let axis = dir.axis();
-        let after = dir.after();
-
-        let Some((&idx, parent_path)) = path.split_last() else {
-            // The group is a single pane: wrap the whole group in a new split.
-            let old = std::mem::replace(&mut self.group, Member::Leaf(Pane::default()));
-            let members = if after {
-                vec![old, Member::Leaf(new_pane)]
-            } else {
-                vec![Member::Leaf(new_pane), old]
-            };
-            self.group = Member::Split(Split {
-                axis,
-                flexes: vec![1.0; 2],
-                members,
-            });
-            let ap = vec![if after { 1 } else { 0 }];
-            self.active = ap.clone();
-            return Some(ap);
-        };
-
-        let parent = self.group.split_at_mut(parent_path)?;
-        let ap = if parent.axis == axis {
-            let ins = if after { idx + 1 } else { idx };
-            parent.members.insert(ins, Member::Leaf(new_pane));
-            parent.flexes.insert(ins, 1.0);
-            renormalize(&mut parent.flexes);
-            [parent_path, &[ins]].concat()
-        } else {
-            let old = std::mem::replace(&mut parent.members[idx], Member::Leaf(Pane::default()));
-            let members = if after {
-                vec![old, Member::Leaf(new_pane)]
-            } else {
-                vec![Member::Leaf(new_pane), old]
-            };
-            parent.members[idx] = Member::Split(Split {
-                axis,
-                flexes: vec![1.0; 2],
-                members,
-            });
-            [parent_path, &[idx, if after { 1 } else { 0 }]].concat()
-        };
-        self.active = ap.clone();
-        Some(ap)
+        let new_path = self.group.split(path, direction, new_pane)?;
+        self.active = new_path.clone();
+        Some(new_path)
     }
 
     /// Move (or, when `dir` is set, split-and-move) the dragged tab to its resolved drop target. Removes the
@@ -5414,9 +5182,9 @@ impl FilesView {
         source: u64,
         index: usize,
         target_pane: u64,
-        dir: Option<SplitDir>,
+        dir: Option<SplitDirection>,
     ) {
-        let Some(src_path) = self.group.path_of(source, &mut Vec::new()) else {
+        let Some(src_path) = self.group.path_of(source) else {
             return;
         };
         // A center drop back onto the same pane is a no-op (nothing to reorder in v1).
@@ -5438,7 +5206,7 @@ impl FilesView {
             };
             it
         };
-        let Some(target_path) = self.group.path_of(target_pane, &mut Vec::new()) else {
+        let Some(target_path) = self.group.path_of(target_pane) else {
             // Target vanished; put the item back so it isn't lost.
             if let Some(pane) = self.group.leaf_at_mut(&src_path) {
                 pane.open.push(item);
@@ -5459,7 +5227,7 @@ impl FilesView {
             }
         }
         // Prune the source pane if the move left it empty.
-        if let Some(src) = self.group.path_of(source, &mut Vec::new()) {
+        if let Some(src) = self.group.path_of(source) {
             let empty = self
                 .group
                 .leaf_at_mut(&src)
@@ -5486,18 +5254,9 @@ impl FilesView {
     /// Remove the leaf pane at `path` from its parent split, renormalize the parent's flexes, then collapse any
     /// single-child split and re-anchor the focus to the first remaining leaf.
     fn remove_pane(&mut self, path: &[usize]) {
-        let Some((&idx, parent_path)) = path.split_last() else {
-            return; // never remove the sole root pane
-        };
-        if let Some(parent) = self.group.split_at_mut(parent_path) {
-            if idx < parent.members.len() {
-                parent.members.remove(idx);
-                parent.flexes.remove(idx);
-                renormalize(&mut parent.flexes);
-            }
+        if self.group.remove(path) {
+            self.active = self.group.first_leaf_path();
         }
-        self.group.collapse();
-        self.active = self.group.first_leaf_path();
     }
 }
 
@@ -5573,196 +5332,114 @@ fn color_of(theme: &Theme, capture: &str) -> Rgba {
     Rgba::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
 }
 
-/// Lay out one member of the group into `rect`. Leaves emit a `PanePlacement` (rect + node); splits divide
-/// `rect` by their flex ratios (subtracting the divider gaps), recurse, and emit a `DividerPlacement` per gap.
-/// Accumulates the render-order pane paths (for tab/split click routing) and divider metadata (for drag).
-#[allow(clippy::too_many_arguments)]
-fn layout_member(
-    m: &mut Member,
+/// One leaf pane's placement: the active item sized to the body below the tab bar, its caret/selection geometry,
+/// and the pane chrome. `p` is the pane's render-order index (keys its tab/split ids).
+fn layout_leaf(
+    pane: &mut Pane,
     rect: Rect,
-    path: &mut Vec<usize>,
-    active: &[usize],
+    is_focused: bool,
+    p: usize,
     hover: Option<u64>,
     panes: &mut Vec<PanePlacement>,
-    dividers: &mut Vec<DividerPlacement>,
-    pane_order: &mut Vec<Vec<usize>>,
-    pane_ids: &mut Vec<u64>,
-    pane_rects: &mut Vec<Rect>,
-    divider_order: &mut Vec<DividerRef>,
 ) {
-    // Snap the incoming rect to whole pixels so 1px divider lines and pane edges stay crisp (no 1-2-3px fuzz).
-    let rect = Rect::new(
-        rect.x.round(),
-        rect.y.round(),
-        rect.w.round(),
-        rect.h.round(),
+    // The active item's text content area (below the tab bar, inside the body padding) is where its
+    // caret/selection geometry is anchored. Focus (caret visibility) follows the group's active pane.
+    if let Some((bar, item)) = pane.search_target() {
+        bar.refresh(item);
+    }
+    let tab_h = pane.header_h();
+    let body_rect = Rect::new(
+        rect.x,
+        rect.y + tab_h,
+        rect.w,
+        (rect.h - tab_h).max(0.0),
         Rgba::TRANSPARENT,
     );
-    match m {
-        Member::Leaf(pane) => {
-            let p = pane_order.len();
-            pane_order.push(path.clone());
-            pane_ids.push(pane.id);
-            pane_rects.push(rect);
-            // The active item's text content area (below the tab bar, inside the body padding) is where its
-            // caret/selection geometry is anchored. Focus (caret visibility) follows the group's active pane.
-            let is_focused = path.as_slice() == active;
-            if let Some((bar, item)) = pane.search_target() {
-                bar.refresh(item);
-            }
-            let tab_h = pane.header_h();
-            let body_rect = Rect::new(
-                rect.x,
-                rect.y + tab_h,
-                rect.w,
-                (rect.h - tab_h).max(0.0),
-                Rgba::TRANSPARENT,
-            );
-            // The text content area (inside the body padding) is where caret/selection/guides are anchored.
-            let content = Rect::new(
-                rect.x,
-                rect.y + tab_h,
-                rect.w.max(0.0),
-                (rect.h - tab_h).max(0.0),
-                Rgba::TRANSPARENT,
-            );
-            let (back, back_tris, carets, scrollbar, h_scrollbar, body) =
-                match pane.active.and_then(|i| pane.open.get_mut(i)) {
-                    Some(item) => {
-                        item.set_focused(is_focused);
-                        item.set_body_height(content.h);
-                        item.set_body_width(content.w);
-                        let back = item.back_rects(content);
-                        let back_tris = item.selection_tris(content);
-                        let carets = item.carets(content);
-                        let scrollbar = item.scrollbar(content);
-                        let h_scrollbar = item.h_scrollbar(content);
-                        let y_offset = item.body_y_offset();
-                        let x_offset = item.body_x_offset();
-                        let gw = item.gutter_w();
-                        let gutter = item.gutter(FOLD_BASE + p as u64 * PANE_STRIDE);
-                        let node = item.render();
-                        // Text starts right of the fixed gutter; it (plus caret/selection) clips to that region so
-                        // scrolled glyphs never paint over the line numbers. The gutter clips to the left strip.
-                        let text_left = content.x + gw;
-                        let text_clip = Rect::new(
-                            text_left,
-                            body_rect.y,
-                            (body_rect.x + body_rect.w - text_left).max(0.0),
-                            body_rect.h,
-                            Rgba::TRANSPARENT,
-                        );
-                        let gutter_clip = Rect::new(
-                            body_rect.x,
-                            body_rect.y,
-                            (text_left - body_rect.x).max(0.0),
-                            body_rect.h,
-                            Rgba::TRANSPARENT,
-                        );
-                        (
-                            back,
-                            back_tris,
-                            carets,
-                            scrollbar,
-                            h_scrollbar,
-                            Some(PaneBody {
-                                node,
-                                rect: body_rect,
-                                y_offset,
-                                text_left,
-                                x_offset,
-                                text_clip,
-                                gutter,
-                                gutter_clip,
-                            }),
-                        )
-                    }
-                    None => (
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        None,
-                    ),
-                };
-            let node = render_pane(pane, p, hover, rect.w / ui::ui_text_scale());
-            panes.push(PanePlacement {
-                rect,
-                node,
-                body,
-                back,
-                back_tris,
-                carets,
-                scrollbar,
-                h_scrollbar,
-            });
-        }
-        Member::Split(s) => {
-            let axis = s.axis;
-            let n = s.members.len();
-            let (along, base) = match axis {
-                Axis::Horizontal => (rect.w, rect.x),
-                Axis::Vertical => (rect.h, rect.y),
-            };
-            // The gap between children is a single 1px line (filled, so no white band); children share the rest.
-            let avail = (along - (n.saturating_sub(1) as f32) * DIVIDER_LINE).max(0.0);
-            let mut pos = 0.0f32; // logical offset from `base`, boundaries rounded so edges never straddle a pixel
-            for i in 0..n {
-                let start = (base + pos).round();
-                pos += avail * s.flexes[i] / n as f32;
-                let end = (base + pos).round();
-                let extent = (end - start).max(0.0);
-                let child_rect = match axis {
-                    Axis::Horizontal => Rect::new(start, rect.y, extent, rect.h, Rgba::TRANSPARENT),
-                    Axis::Vertical => Rect::new(rect.x, start, rect.w, extent, Rgba::TRANSPARENT),
-                };
-                path.push(i);
-                layout_member(
-                    &mut s.members[i],
-                    child_rect,
-                    path,
-                    active,
-                    hover,
-                    panes,
-                    dividers,
-                    pane_order,
-                    pane_ids,
-                    pane_rects,
-                    divider_order,
+    // The text content area (inside the body padding) is where caret/selection/guides are anchored.
+    let content = Rect::new(
+        rect.x,
+        rect.y + tab_h,
+        rect.w.max(0.0),
+        (rect.h - tab_h).max(0.0),
+        Rgba::TRANSPARENT,
+    );
+    let (back, back_tris, carets, scrollbar, h_scrollbar, body) =
+        match pane.active.and_then(|i| pane.open.get_mut(i)) {
+            Some(item) => {
+                item.set_focused(is_focused);
+                item.set_body_height(content.h);
+                item.set_body_width(content.w);
+                let back = item.back_rects(content);
+                let back_tris = item.selection_tris(content);
+                let carets = item.carets(content);
+                let scrollbar = item.scrollbar(content);
+                let h_scrollbar = item.h_scrollbar(content);
+                let y_offset = item.body_y_offset();
+                let x_offset = item.body_x_offset();
+                let gw = item.gutter_w();
+                let gutter = item.gutter(FOLD_BASE + p as u64 * PANE_STRIDE);
+                let node = item.render();
+                // Text starts right of the fixed gutter; it (plus caret/selection) clips to that region so
+                // scrolled glyphs never paint over the line numbers. The gutter clips to the left strip.
+                let text_left = (content.x + gw).min(body_rect.x + body_rect.w);
+                let text_clip = Rect::new(
+                    text_left,
+                    body_rect.y,
+                    (body_rect.x + body_rect.w - text_left).max(0.0),
+                    body_rect.h,
+                    Rgba::TRANSPARENT,
                 );
-                path.pop();
-                if i + 1 < n {
-                    // The 1px gap sits at [end, end+1]; the grab hit strip is wider and overlaps both panes.
-                    let off = (DIVIDER_GRAB - DIVIDER_LINE) / 2.0;
-                    let grab = match axis {
-                        Axis::Horizontal => {
-                            Rect::new(end - off, rect.y, DIVIDER_GRAB, rect.h, Rgba::TRANSPARENT)
-                        }
-                        Axis::Vertical => {
-                            Rect::new(rect.x, end - off, rect.w, DIVIDER_GRAB, Rgba::TRANSPARENT)
-                        }
-                    };
-                    let id = DIVIDER_BASE + divider_order.len() as u64;
-                    dividers.push(DividerPlacement {
-                        rect: grab,
-                        id,
-                        axis: match axis {
-                            Axis::Horizontal => DividerAxis::Horizontal,
-                            Axis::Vertical => DividerAxis::Vertical,
-                        },
-                    });
-                    divider_order.push(DividerRef {
-                        split_path: path.clone(),
-                        index: i,
-                        axis,
-                        container: avail,
-                        child_start: start,
-                    });
-                    pos += DIVIDER_LINE;
-                }
+                let gutter_clip = Rect::new(
+                    body_rect.x,
+                    body_rect.y,
+                    (text_left - body_rect.x).max(0.0),
+                    body_rect.h,
+                    Rgba::TRANSPARENT,
+                );
+                (
+                    back,
+                    back_tris,
+                    carets,
+                    scrollbar,
+                    h_scrollbar,
+                    Some(PaneBody {
+                        node,
+                        rect: body_rect,
+                        y_offset,
+                        text_left,
+                        x_offset,
+                        text_clip,
+                        gutter,
+                        gutter_clip,
+                    }),
+                )
             }
-        }
+            None => (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+            ),
+        };
+    let node = render_pane(pane, p, hover, rect.w / ui::ui_text_scale());
+    panes.push(PanePlacement {
+        rect,
+        node,
+        body,
+        back,
+        back_tris,
+        carets,
+        scrollbar,
+        h_scrollbar,
+    });
+}
+
+fn divider_axis(axis: pane_group::Axis) -> DividerAxis {
+    match axis {
+        pane_group::Axis::Horizontal => DividerAxis::Horizontal,
+        pane_group::Axis::Vertical => DividerAxis::Vertical,
     }
 }
 
@@ -6093,22 +5770,26 @@ impl FunctionView for FilesView {
         let mut pane_order = Vec::new();
         let mut pane_ids = Vec::new();
         let mut pane_rects = Vec::new();
-        let mut divider_order = Vec::new();
-        let mut path = Vec::new();
-        let active = self.active.clone();
-        layout_member(
-            &mut self.group,
-            area,
-            &mut path,
-            &active,
-            self.hover,
-            &mut el.panes,
-            &mut el.dividers,
-            &mut pane_order,
-            &mut pane_ids,
-            &mut pane_rects,
-            &mut divider_order,
-        );
+        let (leaves, dividers) = self.group.layout(area);
+        for (p, leaf) in leaves.into_iter().enumerate() {
+            let is_focused = leaf.path == self.active;
+            let Some(pane) = self.group.leaf_at_mut(&leaf.path) else {
+                continue;
+            };
+            pane_ids.push(pane.id);
+            layout_leaf(pane, leaf.rect, is_focused, p, self.hover, &mut el.panes);
+            pane_rects.push(leaf.rect);
+            pane_order.push(leaf.path);
+        }
+        let mut divider_order = Vec::with_capacity(dividers.len());
+        for (index, divider) in dividers.into_iter().enumerate() {
+            el.dividers.push(DividerPlacement {
+                rect: divider.rect,
+                id: DIVIDER_BASE + index as u64,
+                axis: divider_axis(divider.reference.axis),
+            });
+            divider_order.push(divider.reference);
+        }
         self.pane_order = pane_order;
         self.pane_ids = pane_ids;
         self.pane_rects = pane_rects;
@@ -6440,7 +6121,7 @@ impl FunctionView for FilesView {
                 .cloned()
             {
                 let item = self.clone_active_of(&path);
-                self.do_split(&path, SplitDir::Down, item);
+                self.do_split(&path, SplitDirection::Down, item);
             }
             return true;
         }
@@ -6451,7 +6132,7 @@ impl FunctionView for FilesView {
                 .cloned()
             {
                 let item = self.clone_active_of(&path);
-                self.do_split(&path, SplitDir::Right, item);
+                self.do_split(&path, SplitDirection::Right, item);
             }
             return true;
         }
@@ -6582,77 +6263,18 @@ impl FunctionView for FilesView {
             return None;
         }
         let d = self.divider_order.get((id - DIVIDER_BASE) as usize)?;
-        Some(match d.axis {
-            Axis::Horizontal => DividerAxis::Horizontal,
-            Axis::Vertical => DividerAxis::Vertical,
-        })
+        Some(divider_axis(d.axis))
     }
 
-    /// Resize the split by dragging divider `id` so child `index`'s trailing edge tracks the absolute pointer
-    /// (`x`, `y`). Ports the reference's `compute_resize`: it positions the boundary at the cursor, then empties
-    /// the resulting pixel "bucket" across successive panes (forward or backward), clamping each to its minimum
-    /// so a shrinking neighbour cascades the change onto the pane past it instead of stopping the drag.
     fn drag_divider(&mut self, id: u64, x: f32, y: f32) -> bool {
-        if id < DIVIDER_BASE {
-            return false;
-        }
-        let Some(d) = self.divider_order.get((id - DIVIDER_BASE) as usize) else {
-            return false;
-        };
-        let split_path = d.split_path.clone();
-        let ix = d.index;
-        let axis = d.axis;
-        let container = d.container;
-        let child_start = d.child_start;
-        if container <= 1.0 {
-            return false;
-        }
-        let (pointer, min) = match axis {
-            Axis::Horizontal => (x, MIN_PANE_W),
-            Axis::Vertical => (y, MIN_PANE_H),
-        };
-        let Some(split) = self.group.split_at_mut(&split_path) else {
+        let Some(divider) = id
+            .checked_sub(DIVIDER_BASE)
+            .and_then(|index| self.divider_order.get(index as usize))
+            .cloned()
+        else {
             return false;
         };
-        let n = split.members.len();
-        if ix + 1 >= n {
-            return false;
-        }
-        let flexes = &mut split.flexes;
-        // Faithful port of the reference's interactive resize: flex<->pixel via `size`, then empty a pixel
-        // "bucket" (how far child `ix`'s trailing edge is from the cursor) across successive panes forward or
-        // backward, clamping each to `min` so a shrinking neighbour cascades onto the pane past it. Because the
-        // bucket is recomputed from the absolute cursor every mouse-move, the boundary converges on the pointer
-        // across events (the reference's characteristic feel), rather than snapping in one step.
-        let size = |i: usize, f: &[f32]| container * f[i] / n as f32;
-        if min - 1.0 > size(ix, flexes) {
-            return false;
-        }
-        let before = flexes.clone();
-        let mut proposed = (pointer - child_start) - size(ix, flexes);
-        let forward = proposed > 0.0;
-        let mut offset: usize = 0;
-        while proposed.abs() > 0.0 {
-            // `ix - offset` only when `offset <= ix` (avoid usize underflow).
-            let current = if forward {
-                (ix + 1 + offset < n).then_some(ix + offset)
-            } else if offset <= ix {
-                Some(ix - offset)
-            } else {
-                None
-            };
-            let Some(cur) = current else { break };
-            offset += 1;
-
-            let next_target = (size(cur + 1, flexes) - proposed).max(min);
-            let cur_target = (size(cur, flexes) + size(cur + 1, flexes) - next_target).max(min);
-            let change = cur_target - size(cur, flexes);
-            let flex_change = change / container;
-            flexes[cur] += flex_change;
-            flexes[cur + 1] -= flex_change;
-            proposed -= change;
-        }
-        *flexes != before
+        self.group.resize_divider(&divider, x, y)
     }
 
     fn is_tab(&self, id: u64) -> bool {
@@ -6698,32 +6320,8 @@ impl FunctionView for FilesView {
             .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
             .map(|i| (self.pane_ids[i], self.pane_rects[i]));
         let (drop, preview) = match target {
-            Some((pane, r)) => {
-                let zone = DROP_EDGE * r.w.min(r.h);
-                let (lx, ly) = (x - r.x, y - r.y);
-                let dir = if lx < zone || lx > r.w - zone || ly < zone || ly > r.h - zone {
-                    let (dl, dr, dt, db) = (lx, r.w - lx, ly, r.h - ly);
-                    let m = dl.min(dr).min(dt).min(db);
-                    Some(if m == dl {
-                        SplitDir::Left
-                    } else if m == dr {
-                        SplitDir::Right
-                    } else if m == dt {
-                        SplitDir::Up
-                    } else {
-                        SplitDir::Down
-                    })
-                } else {
-                    None
-                };
-                let half = |a, b, c, d| Rect::new(a, b, c, d, Rgba::TRANSPARENT);
-                let preview = match dir {
-                    Some(SplitDir::Left) => half(r.x, r.y, r.w / 2.0, r.h),
-                    Some(SplitDir::Right) => half(r.x + r.w / 2.0, r.y, r.w / 2.0, r.h),
-                    Some(SplitDir::Up) => half(r.x, r.y, r.w, r.h / 2.0),
-                    Some(SplitDir::Down) => half(r.x, r.y + r.h / 2.0, r.w, r.h / 2.0),
-                    None => r,
-                };
+            Some((pane, rect)) => {
+                let (dir, preview) = pane_group::drop_target(rect, x, y);
                 (Some(TabDrop { pane, dir }), Some(preview))
             }
             None => (None, None),
