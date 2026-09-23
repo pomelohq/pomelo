@@ -1,0 +1,16 @@
+[package]
+name = "terminal_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal view: draws a terminal's grid snapshot (cells, theme ANSI colors, selection, cursor) with the ui element tree."
+
+[lib]
+path = "src/terminal_ui.rs"
+
+[dependencies]
+ui = { path = "../ui" }
+terminal = { path = "../terminal" }
+
+[dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
