@@ -337,9 +337,10 @@ impl FileItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FilesView, Member};
+    use crate::FilesView;
     use lsp::lsp_types::{Position, Range as LspRange};
     use std::path::PathBuf;
+    use workspace::pane_group::Member;
     use workspace::{EditKey, Item};
 
     fn item(text: &str) -> FileItem {
@@ -452,7 +453,7 @@ mod tests {
             Some("fn main() { helper(); }\n".into()),
         );
         first.set_body_height(10.0 * EDIT_LINE_H);
-        if let Member::Leaf(pane) = &mut view.group {
+        if let Member::Leaf(pane) = &mut view.panes.group {
             pane.open.push(Box::new(first));
             pane.active = Some(0);
         }
@@ -461,7 +462,7 @@ mod tests {
             range: range(1, 7, 13),
         };
         view.navigate_to_definition(&[target], Some(0.0));
-        let active = view.active.clone();
+        let active = view.panes.active.clone();
         let opened = view.go_to_line_item(&active).unwrap();
         assert_eq!(opened.path, "b.rs");
         let selection = opened.buffer.as_ref().unwrap().newest();

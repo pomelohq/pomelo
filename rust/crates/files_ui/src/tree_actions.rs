@@ -349,7 +349,7 @@ impl FilesView {
 
     fn has_dirty_items_within(&self, path: &str) -> bool {
         let mut dirty = false;
-        self.group.for_each_pane(&mut |pane| {
+        self.panes.group.for_each_pane(&mut |pane| {
             dirty |= pane
                 .open
                 .iter()
@@ -618,7 +618,7 @@ impl FilesView {
             .drain()
             .map(|dir| moved(&dir).unwrap_or(dir))
             .collect();
-        self.group.for_each_pane_mut(&mut |pane| {
+        self.panes.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {
                 let Some(file) = item
                     .as_any_mut()
