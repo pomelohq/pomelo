@@ -17,6 +17,13 @@ use crate::{
 use std::time::{Duration, Instant};
 use ui::{Context, Frame, IconKind, Overlay, Painted, RawView, Rect, Rgba, Window};
 
+use crate::{
+    TreeAction, MENU_EDIT_COPY_TRIM, MENU_EDIT_GO_TO_DECLARATION, MENU_EDIT_GO_TO_DEFINITION,
+    MENU_EDIT_GO_TO_IMPLEMENTATION, MENU_EDIT_GO_TO_TYPE_DEFINITION, MENU_EDIT_REVEAL,
+    MENU_TREE_COLLAPSE_ALL, MENU_TREE_COPY, MENU_TREE_CUT, MENU_TREE_DELETE, MENU_TREE_DUPLICATE,
+    MENU_TREE_EXPAND_ALL, MENU_TREE_GITIGNORE, MENU_TREE_NEW_DIR, MENU_TREE_NEW_FILE,
+    MENU_TREE_OPEN_SYSTEM, MENU_TREE_PASTE, MENU_TREE_RENAME, MENU_TREE_RESTORE, MENU_TREE_TRASH,
+};
 use crate::{TOAST_ACTION, TOAST_CLOSE};
 
 const TOAST_DISMISS: Duration = Duration::from_secs(10);
@@ -64,6 +71,7 @@ pub struct WorkspaceView {
     modal_rect: Option<Rect>,
     /// Where the caret popover was drawn last frame, so scrolling over it scrolls it.
     popover_rects: Vec<Rect>,
+    pending_prompt: Option<crate::Prompt>,
     layout: Layout,
     session_menu_hover: Option<u64>,
     session_search_query: String,
@@ -100,6 +108,7 @@ impl WorkspaceView {
             menu_editor_anchor: None,
             modal_rect: None,
             popover_rects: Vec::new(),
+            pending_prompt: None,
             toast: None,
             pending: WorkspaceEffects::default(),
         }
@@ -909,12 +918,21 @@ impl WorkspaceView {
             label: "Hide Button",
             checked: false,
             sep: true,
+            disabled: false,
         };
         let item = |id: u64, label: &'static str, sep: bool| MenuItem {
             id,
             label,
             checked: false,
             sep,
+            disabled: false,
+        };
+        let disabled = |id: u64, label: &'static str, sep: bool, disabled: bool| MenuItem {
+            id,
+            label,
+            checked: false,
+            sep,
+            disabled,
         };
         if target == MENU_SUBMENU_COPY {
             return vec![
@@ -924,26 +942,66 @@ impl WorkspaceView {
             ];
         }
         if target == TREE_MENU_TARGET {
-            let is_dir = self.menu_path.as_ref().map(|(_, d)| *d).unwrap_or(false);
-            let mut items = Vec::new();
-            if !is_dir {
-                items.push(item(MENU_TREE_OPEN, "Open", true));
+            let path = self
+                .menu_path
+                .as_ref()
+                .map(|(p, _)| p.as_str())
+                .filter(|p| !p.is_empty());
+            let state = self
+                .layout
+                .files_view
+                .as_ref()
+                .map(|v| v.tree_menu_state(path))
+                .unwrap_or_default();
+            let mut items = vec![
+                item(MENU_TREE_NEW_FILE, "New File", false),
+                item(MENU_TREE_NEW_DIR, "New Folder", false),
+                item(MENU_REVEAL, "Reveal in Finder", true),
+                item(MENU_TREE_OPEN_SYSTEM, "Open in Default App", false),
+                item(MENU_TREE_CUT, "Cut", true),
+                item(MENU_TREE_COPY, "Copy", false),
+                item(MENU_TREE_DUPLICATE, "Duplicate", false),
+                disabled(MENU_TREE_PASTE, "Paste", false, !state.can_paste),
+                item(MENU_COPY_PATH, "Copy Path", true),
+                item(MENU_COPY_REL_PATH, "Copy Relative Path", false),
+            ];
+            if state.has_git_repo {
+                let restore = !state.is_dir && state.has_git_changes;
+                if restore {
+                    items.push(item(MENU_TREE_RESTORE, "Restore File", true));
+                }
+                items.push(item(MENU_TREE_GITIGNORE, "Add to .gitignore", !restore));
             }
-            items.push(item(MENU_SUBMENU_COPY, "Copy", false));
-            items.push(item(MENU_REVEAL, "Reveal in Finder", false));
+            if !state.is_root {
+                items.push(item(MENU_TREE_RENAME, "Rename", true));
+                items.push(item(MENU_TREE_TRASH, "Trash", false));
+                items.push(item(MENU_TREE_DELETE, "Delete", false));
+            }
+            if state.is_dir {
+                items.push(item(MENU_TREE_EXPAND_ALL, "Expand All", true));
+                items.push(item(MENU_TREE_COLLAPSE_ALL, "Collapse All", false));
+            }
             return items;
         }
         if target == EDITOR_MENU_TARGET {
             return vec![
-                item(MENU_EDIT_CUT, "Cut", false),
+                item(MENU_EDIT_GO_TO_DEFINITION, "Go to Definition", false),
+                item(MENU_EDIT_GO_TO_DECLARATION, "Go to Declaration", false),
+                item(
+                    MENU_EDIT_GO_TO_TYPE_DEFINITION,
+                    "Go to Type Definition",
+                    false,
+                ),
+                item(
+                    MENU_EDIT_GO_TO_IMPLEMENTATION,
+                    "Go to Implementation",
+                    false,
+                ),
+                item(MENU_EDIT_CUT, "Cut", true),
                 item(MENU_EDIT_COPY, "Copy", false),
+                item(MENU_EDIT_COPY_TRIM, "Copy and Trim", false),
                 item(MENU_EDIT_PASTE, "Paste", false),
-                MenuItem {
-                    id: MENU_EDIT_SELECT_ALL,
-                    label: "Select All",
-                    checked: false,
-                    sep: true,
-                },
+                item(MENU_EDIT_REVEAL, "Reveal in Finder", true),
             ];
         }
         if target == SIDEBAR_TOGGLE {
@@ -955,12 +1013,14 @@ impl WorkspaceView {
                     label: "Dock Left",
                     checked: left,
                     sep: false,
+                    disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
                     label: "Dock Right",
                     checked: !left,
                     sep: false,
+                    disabled: false,
                 },
             ]
         } else if target == AGENT_TOGGLE {
@@ -971,12 +1031,14 @@ impl WorkspaceView {
                     label: "Dock Left",
                     checked: left,
                     sep: false,
+                    disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
                     label: "Dock Right",
                     checked: !left,
                     sep: false,
+                    disabled: false,
                 },
                 hide,
             ]
@@ -988,18 +1050,21 @@ impl WorkspaceView {
                     label: "Dock Left",
                     checked: side == DockPosition::Left,
                     sep: false,
+                    disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
                     label: "Dock Right",
                     checked: side == DockPosition::Right,
                     sep: false,
+                    disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_BOTTOM,
                     label: "Dock Bottom",
                     checked: side == DockPosition::Bottom,
                     sep: false,
+                    disabled: false,
                 },
                 hide,
             ]
@@ -1016,12 +1081,14 @@ impl WorkspaceView {
                     label: "Dock Left",
                     checked: side == DockPosition::Left,
                     sep: false,
+                    disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
                     label: "Dock Right",
                     checked: side == DockPosition::Right,
                     sep: false,
+                    disabled: false,
                 },
                 hide,
             ]
@@ -1079,6 +1146,36 @@ impl WorkspaceView {
                 .as_ref()
                 .and_then(|v| v.root_dir())
                 .map(|r| r.join(&rel));
+            let tree_action = match item {
+                MENU_TREE_NEW_FILE => Some(TreeAction::NewFile),
+                MENU_TREE_NEW_DIR => Some(TreeAction::NewDirectory),
+                MENU_TREE_OPEN_SYSTEM => Some(TreeAction::OpenWithSystem),
+                MENU_TREE_CUT => Some(TreeAction::Cut),
+                MENU_TREE_COPY => Some(TreeAction::Copy),
+                MENU_TREE_DUPLICATE => Some(TreeAction::Duplicate),
+                MENU_TREE_PASTE => Some(TreeAction::Paste),
+                MENU_TREE_RESTORE => Some(TreeAction::RestoreFile),
+                MENU_TREE_GITIGNORE => Some(TreeAction::AddToGitignore),
+                MENU_TREE_RENAME => Some(TreeAction::Rename),
+                MENU_TREE_TRASH => Some(TreeAction::Trash),
+                MENU_TREE_DELETE => Some(TreeAction::Delete),
+                MENU_TREE_EXPAND_ALL => Some(TreeAction::ExpandAll),
+                MENU_TREE_COLLAPSE_ALL => Some(TreeAction::CollapseAll),
+                _ => None,
+            };
+            if let Some(action) = tree_action {
+                let path = (!rel.is_empty()).then_some(rel.as_str());
+                let prompt = self
+                    .layout
+                    .files_view
+                    .as_mut()
+                    .and_then(|v| v.tree_action(path, action));
+                if prompt.is_some() {
+                    self.pending_prompt = prompt;
+                }
+                self.show_view_toast();
+                return;
+            }
             match item {
                 MENU_TREE_OPEN => {
                     if let Some(v) = self.layout.files_view.as_mut() {
@@ -1118,6 +1215,47 @@ impl WorkspaceView {
                 MENU_EDIT_SELECT_ALL => {
                     if let Some(v) = self.layout.files_view.as_mut() {
                         v.editor_key(EditKey::SelectAll, false);
+                    }
+                }
+                MENU_EDIT_COPY_TRIM => {
+                    let copied = self
+                        .layout
+                        .files_view
+                        .as_ref()
+                        .and_then(|v| v.editor_copy_trimmed());
+                    if let Some(copied) = copied {
+                        Self::clip_set(&copied.text);
+                        crate::remember_copy(&copied);
+                    }
+                }
+                MENU_EDIT_GO_TO_DEFINITION
+                | MENU_EDIT_GO_TO_DECLARATION
+                | MENU_EDIT_GO_TO_TYPE_DEFINITION
+                | MENU_EDIT_GO_TO_IMPLEMENTATION => {
+                    let key = match item {
+                        MENU_EDIT_GO_TO_DEFINITION => EditKey::GoToDefinition,
+                        MENU_EDIT_GO_TO_DECLARATION => EditKey::GoToDeclaration,
+                        MENU_EDIT_GO_TO_TYPE_DEFINITION => EditKey::GoToTypeDefinition,
+                        _ => EditKey::GoToImplementation,
+                    };
+                    if let Some(v) = self.layout.files_view.as_mut() {
+                        v.editor_key(key, false);
+                    }
+                }
+                MENU_EDIT_REVEAL => {
+                    let path = self
+                        .layout
+                        .files_view
+                        .as_ref()
+                        .and_then(|v| v.active_file_path());
+                    if let Some(path) = path {
+                        if let Err(error) = std::process::Command::new("open")
+                            .arg("-R")
+                            .arg(path)
+                            .spawn()
+                        {
+                            eprintln!("reveal in Finder: {error}");
+                        }
                     }
                 }
                 _ => {}
@@ -1215,6 +1353,15 @@ impl WorkspaceView {
             return true;
         }
         let (vw, vh) = self.viewport;
+        let tree = self.layout.tree_region(vw, vh);
+        let in_tree = x >= tree.x && x < tree.x + tree.w && y >= tree.y && y < tree.y + tree.h;
+        if in_tree && self.layout.files_view.is_some() {
+            self.menu = Some((x, y, y, TREE_MENU_TARGET));
+            self.menu_path = Some((String::new(), true));
+            self.submenu = None;
+            self.menu_editor_anchor = None;
+            return true;
+        }
         let cr = self.layout.center_region(vw, vh);
         let in_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
         if in_center
@@ -1367,25 +1514,16 @@ impl WorkspaceView {
             if hit.is_some_and(is_submenu) {
                 return;
             }
-            if let Some(item) = hit.filter(|id| {
-                matches!(
-                    *id,
-                    MENU_DOCK_LEFT
-                        | MENU_DOCK_RIGHT
-                        | MENU_DOCK_BOTTOM
-                        | MENU_HIDE
-                        | MENU_COPY_PATH
-                        | MENU_COPY_REL_PATH
-                        | MENU_COPY_NAME
-                        | MENU_REVEAL
-                        | MENU_TREE_OPEN
-                        | MENU_EDIT_CUT
-                        | MENU_EDIT_COPY
-                        | MENU_EDIT_PASTE
-                        | MENU_EDIT_SELECT_ALL
-                )
-            }) {
-                self.apply_menu(target, item);
+            let mut rows = self.menu_items(target);
+            if let Some(parent) = self.submenu {
+                rows.extend(self.menu_items(parent.3));
+            }
+            let row = hit.and_then(|id| rows.iter().find(|row| row.id == id));
+            if let Some(row) = row {
+                if row.disabled {
+                    return;
+                }
+                self.apply_menu(target, row.id);
             }
             self.menu = None;
             self.submenu = None;
@@ -1532,11 +1670,14 @@ impl WorkspaceView {
     }
 
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
-        self.layout
+        let changed = self
+            .layout
             .files_view
             .as_mut()
             .map(|v| v.editor_key(key, shift))
-            .unwrap_or(false)
+            .unwrap_or(false);
+        self.show_view_toast();
+        changed
     }
 
     pub fn editor_save(&mut self) -> Option<Result<(), String>> {
@@ -1582,6 +1723,24 @@ impl WorkspaceView {
         self.pending_tab = None;
         self.tab_ghost_at = None;
         self.dragging = Drag::None;
+    }
+
+    pub fn take_prompt(&mut self) -> Option<crate::Prompt> {
+        self.pending_prompt.take()
+    }
+
+    pub fn prompt_answered(&mut self, token: u64, answer: usize) {
+        if let Some(v) = self.layout.files_view.as_mut() {
+            v.prompt_answered(token, answer);
+        }
+        self.show_view_toast();
+    }
+
+    fn show_view_toast(&mut self) {
+        let message = self.layout.files_view.as_mut().and_then(|v| v.take_toast());
+        if let Some(message) = message {
+            self.show_toast(message, None);
+        }
     }
 
     pub fn dragging(&self) -> bool {

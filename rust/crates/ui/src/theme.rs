@@ -124,6 +124,7 @@ pub struct ThemeColors {
     pub scrollbar_thumb_hover_background: Rgba,
     /// Faint vertical guide line for indented panel/tree items.
     pub panel_indent_guide: Rgba,
+    pub panel_focused_border: Rgba,
 
     /// Status "info" accent (used by accent-tinted buttons like the selected file pill).
     pub info_background: Rgba,
@@ -198,6 +199,7 @@ pub fn one_dark() -> ThemeColors {
         scrollbar_track_border: h("#2e333c"),
         scrollbar_thumb_hover_background: h("#363c46"),
         panel_indent_guide: h("#363c46"),
+        panel_focused_border: h("#2870bd"),
         info_background: h("#74ade81a"),
         info_border: h("#293b5b"),
         error_background: h("#d072771a"),
@@ -271,6 +273,7 @@ pub fn one_light() -> ThemeColors {
         scrollbar_track_border: h("#eeeeee"),
         scrollbar_thumb_hover_background: h("#dfdfe0"),
         panel_indent_guide: h("#dfdfe0"),
+        panel_focused_border: h("#0588f0"),
         info_background: h("#e2e2fa"),
         info_border: h("#cbcdf6"),
         error_background: h("#fbdfd9"),
@@ -344,6 +347,7 @@ pub fn gruvbox_dark() -> ThemeColors {
         scrollbar_track_border: h("#373432"),
         scrollbar_thumb_hover_background: h("#fbf1c74c"),
         panel_indent_guide: h("#494340"),
+        panel_focused_border: h("#2870bd"),
         info_background: h("#83a5981a"),
         info_border: h("#303a36"),
         error_background: h("#590a0f"),
@@ -417,6 +421,7 @@ pub fn ayu_mirage() -> ThemeColors {
         scrollbar_track_border: h("#323641"),
         scrollbar_thumb_hover_background: h("#43464f"),
         panel_indent_guide: h("#43464f"),
+        panel_focused_border: h("#2870bd"),
         info_background: h("#72cffe1a"),
         info_border: h("#24556f"),
         error_background: h("#481a1b"),
