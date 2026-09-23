@@ -6,6 +6,7 @@ pub mod pane;
 pub mod pane_group;
 mod panel;
 pub mod search_bar;
+pub mod tab_drag;
 pub mod text_field;
 mod workspace_view;
 pub use panel::{
@@ -704,6 +705,13 @@ pub trait TerminalPanelView: 'static {
     fn grid_contains(&self, x: f32, y: f32) -> bool;
     fn divider_axis(&self, id: u64) -> Option<DividerAxis>;
     fn drag_divider(&mut self, id: u64, x: f32, y: f32) -> bool;
+    fn is_tab(&self, id: u64) -> bool;
+    fn begin_tab_drag(&mut self, id: u64) -> bool;
+    /// `over` is the hit under the pointer with its rect, so a tab under it can take the drop.
+    fn update_tab_drag(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool;
+    fn drop_tab(&mut self) -> bool;
+    fn tab_drag_overlay(&self) -> Option<Rect>;
+    fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)>;
     fn mouse_down(
         &mut self,
         x: f32,
@@ -801,7 +809,8 @@ pub trait FunctionView: 'static {
     fn begin_tab_drag(&mut self, _id: u64) -> bool {
         false
     }
-    fn update_tab_drag(&mut self, _x: f32, _y: f32) -> bool {
+    /// `over` is the hit under the pointer with its rect, so a tab under it can take the drop.
+    fn update_tab_drag(&mut self, _x: f32, _y: f32, _over: Option<(u64, ui::Rect)>) -> bool {
         false
     }
     fn drop_tab(&mut self) -> bool {

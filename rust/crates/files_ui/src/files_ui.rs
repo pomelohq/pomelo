@@ -20,6 +20,7 @@ use editor::transform::{LineTransform, TextTransform};
 use workspace::pane::{NavMode, Pane, PaneClickIds, TabBarButton, TabBarConfig, TAB_H};
 use workspace::pane_group::{self, DividerRef, Member, SplitDirection};
 use workspace::search_bar::{SearchBar, SearchClick, SearchField, Searchable};
+use workspace::tab_drag::{self, TabDrag, TabDrop};
 use workspace::text_field;
 
 mod command_palette;
@@ -139,23 +140,6 @@ const HUNK_BASE: u64 = FUNC_VIEW_BASE + 11_000_000; // + pane*PANE_STRIDE + buff
 const HUNK_FROM_FOLD: u64 = HUNK_BASE - FOLD_BASE;
 const DIVIDER_BASE: u64 = FUNC_VIEW_BASE + 12_000_000;
 const PANE_STRIDE: u64 = 100_000;
-
-/// An in-progress tab drag: the source pane (by stable id) and the tab index within it, plus the current drop
-/// resolved each pointer move. `None` drop = the pointer isn't over a pane (dropping there cancels).
-struct TabDrag {
-    source: u64,
-    index: usize,
-    title: String,
-    icon: MaterialIcon,
-    drop: Option<TabDrop>,
-}
-
-/// Where a dragged tab would land: a target pane (by id) and either a split direction (dropped on an edge) or
-/// `None` (dropped in the center = move the tab into that pane).
-struct TabDrop {
-    pane: u64,
-    dir: Option<SplitDirection>,
-}
 
 /// An open file as a center `Item` (an editor item): path/name + decoded text + language (`None` text =
 /// binary) + its own syntax highlighter. Any center tab is a `Box<dyn Item>`, so a terminal/search/etc. can
@@ -4101,7 +4085,6 @@ pub struct FilesView {
     hover: Option<u64>,
     /// An in-progress tab drag and the highlight rect previewing where it would land.
     tab_drag: Option<TabDrag>,
-    drag_preview: Option<Rect>,
     /// Rebuilt each render: click id `FUNC_VIEW_BASE + i` maps to `(path, is_dir)`.
     click_targets: Vec<(String, bool)>,
     /// Rebuilt each render: the folder path for each pinned sticky-breadcrumb row (click to collapse it).
@@ -4179,7 +4162,6 @@ impl FilesView {
             popover_sources: Vec::new(),
             tree_ops: tree_actions::TreeOps::default(),
             tab_drag: None,
-            drag_preview: None,
             click_targets: Vec::new(),
             sticky_paths: Vec::new(),
             flat_cache: Vec::new(),
@@ -5008,71 +4990,6 @@ impl FilesView {
         let new_path = self.group.split(path, direction, new_pane)?;
         self.active = new_path.clone();
         Some(new_path)
-    }
-
-    /// Move (or, when `dir` is set, split-and-move) the dragged tab to its resolved drop target. Removes the
-    /// item from the source pane first, then splits/moves into the target (resolved by stable id so the split's
-    /// restructuring can't invalidate it), and finally prunes the source pane if the move emptied it.
-    fn apply_tab_drop(
-        &mut self,
-        source: u64,
-        index: usize,
-        target_pane: u64,
-        dir: Option<SplitDirection>,
-    ) {
-        let Some(src_path) = self.group.path_of(source) else {
-            return;
-        };
-        // A center drop back onto the same pane is a no-op (nothing to reorder in v1).
-        if dir.is_none() && target_pane == source {
-            return;
-        }
-        let item = {
-            let Some(pane) = self.group.leaf_at_mut(&src_path) else {
-                return;
-            };
-            if index >= pane.open.len() {
-                return;
-            }
-            let it = pane.open.remove(index);
-            pane.active = if pane.open.is_empty() {
-                None
-            } else {
-                Some(index.min(pane.open.len() - 1))
-            };
-            it
-        };
-        let Some(target_path) = self.group.path_of(target_pane) else {
-            // Target vanished; put the item back so it isn't lost.
-            if let Some(pane) = self.group.leaf_at_mut(&src_path) {
-                pane.open.push(item);
-                pane.active = Some(pane.open.len() - 1);
-            }
-            return;
-        };
-        match dir {
-            Some(dir) => {
-                self.do_split(&target_path, dir, Some(item));
-            }
-            None => {
-                if let Some(pane) = self.group.leaf_at_mut(&target_path) {
-                    pane.open.push(item);
-                    pane.active = Some(pane.open.len() - 1);
-                    self.active = target_path;
-                }
-            }
-        }
-        // Prune the source pane if the move left it empty.
-        if let Some(src) = self.group.path_of(source) {
-            let empty = self
-                .group
-                .leaf_at_mut(&src)
-                .map(|p| p.open.is_empty())
-                .unwrap_or(false);
-            if empty && self.group.leaf_count() > 1 {
-                self.remove_pane(&src);
-            }
-        }
     }
 
     /// Close tab `t` in the pane at `path`; if the pane empties and it isn't the only one, remove it and collapse
@@ -5987,49 +5904,50 @@ impl FunctionView for FilesView {
         }
         let n = id - TAB_ACTIVATE_BASE;
         let (p, t) = ((n / PANE_STRIDE) as usize, (n % PANE_STRIDE) as usize);
-        let Some(&source) = self.pane_ids.get(p) else {
+        let Some(path) = self.pane_order.get(p) else {
             return false;
         };
-        let path = self.pane_order.get(p).cloned().unwrap_or_default();
-        let (title, icon) = self
+        self.tab_drag = self
             .group
-            .leaf_at_mut(&path)
-            .and_then(|pane| pane.open.get(t))
-            .map(|it| (it.title(), it.icon().unwrap_or(MaterialIcon::Document)))
-            .unwrap_or_else(|| (String::new(), MaterialIcon::Document));
-        self.tab_drag = Some(TabDrag {
-            source,
-            index: t,
-            title,
-            icon,
-            drop: None,
-        });
-        self.drag_preview = None;
-        true
+            .leaf_at(path)
+            .and_then(|pane| TabDrag::begin(pane, t));
+        self.tab_drag.is_some()
     }
 
-    fn update_tab_drag(&mut self, x: f32, y: f32) -> bool {
+    fn update_tab_drag(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool {
         if self.tab_drag.is_none() {
             return false;
         }
-        // The pane under the pointer (if any), then the drop zone: an outer edge -> split that side; the
-        // interior -> move into the pane. Mirrors the reference's 20%-of-smaller-side edge bands.
+        let full = self.group.leaf_count() >= MAX_PANES;
         let target = self
             .pane_rects
             .iter()
-            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
-            .map(|i| (self.pane_ids[i], self.pane_rects[i]));
-        let (drop, preview) = match target {
-            Some((pane, rect)) => {
-                let (dir, preview) = pane_group::drop_target(rect, x, y);
-                (Some(TabDrop { pane, dir }), Some(preview))
+            .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+        let resolved = target.and_then(|index| {
+            let pane = self.group.leaf_at(self.pane_order.get(index)?)?;
+            let over_tab = over.and_then(|(id, rect)| {
+                let n = id
+                    .checked_sub(TAB_ACTIVATE_BASE)
+                    .filter(|_| self.is_tab(id))?;
+                ((n / PANE_STRIDE) as usize == index).then_some(((n % PANE_STRIDE) as usize, rect))
+            });
+            let (mut target, preview) =
+                tab_drag::resolve_drop(self.pane_rects[index], pane.open.len(), x, y, over_tab);
+            if full && matches!(target, tab_drag::DropTarget::Split(_)) {
+                target = tab_drag::DropTarget::Append;
             }
-            None => (None, None),
-        };
-        if let Some(d) = self.tab_drag.as_mut() {
-            d.drop = drop;
+            Some((
+                TabDrop {
+                    pane: pane.id,
+                    target,
+                },
+                preview,
+            ))
+        });
+        if let Some(drag) = self.tab_drag.as_mut() {
+            drag.drop = resolved.map(|(drop, _)| drop);
+            drag.preview = resolved.map(|(_, preview)| preview);
         }
-        self.drag_preview = preview;
         true
     }
 
@@ -6037,19 +5955,24 @@ impl FunctionView for FilesView {
         let Some(drag) = self.tab_drag.take() else {
             return false;
         };
-        self.drag_preview = None;
-        match drag.drop {
-            Some(drop) => {
-                self.apply_tab_drop(drag.source, drag.index, drop.pane, drop.dir);
-                true
-            }
-            None => false,
+        let Some(drop) = drag.drop else {
+            return false;
+        };
+        let next_id = self.next_pane_id;
+        let landed = tab_drag::apply_drop(&mut self.group, &drag, drop, || Pane::new(next_id));
+        if landed.is_some() && self.group.path_of(next_id).is_some() {
+            self.next_pane_id += 1;
         }
+        if let Some(path) = landed {
+            self.active = path;
+        } else if self.group.leaf_at(&self.active).is_none() {
+            self.active = self.group.first_leaf_path();
+        }
+        true
     }
 
     fn cancel_tab_drag(&mut self) {
         self.tab_drag = None;
-        self.drag_preview = None;
     }
 
     fn dragging_tab(&self) -> bool {
@@ -6057,26 +5980,11 @@ impl FunctionView for FilesView {
     }
 
     fn tab_drag_overlay(&self) -> Option<Rect> {
-        self.drag_preview
+        self.tab_drag.as_ref()?.preview
     }
 
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)> {
-        let drag = self.tab_drag.as_ref()?;
-        // A floating copy of the dragged tab: icon + title in an elevated chip that follows the cursor.
-        let w = (drag.title.chars().count() as f32 * 7.5 + 52.0).clamp(90.0, 260.0);
-        let node = div()
-            .row()
-            .items_center()
-            .gap(6.0)
-            .px(10.0)
-            .h_px(TAB_H)
-            .rounded(6.0)
-            .bg(theme().elevated_surface_background)
-            .border(1.0, theme().border)
-            .child(material_icon(drag.icon).size(14.0))
-            .child(label(drag.title.clone()).size(13.0).color(theme().text))
-            .into();
-        Some((node, w, TAB_H))
+        Some(self.tab_drag.as_ref()?.ghost())
     }
 
     fn editor_save(&mut self) -> Option<Result<(), String>> {
