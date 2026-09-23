@@ -380,6 +380,9 @@ pub trait Item: 'static {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
     fn clone_on_split(&self) -> Option<Box<dyn Item>> {
         None
     }
@@ -699,6 +702,8 @@ pub trait TerminalPanelView: 'static {
     /// The hit id under the pointer (tabs reveal their close button while hovered); returns whether to repaint.
     fn set_hover(&mut self, id: Option<u64>) -> bool;
     fn grid_contains(&self, x: f32, y: f32) -> bool;
+    fn divider_axis(&self, id: u64) -> Option<DividerAxis>;
+    fn drag_divider(&mut self, id: u64, x: f32, y: f32) -> bool;
     fn mouse_down(
         &mut self,
         x: f32,

@@ -1,128 +1,45 @@
-//! The terminal panel: a tab bar of shells plus the active shell's grid, driven by the workspace.
+//! The terminal panel: a pane group of terminal items, driven by the workspace. Panes split, each with its
+//! own tabs and find bar; closing the last terminal closes the panel.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use editor::search::{Direction, SearchQuery};
-use terminal::{
-    GridPoint, HyperlinkMatch, Keystroke, Modifiers, MouseButton, Palette, PathWithPosition,
-    Terminal, TerminalAction, TerminalHost, TerminalOptions, Waker,
-};
-use ui::{div, icon, label, theme, IconKind, Node, Painted, Rect, Rgba};
-use workspace::search_bar::{SearchBar, SearchClick, SearchField, SearchSupport, Searchable};
+use editor::search::Direction;
+use terminal::{Keystroke, Modifiers, Palette, TerminalHost, Waker};
+use ui::{label, theme, IconKind, Painted, Rect, Rgba};
+use workspace::pane::{render_pane, Pane, PaneClickIds, TabBarButton, TabBarConfig};
+use workspace::pane_group::{self, DividerRef, LeafPlacement, Member, SplitDirection};
+use workspace::search_bar::{SearchBar, SearchClick, SearchField, SearchSupport};
 use workspace::{
-    EditKey, TerminalKeyOutcome, TerminalOpenTarget, TerminalPanelView, TerminalSyncOutcome,
-    TERMINAL_VIEW_BASE,
+    DividerAxis, EditKey, TerminalKeyOutcome, TerminalOpenTarget, TerminalPanelView,
+    TerminalSyncOutcome, FUNC_VIEW_BASE, TERMINAL_VIEW_BASE,
 };
 
-use crate::{anchor_to_bottom, GridMetrics, GridOptions, GridPainter, FONT_SIZE, LINE_HEIGHT};
+use crate::item::TerminalItem;
 
-const TAB_H: f32 = 32.0;
-const NEW_TERMINAL: u64 = TERMINAL_VIEW_BASE;
-const TAB_ACTIVATE_BASE: u64 = TERMINAL_VIEW_BASE + 100;
-const TAB_CLOSE_BASE: u64 = TERMINAL_VIEW_BASE + 2000;
-const TAB_LIMIT: u64 = 1900;
-const SEARCH_BASE: u64 = TERMINAL_VIEW_BASE + 4000;
+/// Click ids are laid out per pane (in render order): tabs, then close buttons, then the tab bar buttons and
+/// the find bar. Dividers take the block after the last pane's.
+const PANE_STRIDE: u64 = 500;
+const MAX_PANES: usize = 8;
+const TAB_CLOSE_OFFSET: u64 = 100;
+const NEW_TERMINAL_OFFSET: u64 = 200;
+const SPLIT_RIGHT_OFFSET: u64 = 201;
+const SPLIT_DOWN_OFFSET: u64 = 202;
+/// Terminal panes hide the history arrows, so their ids point at an unused slot.
+const NAV_UNUSED_OFFSET: u64 = 203;
+const SEARCH_OFFSET: u64 = 300;
+const DIVIDER_BASE: u64 = TERMINAL_VIEW_BASE + PANE_STRIDE * MAX_PANES as u64;
 
-/// The search bar's view of a terminal: grid points flattened to offsets (row-major from the top of the
-/// scrollback), so the shared bar's range logic works unchanged.
-struct SearchTarget<'a> {
-    terminal: &'a mut Terminal,
-    history: usize,
-    columns: usize,
+fn terminal_search() -> SearchBar {
+    SearchBar::with_support(SearchSupport {
+        case: false,
+        word: false,
+        regex: true,
+        replace: false,
+        select_all: false,
+    })
 }
 
-impl<'a> SearchTarget<'a> {
-    fn new(terminal: &'a mut Terminal) -> Self {
-        let history = terminal.history_size();
-        let columns = terminal.content().columns.max(1);
-        Self {
-            terminal,
-            history,
-            columns,
-        }
-    }
-
-    fn offset(&self, point: GridPoint) -> usize {
-        let row = (point.line + self.history as i32).max(0) as usize;
-        row * self.columns + point.column
-    }
-
-    fn point(&self, offset: usize) -> GridPoint {
-        GridPoint {
-            line: (offset / self.columns) as i32 - self.history as i32,
-            column: offset % self.columns,
-        }
-    }
-
-    fn range(&self, range: &std::ops::Range<usize>) -> (GridPoint, GridPoint) {
-        (
-            self.point(range.start),
-            self.point(range.end.saturating_sub(1).max(range.start)),
-        )
-    }
-}
-
-/// The pattern for a bar query: regex queries as written, plain text escaped. A lone `.` would match every
-/// cell, so it finds nothing.
-fn pattern_for(query: &SearchQuery) -> Option<String> {
-    let pattern = match query {
-        SearchQuery::Text { query, .. } => regex::escape(query),
-        SearchQuery::Regex { regex, .. } => regex.as_str().to_string(),
-    };
-    (pattern != "." && !pattern.is_empty()).then_some(pattern)
-}
-
-impl Searchable for SearchTarget<'_> {
-    fn search_version(&self) -> u64 {
-        self.terminal.content_version()
-    }
-
-    fn find(&self, query: &SearchQuery) -> Vec<std::ops::Range<usize>> {
-        let Some(pattern) = pattern_for(query) else {
-            return Vec::new();
-        };
-        self.terminal
-            .find(&pattern)
-            .into_iter()
-            .map(|(start, end)| self.offset(start)..self.offset(end) + 1)
-            .collect()
-    }
-
-    fn query_suggestion(&self) -> String {
-        self.terminal.selection_text().unwrap_or_default()
-    }
-
-    /// With no selection the search starts from the cursor, so the first hit is the newest one.
-    fn single_cursor(&self) -> Option<usize> {
-        let point = self.terminal.selection_head().unwrap_or(GridPoint {
-            line: self.terminal.content().cursor.line,
-            column: self.terminal.content().cursor.column,
-        });
-        Some(self.offset(point))
-    }
-
-    fn activate_match(&mut self, range: std::ops::Range<usize>) {
-        let (start, end) = self.range(&range);
-        self.terminal.select_range(start, end);
-    }
-
-    fn select_matches(&mut self, _ranges: &[std::ops::Range<usize>]) {}
-
-    fn replace_match(&mut self, _query: &SearchQuery, _range: std::ops::Range<usize>) {}
-
-    fn replace_all(&mut self, _query: &SearchQuery, _ranges: &[std::ops::Range<usize>]) {}
-
-    fn set_search_highlights(
-        &mut self,
-        matches: Vec<std::ops::Range<usize>>,
-        _active: Option<usize>,
-    ) {
-        let matches = matches.iter().map(|range| self.range(range)).collect();
-        self.terminal.set_search_matches(matches);
-    }
-}
-
-/// Keys for the search bar's text field, from a terminal key press.
+/// Keys for the find bar's text field, from a terminal key press.
 fn search_edit_key(keystroke: &Keystroke) -> Option<EditKey> {
     let m = keystroke.modifiers;
     Some(match keystroke.key.as_str() {
@@ -166,25 +83,48 @@ impl TerminalHost for Host<'_> {
     }
 }
 
+fn terminal_of(pane: &mut Pane) -> Option<&mut TerminalItem> {
+    pane.active_item_mut()?
+        .as_any_mut()?
+        .downcast_mut::<TerminalItem>()
+}
+
+fn divider_axis(axis: pane_group::Axis) -> DividerAxis {
+    match axis {
+        pane_group::Axis::Horizontal => DividerAxis::Horizontal,
+        pane_group::Axis::Vertical => DividerAxis::Vertical,
+    }
+}
+
+fn contains(rect: &Rect, x: f32, y: f32) -> bool {
+    x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
+}
+
+fn blit(painted: &mut Painted, part: Painted) {
+    painted.rects.extend(part.rects);
+    painted.tris.extend(part.tris);
+    painted.texts.extend(part.texts);
+    painted.icons.extend(part.icons);
+    painted.hits.extend(part.hits);
+}
+
 pub struct TerminalPanel {
     root: PathBuf,
     waker: Waker,
-    tabs: Vec<Terminal>,
-    active: usize,
-    painter: GridPainter,
-    /// Where the active grid was drawn (logical px) and its cell metrics, for mapping the pointer to cells.
-    grid_origin: (f32, f32),
-    grid_rect: Rect,
-    metrics: GridMetrics,
+    group: Member<Pane>,
+    /// Path of the focused pane in the group.
+    active: Vec<usize>,
+    next_pane_id: u64,
+    next_item_id: u64,
+    /// Rebuilt each render: leaves in render order (which key the click ids) and the dividers.
+    leaves: Vec<LeafPlacement>,
+    dividers: Vec<DividerRef>,
+    /// The pane a press landed in, so the drag and release go to the same terminal.
+    pressed_pane: Option<Vec<usize>>,
     hover: Option<u64>,
     focused: bool,
     spawn_error: Option<String>,
-    /// The link a cmd-press landed on; releasing over the same link opens it.
-    pressed_link: Option<HyperlinkMatch>,
-    search: SearchBar,
-    hovered_target: Option<TerminalOpenTarget>,
-    open_request: Option<TerminalOpenTarget>,
-    /// The user closed the last tab; reported on the next sync so the panel closes like when shells exit.
+    /// The user closed the last terminal; reported on the next sync so the panel closes like when shells exit.
     closed_last: bool,
 }
 
@@ -193,222 +133,215 @@ impl TerminalPanel {
         Self {
             root,
             waker,
-            tabs: Vec::new(),
-            active: 0,
-            painter: GridPainter::default(),
-            grid_origin: (0.0, 0.0),
-            grid_rect: Rect::new(0.0, 0.0, 0.0, 0.0, Rgba::TRANSPARENT),
-            metrics: GridMetrics::measure(FONT_SIZE, LINE_HEIGHT),
+            group: Member::Leaf(Pane {
+                search: Box::new(terminal_search()),
+                ..Pane::new(0)
+            }),
+            active: Vec::new(),
+            next_pane_id: 1,
+            next_item_id: 0,
+            leaves: Vec::new(),
+            dividers: Vec::new(),
+            pressed_pane: None,
             hover: None,
             focused: false,
             spawn_error: None,
-            pressed_link: None,
-            search: SearchBar::with_support(SearchSupport {
-                case: false,
-                word: false,
-                regex: true,
-                replace: false,
-                select_all: false,
-            }),
-            hovered_target: None,
-            open_request: None,
             closed_last: false,
         }
     }
 
-    fn active_terminal(&mut self) -> Option<&mut Terminal> {
-        self.tabs.get_mut(self.active)
-    }
-
-    /// Pointer position in the active grid's design px.
-    fn local(&self, x: f32, y: f32) -> (f32, f32) {
-        let scale = ui::ui_text_scale();
-        (
-            (x - self.grid_origin.0) / scale,
-            (y - self.grid_origin.1) / scale,
-        )
-    }
-
-    /// What a link points at: URLs as they are; paths only when they name an existing file, tried as written
-    /// and with a position suffix split off, without diff (`a/`, `b/`) or `./` prefixes, against the shell's
-    /// directory and then the project root.
-    fn resolve(&self, link: &HyperlinkMatch) -> Option<TerminalOpenTarget> {
-        if link.is_url {
-            return Some(TerminalOpenTarget::Url(link.text.clone()));
+    fn new_pane(&mut self) -> Pane {
+        let id = self.next_pane_id;
+        self.next_pane_id += 1;
+        Pane {
+            search: Box::new(terminal_search()),
+            ..Pane::new(id)
         }
-        let parsed = PathWithPosition::parse(&link.text);
-        let mut candidates = vec![
-            (link.text.clone(), None, None),
-            (parsed.path, parsed.row, parsed.column),
-        ];
-        for index in 0..candidates.len() {
-            for prefix in ["a/", "b/", "./"] {
-                let (path, row, column) = candidates[index].clone();
-                if let Some(stripped) = path.strip_prefix(prefix) {
-                    candidates.push((stripped.to_string(), row, column));
-                }
+    }
+
+    fn spawn_item(&mut self, cwd: Option<PathBuf>) -> Option<TerminalItem> {
+        let id = self.next_item_id;
+        self.next_item_id += 1;
+        match TerminalItem::spawn(id, self.root.clone(), cwd, self.waker.clone()) {
+            Ok(item) => {
+                self.spawn_error = None;
+                Some(item)
+            }
+            Err(error) => {
+                self.spawn_error = Some(format!("Failed to start the shell: {error}"));
+                None
             }
         }
-        let cwd = self
-            .tabs
-            .get(self.active)
-            .and_then(|terminal| terminal.process_info())
-            .map(|info| info.cwd.clone())
-            .filter(|cwd| !cwd.as_os_str().is_empty());
-        let bases: Vec<PathBuf> = cwd.into_iter().chain([self.root.clone()]).collect();
-        candidates.into_iter().find_map(|(path, row, column)| {
-            let path = Path::new(&path);
-            let found = if path.is_absolute() {
-                path.is_file().then(|| path.to_path_buf())
-            } else {
-                bases
-                    .iter()
-                    .map(|base| base.join(path))
-                    .find(|full| full.is_file())
-            };
-            found.map(|path| TerminalOpenTarget::Path { path, row, column })
-        })
     }
 
-    /// Run `f` with the search bar and the active terminal as its target.
-    fn with_search<R>(
-        &mut self,
-        f: impl FnOnce(&mut SearchBar, &mut SearchTarget) -> R,
-    ) -> Option<R> {
-        let terminal = self.tabs.get_mut(self.active)?;
-        let mut target = SearchTarget::new(terminal);
-        Some(f(&mut self.search, &mut target))
+    fn active_pane(&mut self) -> Option<&mut Pane> {
+        if self.group.leaf_at(&self.active).is_none() {
+            self.active = self.group.first_leaf_path();
+        }
+        self.group.leaf_at_mut(&self.active)
     }
 
-    fn search_focused(&self) -> bool {
-        !self.search.dismissed && self.search.focus.is_some()
+    fn active_terminal(&mut self) -> Option<&mut TerminalItem> {
+        terminal_of(self.active_pane()?)
     }
 
-    /// Search commands available whenever the terminal has focus; returns whether `keystroke` was one.
+    fn pane_path_at(&self, x: f32, y: f32) -> Option<Vec<usize>> {
+        pane_group::leaf_at_point(&self.leaves, x, y).map(|leaf| leaf.path.clone())
+    }
+
+    fn terminal_at(&mut self, x: f32, y: f32) -> Option<(Vec<usize>, &mut TerminalItem)> {
+        let path = self.pane_path_at(x, y)?;
+        let item = terminal_of(self.group.leaf_at_mut(&path)?)?;
+        item.body_contains(x, y).then_some((path, item))
+    }
+
+    fn ids(p: usize) -> PaneClickIds {
+        let base = TERMINAL_VIEW_BASE + p as u64 * PANE_STRIDE;
+        PaneClickIds {
+            tab_activate: base,
+            tab_close: base + TAB_CLOSE_OFFSET,
+            nav_back: base + NAV_UNUSED_OFFSET,
+            nav_forward: base + NAV_UNUSED_OFFSET,
+            search: base + SEARCH_OFFSET,
+        }
+    }
+
+    fn tab_bar(p: usize) -> TabBarConfig {
+        let base = TERMINAL_VIEW_BASE + p as u64 * PANE_STRIDE;
+        TabBarConfig {
+            show_nav: false,
+            buttons: vec![
+                TabBarButton {
+                    icon: IconKind::Plus,
+                    id: base + NEW_TERMINAL_OFFSET,
+                },
+                TabBarButton {
+                    icon: IconKind::PanelRight,
+                    id: base + SPLIT_RIGHT_OFFSET,
+                },
+                TabBarButton {
+                    icon: IconKind::PanelBottom,
+                    id: base + SPLIT_DOWN_OFFSET,
+                },
+            ],
+        }
+    }
+
+    /// Split the pane at `path` with a new shell beside it.
+    fn split(&mut self, path: &[usize], direction: SplitDirection) {
+        if self.group.leaf_count() >= MAX_PANES {
+            return;
+        }
+        let Some(item) = self.spawn_item(None) else {
+            return;
+        };
+        let mut pane = self.new_pane();
+        pane.add_item(Box::new(item));
+        if let Some(new_path) = self.group.split(path, direction, pane) {
+            self.set_active(new_path);
+        }
+    }
+
+    fn set_active(&mut self, path: Vec<usize>) {
+        if self.active == path {
+            return;
+        }
+        let focused = self.focused;
+        if let Some(item) = self.active_terminal() {
+            item.focus_changed(false);
+        }
+        self.active = path;
+        if let Some(item) = self.active_terminal() {
+            item.focus_changed(focused);
+        }
+    }
+
+    /// Close tab `index` in the pane at `path`; an emptied pane leaves the group, and the last one closes the
+    /// panel.
+    fn close_tab(&mut self, path: &[usize], index: usize) {
+        let Some(pane) = self.group.leaf_at_mut(path) else {
+            return;
+        };
+        pane.close_tab(index);
+        if !pane.open.is_empty() {
+            return;
+        }
+        if self.group.remove(path) {
+            self.active = self.group.first_leaf_path();
+        } else {
+            self.closed_last = true;
+        }
+    }
+
+    fn search_focused(&mut self) -> bool {
+        self.active_pane()
+            .is_some_and(|pane| !pane.search.dismissed && pane.search.focus.is_some())
+    }
+
+    /// Find-bar commands for the focused pane; returns whether `keystroke` was one.
     fn search_command(&mut self, keystroke: &Keystroke) -> bool {
         let m = keystroke.modifiers;
         let only_cmd = m.cmd && !m.alt && !m.ctrl;
+        let Some(pane) = self.active_pane() else {
+            return false;
+        };
+        let dismissed = pane.search.dismissed;
+        let Some((bar, item)) = pane.search_target() else {
+            return false;
+        };
         match keystroke.key.as_str() {
             "f" if only_cmd && !m.shift => {
-                if self.search.dismissed {
-                    self.with_search(|bar, target| bar.deploy(target, false));
+                if dismissed {
+                    bar.deploy(item, false);
                 } else {
-                    self.search.focus = Some(SearchField::Query);
-                    self.search.query.select_all();
+                    bar.focus = Some(SearchField::Query);
+                    bar.query.select_all();
                 }
-                true
             }
-            "g" if only_cmd && !self.search.dismissed => {
+            "g" if only_cmd && !dismissed => {
                 let direction = if m.shift {
                     Direction::Prev
                 } else {
                     Direction::Next
                 };
-                self.with_search(|bar, target| bar.select_match(target, direction));
-                true
+                bar.select_match(item, direction);
             }
-            "x" if m.cmd && m.alt && !m.ctrl && !self.search.dismissed => {
-                self.with_search(|bar, target| bar.toggle_option(target, SearchClick::Regex));
-                true
+            "x" if m.cmd && m.alt && !m.ctrl && !dismissed => {
+                bar.toggle_option(item, SearchClick::Regex);
             }
-            _ => false,
+            _ => return false,
         }
+        true
     }
 
-    fn close_tab(&mut self, index: usize) {
-        if index >= self.tabs.len() {
+    fn search_click(&mut self, path: &[usize], click: SearchClick) {
+        let Some(pane) = self.group.leaf_at_mut(path) else {
             return;
-        }
-        self.tabs.remove(index);
-        if self.active >= self.tabs.len() {
-            self.active = self.tabs.len().saturating_sub(1);
-        } else if index < self.active {
-            self.active -= 1;
+        };
+        let Some((bar, item)) = pane.search_target() else {
+            return;
+        };
+        match click {
+            SearchClick::Query => bar.focus = Some(SearchField::Query),
+            SearchClick::Next => bar.select_match(item, Direction::Next),
+            SearchClick::Previous => bar.select_match(item, Direction::Prev),
+            SearchClick::Close => bar.dismiss(item),
+            SearchClick::Regex => bar.toggle_option(item, click),
+            _ => {}
         }
     }
 
-    fn tab_bar(&self) -> Node {
-        let mut bar = div().row().h_px(TAB_H).bg(theme().tab_bar_background);
-        for (index, terminal) in self.tabs.iter().enumerate() {
-            let is_active = index == self.active;
-            let activate = TAB_ACTIVATE_BASE + index as u64;
-            let close = TAB_CLOSE_BASE + index as u64;
-            let hovered = self.hover == Some(activate) || self.hover == Some(close);
-            let mut close_slot = div()
-                .w_px(16.0)
-                .h_px(16.0)
-                .rounded(4.0)
-                .items_center()
-                .justify_center()
-                .on_click(close);
-            if hovered {
-                close_slot =
-                    close_slot.child(icon(IconKind::Close).size(11.0).color(theme().icon_muted));
+    fn all_terminals(&mut self, f: &mut dyn FnMut(&mut TerminalItem)) {
+        self.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                if let Some(terminal) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<TerminalItem>())
+                {
+                    f(terminal);
+                }
             }
-            let text_color = if is_active {
-                theme().text
-            } else {
-                theme().text_muted
-            };
-            let content = div()
-                .row()
-                .flex(1.0)
-                .px(10.0)
-                .gap(6.0)
-                .items_center()
-                .child(
-                    icon(IconKind::Terminal)
-                        .size(14.0)
-                        .color(theme().icon_muted),
-                )
-                .child(label(terminal.tab_title(true)).size(13.0).color(text_color))
-                .child(close_slot);
-            let underline = if is_active {
-                theme().terminal_background
-            } else {
-                theme().border
-            };
-            let cell = div()
-                .col()
-                .h_px(TAB_H)
-                .bg(if is_active {
-                    theme().tab_active_background
-                } else {
-                    theme().tab_inactive_background
-                })
-                .on_click(activate)
-                .child(content)
-                .child(div().h_px(1.0).bg(underline));
-            bar = bar
-                .child(cell)
-                .child(div().w_px(1.0).h_px(TAB_H).bg(theme().border));
-        }
-        bar.child(
-            div()
-                .col()
-                .flex(1.0)
-                .h_px(TAB_H)
-                .child(div().flex(1.0))
-                .child(div().h_px(1.0).bg(theme().border)),
-        )
-        .child(div().w_px(1.0).h_px(TAB_H).bg(theme().border))
-        .child(
-            div()
-                .col()
-                .w_px(28.0)
-                .h_px(TAB_H)
-                .child(
-                    div()
-                        .row()
-                        .flex(1.0)
-                        .items_center()
-                        .justify_center()
-                        .on_click(NEW_TERMINAL)
-                        .child(icon(IconKind::Plus).size(13.0).color(theme().icon_muted)),
-                )
-                .child(div().h_px(1.0).bg(theme().border)),
-        )
-        .into()
+        });
     }
 }
 
@@ -416,218 +349,211 @@ impl TerminalPanelView for TerminalPanel {
     fn render(&mut self, region: Rect, focused: bool) -> Painted {
         self.focused = focused;
         let scale = ui::ui_text_scale();
-        self.metrics = GridMetrics::measure(FONT_SIZE, LINE_HEIGHT);
-        let metrics = self.metrics;
-        let body_h = (region.h / scale - TAB_H - self.search.height()).max(metrics.line_height);
-        let bounds = metrics.bounds(region.w / scale, body_h);
-        let mut padding_top = 0.0;
-        let mut overlays = Vec::new();
-        let grid = match self.tabs.get_mut(self.active) {
-            Some(terminal) => {
-                terminal.set_size(bounds);
-                terminal.apply_resize();
-                let content = terminal.content();
-                if anchor_to_bottom(content) {
-                    padding_top = body_h - bounds.height;
-                }
-                let paint = self.painter.render(
-                    content,
-                    metrics,
-                    &theme(),
-                    &GridOptions {
-                        focused,
-                        cursor_visible: true,
-                        minimum_contrast: crate::MINIMUM_CONTRAST,
-                    },
-                );
-                overlays = paint.overlays;
-                paint.node
+        let (leaves, dividers) = self.group.layout(region);
+        let mut painted = Painted::default();
+        if self.is_empty() {
+            let message = self.spawn_error.clone().unwrap_or_default();
+            let node = label(message).size(13.0).color(theme().text_muted).into();
+            blit(&mut painted, ui::render(&node, region));
+        }
+        let hover = self.hover;
+        let active = self.active.clone();
+        for (p, leaf) in leaves.iter().enumerate() {
+            let Some(pane) = self.group.leaf_at_mut(&leaf.path) else {
+                continue;
+            };
+            if let Some((bar, item)) = pane.search_target() {
+                bar.refresh(item);
             }
-            None => {
-                let message = self.spawn_error.clone().unwrap_or_default();
-                label(message).size(13.0).color(theme().text_muted).into()
+            let chrome_h = pane.header_h() * scale;
+            let body = Rect::new(
+                leaf.rect.x,
+                leaf.rect.y + chrome_h,
+                leaf.rect.w,
+                (leaf.rect.h - chrome_h).max(0.0),
+                Rgba::TRANSPARENT,
+            );
+            let is_active = leaf.path == active;
+            if let Some(item) = terminal_of(pane) {
+                blit(&mut painted, item.paint(body, focused && is_active));
             }
-        };
-        let tab_bar = self.tab_bar();
-        let search_h = self.search.height();
-        let search_bar: Node = if self.search.dismissed {
-            div().into()
-        } else {
-            self.search.render(SEARCH_BASE, region.w / scale)
-        };
-        let body = div()
-            .col()
-            .flex(1.0)
-            .bg(theme().terminal_background)
-            .pl(metrics.cell_width)
-            .child(div().h_px(padding_top))
-            .child(grid);
-        let node: Node = div()
-            .col()
-            .child(tab_bar)
-            .child(search_bar)
-            .child(body)
-            .into();
-        let mut painted = ui::render(&node, region);
-        self.grid_origin = (
-            region.x + metrics.cell_width * scale,
-            region.y + (TAB_H + search_h + padding_top) * scale,
-        );
-        self.grid_rect = Rect::new(
-            region.x,
-            region.y + (TAB_H + search_h) * scale,
-            region.w,
-            (region.h - (TAB_H + search_h) * scale).max(0.0),
-            Rgba::TRANSPARENT,
-        );
-        painted.rects.extend(overlays.into_iter().map(|rect| {
-            Rect::new(
-                self.grid_origin.0 + rect.x * scale,
-                self.grid_origin.1 + rect.y * scale,
-                rect.w * scale,
-                rect.h * scale,
-                rect.color,
-            )
-        }));
+            let chrome = render_pane(
+                pane,
+                &Self::tab_bar(p),
+                Self::ids(p),
+                hover,
+                leaf.rect.w / scale,
+            );
+            blit(&mut painted, ui::render(&chrome, leaf.rect));
+        }
+        let inset = (pane_group::DIVIDER_GRAB - pane_group::DIVIDER_LINE) / 2.0;
+        for (index, divider) in dividers.iter().enumerate() {
+            let grab = divider.rect;
+            let line = match divider.reference.axis {
+                pane_group::Axis::Horizontal => Rect::new(
+                    grab.x + inset,
+                    grab.y,
+                    pane_group::DIVIDER_LINE,
+                    grab.h,
+                    theme().border,
+                ),
+                pane_group::Axis::Vertical => Rect::new(
+                    grab.x,
+                    grab.y + inset,
+                    grab.w,
+                    pane_group::DIVIDER_LINE,
+                    theme().border,
+                ),
+            };
+            painted.rects.push(line);
+            painted.hits.push((grab, DIVIDER_BASE + index as u64));
+        }
+        self.dividers = dividers.into_iter().map(|d| d.reference).collect();
+        self.leaves = leaves;
         painted
     }
 
     fn click(&mut self, id: u64) -> bool {
-        if let Some(click) = id
-            .checked_sub(SEARCH_BASE)
-            .and_then(SearchClick::from_offset)
-        {
-            match click {
-                SearchClick::Query => self.search.focus = Some(SearchField::Query),
-                SearchClick::Next | SearchClick::Previous => {
-                    let direction = if click == SearchClick::Next {
-                        Direction::Next
-                    } else {
-                        Direction::Prev
-                    };
-                    self.with_search(|bar, target| bar.select_match(target, direction));
-                }
-                SearchClick::Close => {
-                    self.with_search(|bar, target| bar.dismiss(target));
-                }
-                SearchClick::Regex => {
-                    self.with_search(|bar, target| bar.toggle_option(target, click));
-                }
-                _ => {}
-            }
+        let Some(offset) = id.checked_sub(TERMINAL_VIEW_BASE) else {
+            return false;
+        };
+        if id >= DIVIDER_BASE {
             return true;
         }
-        if id == NEW_TERMINAL {
-            self.open(None);
-        } else if (TAB_CLOSE_BASE..TAB_CLOSE_BASE + TAB_LIMIT).contains(&id) {
-            self.close_tab((id - TAB_CLOSE_BASE) as usize);
-            self.closed_last |= self.tabs.is_empty();
-        } else if (TAB_ACTIVATE_BASE..TAB_ACTIVATE_BASE + TAB_LIMIT).contains(&id) {
-            let index = (id - TAB_ACTIVATE_BASE) as usize;
-            if index < self.tabs.len() {
-                self.active = index;
+        let p = (offset / PANE_STRIDE) as usize;
+        let within = offset % PANE_STRIDE;
+        let path = self
+            .leaves
+            .get(p)
+            .map(|leaf| leaf.path.clone())
+            .unwrap_or_else(|| self.active.clone());
+        self.set_active(path.clone());
+        match within {
+            SPLIT_RIGHT_OFFSET => self.split(&path, SplitDirection::Right),
+            SPLIT_DOWN_OFFSET => self.split(&path, SplitDirection::Down),
+            NEW_TERMINAL_OFFSET => {
+                if let Some(item) = self.spawn_item(None) {
+                    if let Some(pane) = self.group.leaf_at_mut(&path) {
+                        pane.add_item(Box::new(item));
+                    }
+                }
             }
-        } else {
-            return false;
+            offset if offset >= SEARCH_OFFSET => {
+                if let Some(click) = SearchClick::from_offset(offset - SEARCH_OFFSET) {
+                    self.search_click(&path, click);
+                }
+            }
+            offset if offset >= TAB_CLOSE_OFFSET => {
+                self.close_tab(&path, (offset - TAB_CLOSE_OFFSET) as usize);
+            }
+            index => {
+                if let Some(pane) = self.group.leaf_at_mut(&path) {
+                    if (index as usize) < pane.open.len() {
+                        pane.activate_user(index as usize);
+                    }
+                }
+            }
         }
         true
     }
 
     fn set_hover(&mut self, id: Option<u64>) -> bool {
-        let id = id.filter(|id| (TERMINAL_VIEW_BASE..workspace::FUNC_VIEW_BASE).contains(id));
+        let id = id.filter(|id| (TERMINAL_VIEW_BASE..FUNC_VIEW_BASE).contains(id));
         let changed = self.hover != id;
         self.hover = id;
         changed
     }
 
+    fn divider_axis(&self, id: u64) -> Option<DividerAxis> {
+        let index = id.checked_sub(DIVIDER_BASE)? as usize;
+        self.dividers.get(index).map(|d| divider_axis(d.axis))
+    }
+
+    fn drag_divider(&mut self, id: u64, x: f32, y: f32) -> bool {
+        let Some(divider) = id
+            .checked_sub(DIVIDER_BASE)
+            .and_then(|index| self.dividers.get(index as usize))
+            .cloned()
+        else {
+            return false;
+        };
+        self.group.resize_divider(&divider, x, y)
+    }
+
     fn grid_contains(&self, x: f32, y: f32) -> bool {
-        let rect = self.grid_rect;
-        x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
+        let Some(leaf) = pane_group::leaf_at_point(&self.leaves, x, y) else {
+            return false;
+        };
+        let Some(pane) = self.group.leaf_at(&leaf.path) else {
+            return false;
+        };
+        let chrome = pane.header_h() * ui::ui_text_scale();
+        let body = Rect::new(
+            leaf.rect.x,
+            leaf.rect.y + chrome,
+            leaf.rect.w,
+            (leaf.rect.h - chrome).max(0.0),
+            Rgba::TRANSPARENT,
+        );
+        !pane.open.is_empty() && contains(&body, x, y)
     }
 
     fn mouse_down(&mut self, x: f32, y: f32, click_count: u32, modifiers: Modifiers) -> bool {
-        self.search.focus = None;
-        let (x, y) = self.local(x, y);
-        if modifiers.cmd {
-            let link = self
-                .active_terminal()
-                .and_then(|terminal| terminal.hyperlink_at(x, y));
-            if let Some(link) = link.filter(|link| self.resolve(link).is_some()) {
-                self.pressed_link = Some(link);
-                return true;
-            }
+        let Some(path) = self.pane_path_at(x, y) else {
+            return false;
+        };
+        self.set_active(path.clone());
+        if let Some(pane) = self.group.leaf_at_mut(&path) {
+            pane.search.focus = None;
         }
-        match self.active_terminal() {
-            Some(terminal) => {
-                terminal.mouse_down(x, y, MouseButton::Left, modifiers, click_count);
-                true
-            }
-            None => false,
-        }
+        let Some((path, item)) = self.terminal_at(x, y) else {
+            return false;
+        };
+        item.mouse_down(x, y, click_count, modifiers);
+        self.pressed_pane = Some(path);
+        true
     }
 
     fn mouse_drag(&mut self, x: f32, y: f32, modifiers: Modifiers) -> bool {
-        if self.pressed_link.is_some() {
+        let Some(path) = self.pressed_pane.clone() else {
             return false;
-        }
-        let (x, y) = self.local(x, y);
-        match self.active_terminal() {
-            Some(terminal) => {
-                if terminal.mouse_mode(modifiers.shift) {
-                    terminal.mouse_move(x, y, Some(MouseButton::Left), modifiers);
-                } else {
-                    terminal.mouse_drag(x, y, modifiers);
-                }
-                true
-            }
-            None => false,
-        }
+        };
+        self.group
+            .leaf_at_mut(&path)
+            .and_then(terminal_of)
+            .is_some_and(|item| item.mouse_drag(x, y, modifiers))
     }
 
     fn mouse_move(&mut self, x: f32, y: f32, modifiers: Modifiers) -> bool {
-        let inside = self.grid_contains(x, y);
-        let (x, y) = self.local(x, y);
         let focused = self.focused;
-        let link = if modifiers.cmd && inside {
-            self.active_terminal()
-                .and_then(|terminal| terminal.hyperlink_at(x, y))
-        } else {
-            None
-        };
-        let target = link.as_ref().and_then(|link| self.resolve(link));
-        let link = link.filter(|_| target.is_some());
-        self.hovered_target = target;
-        let Some(terminal) = self.active_terminal() else {
-            return false;
-        };
-        if focused && inside && !modifiers.cmd {
-            terminal.mouse_move(x, y, None, modifiers);
+        let active = self.active.clone();
+        let under = self.pane_path_at(x, y);
+        let paths: Vec<Vec<usize>> = self.leaves.iter().map(|leaf| leaf.path.clone()).collect();
+        let mut changed = false;
+        for path in paths {
+            let Some(item) = self.group.leaf_at_mut(&path).and_then(terminal_of) else {
+                continue;
+            };
+            if under.as_ref() == Some(&path) || item.link_hovered() {
+                changed |= item.mouse_move(x, y, modifiers, focused && path == active);
+            }
         }
-        terminal.set_hovered_link(link)
+        changed
     }
 
     fn mouse_up(&mut self, x: f32, y: f32, modifiers: Modifiers) {
-        let (x, y) = self.local(x, y);
-        if let Some(pressed) = self.pressed_link.take() {
-            let released = self
-                .active_terminal()
-                .and_then(|terminal| terminal.hyperlink_at(x, y));
-            if released.as_ref() == Some(&pressed) {
-                self.open_request = self.resolve(&pressed);
-            }
+        let Some(path) = self.pressed_pane.take() else {
             return;
-        }
-        if let Some(terminal) = self.active_terminal() {
-            terminal.mouse_up(x, y, MouseButton::Left, modifiers);
+        };
+        if let Some(item) = self.group.leaf_at_mut(&path).and_then(terminal_of) {
+            item.mouse_up(x, y, modifiers);
         }
     }
 
     fn scroll(&mut self, x: f32, y: f32, delta_y: f32, modifiers: Modifiers) -> bool {
-        let scale = ui::ui_text_scale();
-        let (x, y) = self.local(x, y);
-        match self.active_terminal() {
-            Some(terminal) => {
-                terminal.scroll_wheel(delta_y / scale, x, y, modifiers);
+        match self.terminal_at(x, y) {
+            Some((_, item)) => {
+                item.scroll(x, y, delta_y, modifiers);
                 true
             }
             None => false,
@@ -635,7 +561,7 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn key(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
-        if self.tabs.is_empty() {
+        if self.active_terminal().is_none() {
             return TerminalKeyOutcome::Ignored;
         }
         if self.search_command(keystroke) {
@@ -646,8 +572,11 @@ impl TerminalPanelView for TerminalPanel {
             if m.cmd && keystroke.key == "v" {
                 return TerminalKeyOutcome::Paste;
             }
+            let Some(pane) = self.active_pane() else {
+                return TerminalKeyOutcome::Ignored;
+            };
             if m.cmd && keystroke.key == "c" {
-                return self
+                return pane
                     .search
                     .query
                     .selected_text()
@@ -655,11 +584,11 @@ impl TerminalPanelView for TerminalPanel {
             }
             return match search_edit_key(keystroke) {
                 Some(key) => {
-                    let keep = self
-                        .with_search(|bar, target| bar.key(target, key, m.shift))
-                        .unwrap_or(false);
+                    let keep = pane
+                        .search_target()
+                        .is_some_and(|(bar, item)| bar.key(item, key, m.shift));
                     if !keep {
-                        self.search.focus = None;
+                        pane.search.focus = None;
                     }
                     TerminalKeyOutcome::Handled
                 }
@@ -667,52 +596,38 @@ impl TerminalPanelView for TerminalPanel {
                 None => TerminalKeyOutcome::Ignored,
             };
         }
-        let Some(terminal) = self.active_terminal() else {
-            return TerminalKeyOutcome::Ignored;
-        };
-        if let Some(action) = terminal::input::binding(keystroke) {
-            return match action {
-                TerminalAction::Copy => terminal
-                    .selection_text()
-                    .map_or(TerminalKeyOutcome::Handled, TerminalKeyOutcome::Copy),
-                TerminalAction::Paste => TerminalKeyOutcome::Paste,
-                action => {
-                    terminal.perform(&action);
-                    TerminalKeyOutcome::Handled
-                }
-            };
-        }
-        if terminal.try_keystroke(keystroke, false) {
-            TerminalKeyOutcome::Handled
-        } else {
-            TerminalKeyOutcome::Ignored
-        }
+        self.active_terminal()
+            .map_or(TerminalKeyOutcome::Ignored, |item| item.key(keystroke))
     }
 
     fn text(&mut self, text: &str) {
         if self.search_focused() {
-            self.with_search(|bar, target| bar.input(target, text));
+            if let Some((bar, item)) = self.active_pane().and_then(Pane::search_target) {
+                bar.input(item, text);
+            }
             return;
         }
-        if let Some(terminal) = self.active_terminal() {
-            terminal.input(text.as_bytes().to_vec());
+        if let Some(item) = self.active_terminal() {
+            item.text(text);
         }
     }
 
     fn paste(&mut self, text: &str) {
         if self.search_focused() {
-            self.with_search(|bar, target| bar.input(target, text));
+            if let Some((bar, item)) = self.active_pane().and_then(Pane::search_target) {
+                bar.input(item, text);
+            }
             return;
         }
-        if let Some(terminal) = self.active_terminal() {
-            terminal.paste(text);
+        if let Some(item) = self.active_terminal() {
+            item.paste(text);
         }
     }
 
     fn focus_changed(&mut self, focused: bool) {
         self.focused = focused;
-        if let Some(terminal) = self.active_terminal() {
-            terminal.focus_changed(focused);
+        if let Some(item) = self.active_terminal() {
+            item.focus_changed(focused);
         }
     }
 
@@ -722,157 +637,194 @@ impl TerminalPanelView for TerminalPanel {
             clipboard,
         };
         let mut outcome = TerminalSyncOutcome::default();
-        let had_tabs = !self.tabs.is_empty();
-        let mut index = 0;
-        while index < self.tabs.len() {
-            let result = self.tabs[index].sync(&host);
-            outcome.changed |= result.changed || result.title_changed;
-            if result.clipboard_store.is_some() {
-                outcome.clipboard_store = result.clipboard_store;
+        let had_terminals = !self.is_empty();
+        let mut exited: Vec<(u64, String)> = Vec::new();
+        self.group.for_each_pane_mut(&mut |pane| {
+            let mut pane_changed = false;
+            for item in pane.open.iter_mut() {
+                let Some(id) = item.id() else {
+                    continue;
+                };
+                let Some(terminal) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<TerminalItem>())
+                else {
+                    continue;
+                };
+                let result = terminal.sync(&host);
+                pane_changed |= result.changed || result.title_changed;
+                if result.clipboard_store.is_some() {
+                    outcome.clipboard_store = result.clipboard_store;
+                }
+                if result.close {
+                    exited.push((pane.id, id));
+                }
             }
-            if result.close {
-                self.close_tab(index);
+            if pane_changed {
+                if let Some((bar, item)) = pane.search_target() {
+                    if !bar.dismissed {
+                        bar.refresh(item);
+                    }
+                }
+            }
+            outcome.changed |= pane_changed;
+        });
+        for (pane_id, item_id) in exited {
+            let Some(path) = self.group.path_of(pane_id) else {
+                continue;
+            };
+            let index = self
+                .group
+                .leaf_at(&path)
+                .and_then(|pane| pane.index_of_id(&item_id));
+            if let Some(index) = index {
+                self.close_tab(&path, index);
                 outcome.changed = true;
-            } else {
-                index += 1;
             }
         }
         outcome.closed_all =
-            (had_tabs && self.tabs.is_empty()) || std::mem::take(&mut self.closed_last);
-        if outcome.changed && !self.search.dismissed {
-            self.with_search(|bar, target| bar.refresh(target));
-        }
+            (had_terminals && self.is_empty()) || std::mem::take(&mut self.closed_last);
         outcome
     }
 
     fn open(&mut self, cwd: Option<PathBuf>) {
         self.closed_last = false;
-        let options = TerminalOptions {
-            working_directory: Some(cwd.unwrap_or_else(|| self.root.clone())),
-            ..TerminalOptions::default()
+        let Some(item) = self.spawn_item(cwd) else {
+            return;
         };
-        match Terminal::spawn(options, self.waker.clone()) {
-            Ok(terminal) => {
-                self.tabs.push(terminal);
-                self.active = self.tabs.len() - 1;
-                self.spawn_error = None;
-            }
-            Err(error) => self.spawn_error = Some(format!("Failed to start the shell: {error}")),
+        if let Some(pane) = self.active_pane() {
+            pane.add_item(Box::new(item));
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.tabs.is_empty()
+        let mut empty = true;
+        self.group
+            .for_each_pane(&mut |pane| empty &= pane.open.is_empty());
+        empty
     }
 
     fn take_open_request(&mut self) -> Option<TerminalOpenTarget> {
-        self.open_request.take()
+        let mut request = None;
+        self.all_terminals(&mut |item| {
+            if request.is_none() {
+                request = item.take_open_request();
+            }
+        });
+        request
     }
 
     fn link_hovered(&self) -> bool {
-        self.hovered_target.is_some()
+        let mut hovered = false;
+        self.group.for_each_pane(&mut |pane| {
+            hovered |= pane.active_item().is_some_and(|item| {
+                item.as_any()
+                    .and_then(|any| any.downcast_ref::<TerminalItem>())
+                    .is_some_and(TerminalItem::link_hovered)
+            });
+        });
+        hovered
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use terminal::GridPoint;
+    use terminal::{Terminal, TerminalOptions};
 
-    fn link(text: &str, is_url: bool) -> HyperlinkMatch {
-        HyperlinkMatch {
-            text: text.into(),
-            is_url,
-            start: GridPoint::default(),
-            end: GridPoint::default(),
-        }
-    }
-
-    #[test]
-    fn links_resolve_to_existing_files_or_urls() {
-        let root = std::env::temp_dir().join(format!("pomelo-links-{}", std::process::id()));
-        std::fs::create_dir_all(root.join("src")).ok();
-        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").ok();
-        let panel = TerminalPanel::new(root.clone(), std::sync::Arc::new(|| {}));
-        assert_eq!(
-            panel.resolve(&link("b/src/main.rs:3:7", false)),
-            Some(TerminalOpenTarget::Path {
-                path: root.join("src/main.rs"),
-                row: Some(3),
-                column: Some(7),
-            })
-        );
-        assert_eq!(
-            panel.resolve(&link("./src/main.rs", false)),
-            Some(TerminalOpenTarget::Path {
-                path: root.join("src/main.rs"),
-                row: None,
-                column: None,
-            })
-        );
-        assert_eq!(panel.resolve(&link("src/missing.rs", false)), None);
-        assert_eq!(panel.resolve(&link("src", false)), None);
-        assert_eq!(
-            panel.resolve(&link("https://example.com", true)),
-            Some(TerminalOpenTarget::Url("https://example.com".into()))
-        );
-        std::fs::remove_dir_all(&root).ok();
+    fn panel() -> TerminalPanel {
+        TerminalPanel::new(std::env::temp_dir(), std::sync::Arc::new(|| {}))
     }
 
     #[test]
     fn search_finds_newest_match_first_and_cycles() {
-        let root = std::env::temp_dir();
-        let mut panel = TerminalPanel::new(root, std::sync::Arc::new(|| {}));
-        panel.tabs.push(
-            Terminal::spawn(
-                TerminalOptions {
-                    shell: Some((
-                        "/bin/sh".into(),
-                        vec![
-                            "-c".into(),
-                            "printf 'alpha one\\nbeta\\nalpha two'; sleep 5".into(),
-                        ],
-                    )),
-                    ..TerminalOptions::default()
-                },
-                std::sync::Arc::new(|| {}),
-            )
-            .unwrap(),
-        );
+        let mut panel = panel();
+        let terminal = Terminal::spawn(
+            TerminalOptions {
+                shell: Some((
+                    "/bin/sh".into(),
+                    vec![
+                        "-c".into(),
+                        "printf 'alpha one\\nbeta\\nalpha two'; sleep 5".into(),
+                    ],
+                )),
+                ..TerminalOptions::default()
+            },
+            std::sync::Arc::new(|| {}),
+        )
+        .unwrap();
+        let item = TerminalItem::with_terminal(0, std::env::temp_dir(), terminal);
+        panel.active_pane().unwrap().add_item(Box::new(item));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !panel.tabs[0].screen_text().contains("two") {
+        while !panel
+            .active_terminal()
+            .unwrap()
+            .terminal()
+            .screen_text()
+            .contains("two")
+        {
             assert!(std::time::Instant::now() < deadline, "no output");
             panel.sync(&|| None);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(panel.search_command(&Keystroke::parse("cmd-f")));
         panel.text("alpha");
-        assert_eq!(panel.search.matches.len(), 2);
-        assert_eq!(panel.search.active_match, Some(1));
-        assert_eq!(panel.tabs[0].selection_text().as_deref(), Some("alpha"));
-        let highlighted = &panel.tabs[0].content().search_matches;
+        let pane = panel.active_pane().unwrap();
+        assert_eq!(pane.search.matches.len(), 2);
+        assert_eq!(pane.search.active_match, Some(1));
+        let terminal = panel.active_terminal().unwrap().terminal();
+        assert_eq!(terminal.selection_text().as_deref(), Some("alpha"));
+        let highlighted = &terminal.content().search_matches;
         assert_eq!(highlighted.len(), 2);
         assert_eq!(highlighted[1].0.line - highlighted[0].0.line, 2);
         assert!(panel.search_command(&Keystroke::parse("cmd-g")));
-        assert_eq!(panel.search.active_match, Some(0));
+        assert_eq!(panel.active_pane().unwrap().search.active_match, Some(0));
         assert_eq!(
             panel.key(&Keystroke::parse("escape")),
             TerminalKeyOutcome::Handled
         );
-        assert!(panel.search.dismissed);
-        assert!(panel.tabs[0].content().search_matches.is_empty());
+        assert!(panel.active_pane().unwrap().search.dismissed);
+        let terminal = panel.active_terminal().unwrap().terminal();
+        assert!(terminal.content().search_matches.is_empty());
     }
 
     #[test]
     fn closing_the_last_tab_closes_the_panel() {
-        let mut panel = TerminalPanel::new(std::env::temp_dir(), std::sync::Arc::new(|| {}));
+        let mut panel = panel();
         panel.open(None);
         panel.open(None);
-        assert!(panel.click(TAB_CLOSE_BASE));
+        let close_first = TERMINAL_VIEW_BASE + TAB_CLOSE_OFFSET;
+        assert!(panel.click(close_first));
         assert!(!panel.sync(&|| None).closed_all);
-        assert!(panel.click(TAB_CLOSE_BASE));
+        assert!(panel.click(close_first));
         assert!(panel.is_empty());
         assert!(panel.sync(&|| None).closed_all);
+        assert!(!panel.sync(&|| None).closed_all);
+    }
+
+    #[test]
+    fn panes_split_and_empty_panes_leave_the_group() {
+        let mut panel = panel();
+        panel.open(None);
+        let region = Rect::new(0.0, 0.0, 800.0, 400.0, Rgba::TRANSPARENT);
+        panel.render(region, true);
+        assert!(panel.click(TERMINAL_VIEW_BASE + SPLIT_RIGHT_OFFSET));
+        assert_eq!(panel.group.leaf_count(), 2);
+        assert_eq!(panel.active, vec![1]);
+        let painted = panel.render(region, true);
+        assert!(painted.hits.iter().any(|(_, id)| *id == DIVIDER_BASE));
+        assert!(matches!(
+            panel.divider_axis(DIVIDER_BASE),
+            Some(DividerAxis::Horizontal)
+        ));
+        assert!(panel.drag_divider(DIVIDER_BASE, 600.0, 10.0));
+        assert!(panel.click(TERMINAL_VIEW_BASE + PANE_STRIDE + SPLIT_DOWN_OFFSET));
+        assert_eq!(panel.group.leaf_count(), 3);
+        panel.render(region, true);
+        let second = TERMINAL_VIEW_BASE + PANE_STRIDE;
+        assert!(panel.click(second + TAB_CLOSE_OFFSET));
+        assert_eq!(panel.group.leaf_count(), 2);
+        assert!(!panel.is_empty());
         assert!(!panel.sync(&|| None).closed_all);
     }
 }
