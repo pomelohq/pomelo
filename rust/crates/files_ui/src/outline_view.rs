@@ -116,6 +116,7 @@ pub struct OutlineView {
     scroll_top: usize,
     /// Scrolled distance not yet worth a whole row.
     scroll_remainder: f32,
+    pub scrollbar: crate::list_scrollbar::ScrollbarReveal,
     cursor: usize,
     /// The window size in design px, which the picker and its preview size themselves by.
     viewport: (f32, f32),
@@ -158,6 +159,7 @@ impl OutlineView {
             selected: 0,
             scroll_top: 0,
             scroll_remainder: 0.0,
+            scrollbar: Default::default(),
             cursor,
             viewport,
             preview,
@@ -294,8 +296,9 @@ impl OutlineView {
         }
     }
 
+    /// A row's height in design px: a code-font line plus the item padding.
     fn row_height() -> f32 {
-        crate::EDIT_FONT * ui::ui_text_scale() * 1.4 + 10.0
+        crate::EDIT_FONT * 1.4 + 10.0
     }
 
     /// Resize for a window of `viewport` real px.
@@ -347,13 +350,17 @@ impl OutlineView {
     /// A wheel or trackpad scroll over the list: moves the rows, not the selection.
     pub fn scroll_by(&mut self, dy: f32) -> bool {
         let max_top = self.entries.len().saturating_sub(self.visible_rows());
-        crate::command_palette::scroll_rows(
+        let moved = crate::command_palette::scroll_rows(
             &mut self.scroll_top,
             &mut self.scroll_remainder,
             dy,
-            Self::row_height(),
+            Self::row_height() * ui::ui_text_scale(),
             max_top,
-        )
+        );
+        if moved {
+            self.scrollbar.reveal();
+        }
+        moved
     }
 
     fn visible_rows(&self) -> usize {
@@ -364,6 +371,7 @@ impl OutlineView {
 
     fn scroll_to_selected(&mut self) {
         let visible = self.visible_rows();
+        let before = self.scroll_top;
         if self.selected < self.scroll_top {
             self.scroll_top = self.selected;
         } else if self.selected >= self.scroll_top + visible {
@@ -372,6 +380,9 @@ impl OutlineView {
         self.scroll_top = self
             .scroll_top
             .min(self.entries.len().saturating_sub(visible));
+        if self.scroll_top != before {
+            self.scrollbar.reveal();
+        }
     }
 
     /// Code lines the preview pane has room for, and columns across.
@@ -444,10 +455,25 @@ impl OutlineView {
                 ),
             )
         } else {
-            let end = (self.scroll_top + self.visible_rows()).min(self.entries.len());
+            let visible = self.visible_rows();
+            let end = (self.scroll_top + visible).min(self.entries.len());
+            let list_width = match self.preview {
+                PreviewLayout::Right => size.results.0,
+                // Children aren't inset by the border, so stop short of the right one.
+                _ => size.width - 1.0,
+            };
+            let scrollbar = crate::list_scrollbar::render(
+                list_width,
+                visible as f32 * Self::row_height() + 8.0,
+                self.scroll_top,
+                visible,
+                self.entries.len(),
+                self.scrollbar.opacity(),
+            );
             div()
                 .col()
                 .py(4.0)
+                .children(scrollbar)
                 .children((self.scroll_top..end).map(|row| self.render_row(row, id_base)))
         };
         let fixed = size.height.is_some();
@@ -749,7 +775,7 @@ mod tests {
             (1200.0, 400.0),
             PreviewLayout::Hidden,
         );
-        let row = OutlineView::row_height();
+        let row = OutlineView::row_height() * ui::ui_text_scale();
         assert!(!view.scroll_by(-row * 0.5));
         assert!(view.scroll_by(-row * 0.6));
         assert_eq!(view.scroll_top, 1);
@@ -795,6 +821,37 @@ mod tests {
                 "{layout:?} bottom {bottom} > {height}"
             );
         }
+    }
+
+    #[test]
+    fn scrolling_shows_a_thumb_at_the_right_edge() {
+        let symbols: Vec<Symbol> = (0..100)
+            .map(|i| symbol(0, i * 10..i * 10 + 5, &format!("fn f{i}")))
+            .collect();
+        let scale = ui::ui_text_scale();
+        let mut view = OutlineView::new(
+            symbols,
+            0,
+            (0.0, 0.0),
+            (1200.0, 400.0),
+            PreviewLayout::Hidden,
+        );
+        view.set_viewport((1200.0 * scale, 400.0 * scale));
+        let thumbs = |view: &OutlineView| {
+            let node: Node = div().col().child(view.render(0, None)).into();
+            let area = ui::Rect::new(0.0, 0.0, WIDTH * scale, 2000.0, Rgba::TRANSPARENT);
+            ui::render(&node, area)
+                .rects
+                .into_iter()
+                .filter(|r| (r.w - 6.0 * scale).abs() < 0.01)
+                .collect::<Vec<_>>()
+        };
+        assert!(thumbs(&view).is_empty());
+        view.scroll_by(-OutlineView::row_height() * scale * 3.0);
+        let thumb = thumbs(&view);
+        assert_eq!(thumb.len(), 1);
+        let right = thumb[0].x + thumb[0].w;
+        assert!((right - (WIDTH - 1.0 - 4.0) * scale).abs() < 0.5, "{right}");
     }
 
     #[test]
