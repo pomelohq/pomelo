@@ -1,6 +1,9 @@
 //! Terminal core: a shell running on a PTY, its output parsed by a VT emulator into a scrollback grid, and a
 //! snapshot of that grid for a view to draw. No rendering here; `terminal_ui` draws `Content`.
 
+pub mod input;
+pub mod mouse;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,6 +13,8 @@ use std::sync::{mpsc, Arc};
 use alacritty_terminal::event::{Event as BackendEvent, EventListener, Notify, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point as BackendPoint, Side as BackendSide};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::tty;
@@ -17,6 +22,13 @@ use alacritty_terminal::tty;
 pub use alacritty_terminal::term::cell::Flags;
 pub use alacritty_terminal::term::TermMode;
 pub use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
+pub use input::{Keystroke, Modifiers, TerminalAction};
+pub use mouse::{GridPoint, MouseButton, Side};
+
+use mouse::grid_point_and_side;
+
+/// Pointer travel (px) before a press becomes a selection drag, so a jittery click selects nothing.
+const SELECTION_DRAG_THRESHOLD: f32 = 2.0;
 
 pub const DEFAULT_SCROLL_HISTORY_LINES: usize = 10_000;
 pub const MAX_SCROLL_HISTORY_LINES: usize = 100_000;
@@ -173,9 +185,28 @@ pub struct Content {
     pub total_lines: usize,
     pub screen_lines: usize,
     pub columns: usize,
+    pub selection: Option<SelectionRange>,
     /// Colors a program redefined (OSC 4/10/11); `None` falls back to the palette.
     pub colors: Vec<Option<Rgb>>,
     pub bounds: TerminalBounds,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionRange {
+    pub start: GridPoint,
+    pub end: GridPoint,
+    pub is_block: bool,
+}
+
+impl SelectionRange {
+    pub fn contains(&self, point: GridPoint) -> bool {
+        if self.is_block {
+            return (self.start.line..=self.end.line).contains(&point.line)
+                && (self.start.column..=self.end.column).contains(&point.column);
+        }
+        (self.start.line, self.start.column) <= (point.line, point.column)
+            && (point.line, point.column) <= (self.end.line, self.end.column)
+    }
 }
 
 /// What a sync produced that the host has to act on.
@@ -233,6 +264,10 @@ pub struct Terminal {
     title: String,
     keyboard_input_sent: bool,
     child_exit: Option<ExitStatus>,
+    scroll_px: f32,
+    selecting: bool,
+    mouse_down_position: Option<(f32, f32)>,
+    last_mouse: Option<(GridPoint, Side)>,
 }
 
 /// The variables every shell gets: a known terminal type with truecolor, a UTF-8 locale when the app was
@@ -295,6 +330,10 @@ impl Terminal {
             title: String::new(),
             keyboard_input_sent: false,
             child_exit: None,
+            scroll_px: 0.0,
+            selecting: false,
+            mouse_down_position: None,
+            last_mouse: None,
         })
     }
 
@@ -341,8 +380,264 @@ impl Terminal {
         self.input(payload.into_bytes());
     }
 
-    pub fn scroll_lines(&mut self, lines: i32) {
-        self.term.lock().scroll_display(Scroll::Delta(lines));
+    fn scroll(&mut self, scroll: Scroll) {
+        self.term.lock().scroll_display(scroll);
+        self.snapshot();
+    }
+
+    pub fn scroll_line_up(&mut self) {
+        self.scroll(Scroll::Delta(1));
+    }
+
+    pub fn scroll_line_down(&mut self) {
+        self.scroll(Scroll::Delta(-1));
+    }
+
+    pub fn scroll_page_up(&mut self) {
+        self.scroll(Scroll::PageUp);
+    }
+
+    pub fn scroll_page_down(&mut self) {
+        self.scroll(Scroll::PageDown);
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        self.scroll(Scroll::Top);
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll(Scroll::Bottom);
+    }
+
+    /// Returns whether the key was consumed; unconsumed keys arrive later as typed text.
+    pub fn try_keystroke(&mut self, keystroke: &Keystroke, option_as_meta: bool) -> bool {
+        match input::escape_sequence(keystroke, self.content.mode, option_as_meta) {
+            Some(Cow::Borrowed(sequence)) => self.input(sequence.as_bytes()),
+            Some(Cow::Owned(sequence)) => self.input(sequence.into_bytes()),
+            None => return false,
+        }
+        true
+    }
+
+    pub fn focus_changed(&mut self, focused: bool) {
+        if self.content.mode.contains(TermMode::FOCUS_IN_OUT) {
+            let report: &'static [u8] = if focused { b"\x1b[I" } else { b"\x1b[O" };
+            self.pty.notify(report);
+        }
+    }
+
+    /// Wipe the screen and scrollback, keeping the cursor's line (with the prompt) at the top.
+    pub fn clear(&mut self) {
+        let mut term = self.term.lock();
+        alacritty_terminal::vte::ansi::Handler::clear_screen(
+            &mut *term,
+            alacritty_terminal::vte::ansi::ClearMode::Saved,
+        );
+        let cursor = term.grid().cursor.point;
+        let columns = term.grid().columns();
+        term.grid_mut().reset_region(..cursor.line);
+        for index in 0..columns {
+            let cell = term.grid()[cursor.line][Column(index)].clone();
+            term.grid_mut()[Line(0)][Column(index)] = cell;
+        }
+        term.grid_mut().cursor.point = BackendPoint::new(Line(0), cursor.column);
+        if term.screen_lines() > 1 {
+            term.grid_mut().reset_region(Line(1)..);
+        }
+        drop(term);
+        self.snapshot();
+    }
+
+    /// Programs that track the mouse get reports instead of selections; holding shift overrides that.
+    pub fn mouse_mode(&self, shift: bool) -> bool {
+        self.content.mode.intersects(TermMode::MOUSE_MODE) && !shift
+    }
+
+    fn cell_at(&self, x: f32, y: f32) -> (GridPoint, Side) {
+        grid_point_and_side(x, y, self.content.bounds, self.content.display_offset)
+    }
+
+    /// A wheel movement of `delta_y` px at `(x, y)` in the grid: reported to mouse-tracking programs, turned
+    /// into arrow keys on the alternate screen, and otherwise scrolling the history.
+    pub fn scroll_wheel(&mut self, delta_y: f32, x: f32, y: f32, modifiers: Modifiers) {
+        let line_height = self.content.bounds.line_height;
+        let before = (self.scroll_px / line_height) as i32;
+        self.scroll_px += delta_y;
+        let lines = (self.scroll_px / line_height) as i32 - before;
+        self.scroll_px %= self.content.bounds.height;
+        if lines == 0 {
+            return;
+        }
+        let mode = self.content.mode;
+        if self.mouse_mode(modifiers.shift) {
+            let (point, _) = self.cell_at(x, y);
+            for report in mouse::scroll_reports(point, lines, modifiers, mode) {
+                self.pty.notify(report);
+            }
+        } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
+            && !modifiers.shift
+        {
+            self.pty.notify(mouse::alt_scroll(lines));
+        } else {
+            self.scroll(Scroll::Delta(lines));
+        }
+    }
+
+    pub fn mouse_down(
+        &mut self,
+        x: f32,
+        y: f32,
+        button: MouseButton,
+        modifiers: Modifiers,
+        click_count: u32,
+    ) {
+        let (point, side) = self.cell_at(x, y);
+        if self.mouse_mode(modifiers.shift) {
+            if let Some(report) =
+                mouse::button_report(point, button, modifiers, true, self.content.mode)
+            {
+                self.pty.notify(report);
+            }
+            return;
+        }
+        if button != MouseButton::Left {
+            return;
+        }
+        self.mouse_down_position = Some((x, y));
+        let kind = match click_count {
+            1 => SelectionType::Simple,
+            2 => SelectionType::Semantic,
+            3 => SelectionType::Lines,
+            _ => return,
+        };
+        let mut term = self.term.lock();
+        if kind == SelectionType::Simple && modifiers.shift {
+            match term.selection.as_mut() {
+                Some(selection) => selection.update(backend_point(point), backend_side(side)),
+                None => {
+                    term.selection = Some(Selection::new(
+                        kind,
+                        backend_point(point),
+                        backend_side(side),
+                    ))
+                }
+            }
+        } else {
+            term.selection = Some(Selection::new(
+                kind,
+                backend_point(point),
+                backend_side(side),
+            ));
+        }
+        drop(term);
+        self.snapshot();
+    }
+
+    /// Extend the selection to the pointer; dragging above or below the grid scrolls the history, faster the
+    /// further out the pointer is.
+    pub fn mouse_drag(&mut self, x: f32, y: f32, modifiers: Modifiers) {
+        if self.mouse_mode(modifiers.shift) {
+            return;
+        }
+        if !self.selecting {
+            if let Some((down_x, down_y)) = self.mouse_down_position {
+                if (x - down_x).hypot(y - down_y) <= SELECTION_DRAG_THRESHOLD {
+                    return;
+                }
+            }
+        }
+        self.selecting = true;
+        let (point, side) = self.cell_at(x, y);
+        let alt_screen = self.content.mode.contains(TermMode::ALT_SCREEN);
+        let mut term = self.term.lock();
+        if let Some(selection) = term.selection.as_mut() {
+            selection.update(backend_point(point), backend_side(side));
+        }
+        if !alt_screen {
+            let line_height = self.content.bounds.line_height;
+            let bottom = self.content.bounds.height;
+            let lines = if y < 0.0 {
+                ((-y).powf(1.1) / line_height).ceil() as i32
+            } else if y > bottom {
+                (-(y - bottom).powf(1.1) / line_height).floor() as i32
+            } else {
+                0
+            };
+            if lines != 0 {
+                term.scroll_display(Scroll::Delta(lines.clamp(-3, 3)));
+            }
+        }
+        drop(term);
+        self.snapshot();
+    }
+
+    pub fn mouse_move(&mut self, x: f32, y: f32, held: Option<MouseButton>, modifiers: Modifiers) {
+        if !self.mouse_mode(modifiers.shift) {
+            return;
+        }
+        let cell = self.cell_at(x, y);
+        if self.last_mouse == Some(cell) {
+            return;
+        }
+        self.last_mouse = Some(cell);
+        if let Some(report) = mouse::moved_report(cell.0, held, modifiers, self.content.mode) {
+            self.pty.notify(report);
+        }
+    }
+
+    pub fn mouse_up(&mut self, x: f32, y: f32, button: MouseButton, modifiers: Modifiers) {
+        if self.mouse_mode(modifiers.shift) {
+            let (point, _) = self.cell_at(x, y);
+            if let Some(report) =
+                mouse::button_report(point, button, modifiers, false, self.content.mode)
+            {
+                self.pty.notify(report);
+            }
+        }
+        self.selecting = false;
+        self.last_mouse = None;
+        self.mouse_down_position = None;
+    }
+
+    pub fn select_all(&mut self) {
+        let mut term = self.term.lock();
+        let start = BackendPoint::new(term.topmost_line(), Column(0));
+        let end = BackendPoint::new(term.bottommost_line(), term.last_column());
+        let mut selection = Selection::new(SelectionType::Simple, start, BackendSide::Left);
+        selection.update(end, BackendSide::Right);
+        term.selection = Some(selection);
+        drop(term);
+        self.snapshot();
+    }
+
+    /// Run a terminal binding; returns the text to put on the clipboard for Copy. Paste goes through
+    /// `paste` with the clipboard text instead.
+    pub fn perform(&mut self, action: &TerminalAction) -> Option<String> {
+        match action {
+            TerminalAction::Copy => return self.selection_text(),
+            TerminalAction::Paste => {}
+            TerminalAction::Clear => self.clear(),
+            TerminalAction::SelectAll => self.select_all(),
+            TerminalAction::ScrollLineUp => self.scroll_line_up(),
+            TerminalAction::ScrollLineDown => self.scroll_line_down(),
+            TerminalAction::ScrollPageUp => self.scroll_page_up(),
+            TerminalAction::ScrollPageDown => self.scroll_page_down(),
+            TerminalAction::ScrollToTop => self.scroll_to_top(),
+            TerminalAction::ScrollToBottom => self.scroll_to_bottom(),
+            TerminalAction::SendKeystroke(keystroke) => {
+                self.try_keystroke(keystroke, false);
+            }
+            TerminalAction::SendText(text) => self.input(text.as_bytes()),
+        }
+        None
+    }
+
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.lock().selection_to_string()
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.term.lock().selection = None;
         self.snapshot();
     }
 
@@ -453,6 +748,11 @@ impl Terminal {
             total_lines: grid.total_lines(),
             screen_lines: grid.screen_lines(),
             columns: grid.columns(),
+            selection: renderable.selection.map(|range| SelectionRange {
+                start: grid_point(range.start),
+                end: grid_point(range.end),
+                is_block: range.is_block,
+            }),
             colors,
             bounds: self.content.bounds,
         };
@@ -479,6 +779,24 @@ impl Terminal {
             .join("\n")
             .trim_end()
             .to_string()
+    }
+}
+
+fn backend_point(point: GridPoint) -> BackendPoint {
+    BackendPoint::new(Line(point.line), Column(point.column))
+}
+
+fn grid_point(point: BackendPoint) -> GridPoint {
+    GridPoint {
+        line: point.line.0,
+        column: point.column.0,
+    }
+}
+
+fn backend_side(side: Side) -> BackendSide {
+    match side {
+        Side::Left => BackendSide::Left,
+        Side::Right => BackendSide::Right,
     }
 }
 
@@ -583,6 +901,53 @@ mod tests {
         wait_for(&mut terminal, &host, |t, _| {
             t.screen_text().contains("pomelo-42")
         });
+    }
+
+    fn sized(options: TerminalOptions) -> Terminal {
+        let mut terminal = Terminal::spawn(options, Arc::new(|| {})).unwrap();
+        terminal.set_size(TerminalBounds {
+            cell_width: 10.0,
+            line_height: 20.0,
+            width: 400.0,
+            height: 200.0,
+        });
+        terminal
+    }
+
+    #[test]
+    fn keystrokes_are_encoded_for_the_program() {
+        let mut terminal = sized(sh(
+            "stty -echo; read line; printf \"<%s>\" \"$line\"; sleep 5",
+        ));
+        let host = host();
+        terminal.sync(&host);
+        std::thread::sleep(Duration::from_millis(100));
+        terminal.input(b"xy".as_slice());
+        assert!(terminal.try_keystroke(&Keystroke::parse("backspace"), false));
+        assert!(!terminal.try_keystroke(&Keystroke::parse("z"), false));
+        terminal.input(b"z".as_slice());
+        assert!(terminal.try_keystroke(&Keystroke::parse("enter"), false));
+        wait_for(&mut terminal, &host, |t, _| {
+            t.screen_text().contains("<xz>")
+        });
+    }
+
+    #[test]
+    fn double_click_selects_a_word_and_clear_keeps_the_cursor_line() {
+        let mut terminal = sized(sh("printf 'one\\nhello world'; sleep 5"));
+        let host = host();
+        wait_for(&mut terminal, &host, |t, _| {
+            t.screen_text() == "one\nhello world"
+        });
+        terminal.mouse_down(75.0, 30.0, MouseButton::Left, Modifiers::default(), 2);
+        assert_eq!(terminal.selection_text().as_deref(), Some("world"));
+        assert!(terminal.content().selection.is_some());
+        terminal.mouse_down(5.0, 5.0, MouseButton::Left, Modifiers::default(), 1);
+        terminal.mouse_drag(35.0, 25.0, Modifiers::default());
+        assert_eq!(terminal.selection_text().as_deref(), Some("one\nhel"));
+        terminal.mouse_up(35.0, 25.0, MouseButton::Left, Modifiers::default());
+        terminal.clear();
+        assert_eq!(terminal.screen_text(), "hello world");
     }
 
     #[test]
