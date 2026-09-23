@@ -231,15 +231,30 @@ impl FileItem {
         let over_text = local.filter(|(x, y)| {
             *y >= 0.0 && *x >= crate::gutter_width(self.line_count()) && *y < self.body_h
         });
+        let link_before = self.link_range();
+        let modifiers = ui::modifiers();
         match over_text {
             Some((x, y)) => {
-                if let Some(offset) = self.hover_offset(x, y) {
+                let offset = self.hover_offset(x, y);
+                match offset {
+                    Some(offset) if modifiers.cmd => {
+                        self.show_link_definition(offset, modifiers.shift)
+                    }
+                    _ if !modifiers.cmd => {
+                        self.hide_hovered_link();
+                    }
+                    _ => {}
+                }
+                if let Some(offset) = offset {
                     self.hover_at(Some(offset), Some(window));
                 }
             }
-            None => self.hover_at(None, Some(window)),
+            None => {
+                self.hide_hovered_link();
+                self.hover_at(None, Some(window));
+            }
         }
-        was_busy || self.hover.is_busy()
+        was_busy || self.hover.is_busy() || self.link_range() != link_before || self.link.is_some()
     }
 
     fn hover_at(&mut self, offset: Option<usize>, pointer: Option<(f32, f32)>) {

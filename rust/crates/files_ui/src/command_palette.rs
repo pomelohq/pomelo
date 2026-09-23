@@ -218,6 +218,26 @@ const COMMANDS: &[(&str, PaletteAction, &[&str])] = &[
     ("editor::Hover", Key(EditKey::Hover), &[]),
     ("editor::GoToHunk", Key(EditKey::GoToHunk), &["cmd-f8"]),
     (
+        "editor::GoToDefinition",
+        Key(EditKey::GoToDefinition),
+        &["f12"],
+    ),
+    (
+        "editor::GoToDeclaration",
+        Key(EditKey::GoToDeclaration),
+        &["ctrl-f12"],
+    ),
+    (
+        "editor::GoToTypeDefinition",
+        Key(EditKey::GoToTypeDefinition),
+        &["cmd-f12"],
+    ),
+    (
+        "editor::GoToImplementation",
+        Key(EditKey::GoToImplementation),
+        &["shift-f12"],
+    ),
+    (
         "editor::GoToPreviousHunk",
         Key(EditKey::GoToPreviousHunk),
         &["cmd-shift-f8"],

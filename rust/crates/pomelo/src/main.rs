@@ -606,6 +606,26 @@ impl ApplicationHandler for App {
             self.shift_down = mods.state().shift_key();
             self.alt_down = mods.state().alt_key();
             self.ctrl_down = mods.state().control_key();
+            ui::set_modifiers(ui::Modifiers {
+                cmd: self.super_down,
+                shift: self.shift_down,
+                alt: self.alt_down,
+                ctrl: self.ctrl_down,
+            });
+            if let Some((x, y)) = self.mains.get(&id).map(|m| m.cursor) {
+                let scale = self
+                    .mains
+                    .get(&id)
+                    .map_or(1.0, |m| m.window.scale_factor() as f32);
+                if self.with_workspace_view(id, |v, _| {
+                    v.mouse_move(x as f32 / scale, y as f32 / scale)
+                }) == Some(true)
+                {
+                    if let Some(m) = self.mains.get_mut(&id) {
+                        m.dirty = true;
+                    }
+                }
+            }
         }
         if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
             if ke.state == ElementState::Pressed {
@@ -784,6 +804,10 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::ArrowDown) => key(EditKey::Down),
                     Key::Named(NamedKey::Home) => key(EditKey::Home),
                     Key::Named(NamedKey::End) => key(EditKey::End),
+                    Key::Named(NamedKey::F12) if cmd => key(EditKey::GoToTypeDefinition),
+                    Key::Named(NamedKey::F12) if shift => key(EditKey::GoToImplementation),
+                    Key::Named(NamedKey::F12) if ctrl => key(EditKey::GoToDeclaration),
+                    Key::Named(NamedKey::F12) => key(EditKey::GoToDefinition),
                     Key::Named(NamedKey::F8) if cmd && shift => key(EditKey::GoToPreviousHunk),
                     Key::Named(NamedKey::F8) if cmd => key(EditKey::GoToHunk),
                     Key::Named(NamedKey::Space) if ctrl && !cmd => key(EditKey::ShowCompletions),
