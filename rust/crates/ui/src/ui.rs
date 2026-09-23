@@ -1831,9 +1831,11 @@ impl UiRenderer {
                 let y = px(cy).min(self.config.height);
                 let w = px(cw).min(self.config.width.saturating_sub(x));
                 let h = px(ch).min(self.config.height.saturating_sub(y));
-                if w > 0 && h > 0 {
-                    pass.set_scissor_rect(x, y, w, h);
+                // An empty clip hides the whole layer; wgpu rejects a zero-size scissor, so skip drawing.
+                if w == 0 || h == 0 {
+                    continue;
                 }
+                pass.set_scissor_rect(x, y, w, h);
             }
             let (start, end) = ranges[i];
             if end > start {
