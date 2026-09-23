@@ -70,6 +70,26 @@ pub enum IconKind {
     PanelBottom,
     Server,
     Undo,
+    ChevronLeft,
+    CaseSensitive,
+    WholeWord,
+    Regex,
+    Replace,
+    ReplaceNext,
+    ReplaceAll,
+    SelectAll,
+    Quote,
+    Command,
+    Shift,
+    Option,
+    Control,
+    ArrowUp,
+    ArrowDown,
+    Return,
+    Backspace,
+    Tab,
+    KeyArrowLeft,
+    KeyArrowRight,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -400,6 +420,10 @@ impl Div {
     }
     pub fn justify_center(mut self) -> Self {
         self.justify = Justify::Center;
+        self
+    }
+    pub fn justify_end(mut self) -> Self {
+        self.justify = Justify::End;
         self
     }
     pub fn items_center(mut self) -> Self {

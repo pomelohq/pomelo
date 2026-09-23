@@ -13,4 +13,5 @@ ui = { path = "../ui" }
 workspace = { path = "../workspace" }
 files = { path = "../files" }
 editor = { package = "pomelo-editor", path = "../editor" }
+nucleo-matcher = "0.3.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }

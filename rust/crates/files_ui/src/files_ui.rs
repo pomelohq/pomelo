@@ -13,6 +13,14 @@ use std::rc::Rc;
 
 use editor::buffer::{Bias, ClipboardSelection, Deletion, DisplayRows, Motion, Selection};
 use editor::fold::FoldMap;
+use editor::search::{Direction, SearchQuery};
+use editor::transform::{LineTransform, TextTransform};
+use search_bar::{SearchBar, SearchClick, SearchField, Searchable};
+
+mod command_palette;
+mod go_to_line;
+mod search_bar;
+mod text_field;
 use editor::wrap::Boundary;
 use editor::{EditorBuffer, Lang, Syntax, Theme};
 use files::FileNode;
@@ -110,6 +118,8 @@ const SPLIT_RIGHT_BASE: u64 = FUNC_VIEW_BASE + 5_000_000;
 const SPLIT_DOWN_BASE: u64 = FUNC_VIEW_BASE + 6_000_000;
 const NAV_BACK_BASE: u64 = FUNC_VIEW_BASE + 7_000_000;
 const NAV_FWD_BASE: u64 = FUNC_VIEW_BASE + 8_000_000;
+const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 8_500_000; // + PaletteClick
+const SEARCH_BASE: u64 = FUNC_VIEW_BASE + 9_000_000; // + pane*PANE_STRIDE + SearchClick
 const FOLD_BASE: u64 = FUNC_VIEW_BASE + 10_000_000; // + pane*PANE_STRIDE + buffer_line
 const DIVIDER_BASE: u64 = FUNC_VIEW_BASE + 12_000_000;
 const PANE_STRIDE: u64 = 100_000;
@@ -231,6 +241,24 @@ impl LineLayout {
     }
 }
 
+const MAX_NAVIGATION_HISTORY_LEN: usize = 1024;
+const MIN_NAVIGATION_HISTORY_ROW_DELTA: usize = 10;
+
+#[derive(Clone, Debug, PartialEq)]
+struct NavEntry {
+    id: String,
+    cursor: Option<usize>,
+    scroll: Option<(f32, f32)>,
+    row: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavMode {
+    Normal,
+    GoingBack,
+    GoingForward,
+}
+
 /// One screen row: a slice `[start, end)` of `line`'s tab-expanded text (`end` is `usize::MAX` on a line's last
 /// row), drawn after `indent` blank columns (non-zero only on soft-wrap continuation rows).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -246,6 +274,7 @@ enum LineCommand {
     Delete,
     Duplicate { up: bool },
     Move { up: bool },
+    Manipulate(LineTransform),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -301,6 +330,9 @@ struct FileItem {
     gutter_hovered: bool,
     /// When the view last scrolled, which keeps the scrollbars visible for `SCROLLBAR_SHOW_INTERVAL`.
     scrolled_at: Option<std::time::Instant>,
+    search_highlights: Vec<Range<usize>>,
+    active_search_highlight: Option<usize>,
+    highlighted_row: Option<usize>,
 }
 
 impl FileItem {
@@ -344,6 +376,9 @@ impl FileItem {
             char_widths: RefCell::default(),
             gutter_hovered: false,
             scrolled_at: None,
+            search_highlights: Vec::new(),
+            active_search_highlight: None,
+            highlighted_row: None,
         }
     }
 
@@ -851,6 +886,7 @@ impl FileItem {
                 LineCommand::Delete => b.plan_delete_lines(&rows),
                 LineCommand::Duplicate { up } => b.plan_duplicate(up, true, &rows),
                 LineCommand::Move { up } => b.plan_move_lines(up, &rows),
+                LineCommand::Manipulate(transform) => b.plan_manipulate_lines(transform, &rows),
             }
         });
         let Some(plan) = plan else {
@@ -1353,7 +1389,191 @@ impl FileItem {
     }
 }
 
+impl FileItem {
+    fn cursor_status_text(&self) -> Option<String> {
+        let b = self.buffer.as_ref()?;
+        let newest = b.newest();
+        let (line, column) = b.line_col_of(newest.head());
+        let mut text = format!("{}:{}", line + 1, column + 1);
+        let (mut lines, mut characters) = (0usize, 0usize);
+        for s in b.selections() {
+            characters += s.end - s.start;
+            if !s.is_empty() {
+                let (start_row, _) = b.line_col_of(s.start);
+                let (end_row, end_col) = b.line_col_of(s.end);
+                lines += end_row - start_row + usize::from(end_col != 0);
+            }
+        }
+        let selections = b.selections().len();
+        let parts: Vec<String> = [
+            (selections > 1).then_some((selections, "selection")),
+            (lines > 1).then_some((lines, "line")),
+            (characters > 0).then_some((characters, "character")),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|(count, name)| format!("{count} {name}{}", if count > 1 { "s" } else { "" }))
+        .collect();
+        if !parts.is_empty() {
+            text.push_str(&format!(" ({})", parts.join(", ")));
+        }
+        Some(text)
+    }
+
+    fn manipulate_text(&mut self, transform: TextTransform) {
+        if let Some(b) = self.buffer.as_mut() {
+            b.manipulate_text(transform);
+        }
+        self.refresh();
+        self.ensure_visible();
+        self.ensure_cursor_visible();
+    }
+
+    fn caret_line_column(&self) -> (usize, usize) {
+        let Some(b) = self.buffer.as_ref() else {
+            return (1, 1);
+        };
+        let end = b.selections().last().map_or(0, |s| s.end);
+        let (line, column) = b.line_col_of(end);
+        (line + 1, column + 1)
+    }
+
+    fn nav_position(&self) -> Option<(usize, usize, (f32, f32))> {
+        let b = self.buffer.as_ref()?;
+        let head = b.newest().head();
+        Some((head, b.rope.char_to_line(head), self.scroll_position()))
+    }
+
+    fn navigate(&mut self, cursor: usize, scroll: (f32, f32)) -> bool {
+        let Some(b) = self.buffer.as_mut() else {
+            return false;
+        };
+        let cursor = cursor.min(b.rope.len_chars());
+        if b.newest().head() == cursor {
+            return false;
+        }
+        b.place_cursor(cursor);
+        self.set_scroll_position(scroll);
+        true
+    }
+
+    fn scroll_position(&self) -> (f32, f32) {
+        (self.scroll_y, self.scroll_x)
+    }
+
+    fn set_scroll_position(&mut self, (y, x): (f32, f32)) {
+        self.set_scroll_y(y);
+        self.scroll_x = x.clamp(0.0, self.max_scroll_x());
+    }
+
+    fn scroll_line_to_center(&mut self, line: usize) {
+        self.ensure_visible();
+        let row = self.disp_of(line) as f32;
+        let visible = self.body_h / EDIT_LINE_H;
+        let margin = ((visible - 1.0) / 2.0).floor().max(0.0);
+        self.set_scroll_y((row - margin).max(0.0) * EDIT_LINE_H);
+    }
+
+    fn preview_line(&mut self, target: Option<(usize, usize)>) {
+        let Some(b) = self.buffer.as_ref() else {
+            return;
+        };
+        let last = b.rope.len_lines().saturating_sub(1);
+        self.highlighted_row = target.map(|(line, _)| line.min(last));
+        if let Some(line) = self.highlighted_row {
+            self.scroll_line_to_center(line);
+        }
+    }
+
+    fn go_to(&mut self, line: usize, column: usize) {
+        self.highlighted_row = None;
+        if let Some(b) = self.buffer.as_mut() {
+            let offset = b.offset_at(line, column);
+            b.place_cursor(offset);
+        }
+        self.scroll_line_to_center(line);
+    }
+}
+
+impl Searchable for FileItem {
+    fn search_version(&self) -> u64 {
+        self.buffer.as_ref().map_or(0, EditorBuffer::version)
+    }
+
+    fn find(&self, query: &SearchQuery) -> Vec<Range<usize>> {
+        self.buffer
+            .as_ref()
+            .map_or_else(Vec::new, |b| b.search(query))
+    }
+
+    fn query_suggestion(&self) -> String {
+        self.buffer
+            .as_ref()
+            .map_or_else(String::new, EditorBuffer::query_suggestion)
+    }
+
+    fn single_cursor(&self) -> Option<usize> {
+        let b = self.buffer.as_ref()?;
+        (b.selections().len() == 1).then(|| b.newest().head())
+    }
+
+    fn activate_match(&mut self, range: Range<usize>) {
+        if !self.folds.take_overlapping(range.clone()).is_empty() {
+            self.rows = None;
+        }
+        if let Some(b) = self.buffer.as_mut() {
+            b.select_ranges(std::slice::from_ref(&range));
+        }
+        self.refresh();
+        self.ensure_visible();
+        self.ensure_cursor_visible();
+    }
+
+    fn select_matches(&mut self, ranges: &[Range<usize>]) {
+        let mut unfolded = false;
+        for range in ranges {
+            unfolded |= !self.folds.take_overlapping(range.clone()).is_empty();
+        }
+        if unfolded {
+            self.rows = None;
+        }
+        if let Some(b) = self.buffer.as_mut() {
+            b.select_ranges(ranges);
+        }
+        self.ensure_visible();
+    }
+
+    fn replace_match(&mut self, query: &SearchQuery, range: Range<usize>) {
+        if let Some(b) = self.buffer.as_mut() {
+            b.replace_match(query, range);
+        }
+        self.refresh();
+        self.ensure_visible();
+    }
+
+    fn replace_all(&mut self, query: &SearchQuery, ranges: &[Range<usize>]) {
+        if let Some(b) = self.buffer.as_mut() {
+            b.replace_all(query, ranges);
+        }
+        self.refresh();
+        self.ensure_visible();
+    }
+
+    fn set_search_highlights(&mut self, matches: Vec<Range<usize>>, active: Option<usize>) {
+        self.search_highlights = matches;
+        self.active_search_highlight = active;
+    }
+}
+
 impl Item for FileItem {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn cursor_status(&self) -> Option<String> {
+        self.cursor_status_text()
+    }
+
     fn id(&self) -> Option<String> {
         Some(self.path.clone())
     }
@@ -1995,6 +2215,47 @@ impl Item for FileItem {
             }
         }
 
+        if let Some(line) = self.highlighted_row {
+            let (top, bottom) = (self.disp_of(line), self.last_row_of_line(line));
+            if top < last && bottom >= first {
+                rects.push(Rect::new(
+                    content.x,
+                    row_y(top),
+                    content.w,
+                    (bottom + 1 - top) as f32 * EDIT_LINE_H,
+                    theme().editor_highlighted_line,
+                ));
+            }
+        }
+
+        for (index, range) in self.search_highlights.iter().enumerate() {
+            let color = if Some(index) == self.active_search_highlight {
+                theme().search_active_match_background
+            } else {
+                theme().search_match_background
+            };
+            let (start_row, start_x) = self.position(range.start);
+            let (end_row, end_x) = self.position(range.end);
+            if end_row < first || start_row >= last {
+                continue;
+            }
+            for row in start_row.max(first)..=end_row.min(last.saturating_sub(1)) {
+                let left = if row == start_row { start_x } else { 0.0 };
+                let right = if row == end_row {
+                    end_x
+                } else {
+                    self.row_width(row)
+                };
+                rects.push(Rect::new(
+                    content.x + gw + left - self.scroll_x,
+                    row_y(row),
+                    (right - left).max(1.0),
+                    EDIT_LINE_H,
+                    color,
+                ));
+            }
+        }
+
         // Text an input method is still composing is underlined.
         for marked in b.marked_ranges() {
             let (start_row, start_x) = self.position(marked.start);
@@ -2425,63 +2686,130 @@ struct Pane {
     id: u64,
     open: Vec<Box<dyn Item>>,
     active: Option<usize>,
-    /// Back/forward navigation stacks of item ids (paths), like the reference's per-pane nav history. Activating
-    /// a different tab pushes the previous one onto `back` and clears `fwd`; the arrows walk between them.
-    back: Vec<String>,
-    fwd: Vec<String>,
+    back: Vec<NavEntry>,
+    fwd: Vec<NavEntry>,
+    search: Box<SearchBar>,
 }
 
 impl Pane {
-    fn active_id(&self) -> Option<String> {
-        self.active.and_then(|i| self.open.get(i)?.id())
+    fn header_h(&self) -> f32 {
+        if self.open.is_empty() {
+            0.0
+        } else {
+            TAB_H + self.search.height()
+        }
+    }
+
+    fn search_target(&mut self) -> Option<(&mut SearchBar, &mut FileItem)> {
+        let index = self.active?;
+        let item = self
+            .open
+            .get_mut(index)?
+            .as_any_mut()?
+            .downcast_mut::<FileItem>()?;
+        Some((self.search.as_mut(), item))
     }
 
     fn index_of_id(&self, id: &str) -> Option<usize> {
         self.open.iter().position(|o| o.id().as_deref() == Some(id))
     }
 
-    /// Activate `i` from a user gesture (tab click / open), recording the previous tab for back-navigation.
+    fn nav_entry_for(&mut self, index: usize) -> Option<NavEntry> {
+        let item = self.open.get_mut(index)?;
+        let id = item.id()?;
+        let file = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>());
+        Some(match file.and_then(|f| f.nav_position()) {
+            Some((cursor, row, scroll)) => NavEntry {
+                id,
+                cursor: Some(cursor),
+                scroll: Some(scroll),
+                row: Some(row),
+            },
+            None => NavEntry {
+                id,
+                cursor: None,
+                scroll: None,
+                row: None,
+            },
+        })
+    }
+
+    fn push_nav(&mut self, entry: NavEntry, mode: NavMode) {
+        let same = |e: &NavEntry| e.id == entry.id && e.row == entry.row;
+        let stack = match mode {
+            NavMode::GoingBack => &mut self.fwd,
+            NavMode::Normal | NavMode::GoingForward => &mut self.back,
+        };
+        stack.retain(|e| !same(e));
+        if stack.len() >= MAX_NAVIGATION_HISTORY_LEN {
+            stack.remove(0);
+        }
+        stack.push(entry);
+        if mode == NavMode::Normal {
+            self.fwd.clear();
+        }
+    }
+
+    fn deactivate_active(&mut self, mode: NavMode) {
+        if let Some(entry) = self.active.and_then(|i| self.nav_entry_for(i)) {
+            self.push_nav(entry, mode);
+        }
+    }
+
     fn activate_user(&mut self, i: usize) {
         if self.active == Some(i) {
             return;
         }
-        if let Some(prev) = self.active_id() {
-            self.back.push(prev);
-            self.fwd.clear();
-        }
+        self.deactivate_active(NavMode::Normal);
         self.active = Some(i);
     }
 
     fn can_back(&self) -> bool {
-        self.back.iter().any(|id| self.index_of_id(id).is_some())
+        self.back.iter().any(|e| self.index_of_id(&e.id).is_some())
     }
 
     fn can_forward(&self) -> bool {
-        self.fwd.iter().any(|id| self.index_of_id(id).is_some())
+        self.fwd.iter().any(|e| self.index_of_id(&e.id).is_some())
+    }
+
+    fn navigate(&mut self, mode: NavMode) {
+        loop {
+            let entry = match mode {
+                NavMode::GoingBack => self.back.pop(),
+                NavMode::GoingForward => self.fwd.pop(),
+                NavMode::Normal => None,
+            };
+            let Some(entry) = entry else {
+                return;
+            };
+            let Some(index) = self.index_of_id(&entry.id) else {
+                continue;
+            };
+            self.deactivate_active(mode);
+            let previous = self.active.replace(index);
+            let mut navigated = previous != Some(index);
+            if let (Some(cursor), Some(scroll)) = (entry.cursor, entry.scroll) {
+                if let Some(file) = self
+                    .open
+                    .get_mut(index)
+                    .and_then(|item| item.as_any_mut())
+                    .and_then(|a| a.downcast_mut::<FileItem>())
+                {
+                    navigated |= file.navigate(cursor, scroll);
+                }
+            }
+            if navigated {
+                return;
+            }
+        }
     }
 
     fn nav_back(&mut self) {
-        while let Some(id) = self.back.pop() {
-            if let Some(i) = self.index_of_id(&id) {
-                if let Some(cur) = self.active_id() {
-                    self.fwd.push(cur);
-                }
-                self.active = Some(i);
-                return;
-            }
-        }
+        self.navigate(NavMode::GoingBack);
     }
 
     fn nav_forward(&mut self) {
-        while let Some(id) = self.fwd.pop() {
-            if let Some(i) = self.index_of_id(&id) {
-                if let Some(cur) = self.active_id() {
-                    self.back.push(cur);
-                }
-                self.active = Some(i);
-                return;
-            }
-        }
+        self.navigate(NavMode::GoingForward);
     }
 
     fn open_file(&mut self, root: &std::path::Path, path: &str) {
@@ -2679,11 +3007,14 @@ pub struct FilesView {
     /// The tree column's visible width, refreshed each frame from the layout (the dock owns the width now), so
     /// horizontal scroll can clamp against it.
     tree_vw: f32,
+    go_to_line: Option<(Vec<usize>, go_to_line::GoToLine)>,
+    palette: Option<(Vec<usize>, command_palette::CommandPalette)>,
+    palette_memory: command_palette::PaletteMemory,
 }
 
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting stays in sync with
 /// the app theme (the reference drives both UI and syntax from one theme).
-fn syntax_theme() -> Theme {
+pub(crate) fn syntax_theme() -> Theme {
     if theme().appearance == ui::Appearance::Light {
         Theme::one_light()
     } else {
@@ -2709,6 +3040,9 @@ impl FilesView {
             pane_rects: Vec::new(),
             divider_order: Vec::new(),
             hover: None,
+            go_to_line: None,
+            palette: None,
+            palette_memory: command_palette::PaletteMemory::default(),
             tab_drag: None,
             drag_preview: None,
             click_targets: Vec::new(),
@@ -2765,7 +3099,407 @@ impl FilesView {
         pane.open.get_mut(i).map(|b| b.as_mut())
     }
 
-    /// Read-only walk to the leaf `Pane` at `path`.
+    fn go_to_line_item(&mut self, path: &[usize]) -> Option<&mut FileItem> {
+        let pane = self.group.leaf_at_mut(path)?;
+        let index = pane.active?;
+        pane.open
+            .get_mut(index)?
+            .as_any_mut()?
+            .downcast_mut::<FileItem>()
+    }
+
+    fn open_go_to_line(&mut self) {
+        let path = self.active.clone();
+        let Some(item) = self.go_to_line_item(&path) else {
+            return;
+        };
+        let (line, column) = item.caret_line_column();
+        let modal =
+            go_to_line::GoToLine::new(line, column, item.line_count(), item.scroll_position());
+        self.go_to_line = Some((path, modal));
+    }
+
+    fn close_go_to_line(&mut self, confirm: bool) {
+        let Some((path, modal)) = self.go_to_line.take() else {
+            return;
+        };
+        let Some(item) = self.go_to_line_item(&path) else {
+            return;
+        };
+        match (confirm, modal.target()) {
+            (true, Some((line, column))) => item.go_to(line, column),
+            _ => {
+                item.highlighted_row = None;
+                if let Some(scroll) = modal.prev_scroll {
+                    item.set_scroll_position(scroll);
+                }
+            }
+        }
+    }
+
+    fn go_to_line_key(&mut self, key: EditKey, shift: bool) {
+        match key {
+            EditKey::Escape | EditKey::ToggleGoToLine => return self.close_go_to_line(false),
+            EditKey::Enter => return self.close_go_to_line(true),
+            _ => {}
+        }
+        let Some((path, modal)) = self.go_to_line.as_mut() else {
+            return;
+        };
+        let edited = if key == EditKey::Tab {
+            modal.accept_placeholder();
+            true
+        } else {
+            modal.field.key(key, shift)
+        };
+        if edited {
+            let (path, target) = (path.clone(), modal.target());
+            if let Some(item) = self.go_to_line_item(&path) {
+                item.preview_line(target);
+            }
+        }
+    }
+
+    fn go_to_line_input(&mut self, text: &str) {
+        let Some((path, modal)) = self.go_to_line.as_mut() else {
+            return;
+        };
+        modal.field.insert(&text.replace('\n', ""));
+        let (path, target) = (path.clone(), modal.target());
+        if let Some(item) = self.go_to_line_item(&path) {
+            item.preview_line(target);
+        }
+    }
+
+    fn toggle_palette(&mut self) {
+        if self.palette.take().is_some() {
+            return;
+        }
+        let path = self.active.clone();
+        if self.go_to_line_item(&path).is_some() {
+            let palette = command_palette::CommandPalette::new(&self.palette_memory);
+            self.palette = Some((path, palette));
+        }
+    }
+
+    fn palette_key(&mut self, key: EditKey, shift: bool) {
+        let Some((_, palette)) = self.palette.as_mut() else {
+            return;
+        };
+        match key {
+            EditKey::Escape | EditKey::ToggleCommandPalette => self.palette = None,
+            EditKey::Enter => self.confirm_palette(),
+            EditKey::Up => palette.select_previous(&mut self.palette_memory),
+            EditKey::Down => palette.select_next(&mut self.palette_memory),
+            _ => {
+                if palette.field.key(key, shift) {
+                    palette.update_matches();
+                }
+            }
+        }
+    }
+
+    fn palette_input(&mut self, text: &str) {
+        if let Some((_, palette)) = self.palette.as_mut() {
+            palette.field.insert(&text.replace('\n', ""));
+            palette.update_matches();
+        }
+    }
+
+    fn palette_click(&mut self, click: command_palette::PaletteClick) {
+        if let (command_palette::PaletteClick::Row(row), Some((_, palette))) =
+            (click, self.palette.as_mut())
+        {
+            palette.select_row(row);
+        }
+        self.track_nav(|v| v.confirm_palette());
+    }
+
+    fn confirm_palette(&mut self) {
+        let Some((path, palette)) = self.palette.take() else {
+            return;
+        };
+        let Some(action) = palette.confirm(&mut self.palette_memory) else {
+            return;
+        };
+        self.active = path.clone();
+        match action {
+            command_palette::PaletteAction::Key(key) => {
+                self.editor_key_untracked(key, false);
+            }
+            command_palette::PaletteAction::Text(transform) => {
+                if let Some(item) = self.go_to_line_item(&path) {
+                    item.manipulate_text(transform);
+                }
+            }
+            command_palette::PaletteAction::Lines(transform) => {
+                if let Some(item) = self.go_to_line_item(&path) {
+                    item.run_line_command(LineCommand::Manipulate(transform));
+                }
+            }
+        }
+        if let Some(pane) = self.group.leaf_at_mut(&path) {
+            if let Some((bar, item)) = pane.search_target() {
+                bar.refresh(item);
+            }
+        }
+    }
+
+    fn track_nav<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let path = self.active.clone();
+        let before = self
+            .group
+            .leaf_at_mut(&path)
+            .and_then(|p| p.active.and_then(|i| p.nav_entry_for(i)));
+        let result = f(self);
+        if let (Some(before), Some(pane)) = (before, self.group.leaf_at_mut(&path)) {
+            let after = pane.active.and_then(|i| pane.nav_entry_for(i));
+            let jumped = after.filter(|a| a.id == before.id).is_some_and(|a| {
+                matches!((before.row, a.row), (Some(old), Some(new))
+                    if old.abs_diff(new) >= MIN_NAVIGATION_HISTORY_ROW_DELTA)
+            });
+            if jumped {
+                pane.push_nav(before, NavMode::Normal);
+            }
+        }
+        result
+    }
+
+    fn editor_key_untracked(&mut self, key: EditKey, shift: bool) -> bool {
+        if self.palette.is_some() {
+            self.palette_key(key, shift);
+            return true;
+        }
+        if key == EditKey::ToggleCommandPalette {
+            self.go_to_line = None;
+            self.toggle_palette();
+            return true;
+        }
+        if self.go_to_line.is_some() {
+            self.go_to_line_key(key, shift);
+            return true;
+        }
+        if key == EditKey::ToggleGoToLine {
+            self.open_go_to_line();
+            return true;
+        }
+        if matches!(key, EditKey::GoBack | EditKey::GoForward) {
+            if let Some(pane) = self.active_pane_mut() {
+                if key == EditKey::GoBack {
+                    pane.nav_back();
+                } else {
+                    pane.nav_forward();
+                }
+            }
+            return true;
+        }
+        if self.search_command(key) {
+            return true;
+        }
+        if let Some((bar, item)) = self.focused_search() {
+            bar.key(item, key, shift);
+            return true;
+        }
+        let changed = match self.active_item_mut() {
+            Some(item) if item.is_editable() => {
+                item.input_key(key, shift);
+                true
+            }
+            _ => false,
+        };
+        if let Some(pane) = self.active_pane_mut() {
+            if let Some((bar, item)) = pane.search_target() {
+                bar.refresh(item);
+            }
+        }
+        changed
+    }
+
+    fn editor_text_untracked(&mut self, text: &str) -> bool {
+        if self.palette.is_some() {
+            self.palette_input(text);
+            return true;
+        }
+        if self.go_to_line.is_some() {
+            self.go_to_line_input(text);
+            return true;
+        }
+        if let Some((bar, item)) = self.focused_search() {
+            bar.input(item, text);
+            return true;
+        }
+        match self.active_item_mut() {
+            Some(item) if item.is_editable() => {
+                item.input_text(text);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn editor_paste_untracked(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool {
+        if self.palette.is_some() {
+            self.palette_input(text);
+            return true;
+        }
+        if self.go_to_line.is_some() {
+            self.go_to_line_input(text);
+            return true;
+        }
+        if let Some((bar, item)) = self.focused_search() {
+            bar.input(item, text);
+            return true;
+        }
+        match self.active_item_mut() {
+            Some(item) if item.is_editable() => {
+                item.paste(text, slices);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn editor_click_untracked(&mut self, x: f32, y: f32, extend: bool) -> bool {
+        let Some((path, local_x, local_y)) = self.editor_local(x, y) else {
+            return false;
+        };
+        if !extend {
+            self.active = path;
+        }
+        if let Some(pane) = self.active_pane_mut() {
+            pane.search.focus = None;
+        }
+        match self.active_item_mut() {
+            Some(item) if item.is_editable() => {
+                item.place_cursor(local_x, local_y, extend);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn editor_double_click_untracked(&mut self, x: f32, y: f32) -> bool {
+        let Some((path, local_x, local_y)) = self.editor_local(x, y) else {
+            return false;
+        };
+        self.active = path;
+        match self.active_item_mut() {
+            Some(item) if item.is_editable() => {
+                item.select_word_at(local_x, local_y);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn editor_drag_untracked(&mut self, x: f32, y: f32) -> bool {
+        let Some(index) = self.pane_order.iter().position(|p| *p == self.active) else {
+            return false;
+        };
+        let Some(rect) = self.pane_rects.get(index).copied() else {
+            return false;
+        };
+        let header_h = self
+            .pane_at(&self.active.clone())
+            .map_or(TAB_H, Pane::header_h);
+        let text_top = rect.y + header_h;
+        let text_bottom = rect.y + rect.h;
+        let vertical_margin = EDIT_LINE_H.min((text_bottom - text_top) / 3.0);
+        let delta_rows = if y < text_top + vertical_margin {
+            -drag_autoscroll_rows(text_top + vertical_margin - y)
+        } else if y > text_bottom - vertical_margin {
+            drag_autoscroll_rows(y - (text_bottom - vertical_margin))
+        } else {
+            0.0
+        };
+        let em = char_advance();
+        let horizontal_space = HORIZONTAL_SCROLL_MARGIN * em;
+        let Some(item) = self.active_item_mut() else {
+            return false;
+        };
+        if !item.is_editable() {
+            return false;
+        }
+        let text_left = rect.x + item.gutter_w() + horizontal_space;
+        let text_right = rect.x + rect.w - horizontal_space;
+        let delta_columns = if x < text_left {
+            -drag_autoscroll_columns(text_left - x)
+        } else if x > text_right {
+            drag_autoscroll_columns(x - text_right)
+        } else {
+            0.0
+        };
+        item.scroll_by(-delta_rows * EDIT_LINE_H);
+        item.scroll_by_x(-delta_columns * em);
+        let local_x = (x - rect.x).max(0.0);
+        let local_y = y - (rect.y + header_h);
+        item.place_cursor(local_x, local_y, true);
+        true
+    }
+
+    fn focused_search(&mut self) -> Option<(&mut SearchBar, &mut FileItem)> {
+        let pane = self.active_pane_mut()?;
+        if pane.search.dismissed || pane.search.focus.is_none() {
+            return None;
+        }
+        pane.search_target()
+    }
+
+    fn search_command(&mut self, key: EditKey) -> bool {
+        let Some(pane) = self.active_pane_mut() else {
+            return false;
+        };
+        let Some((bar, item)) = pane.search_target() else {
+            return false;
+        };
+        let deployed = !bar.dismissed;
+        match key {
+            EditKey::DeploySearch => bar.deploy(item, false),
+            EditKey::ToggleSearchReplace if deployed => bar.toggle_replace(),
+            EditKey::ToggleSearchReplace => bar.deploy(item, true),
+            EditKey::SelectNextMatch if deployed => bar.select_match(item, Direction::Next),
+            EditKey::SelectPreviousMatch if deployed => bar.select_match(item, Direction::Prev),
+            EditKey::SelectAllMatchesInSearch if deployed => bar.select_all_matches(item),
+            EditKey::ToggleSearchCaseSensitive if deployed => {
+                bar.toggle_option(item, SearchClick::CaseSensitive)
+            }
+            EditKey::ToggleSearchWholeWord if deployed => {
+                bar.toggle_option(item, SearchClick::WholeWord)
+            }
+            EditKey::ToggleSearchRegex if deployed => bar.toggle_option(item, SearchClick::Regex),
+            EditKey::UseSelectionForFind => bar.use_selection_for_find(item),
+            _ => return false,
+        }
+        true
+    }
+
+    fn search_click(&mut self, p: usize, click: SearchClick) {
+        let Some(path) = self.pane_order.get(p).cloned() else {
+            return;
+        };
+        self.active = path.clone();
+        let Some(pane) = self.group.leaf_at_mut(&path) else {
+            return;
+        };
+        let Some((bar, item)) = pane.search_target() else {
+            return;
+        };
+        match click {
+            SearchClick::Query => bar.focus = Some(SearchField::Query),
+            SearchClick::Replacement => bar.focus = Some(SearchField::Replacement),
+            SearchClick::CaseSensitive | SearchClick::WholeWord | SearchClick::Regex => {
+                bar.toggle_option(item, click)
+            }
+            SearchClick::ToggleReplace => bar.toggle_replace(),
+            SearchClick::SelectAll => bar.select_all_matches(item),
+            SearchClick::Previous => bar.select_match(item, Direction::Prev),
+            SearchClick::Next => bar.select_match(item, Direction::Next),
+            SearchClick::Close => bar.dismiss(item),
+            SearchClick::ReplaceNext => bar.replace_next(item),
+            SearchClick::ReplaceAll => bar.replace_all(item),
+        }
+    }
+
     fn pane_at(&self, path: &[usize]) -> Option<&Pane> {
         let mut cur = &self.group;
         for &i in path {
@@ -2780,15 +3514,12 @@ impl FilesView {
         }
     }
 
-    /// The focused pane's active item (read-only), for clipboard reads.
     fn active_item_ref(&self) -> Option<&dyn Item> {
         let pane = self.pane_at(&self.active)?;
         let i = pane.active?;
         pane.open.get(i).map(|b| b.as_ref())
     }
 
-    /// The pane body under `(x, y)`: its path and the content-local pointer (before gutter/scroll), or `None`
-    /// if the point isn't in a pane body (e.g. the tab bar).
     fn editor_local(&self, x: f32, y: f32) -> Option<(Vec<usize>, f32, f32)> {
         let idx = self
             .pane_rects
@@ -2796,11 +3527,7 @@ impl FilesView {
             .position(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)?;
         let rect = self.pane_rects[idx];
         let path = self.pane_order[idx].clone();
-        let empty = self
-            .pane_at(&path)
-            .map(|p| p.open.is_empty())
-            .unwrap_or(true);
-        let tab_h = if empty { 0.0 } else { TAB_H };
+        let tab_h = self.pane_at(&path).map_or(0.0, Pane::header_h);
         let local_x = (x - rect.x).max(0.0);
         let local_y = y - (rect.y + tab_h);
         if local_y < 0.0 {
@@ -2809,7 +3536,6 @@ impl FilesView {
         Some((path, local_x, local_y))
     }
 
-    /// Whether the focused pane's active item accepts text input.
     fn focused_editable(&self) -> bool {
         let mut cur = &self.group;
         for &i in &self.active {
@@ -2827,7 +3553,6 @@ impl FilesView {
         }
     }
 
-    /// A clone-on-split of the active item of the pane at `path` (for the toolbar split buttons).
     fn clone_active_of(&mut self, path: &[usize]) -> Option<Box<dyn Item>> {
         self.group
             .leaf_at_mut(path)
@@ -2835,9 +3560,6 @@ impl FilesView {
             .and_then(|it| it.clone_on_split())
     }
 
-    /// Split the pane at `path`, placing `item` (if any) in a new pane in `dir`, and focus the new pane. If the
-    /// pane's parent split already runs along the split axis the new pane is inserted as a sibling; otherwise the
-    /// pane is wrapped in a fresh split of the two. Returns the new pane's path.
     fn do_split(
         &mut self,
         path: &[usize],
@@ -3092,7 +3814,10 @@ fn layout_member(
             // The active item's text content area (below the tab bar, inside the body padding) is where its
             // caret/selection geometry is anchored. Focus (caret visibility) follows the group's active pane.
             let is_focused = path.as_slice() == active;
-            let tab_h = if pane.open.is_empty() { 0.0 } else { TAB_H };
+            if let Some((bar, item)) = pane.search_target() {
+                bar.refresh(item);
+            }
+            let tab_h = pane.header_h();
             let body_rect = Rect::new(
                 rect.x,
                 rect.y + tab_h,
@@ -3357,7 +4082,11 @@ fn render_pane(pane: &Pane, p: usize, hover: Option<u64>) -> Node {
     if pane.open.is_empty() {
         return div().col().flex(1.0).into();
     }
-    div().col().flex(1.0).child(tab_bar).into()
+    let mut chrome = div().col().flex(1.0).child(tab_bar);
+    if !pane.search.dismissed {
+        chrome = chrome.child(pane.search.render(SEARCH_BASE + p as u64 * PANE_STRIDE));
+    }
+    chrome.into()
 }
 
 /// A back/forward nav button in the pane's tab bar. Dimmed and non-clickable when there's nowhere to go.
@@ -3405,6 +4134,25 @@ fn split_button(kind: IconKind, id: u64) -> Node {
 }
 
 impl FunctionView for FilesView {
+    fn cursor_position(&self) -> Option<String> {
+        let pane = self.pane_at(&self.active)?;
+        let item = pane.open.get(pane.active?)?;
+        item.cursor_status()
+    }
+
+    fn modal(&mut self) -> Option<(Node, f32)> {
+        if let Some((_, palette)) = self.palette.as_ref() {
+            return Some((palette.render(PALETTE_BASE), command_palette::WIDTH));
+        }
+        let (_, modal) = self.go_to_line.as_ref()?;
+        Some((modal.render(), go_to_line::WIDTH))
+    }
+
+    fn dismiss_modal(&mut self) {
+        self.palette = None;
+        self.close_go_to_line(false);
+    }
+
     fn editor_layout(&mut self, area: Rect) -> EditorLayout {
         let mut el = EditorLayout::default();
         let mut pane_order = Vec::new();
@@ -3623,6 +4371,20 @@ impl FunctionView for FilesView {
                     item.toggle_fold(line);
                 }
             }
+            return true;
+        }
+        if id >= SEARCH_BASE {
+            let n = id - SEARCH_BASE;
+            let (p, offset) = ((n / PANE_STRIDE) as usize, n % PANE_STRIDE);
+            if let Some(click) = SearchClick::from_offset(offset) {
+                self.track_nav(|v| v.search_click(p, click));
+            }
+            return true;
+        }
+        if id >= PALETTE_BASE {
+            self.palette_click(command_palette::PaletteClick::from_offset(
+                id - PALETTE_BASE,
+            ));
             return true;
         }
         // Nav forward / back arrows: walk that pane's activation history.
@@ -4013,7 +4775,7 @@ impl FunctionView for FilesView {
         let idx = self.pane_order.iter().position(|p| p.as_slice() == path)?;
         let rect = *self.pane_rects.get(idx)?;
         let pane = self.pane_at(path)?;
-        let tab_h = if pane.open.is_empty() { 0.0 } else { TAB_H };
+        let tab_h = pane.header_h();
         let content = Rect::new(
             rect.x,
             rect.y + tab_h,
@@ -4025,15 +4787,8 @@ impl FunctionView for FilesView {
     }
 
     fn editor_paste(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) -> bool {
-        match self.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.paste(text, slices);
-                true
-            }
-            _ => false,
-        }
+        self.track_nav(|v| v.editor_paste_untracked(text, slices))
     }
-
     fn editor_hover(&mut self, x: f32, y: f32) -> bool {
         let mut changed = false;
         for (index, rect) in self.pane_rects.clone().into_iter().enumerate() {
@@ -4043,7 +4798,7 @@ impl FunctionView for FilesView {
             let Some(pane) = self.group.leaf_at_mut(&path) else {
                 continue;
             };
-            let tab_h = if pane.open.is_empty() { 0.0 } else { TAB_H };
+            let tab_h = pane.header_h();
             let Some(item) = pane.active.and_then(|i| pane.open.get_mut(i)) else {
                 continue;
             };
@@ -4077,10 +4832,34 @@ impl FunctionView for FilesView {
     }
 
     fn editor_copy(&self) -> Option<CopiedText> {
+        if let Some(pane) = self.pane_at(&self.active) {
+            let field = match pane.search.focus {
+                Some(SearchField::Query) => Some(&pane.search.query),
+                Some(SearchField::Replacement) => Some(&pane.search.replacement),
+                None => None,
+            };
+            if let Some(field) = field.filter(|_| !pane.search.dismissed) {
+                return field.selected_text().map(|text| CopiedText {
+                    text,
+                    slices: Vec::new(),
+                });
+            }
+        }
         self.active_item_ref().and_then(|item| item.copy())
     }
 
     fn editor_cut(&mut self) -> Option<CopiedText> {
+        if let Some((bar, item)) = self.focused_search() {
+            let text = match bar.focus {
+                Some(SearchField::Replacement) => bar.replacement.selected_text(),
+                _ => bar.query.selected_text(),
+            }?;
+            bar.key(item, EditKey::Backspace, false);
+            return Some(CopiedText {
+                text,
+                slices: Vec::new(),
+            });
+        }
         match self.active_item_mut() {
             Some(item) if item.is_editable() => item.cut(),
             _ => None,
@@ -4088,99 +4867,23 @@ impl FunctionView for FilesView {
     }
 
     fn editor_text(&mut self, text: &str) -> bool {
-        match self.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.input_text(text);
-                true
-            }
-            _ => false,
-        }
+        self.track_nav(|v| v.editor_text_untracked(text))
     }
-
     fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
-        match self.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.input_key(key, shift);
-                true
-            }
-            _ => false,
+        if matches!(key, EditKey::GoBack | EditKey::GoForward) {
+            return self.editor_key_untracked(key, shift);
         }
+        self.track_nav(|v| v.editor_key_untracked(key, shift))
     }
-
     fn editor_click(&mut self, x: f32, y: f32, extend: bool) -> bool {
-        // A click in a pane body (below the tab bar) focuses it and places the caret. Tab-bar clicks are routed
-        // by the tab hit ids, not here.
-        let Some((path, local_x, local_y)) = self.editor_local(x, y) else {
-            return false;
-        };
-        if !extend {
-            self.active = path;
-        }
-        match self.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.place_cursor(local_x, local_y, extend);
-                true
-            }
-            _ => false,
-        }
+        self.track_nav(|v| v.editor_click_untracked(x, y, extend))
     }
-
     fn editor_drag(&mut self, x: f32, y: f32) -> bool {
-        let Some(index) = self.pane_order.iter().position(|p| *p == self.active) else {
-            return false;
-        };
-        let Some(rect) = self.pane_rects.get(index).copied() else {
-            return false;
-        };
-        let text_top = rect.y + TAB_H;
-        let text_bottom = rect.y + rect.h;
-        let vertical_margin = EDIT_LINE_H.min((text_bottom - text_top) / 3.0);
-        let delta_rows = if y < text_top + vertical_margin {
-            -drag_autoscroll_rows(text_top + vertical_margin - y)
-        } else if y > text_bottom - vertical_margin {
-            drag_autoscroll_rows(y - (text_bottom - vertical_margin))
-        } else {
-            0.0
-        };
-        let em = char_advance();
-        let horizontal_space = HORIZONTAL_SCROLL_MARGIN * em;
-        let Some(item) = self.active_item_mut() else {
-            return false;
-        };
-        if !item.is_editable() {
-            return false;
-        }
-        let text_left = rect.x + item.gutter_w() + horizontal_space;
-        let text_right = rect.x + rect.w - horizontal_space;
-        let delta_columns = if x < text_left {
-            -drag_autoscroll_columns(text_left - x)
-        } else if x > text_right {
-            drag_autoscroll_columns(x - text_right)
-        } else {
-            0.0
-        };
-        item.scroll_by(-delta_rows * EDIT_LINE_H);
-        item.scroll_by_x(-delta_columns * em);
-        let local_x = (x - rect.x).max(0.0);
-        let local_y = y - (rect.y + TAB_H);
-        item.place_cursor(local_x, local_y, true);
-        true
+        self.track_nav(|v| v.editor_drag_untracked(x, y))
     }
-
     fn editor_double_click(&mut self, x: f32, y: f32) -> bool {
-        let Some((path, local_x, local_y)) = self.editor_local(x, y) else {
-            return false;
-        };
-        self.active = path;
-        match self.active_item_mut() {
-            Some(item) if item.is_editable() => {
-                item.select_word_at(local_x, local_y);
-                true
-            }
-            _ => false,
-        }
+        self.track_nav(|v| v.editor_double_click_untracked(x, y))
     }
-
     fn editor_selected_text(&self) -> Option<String> {
         self.active_item_ref().and_then(|it| it.selected_text())
     }
@@ -4481,5 +5184,259 @@ mod indent_guide_tests {
         assert_eq!(FileItem::enclosing_indent(&b, 2), Some((1, 2, 4)));
         assert_eq!(FileItem::enclosing_indent(&b, 4), Some((0, 4, 0)));
         assert_eq!(FileItem::enclosing_indent(&b, 1), Some((1, 2, 4)));
+    }
+}
+
+#[cfg(test)]
+mod search_bar_tests {
+    use super::*;
+
+    fn item(text: &str) -> FileItem {
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
+        item.set_body_height(10.0 * EDIT_LINE_H);
+        item
+    }
+
+    #[test]
+    fn deploy_seeds_from_the_word_and_selects_the_nearest_match() {
+        let mut item = item("foo bar foo\nbar");
+        item.buffer.as_mut().unwrap().place_cursor(5);
+        let mut bar = SearchBar::default();
+        bar.deploy(&mut item, false);
+        assert_eq!(bar.query.text(), "bar");
+        assert_eq!(bar.matches, vec![4..7, 12..15]);
+        assert_eq!(bar.active_match, Some(0));
+        bar.select_match(&mut item, Direction::Next);
+        assert_eq!(bar.active_match, Some(1));
+        assert_eq!(
+            item.buffer.as_ref().unwrap().selected_text().as_deref(),
+            Some("bar")
+        );
+        bar.select_match(&mut item, Direction::Next);
+        assert_eq!(bar.active_match, Some(0));
+    }
+
+    #[test]
+    fn typing_a_query_searches_and_replace_all_is_one_undo() {
+        let mut item = item("a1 a2 a3");
+        let mut bar = SearchBar::default();
+        bar.deploy(&mut item, true);
+        bar.focus = Some(SearchField::Query);
+        bar.input(&mut item, "a");
+        assert_eq!(bar.matches.len(), 3);
+        bar.focus = Some(SearchField::Replacement);
+        bar.input(&mut item, "b");
+        bar.replace_all(&mut item);
+        assert_eq!(item.buffer.as_ref().unwrap().text(), "b1 b2 b3");
+        assert!(bar.matches.is_empty());
+        item.buffer.as_mut().unwrap().undo();
+        assert_eq!(item.buffer.as_ref().unwrap().text(), "a1 a2 a3");
+    }
+
+    #[test]
+    fn invalid_regex_reports_an_error() {
+        let mut item = item("x");
+        let mut bar = SearchBar::default();
+        bar.deploy(&mut item, false);
+        bar.toggle_option(&mut item, SearchClick::Regex);
+        bar.input(&mut item, "(");
+        assert!(bar.error.is_some());
+        assert!(bar.matches.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod go_to_line_tests {
+    use super::*;
+
+    fn view_with(text: &str) -> FilesView {
+        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
+        item.set_body_height(4.0 * EDIT_LINE_H);
+        if let Member::Leaf(pane) = &mut view.group {
+            pane.open.push(Box::new(item));
+            pane.active = Some(0);
+        }
+        view
+    }
+
+    fn cursor(view: &mut FilesView) -> (usize, usize) {
+        let path = view.active.clone();
+        let item = view.go_to_line_item(&path).unwrap();
+        item.buffer.as_ref().unwrap().line_col()
+    }
+
+    #[test]
+    fn confirm_moves_the_caret_and_cancel_restores_scroll() {
+        let text: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+        let mut view = view_with(&text);
+        view.editor_key(EditKey::ToggleGoToLine, false);
+        view.editor_text("20:3");
+        let path = view.active.clone();
+        assert_eq!(
+            view.go_to_line_item(&path).unwrap().highlighted_row,
+            Some(19)
+        );
+        view.editor_key(EditKey::Enter, false);
+        assert!(view.go_to_line.is_none());
+        assert_eq!(cursor(&mut view), (19, 2));
+
+        view.editor_key(EditKey::ToggleGoToLine, false);
+        let before = view.go_to_line_item(&path).unwrap().scroll_position();
+        view.editor_text("1");
+        view.editor_key(EditKey::Escape, false);
+        let item = view.go_to_line_item(&path).unwrap();
+        assert_eq!(item.scroll_position(), before);
+        assert_eq!(item.highlighted_row, None);
+        assert_eq!(cursor(&mut view), (19, 2));
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+
+    fn view_with(text: &str) -> FilesView {
+        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
+        item.set_body_height(4.0 * EDIT_LINE_H);
+        if let Member::Leaf(pane) = &mut view.group {
+            pane.open.push(Box::new(item));
+            pane.active = Some(0);
+        }
+        view
+    }
+
+    fn line(view: &mut FilesView) -> usize {
+        let path = view.active.clone();
+        view.go_to_line_item(&path)
+            .unwrap()
+            .buffer
+            .as_ref()
+            .unwrap()
+            .line_col()
+            .0
+    }
+
+    #[test]
+    fn far_jumps_are_recorded_and_walked_back_and_forth() {
+        let text: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+        let mut view = view_with(&text);
+        view.editor_key(EditKey::Down, false);
+        view.editor_key(EditKey::ToggleGoToLine, false);
+        view.editor_text("50");
+        view.editor_key(EditKey::Enter, false);
+        view.editor_key(EditKey::ToggleGoToLine, false);
+        view.editor_text("80");
+        view.editor_key(EditKey::Enter, false);
+        assert_eq!(line(&mut view), 79);
+        view.editor_key(EditKey::GoBack, false);
+        assert_eq!(line(&mut view), 49);
+        view.editor_key(EditKey::GoBack, false);
+        assert_eq!(line(&mut view), 1);
+        view.editor_key(EditKey::GoForward, false);
+        assert_eq!(line(&mut view), 49);
+        view.editor_key(EditKey::GoForward, false);
+        assert_eq!(line(&mut view), 79);
+    }
+
+    #[test]
+    fn small_moves_are_not_recorded() {
+        let text: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+        let mut view = view_with(&text);
+        for _ in 0..5 {
+            view.editor_key(EditKey::Down, false);
+        }
+        if let Member::Leaf(pane) = &view.group {
+            assert!(pane.back.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod cursor_status_tests {
+    use super::*;
+
+    #[test]
+    fn describes_the_caret_and_selection() {
+        let mut item = FileItem::new(
+            PathBuf::from("/nonexistent"),
+            "t.txt",
+            Some("abc\ndef\nghi".into()),
+        );
+        let b = item.buffer.as_mut().unwrap();
+        b.place_cursor(5);
+        assert_eq!(item.cursor_status_text().as_deref(), Some("2:2"));
+        let b = item.buffer.as_mut().unwrap();
+        b.place_cursor(1);
+        b.extend_cursor(9);
+        assert_eq!(
+            item.cursor_status_text().as_deref(),
+            Some("3:2 (3 lines, 8 characters)")
+        );
+        let b = item.buffer.as_mut().unwrap();
+        b.place_cursor(0);
+        b.add_cursor(4);
+        assert_eq!(
+            item.cursor_status_text().as_deref(),
+            Some("2:1 (2 selections)")
+        );
+    }
+}
+
+#[cfg(test)]
+mod command_palette_tests {
+    use super::*;
+
+    fn view_with(text: &str) -> FilesView {
+        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
+        item.set_body_height(4.0 * EDIT_LINE_H);
+        if let Member::Leaf(pane) = &mut view.group {
+            pane.open.push(Box::new(item));
+            pane.active = Some(0);
+        }
+        view
+    }
+
+    fn text(view: &mut FilesView) -> String {
+        let path = view.active.clone();
+        let item = view.go_to_line_item(&path).unwrap();
+        item.buffer.as_ref().unwrap().text()
+    }
+
+    #[test]
+    fn runs_transforms_and_editor_commands() {
+        let mut view = view_with("hello world\nb\na\n");
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        view.editor_text("convert to upper case");
+        view.editor_key(EditKey::Enter, false);
+        assert!(view.palette.is_none());
+        assert_eq!(text(&mut view), "HELLO world\nb\na\n");
+
+        view.editor_key(EditKey::SelectAll, false);
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        view.editor_text("sort lines case sensitive");
+        view.editor_key(EditKey::Enter, false);
+        assert_eq!(text(&mut view), "HELLO world\na\nb\n");
+
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        view.editor_text("go to line");
+        view.editor_key(EditKey::Enter, false);
+        assert!(view.go_to_line.is_some());
+    }
+
+    #[test]
+    fn escape_and_outside_clicks_close_without_running() {
+        let mut view = view_with("abc");
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        view.editor_text("upper");
+        view.editor_key(EditKey::Escape, false);
+        assert!(view.palette.is_none());
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        assert!(view.modal().is_some());
+        view.dismiss_modal();
+        assert!(view.modal().is_none());
+        assert_eq!(text(&mut view), "abc");
     }
 }

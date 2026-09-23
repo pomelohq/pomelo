@@ -4,6 +4,7 @@ pub mod fold;
 pub mod highlight;
 pub mod language;
 pub mod movement;
+pub mod search;
 pub mod syntax;
 pub mod theme;
 pub mod transform;
