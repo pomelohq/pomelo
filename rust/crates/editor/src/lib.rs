@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod completion;
 pub mod display;
 pub mod fold;
 pub mod highlight;

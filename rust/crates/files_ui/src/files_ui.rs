@@ -18,6 +18,7 @@ use editor::transform::{LineTransform, TextTransform};
 use search_bar::{SearchBar, SearchClick, SearchField, Searchable};
 
 mod command_palette;
+mod completions_menu;
 mod fuzzy;
 mod git_diff;
 mod go_to_line;
@@ -126,6 +127,7 @@ const NAV_BACK_BASE: u64 = FUNC_VIEW_BASE + 7_000_000;
 const NAV_FWD_BASE: u64 = FUNC_VIEW_BASE + 8_000_000;
 const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 8_500_000; // + PaletteClick
 const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 8_600_000; // + row
+const COMPLETION_BASE: u64 = FUNC_VIEW_BASE + 8_700_000; // + row
 const SEARCH_BASE: u64 = FUNC_VIEW_BASE + 9_000_000; // + pane*PANE_STRIDE + SearchClick
 const FOLD_BASE: u64 = FUNC_VIEW_BASE + 10_000_000; // + pane*PANE_STRIDE + buffer_line
 const HUNK_BASE: u64 = FUNC_VIEW_BASE + 11_000_000; // + pane*PANE_STRIDE + buffer_line
@@ -352,6 +354,10 @@ struct FileItem {
     base: Option<BaseText>,
     /// Whether `rows` holds removed lines of expanded changes.
     has_virtual_rows: bool,
+    /// Words completing the one being typed, when the menu is open.
+    completions: Option<completions_menu::CompletionsMenu>,
+    /// The menu was asked for explicitly, so it stays open below the minimum query length.
+    completions_forced: bool,
 }
 
 /// The committed version of the file, highlighted like the file, for expanded changes' removed lines.
@@ -414,6 +420,8 @@ impl FileItem {
             expanded: Vec::new(),
             base: None,
             has_virtual_rows: false,
+            completions: None,
+            completions_forced: false,
         }
     }
 
@@ -1582,6 +1590,100 @@ impl FileItem {
         git::entry_for_row(self.git.blame(), line).map(git::inline_text)
     }
 
+    fn close_completions(&mut self) {
+        self.completions = None;
+        self.completions_forced = false;
+    }
+
+    /// Open, refilter, or close the word menu for the word before the newest caret. Typing a word char opens it
+    /// once the word has three chars; `force` opens it at any length.
+    fn update_completions(&mut self, typed: bool, force: bool) {
+        let words_allowed = !matches!(self.lang, Lang::Markdown | Lang::PlainText);
+        let Some(b) = self.buffer.as_ref() else {
+            return self.close_completions();
+        };
+        let newest = b.newest();
+        let query = (words_allowed && newest.is_empty())
+            .then(|| editor::completion::completion_query(b, newest.head()))
+            .flatten();
+        let Some((word_start, query)) = query else {
+            return self.close_completions();
+        };
+        self.completions_forced |= force;
+        if self.completions.is_none() && !typed && !force {
+            return;
+        }
+        if !self.completions_forced && query.chars().count() < 3 {
+            return self.close_completions();
+        }
+        let head = newest.head();
+        let mut word_end = head;
+        while word_end < b.rope.len_chars() && {
+            let c = b.rope.char(word_end);
+            c.is_alphanumeric() || c == '_'
+        } {
+            word_end += 1;
+        }
+        let whole_word = b.rope.slice(word_start..word_end).to_string();
+        let row = b.rope.char_to_line(head);
+        let skip_digits = !query.chars().any(|c| c.is_ascii_digit());
+        let candidates = editor::completion::buffer_words(b, row, Some(&whole_word), skip_digits);
+        self.completions = completions_menu::CompletionsMenu::new(&query, candidates);
+        if self.completions.is_none() {
+            self.completions_forced = false;
+        }
+    }
+
+    /// Replace the word part before each caret with the chosen word (row `row`, else the selected one).
+    fn confirm_completion(&mut self, row: Option<usize>) {
+        let Some(menu) = self.completions.take() else {
+            return;
+        };
+        self.completions_forced = false;
+        let word = match row {
+            Some(row) => menu.word_at(row),
+            None => menu.selected_word(),
+        };
+        let (Some(word), Some(b)) = (word.map(str::to_string), self.buffer.as_mut()) else {
+            return;
+        };
+        let newest_query =
+            editor::completion::completion_query(b, b.newest().head()).map(|(_, q)| q);
+        let edits: Vec<(Range<usize>, String)> = b
+            .selections()
+            .iter()
+            .filter(|s| s.is_empty())
+            .filter_map(|s| {
+                let (start, query) = editor::completion::completion_query(b, s.head())?;
+                (Some(&query) == newest_query.as_ref()).then(|| (start..s.head(), word.clone()))
+            })
+            .collect();
+        b.replace_ranges(edits);
+        self.refresh();
+        self.ensure_visible();
+        self.ensure_cursor_visible();
+    }
+
+    /// The word menu and its window position: under the caret's line, or above it when that has more room
+    /// and the menu doesn't fit below.
+    fn completion_menu_popover(&self, content: Rect) -> Option<(Node, f32, f32)> {
+        let menu = self.completions.as_ref()?;
+        let b = self.buffer.as_ref()?;
+        let (row, x) = self.position(b.newest().head());
+        let x = content.x + gutter_width(self.line_count()) + x - self.scroll_x;
+        let row_top = content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
+        let height = menu.height() * ui::ui_text_scale();
+        let below = row_top + EDIT_LINE_H;
+        let room_below = content.y + self.body_h - below;
+        let room_above = row_top - content.y;
+        let y = if height > room_below && room_above > room_below {
+            row_top - height
+        } else {
+            below
+        };
+        Some((menu.render(COMPLETION_BASE), x, y))
+    }
+
     /// Hunks touching any selection's lines; a deletion counts when it sits right above or below them.
     fn hunks_in_selections(&self) -> Vec<git::DiffHunk> {
         let Some(b) = self.buffer.as_ref() else {
@@ -2470,6 +2572,26 @@ impl Item for FileItem {
         self.toggle_hunk_at_line(line);
     }
 
+    fn completion_popover(&self, content: Rect) -> Option<(Node, f32, f32)> {
+        self.completion_menu_popover(content)
+    }
+
+    fn click_completion(&mut self, row: usize) {
+        self.confirm_completion(Some(row));
+    }
+
+    fn scroll_completion(&mut self, dy: f32) -> bool {
+        self.completions
+            .as_mut()
+            .is_some_and(|menu| menu.scroll_by(dy))
+    }
+
+    fn hover_completion(&mut self, id: Option<u64>) {
+        if let Some(menu) = self.completions.as_mut() {
+            menu.hovered = id;
+        }
+    }
+
     fn save(&mut self) -> Result<(), String> {
         let Some(b) = self.buffer.as_mut() else {
             return Ok(());
@@ -2526,6 +2648,10 @@ impl Item for FileItem {
         self.syntax.as_ref().is_some_and(|s| s.is_parsing())
             || self.scrollbars_revealed()
             || self.git.is_busy()
+            || self
+                .completions
+                .as_ref()
+                .is_some_and(|menu| menu.scrollbar.is_animating())
             || self
                 .base
                 .as_ref()
@@ -2655,6 +2781,9 @@ impl Item for FileItem {
         self.refresh();
         self.ensure_visible();
         self.ensure_cursor_visible();
+        let mut chars = text.chars();
+        let typed_word_char = matches!((chars.next(), chars.next()), (Some(c), None) if c.is_alphanumeric() || c == '_');
+        self.update_completions(typed_word_char, false);
     }
 
     fn ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) {
@@ -2711,6 +2840,26 @@ impl Item for FileItem {
     }
 
     fn input_key(&mut self, key: EditKey, shift: bool) {
+        if let Some(menu) = self.completions.as_mut() {
+            match key {
+                EditKey::Up => return menu.select_previous(),
+                EditKey::Down => return menu.select_next(),
+                EditKey::Enter | EditKey::Tab => return self.confirm_completion(None),
+                EditKey::Escape => return self.close_completions(),
+                EditKey::Backspace | EditKey::Delete => {
+                    // Edit with the menu out of the way, then refilter it for the shorter word.
+                    self.completions = None;
+                    self.input_key(key, shift);
+                    return self.update_completions(false, false);
+                }
+                _ => self.close_completions(),
+            }
+        }
+        match key {
+            EditKey::ShowCompletions => return self.update_completions(true, false),
+            EditKey::ShowWordCompletions => return self.update_completions(true, true),
+            _ => {}
+        }
         // One row of the previous page stays on screen.
         let page_rows = ((self.body_h / EDIT_LINE_H) as usize).saturating_sub(1);
         let motion = match key {
@@ -2894,6 +3043,7 @@ impl Item for FileItem {
     }
 
     fn place_cursor(&mut self, local_x: f32, local_y: f32, extend: bool) {
+        self.close_completions();
         let Some(off) = self.offset_at_local(local_x, local_y) else {
             return;
         };
@@ -3829,6 +3979,8 @@ pub struct FilesView {
     outline_preview: outline_view::PreviewLayout,
     /// The window size last seen by `modal`, for sizing a modal as it opens.
     window_size: (f32, f32),
+    /// The focused pane's text area as last laid out, for placing popovers at its caret.
+    focused_content: Option<Rect>,
 }
 
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting stays in sync with
@@ -3865,6 +4017,7 @@ impl FilesView {
             outline: None,
             outline_preview: outline_view::PreviewLayout::Hidden,
             window_size: (1200.0, 800.0),
+            focused_content: None,
             tab_drag: None,
             drag_preview: None,
             click_targets: Vec::new(),
@@ -5157,6 +5310,20 @@ impl FunctionView for FilesView {
         })
     }
 
+    fn editor_popover(&mut self) -> Option<(Node, f32, f32)> {
+        if self.outline.is_some() || self.palette.is_some() || self.go_to_line.is_some() {
+            return None;
+        }
+        let content = self.focused_content?;
+        let pane = self.pane_at(&self.active)?;
+        pane.open.get(pane.active?)?.completion_popover(content)
+    }
+
+    fn popover_scroll(&mut self, dy: f32) -> bool {
+        self.active_item_mut()
+            .is_some_and(|item| item.scroll_completion(dy))
+    }
+
     fn modal_scroll(&mut self, dy: f32) -> bool {
         if let Some((_, view)) = self.outline.as_mut() {
             return view.scroll_by(dy);
@@ -5197,6 +5364,21 @@ impl FunctionView for FilesView {
         self.pane_order = pane_order;
         self.pane_ids = pane_ids;
         self.pane_rects = pane_rects;
+        self.focused_content = self
+            .pane_order
+            .iter()
+            .position(|path| *path == self.active)
+            .and_then(|index| {
+                let rect = *self.pane_rects.get(index)?;
+                let header = self.pane_at(&self.active)?.header_h();
+                Some(Rect::new(
+                    rect.x,
+                    rect.y + header,
+                    rect.w.max(0.0),
+                    (rect.h - header).max(0.0),
+                    Rgba::TRANSPARENT,
+                ))
+            });
         self.divider_order = divider_order;
         el
     }
@@ -5416,6 +5598,12 @@ impl FunctionView for FilesView {
             }
             return true;
         }
+        if id >= COMPLETION_BASE {
+            if let Some(item) = self.active_item_mut() {
+                item.click_completion((id - COMPLETION_BASE) as usize);
+            }
+            return true;
+        }
         if id >= OUTLINE_BASE {
             match outline_view::OutlineClick::from_offset(id - OUTLINE_BASE) {
                 outline_view::OutlineClick::Row(row) => {
@@ -5571,6 +5759,10 @@ impl FunctionView for FilesView {
             }) {
                 view.scrollbar.reveal();
             }
+        }
+        let over_completion = id.filter(|v| (COMPLETION_BASE..SEARCH_BASE).contains(v));
+        if let Some(item) = self.active_item_mut() {
+            item.hover_completion(over_completion);
         }
         if let Some((_, palette)) = self.palette.as_mut() {
             palette.hovered = over_modal;
@@ -6878,5 +7070,90 @@ mod hunk_action_tests {
             repo.git(&["show", ":a.txt"]).as_deref(),
             Some("a\nb\nc\nd\ne\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    fn item(name: &str, text: &str) -> FileItem {
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), name, Some(text.into()));
+        item.set_body_height(10.0 * EDIT_LINE_H);
+        let end = item.buffer.as_ref().unwrap().rope.len_chars();
+        item.buffer.as_mut().unwrap().place_cursor(end);
+        item
+    }
+
+    fn text(item: &FileItem) -> String {
+        item.buffer.as_ref().unwrap().text()
+    }
+
+    #[test]
+    fn typing_three_word_chars_opens_the_menu_and_enter_completes() {
+        let mut item = item("a.rs", "hello help world\nhe");
+        item.input_text("l");
+        let menu = item
+            .completions
+            .as_ref()
+            .expect("menu opens at three chars");
+        let first = menu.selected_word().unwrap().to_string();
+        assert!(first == "hello" || first == "help");
+        item.input_key(EditKey::Down, false);
+        let second = item
+            .completions
+            .as_ref()
+            .unwrap()
+            .selected_word()
+            .unwrap()
+            .to_string();
+        assert_ne!(first, second);
+        item.input_key(EditKey::Enter, false);
+        assert!(item.completions.is_none());
+        assert_eq!(text(&item), format!("hello help world\n{second}"));
+        let b = item.buffer.as_ref().unwrap();
+        assert_eq!(b.cursor(), b.rope.len_chars());
+    }
+
+    #[test]
+    fn short_words_non_word_chars_and_escape_close_it() {
+        let mut item = item("a.rs", "hello helpme\nh");
+        item.input_text("e");
+        assert!(item.completions.is_none());
+        item.input_text("l");
+        assert!(item.completions.is_some());
+        item.input_key(EditKey::Backspace, false);
+        assert!(item.completions.is_none());
+        item.input_text("l");
+        item.input_key(EditKey::Escape, false);
+        assert!(item.completions.is_none());
+        item.input_text("p");
+        assert!(item.completions.is_some());
+        item.input_text(" ");
+        assert!(item.completions.is_none());
+    }
+
+    #[test]
+    fn markdown_has_no_word_menu_but_it_can_be_forced() {
+        let mut item = item("a.md", "hello help\nhel");
+        item.input_text("p");
+        assert!(item.completions.is_none());
+        let mut item = super::completion_tests::item("a.rs", "hello help\nh");
+        item.input_key(EditKey::ShowWordCompletions, false);
+        assert!(item.completions.is_some());
+    }
+
+    #[test]
+    fn menu_opens_below_the_caret_or_above_near_the_bottom() {
+        let mut item = item("a.rs", "hello help\nhel");
+        item.input_key(EditKey::ShowCompletions, false);
+        let content = Rect::new(0.0, 0.0, 800.0, 10.0 * EDIT_LINE_H, Rgba::TRANSPARENT);
+        let (_, _, y) = item.completion_menu_popover(content).unwrap();
+        assert_eq!(y, 2.0 * EDIT_LINE_H);
+        let lines: String = (0..9).map(|i| format!("help{i}\n")).collect();
+        let mut item = super::completion_tests::item("a.rs", &format!("{lines}hel"));
+        item.input_key(EditKey::ShowCompletions, false);
+        let (_, _, y) = item.completion_menu_popover(content).unwrap();
+        assert!(y < 9.0 * EDIT_LINE_H, "{y}");
     }
 }

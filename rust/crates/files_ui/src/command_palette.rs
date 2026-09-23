@@ -205,6 +205,16 @@ const COMMANDS: &[(&str, PaletteAction, &[&str])] = &[
         Key(EditKey::ExpandAllDiffHunks),
         &["cmd-\""],
     ),
+    (
+        "editor::ShowCompletions",
+        Key(EditKey::ShowCompletions),
+        &["ctrl-space"],
+    ),
+    (
+        "editor::ShowWordCompletions",
+        Key(EditKey::ShowWordCompletions),
+        &[],
+    ),
     ("editor::GoToHunk", Key(EditKey::GoToHunk), &["cmd-f8"]),
     (
         "editor::GoToPreviousHunk",
