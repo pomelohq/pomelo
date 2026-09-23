@@ -112,7 +112,7 @@ pub struct OutlineView {
     /// Where each path's own symbol text starts, in chars.
     leaf_offsets: Vec<usize>,
     entries: Vec<Entry>,
-    selected: usize,
+    pub(crate) selected: usize,
     scroll_top: usize,
     /// Scrolled distance not yet worth a whole row.
     scroll_remainder: f32,
@@ -571,9 +571,7 @@ impl OutlineView {
             .py(4.0)
             .rounded(4.0)
             .on_click(id_base + OutlineClick::Row(row).offset());
-        if self.hovered == Some(id_base + OutlineClick::Row(row).offset()) {
-            item = item.bg(colors.ghost_element_hover);
-        } else if row == self.selected {
+        if row == self.selected {
             item = item.bg(colors.element_selected);
         }
         let text = div()

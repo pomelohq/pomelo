@@ -5865,21 +5865,29 @@ impl FunctionView for FilesView {
         let tabbish =
             |x: Option<u64>| x.is_some_and(|v| (TAB_ACTIVATE_BASE..STICKY_BASE).contains(&v));
         let modal = |x: Option<u64>| x.is_some_and(|v| (PALETTE_BASE..SEARCH_BASE).contains(&v));
-        let changed = self.hover != id
-            && (tabbish(self.hover) || tabbish(id) || modal(self.hover) || modal(id));
+        let entered = self.hover != id;
+        let changed =
+            entered && (tabbish(self.hover) || tabbish(id) || modal(self.hover) || modal(id));
         self.hover = id;
         let over_modal = id.filter(|v| (PALETTE_BASE..SEARCH_BASE).contains(v));
+        let mut outline_hovered_row = None;
         if let Some((_, view)) = self.outline.as_mut() {
             view.hovered = over_modal;
-            // Pointing into the list shows its scrollbar, as scrolling does.
-            if over_modal.is_some_and(|v| {
-                matches!(
-                    outline_view::OutlineClick::from_offset(v.saturating_sub(OUTLINE_BASE)),
-                    outline_view::OutlineClick::Row(_)
-                )
-            }) {
+            if let Some(outline_view::OutlineClick::Row(row)) = over_modal
+                .filter(|v| *v >= OUTLINE_BASE && *v < COMPLETION_BASE)
+                .map(|v| outline_view::OutlineClick::from_offset(v - OUTLINE_BASE))
+            {
+                // Pointing into the list shows its scrollbar, as scrolling does.
                 view.scrollbar.reveal();
+                // Moving onto a row selects it, so keyboard moves under a still pointer aren't undone.
+                if entered && view.selected != row {
+                    view.select_row(row);
+                    outline_hovered_row = Some(row);
+                }
             }
+        }
+        if outline_hovered_row.is_some() {
+            self.preview_outline(false);
         }
         let over_completion = id.filter(|v| (COMPLETION_BASE..SEARCH_BASE).contains(v));
         if let Some(item) = self.active_item_mut() {
@@ -5889,6 +5897,12 @@ impl FunctionView for FilesView {
             palette.hovered = over_modal;
             if over_modal.is_some_and(|v| v > PALETTE_BASE && v < OUTLINE_BASE) {
                 palette.scrollbar.reveal();
+            }
+            if let Some(command_palette::PaletteClick::Row(row)) = over_modal
+                .filter(|v| *v >= PALETTE_BASE && *v < OUTLINE_BASE && entered)
+                .map(|v| command_palette::PaletteClick::from_offset(v - PALETTE_BASE))
+            {
+                palette.select_row(row);
             }
         }
         changed || over_modal.is_some()
@@ -6915,22 +6929,29 @@ mod outline_tests {
     }
 
     #[test]
-    fn hovering_a_row_lights_it_and_reveals_the_scrollbar() {
+    fn hovering_a_row_selects_it_and_reveals_the_scrollbar() {
         let mut view = rust_view("fn a() {}\nfn b() {}\n");
         view.editor_key(EditKey::ToggleOutline, false);
         let row = OUTLINE_BASE + outline_view::OutlineClick::Row(1).offset();
         assert!(view.set_hover(Some(row)));
         let (_, outline) = view.outline.as_ref().unwrap();
-        assert_eq!(outline.hovered, Some(row));
+        assert_eq!(outline.selected, 1);
         assert!(outline.scrollbar.is_animating());
-        let node = outline.render(OUTLINE_BASE, None);
-        let painted = ui::render(&node, Rect::new(0.0, 0.0, 600.0, 800.0, Rgba::TRANSPARENT));
-        assert!(painted
-            .rects
-            .iter()
-            .any(|r| r.color == theme().ghost_element_hover));
+        view.editor_key(EditKey::Up, false);
+        assert!(view.set_hover(Some(row)));
+        assert_eq!(view.outline.as_ref().unwrap().1.selected, 0);
         view.set_hover(None);
         assert_eq!(view.outline.as_ref().unwrap().1.hovered, None);
+        assert_eq!(view.outline.as_ref().unwrap().1.selected, 0);
+    }
+
+    #[test]
+    fn hovering_a_palette_row_selects_it() {
+        let mut view = rust_view("fn a() {}\n");
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        let row = PALETTE_BASE + command_palette::PaletteClick::Row(2).offset();
+        view.set_hover(Some(row));
+        assert_eq!(view.palette.as_ref().unwrap().1.selected, 2);
     }
 
     #[test]
