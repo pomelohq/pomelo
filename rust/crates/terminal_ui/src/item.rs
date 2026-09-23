@@ -32,6 +32,8 @@ impl TerminalHost for Host<'_> {
 pub struct TerminalItem {
     id: u64,
     root: PathBuf,
+    /// Where the shell started, saved when the shell's current directory is not known yet.
+    start_dir: PathBuf,
     terminal: Terminal,
     painter: GridPainter,
     /// Where the grid was last drawn (logical px), for mapping the pointer to cells.
@@ -107,20 +109,20 @@ impl TerminalItem {
         cwd: Option<PathBuf>,
         waker: Waker,
     ) -> anyhow::Result<Self> {
+        let start_dir = cwd.unwrap_or_else(|| root.clone());
         let options = TerminalOptions {
-            working_directory: Some(cwd.unwrap_or_else(|| root.clone())),
+            working_directory: Some(start_dir.clone()),
             ..TerminalOptions::default()
         };
-        Ok(Self::with_terminal(
-            id,
-            root,
-            Terminal::spawn(options, waker)?,
-        ))
+        let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
+        item.start_dir = start_dir;
+        Ok(item)
     }
 
     pub fn with_terminal(id: u64, root: PathBuf, terminal: Terminal) -> Self {
         Self {
             id,
+            start_dir: root.clone(),
             root,
             terminal,
             painter: GridPainter::default(),
@@ -416,7 +418,10 @@ pub(crate) fn saved_cwd(item: &workspace::persistence::SerializedItem) -> Option
 
 impl Item for TerminalItem {
     fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
-        let cwd = self.terminal.process_info()?.cwd.clone();
+        let cwd = self
+            .terminal
+            .process_info()
+            .map_or_else(|| self.start_dir.clone(), |info| info.cwd.clone());
         Some(workspace::persistence::SerializedItem {
             kind: TERMINAL_KIND.into(),
             data: serde_json::json!({ "cwd": cwd }),

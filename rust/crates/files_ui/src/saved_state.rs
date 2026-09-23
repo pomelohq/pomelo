@@ -306,4 +306,33 @@ mod tests {
         assert!(FileItem::from_saved(&saved).is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
+
+    #[test]
+    fn the_editor_area_comes_back_with_its_tabs_and_splits() {
+        use workspace::FunctionView;
+        let root = temp_root("area");
+        std::fs::write(root.join("main.rs"), SOURCE).unwrap();
+        std::fs::write(root.join("lib.rs"), "pub fn lib() {}\n").unwrap();
+        let mut view = crate::FilesView::new(root.clone());
+        view.open_file("main.rs");
+        view.open_file("lib.rs");
+        let item = view.panes.clone_active_of(&[]);
+        view.panes
+            .split(&[], workspace::pane_group::SplitDirection::Right, item);
+        let Some(saved) = view.save_panes() else {
+            panic!("the editor area should save its panes");
+        };
+        let mut back = crate::FilesView::new(root.clone());
+        assert!(back.restore_panes(&saved));
+        assert_eq!(back.panes.group.leaf_count(), 2);
+        assert_eq!(back.panes.active, vec![1]);
+        let titles: Vec<String> = back
+            .panes
+            .pane_at(&[0])
+            .map(|pane| pane.open.iter().map(|item| item.title()).collect())
+            .unwrap_or_default();
+        assert_eq!(titles, ["main.rs", "lib.rs"]);
+        assert_eq!(back.save_panes(), Some(saved));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

@@ -27,6 +27,8 @@ use crate::{
 use crate::{TOAST_ACTION, TOAST_CLOSE};
 
 const TOAST_DISMISS: Duration = Duration::from_secs(10);
+/// How long after the panes first change they are written, so a burst of changes costs one write.
+const PANES_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 const TOAST_ANIM: Duration = Duration::from_millis(160);
 const MODAL_TOP: f32 = 80.0;
 
@@ -84,6 +86,11 @@ pub struct WorkspaceView {
     popover_rects: Vec<Rect>,
     /// For each drawn popover, the pane group it belongs to and its index there.
     popover_groups: Vec<(InputGroup, usize)>,
+    /// The project's saved panes were loaded (done once, before the first frame).
+    panes_restored: bool,
+    /// The panes as last written, and when the pending write is due.
+    saved_panes: Option<String>,
+    panes_write_at: Option<Instant>,
     pending_prompt: Option<crate::Prompt>,
     terminal_focused: bool,
     pointer: (f32, f32),
@@ -126,6 +133,9 @@ impl WorkspaceView {
             modal_rect: None,
             popover_rects: Vec::new(),
             popover_groups: Vec::new(),
+            panes_restored: false,
+            saved_panes: None,
+            panes_write_at: None,
             pending_prompt: None,
             terminal_focused: false,
             pointer: (0.0, 0.0),
@@ -150,12 +160,72 @@ impl WorkspaceView {
 
     pub fn ticking(&self) -> bool {
         self.toast.is_some()
+            || self.panes_write_at.is_some()
             || self.layout.files_view.as_ref().is_some_and(|v| v.is_busy())
             || self
                 .layout
                 .terminal_view
                 .as_ref()
                 .is_some_and(|view| view.panes_ref().is_busy())
+    }
+
+    /// Bring back the project's saved panes, once.
+    fn restore_saved_panes(&mut self) {
+        if std::mem::replace(&mut self.panes_restored, true) {
+            return;
+        }
+        let Some(root) = self.layout.files_view.as_ref().and_then(|v| v.root_dir()) else {
+            return;
+        };
+        if let Some(saved) = crate::persistence::load_workspace(&root) {
+            if let (Some(center), Some(files)) = (&saved.center, self.layout.files_view.as_mut()) {
+                files.restore_panes(center);
+            }
+            if let (Some(panel), Some(view)) = (&saved.panel, self.layout.terminal_view.as_mut()) {
+                view.restore_panes(panel);
+            }
+        }
+        self.saved_panes = self.panes_state().map(|(_, json)| json);
+    }
+
+    fn panes_state(&self) -> Option<(std::path::PathBuf, String)> {
+        let files = self.layout.files_view.as_ref()?;
+        let root = files.root_dir()?;
+        let state = crate::persistence::SerializedWorkspace {
+            root: root.clone(),
+            center: files.save_panes(),
+            panel: self
+                .layout
+                .terminal_view
+                .as_ref()
+                .map(|view| view.save_panes()),
+        };
+        Some((root, serde_json::to_string_pretty(&state).ok()?))
+    }
+
+    /// Save the panes 200ms after they first change, taking in whatever else changed meanwhile; `flush` writes
+    /// any change right away (on quit).
+    pub fn persist_panes(&mut self, flush: bool) {
+        if !self.panes_restored {
+            return;
+        }
+        let Some((root, json)) = self.panes_state() else {
+            return;
+        };
+        if self.saved_panes.as_deref() == Some(json.as_str()) {
+            self.panes_write_at = None;
+            return;
+        }
+        let now = Instant::now();
+        let due = *self.panes_write_at.get_or_insert(now + PANES_SAVE_THROTTLE);
+        if !flush && now < due {
+            return;
+        }
+        self.panes_write_at = None;
+        match crate::persistence::save_workspace(&json, &root) {
+            Ok(()) => self.saved_panes = Some(json),
+            Err(error) => eprintln!("failed to save the workspace panes: {error}"),
+        }
     }
 
     pub fn layout(&self) -> &Layout {
@@ -173,6 +243,8 @@ impl WorkspaceView {
     fn build(&mut self, window: &Window) -> Frame {
         let (w, h) = (window.width, window.height);
         self.viewport = (w, h);
+        self.restore_saved_panes();
+        self.persist_panes(false);
         self.sync_terminals();
         self.layout.sync_docks();
         let (mut rects, mut texts) = self.layout.build(w, h);
