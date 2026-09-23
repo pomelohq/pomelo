@@ -1438,7 +1438,7 @@ impl WorkspaceView {
                 let mut repaint = view.set_hover(hit);
                 if self.dragging == Drag::Terminal {
                     repaint |= view.mouse_drag(x, y, modifiers);
-                } else if over_terminal && self.terminal_focused {
+                } else if over_terminal || view.link_hovered() {
                     repaint |= view.mouse_move(x, y, modifiers);
                 }
                 repaint
@@ -1796,8 +1796,12 @@ impl WorkspaceView {
         if self.dragging == Drag::Terminal {
             let (x, y) = self.pointer;
             let modifiers = terminal_modifiers();
-            if let Some(view) = self.layout.terminal_view.as_mut() {
+            let request = self.layout.terminal_view.as_mut().and_then(|view| {
                 view.mouse_up(x, y, modifiers);
+                view.take_open_request()
+            });
+            if let Some(request) = request {
+                self.open_terminal_target(request);
             }
         } else if self.dragging == Drag::Tab {
             if let Some(v) = self.layout.files_view.as_mut() {
@@ -1894,6 +1898,33 @@ impl WorkspaceView {
         if let Some(view) = self.layout.terminal_view.as_mut() {
             view.text(text);
         }
+    }
+
+    fn open_terminal_target(&mut self, target: crate::TerminalOpenTarget) {
+        match target {
+            crate::TerminalOpenTarget::Url(url) => {
+                if let Err(error) = std::process::Command::new("open").arg(&url).spawn() {
+                    self.show_toast(format!("Failed to open {url}: {error}"), None);
+                }
+            }
+            crate::TerminalOpenTarget::Path { path, row, column } => {
+                if let Some(view) = self.layout.files_view.as_mut() {
+                    view.open_file_at(&path, row, column);
+                    self.set_terminal_focus(false);
+                }
+            }
+        }
+    }
+
+    /// Over the terminal grid: `Some(true)` on a link a click would open, `Some(false)` elsewhere (text).
+    pub fn terminal_pointer_at(&self, x: f32, y: f32) -> Option<bool> {
+        if !self.terminal_grid_at(x, y) {
+            return None;
+        }
+        self.layout
+            .terminal_view
+            .as_ref()
+            .map(|view| view.link_hovered())
     }
 
     fn show_terminal(&mut self) {

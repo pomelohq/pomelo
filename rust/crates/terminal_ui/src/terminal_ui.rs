@@ -229,7 +229,7 @@ impl GridPainter {
         options: &GridOptions,
     ) -> GridPaint {
         let palette = palette(theme);
-        let mut overlays = Vec::new();
+        let mut overlays: Vec<Rect> = Vec::new();
         let offset = content.display_offset as i32;
         let screen_lines = content.screen_lines.max(1);
         let cursor_row = content.cursor.line + offset;
@@ -279,6 +279,27 @@ impl GridPainter {
             }
             let mut foreground =
                 self.foreground(cell, fg, bg, theme, &palette, options.minimum_contrast);
+            let point = terminal::GridPoint {
+                line: cell.line,
+                column: cell.column,
+            };
+            if content
+                .hovered_link
+                .as_ref()
+                .is_some_and(|link| link.contains(point))
+            {
+                foreground = theme.link_text_hover;
+                let x = cell.column as f32 * metrics.cell_width;
+                let y = row as f32 * metrics.line_height + (metrics.line_height + FONT_SIZE) / 2.0;
+                match overlays.last_mut() {
+                    Some(last)
+                        if last.y == y && (last.x + last.w - x).abs() < 0.01 && last.h == 1.0 =>
+                    {
+                        last.w += metrics.cell_width;
+                    }
+                    _ => overlays.push(Rect::new(x, y, metrics.cell_width, 1.0, foreground)),
+                }
+            }
             let cursor = is_cursor.then_some(cursor_shape);
             if cursor == Some(CursorShape::Block) {
                 background = Some(theme.player_cursor);

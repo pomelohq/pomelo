@@ -1,13 +1,16 @@
 //! The terminal panel: a tab bar of shells plus the active shell's grid, driven by the workspace.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use terminal::{
-    Keystroke, Modifiers, MouseButton, Palette, Terminal, TerminalAction, TerminalHost,
-    TerminalOptions, Waker,
+    HyperlinkMatch, Keystroke, Modifiers, MouseButton, Palette, PathWithPosition, Terminal,
+    TerminalAction, TerminalHost, TerminalOptions, Waker,
 };
 use ui::{div, icon, label, theme, IconKind, Node, Painted, Rect, Rgba};
-use workspace::{TerminalKeyOutcome, TerminalPanelView, TerminalSyncOutcome, TERMINAL_VIEW_BASE};
+use workspace::{
+    TerminalKeyOutcome, TerminalOpenTarget, TerminalPanelView, TerminalSyncOutcome,
+    TERMINAL_VIEW_BASE,
+};
 
 use crate::{anchor_to_bottom, GridMetrics, GridOptions, GridPainter, FONT_SIZE, LINE_HEIGHT};
 
@@ -45,6 +48,10 @@ pub struct TerminalPanel {
     hover: Option<u64>,
     focused: bool,
     spawn_error: Option<String>,
+    /// The link a cmd-press landed on; releasing over the same link opens it.
+    pressed_link: Option<HyperlinkMatch>,
+    hovered_target: Option<TerminalOpenTarget>,
+    open_request: Option<TerminalOpenTarget>,
 }
 
 impl TerminalPanel {
@@ -61,6 +68,9 @@ impl TerminalPanel {
             hover: None,
             focused: false,
             spawn_error: None,
+            pressed_link: None,
+            hovered_target: None,
+            open_request: None,
         }
     }
 
@@ -75,6 +85,47 @@ impl TerminalPanel {
             (x - self.grid_origin.0) / scale,
             (y - self.grid_origin.1) / scale,
         )
+    }
+
+    /// What a link points at: URLs as they are; paths only when they name an existing file, tried as written
+    /// and with a position suffix split off, without diff (`a/`, `b/`) or `./` prefixes, against the shell's
+    /// directory and then the project root.
+    fn resolve(&self, link: &HyperlinkMatch) -> Option<TerminalOpenTarget> {
+        if link.is_url {
+            return Some(TerminalOpenTarget::Url(link.text.clone()));
+        }
+        let parsed = PathWithPosition::parse(&link.text);
+        let mut candidates = vec![
+            (link.text.clone(), None, None),
+            (parsed.path, parsed.row, parsed.column),
+        ];
+        for index in 0..candidates.len() {
+            for prefix in ["a/", "b/", "./"] {
+                let (path, row, column) = candidates[index].clone();
+                if let Some(stripped) = path.strip_prefix(prefix) {
+                    candidates.push((stripped.to_string(), row, column));
+                }
+            }
+        }
+        let cwd = self
+            .tabs
+            .get(self.active)
+            .and_then(|terminal| terminal.process_info())
+            .map(|info| info.cwd.clone())
+            .filter(|cwd| !cwd.as_os_str().is_empty());
+        let bases: Vec<PathBuf> = cwd.into_iter().chain([self.root.clone()]).collect();
+        candidates.into_iter().find_map(|(path, row, column)| {
+            let path = Path::new(&path);
+            let found = if path.is_absolute() {
+                path.is_file().then(|| path.to_path_buf())
+            } else {
+                bases
+                    .iter()
+                    .map(|base| base.join(path))
+                    .find(|full| full.is_file())
+            };
+            found.map(|path| TerminalOpenTarget::Path { path, row, column })
+        })
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -273,6 +324,15 @@ impl TerminalPanelView for TerminalPanel {
 
     fn mouse_down(&mut self, x: f32, y: f32, click_count: u32, modifiers: Modifiers) -> bool {
         let (x, y) = self.local(x, y);
+        if modifiers.cmd {
+            let link = self
+                .active_terminal()
+                .and_then(|terminal| terminal.hyperlink_at(x, y));
+            if let Some(link) = link.filter(|link| self.resolve(link).is_some()) {
+                self.pressed_link = Some(link);
+                return true;
+            }
+        }
         match self.active_terminal() {
             Some(terminal) => {
                 terminal.mouse_down(x, y, MouseButton::Left, modifiers, click_count);
@@ -283,6 +343,9 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn mouse_drag(&mut self, x: f32, y: f32, modifiers: Modifiers) -> bool {
+        if self.pressed_link.is_some() {
+            return false;
+        }
         let (x, y) = self.local(x, y);
         match self.active_terminal() {
             Some(terminal) => {
@@ -298,15 +361,38 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn mouse_move(&mut self, x: f32, y: f32, modifiers: Modifiers) -> bool {
+        let inside = self.grid_contains(x, y);
         let (x, y) = self.local(x, y);
-        if let Some(terminal) = self.active_terminal() {
+        let focused = self.focused;
+        let link = if modifiers.cmd && inside {
+            self.active_terminal()
+                .and_then(|terminal| terminal.hyperlink_at(x, y))
+        } else {
+            None
+        };
+        let target = link.as_ref().and_then(|link| self.resolve(link));
+        let link = link.filter(|_| target.is_some());
+        self.hovered_target = target;
+        let Some(terminal) = self.active_terminal() else {
+            return false;
+        };
+        if focused && inside && !modifiers.cmd {
             terminal.mouse_move(x, y, None, modifiers);
         }
-        false
+        terminal.set_hovered_link(link)
     }
 
     fn mouse_up(&mut self, x: f32, y: f32, modifiers: Modifiers) {
         let (x, y) = self.local(x, y);
+        if let Some(pressed) = self.pressed_link.take() {
+            let released = self
+                .active_terminal()
+                .and_then(|terminal| terminal.hyperlink_at(x, y));
+            if released.as_ref() == Some(&pressed) {
+                self.open_request = self.resolve(&pressed);
+            }
+            return;
+        }
         if let Some(terminal) = self.active_terminal() {
             terminal.mouse_up(x, y, MouseButton::Left, modifiers);
         }
@@ -408,5 +494,59 @@ impl TerminalPanelView for TerminalPanel {
 
     fn is_empty(&self) -> bool {
         self.tabs.is_empty()
+    }
+
+    fn take_open_request(&mut self) -> Option<TerminalOpenTarget> {
+        self.open_request.take()
+    }
+
+    fn link_hovered(&self) -> bool {
+        self.hovered_target.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use terminal::GridPoint;
+
+    fn link(text: &str, is_url: bool) -> HyperlinkMatch {
+        HyperlinkMatch {
+            text: text.into(),
+            is_url,
+            start: GridPoint::default(),
+            end: GridPoint::default(),
+        }
+    }
+
+    #[test]
+    fn links_resolve_to_existing_files_or_urls() {
+        let root = std::env::temp_dir().join(format!("pomelo-links-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).ok();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").ok();
+        let panel = TerminalPanel::new(root.clone(), std::sync::Arc::new(|| {}));
+        assert_eq!(
+            panel.resolve(&link("b/src/main.rs:3:7", false)),
+            Some(TerminalOpenTarget::Path {
+                path: root.join("src/main.rs"),
+                row: Some(3),
+                column: Some(7),
+            })
+        );
+        assert_eq!(
+            panel.resolve(&link("./src/main.rs", false)),
+            Some(TerminalOpenTarget::Path {
+                path: root.join("src/main.rs"),
+                row: None,
+                column: None,
+            })
+        );
+        assert_eq!(panel.resolve(&link("src/missing.rs", false)), None);
+        assert_eq!(panel.resolve(&link("src", false)), None);
+        assert_eq!(
+            panel.resolve(&link("https://example.com", true)),
+            Some(TerminalOpenTarget::Url("https://example.com".into()))
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }

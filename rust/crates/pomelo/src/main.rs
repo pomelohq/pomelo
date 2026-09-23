@@ -1188,10 +1188,15 @@ impl ApplicationHandler for App {
                     .with_workspace_view(id, |v, _| v.hit_at(lx, ly))
                     .flatten()
                     .is_some();
+                let terminal_pointer = self
+                    .with_workspace_view(id, |v, _| v.terminal_pointer_at(lx, ly))
+                    .flatten();
                 if let Some(m) = self.mains.get(&id) {
                     m.window.set_cursor(match resize {
                         Some(workspace::ResizeCursor::Horizontal) => CursorIcon::EwResize,
                         Some(workspace::ResizeCursor::Vertical) => CursorIcon::NsResize,
+                        None if terminal_pointer == Some(true) => CursorIcon::Pointer,
+                        None if terminal_pointer == Some(false) => CursorIcon::Text,
                         None if over => CursorIcon::Pointer,
                         None => CursorIcon::Default,
                     });
