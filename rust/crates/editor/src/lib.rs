@@ -9,6 +9,7 @@ pub mod language;
 pub mod movement;
 pub mod outline;
 pub mod search;
+pub mod snippet;
 pub mod syntax;
 pub mod theme;
 pub mod transform;

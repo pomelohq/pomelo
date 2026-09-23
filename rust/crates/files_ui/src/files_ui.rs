@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use editor::buffer::{Bias, ClipboardSelection, Deletion, DisplayRows, Motion, Selection};
+use editor::buffer::{
+    Bias, ClipboardSelection, Deletion, DisplayRows, Motion, Selection, SelectionGoal,
+};
 use editor::fold::FoldMap;
 use editor::search::{Direction, SearchQuery};
 use editor::transform::{LineTransform, TextTransform};
@@ -25,6 +27,7 @@ mod go_to_line;
 mod list_scrollbar;
 mod outline_view;
 mod search_bar;
+mod snippet_store;
 mod text_field;
 use editor::wrap::Boundary;
 use editor::{EditorBuffer, Lang, Syntax, Theme};
@@ -358,6 +361,15 @@ struct FileItem {
     completions: Option<completions_menu::CompletionsMenu>,
     /// The menu was asked for explicitly, so it stays open below the minimum query length.
     completions_forced: bool,
+    snippet_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CompletionTrigger {
+    Typed,
+    Refilter,
+    Show,
+    ShowWords,
 }
 
 /// The committed version of the file, highlighted like the file, for expanded changes' removed lines.
@@ -422,6 +434,11 @@ impl FileItem {
             has_virtual_rows: false,
             completions: None,
             completions_forced: false,
+            snippet_dir: if cfg!(test) {
+                None
+            } else {
+                snippet_store::default_dir()
+            },
         }
     }
 
@@ -1595,73 +1612,162 @@ impl FileItem {
         self.completions_forced = false;
     }
 
-    /// Open, refilter, or close the word menu for the word before the newest caret. Typing a word char opens it
-    /// once the word has three chars; `force` opens it at any length.
-    fn update_completions(&mut self, typed: bool, force: bool) {
-        let words_allowed = !matches!(self.lang, Lang::Markdown | Lang::PlainText);
+    fn update_completions(&mut self, trigger: CompletionTrigger) {
+        if self
+            .completions
+            .as_ref()
+            .is_some_and(|menu| menu.is_choices())
+        {
+            self.completions = None;
+            if trigger == CompletionTrigger::Refilter {
+                return;
+            }
+        }
+        let menu_open = self.completions.is_some();
+        if trigger == CompletionTrigger::Refilter && !menu_open {
+            return;
+        }
         let Some(b) = self.buffer.as_ref() else {
             return self.close_completions();
         };
         let newest = b.newest();
-        let query = (words_allowed && newest.is_empty())
+        let word_query = newest
+            .is_empty()
             .then(|| editor::completion::completion_query(b, newest.head()))
             .flatten();
-        let Some((word_start, query)) = query else {
-            return self.close_completions();
-        };
-        self.completions_forced |= force;
-        if self.completions.is_none() && !typed && !force {
-            return;
-        }
-        if !self.completions_forced && query.chars().count() < 3 {
+        let explicit = matches!(
+            trigger,
+            CompletionTrigger::Show | CompletionTrigger::ShowWords
+        );
+        if !newest.is_empty() || (word_query.is_none() && !explicit) {
             return self.close_completions();
         }
+        self.completions_forced |= trigger == CompletionTrigger::ShowWords;
         let head = newest.head();
-        let mut word_end = head;
-        while word_end < b.rope.len_chars() && {
-            let c = b.rope.char(word_end);
-            c.is_alphanumeric() || c == '_'
-        } {
-            word_end += 1;
+        let query = word_query.as_ref().map_or("", |(_, q)| q.as_str());
+        let words_allowed = !matches!(self.lang, Lang::Markdown | Lang::PlainText);
+        let mut words = Vec::new();
+        if let Some((word_start, query)) = word_query.as_ref().filter(|_| words_allowed) {
+            if self.completions_forced || query.chars().count() >= 3 {
+                let mut word_end = head;
+                while word_end < b.rope.len_chars() && {
+                    let c = b.rope.char(word_end);
+                    c.is_alphanumeric() || c == '_'
+                } {
+                    word_end += 1;
+                }
+                let whole_word = b.rope.slice(*word_start..word_end).to_string();
+                let row = b.rope.char_to_line(head);
+                let skip_digits = !query.chars().any(|c| c.is_ascii_digit());
+                words = editor::completion::buffer_words(b, row, Some(&whole_word), skip_digits);
+            }
         }
-        let whole_word = b.rope.slice(word_start..word_end).to_string();
-        let row = b.rope.char_to_line(head);
-        let skip_digits = !query.chars().any(|c| c.is_ascii_digit());
-        let candidates = editor::completion::buffer_words(b, row, Some(&whole_word), skip_digits);
-        self.completions = completions_menu::CompletionsMenu::new(&query, candidates);
+        let mut snippets = Vec::new();
+        if !self.completions_forced {
+            let definitions = self
+                .snippet_dir
+                .as_deref()
+                .map(|dir| snippet_store::snippets_for(dir, self.lang))
+                .unwrap_or_default();
+            let needs_strong_match = trigger == CompletionTrigger::Typed && !menu_open;
+            let strong = || {
+                editor::snippet::has_strong_prefix_match(
+                    query,
+                    definitions
+                        .iter()
+                        .flat_map(|d| d.prefixes.iter().map(String::as_str)),
+                )
+            };
+            if !definitions.is_empty() && (!needs_strong_match || strong()) {
+                let before = b.rope.slice(head.saturating_sub(256)..head).to_string();
+                snippets = completions_menu::match_snippets(&before, &definitions);
+            }
+        }
+        self.completions = completions_menu::CompletionsMenu::new(query, words, snippets);
         if self.completions.is_none() {
             self.completions_forced = false;
         }
     }
 
-    /// Replace the word part before each caret with the chosen word (row `row`, else the selected one).
     fn confirm_completion(&mut self, row: Option<usize>) {
         let Some(menu) = self.completions.take() else {
             return;
         };
         self.completions_forced = false;
-        let word = match row {
-            Some(row) => menu.word_at(row),
-            None => menu.selected_word(),
+        let completion = match row {
+            Some(row) => menu.completion_at(row),
+            None => menu.selected_completion(),
         };
-        let (Some(word), Some(b)) = (word.map(str::to_string), self.buffer.as_mut()) else {
+        let (Some(completion), Some(b)) = (completion.cloned(), self.buffer.as_mut()) else {
             return;
         };
-        let newest_query =
-            editor::completion::completion_query(b, b.newest().head()).map(|(_, q)| q);
-        let edits: Vec<(Range<usize>, String)> = b
-            .selections()
-            .iter()
-            .filter(|s| s.is_empty())
-            .filter_map(|s| {
-                let (start, query) = editor::completion::completion_query(b, s.head())?;
-                (Some(&query) == newest_query.as_ref()).then(|| (start..s.head(), word.clone()))
-            })
-            .collect();
-        b.replace_ranges(edits);
+        match completion.kind {
+            completions_menu::CompletionKind::Word => {
+                let newest_query =
+                    editor::completion::completion_query(b, b.newest().head()).map(|(_, q)| q);
+                let edits: Vec<(Range<usize>, String)> = b
+                    .selections()
+                    .iter()
+                    .filter(|s| s.is_empty())
+                    .filter_map(|s| {
+                        let (start, query) = editor::completion::completion_query(b, s.head())?;
+                        (Some(&query) == newest_query.as_ref())
+                            .then(|| (start..s.head(), completion.label.clone()))
+                    })
+                    .collect();
+                b.replace_ranges(edits);
+            }
+            completions_menu::CompletionKind::Snippet { snippet, replaced } => {
+                let head = b.newest().head();
+                let matched = b
+                    .rope
+                    .slice(head.saturating_sub(replaced)..head)
+                    .to_string();
+                let ranges: Vec<Range<usize>> = b
+                    .selections()
+                    .iter()
+                    .filter(|s| s.is_empty() && s.head() >= replaced)
+                    .map(|s| s.head() - replaced..s.head())
+                    .filter(|range| b.rope.slice(range.clone()) == matched.as_str())
+                    .collect();
+                if let Some(choices) = b.insert_snippet(&ranges, &snippet.body) {
+                    self.completions = completions_menu::CompletionsMenu::choices(choices);
+                }
+            }
+            completions_menu::CompletionKind::Choice => {
+                let edits = b
+                    .selections()
+                    .iter()
+                    .map(|s| (s.start..s.end, completion.label.clone()))
+                    .collect();
+                b.replace_ranges(edits);
+                let collapsed = b
+                    .selections()
+                    .iter()
+                    .map(|s| {
+                        let mut s = *s;
+                        s.collapse_to(s.end, SelectionGoal::None);
+                        s
+                    })
+                    .collect();
+                b.set_selections(collapsed);
+            }
+        }
         self.refresh();
         self.ensure_visible();
         self.ensure_cursor_visible();
+    }
+
+    fn move_to_snippet_stop(&mut self, forward: bool) -> bool {
+        let Some(b) = self.buffer.as_mut() else {
+            return false;
+        };
+        let Some(choices) = b.move_to_snippet_stop(forward) else {
+            return false;
+        };
+        self.completions = choices.and_then(completions_menu::CompletionsMenu::choices);
+        self.ensure_cursor_visible();
+        true
     }
 
     /// The word menu and its window position: under the caret's line, or above it when that has more room
@@ -2783,7 +2889,11 @@ impl Item for FileItem {
         self.ensure_cursor_visible();
         let mut chars = text.chars();
         let typed_word_char = matches!((chars.next(), chars.next()), (Some(c), None) if c.is_alphanumeric() || c == '_');
-        self.update_completions(typed_word_char, false);
+        self.update_completions(if typed_word_char {
+            CompletionTrigger::Typed
+        } else {
+            CompletionTrigger::Refilter
+        });
     }
 
     fn ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) {
@@ -2845,19 +2955,30 @@ impl Item for FileItem {
                 EditKey::Up => return menu.select_previous(),
                 EditKey::Down => return menu.select_next(),
                 EditKey::Enter | EditKey::Tab => return self.confirm_completion(None),
-                EditKey::Escape => return self.close_completions(),
+                EditKey::Escape => {
+                    self.close_completions();
+                    if let Some(b) = self.buffer.as_mut() {
+                        b.exit_snippet();
+                    }
+                    return;
+                }
                 EditKey::Backspace | EditKey::Delete => {
                     // Edit with the menu out of the way, then refilter it for the shorter word.
                     self.completions = None;
                     self.input_key(key, shift);
-                    return self.update_completions(false, false);
+                    return self.update_completions(CompletionTrigger::Refilter);
                 }
                 _ => self.close_completions(),
             }
         }
         match key {
-            EditKey::ShowCompletions => return self.update_completions(true, false),
-            EditKey::ShowWordCompletions => return self.update_completions(true, true),
+            EditKey::ShowCompletions => return self.update_completions(CompletionTrigger::Show),
+            EditKey::ShowWordCompletions => {
+                return self.update_completions(CompletionTrigger::ShowWords)
+            }
+            EditKey::Tab if self.move_to_snippet_stop(true) => return,
+            EditKey::Backtab if self.move_to_snippet_stop(false) => return,
+            EditKey::Escape if self.buffer.as_mut().is_some_and(|b| b.exit_snippet()) => return,
             _ => {}
         }
         // One row of the previous page stays on screen.
@@ -2962,7 +3083,7 @@ impl Item for FileItem {
             self.run_line_command(command);
             return;
         }
-        if key == EditKey::Outdent {
+        if matches!(key, EditKey::Outdent | EditKey::Backtab) {
             self.refresh();
             self.ensure_visible();
             let ranges: Option<Vec<Range<usize>>> = self
@@ -7070,6 +7191,105 @@ mod hunk_action_tests {
             repo.git(&["show", ":a.txt"]).as_deref(),
             Some("a\nb\nc\nd\ne\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod snippet_tests {
+    use super::*;
+
+    fn item_with_snippets(name: &str, text: &str, json: &str) -> FileItem {
+        let dir = std::env::temp_dir().join(format!(
+            "pomelo-snippets-{}-{}",
+            std::process::id(),
+            name.replace('.', "-")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rust.json"), json).unwrap();
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), name, Some(text.into()));
+        item.snippet_dir = Some(dir);
+        item.set_body_height(10.0 * EDIT_LINE_H);
+        let end = item.buffer.as_ref().unwrap().rope.len_chars();
+        item.buffer.as_mut().unwrap().place_cursor(end);
+        item
+    }
+
+    fn text(item: &FileItem) -> String {
+        item.buffer.as_ref().unwrap().text()
+    }
+
+    fn selection(item: &FileItem) -> Range<usize> {
+        let newest = item.buffer.as_ref().unwrap().newest();
+        newest.start..newest.end
+    }
+
+    const FUNCTION: &str =
+        r#"{"Function": {"prefix": "fn", "body": ["fn ${1:name}($2) {", "    $0", "}"]}}"#;
+
+    #[test]
+    fn two_chars_of_a_prefix_open_the_menu_and_enter_expands_indented() {
+        let mut item = item_with_snippets("expand.rs", "mod a {\n    f", FUNCTION);
+        item.input_text("n");
+        let menu = item
+            .completions
+            .as_ref()
+            .expect("snippet prefix opens the menu");
+        assert_eq!(menu.selected_word(), Some("fn"));
+        assert_eq!(
+            menu.selected_completion().unwrap().detail.as_deref(),
+            Some("Function")
+        );
+        item.input_key(EditKey::Enter, false);
+        assert_eq!(text(&item), "mod a {\n    fn name() {\n        \n    }");
+        assert_eq!(selection(&item), 15..19);
+        item.input_text("run");
+        item.input_key(EditKey::Tab, false);
+        assert_eq!(selection(&item), 19..19);
+        item.input_key(EditKey::Backtab, false);
+        assert_eq!(selection(&item), 15..18);
+        item.input_key(EditKey::Tab, false);
+        item.input_key(EditKey::Tab, false);
+        assert_eq!(text(&item), "mod a {\n    fn run() {\n        \n    }");
+        assert_eq!(selection(&item), 31..31);
+        assert!(!item.buffer.as_ref().unwrap().in_snippet());
+    }
+
+    #[test]
+    fn choices_open_a_menu_at_their_stop() {
+        let json = r#"{"Int": {"prefix": "int", "body": "let x: ${1|i32,u64|} = $2;"}}"#;
+        let mut item = item_with_snippets("choice.rs", "in", json);
+        item.input_text("t");
+        item.input_key(EditKey::Enter, false);
+        assert_eq!(text(&item), "let x: i32 = ;");
+        let menu = item.completions.as_ref().expect("choices menu");
+        assert!(menu.is_choices());
+        item.input_key(EditKey::Down, false);
+        item.input_key(EditKey::Enter, false);
+        assert_eq!(text(&item), "let x: u64 = ;");
+        item.input_key(EditKey::Tab, false);
+        assert_eq!(selection(&item), 13..13);
+    }
+
+    #[test]
+    fn escape_leaves_the_snippet_so_tab_indents_again() {
+        let mut item = item_with_snippets("escape.rs", "f", FUNCTION);
+        item.input_key(EditKey::ShowCompletions, false);
+        item.input_key(EditKey::Enter, false);
+        assert!(item.buffer.as_ref().unwrap().in_snippet());
+        item.input_key(EditKey::Escape, false);
+        assert!(!item.buffer.as_ref().unwrap().in_snippet());
+        let before = text(&item);
+        item.input_key(EditKey::Tab, false);
+        assert_ne!(text(&item), before);
+    }
+
+    #[test]
+    fn one_char_or_a_non_matching_word_opens_nothing() {
+        let mut item = item_with_snippets("none.rs", "", FUNCTION);
+        item.input_text("f");
+        assert!(item.completions.is_none());
+        item.input_text("x");
+        assert!(item.completions.is_none());
     }
 }
 
