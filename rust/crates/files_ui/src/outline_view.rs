@@ -114,6 +114,8 @@ pub struct OutlineView {
     entries: Vec<Entry>,
     selected: usize,
     scroll_top: usize,
+    /// Scrolled distance not yet worth a whole row.
+    scroll_remainder: f32,
     cursor: usize,
     /// The window size in design px, which the picker and its preview size themselves by.
     viewport: (f32, f32),
@@ -155,6 +157,7 @@ impl OutlineView {
             entries: Vec::new(),
             selected: 0,
             scroll_top: 0,
+            scroll_remainder: 0.0,
             cursor,
             viewport,
             preview,
@@ -339,6 +342,18 @@ impl OutlineView {
             preview,
             list_height: (results.1 - header_chrome).max(Self::row_height()),
         }
+    }
+
+    /// A wheel or trackpad scroll over the list: moves the rows, not the selection.
+    pub fn scroll_by(&mut self, dy: f32) -> bool {
+        let max_top = self.entries.len().saturating_sub(self.visible_rows());
+        crate::command_palette::scroll_rows(
+            &mut self.scroll_top,
+            &mut self.scroll_remainder,
+            dy,
+            Self::row_height(),
+            max_top,
+        )
     }
 
     fn visible_rows(&self) -> usize {
@@ -715,6 +730,29 @@ mod tests {
         let below = view.size();
         assert_eq!(pair(below.preview), (720.0, 240.0));
         assert_eq!(pair(below.results), (720.0, 240.0));
+    }
+
+    #[test]
+    fn wheel_scrolls_rows_without_moving_the_selection() {
+        let symbols: Vec<Symbol> = (0..100)
+            .map(|i| symbol(0, i * 10..i * 10 + 5, &format!("fn f{i}")))
+            .collect();
+        let mut view = OutlineView::new(
+            symbols,
+            0,
+            (0.0, 0.0),
+            (1200.0, 400.0),
+            PreviewLayout::Hidden,
+        );
+        let row = OutlineView::row_height();
+        assert!(!view.scroll_by(-row * 0.5));
+        assert!(view.scroll_by(-row * 0.6));
+        assert_eq!(view.scroll_top, 1);
+        view.scroll_by(-row * 1000.0);
+        assert_eq!(view.scroll_top, 100 - view.visible_rows());
+        assert!(view.scroll_by(row * 1000.0));
+        assert_eq!(view.scroll_top, 0);
+        assert_eq!(view.selected, 0);
     }
 
     #[test]

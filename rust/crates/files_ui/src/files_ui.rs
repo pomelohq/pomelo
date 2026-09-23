@@ -4618,6 +4618,16 @@ impl FunctionView for FilesView {
         })
     }
 
+    fn modal_scroll(&mut self, dy: f32) -> bool {
+        if let Some((_, view)) = self.outline.as_mut() {
+            return view.scroll_by(dy);
+        }
+        if let Some((_, palette)) = self.palette.as_mut() {
+            return palette.scroll_by(dy);
+        }
+        false
+    }
+
     fn dismiss_modal(&mut self) {
         self.close_outline(false);
         self.palette = None;
