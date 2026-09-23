@@ -512,6 +512,10 @@ pub trait FunctionView: 'static {
         None
     }
     fn dismiss_modal(&mut self) {}
+    /// A wheel or trackpad scroll over the open modal; returns whether it moved.
+    fn modal_scroll(&mut self, _dy: f32) -> bool {
+        false
+    }
     fn cursor_position(&self) -> Option<String> {
         None
     }

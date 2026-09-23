@@ -488,6 +488,32 @@ pub struct CommandPalette {
     matches: Vec<Match>,
     selected: usize,
     scroll_top: usize,
+    /// Scrolled distance not yet worth a whole row.
+    scroll_remainder: f32,
+}
+
+/// Move a row list's first visible row by a wheel delta (positive = toward the top), carrying partial rows over
+/// to the next delta; returns whether the first row changed.
+pub(crate) fn scroll_rows(
+    top: &mut usize,
+    remainder: &mut f32,
+    dy: f32,
+    row_height: f32,
+    max_top: usize,
+) -> bool {
+    *remainder -= dy;
+    let rows = (*remainder / row_height).trunc();
+    if rows == 0.0 {
+        return false;
+    }
+    *remainder -= rows * row_height;
+    let next = (*top as isize + rows as isize).clamp(0, max_top as isize) as usize;
+    if next == 0 || next == max_top {
+        *remainder = 0.0;
+    }
+    let moved = next != *top;
+    *top = next;
+    moved
 }
 
 impl CommandPalette {
@@ -518,6 +544,7 @@ impl CommandPalette {
             matches: Vec::new(),
             selected: 0,
             scroll_top: 0,
+            scroll_remainder: 0.0,
         };
         palette.update_matches();
         palette
@@ -616,6 +643,17 @@ impl CommandPalette {
         }
         *memory.usage.entry(command.name.clone()).or_default() += 1;
         Some(command.action)
+    }
+
+    pub fn scroll_by(&mut self, dy: f32) -> bool {
+        let max_top = self.matches.len().saturating_sub(Self::visible_rows());
+        scroll_rows(
+            &mut self.scroll_top,
+            &mut self.scroll_remainder,
+            dy,
+            row_height(),
+            max_top,
+        )
     }
 
     fn visible_rows() -> usize {

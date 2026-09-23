@@ -732,29 +732,44 @@ impl WorkspaceView {
             self.modal_rect = Some(rect);
             header_hits.extend(p.hits.iter().copied());
             let mut painted = Painted::default();
-            // Layered shadows by elevation, drawn as offset rounded rects (the renderer has no blur).
+            // Layered shadows by elevation: (y offset, alpha, blur). The renderer has no blur, so each blurred
+            // layer is a stack of rects growing across the blur width, the alpha split between them.
             let light = ui::theme().appearance == ui::Appearance::Light;
-            let shadows: &[(f32, f32)] = match (modal.elevation, light) {
-                (crate::Elevation::Elevated, true) => &[(2.0, 0.12), (1.0, 0.03)],
-                (crate::Elevation::Elevated, false) => &[(2.0, 0.12), (1.0, 0.06)],
-                (crate::Elevation::Modal, true) => {
-                    &[(6.0, 0.04), (3.0, 0.06), (2.0, 0.06), (1.0, 0.04)]
-                }
-                (crate::Elevation::Modal, false) => {
-                    &[(6.0, 0.04), (3.0, 0.08), (2.0, 0.12), (1.0, 0.12)]
-                }
+            let shadows: &[(f32, f32, f32)] = match (modal.elevation, light) {
+                (crate::Elevation::Elevated, true) => &[(2.0, 0.12, 3.0), (1.0, 0.03, 0.0)],
+                (crate::Elevation::Elevated, false) => &[(2.0, 0.12, 3.0), (1.0, 0.06, 0.0)],
+                (crate::Elevation::Modal, true) => &[
+                    (2.0, 0.06, 3.0),
+                    (3.0, 0.06, 6.0),
+                    (6.0, 0.04, 12.0),
+                    (1.0, 0.04, 0.0),
+                ],
+                (crate::Elevation::Modal, false) => &[
+                    (2.0, 0.12, 3.0),
+                    (3.0, 0.08, 6.0),
+                    (6.0, 0.04, 12.0),
+                    (1.0, 0.12, 0.0),
+                ],
             };
-            for (offset, alpha) in shadows {
-                painted.rects.push(Rect {
-                    x,
-                    y: MODAL_TOP + offset,
-                    w: modal_w,
-                    h: rect.h,
-                    color: Rgba::new(0.0, 0.0, 0.0, *alpha),
-                    radius: 8.0,
-                    border: 0.0,
-                    border_color: Rgba::TRANSPARENT,
-                });
+            for &(offset, alpha, blur) in shadows {
+                let steps = blur.ceil().max(1.0) as usize;
+                for step in 0..steps {
+                    let spread = if steps == 1 {
+                        0.0
+                    } else {
+                        step as f32 - blur / 2.0 + 0.5
+                    };
+                    painted.rects.push(Rect {
+                        x: x - spread,
+                        y: MODAL_TOP + offset - spread,
+                        w: modal_w + spread * 2.0,
+                        h: rect.h + spread * 2.0,
+                        color: Rgba::new(0.0, 0.0, 0.0, alpha / steps as f32),
+                        radius: (8.0 + spread).max(0.0),
+                        border: 0.0,
+                        border_color: Rgba::TRANSPARENT,
+                    });
+                }
             }
             painted.rects.extend(p.rects);
             painted.tris.extend(p.tris);
@@ -1577,6 +1592,16 @@ impl WorkspaceView {
     }
 
     pub fn scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        // An open modal swallows scrolling over it so the editor underneath stays put.
+        if let Some(rect) = self.modal_rect {
+            if x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h {
+                return self
+                    .layout
+                    .files_view
+                    .as_mut()
+                    .is_some_and(|v| v.modal_scroll(dy));
+            }
+        }
         if !self.layout.session_menu {
             let (w, h) = self.viewport;
             let cr = self.layout.center_region(w, h);
