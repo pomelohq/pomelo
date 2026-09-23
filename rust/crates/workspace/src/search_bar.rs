@@ -21,6 +21,11 @@ const MAX_HISTORY: usize = 50;
 const COUNT_FONT: f32 = 12.0;
 const COUNT_MARGIN: f32 = 8.0;
 const COUNT_MIN_W: f32 = 40.0;
+/// Below this bar width the match count and close button are dropped to leave room for the query.
+const NARROW_W: f32 = 340.0;
+const QUERY_MIN_W: f32 = 128.0;
+const MODE_MIN_W: f32 = 256.0;
+const BUTTON_GAP: f32 = 4.0;
 
 /// Click targets inside the bar, offset from the pane's base id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -410,7 +415,8 @@ impl SearchBar {
         }
     }
 
-    pub fn render(&self, base: u64) -> Node {
+    /// The bar laid out for `width` design px.
+    pub fn render(&self, base: u64, width: f32) -> Node {
         let colors = theme();
         let icon_button =
             |kind: IconKind, click: SearchClick, toggled: bool, enabled: bool| -> Node {
@@ -443,7 +449,6 @@ impl SearchBar {
                 };
                 div()
                     .row()
-                    .flex(1.0)
                     .h_px(INPUT_H)
                     .pl(8.0)
                     .pr(4.0)
@@ -473,14 +478,28 @@ impl SearchBar {
         let count_w = (ui::measure_text_width(&count, COUNT_FONT, false, ui::ui_font_weight())
             / ui::ui_text_scale())
         .max(COUNT_MIN_W);
+        let narrow = width < NARROW_W;
         let supported = self.supported;
+        let optional_buttons = supported.replace as usize + supported.select_all as usize;
+        let mut mode_content =
+            optional_buttons as f32 * (BUTTON + BUTTON_GAP) + 1.0 + 2.0 * BUTTON + 3.0 * BUTTON_GAP;
+        if !narrow {
+            mode_content += COUNT_MARGIN + count_w + BUTTON_GAP + BUTTON;
+        }
+        let mode_w = if narrow {
+            mode_content
+        } else {
+            mode_content.max(MODE_MIN_W)
+        };
+        let query_w = (width - 2.0 * TOOLBAR_PAD_X - LINE_GAP - mode_w).max(QUERY_MIN_W);
         let mut query_column = input(
             &self.query,
             SearchField::Query,
             "Search...",
             query_border,
             SearchClick::Query,
-        );
+        )
+        .w_px(query_w);
         if supported.case {
             query_column = query_column.child(icon_button(
                 IconKind::CaseSensitive,
@@ -522,7 +541,7 @@ impl SearchBar {
                 false,
                 has_match,
             ))
-            .child(
+            .children((!narrow).then(|| {
                 div()
                     .row()
                     .h_px(BUTTON)
@@ -533,8 +552,9 @@ impl SearchBar {
                         colors.text
                     } else {
                         colors.text_disabled
-                    })),
-            );
+                    }))
+                    .into()
+            }));
         let mut mode_column = div().row().items_center().gap(4.0);
         if supported.replace {
             mode_column = mode_column.child(icon_button(
@@ -552,22 +572,22 @@ impl SearchBar {
                 true,
             ));
         }
-        let mode_column = mode_column
-            .child(matches_column)
-            .child(div().flex(1.0))
-            .child(icon_button(
+        let mut mode_column = mode_column.child(matches_column);
+        if !narrow {
+            mode_column = mode_column.child(div().flex(1.0)).child(icon_button(
                 IconKind::Close,
                 SearchClick::Close,
                 false,
                 true,
             ));
+        }
         let search_line = div()
             .row()
             .h_px(INPUT_H)
             .items_center()
             .gap(LINE_GAP)
             .child(query_column)
-            .child(div().w_px(256.0).child(mode_column));
+            .child(mode_column.w_px(mode_w));
         let mut bar = div()
             .col()
             .gap(LINE_GAP)
@@ -606,14 +626,17 @@ impl SearchBar {
                     .h_px(INPUT_H)
                     .items_center()
                     .gap(LINE_GAP)
-                    .child(input(
-                        &self.replacement,
-                        SearchField::Replacement,
-                        "Replace with...",
-                        colors.border,
-                        SearchClick::Replacement,
-                    ))
-                    .child(div().w_px(256.0).child(replace_actions)),
+                    .child(
+                        input(
+                            &self.replacement,
+                            SearchField::Replacement,
+                            "Replace with...",
+                            colors.border,
+                            SearchClick::Replacement,
+                        )
+                        .w_px(query_w),
+                    )
+                    .child(div().w_px(mode_w).child(replace_actions)),
             );
         }
         div()

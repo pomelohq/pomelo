@@ -5686,7 +5686,7 @@ fn layout_member(
                         None,
                     ),
                 };
-            let node = render_pane(pane, p, hover);
+            let node = render_pane(pane, p, hover, rect.w / ui::ui_text_scale());
             panes.push(PanePlacement {
                 rect,
                 node,
@@ -5769,7 +5769,7 @@ fn layout_member(
 /// One leaf pane: a tab bar (each tab a column [content | 1px underline]) plus the active item's body, filling
 /// its clipped rect. `p` is the pane's render-order index (keys its tab/split ids); `hover` is the pointer's
 /// current hit id, so a tab shows its close button only while hovered.
-fn render_pane(pane: &Pane, p: usize, hover: Option<u64>) -> Node {
+fn render_pane(pane: &Pane, p: usize, hover: Option<u64>, width: f32) -> Node {
     // Tab bar: a full-width bottom border that the active tab punches through -- the active tab's bottom line
     // matches the editor so it merges into the body below; inactive tabs keep the border and sit on the line.
     let mut tab_bar = div().row().h_px(TAB_H).bg(theme().tab_bar_background);
@@ -5877,7 +5877,10 @@ fn render_pane(pane: &Pane, p: usize, hover: Option<u64>) -> Node {
     }
     let mut chrome = div().col().flex(1.0).child(tab_bar);
     if !pane.search.dismissed {
-        chrome = chrome.child(pane.search.render(SEARCH_BASE + p as u64 * PANE_STRIDE));
+        chrome = chrome.child(
+            pane.search
+                .render(SEARCH_BASE + p as u64 * PANE_STRIDE, width),
+        );
     }
     chrome.into()
 }
