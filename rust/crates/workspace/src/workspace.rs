@@ -336,6 +336,16 @@ pub trait Item: 'static {
         0.0
     }
     fn toggle_fold(&mut self, _line: usize) {}
+    /// A popover at the caret (the word menu) and its window position, given the text area.
+    fn completion_popover(&self, _content: ui::Rect) -> Option<(Node, f32, f32)> {
+        None
+    }
+    /// A click on row `row` of the word menu.
+    fn click_completion(&mut self, _row: usize) {}
+    fn hover_completion(&mut self, _id: Option<u64>) {}
+    fn scroll_completion(&mut self, _dy: f32) -> bool {
+        false
+    }
     /// Expand or collapse the uncommitted change at `line`.
     fn toggle_diff_hunk(&mut self, _line: usize) {}
     /// Whether the pointer is over this item's gutter; returns whether that changed.
@@ -449,6 +459,8 @@ pub enum EditKey {
     UnstageAndNext,
     ToggleSelectedDiffHunks,
     ExpandAllDiffHunks,
+    ShowCompletions,
+    ShowWordCompletions,
     Undo,
     Redo,
     SelectAll,
@@ -522,6 +534,14 @@ pub trait FunctionView: 'static {
         None
     }
     fn dismiss_modal(&mut self) {}
+    /// A wheel or trackpad scroll over the caret popover.
+    fn popover_scroll(&mut self, _dy: f32) -> bool {
+        false
+    }
+    /// A popover anchored at the focused editor's caret, with its window position.
+    fn editor_popover(&mut self) -> Option<(Node, f32, f32)> {
+        None
+    }
     /// A wheel or trackpad scroll over the open modal; returns whether it moved.
     fn modal_scroll(&mut self, _dy: f32) -> bool {
         false

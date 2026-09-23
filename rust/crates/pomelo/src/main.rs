@@ -779,6 +779,7 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::End) => key(EditKey::End),
                     Key::Named(NamedKey::F8) if cmd && shift => key(EditKey::GoToPreviousHunk),
                     Key::Named(NamedKey::F8) if cmd => key(EditKey::GoToHunk),
+                    Key::Named(NamedKey::Space) if ctrl && !cmd => key(EditKey::ShowCompletions),
                     Key::Named(NamedKey::PageUp) => key(EditKey::PageUp),
                     Key::Named(NamedKey::PageDown) => key(EditKey::PageDown),
                     Key::Named(NamedKey::Backspace) if cmd => key(EditKey::DeleteToLineStart),

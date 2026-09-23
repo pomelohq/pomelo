@@ -60,7 +60,10 @@ pub enum ResizeCursor {
 }
 
 pub struct WorkspaceView {
+    /// Where the open modal was drawn last frame, for dismissing it on outside presses.
     modal_rect: Option<Rect>,
+    /// Where the caret popover was drawn last frame, so scrolling over it scrolls it.
+    popover_rect: Option<Rect>,
     layout: Layout,
     session_menu_hover: Option<u64>,
     session_search_query: String,
@@ -96,6 +99,7 @@ impl WorkspaceView {
             submenu: None,
             menu_editor_anchor: None,
             modal_rect: None,
+            popover_rect: None,
             toast: None,
             pending: WorkspaceEffects::default(),
         }
@@ -713,6 +717,35 @@ impl WorkspaceView {
             });
         }
 
+        // A caret popover floats above the editor, under any modal.
+        self.popover_rect = None;
+        if let Some((node, px, py)) = self
+            .layout
+            .files_view
+            .as_mut()
+            .and_then(|v| v.editor_popover())
+        {
+            let area = Rect::new(px, py, w - px, h - py, Rgba::TRANSPARENT);
+            let p = ui::render(&ui::div().col().child(node).into(), area);
+            header_hits.extend(p.hits.iter().copied());
+            let right = p.rects.iter().map(|r| r.x + r.w).fold(px, f32::max);
+            let bottom = p.rects.iter().map(|r| r.y + r.h).fold(py, f32::max);
+            let mut painted = Painted::default();
+            let popover = Rect::new(px, py, right - px, bottom - py, Rgba::TRANSPARENT);
+            self.popover_rect = Some(popover);
+            painted
+                .rects
+                .extend(elevation_shadow(popover, crate::Elevation::Elevated));
+            painted.rects.extend(p.rects);
+            painted.tris.extend(p.tris);
+            painted.texts.extend(p.texts);
+            painted.icons.extend(p.icons);
+            overlays.push(Overlay {
+                painted,
+                clip: None,
+            });
+        }
+
         self.modal_rect = None;
         let viewport = (w, h);
         if let Some(modal) = self
@@ -732,45 +765,9 @@ impl WorkspaceView {
             self.modal_rect = Some(rect);
             header_hits.extend(p.hits.iter().copied());
             let mut painted = Painted::default();
-            // Layered shadows by elevation: (y offset, alpha, blur). The renderer has no blur, so each blurred
-            // layer is a stack of rects growing across the blur width, the alpha split between them.
-            let light = ui::theme().appearance == ui::Appearance::Light;
-            let shadows: &[(f32, f32, f32)] = match (modal.elevation, light) {
-                (crate::Elevation::Elevated, true) => &[(2.0, 0.12, 3.0), (1.0, 0.03, 0.0)],
-                (crate::Elevation::Elevated, false) => &[(2.0, 0.12, 3.0), (1.0, 0.06, 0.0)],
-                (crate::Elevation::Modal, true) => &[
-                    (2.0, 0.06, 3.0),
-                    (3.0, 0.06, 6.0),
-                    (6.0, 0.04, 12.0),
-                    (1.0, 0.04, 0.0),
-                ],
-                (crate::Elevation::Modal, false) => &[
-                    (2.0, 0.12, 3.0),
-                    (3.0, 0.08, 6.0),
-                    (6.0, 0.04, 12.0),
-                    (1.0, 0.12, 0.0),
-                ],
-            };
-            for &(offset, alpha, blur) in shadows {
-                let steps = blur.ceil().max(1.0) as usize;
-                for step in 0..steps {
-                    let spread = if steps == 1 {
-                        0.0
-                    } else {
-                        step as f32 - blur / 2.0 + 0.5
-                    };
-                    painted.rects.push(Rect {
-                        x: x - spread,
-                        y: MODAL_TOP + offset - spread,
-                        w: modal_w + spread * 2.0,
-                        h: rect.h + spread * 2.0,
-                        color: Rgba::new(0.0, 0.0, 0.0, alpha / steps as f32),
-                        radius: (8.0 + spread).max(0.0),
-                        border: 0.0,
-                        border_color: Rgba::TRANSPARENT,
-                    });
-                }
-            }
+            painted
+                .rects
+                .extend(elevation_shadow(rect, modal.elevation));
             painted.rects.extend(p.rects);
             painted.tris.extend(p.tris);
             painted.texts.extend(p.texts);
@@ -1592,6 +1589,15 @@ impl WorkspaceView {
     }
 
     pub fn scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        if let Some(rect) = self.popover_rect {
+            if x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h {
+                return self
+                    .layout
+                    .files_view
+                    .as_mut()
+                    .is_some_and(|v| v.popover_scroll(dy));
+            }
+        }
         // An open modal swallows scrolling over it so the editor underneath stays put.
         if let Some(rect) = self.modal_rect {
             if x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h {
@@ -1780,6 +1786,50 @@ impl RawView for WorkspaceView {
     fn render_frame(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Frame {
         self.build(window)
     }
+}
+
+/// Layered shadows under a floating surface: (y offset, alpha, blur) per elevation. The renderer has no blur,
+/// so each blurred layer is a stack of rects growing across the blur width, the alpha split between them.
+fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
+    let light = ui::theme().appearance == ui::Appearance::Light;
+    let shadows: &[(f32, f32, f32)] = match (elevation, light) {
+        (crate::Elevation::Elevated, true) => &[(2.0, 0.12, 3.0), (1.0, 0.03, 0.0)],
+        (crate::Elevation::Elevated, false) => &[(2.0, 0.12, 3.0), (1.0, 0.06, 0.0)],
+        (crate::Elevation::Modal, true) => &[
+            (2.0, 0.06, 3.0),
+            (3.0, 0.06, 6.0),
+            (6.0, 0.04, 12.0),
+            (1.0, 0.04, 0.0),
+        ],
+        (crate::Elevation::Modal, false) => &[
+            (2.0, 0.12, 3.0),
+            (3.0, 0.08, 6.0),
+            (6.0, 0.04, 12.0),
+            (1.0, 0.12, 0.0),
+        ],
+    };
+    let mut rects = Vec::new();
+    for &(offset, alpha, blur) in shadows {
+        let steps = blur.ceil().max(1.0) as usize;
+        for step in 0..steps {
+            let spread = if steps == 1 {
+                0.0
+            } else {
+                step as f32 - blur / 2.0 + 0.5
+            };
+            rects.push(Rect {
+                x: rect.x - spread,
+                y: rect.y + offset - spread,
+                w: rect.w + spread * 2.0,
+                h: rect.h + spread * 2.0,
+                color: Rgba::new(0.0, 0.0, 0.0, alpha / steps as f32),
+                radius: (8.0 + spread).max(0.0),
+                border: 0.0,
+                border_color: Rgba::TRANSPARENT,
+            });
+        }
+    }
+    rects
 }
 
 #[cfg(test)]
