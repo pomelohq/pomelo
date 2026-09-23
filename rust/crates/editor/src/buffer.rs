@@ -160,6 +160,8 @@ struct Replacement {
 struct LogEntry {
     version: u64,
     edits: Vec<Edit>,
+    /// What each edit inserted, for mirrors of the text kept elsewhere (a language server's copy).
+    new_texts: Vec<String>,
     syntax: Vec<InputEdit>,
 }
 
@@ -452,6 +454,15 @@ impl EditorBuffer {
     pub fn edits_since(&self, since: u64) -> impl Iterator<Item = &[Edit]> {
         let start = self.log.partition_point(|e| e.version <= since);
         self.log[start..].iter().map(|e| e.edits.as_slice())
+    }
+
+    /// Each edit batch since `since` with the text its edits inserted; a batch's ranges are in the text as it was
+    /// just before that batch.
+    pub fn text_edits_since(&self, since: u64) -> impl Iterator<Item = (&[Edit], &[String])> {
+        let start = self.log.partition_point(|e| e.version <= since);
+        self.log[start..]
+            .iter()
+            .map(|e| (e.edits.as_slice(), e.new_texts.as_slice()))
     }
 
     pub fn syntax_edits_since(&self, since: u64) -> impl Iterator<Item = &InputEdit> {
@@ -952,6 +963,7 @@ impl EditorBuffer {
         self.version += 1;
         self.log.push(LogEntry {
             version: self.version,
+            new_texts: replacements.iter().map(|r| r.new_text.clone()).collect(),
             edits: replacements
                 .iter()
                 .map(|r| Edit {

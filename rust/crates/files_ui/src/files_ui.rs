@@ -4,7 +4,7 @@
 //! highlighting reuses the `editor` crate. The `workspace` toolkit stays free of this crate .
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -361,7 +361,38 @@ struct FileItem {
     completions: Option<completions_menu::CompletionsMenu>,
     /// The menu was asked for explicitly, so it stays open below the minimum query length.
     completions_forced: bool,
+    /// Where the user's snippet files are read from.
     snippet_dir: Option<PathBuf>,
+    /// What the language server reports about this file, carried through edits.
+    diagnostics: Vec<DiagnosticEntry>,
+    /// Saved since the language server last heard about it.
+    saved_unannounced: bool,
+}
+
+/// A problem a language server reported, over a char range of the buffer.
+#[derive(Clone, Debug, PartialEq)]
+struct DiagnosticEntry {
+    range: Range<usize>,
+    severity: lsp::lsp_types::DiagnosticSeverity,
+    message: String,
+}
+
+/// Where a wavy underline sits in a line: below the baseline by most of the font's descent, as text is
+/// centered in the line box. Ascent and descent are the mono font's 1.025 and 0.275 em.
+const DIAGNOSTIC_UNDERLINE_TOP: f32 =
+    (EDIT_LINE_H - EDIT_FONT * 1.3) / 2.0 + EDIT_FONT * 1.025 + EDIT_FONT * 0.275 * 0.618;
+const DIAGNOSTIC_UNDERLINE_THICKNESS: f32 = 1.0;
+
+fn diagnostic_color(severity: lsp::lsp_types::DiagnosticSeverity) -> Rgba {
+    use lsp::lsp_types::DiagnosticSeverity as Severity;
+    let colors = theme();
+    match severity {
+        Severity::ERROR => colors.error,
+        Severity::WARNING => colors.warning,
+        Severity::INFORMATION => colors.info,
+        Severity::HINT => colors.hint,
+        _ => colors.ignored,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -439,7 +470,78 @@ impl FileItem {
             } else {
                 snippet_store::default_dir()
             },
+            diagnostics: Vec::new(),
+            saved_unannounced: false,
         }
+    }
+
+    /// Adopt a file's diagnostics: placed in the text they were computed for, then carried through the edits
+    /// made since.
+    fn set_diagnostics(&mut self, update: &lsp::DiagnosticsUpdate) {
+        self.refresh();
+        let Some(b) = self.buffer.as_ref() else {
+            return;
+        };
+        let (rope, since) = match &update.synced {
+            Some(synced) => (&synced.rope, Some(synced.buffer_version)),
+            None => (&b.rope, None),
+        };
+        let mut entries: Vec<DiagnosticEntry> = update
+            .diagnostics
+            .iter()
+            .map(|diagnostic| DiagnosticEntry {
+                range: lsp::diagnostic_char_range(rope, diagnostic.range),
+                severity: diagnostic
+                    .severity
+                    .unwrap_or(lsp::lsp_types::DiagnosticSeverity::ERROR),
+                message: diagnostic.message.clone(),
+            })
+            .collect();
+        if let Some(since) = since {
+            for batch in b.edits_since(since) {
+                for entry in &mut entries {
+                    entry.range.start =
+                        editor::buffer::map_offset(batch, entry.range.start, Bias::Left);
+                    entry.range.end =
+                        editor::buffer::map_offset(batch, entry.range.end, Bias::Left);
+                }
+            }
+        }
+        self.diagnostics = entries;
+    }
+
+    /// Wavy underlines under the visible diagnostics, the more severe drawn on top.
+    fn diagnostic_rects(&self, content: Rect, first: usize, last: usize) -> Vec<Rect> {
+        let gw = gutter_width(self.line_count());
+        let mut ordered: Vec<&DiagnosticEntry> = self.diagnostics.iter().collect();
+        ordered.sort_by_key(|entry| std::cmp::Reverse(entry.severity));
+        let mut rects = Vec::new();
+        for entry in ordered {
+            let (start_row, start_x) = self.position(entry.range.start);
+            let (end_row, end_x) = self.position(entry.range.end);
+            if end_row < first || start_row >= last {
+                continue;
+            }
+            for row in start_row.max(first)..=end_row.min(last.saturating_sub(1)) {
+                let left = if row == start_row { start_x } else { 0.0 };
+                let right = if row == end_row {
+                    end_x
+                } else {
+                    self.row_width(row)
+                };
+                if right <= left {
+                    continue;
+                }
+                rects.push(Rect::wavy_underline(
+                    content.x + gw + left - self.scroll_x,
+                    content.y + row as f32 * EDIT_LINE_H - self.scroll_y + DIAGNOSTIC_UNDERLINE_TOP,
+                    right - left,
+                    DIAGNOSTIC_UNDERLINE_THICKNESS,
+                    diagnostic_color(entry.severity),
+                ));
+            }
+        }
+        rects
     }
 
     /// Bring dependents up to the buffer: the syntax tree, fold positions (carried through the edits since the
@@ -469,6 +571,12 @@ impl FileItem {
                 for range in &mut self.expanded {
                     range.start = editor::buffer::map_offset(batch, range.start, Bias::Left);
                     range.end = editor::buffer::map_offset(batch, range.end, Bias::Right);
+                }
+                for entry in &mut self.diagnostics {
+                    entry.range.start =
+                        editor::buffer::map_offset(batch, entry.range.start, Bias::Left);
+                    entry.range.end =
+                        editor::buffer::map_offset(batch, entry.range.end, Bias::Left);
                 }
             }
         }
@@ -2707,6 +2815,7 @@ impl Item for FileItem {
         b.mark_saved();
         self.saved_mtime = Some(mtime);
         self.conflict = false;
+        self.saved_unannounced = true;
         self.git.reload_bases(self.root.join(&self.path));
         Ok(())
     }
@@ -3304,6 +3413,8 @@ impl Item for FileItem {
                 ));
             }
         }
+
+        rects.extend(self.diagnostic_rects(content, first, last));
 
         // Text an input method is still composing is underlined.
         for marked in b.marked_ranges() {
@@ -4102,6 +4213,8 @@ pub struct FilesView {
     window_size: (f32, f32),
     /// The focused pane's text area as last laid out, for placing popovers at its caret.
     focused_content: Option<Rect>,
+    /// The project's language servers; none in tests, which must not start real servers.
+    lsp: Option<lsp::LspStore>,
 }
 
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting stays in sync with
@@ -4117,6 +4230,8 @@ pub(crate) fn syntax_theme() -> Theme {
 impl FilesView {
     pub fn new(root: PathBuf) -> Self {
         let tree = files::build_tree(&files::list(&root));
+        let lsp =
+            (!cfg!(test)).then(|| lsp::LspStore::new(root.clone(), std::sync::Arc::new(ui::wake)));
         Self {
             root,
             tree,
@@ -4139,6 +4254,7 @@ impl FilesView {
             outline_preview: outline_view::PreviewLayout::Hidden,
             window_size: (1200.0, 800.0),
             focused_content: None,
+            lsp,
             tab_drag: None,
             drag_preview: None,
             click_targets: Vec::new(),
@@ -4193,6 +4309,49 @@ impl FilesView {
         let pane = self.active_pane_mut()?;
         let i = pane.active?;
         pane.open.get_mut(i).map(|b| b.as_mut())
+    }
+
+    /// Bring the language servers up to date with the open files, and give each file its diagnostics. A file
+    /// open in several panes is mirrored from its first pane's buffer.
+    fn sync_language_servers(&mut self) {
+        let Some(lsp) = self.lsp.as_mut() else {
+            return;
+        };
+        let updates = lsp.poll();
+        let root = self.root.clone();
+        let mut synced: HashSet<PathBuf> = HashSet::new();
+        self.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                else {
+                    continue;
+                };
+                let path = root.join(&file.path);
+                if file.buffer.is_none() || !synced.insert(path.clone()) {
+                    continue;
+                }
+                for update in updates.iter().filter(|update| update.path == path) {
+                    file.set_diagnostics(update);
+                }
+                file.refresh();
+                if let Some(b) = file.buffer.as_ref() {
+                    lsp.sync_document(&path, file.lang, b);
+                    if std::mem::take(&mut file.saved_unannounced) {
+                        lsp.did_save(&path, b);
+                    }
+                }
+            }
+        });
+        let closed: Vec<PathBuf> = lsp
+            .open_documents()
+            .filter(|path| !synced.contains(*path))
+            .map(Path::to_path_buf)
+            .collect();
+        for path in closed {
+            lsp.close_document(&path);
+        }
     }
 
     fn go_to_line_item(&mut self, path: &[usize]) -> Option<&mut FileItem> {
@@ -5462,6 +5621,7 @@ impl FunctionView for FilesView {
     }
 
     fn editor_layout(&mut self, area: Rect) -> EditorLayout {
+        self.sync_language_servers();
         let mut el = EditorLayout::default();
         let mut pane_order = Vec::new();
         let mut pane_ids = Vec::new();
@@ -7212,6 +7372,75 @@ mod hunk_action_tests {
             repo.git(&["show", ":a.txt"]).as_deref(),
             Some("a\nb\nc\nd\ne\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position};
+
+    fn item(text: &str) -> FileItem {
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "a.rs", Some(text.into()));
+        item.set_body_height(10.0 * EDIT_LINE_H);
+        item
+    }
+
+    fn diagnostic(line: u32, start: u32, end: u32, severity: DiagnosticSeverity) -> Diagnostic {
+        Diagnostic {
+            range: lsp::lsp_types::Range::new(Position::new(line, start), Position::new(line, end)),
+            severity: Some(severity),
+            message: "problem".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn diagnostics_for_an_older_version_follow_the_edits_since() {
+        let mut item = item("let a = b;\nlet c = d;\n");
+        let b = item.buffer.as_ref().unwrap();
+        let synced = lsp::SyncedText {
+            lsp_version: 0,
+            buffer_version: b.version(),
+            rope: b.rope.clone(),
+        };
+        item.buffer.as_mut().unwrap().place_cursor(0);
+        item.input_text("// x\n");
+        item.set_diagnostics(&lsp::DiagnosticsUpdate {
+            path: PathBuf::from("/nonexistent/a.rs"),
+            diagnostics: vec![diagnostic(1, 8, 9, DiagnosticSeverity::ERROR)],
+            synced: Some(synced),
+        });
+        let text = item.buffer.as_ref().unwrap().text();
+        let entry = &item.diagnostics[0];
+        assert_eq!(&text[entry.range.clone()], "d");
+        item.buffer.as_mut().unwrap().place_cursor(5);
+        item.input_text("  ");
+        item.refresh();
+        let text = item.buffer.as_ref().unwrap().text();
+        assert_eq!(&text[item.diagnostics[0].range.clone()], "d");
+    }
+
+    #[test]
+    fn visible_diagnostics_draw_wavy_underlines_in_their_color() {
+        let mut item = item("let a = b;\n");
+        item.set_diagnostics(&lsp::DiagnosticsUpdate {
+            path: PathBuf::from("/nonexistent/a.rs"),
+            diagnostics: vec![
+                diagnostic(0, 4, 5, DiagnosticSeverity::WARNING),
+                diagnostic(0, 8, 9, DiagnosticSeverity::ERROR),
+            ],
+            synced: None,
+        });
+        let content = Rect::new(0.0, 0.0, 800.0, 240.0, Rgba::TRANSPARENT);
+        let rects = item.diagnostic_rects(content, 0, 2);
+        assert_eq!(rects.len(), 2);
+        assert!(rects.iter().all(|r| r.radius < 0.0));
+        assert_eq!(rects.last().unwrap().color, theme().error);
+        assert!(
+            rects[0].y > DIAGNOSTIC_UNDERLINE_TOP - 1.0 && rects[0].y + rects[0].h <= EDIT_LINE_H
+        );
+        assert!(item.diagnostic_rects(content, 1, 2).is_empty());
     }
 }
 

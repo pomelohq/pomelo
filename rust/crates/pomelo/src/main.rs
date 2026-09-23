@@ -484,6 +484,13 @@ impl App {
 const CARET_BLINK: Duration = Duration::from_millis(500);
 
 impl ApplicationHandler for App {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+        for id in windows {
+            self.draw_main(id);
+        }
+    }
+
     // Blink the settings caret: while the settings window is open, wake on a timer to toggle caret visibility.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Coalesce per-window redraws (scroll/hover bursts) into one per iteration.
@@ -1270,6 +1277,12 @@ fn main() -> anyhow::Result<()> {
     }));
 
     let event_loop = EventLoop::new()?;
+    let proxy = event_loop.create_proxy();
+    ui::set_waker(move || {
+        if let Err(error) = proxy.send_event(()) {
+            eprintln!("wake after the event loop closed: {error}");
+        }
+    });
     let mut app = App::default();
     event_loop.run_app(&mut app)?;
     Ok(())
