@@ -282,17 +282,12 @@ impl WorkspaceView {
                                     clip: Some(text_clip),
                                 });
                             }
-                            if let Some(bar) = pane.scrollbar {
+                            for bar in [&pane.scrollbar, &pane.h_scrollbar] {
+                                if bar.is_empty() {
+                                    continue;
+                                }
                                 let mut bp = Painted::default();
-                                bp.rects.push(bar);
-                                center_overlays.push(Overlay {
-                                    painted: bp,
-                                    clip: Some(b.rect),
-                                });
-                            }
-                            if let Some(bar) = pane.h_scrollbar {
-                                let mut bp = Painted::default();
-                                bp.rects.push(bar);
+                                bp.rects.extend(bar.iter().copied());
                                 center_overlays.push(Overlay {
                                     painted: bp,
                                     clip: Some(b.rect),
@@ -1249,6 +1244,9 @@ impl WorkspaceView {
                         t.hovered = over;
                         changed = true;
                     }
+                }
+                if let Some(v) = self.layout.files_view.as_mut() {
+                    changed |= v.editor_hover(x, y);
                 }
                 let hovered = self.hit(x, y);
                 if hovered != self.session_menu_hover {

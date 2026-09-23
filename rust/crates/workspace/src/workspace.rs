@@ -315,8 +315,8 @@ pub trait Item: 'static {
     fn selection_tris(&self, _content: ui::Rect) -> Vec<ui::Tri> {
         Vec::new()
     }
-    fn scrollbar(&self, _content: ui::Rect) -> Option<ui::Rect> {
-        None
+    fn scrollbar(&self, _content: ui::Rect) -> Vec<ui::Rect> {
+        Vec::new()
     }
     fn body_y_offset(&self) -> f32 {
         0.0
@@ -329,6 +329,10 @@ pub trait Item: 'static {
         0.0
     }
     fn toggle_fold(&mut self, _line: usize) {}
+    /// Whether the pointer is over this item's gutter; returns whether that changed.
+    fn set_gutter_hovered(&mut self, _hovered: bool) -> bool {
+        false
+    }
     fn save(&mut self) -> Result<(), String> {
         Ok(())
     }
@@ -356,8 +360,8 @@ pub trait Item: 'static {
     fn scroll_by_x(&mut self, _dx: f32) -> bool {
         false
     }
-    fn h_scrollbar(&self, _content: ui::Rect) -> Option<ui::Rect> {
-        None
+    fn h_scrollbar(&self, _content: ui::Rect) -> Vec<ui::Rect> {
+        Vec::new()
     }
 }
 
@@ -430,8 +434,8 @@ pub struct PanePlacement {
     pub back: Vec<ui::Rect>,
     pub back_tris: Vec<ui::Tri>,
     pub carets: Vec<ui::Rect>,
-    pub scrollbar: Option<ui::Rect>,
-    pub h_scrollbar: Option<ui::Rect>,
+    pub scrollbar: Vec<ui::Rect>,
+    pub h_scrollbar: Vec<ui::Rect>,
 }
 
 pub struct PaneBody {
@@ -512,6 +516,10 @@ pub trait FunctionView: 'static {
     }
     fn editor_paste(&mut self, text: &str, _slices: Option<&[ClipboardSlice]>) -> bool {
         self.editor_text(text)
+    }
+    /// The pointer moved (no button held); returns whether anything hover-dependent changed.
+    fn editor_hover(&mut self, _x: f32, _y: f32) -> bool {
+        false
     }
     fn editor_ime_preedit(
         &mut self,

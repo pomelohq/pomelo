@@ -511,6 +511,41 @@ pub fn measure_text_width(text: &str, size: f32, mono: bool, weight: u16) -> f32
     })
 }
 
+/// How far the mono (editor) font reaches below its baseline at `size`, in logical px.
+pub fn mono_descent(size: f32) -> f32 {
+    let size = size * theme::ui_text_scale();
+    MEASURER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let m = slot.get_or_insert_with(|| {
+            let mut font_system = FontSystem::new();
+            let (sans, mono) = load_ui_fonts(&mut font_system);
+            Measurer {
+                font_system,
+                sans,
+                mono,
+                cache: std::collections::HashMap::new(),
+                wrap_cache: std::collections::HashMap::new(),
+                glyph_cache: std::collections::HashMap::new(),
+            }
+        });
+        let Some(name) = m.mono.clone() else {
+            return 0.0;
+        };
+        let id = m.font_system.db().query(&glyphon::fontdb::Query {
+            families: &[glyphon::fontdb::Family::Name(&name)],
+            ..Default::default()
+        });
+        let Some(font) = id.and_then(|id| m.font_system.get_font(id)) else {
+            return 0.0;
+        };
+        let metrics = font.as_swash().metrics(&[]);
+        if metrics.units_per_em == 0 {
+            return 0.0;
+        }
+        metrics.descent / metrics.units_per_em as f32 * size
+    })
+}
+
 /// Glyph offsets of `text` shaped exactly like a single-line label (same font, size, weight, scale as
 /// `measure_text_width`): each glyph's starting byte index with its x, and the total advance. A ligature is one
 /// glyph, so indices inside it have no entry of their own.
