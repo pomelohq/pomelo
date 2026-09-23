@@ -359,5 +359,17 @@ pub fn config(lang: Lang) -> LanguageConfig {
             code(GENERIC, SLASH_COMMENTS, SLASH_BLOCK)
         }
         Lang::Zig => code(GENERIC, SLASH_COMMENTS, None),
+        Lang::Kotlin | Lang::Proto | Lang::Prisma | Lang::Gleam => {
+            code(GENERIC, SLASH_COMMENTS, SLASH_BLOCK)
+        }
+        Lang::Sql => code(GENERIC, DASH_COMMENTS, SLASH_BLOCK),
+        Lang::Hcl => code(GENERIC, &["# ", "// "], SLASH_BLOCK),
+        Lang::Dockerfile | Lang::GraphQl | Lang::R | Lang::GitCommit | Lang::Diff => {
+            code(GENERIC, HASH_COMMENTS, None)
+        }
+        Lang::Ini => code(GENERIC, &["; ", "# "], None),
+        Lang::Erlang => code(GENERIC, &["% "], None),
+        Lang::Elm => code(GENERIC, DASH_COMMENTS, Some(("{-", "-}"))),
+        Lang::Svelte => code(GENERIC, &[], Some(("<!--", "-->"))),
     }
 }

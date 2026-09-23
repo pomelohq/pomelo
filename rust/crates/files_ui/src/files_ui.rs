@@ -364,7 +364,7 @@ struct BaseText {
 impl FileItem {
     fn new(root: PathBuf, path: &str, text: Option<String>) -> Self {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
-        let lang = Lang::from_ext(path.rsplit('.').next().unwrap_or(""));
+        let lang = Lang::detect(path, text.as_deref().and_then(|t| t.lines().next()));
         let buffer = text.map(|t| EditorBuffer::from_text(&t));
         let syntax = buffer.as_ref().and_then(|_| Syntax::new(lang));
         let saved_mtime = files::mtime(&root, path).ok();
