@@ -18,4 +18,5 @@ editor = { package = "pomelo-editor", path = "../editor" }
 nucleo-matcher = "0.3.1"
 pulldown-cmark = { version = "0.13", default-features = false }
 ropey.workspace = true
+serde_json.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
