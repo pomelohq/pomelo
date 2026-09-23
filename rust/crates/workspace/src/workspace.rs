@@ -782,6 +782,14 @@ pub trait TerminalPanelView: 'static {
     fn drop_tab(&mut self) -> bool;
     fn tab_drag_overlay(&self) -> Option<Rect>;
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)>;
+    /// Moving a tab across pane groups: the item being dragged here, taking it out, whether this view takes
+    /// such an item, where it would land when the pointer is over this view, and placing it.
+    fn dragged_item(&self) -> Option<&dyn Item>;
+    fn take_dragged_item(&mut self) -> Option<Box<dyn Item>>;
+    fn accepts_item(&self, item: &dyn Item) -> bool;
+    fn update_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) -> bool;
+    fn clear_foreign_drop(&mut self);
+    fn accept_foreign_item(&mut self, item: Box<dyn Item>);
     fn mouse_down(
         &mut self,
         x: f32,
@@ -947,6 +955,22 @@ pub trait FunctionView: 'static {
     fn tab_drag_ghost(&self) -> Option<(Node, f32, f32)> {
         None
     }
+    /// Moving a tab across pane groups: the item being dragged here, taking it out, whether this view takes
+    /// such an item, where it would land when the pointer is over this view, and placing it.
+    fn dragged_item(&self) -> Option<&dyn Item> {
+        None
+    }
+    fn take_dragged_item(&mut self) -> Option<Box<dyn Item>> {
+        None
+    }
+    fn accepts_item(&self, _item: &dyn Item) -> bool {
+        false
+    }
+    fn update_foreign_drop(&mut self, _x: f32, _y: f32, _over: Option<(u64, ui::Rect)>) -> bool {
+        false
+    }
+    fn clear_foreign_drop(&mut self) {}
+    fn accept_foreign_item(&mut self, _item: Box<dyn Item>) {}
 
     fn editor_text(&mut self, _text: &str) -> bool {
         false

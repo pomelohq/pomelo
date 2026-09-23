@@ -385,21 +385,6 @@ impl WorkspaceView {
                             clip: Some(cr),
                         });
                     }
-                    if let Some((gx, gy)) = self.tab_ghost_at {
-                        if let Some((node, gw, gh)) = self
-                            .layout
-                            .files_view
-                            .as_ref()
-                            .and_then(|v| v.tab_drag_ghost())
-                        {
-                            let area =
-                                Rect::new(gx - 14.0, gy - gh / 2.0, gw, gh, Rgba::TRANSPARENT);
-                            center_overlays.push(Overlay {
-                                painted: ui::render(&node, area),
-                                clip: None,
-                            });
-                        }
-                    }
                     let mut bar = Painted::default();
                     let thumb = ui::theme().scrollbar_thumb_background;
                     let tr = tree_region;
@@ -595,27 +580,45 @@ impl WorkspaceView {
 
         let mut overlays: Vec<Overlay> = Vec::new();
         overlays.append(&mut center_overlays);
-        if self.dragging == Drag::TerminalTab {
-            if let Some(view) = self.layout.terminal_view.as_ref() {
-                let mut drag = Painted::default();
-                if let Some(preview) = view.tab_drag_overlay() {
-                    drag.rects.push(Rect::new(
-                        preview.x,
-                        preview.y,
-                        preview.w,
-                        preview.h,
-                        ui::theme().text_accent.alpha(0.22),
-                    ));
-                }
-                if let (Some((gx, gy)), Some((node, gw, gh))) =
-                    (self.tab_ghost_at, view.tab_drag_ghost())
-                {
-                    let area = Rect::new(gx - 14.0, gy - gh / 2.0, gw, gh, Rgba::TRANSPARENT);
-                    let ghost = ui::render(&node, area);
-                    drag.rects.extend(ghost.rects);
-                    drag.texts.extend(ghost.texts);
-                    drag.icons.extend(ghost.icons);
-                }
+        {
+            let mut drag = Painted::default();
+            let panel_preview = self
+                .layout
+                .terminal_view
+                .as_ref()
+                .filter(|_| self.layout.terminal_visible())
+                .and_then(|v| v.tab_drag_overlay());
+            if let Some(preview) = panel_preview {
+                drag.rects.push(Rect::new(
+                    preview.x,
+                    preview.y,
+                    preview.w,
+                    preview.h,
+                    ui::theme().text_accent.alpha(0.22),
+                ));
+            }
+            let ghost = match self.dragging {
+                Drag::TerminalTab => self
+                    .layout
+                    .terminal_view
+                    .as_ref()
+                    .and_then(|v| v.tab_drag_ghost()),
+                Drag::Tab => self
+                    .layout
+                    .files_view
+                    .as_ref()
+                    .and_then(|v| v.tab_drag_ghost()),
+                _ => None,
+            };
+            // Drawn after both groups so the ghost stays on top while crossing between them.
+            if let (Some((gx, gy)), Some((node, gw, gh))) = (self.tab_ghost_at, ghost) {
+                let area = Rect::new(gx - 14.0, gy - gh / 2.0, gw, gh, Rgba::TRANSPARENT);
+                let ghost = ui::render(&node, area);
+                drag.rects.extend(ghost.rects);
+                drag.texts.extend(ghost.texts);
+                drag.icons.extend(ghost.icons);
+            }
+            if !drag.rects.is_empty() {
                 overlays.push(Overlay {
                     painted: drag,
                     clip: None,
@@ -1507,6 +1510,97 @@ impl WorkspaceView {
         terminal_repaint | item_repaint | self.mouse_move_inner(x, y)
     }
 
+    /// A terminal-panel tab dragged over the center previews where it would land there.
+    fn update_center_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) {
+        if let Some(files) = self.layout.files_view.as_mut() {
+            files.update_foreign_drop(x, y, over);
+        }
+    }
+
+    /// A center tab dragged over the terminal panel previews there, but only for items the panel can host.
+    fn update_panel_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) {
+        let accepts = self.layout.terminal_visible()
+            && match (&self.layout.files_view, &self.layout.terminal_view) {
+                (Some(files), Some(panel)) => files
+                    .dragged_item()
+                    .is_some_and(|item| panel.accepts_item(item)),
+                _ => false,
+            };
+        if let Some(panel) = self.layout.terminal_view.as_mut() {
+            if accepts {
+                panel.update_foreign_drop(x, y, over);
+            } else {
+                panel.clear_foreign_drop();
+            }
+        }
+    }
+
+    fn finish_center_tab_drag(&mut self) {
+        let foreign = self
+            .layout
+            .terminal_view
+            .as_ref()
+            .and_then(|panel| panel.tab_drag_overlay())
+            .is_some();
+        let moved = if foreign {
+            self.layout
+                .files_view
+                .as_mut()
+                .and_then(|files| files.take_dragged_item())
+        } else {
+            None
+        };
+        match moved {
+            Some(item) => {
+                if let Some(panel) = self.layout.terminal_view.as_mut() {
+                    panel.accept_foreign_item(item);
+                }
+                self.set_terminal_focus(true);
+            }
+            None => {
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    files.drop_tab();
+                }
+            }
+        }
+        if let Some(panel) = self.layout.terminal_view.as_mut() {
+            panel.clear_foreign_drop();
+        }
+    }
+
+    fn finish_panel_tab_drag(&mut self) {
+        let foreign = self
+            .layout
+            .files_view
+            .as_ref()
+            .and_then(|files| files.tab_drag_overlay())
+            .is_some();
+        let moved = if foreign {
+            self.layout
+                .terminal_view
+                .as_mut()
+                .and_then(|panel| panel.take_dragged_item())
+        } else {
+            None
+        };
+        match moved {
+            Some(item) => {
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    files.accept_foreign_item(item);
+                }
+                self.set_terminal_focus(false);
+            }
+            None => {
+                if let Some(panel) = self.layout.terminal_view.as_mut() {
+                    panel.drop_tab();
+                }
+            }
+        }
+        if let Some(files) = self.layout.files_view.as_mut() {
+            files.clear_foreign_drop();
+        }
+    }
+
     fn mouse_move_inner(&mut self, x: f32, y: f32) -> bool {
         let over = self.hit_with_rect(x, y);
         match self.dragging {
@@ -1518,10 +1612,13 @@ impl WorkspaceView {
                 .is_some_and(|v| v.item_pointer_drag(x, y, terminal_modifiers())),
             Drag::TerminalTab => {
                 self.tab_ghost_at = Some((x, y));
-                self.layout
+                let own = self
+                    .layout
                     .terminal_view
                     .as_mut()
-                    .is_some_and(|v| v.update_tab_drag(x, y, over))
+                    .is_some_and(|v| v.update_tab_drag(x, y, over));
+                self.update_center_foreign_drop(x, y, over);
+                own
             }
             Drag::TerminalDivider(id) => self
                 .layout
@@ -1552,11 +1649,14 @@ impl WorkspaceView {
                 .unwrap_or(false),
             Drag::Tab => {
                 self.tab_ghost_at = Some((x, y));
-                self.layout
+                let own = self
+                    .layout
                     .files_view
                     .as_mut()
                     .map(|v| v.update_tab_drag(x, y, over))
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                self.update_panel_foreign_drop(x, y, over);
+                own
             }
             Drag::EditorSel => self
                 .layout
@@ -1921,13 +2021,9 @@ impl WorkspaceView {
                 self.open_terminal_target(request);
             }
         } else if self.dragging == Drag::Tab {
-            if let Some(v) = self.layout.files_view.as_mut() {
-                v.drop_tab();
-            }
+            self.finish_center_tab_drag();
         } else if self.dragging == Drag::TerminalTab {
-            if let Some(v) = self.layout.terminal_view.as_mut() {
-                v.drop_tab();
-            }
+            self.finish_panel_tab_drag();
         } else if self.dragging != Drag::None {
             self.pending.persist = true;
         } else if let Some((id, _, _)) = self.pending_tab.take() {
