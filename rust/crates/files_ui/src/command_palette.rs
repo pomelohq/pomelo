@@ -9,7 +9,7 @@ use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 use workspace::EditKey;
 
 use crate::fuzzy::{fuzzy_match, Match};
-use crate::text_field::{TextField, INPUT_FONT};
+use crate::text_field::{FieldFont, TextField, INPUT_FONT};
 
 pub const WIDTH: f32 = 608.0;
 const MAX_RESULTS_HEIGHT: f32 = 384.0;
@@ -640,10 +640,13 @@ impl CommandPalette {
             .items_center()
             .h_px(HEAD_HEIGHT)
             .px(10.0)
-            .child(
-                self.field
-                    .render(PLACEHOLDER, true, colors.text, INPUT_FONT * 1.6),
-            );
+            .child(self.field.render(
+                PLACEHOLDER,
+                true,
+                colors.editor_foreground,
+                INPUT_FONT * FieldFont::Ui.line_height(),
+                FieldFont::Ui,
+            ));
         let results: Node = if self.matches.is_empty() {
             div()
                 .col()

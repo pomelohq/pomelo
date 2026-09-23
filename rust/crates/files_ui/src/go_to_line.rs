@@ -1,7 +1,7 @@
 //! Ctrl+G: a modal that jumps the caret to `line[:column]` or `+n`/`-n` lines from the current one, previewing
 //! the target row while typing and restoring the scroll when cancelled.
 
-use crate::text_field::{TextField, INPUT_FONT};
+use crate::text_field::{FieldFont, TextField, INPUT_FONT};
 use ui::{div, label, theme, Node};
 
 pub const WIDTH: f32 = 384.0;
@@ -120,8 +120,9 @@ impl GoToLine {
             .child(div().px(8.0).py(4.0).child(self.field.render(
                 &self.placeholder(),
                 true,
-                colors.text,
-                INPUT_FONT * 1.6,
+                colors.editor_foreground,
+                INPUT_FONT * FieldFont::Ui.line_height(),
+                FieldFont::Ui,
             )))
             .child(div().h_px(1.0).bg(colors.border_variant))
             .child(
@@ -159,6 +160,19 @@ mod tests {
         assert_eq!(modal("").help_text(), "Current Line: 10 of 50 (column 3)");
         assert_eq!(modal("-2").help_text(), "Go to line 8 (-2 from current)");
         assert_eq!(modal("7:2").help_text(), "Go to line 7, character 2");
+    }
+
+    #[test]
+    fn modal_keeps_its_content_height() {
+        let node: Node = div().col().child(modal("").render()).into();
+        let painted = ui::render(
+            &node,
+            ui::Rect::new(0.0, 0.0, WIDTH, 800.0, ui::Rgba::TRANSPARENT),
+        );
+        let bottom = painted.rects.iter().map(|r| r.y + r.h).fold(0.0, f32::max);
+        let widest = painted.rects.iter().map(|r| r.w).fold(0.0, f32::max);
+        assert!(bottom < 100.0, "modal is {bottom}px tall");
+        assert!((widest - WIDTH * ui::ui_text_scale()).abs() < 0.5);
     }
 
     #[test]

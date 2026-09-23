@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use crate::text_field::TextField;
+use crate::text_field::{FieldFont, TextField};
 use editor::search::{
     active_match_index, match_index_for_direction, Direction, SearchOptions, SearchQuery,
 };
@@ -415,7 +415,13 @@ impl SearchBar {
                     .rounded(6.0)
                     .border(1.0, border)
                     .on_click(SearchClick::id(click, base))
-                    .child(field.render(placeholder, focused, text_color, INPUT_H - 2.0))
+                    .child(field.render(
+                        placeholder,
+                        focused,
+                        text_color,
+                        INPUT_H - 2.0,
+                        FieldFont::Mono,
+                    ))
             };
         let query_border = if self.error.is_some() {
             colors.error
