@@ -413,6 +413,7 @@ pub enum EditKey {
     DeleteToLineEnd,
     Enter,
     Tab,
+    Backtab,
     Outdent,
     Indent,
     ToggleComments,

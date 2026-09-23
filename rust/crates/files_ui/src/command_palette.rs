@@ -132,7 +132,7 @@ const COMMANDS: &[(&str, PaletteAction, &[&str])] = &[
     ),
     ("editor::Newline", Key(EditKey::Enter), &["enter"]),
     ("editor::Tab", Key(EditKey::Tab), &["tab"]),
-    ("editor::Backtab", Key(EditKey::Outdent), &["shift-tab"]),
+    ("editor::Backtab", Key(EditKey::Backtab), &["shift-tab"]),
     ("editor::Indent", Key(EditKey::Indent), &["cmd-]"]),
     ("editor::Outdent", Key(EditKey::Outdent), &["cmd-["]),
     (

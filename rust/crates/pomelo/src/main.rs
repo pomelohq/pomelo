@@ -815,7 +815,7 @@ impl ApplicationHandler for App {
                         "m" => key(EditKey::MoveToEnclosingBracket),
                         _ => None,
                     },
-                    Key::Named(NamedKey::Tab) if shift => key(EditKey::Outdent),
+                    Key::Named(NamedKey::Tab) if shift => key(EditKey::Backtab),
                     Key::Named(NamedKey::Tab) => key(EditKey::Tab),
                     Key::Character(_) if cmd && alt => match ke.key_without_modifiers() {
                         Key::Character(c) => match c.as_str() {

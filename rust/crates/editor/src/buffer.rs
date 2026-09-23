@@ -5,6 +5,7 @@ use crate::indent::{
 use crate::language::{BracketPair, LanguageConfig, Scope};
 use crate::movement;
 use crate::search::SearchQuery;
+use crate::snippet::Snippet;
 use crate::transform::{LineTransform, TextTransform};
 use ropey::Rope;
 use std::collections::BTreeMap;
@@ -347,6 +348,14 @@ pub struct EditorBuffer {
     ime_undo_base: Option<usize>,
     /// Edited spans waiting to be re-indented once the syntax tree reflects the edit.
     autoindent_requests: Vec<AutoindentRequest>,
+    snippet_stack: Vec<SnippetState>,
+}
+
+#[derive(Clone, Debug)]
+struct SnippetState {
+    ranges: Vec<Vec<Range<usize>>>,
+    active: usize,
+    choices: Vec<Option<Vec<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -417,6 +426,7 @@ impl EditorBuffer {
             marked_ranges: Vec::new(),
             ime_undo_base: None,
             autoindent_requests: Vec::new(),
+            snippet_stack: Vec::new(),
         }
     }
 
@@ -521,6 +531,21 @@ impl EditorBuffer {
         }
         self.select_next_state = None;
         self.syntax_node_history.clear();
+        while let Some(state) = self.snippet_stack.last() {
+            let ranges = state
+                .ranges
+                .get(state.active)
+                .map_or(&[][..], Vec::as_slice);
+            let inside = selections.len() == ranges.len()
+                && selections
+                    .iter()
+                    .zip(ranges)
+                    .all(|(s, range)| range.start <= s.head() && s.head() <= range.end);
+            if inside {
+                break;
+            }
+            self.snippet_stack.pop();
+        }
         // A region lives only while its own selection stays inside it.
         self.autoclose_regions.retain(|region| {
             selections.iter().any(|s| {
@@ -823,6 +848,7 @@ impl EditorBuffer {
         if edits.is_empty() {
             return;
         }
+        let mut snippets = std::mem::take(&mut self.snippet_stack);
         let replacements = self.apply(&edits);
         let batch: Vec<Edit> = replacements
             .iter()
@@ -831,6 +857,14 @@ impl EditorBuffer {
                 new: r.new.clone(),
             })
             .collect();
+        for range in snippets
+            .iter_mut()
+            .flat_map(|state| state.ranges.iter_mut().flatten())
+        {
+            range.start = map_offset(&batch, range.start, Bias::Right);
+            range.end = map_offset(&batch, range.end, Bias::Right);
+        }
+        self.snippet_stack = snippets;
         let mut next = self.selections.clone();
         for selection in &mut next {
             selection.start = map_offset(&batch, selection.start, Bias::Right);
@@ -907,6 +941,14 @@ impl EditorBuffer {
             entry.range.start = map_offset(&batch, entry.range.start, Bias::Left);
             entry.range.end = map_offset(&batch, entry.range.end, Bias::Right);
         }
+        for range in self
+            .snippet_stack
+            .iter_mut()
+            .flat_map(|state| state.ranges.iter_mut().flatten())
+        {
+            range.start = map_offset(&batch, range.start, Bias::Left);
+            range.end = map_offset(&batch, range.end, Bias::Right);
+        }
         self.version += 1;
         self.log.push(LogEntry {
             version: self.version,
@@ -940,6 +982,99 @@ impl EditorBuffer {
                 s.end = map(s.end, Bias::Left);
             });
         });
+    }
+
+    pub fn insert_snippet(
+        &mut self,
+        ranges: &[Range<usize>],
+        snippet: &Snippet,
+    ) -> Option<Vec<String>> {
+        let mut ranges = ranges.to_vec();
+        ranges.sort_by_key(|range| range.start);
+        let edits = ranges
+            .iter()
+            .map(|range| (range.clone(), snippet.text.clone()))
+            .collect();
+        let snippet_len = snippet.len();
+        self.transact(|this| {
+            let applied = this.edit_autoindented(
+                edits,
+                AutoindentMode::Block {
+                    original_indent_columns: Vec::new(),
+                },
+            );
+            let len = this.rope.len_chars();
+            let starts: Vec<usize> = applied.iter().map(|edit| edit.new.start).collect();
+            let stops: Vec<Vec<Range<usize>>> = snippet
+                .tabstops
+                .iter()
+                .map(|stop| {
+                    let mut placed: Vec<Range<usize>> = stop
+                        .ranges
+                        .iter()
+                        .flat_map(|range| {
+                            starts.iter().map(move |start| {
+                                (start + range.start).min(len)..(start + range.end).min(len)
+                            })
+                        })
+                        .collect();
+                    placed.sort_by_key(|range| range.start);
+                    placed
+                })
+                .collect();
+            let first = snippet.tabstops.first()?;
+            let first_is_end = first
+                .ranges
+                .first()
+                .is_some_and(|range| range.is_empty() && range.start == snippet_len);
+            this.select_stop(stops.first()?);
+            if !first_is_end {
+                this.snippet_stack.push(SnippetState {
+                    ranges: stops,
+                    active: 0,
+                    choices: snippet.tabstops.iter().map(|t| t.choices.clone()).collect(),
+                });
+            }
+            first.choices.clone()
+        })
+    }
+
+    fn select_stop(&mut self, ranges: &[Range<usize>]) {
+        let selections = ranges
+            .iter()
+            .rev()
+            .map(|range| self.new_selection(range.start, range.end, false))
+            .collect();
+        self.select(selections);
+    }
+
+    pub fn in_snippet(&self) -> bool {
+        !self.snippet_stack.is_empty()
+    }
+
+    pub fn move_to_snippet_stop(&mut self, forward: bool) -> Option<Option<Vec<String>>> {
+        let mut state = self.snippet_stack.pop()?;
+        let target = if forward {
+            (state.active + 1 < state.ranges.len()).then_some(state.active + 1)
+        } else {
+            state.active.checked_sub(1)
+        };
+        let Some(target) = target else {
+            self.snippet_stack.push(state);
+            return None;
+        };
+        state.active = target;
+        let ranges = state.ranges.get(target).cloned().unwrap_or_default();
+        let choices = state.choices.get(target).cloned().flatten();
+        self.select_stop(&ranges);
+        if target + 1 < state.ranges.len() {
+            self.snippet_stack.push(state);
+        }
+        Some(choices)
+    }
+
+    pub fn exit_snippet(&mut self) -> bool {
+        self.snippet_stack.pop().is_some()
     }
 
     pub fn insert_text(&mut self, text: &str) {
@@ -4168,5 +4303,75 @@ mod tests {
         b.place_cursor(0);
         b.extend_cursor(3);
         assert_eq!(b.query_suggestion(), "alp");
+    }
+    fn ranges_of(b: &EditorBuffer) -> Vec<Range<usize>> {
+        b.selections().iter().map(|s| s.start..s.end).collect()
+    }
+
+    #[test]
+    fn snippet_stops_follow_typing_and_tab() {
+        let mut b = EditorBuffer::from_text("fn");
+        b.place_cursor(2);
+        let snippet = Snippet::parse("fn ${1:name}($2) {$0}").unwrap();
+        b.insert_snippet(std::slice::from_ref(&(0..2)), &snippet);
+        assert_eq!(b.text(), "fn name() {}");
+        assert_eq!(ranges_of(&b), vec![3..7]);
+        assert!(b.in_snippet());
+        b.insert_text("go");
+        assert_eq!(b.text(), "fn go() {}");
+        assert!(b.in_snippet());
+        assert_eq!(b.move_to_snippet_stop(true), Some(None));
+        assert_eq!(ranges_of(&b), vec![6..6]);
+        b.insert_text("x");
+        assert_eq!(b.move_to_snippet_stop(false), Some(None));
+        assert_eq!(ranges_of(&b), vec![3..5]);
+        b.move_to_snippet_stop(true);
+        assert_eq!(ranges_of(&b), vec![6..7]);
+        assert_eq!(b.move_to_snippet_stop(true), Some(None));
+        assert_eq!(ranges_of(&b), vec![10..10]);
+        assert!(!b.in_snippet());
+        assert_eq!(b.move_to_snippet_stop(true), None);
+    }
+
+    #[test]
+    fn snippet_ends_when_a_caret_leaves_its_stop() {
+        let mut b = EditorBuffer::from_text("x");
+        b.place_cursor(1);
+        let snippet = Snippet::parse("a($1, $2)").unwrap();
+        b.insert_snippet(std::slice::from_ref(&(1..1)), &snippet);
+        assert_eq!(ranges_of(&b), vec![3..3]);
+        b.place_cursor(0);
+        assert!(!b.in_snippet());
+    }
+
+    #[test]
+    fn snippet_at_every_caret_and_mirrored_stops() {
+        let mut b = EditorBuffer::from_text("f\nf");
+        let snippet = Snippet::parse("$1=$1").unwrap();
+        b.insert_snippet(&[0..1, 2..3], &snippet);
+        assert_eq!(b.text(), "=\n=");
+        assert_eq!(ranges_of(&b), vec![0..0, 1..1, 2..2, 3..3]);
+        b.insert_text("v");
+        assert_eq!(b.text(), "v=v\nv=v");
+        assert_eq!(b.newest().head(), 1);
+        assert!(b.in_snippet());
+    }
+
+    #[test]
+    fn snippet_ending_at_its_only_stop_leaves_no_state() {
+        let mut b = EditorBuffer::from_text("");
+        b.insert_snippet(
+            std::slice::from_ref(&(0..0)),
+            &Snippet::parse("done").unwrap(),
+        );
+        assert_eq!(ranges_of(&b), vec![4..4]);
+        assert!(!b.in_snippet());
+        b.insert_snippet(
+            std::slice::from_ref(&(4..4)),
+            &Snippet::parse("${1:a}").unwrap(),
+        );
+        assert!(b.in_snippet());
+        assert!(b.exit_snippet());
+        assert!(!b.in_snippet());
     }
 }

@@ -316,7 +316,7 @@ impl SearchBar {
                 self.dismiss(item);
                 return false;
             }
-            EditKey::Tab | EditKey::Outdent => {
+            EditKey::Tab | EditKey::Backtab | EditKey::Outdent => {
                 if self.replace_enabled {
                     self.focus = Some(match field {
                         SearchField::Query => SearchField::Replacement,
