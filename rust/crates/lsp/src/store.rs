@@ -8,14 +8,15 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 
 use editor::{EditorBuffer, Lang};
 use lsp_types::{
-    Diagnostic, PublishDiagnosticsParams, ServerCapabilities, TextDocumentContentChangeEvent,
+    Diagnostic, Hover, HoverContents, HoverProviderCapability, MarkedString, MarkupKind,
+    PublishDiagnosticsParams, ServerCapabilities, TextDocumentContentChangeEvent,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions, Url,
 };
 use ropey::Rope;
 use serde_json::{json, Value};
 
 use crate::adapters::adapter_for;
-use crate::position::char_to_position;
+use crate::position::{char_to_position, position_to_char};
 use crate::{LanguageServer, ServerEvent, Waker};
 
 /// Versions of a document kept after sending them, so diagnostics a server computed for an older version can
@@ -37,6 +38,22 @@ pub struct DiagnosticsUpdate {
     pub diagnostics: Vec<Diagnostic>,
     pub synced: Option<SyncedText>,
 }
+
+#[derive(Clone, Debug)]
+pub enum StoreEvent {
+    Diagnostics(DiagnosticsUpdate),
+    Hover(HoverResponse),
+}
+
+#[derive(Clone, Debug)]
+pub struct HoverResponse {
+    pub request: u64,
+    pub markdown: Option<String>,
+    pub range: Option<std::ops::Range<usize>>,
+    pub synced: SyncedText,
+}
+
+const MAX_HOVER_BYTES: usize = 100_000;
 
 enum ServerState {
     Locating(Receiver<Option<(PathBuf, Vec<String>)>>),
@@ -76,7 +93,9 @@ pub struct LspStore {
     documents: HashMap<PathBuf, Document>,
     /// Diagnostics for files that aren't open, delivered when they are.
     unopened_diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
-    updates: Vec<DiagnosticsUpdate>,
+    updates: Vec<StoreEvent>,
+    hovers: HashMap<(&'static str, i64), (u64, SyncedText)>,
+    next_request: u64,
 }
 
 impl LspStore {
@@ -90,6 +109,8 @@ impl LspStore {
             documents: HashMap::new(),
             unopened_diagnostics: HashMap::new(),
             updates: Vec::new(),
+            hovers: HashMap::new(),
+            next_request: 0,
         }
     }
 
@@ -242,11 +263,12 @@ impl LspStore {
                 rope: buffer.rope.clone(),
             };
             if let Some(diagnostics) = self.unopened_diagnostics.remove(path) {
-                self.updates.push(DiagnosticsUpdate {
-                    path: path.to_path_buf(),
-                    diagnostics,
-                    synced: Some(synced.clone()),
-                });
+                self.updates
+                    .push(StoreEvent::Diagnostics(DiagnosticsUpdate {
+                        path: path.to_path_buf(),
+                        diagnostics,
+                        synced: Some(synced.clone()),
+                    }));
             }
             self.documents.insert(
                 path.to_path_buf(),
@@ -329,8 +351,48 @@ impl LspStore {
         }
     }
 
-    /// Handle what the servers sent; returns the diagnostics that changed for open files.
-    pub fn poll(&mut self) -> Vec<DiagnosticsUpdate> {
+    pub fn hover(
+        &mut self,
+        path: &Path,
+        lang: Lang,
+        buffer: &EditorBuffer,
+        offset: usize,
+    ) -> Option<u64> {
+        self.sync_document(path, lang, buffer);
+        let document = self.documents.get(path)?;
+        let synced = document.versions.back()?.clone();
+        if synced.buffer_version != buffer.version() {
+            return None;
+        }
+        let Some(Server {
+            server: Some(server),
+            state: ServerState::Running { capabilities },
+        }) = self.servers.get_mut(document.adapter)
+        else {
+            return None;
+        };
+        let supported = matches!(
+            capabilities.hover_provider,
+            Some(HoverProviderCapability::Simple(true) | HoverProviderCapability::Options(_))
+        );
+        if !supported {
+            return None;
+        }
+        let id = server.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": {"uri": document.uri},
+                "position": char_to_position(&synced.rope, offset),
+            }),
+        );
+        let request = self.next_request;
+        self.next_request += 1;
+        self.hovers
+            .insert((document.adapter, id), (request, synced));
+        Some(request)
+    }
+
+    pub fn poll(&mut self) -> Vec<StoreEvent> {
         let names: Vec<&'static str> = self.servers.keys().copied().collect();
         for name in names {
             let events = match self
@@ -351,6 +413,26 @@ impl LspStore {
     fn handle_event(&mut self, name: &'static str, event: ServerEvent) {
         match event {
             ServerEvent::Response { id, result, .. } => {
+                if let Some((request, synced)) = self.hovers.remove(&(name, id)) {
+                    let hover = result
+                        .ok()
+                        .and_then(|value| serde_json::from_value::<Option<Hover>>(value).ok())
+                        .flatten();
+                    let range = hover.as_ref().and_then(|hover| hover.range).map(|range| {
+                        position_to_char(&synced.rope, range.start)
+                            ..position_to_char(&synced.rope, range.end)
+                    });
+                    let markdown = hover
+                        .map(|hover| combine_hover_contents(hover.contents))
+                        .filter(|markdown| !markdown.trim().is_empty());
+                    self.updates.push(StoreEvent::Hover(HoverResponse {
+                        request,
+                        markdown,
+                        range,
+                        synced,
+                    }));
+                    return;
+                }
                 let Some(server) = self.servers.get_mut(name) else {
                     return;
                 };
@@ -406,11 +488,12 @@ impl LspStore {
             .collect();
         for path in closed {
             self.documents.remove(&path);
-            self.updates.push(DiagnosticsUpdate {
-                path,
-                diagnostics: Vec::new(),
-                synced: None,
-            });
+            self.updates
+                .push(StoreEvent::Diagnostics(DiagnosticsUpdate {
+                    path,
+                    diagnostics: Vec::new(),
+                    synced: None,
+                }));
         }
     }
 
@@ -444,11 +527,12 @@ impl LspStore {
         if synced.is_none() {
             return;
         }
-        self.updates.push(DiagnosticsUpdate {
-            path,
-            diagnostics,
-            synced,
-        });
+        self.updates
+            .push(StoreEvent::Diagnostics(DiagnosticsUpdate {
+                path,
+                diagnostics,
+                synced,
+            }));
     }
 }
 
@@ -458,6 +542,78 @@ impl Drop for LspStore {
             server.shutdown();
         }
     }
+}
+
+enum HoverBlock {
+    Markdown(String),
+    Code { language: String, text: String },
+}
+
+fn combine_hover_contents(contents: HoverContents) -> String {
+    let from_marked = |marked: MarkedString| match marked {
+        MarkedString::String(text) => HoverBlock::Markdown(text),
+        MarkedString::LanguageString(code) => HoverBlock::Code {
+            language: code.language,
+            text: code.value,
+        },
+    };
+    let blocks: Vec<HoverBlock> = match contents {
+        HoverContents::Scalar(marked) => vec![from_marked(marked)],
+        HoverContents::Array(marked) => marked.into_iter().map(from_marked).collect(),
+        HoverContents::Markup(markup) => match markup.kind {
+            MarkupKind::Markdown | MarkupKind::PlainText => {
+                vec![HoverBlock::Markdown(markup.value)]
+            }
+        },
+    };
+    let mut combined = String::new();
+    let mut truncated = false;
+    for block in blocks {
+        let piece = match block {
+            HoverBlock::Markdown(text) => text.trim().to_string(),
+            HoverBlock::Code { language, text } => {
+                let text = text.trim();
+                let fence = code_fence_for(text);
+                let language = language.replace(['`', '\r', '\n'], "");
+                format!("{fence}{language}\n{text}\n{fence}")
+            }
+        };
+        if piece.is_empty() {
+            continue;
+        }
+        if !combined.is_empty() {
+            combined.push_str("\n\n");
+        }
+        let room = MAX_HOVER_BYTES.saturating_sub(combined.len());
+        if piece.len() > room {
+            let mut cut = room;
+            while !piece.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            combined.push_str(&piece[..cut]);
+            truncated = true;
+            break;
+        }
+        combined.push_str(&piece);
+    }
+    if truncated {
+        combined.push_str("\n\n...");
+    }
+    combined
+}
+
+fn code_fence_for(text: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for c in text.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat((longest + 1).max(3))
 }
 
 fn sync_kind(capabilities: &ServerCapabilities) -> Option<TextDocumentSyncKind> {
@@ -545,6 +701,7 @@ fn initialize_params(root: &Path) -> Value {
             },
             "textDocument": {
                 "synchronization": {"didSave": true, "dynamicRegistration": true},
+                "hover": {"contentFormat": ["markdown"], "dynamicRegistration": true},
                 "publishDiagnostics": {
                     "relatedInformation": true,
                     "versionSupport": true,
@@ -613,6 +770,22 @@ mod tests {
     }
 
     #[test]
+    fn hover_contents_become_one_markdown_document() {
+        let contents = HoverContents::Array(vec![
+            MarkedString::LanguageString(lsp_types::LanguageString {
+                language: "rust".into(),
+                value: "fn a() -> u8".into(),
+            }),
+            MarkedString::String("  Doc text.  ".into()),
+        ]);
+        assert_eq!(
+            combine_hover_contents(contents),
+            "```rust\nfn a() -> u8\n```\n\nDoc text."
+        );
+        assert_eq!(code_fence_for("uses ``` inside"), "````");
+    }
+
+    #[test]
     fn save_text_follows_the_server_options() {
         let mut capabilities = ServerCapabilities::default();
         assert_eq!(save_includes_text(&capabilities), None);
@@ -652,7 +825,10 @@ mod tests {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
                 while std::time::Instant::now() < deadline {
                     store.sync_document(&path, Lang::C, buffer);
-                    for update in store.poll() {
+                    for event in store.poll() {
+                        let StoreEvent::Diagnostics(update) = event else {
+                            continue;
+                        };
                         if update.path == path && want(&update.diagnostics) {
                             return true;
                         }
@@ -666,6 +842,21 @@ mod tests {
                 .any(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
         };
         assert!(wait_for(&mut store, &buffer, &has_error));
+        let token = store
+            .hover(&path, Lang::C, &buffer, text.find("main").unwrap() + 1)
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut answer = None;
+        while answer.is_none() && std::time::Instant::now() < deadline {
+            answer = store.poll().into_iter().find_map(|event| match event {
+                StoreEvent::Hover(hover) if hover.request == token => Some(hover),
+                _ => None,
+            });
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let answer = answer.unwrap();
+        assert!(answer.markdown.unwrap().contains("main"));
+        assert_eq!(answer.range, Some(4..8));
         let at = buffer.text().find("missing").unwrap();
         buffer.place_cursor(at);
         buffer.extend_cursor(at + "missing".len());

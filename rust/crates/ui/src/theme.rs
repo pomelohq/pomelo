@@ -127,6 +127,14 @@ pub struct ThemeColors {
     /// Status "info" accent (used by accent-tinted buttons like the selected file pill).
     pub info_background: Rgba,
     pub info_border: Rgba,
+    pub error_background: Rgba,
+    pub error_border: Rgba,
+    pub warning_background: Rgba,
+    pub warning_border: Rgba,
+    pub hint_background: Rgba,
+    pub hint_border: Rgba,
+    pub ignored_background: Rgba,
+    pub ignored_border: Rgba,
 }
 
 /// One Dark.
@@ -190,6 +198,14 @@ pub fn one_dark() -> ThemeColors {
         panel_indent_guide: h("#363c46"),
         info_background: h("#74ade81a"),
         info_border: h("#293b5b"),
+        error_background: h("#d072771a"),
+        error_border: h("#4c2b2c"),
+        warning_background: h("#dec1841a"),
+        warning_border: h("#5d4c2f"),
+        hint_background: h("#5a6f891a"),
+        hint_border: h("#293b5b"),
+        ignored_background: h("#696b771a"),
+        ignored_border: h("#464b57"),
     }
 }
 
@@ -254,6 +270,14 @@ pub fn one_light() -> ThemeColors {
         panel_indent_guide: h("#dfdfe0"),
         info_background: h("#e2e2fa"),
         info_border: h("#cbcdf6"),
+        error_background: h("#fbdfd9"),
+        error_border: h("#f6c6bd"),
+        warning_background: h("#faf2e6"),
+        warning_border: h("#f4e7d1"),
+        hint_background: h("#e2e2fa"),
+        hint_border: h("#cbcdf6"),
+        ignored_background: h("#dcdcdd"),
+        ignored_border: h("#c9c9ca"),
     }
 }
 
@@ -318,6 +342,14 @@ pub fn gruvbox_dark() -> ThemeColors {
         panel_indent_guide: h("#494340"),
         info_background: h("#83a5981a"),
         info_border: h("#303a36"),
+        error_background: h("#590a0f"),
+        error_border: h("#771617"),
+        warning_background: h("#572e10"),
+        warning_border: h("#754916"),
+        hint_background: h("#1e2321"),
+        hint_border: h("#303a36"),
+        ignored_background: h("#4c4642"),
+        ignored_border: h("#5b534d"),
     }
 }
 
@@ -382,6 +414,14 @@ pub fn ayu_mirage() -> ThemeColors {
         panel_indent_guide: h("#43464f"),
         info_background: h("#72cffe1a"),
         info_border: h("#24556f"),
+        error_background: h("#481a1b"),
+        error_border: h("#662e2d"),
+        warning_background: h("#574018"),
+        warning_border: h("#765a29"),
+        hint_background: h("#123950"),
+        hint_border: h("#24556f"),
+        ignored_background: h("#464a52"),
+        ignored_border: h("#53565d"),
     }
 }
 

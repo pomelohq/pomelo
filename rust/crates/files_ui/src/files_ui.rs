@@ -24,7 +24,9 @@ mod completions_menu;
 mod fuzzy;
 mod git_diff;
 mod go_to_line;
+mod hover;
 mod list_scrollbar;
+mod markdown_view;
 mod outline_view;
 mod search_bar;
 mod snippet_store;
@@ -131,6 +133,7 @@ const NAV_FWD_BASE: u64 = FUNC_VIEW_BASE + 8_000_000;
 const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 8_500_000; // + PaletteClick
 const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 8_600_000; // + row
 const COMPLETION_BASE: u64 = FUNC_VIEW_BASE + 8_700_000; // + row
+const HOVER_BASE: u64 = FUNC_VIEW_BASE + 8_800_000; // + popover
 const SEARCH_BASE: u64 = FUNC_VIEW_BASE + 9_000_000; // + pane*PANE_STRIDE + SearchClick
 const FOLD_BASE: u64 = FUNC_VIEW_BASE + 10_000_000; // + pane*PANE_STRIDE + buffer_line
 const HUNK_BASE: u64 = FUNC_VIEW_BASE + 11_000_000; // + pane*PANE_STRIDE + buffer_line
@@ -367,6 +370,7 @@ struct FileItem {
     diagnostics: Vec<DiagnosticEntry>,
     /// Saved since the language server last heard about it.
     saved_unannounced: bool,
+    hover: hover::HoverState,
 }
 
 /// A problem a language server reported, over a char range of the buffer.
@@ -375,6 +379,8 @@ struct DiagnosticEntry {
     range: Range<usize>,
     severity: lsp::lsp_types::DiagnosticSeverity,
     message: String,
+    source: Option<String>,
+    code: Option<String>,
 }
 
 /// Where a wavy underline sits in a line: below the baseline by most of the font's descent, as text is
@@ -472,6 +478,7 @@ impl FileItem {
             },
             diagnostics: Vec::new(),
             saved_unannounced: false,
+            hover: hover::HoverState::default(),
         }
     }
 
@@ -495,6 +502,11 @@ impl FileItem {
                     .severity
                     .unwrap_or(lsp::lsp_types::DiagnosticSeverity::ERROR),
                 message: diagnostic.message.clone(),
+                source: diagnostic.source.clone(),
+                code: diagnostic.code.as_ref().map(|code| match code {
+                    lsp::lsp_types::NumberOrString::Number(number) => number.to_string(),
+                    lsp::lsp_types::NumberOrString::String(text) => text.clone(),
+                }),
             })
             .collect();
         if let Some(since) = since {
@@ -1794,6 +1806,8 @@ impl FileItem {
         self.completions = completions_menu::CompletionsMenu::new(query, words, snippets);
         if self.completions.is_none() {
             self.completions_forced = false;
+        } else {
+            self.hide_hover();
         }
     }
 
@@ -2800,6 +2814,18 @@ impl Item for FileItem {
             .is_some_and(|menu| menu.scroll_by(dy))
     }
 
+    fn pointer_moved(&mut self, local: Option<(f32, f32)>, window: (f32, f32)) -> bool {
+        self.hover_pointer(local, window)
+    }
+
+    fn hover_popovers(&self, content: Rect) -> Vec<(Node, f32, f32)> {
+        self.hover_popover_nodes(content)
+    }
+
+    fn scroll_hover(&mut self, index: usize, dy: f32) -> bool {
+        self.scroll_hover_popover(index, dy)
+    }
+
     fn hover_completion(&mut self, id: Option<u64>) {
         if let Some(menu) = self.completions.as_mut() {
             menu.hovered = id;
@@ -2863,6 +2889,7 @@ impl Item for FileItem {
         self.syntax.as_ref().is_some_and(|s| s.is_parsing())
             || self.scrollbars_revealed()
             || self.git.is_busy()
+            || self.hover.is_busy()
             || self
                 .completions
                 .as_ref()
@@ -2979,12 +3006,14 @@ impl Item for FileItem {
     }
 
     fn scroll_by(&mut self, dy: f32) -> bool {
+        self.hide_hover();
         let before = self.scroll_y;
         self.set_scroll_y(self.scroll_y - dy);
         (self.scroll_y - before).abs() > 0.01
     }
 
     fn input_text(&mut self, text: &str) {
+        self.hide_hover();
         self.refresh();
         let language = editor::language::config(self.lang);
         let rope = self.rope_snapshot();
@@ -3059,6 +3088,13 @@ impl Item for FileItem {
     }
 
     fn input_key(&mut self, key: EditKey, shift: bool) {
+        if key == EditKey::Hover {
+            if let Some(caret) = self.buffer.as_ref().map(|b| b.newest().head()) {
+                self.show_hover(caret, true);
+            }
+            return;
+        }
+        self.hide_hover();
         if let Some(menu) = self.completions.as_mut() {
             match key {
                 EditKey::Up => return menu.select_previous(),
@@ -3273,6 +3309,7 @@ impl Item for FileItem {
     }
 
     fn place_cursor(&mut self, local_x: f32, local_y: f32, extend: bool) {
+        self.hide_hover();
         self.close_completions();
         let Some(off) = self.offset_at_local(local_x, local_y) else {
             return;
@@ -3287,6 +3324,7 @@ impl Item for FileItem {
     }
 
     fn select_word_at(&mut self, local_x: f32, local_y: f32) {
+        self.hide_hover();
         let Some(off) = self.offset_at_local(local_x, local_y) else {
             return;
         };
@@ -3368,6 +3406,26 @@ impl Item for FileItem {
                     content.w,
                     (bottom + 1 - top) as f32 * EDIT_LINE_H,
                     theme().editor_highlighted_line,
+                ));
+            }
+        }
+
+        for range in self.hover_highlight_ranges() {
+            let (start_row, start_x) = self.position(range.start);
+            let (end_row, end_x) = self.position(range.end);
+            for row in start_row.max(first)..=end_row.min(last.saturating_sub(1)) {
+                let left = if row == start_row { start_x } else { 0.0 };
+                let right = if row == end_row {
+                    end_x
+                } else {
+                    self.row_width(row)
+                };
+                rects.push(Rect::new(
+                    content.x + gw + left - self.scroll_x,
+                    row_y(row),
+                    (right - left).max(1.0),
+                    EDIT_LINE_H,
+                    theme().element_hover,
                 ));
             }
         }
@@ -4215,6 +4273,13 @@ pub struct FilesView {
     focused_content: Option<Rect>,
     /// The project's language servers; none in tests, which must not start real servers.
     lsp: Option<lsp::LspStore>,
+    popover_sources: Vec<PopoverSource>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum PopoverSource {
+    Completion,
+    Hover { pane: Vec<usize>, index: usize },
 }
 
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting stays in sync with
@@ -4255,6 +4320,7 @@ impl FilesView {
             window_size: (1200.0, 800.0),
             focused_content: None,
             lsp,
+            popover_sources: Vec::new(),
             tab_drag: None,
             drag_preview: None,
             click_targets: Vec::new(),
@@ -4314,10 +4380,30 @@ impl FilesView {
     /// Bring the language servers up to date with the open files, and give each file its diagnostics. A file
     /// open in several panes is mirrored from its first pane's buffer.
     fn sync_language_servers(&mut self) {
+        let now = std::time::Instant::now();
         let Some(lsp) = self.lsp.as_mut() else {
+            self.group.for_each_pane_mut(&mut |pane| {
+                for item in pane.open.iter_mut() {
+                    if let Some(file) = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>())
+                    {
+                        if file.hover_request_due(now).is_some() {
+                            file.hover_requested(None);
+                        }
+                        file.tick_hover(now);
+                    }
+                }
+            });
             return;
         };
-        let updates = lsp.poll();
+        let events = lsp.poll();
+        let mut updates = Vec::new();
+        let mut hovers = Vec::new();
+        for event in events {
+            match event {
+                lsp::StoreEvent::Diagnostics(update) => updates.push(update),
+                lsp::StoreEvent::Hover(response) => hovers.push(response),
+            }
+        }
         let root = self.root.clone();
         let mut synced: HashSet<PathBuf> = HashSet::new();
         self.group.for_each_pane_mut(&mut |pane| {
@@ -4328,7 +4414,16 @@ impl FilesView {
                 else {
                     continue;
                 };
+                for response in &hovers {
+                    file.hover_answered(response);
+                }
                 let path = root.join(&file.path);
+                if let (Some(offset), Some(b)) = (file.hover_request_due(now), file.buffer.as_ref())
+                {
+                    let token = lsp.hover(&path, file.lang, b, offset);
+                    file.hover_requested(token);
+                }
+                file.tick_hover(now);
                 if file.buffer.is_none() || !synced.insert(path.clone()) {
                     continue;
                 }
@@ -5590,18 +5685,61 @@ impl FunctionView for FilesView {
         })
     }
 
-    fn editor_popover(&mut self) -> Option<(Node, f32, f32)> {
+    fn editor_popovers(&mut self) -> Vec<(Node, f32, f32)> {
+        self.popover_sources.clear();
         if self.outline.is_some() || self.palette.is_some() || self.go_to_line.is_some() {
-            return None;
+            return Vec::new();
         }
-        let content = self.focused_content?;
-        let pane = self.pane_at(&self.active)?;
-        pane.open.get(pane.active?)?.completion_popover(content)
+        let mut popovers = Vec::new();
+        let completion = self.focused_content.and_then(|content| {
+            let pane = self.pane_at(&self.active)?;
+            pane.open.get(pane.active?)?.completion_popover(content)
+        });
+        if let Some(completion) = completion {
+            popovers.push(completion);
+            self.popover_sources.push(PopoverSource::Completion);
+        }
+        for (index, rect) in self.pane_rects.iter().enumerate() {
+            let Some(path) = self.pane_order.get(index) else {
+                continue;
+            };
+            let Some(pane) = self.pane_at(path) else {
+                continue;
+            };
+            let Some(item) = pane.active.and_then(|i| pane.open.get(i)) else {
+                continue;
+            };
+            let tab_h = pane.header_h();
+            let content = Rect::new(
+                rect.x,
+                rect.y + tab_h,
+                rect.w,
+                rect.h - tab_h,
+                Rgba::TRANSPARENT,
+            );
+            for (position, popover) in item.hover_popovers(content).into_iter().enumerate() {
+                popovers.push(popover);
+                self.popover_sources.push(PopoverSource::Hover {
+                    pane: path.clone(),
+                    index: position,
+                });
+            }
+        }
+        popovers
     }
 
-    fn popover_scroll(&mut self, dy: f32) -> bool {
-        self.active_item_mut()
-            .is_some_and(|item| item.scroll_completion(dy))
+    fn popover_scroll(&mut self, index: usize, dy: f32) -> bool {
+        match self.popover_sources.get(index).cloned() {
+            Some(PopoverSource::Completion) => self
+                .active_item_mut()
+                .is_some_and(|item| item.scroll_completion(dy)),
+            Some(PopoverSource::Hover { pane, index }) => self
+                .group
+                .leaf_at_mut(&pane)
+                .and_then(|pane| pane.active.and_then(|i| pane.open.get_mut(i)))
+                .is_some_and(|item| item.scroll_hover(index, dy)),
+            None => false,
+        }
     }
 
     fn modal_scroll(&mut self, dy: f32) -> bool {
@@ -5879,6 +6017,17 @@ impl FunctionView for FilesView {
             }
             return true;
         }
+        if id >= HOVER_BASE {
+            self.group.for_each_pane_mut(&mut |pane| {
+                for item in pane.open.iter_mut() {
+                    if let Some(file) = item.as_any_mut().and_then(|a| a.downcast_mut::<FileItem>())
+                    {
+                        file.hover_clicked();
+                    }
+                }
+            });
+            return true;
+        }
         if id >= COMPLETION_BASE {
             if let Some(item) = self.active_item_mut() {
                 item.click_completion((id - COMPLETION_BASE) as usize);
@@ -6049,7 +6198,7 @@ impl FunctionView for FilesView {
         if outline_hovered_row.is_some() {
             self.preview_outline(false);
         }
-        let over_completion = id.filter(|v| (COMPLETION_BASE..SEARCH_BASE).contains(v));
+        let over_completion = id.filter(|v| (COMPLETION_BASE..HOVER_BASE).contains(v));
         if let Some(item) = self.active_item_mut() {
             item.hover_completion(over_completion);
         }
@@ -6378,6 +6527,10 @@ impl FunctionView for FilesView {
                 && y >= rect.y + tab_h
                 && y < rect.y + rect.h;
             changed |= item.set_gutter_hovered(over_gutter);
+            let in_pane =
+                x >= rect.x && x < rect.x + rect.w && y >= rect.y + tab_h && y < rect.y + rect.h;
+            let local = in_pane.then_some((x - rect.x, y - (rect.y + tab_h)));
+            changed |= item.pointer_moved(local, (x, y));
         }
         changed
     }
