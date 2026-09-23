@@ -715,24 +715,35 @@ impl WorkspaceView {
 
         self.modal_rect = None;
         if let Some((node, modal_w)) = self.layout.files_view.as_mut().and_then(|v| v.modal()) {
+            // Modal widths are design px; the tree scales them with the UI text size.
+            let modal_w = modal_w * ui::ui_text_scale();
             let x = ((w - modal_w) / 2.0).max(8.0);
             let area = Rect::new(x, MODAL_TOP, modal_w, h - MODAL_TOP, Rgba::TRANSPARENT);
-            let p = ui::render(&node, area);
+            // Wrapped in a column so the modal keeps its content height instead of filling the area.
+            let p = ui::render(&ui::div().col().child(node).into(), area);
             let bottom = p.rects.iter().map(|r| r.y + r.h).fold(MODAL_TOP, f32::max);
             let rect = Rect::new(x, MODAL_TOP, modal_w, bottom - MODAL_TOP, Rgba::TRANSPARENT);
             self.modal_rect = Some(rect);
             header_hits.extend(p.hits.iter().copied());
             let mut painted = Painted::default();
-            painted.rects.push(Rect {
-                x: x - 2.0,
-                y: MODAL_TOP,
-                w: modal_w + 4.0,
-                h: rect.h + 6.0,
-                color: Rgba::new(0.0, 0.0, 0.0, 0.12),
-                radius: 10.0,
-                border: 0.0,
-                border_color: Rgba::TRANSPARENT,
-            });
+            // Elevated-surface shadow: a soft layer 2px down and a faint one 1px down (no blur available).
+            let faint = if ui::theme().appearance == ui::Appearance::Light {
+                0.03
+            } else {
+                0.06
+            };
+            for (offset, alpha) in [(2.0, 0.12), (1.0, faint)] {
+                painted.rects.push(Rect {
+                    x,
+                    y: MODAL_TOP + offset,
+                    w: modal_w,
+                    h: rect.h,
+                    color: Rgba::new(0.0, 0.0, 0.0, alpha),
+                    radius: 8.0,
+                    border: 0.0,
+                    border_color: Rgba::TRANSPARENT,
+                });
+            }
             painted.rects.extend(p.rects);
             painted.tris.extend(p.tris);
             painted.texts.extend(p.texts);

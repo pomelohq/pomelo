@@ -7,7 +7,7 @@ use std::ops::Range;
 use ui::{div, label, theme, Node, Rgba};
 
 use crate::fuzzy::fuzzy_match;
-use crate::text_field::{TextField, INPUT_FONT};
+use crate::text_field::{FieldFont, TextField, INPUT_FONT};
 
 pub const WIDTH: f32 = 544.0;
 const HEAD_HEIGHT: f32 = 36.0;
@@ -239,10 +239,13 @@ impl OutlineView {
             .items_center()
             .h_px(HEAD_HEIGHT)
             .px(10.0)
-            .child(
-                self.field
-                    .render(PLACEHOLDER, true, colors.text, INPUT_FONT * 1.6),
-            );
+            .child(self.field.render(
+                PLACEHOLDER,
+                true,
+                colors.editor_foreground,
+                INPUT_FONT * FieldFont::Ui.line_height(),
+                FieldFont::Ui,
+            ));
         let list: Node = if self.entries.is_empty() {
             div()
                 .col()

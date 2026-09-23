@@ -9,6 +9,23 @@ use workspace::EditKey;
 
 pub const INPUT_FONT: f32 = 14.0;
 
+/// One-line fields use the UI font like other single-line inputs; search queries use the code font.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FieldFont {
+    Ui,
+    Mono,
+}
+
+impl FieldFont {
+    /// Line height as a multiple of the font size.
+    pub fn line_height(self) -> f32 {
+        match self {
+            FieldFont::Ui => 1.618,
+            FieldFont::Mono => 1.3,
+        }
+    }
+}
+
 /// A one-line text field backed by an editor buffer, so it has the editor's caret and selection motions.
 #[derive(Default)]
 pub struct TextField {
@@ -88,26 +105,39 @@ impl TextField {
     }
 
     /// The field's text laid out on one row: the selection tinted and a 2px caret at the head while focused.
-    pub fn render(&self, placeholder: &str, focused: bool, color: ui::Rgba, height: f32) -> Node {
+    pub fn render(
+        &self,
+        placeholder: &str,
+        focused: bool,
+        color: ui::Rgba,
+        height: f32,
+        font: FieldFont,
+    ) -> Node {
         let text = self.buffer.text();
         let mut row = div().row().items_center().flex(1.0).h_px(height);
-        let caret = |visible: bool| {
-            div().w_px(2.0).h_px(INPUT_FONT * 1.3).bg(if visible {
-                theme().player_cursor
+        let styled = |text: String| {
+            let label = label(text).size(INPUT_FONT);
+            if font == FieldFont::Mono {
+                label.mono()
             } else {
-                ui::Rgba::TRANSPARENT
-            })
+                label
+            }
+        };
+        let caret = |visible: bool| {
+            div()
+                .w_px(2.0)
+                .h_px(INPUT_FONT * font.line_height())
+                .bg(if visible {
+                    theme().player_cursor
+                } else {
+                    ui::Rgba::TRANSPARENT
+                })
         };
         let show_caret = focused && ui::caret_phase();
         if text.is_empty() {
             return row
                 .child(caret(show_caret))
-                .child(
-                    label(placeholder.to_string())
-                        .size(INPUT_FONT)
-                        .mono()
-                        .color(theme().text_placeholder),
-                )
+                .child(styled(placeholder.to_string()).color(theme().text_placeholder))
                 .into();
         }
         let selection = self.buffer.newest();
@@ -119,7 +149,7 @@ impl TextField {
             if range.is_empty() {
                 return row;
             }
-            let text = label(piece(range)).size(INPUT_FONT).mono().color(color);
+            let text = styled(piece(range)).color(color);
             if selected && focused {
                 let st = crate::syntax_theme();
                 let [r, g, b] = st.selection.0;
