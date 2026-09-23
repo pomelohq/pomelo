@@ -959,3 +959,65 @@ mod scope_tests {
         assert_eq!(scope(Lang::Python, "x = 1  # hi|"), COMMENT);
     }
 }
+
+#[cfg(test)]
+mod new_language_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn capture_of(lang: Lang, text: &str, word: &str) -> Option<&'static str> {
+        let buffer = EditorBuffer::from_text(text);
+        let mut syntax = Syntax::new(lang).unwrap();
+        syntax.sync(&buffer);
+        while syntax.is_parsing() {
+            std::thread::sleep(Duration::from_millis(1));
+            syntax.sync(&buffer);
+        }
+        let start = text.find(word).unwrap();
+        syntax
+            .highlight(&buffer.rope, 0..buffer.rope.len_bytes())
+            .into_iter()
+            .find(|run| run.range.start <= start && start < run.range.end)
+            .and_then(|run| run.capture)
+    }
+
+    #[test]
+    fn new_languages_color_their_keywords() {
+        assert_eq!(
+            capture_of(Lang::Kotlin, "fun main() {}\n", "fun"),
+            Some("keyword")
+        );
+        assert_eq!(
+            capture_of(Lang::Kotlin, "fun main() {}\n", "main"),
+            Some("function")
+        );
+        assert_eq!(
+            capture_of(
+                Lang::Hcl,
+                "resource \"x\" \"y\" {\n  a = 1\n}\n",
+                "resource"
+            ),
+            Some("type")
+        );
+        assert_eq!(
+            capture_of(Lang::GraphQl, "type Query { a: Int }\n", "type"),
+            Some("keyword")
+        );
+        assert_eq!(
+            capture_of(Lang::Sql, "SELECT a FROM t;\n", "SELECT"),
+            Some("keyword")
+        );
+        assert_eq!(
+            capture_of(Lang::Dockerfile, "FROM alpine\n", "FROM"),
+            Some("keyword")
+        );
+        assert_eq!(
+            capture_of(
+                Lang::Proto,
+                "syntax = \"proto3\";\nmessage A {}\n",
+                "message"
+            ),
+            Some("keyword")
+        );
+    }
+}
