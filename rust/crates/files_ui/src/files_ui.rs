@@ -1482,6 +1482,137 @@ impl FileItem {
             .unwrap_or_default()
     }
 
+    /// Hunks touching any selection's lines; a deletion counts when it sits right above or below them.
+    fn hunks_in_selections(&self) -> Vec<git::DiffHunk> {
+        let Some(b) = self.buffer.as_ref() else {
+            return Vec::new();
+        };
+        let mut picked: Vec<git::DiffHunk> = Vec::new();
+        for selection in b.selections() {
+            let first = b.rope.char_to_line(selection.start);
+            let query = first..b.rope.char_to_line(selection.end) + 1;
+            for hunk in self.git.hunks() {
+                let touches = if hunk.rows.is_empty() {
+                    hunk.rows.start == query.start || hunk.rows.start == query.end
+                } else {
+                    hunk.rows.start < query.end && query.start < hunk.rows.end
+                };
+                if touches && !picked.contains(hunk) {
+                    picked.push(hunk.clone());
+                }
+            }
+        }
+        picked.sort_by_key(|hunk| hunk.rows.start);
+        picked
+    }
+
+    /// Move the caret to the start of the next (or previous) change, wrapping around the file.
+    fn go_to_hunk(&mut self, next: bool) {
+        let Some(b) = self.buffer.as_ref() else {
+            return;
+        };
+        let head = b.newest().head();
+        let row = b.rope.char_to_line(head.min(b.rope.len_chars()));
+        let line_start = |line: usize| {
+            if line >= b.rope.len_lines() {
+                b.rope.len_chars()
+            } else {
+                b.rope.line_to_char(line)
+            }
+        };
+        let hunks = self.git.hunks();
+        let target = if next {
+            hunks
+                .iter()
+                .find(|hunk| hunk.rows.start > row)
+                .or_else(|| hunks.iter().find(|hunk| hunk.rows.end < row))
+        } else {
+            hunks
+                .iter()
+                .rev()
+                .find(|hunk| line_start(hunk.rows.end) < head)
+                .or_else(|| hunks.last())
+        };
+        let Some(line) = target.map(|hunk| hunk.rows.start) else {
+            return;
+        };
+        let offset = line_start(line);
+        if !self.folds.take_overlapping(offset..offset + 1).is_empty() {
+            self.rows = None;
+        }
+        if let Some(b) = self.buffer.as_mut() {
+            b.place_cursor(offset);
+        }
+        self.scroll_line_to_center(line);
+    }
+
+    /// Stage or unstage the changes under the selections; `None` stages unless all of them already are.
+    fn stage_hunks(&mut self, stage: Option<bool>) {
+        let hunks = self.hunks_in_selections();
+        if hunks.is_empty() {
+            return;
+        }
+        let stage = stage.unwrap_or_else(|| hunks.iter().any(|hunk| !hunk.staged));
+        self.write_staged(&hunks, stage);
+    }
+
+    /// A dirty buffer is saved first, since the index gets what the file holds.
+    fn write_staged(&mut self, hunks: &[git::DiffHunk], stage: bool) {
+        if self.is_dirty() {
+            if let Err(error) = self.save() {
+                eprintln!("git: {error}");
+                return;
+            }
+        }
+        let (Some(bases), Some(b)) = (self.git.bases(), self.buffer.as_ref()) else {
+            return;
+        };
+        if let Some(index) = git::index_after(&bases, &b.text(), hunks, stage) {
+            self.git.write_index(self.root.join(&self.path), index);
+        }
+    }
+
+    /// Put the changes under the selections back to their committed text, unstaging them first.
+    fn restore_hunks(&mut self) {
+        let hunks = self.hunks_in_selections();
+        let Some(bases) = self.git.bases() else {
+            return;
+        };
+        if hunks.is_empty() {
+            return;
+        }
+        let staged: Vec<git::DiffHunk> = hunks.iter().filter(|h| h.staged).cloned().collect();
+        if !staged.is_empty() {
+            self.write_staged(&staged, false);
+        }
+        let head = bases.head.clone().unwrap_or_default();
+        let Some(b) = self.buffer.as_mut() else {
+            return;
+        };
+        let line_start = |b: &EditorBuffer, line: usize| {
+            if line >= b.rope.len_lines() {
+                b.rope.len_chars()
+            } else {
+                b.rope.line_to_char(line)
+            }
+        };
+        let edits: Vec<(Range<usize>, String)> = hunks
+            .iter()
+            .map(|hunk| {
+                (
+                    line_start(b, hunk.rows.start)..line_start(b, hunk.rows.end),
+                    git::line_text(&head, hunk.base_rows.clone()),
+                )
+            })
+            .collect();
+        b.replace_ranges(edits);
+        self.refresh();
+        self.ensure_visible();
+        self.ensure_cursor_visible();
+    }
+
+    /// Uncommitted changes as strips at the gutter's left edge: added, modified, and a half-pill between the
+    /// lines where some were deleted. Staged changes are drawn hollow.
     fn diff_hunk_rects(&self, content: Rect, first: usize, last: usize) -> Vec<Rect> {
         let strip_width = (0.275 * EDIT_LINE_H).floor();
         let deleted_width = (0.35 * EDIT_LINE_H).floor();
@@ -2265,6 +2396,25 @@ impl Item for FileItem {
         if key == EditKey::ToggleSoftWrap {
             self.toggle_soft_wrap();
             return;
+        }
+        match key {
+            EditKey::GoToHunk | EditKey::GoToPreviousHunk => {
+                return self.go_to_hunk(key == EditKey::GoToHunk)
+            }
+            EditKey::GitRestore => return self.restore_hunks(),
+            EditKey::ToggleStaged => return self.stage_hunks(None),
+            EditKey::StageAndNext | EditKey::UnstageAndNext => {
+                let only_carets = self
+                    .buffer
+                    .as_ref()
+                    .is_some_and(|b| b.selections().iter().all(|s| s.is_empty()));
+                self.stage_hunks(Some(key == EditKey::StageAndNext));
+                if only_carets {
+                    self.go_to_hunk(true);
+                }
+                return;
+            }
+            _ => {}
         }
         if key == EditKey::MoveToEnclosingBracket {
             self.refresh();
@@ -6147,5 +6297,123 @@ mod git_gutter_tests {
         assert_eq!(strips[0].w, (0.275 * EDIT_LINE_H).floor());
         assert!(strips[1].x < 0.0);
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod hunk_action_tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+
+    struct Repo(PathBuf);
+
+    impl Repo {
+        fn new(name: &str, committed: &str) -> Self {
+            let root = std::env::temp_dir().join(format!("pomelo-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let repo = Repo(root);
+            assert!(repo.git(&["init", "-q"]).is_some());
+            repo.git(&["config", "user.email", "test@example.com"]);
+            repo.git(&["config", "user.name", "test"]);
+            repo.git(&["config", "commit.gpgsign", "false"]);
+            std::fs::write(repo.0.join("a.txt"), committed).unwrap();
+            repo.git(&["add", "a.txt"]);
+            repo.git(&["commit", "-q", "-m", "init"]);
+            repo
+        }
+
+        fn git(&self, args: &[&str]) -> Option<String> {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&self.0)
+                .args(args)
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).to_string())
+        }
+
+        fn open(&self, text: &str) -> FileItem {
+            std::fs::write(self.0.join("a.txt"), text).unwrap();
+            let mut item = FileItem::new(self.0.clone(), "a.txt", Some(text.into()));
+            item.set_body_height(10.0 * EDIT_LINE_H);
+            settle(&mut item);
+            item
+        }
+    }
+
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn settle(item: &mut FileItem) {
+        for _ in 0..3000 {
+            if let Some(b) = item.buffer.as_ref() {
+                item.git.poll(&b.rope, b.version());
+            }
+            if !item.git.is_busy() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn caret_line(item: &FileItem) -> usize {
+        item.buffer.as_ref().unwrap().line_col().0
+    }
+
+    #[test]
+    fn next_and_previous_hunk_wrap_around() {
+        let repo = Repo::new("hunk-nav", "a\nb\nc\nd\ne\nf\n");
+        let mut item = repo.open("a\nB\nc\nd\nE\nf\n");
+        item.input_key(EditKey::GoToHunk, false);
+        assert_eq!(caret_line(&item), 1);
+        item.input_key(EditKey::GoToHunk, false);
+        assert_eq!(caret_line(&item), 4);
+        item.input_key(EditKey::GoToHunk, false);
+        assert_eq!(caret_line(&item), 1);
+        item.input_key(EditKey::GoToPreviousHunk, false);
+        assert_eq!(caret_line(&item), 4);
+    }
+
+    #[test]
+    fn restore_puts_the_committed_lines_back_and_undoes() {
+        let repo = Repo::new("hunk-restore", "a\nb\nc\n");
+        let mut item = repo.open("a\nB\nc\nnew\n");
+        item.buffer.as_mut().unwrap().place_cursor(2);
+        item.input_key(EditKey::GitRestore, false);
+        assert_eq!(item.buffer.as_ref().unwrap().text(), "a\nb\nc\nnew\n");
+        item.input_key(EditKey::Undo, false);
+        assert_eq!(item.buffer.as_ref().unwrap().text(), "a\nB\nc\nnew\n");
+    }
+
+    #[test]
+    fn staging_writes_only_the_hunk_under_the_caret() {
+        let repo = Repo::new("hunk-stage", "a\nb\nc\nd\ne\n");
+        let mut item = repo.open("a\nB\nc\nd\nE\n");
+        item.buffer.as_mut().unwrap().place_cursor(2);
+        item.input_key(EditKey::StageAndNext, false);
+        settle(&mut item);
+        assert_eq!(
+            repo.git(&["show", ":a.txt"]).as_deref(),
+            Some("a\nB\nc\nd\ne\n")
+        );
+        assert_eq!(caret_line(&item), 4);
+        let staged: Vec<bool> = item.git.hunks().iter().map(|h| h.staged).collect();
+        assert_eq!(staged, vec![true, false]);
+
+        item.buffer.as_mut().unwrap().place_cursor(2);
+        item.input_key(EditKey::ToggleStaged, false);
+        settle(&mut item);
+        assert_eq!(
+            repo.git(&["show", ":a.txt"]).as_deref(),
+            Some("a\nb\nc\nd\ne\n")
+        );
     }
 }

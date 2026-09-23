@@ -139,6 +139,145 @@ pub fn uncommitted_hunks(bases: &DiffBases, text: &str) -> Vec<DiffHunk> {
         .collect()
 }
 
+/// Lines `rows` of `text`, line breaks included.
+pub fn line_text(text: &str, rows: Range<usize>) -> String {
+    lines(text).skip(rows.start).take(rows.len()).collect()
+}
+
+/// What the index should hold after staging (or unstaging) `hunks`: `None` when nothing changes,
+/// `Some(None)` to drop the file from the index, else its new text. Each hunk maps into the index through the
+/// changes the index doesn't have yet; overlapping unstaged changes are taken along, like git does.
+pub fn index_after(
+    bases: &DiffBases,
+    text: &str,
+    hunks: &[DiffHunk],
+    stage: bool,
+) -> Option<Option<String>> {
+    let acted: Vec<&DiffHunk> = hunks.iter().filter(|hunk| hunk.staged != stage).collect();
+    if acted.is_empty() {
+        return None;
+    }
+    let (Some(index), Some(head)) = (bases.index.as_deref(), bases.head.as_deref()) else {
+        // Without both versions the whole file goes in or comes out.
+        return Some(if stage {
+            Some(text.to_string())
+        } else {
+            bases.head.clone()
+        });
+    };
+    let unstaged = line_hunks(index, text);
+    let index_lines = line_count(index);
+    let mut next_unstaged = 0;
+    let (mut prev_buffer_end, mut prev_index_end) = (0, 0);
+    let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+    let mut pending = acted.into_iter().peekable();
+    while let Some(hunk) = pending.next() {
+        while let Some((index_rows, buffer_rows)) = unstaged.get(next_unstaged) {
+            if buffer_rows.end >= hunk.rows.start {
+                break;
+            }
+            prev_index_end = index_rows.end;
+            prev_buffer_end = buffer_rows.end;
+            next_unstaged += 1;
+        }
+        let mut rows = hunk.rows.clone();
+        let mut index_start = prev_index_end + rows.start.saturating_sub(prev_buffer_end);
+        loop {
+            if let Some((index_rows, buffer_rows)) = unstaged.get(next_unstaged) {
+                if buffer_rows.start <= rows.end {
+                    prev_index_end = index_rows.end;
+                    prev_buffer_end = buffer_rows.end;
+                    index_start = index_start.min(index_rows.start);
+                    rows.start = rows.start.min(buffer_rows.start);
+                    rows.end = rows.end.max(buffer_rows.end);
+                    next_unstaged += 1;
+                    continue;
+                }
+            }
+            if let Some(next) = pending.next_if(|next| next.rows.start <= rows.end) {
+                rows.end = rows.end.max(next.rows.end);
+                continue;
+            }
+            break;
+        }
+        let index_end =
+            (prev_index_end + rows.end.saturating_sub(prev_buffer_end)).min(index_lines);
+        let index_start = index_start.min(index_end);
+        let replacement = if stage {
+            line_text(text, rows)
+        } else {
+            line_text(head, hunk.base_rows.clone())
+        };
+        match edits.last_mut() {
+            Some((last, last_text)) if index_start <= last.end => {
+                last.end = last.end.max(index_end);
+                last_text.push_str(&replacement);
+            }
+            _ => edits.push((index_start..index_end, replacement)),
+        }
+    }
+    let index_rows: Vec<&str> = lines(index).collect();
+    let mut out = String::with_capacity(index.len());
+    let mut row = 0;
+    for (range, replacement) in edits {
+        out.extend(index_rows.iter().take(range.start).skip(row).copied());
+        out.push_str(&replacement);
+        row = range.end;
+    }
+    out.extend(index_rows.iter().skip(row).copied());
+    Some(Some(out))
+}
+
+fn git_with_input(dir: &Path, args: &[&str], input: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Write;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(input).ok()?;
+    let output = child.wait_with_output().ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+/// Put `text` in the index as the file's staged version, or drop the file from the index for `None`.
+pub fn write_index(path: &Path, text: Option<&str>) -> Result<(), String> {
+    let dir = path.parent().ok_or("no parent directory")?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("unreadable file name")?;
+    let Some(text) = text else {
+        return git(dir, &["update-index", "--force-remove", "--", name])
+            .map(|_| ())
+            .ok_or_else(|| format!("could not unstage {name}"));
+    };
+    let hash = git_with_input(dir, &["hash-object", "-w", "--stdin"], text.as_bytes())
+        .ok_or_else(|| format!("could not store {name}"))?;
+    let hash = String::from_utf8_lossy(&hash).trim().to_string();
+    // Keep an executable bit the index already records.
+    let mode = git(dir, &["ls-files", "-s", "--", name])
+        .and_then(|listing| {
+            String::from_utf8_lossy(&listing)
+                .split_whitespace()
+                .next()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "100644".to_string());
+    // `--cacheinfo` paths are relative to the repository root, not the working directory.
+    let prefix = git(dir, &["rev-parse", "--show-prefix"])
+        .map(|prefix| String::from_utf8_lossy(&prefix).trim().to_string())
+        .unwrap_or_default();
+    let info = format!("{mode},{hash},{prefix}{name}");
+    git(dir, &["update-index", "--add", "--cacheinfo", &info])
+        .map(|_| ())
+        .ok_or_else(|| format!("could not stage {name}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +337,65 @@ mod tests {
         assert_eq!(summary(&hunks), vec![(0..2, HunkKind::Added, true)]);
     }
 
+    fn index_text(head: &str, index: &str, text: &str, stage: bool, pick: usize) -> Option<String> {
+        let bases = bases(Some(head), Some(index));
+        let hunks = uncommitted_hunks(&bases, text);
+        index_after(&bases, text, &hunks[pick..pick + 1], stage).flatten()
+    }
+
+    #[test]
+    fn staging_one_hunk_leaves_the_others_out_of_the_index() {
+        let head = "a\nb\nc\nd\ne\n";
+        let text = "a\nB\nc\nd\nE\n";
+        assert_eq!(
+            index_text(head, head, text, true, 0).as_deref(),
+            Some("a\nB\nc\nd\ne\n")
+        );
+        assert_eq!(
+            index_text(head, head, text, true, 1).as_deref(),
+            Some("a\nb\nc\nd\nE\n")
+        );
+        assert_eq!(
+            index_text(head, head, "a\nc\nd\ne\n", true, 0).as_deref(),
+            Some("a\nc\nd\ne\n")
+        );
+        assert_eq!(
+            index_text(head, head, "a\nb\nx\nc\nd\ne\n", true, 0).as_deref(),
+            Some("a\nb\nx\nc\nd\ne\n")
+        );
+    }
+
+    #[test]
+    fn unstaging_puts_head_back_and_already_staged_hunks_are_skipped() {
+        let head = "a\nb\nc\n";
+        let index = "a\nB\nc\n";
+        let text = "a\nB\nc\nd\n";
+        assert_eq!(
+            index_text(head, index, text, false, 0).as_deref(),
+            Some("a\nb\nc\n")
+        );
+        let bases = bases(Some(head), Some(index));
+        let hunks = uncommitted_hunks(&bases, text);
+        assert_eq!(index_after(&bases, text, &hunks[0..1], true), None);
+        assert_eq!(index_after(&bases, text, &hunks[1..2], false), None);
+    }
+
+    #[test]
+    fn new_files_stage_whole() {
+        let bases = bases(None, None);
+        let hunks = uncommitted_hunks(&bases, "x\n");
+        assert_eq!(
+            index_after(&bases, "x\n", &hunks, true),
+            Some(Some("x\n".to_string()))
+        );
+        let staged = DiffBases {
+            head: None,
+            index: Some("x\n".to_string()),
+        };
+        let hunks = uncommitted_hunks(&staged, "x\n");
+        assert_eq!(index_after(&staged, "x\n", &hunks, false), Some(None));
+    }
+
     #[test]
     fn reads_bases_from_a_repository() {
         let root = std::env::temp_dir().join(format!("pomelo-git-test-{}", std::process::id()));
@@ -232,6 +430,16 @@ mod tests {
             load_bases(&root.join("missing.txt")).map(|b| b.head),
             Some(None)
         );
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let nested = root.join("sub").join("b.txt");
+        std::fs::write(&nested, "x\n").unwrap();
+        write_index(&nested, Some("staged\n")).unwrap();
+        assert_eq!(
+            load_bases(&nested).and_then(|b| b.index).as_deref(),
+            Some("staged\n")
+        );
+        write_index(&nested, None).unwrap();
+        assert_eq!(load_bases(&nested).and_then(|b| b.index), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

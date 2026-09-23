@@ -35,6 +35,23 @@ impl GitDiff {
         self.loading_bases = Some(receiver);
     }
 
+    pub fn bases(&self) -> Option<Arc<DiffBases>> {
+        self.bases.clone()
+    }
+
+    /// Stage `text` for the file (or drop it from the index), then re-read the bases.
+    pub fn write_index(&mut self, path: PathBuf, text: Option<String>) {
+        let (sender, receiver) = channel();
+        std::thread::spawn(move || {
+            if let Err(error) = git::write_index(&path, text.as_deref()) {
+                eprintln!("git: {error}");
+            }
+            // The receiver is gone only if the file was closed; nothing to report then.
+            let _ = sender.send(git::load_bases(&path));
+        });
+        self.loading_bases = Some(receiver);
+    }
+
     pub fn hunks(&self) -> &[DiffHunk] {
         &self.hunks
     }
