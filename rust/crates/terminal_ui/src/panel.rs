@@ -681,4 +681,17 @@ mod tests {
         assert_eq!(panel.panes.group.leaf_count(), 1);
         assert!(!panel.is_empty());
     }
+
+    #[test]
+    fn saved_terminals_come_back_as_shells_in_their_directories() {
+        let mut panel = panel();
+        panel.open(Some(std::env::temp_dir()));
+        panel.open(None);
+        let saved = panel.save_panes();
+        let mut back = super::TerminalPanel::new(std::env::temp_dir(), std::sync::Arc::new(|| {}));
+        assert!(back.restore_panes(&saved));
+        let count = back.panes.pane_at(&[]).map(|pane| pane.open.len());
+        assert_eq!(count, Some(2));
+        assert!(!back.is_empty());
+    }
 }

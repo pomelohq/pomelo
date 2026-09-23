@@ -642,6 +642,13 @@ impl App {
 const CARET_BLINK: Duration = Duration::from_millis(500);
 
 impl ApplicationHandler for App {
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+        for id in windows {
+            self.with_workspace_view(id, |v, _| v.persist_panes(true));
+        }
+    }
+
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
         self.deliver_prompt_answers();
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
@@ -1250,6 +1257,7 @@ impl ApplicationHandler for App {
             .unwrap_or(2.0);
         match event {
             WindowEvent::CloseRequested => {
+                self.with_workspace_view(id, |v, _| v.persist_panes(true));
                 self.persist_settings();
                 if let Some(m) = self.mains.remove(&id) {
                     if let Some(app) = self.main_app.as_mut() {
