@@ -151,9 +151,67 @@ pub fn claude_launch(context: &LaunchContext<'_>) -> AgentLaunch {
     }
 }
 
+pub fn claude_task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str) -> AgentLaunch {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let id = session_id(&format!("{role}:{}:{stamp}", context.branch));
+    let claude = resolve_claude(context.home, context.tool_path);
+    let mcp = mcp_config_json(context.state, context.binary, context.branch);
+    let script = format!(
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --session-id {id} --mcp-config {mcp} --append-system-prompt {system} {prompt}",
+        path = shell_quote(context.tool_path),
+        cwd = shell_quote(&context.cwd.to_string_lossy()),
+        claude = shell_quote(&claude),
+        mcp = shell_quote(&mcp),
+        system = shell_quote(&system_prompt()),
+        prompt = shell_quote(prompt),
+    );
+    AgentLaunch {
+        holder: format!(
+            "ws-{}-{}-{role}",
+            context.session.replace('/', "_"),
+            context.branch.replace('/', "_")
+        ),
+        cwd: context.cwd.to_path_buf(),
+        argv: vec!["zsh".into(), "-c".into(), script],
+        title: format!("Claude ({role})"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_task_starts_a_fresh_conversation_on_its_prompt() {
+        let state = StateDir::new("/tmp/pom-state");
+        let context = LaunchContext {
+            state: &state,
+            home: Path::new("/nonexistent-home"),
+            binary: Path::new("/app/pom"),
+            tool_path: "/usr/bin",
+            session: "demo",
+            branch: "feat/x",
+            is_main: false,
+            cwd: Path::new("/work/demo"),
+        };
+        let launch = claude_task_launch(&context, "fixer", "Make it run: it's broken");
+        assert_eq!(launch.holder, "ws-demo-feat_x-fixer");
+        let script = launch.argv.last().cloned().unwrap_or_default();
+        assert!(script.contains("--session-id"));
+        assert!(!script.contains("--resume"));
+        assert!(script.ends_with(&shell_quote("Make it run: it's broken")));
+        let again = claude_task_launch(&context, "fixer", "x");
+        assert_ne!(
+            script.split("--session-id ").nth(1).map(|rest| &rest[..36]),
+            again
+                .argv
+                .last()
+                .and_then(|s| s.split("--session-id ").nth(1))
+                .map(|rest| &rest[..36])
+        );
+    }
 
     #[test]
     fn session_ids_match_the_previous_core() {

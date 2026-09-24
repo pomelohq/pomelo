@@ -1,0 +1,18 @@
+[package]
+name = "pom_doctor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "What keeps a project from running: config errors, missing tools, repos, secrets and unwired shared services, as findings an agent can act on."
+
+[lib]
+path = "src/pom_doctor.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_layout = { path = "../pom_layout" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

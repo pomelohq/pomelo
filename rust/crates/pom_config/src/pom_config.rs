@@ -2,6 +2,7 @@ mod decode;
 mod depgraph;
 mod include;
 mod lookup;
+pub mod maintain;
 mod presets;
 mod schema;
 mod validate;

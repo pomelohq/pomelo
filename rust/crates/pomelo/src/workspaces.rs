@@ -199,6 +199,7 @@ impl App {
 
     /// Picks up a closed form, the operations' progress and whatever finished.
     pub(crate) fn poll_workspaces(&mut self, id: WindowId) {
+        self.poll_doctor(id);
         let result = self.with_workspace_view(id, |view, _| {
             view.tick_window_modal();
             view.take_modal_result()
