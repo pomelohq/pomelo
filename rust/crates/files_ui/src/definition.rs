@@ -6,7 +6,7 @@ use std::ops::Range;
 use lsp::{DefinitionKind, DefinitionTarget};
 use ui::{theme, Rect, Rgba};
 
-use crate::{FileItem, EDIT_LINE_H, TAB_COLS};
+use crate::{edit_line_h, FileItem, TAB_COLS};
 
 pub(crate) struct PendingDefinition {
     offset: usize,
@@ -217,7 +217,7 @@ impl FileItem {
     pub(crate) fn caret_top(&self) -> Option<f32> {
         let b = self.buffer.as_ref()?;
         let (row, _) = self.position(b.newest().head());
-        Some(row as f32 * EDIT_LINE_H - self.scroll_y)
+        Some(row as f32 * edit_line_h() - self.scroll_y)
     }
 
     /// Select a target range (just its start when it spans lines) and scroll it to `caret_top`.
@@ -243,7 +243,7 @@ impl FileItem {
         }
         let (row, _) = self.position(start);
         match caret_top {
-            Some(top) => self.set_scroll_y(row as f32 * EDIT_LINE_H - top),
+            Some(top) => self.set_scroll_y(row as f32 * edit_line_h() - top),
             None => {
                 let line = self
                     .buffer
@@ -279,8 +279,8 @@ impl FileItem {
             if right > left {
                 rects.push(Rect::new(
                     content.x + gw + left - self.scroll_x,
-                    content.y + row as f32 * EDIT_LINE_H - self.scroll_y
-                        + crate::DIAGNOSTIC_UNDERLINE_TOP,
+                    content.y + row as f32 * edit_line_h() - self.scroll_y
+                        + crate::diagnostic_underline_top(),
                     right - left,
                     1.0,
                     theme().link_text_hover,
@@ -345,7 +345,7 @@ mod tests {
 
     fn item(text: &str) -> FileItem {
         let mut item = FileItem::new(PathBuf::from("/project"), "a.rs", Some(text.into()));
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         item.ensure_visible();
         item
     }
@@ -431,7 +431,7 @@ mod tests {
     fn a_command_click_without_a_link_asks_at_the_click() {
         let mut item = item("fn helper() {}\nfn main() { helper(); }\n");
         let x = crate::gutter_width(item.line_count()) + 14.25 * crate::char_advance();
-        let y = EDIT_LINE_H * 1.5;
+        let y = edit_line_h() * 1.5;
         assert!(item.definition_click(x, y).is_none());
         assert_eq!(item.buffer.as_ref().unwrap().newest().head(), 29);
         assert_eq!(
@@ -452,7 +452,7 @@ mod tests {
             "a.rs",
             Some("fn main() { helper(); }\n".into()),
         );
-        first.set_body_height(10.0 * EDIT_LINE_H);
+        first.set_body_height(10.0 * edit_line_h());
         if let Member::Leaf(pane) = &mut view.panes.group {
             pane.open.push(Box::new(first));
             pane.active = Some(0);

@@ -451,7 +451,7 @@ mod tests {
             "a.rs",
             Some(text.into()),
         );
-        item.set_body_height(10.0 * crate::EDIT_LINE_H);
+        item.set_body_height(10.0 * crate::edit_line_h());
         let end = item.buffer.as_ref().unwrap().rope.len_chars();
         item.buffer.as_mut().unwrap().place_cursor(end);
         item.lsp_triggers = Some(vec![".".into()]);
@@ -614,7 +614,7 @@ mod tests {
             0.0,
             0.0,
             700.0,
-            10.0 * crate::EDIT_LINE_H,
+            10.0 * crate::edit_line_h(),
             ui::Rgba::TRANSPARENT,
         )
     }
@@ -654,7 +654,7 @@ mod tests {
         // Without room on the right it goes below the menu, at the menu's left edge.
         let (_, narrow_x, narrow_y) = item.completion_aside(content(), (700.0, 1000.0)).unwrap();
         assert_eq!(narrow_x, menu_x);
-        assert!(narrow_y > crate::EDIT_LINE_H);
+        assert!(narrow_y > crate::edit_line_h());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use ui::{div, theme, IconKind, Node, Painted, Rect, Rgba};
 use workspace::search_bar::{SearchSupport, Searchable};
 use workspace::{ClipboardSlice, Item, ItemTick, TerminalKeyOutcome, TerminalOpenTarget};
 
-use crate::{anchor_to_bottom, GridMetrics, GridOptions, GridPainter, FONT_SIZE, LINE_HEIGHT};
+use crate::{anchor_to_bottom, font_size, GridMetrics, GridOptions, GridPainter, LINE_HEIGHT};
 
 pub(crate) struct Host<'a> {
     pub(crate) palette: Palette,
@@ -119,11 +119,20 @@ impl TerminalItem {
         holder: Option<terminal::HolderOptions>,
     ) -> anyhow::Result<Self> {
         let start_dir = cwd.unwrap_or_else(|| root.clone());
-        let options = TerminalOptions {
+        let defaults = crate::defaults()
+            .lock()
+            .map(|defaults| defaults.clone())
+            .unwrap_or_default();
+        let mut shell = defaults.shell.split_whitespace().map(str::to_string);
+        let mut options = TerminalOptions {
             working_directory: Some(start_dir.clone()),
             holder,
+            shell: shell.next().map(|program| (program, shell.collect())),
             ..TerminalOptions::default()
         };
+        if defaults.scrollback > 0 {
+            options.scroll_history = defaults.scrollback;
+        }
         let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
         item.start_dir = start_dir;
         Ok(item)
@@ -259,7 +268,7 @@ impl TerminalItem {
     pub fn paint(&mut self, body: Rect, focused: bool) -> Painted {
         self.body = body;
         let scale = ui::ui_text_scale();
-        let metrics = GridMetrics::measure(FONT_SIZE, LINE_HEIGHT);
+        let metrics = GridMetrics::measure(font_size(), LINE_HEIGHT);
         let body_h = (body.h / scale).max(metrics.line_height);
         self.terminal
             .set_size(metrics.bounds(body.w / scale, body_h));

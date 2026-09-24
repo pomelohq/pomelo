@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use workspace::persistence::SerializedItem;
 use workspace::Item;
 
-use crate::{FileItem, ImageItem, EDIT_LINE_H};
+use crate::{edit_line_h, FileItem, ImageItem};
 
 pub(crate) const FILE_KIND: &str = "file";
 pub(crate) const IMAGE_KIND: &str = "image";
@@ -172,7 +172,7 @@ impl FileItem {
             .top_row
             .min(buffer.rope.len_lines().saturating_sub(1));
         self.scroll_anchor = buffer.rope.line_to_char(top_row);
-        self.scroll_anchor_offset = scroll.offset_y.clamp(0.0, EDIT_LINE_H);
+        self.scroll_anchor_offset = scroll.offset_y.clamp(0.0, edit_line_h());
         self.scroll_x = scroll.x.max(0.0);
         if let Some(buffer) = self.buffer.as_ref() {
             for range in found {

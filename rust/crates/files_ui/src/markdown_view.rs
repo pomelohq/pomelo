@@ -286,7 +286,7 @@ fn text_width(text: &str, style: SpanStyle) -> f32 {
         ui::ui_font_weight()
     };
     let size = if style.code {
-        crate::EDIT_FONT
+        crate::edit_font()
     } else {
         TEXT_SIZE
     };
@@ -413,7 +413,7 @@ impl Markdown {
                 });
             }
         };
-        let code_line_height = crate::EDIT_LINE_H;
+        let code_line_height = crate::edit_line_h();
         let mut widest: f32 = 0.0;
         let last = self.blocks.len().saturating_sub(1);
         for (index, block) in self.blocks.iter().enumerate() {
@@ -573,7 +573,7 @@ impl MarkdownLayout {
                     for (text, color) in segments {
                         row = row.child(
                             label(text.clone())
-                                .size(crate::EDIT_FONT)
+                                .size(crate::edit_font())
                                 .mono()
                                 .color(*color),
                         );
@@ -590,7 +590,7 @@ impl MarkdownLayout {
 fn render_run(text: &str, style: SpanStyle, color: Rgba) -> Node {
     let mut run = label(text.to_string()).color(color);
     run = if style.code {
-        run.size(crate::EDIT_FONT).mono()
+        run.size(crate::edit_font()).mono()
     } else {
         run.size(TEXT_SIZE)
     };
@@ -690,7 +690,7 @@ mod tests {
         assert_eq!(layout.lines_fitting(0, HOVER_STYLE.line_height), 1);
         let code = Markdown::parse("```rust\nlet x = 1;\n```").layout(400.0, HOVER_STYLE);
         assert_eq!(code.line_count(), 1);
-        assert_eq!(code.height(), crate::EDIT_LINE_H);
+        assert_eq!(code.height(), crate::edit_line_h());
     }
 
     #[test]

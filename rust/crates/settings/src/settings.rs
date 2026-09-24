@@ -49,6 +49,19 @@ pub struct Settings {
     pub sound_finished: String,
     pub sound_needs_input: String,
     pub sound_compacting: String,
+    /// The installed app checks for a newer release on launch.
+    pub auto_update: bool,
+    pub buffer_font_size: f32,
+    /// New files wrap long lines at the editor's width.
+    pub soft_wrap: bool,
+    /// Diffs open side by side when wide enough (else unified).
+    pub split_diff: bool,
+    /// The app "Open in External Editor" uses; empty picks the first one installed.
+    pub external_editor: String,
+    pub terminal_font_size: f32,
+    /// The shell new terminals run (with its arguments); empty runs the login shell.
+    pub terminal_shell: String,
+    pub terminal_scrollback: u32,
 }
 
 impl Default for Settings {
@@ -87,6 +100,14 @@ impl Default for Settings {
             sound_finished: "Glass".into(),
             sound_needs_input: "Ping".into(),
             sound_compacting: String::new(),
+            auto_update: true,
+            buffer_font_size: 15.0,
+            soft_wrap: false,
+            split_diff: true,
+            external_editor: String::new(),
+            terminal_font_size: 15.0,
+            terminal_shell: String::new(),
+            terminal_scrollback: 10_000,
         }
     }
 }

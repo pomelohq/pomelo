@@ -599,6 +599,10 @@ struct App {
     keymap: workspace::keymap::Keymap,
     /// The first keys of a longer binding typed so far (`cmd-k` of `cmd-k cmd-s`).
     pending_keys: Vec<workspace::keymap::Keystroke>,
+    keymap_problems: Vec<String>,
+    /// When the user's keymap file was last read, to pick up edits.
+    keymap_read: Option<std::time::SystemTime>,
+    keymap_checked: Option<Instant>,
     dev_proxy: Option<pom_proxy::DevProxy>,
     agent_registration: Arc<std::sync::Mutex<settings_ui::AgentPage>>,
     settings_pages_at: Option<Instant>,
@@ -1066,6 +1070,129 @@ impl App {
         self.sync_dev_proxy();
     }
 
+    /// Pushes the editor and terminal settings to their crates; open files lay out again when the font changed.
+    fn apply_editor_defaults(&mut self) {
+        let font_changed = files_ui::set_editor_defaults(
+            self.settings.buffer_font_size,
+            self.settings.soft_wrap,
+            self.settings.split_diff,
+        );
+        terminal_ui::set_terminal_defaults(
+            self.settings.terminal_font_size,
+            &self.settings.terminal_shell,
+            self.settings.terminal_scrollback as usize,
+        );
+        if font_changed {
+            let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+            for id in windows {
+                self.with_workspace_view(id, |view, _| view.editor_metrics_changed());
+            }
+        }
+        self.mark_all_mains_dirty();
+    }
+
+    /// Opens the user's keymap file in the editor, starting it from a commented example when missing.
+    fn edit_keymap(&mut self) {
+        let Some(path) = workspace::keymap::Keymap::user_file() else {
+            return;
+        };
+        if !path.exists() {
+            let example = "[\n  {\n    \"context\": \"Workspace\",\n    \"bindings\": {}\n  }\n]\n";
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&path, example));
+            if let Err(error) = written {
+                eprintln!("keymap: create {}: {error}", path.display());
+                return;
+            }
+        }
+        let Some(id) = self
+            .focused_main
+            .or_else(|| self.mains.keys().next().copied())
+        else {
+            return;
+        };
+        self.with_workspace_view(id, |view, _| view.open_file(&path));
+        if let Some(main) = self.mains.get(&id) {
+            main.window.focus_window();
+        }
+        self.mark_all_mains_dirty();
+    }
+
+    /// Reads the keymap file again when it changed since the last read (it is edited while the app runs).
+    fn reload_keymap_if_changed(&mut self) {
+        if self
+            .keymap_checked
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.keymap_checked = Some(Instant::now());
+        let modified = workspace::keymap::Keymap::user_file()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|meta| meta.modified().ok());
+        if modified == self.keymap_read {
+            return;
+        }
+        self.keymap_read = modified;
+        let (keymap, problems) = workspace::keymap::Keymap::load();
+        self.keymap = keymap;
+        self.keymap_problems = problems;
+        self.pending_keys.clear();
+        let bindings = self.keymap_bindings();
+        let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+        for id in windows {
+            let bindings = bindings.clone();
+            self.with_workspace_view(id, |view, _| view.set_bindings(bindings));
+        }
+    }
+
+    /// Opens the active file (else the workspace) in the external editor from the settings, or the first
+    /// known one installed.
+    fn open_in_external_editor(&mut self, id: WindowId) {
+        let Some(target) = self
+            .with_workspace_view(id, |view, _| view.external_target())
+            .flatten()
+        else {
+            return;
+        };
+        let installed = |name: &str| {
+            std::path::Path::new(&format!("/Applications/{name}.app")).exists()
+                || std::env::var_os("HOME").is_some_and(|home| {
+                    std::path::Path::new(&home)
+                        .join(format!("Applications/{name}.app"))
+                        .exists()
+                })
+        };
+        let editor = if self.settings.external_editor.is_empty() {
+            settings_ui::EXTERNAL_EDITORS
+                .into_iter()
+                .find(|name| installed(name))
+                .map(str::to_string)
+        } else {
+            Some(self.settings.external_editor.clone())
+        };
+        let Some(editor) = editor else {
+            self.with_workspace_view(id, |view, _| {
+                view.show_toast(
+                    "No external editor found; pick one in Settings > Editor",
+                    None,
+                )
+            });
+            return;
+        };
+        if let Err(error) = std::process::Command::new("open")
+            .arg("-a")
+            .arg(&editor)
+            .arg(&target)
+            .spawn()
+        {
+            let message = format!("Failed to open {editor}: {error}");
+            self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+        }
+    }
+
     /// Binds again after a port another instance held was freed.
     fn restart_dev_proxy(&mut self) {
         self.dev_proxy = None;
@@ -1122,9 +1249,29 @@ impl App {
                 })
                 .collect(),
         };
+        let general = settings_ui::GeneralPage {
+            start_at_login: start_at_login(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            updates_apply: installed_app().is_some(),
+        };
+        let keymap = settings_ui::KeymapPage {
+            rows: workspace::keymap::Action::ALL
+                .iter()
+                .map(|action| {
+                    (
+                        action.label().to_string(),
+                        action.name().to_string(),
+                        self.keymap.binding_for(*action).unwrap_or_default(),
+                    )
+                })
+                .collect(),
+            problems: self.keymap_problems.clone(),
+        };
         let changed = self.with_settings_view(|view, _| {
             let agent_changed = view.set_agent_page(agent);
-            view.set_network_page(network) || agent_changed
+            let general_changed = view.set_general_page(general);
+            let keymap_changed = view.set_keymap_page(keymap);
+            view.set_network_page(network) || agent_changed || general_changed || keymap_changed
         });
         if changed == Some(true) {
             self.settings_dirty = true;
@@ -1614,7 +1761,17 @@ impl App {
             return false;
         }
         match action {
-            Action::OpenSettings | Action::OpenKeymap => self.toggle_settings(event_loop),
+            Action::OpenSettings => self.toggle_settings(event_loop),
+            Action::OpenKeymap => {
+                if self.settings_window.is_none() {
+                    self.toggle_settings(event_loop);
+                }
+                self.settings_pages_at = None;
+                self.refresh_settings_pages();
+                self.with_settings_view(|view, _| view.select_category(settings_ui::KEYMAP));
+                self.settings_dirty = true;
+            }
+            Action::OpenInExternalEditor => self.open_in_external_editor(id),
             Action::OpenProject => {
                 self.handle_session_request(id, workspace::SessionRequest::ChooseFolder)
             }
@@ -1771,6 +1928,19 @@ impl App {
         };
         let effects = entity.update(app.app_mut(), |v, _| v.take_side_effects());
         self.settings = entity.read(app.app()).settings().clone();
+        self.apply_editor_defaults();
+        if effects.toggle_login_item {
+            if let Err(error) = set_start_at_login(!start_at_login()) {
+                eprintln!("start at login: {error}");
+            }
+            self.settings_pages_at = None;
+        }
+        if effects.check_updates {
+            auto_update::spawn_background_check();
+        }
+        if effects.edit_keymap {
+            self.edit_keymap();
+        }
         if effects.reapply_font {
             self.apply_ui_font();
         }
@@ -1941,6 +2111,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.poll_scaffold();
+        self.reload_keymap_if_changed();
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {
             self.poll_workspaces(id);
@@ -2060,9 +2231,12 @@ impl ApplicationHandler for App {
         self.apply_font_scale();
         self.apply_font_weight();
         ui::set_chrome(settings_ui::chrome_flags(&self.settings));
+        self.apply_editor_defaults();
         #[cfg(target_os = "macos")]
         set_dock_icon();
-        auto_update::spawn_background_check();
+        if self.settings.auto_update {
+            auto_update::spawn_background_check();
+        }
 
         let mut layout = Layout::default();
         apply_dock_settings(&self.settings, &mut layout);
@@ -2877,6 +3051,56 @@ fn center_traffic_lights(window: &Window) {
     }
 }
 
+/// The installed app bundle when this is it (only it replaces itself on update).
+fn installed_app() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let app = exe.ancestors().nth(3)?;
+    (app.file_name()? == "Pomelo.app").then(|| app.to_path_buf())
+}
+
+/// The LaunchAgent that opens the app at login.
+fn login_item_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::PathBuf::from(home).join("Library/LaunchAgents/app.pomelo.login.plist"))
+}
+
+fn start_at_login() -> bool {
+    login_item_path().is_some_and(|path| path.exists())
+}
+
+/// Adds or removes the login LaunchAgent for the bundle this run came from.
+fn set_start_at_login(enabled: bool) -> std::io::Result<()> {
+    let Some(path) = login_item_path() else {
+        return Ok(());
+    };
+    if !enabled {
+        return match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        };
+    }
+    let exe = std::env::current_exe()?;
+    let bundle = exe
+        .ancestors()
+        .nth(3)
+        .filter(|app| app.extension().is_some_and(|extension| extension == "app"))
+        .ok_or_else(|| std::io::Error::other("not running from an app bundle"))?;
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n<dict>\n\
+  <key>Label</key><string>app.pomelo.login</string>\n\
+  <key>ProgramArguments</key><array><string>/usr/bin/open</string><string>{}</string></array>\n\
+  <key>RunAtLoad</key><true/>\n\
+</dict>\n</plist>\n",
+        bundle.display()
+    );
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, plist)
+}
+
 fn is_dev_build() -> bool {
     std::env::current_exe()
         .ok()
@@ -2978,10 +3202,14 @@ fn main() -> anyhow::Result<()> {
     }
     let mut app = App::default();
     let (keymap, problems) = workspace::keymap::Keymap::load();
-    for problem in problems {
+    for problem in &problems {
         eprintln!("{problem}");
     }
     app.keymap = keymap;
+    app.keymap_problems = problems;
+    app.keymap_read = workspace::keymap::Keymap::user_file()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|meta| meta.modified().ok());
     register_with_agents(app.agent_registration.clone());
     app.refresh_agents();
     event_loop.run_app(&mut app)?;

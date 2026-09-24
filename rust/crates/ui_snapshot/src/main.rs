@@ -907,6 +907,26 @@ fn main() -> anyhow::Result<()> {
                 Vec::new()
             },
         },
+        general: settings_ui::GeneralPage {
+            start_at_login: false,
+            version: env!("CARGO_PKG_VERSION").into(),
+            updates_apply: live,
+        },
+        keymap: settings_ui::KeymapPage {
+            rows: workspace::keymap::Action::ALL
+                .iter()
+                .map(|action| {
+                    (
+                        action.label().to_string(),
+                        action.name().to_string(),
+                        workspace::keymap::Keymap::defaults()
+                            .binding_for(*action)
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect(),
+            problems: Vec::new(),
+        },
     };
     let fs_edit = std::env::var("FSEDIT").ok();
     let editing = fs_edit

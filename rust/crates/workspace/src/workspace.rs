@@ -1166,6 +1166,8 @@ pub struct ExtraCommand {
 pub trait FunctionView: ItemInput + 'static {
     /// The window's own commands, listed in the command palette next to the editor's.
     fn set_extra_commands(&mut self, _commands: Vec<ExtraCommand>) {}
+    /// The editor font changed; open files lay out again.
+    fn editor_metrics_changed(&mut self) {}
     /// Opens the palette with only `commands` (a switcher), showing `placeholder` in its query.
     fn open_command_list(&mut self, _commands: Vec<ExtraCommand>, _placeholder: &'static str) {}
     /// The window command picked in the palette, once.
