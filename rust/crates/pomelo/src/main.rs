@@ -563,6 +563,7 @@ struct App {
     agents: AgentTracker,
     next_agent_item: u64,
     scaffolding: Option<Scaffolding>,
+    dev_proxy: Option<pom_proxy::DevProxy>,
     /// The main window last focused: Settings edits its project's Jira settings.
     focused_main: Option<WindowId>,
 }
@@ -1004,6 +1005,35 @@ impl App {
         }
         self.install_project_views(id);
         self.refresh_sessions();
+        self.sync_dev_proxy();
+    }
+
+    /// Points the dev proxy and webhook relay at the projects the windows have open, starting them with the
+    /// first project.
+    fn sync_dev_proxy(&mut self) {
+        let projects: Vec<pom_proxy::ProjectRoute> = self
+            .mains
+            .values()
+            .filter_map(|main| {
+                Some(pom_proxy::ProjectRoute {
+                    root: main.project.as_ref()?.root.clone(),
+                    config: main.services.as_ref()?.config.clone(),
+                })
+            })
+            .collect();
+        if self.dev_proxy.is_none() && !projects.is_empty() {
+            let machine = pom_proxy::SystemMachine {
+                state: pom_paths::StateDir::from_env(),
+                holders: pom_ptyhost::SocketDir::from_env(),
+            };
+            match pom_proxy::DevProxy::start(Box::new(machine), pom_proxy::Ports::from_env()) {
+                Ok(proxy) => self.dev_proxy = Some(proxy),
+                Err(error) => eprintln!("dev proxy failed to start: {error}"),
+            }
+        }
+        if let Some(proxy) = &self.dev_proxy {
+            proxy.set_projects(projects);
+        }
     }
 
     /// Root the window's file tree and terminal in its active workspace (or show the welcome page).
@@ -2384,6 +2414,7 @@ impl ApplicationHandler for App {
                         app.close_window(m.handle);
                     }
                 }
+                self.sync_dev_proxy();
                 if self.mains.is_empty() {
                     event_loop.exit();
                 }
