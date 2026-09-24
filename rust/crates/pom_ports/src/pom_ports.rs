@@ -344,6 +344,10 @@ impl PortManager {
         }
     }
 
+    pub fn bindable(&self, port: u16) -> bool {
+        self.probe.bindable(port)
+    }
+
     pub fn port_of(&self, key: &str) -> Option<u16> {
         let tracked = self.tracked.lock().ok()?;
         tracked.get(key)?.lease.as_ref().map(|lease| lease.port)

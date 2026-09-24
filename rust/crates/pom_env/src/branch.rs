@@ -86,6 +86,48 @@ pub fn stable_shared_port(session: &str, name: &str) -> u16 {
     u16::try_from(BASE + hash % SPAN).unwrap_or(u16::MAX)
 }
 
+pub fn resolve_branch_tokens(text: &str, branch: &str) -> String {
+    if !text.contains("{{branch") {
+        return text.to_string();
+    }
+    let (safe, hash, host) = (
+        branch_safe(branch),
+        branch_hash(branch),
+        branch_host(branch),
+    );
+    let replacements: [(&str, &str); 10] = [
+        ("{{branch.safe}}", &safe),
+        ("{{branch|safe}}", &safe),
+        ("{{branch_safe}}", &safe),
+        ("{{branch.hash}}", &hash),
+        ("{{branch|hash}}", &hash),
+        ("{{branch_hash}}", &hash),
+        ("{{branch.host}}", &host),
+        ("{{branch|host}}", &host),
+        ("{{branch_host}}", &host),
+        ("{{branch}}", branch),
+    ];
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        match replacements
+            .iter()
+            .find(|(token, _)| rest.starts_with(token))
+        {
+            Some((token, value)) => {
+                out.push_str(value);
+                rest = &rest[token.len()..];
+            }
+            None => {
+                let next = rest.chars().next().map_or(1, char::len_utf8);
+                out.push_str(&rest[..next]);
+                rest = &rest[next..];
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +172,16 @@ mod tests {
         assert_eq!(ws_key("main", true), "main:main");
         assert_eq!(ws_key("feat", false), "ws:feat");
         assert_eq!(port_ws_key("feat/x"), "ws-feat_x");
+    }
+
+    #[test]
+    fn branch_tokens_only() {
+        assert_eq!(
+            resolve_branch_tokens("app_{{branch.safe}}_{{branch}}_{{db.x}}", "feat/x"),
+            "app_feat_x_feat/x_{{db.x}}"
+        );
+        assert_eq!(resolve_branch_tokens("{{branch_safe}}", "a/b"), "a_b");
+        assert_eq!(resolve_branch_tokens("plain", "a/b"), "plain");
     }
 
     #[test]
