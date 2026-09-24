@@ -109,6 +109,11 @@ impl SettingsView {
         }
     }
 
+    /// The app changed the theme (from a key binding); the page shows it and later saves keep it.
+    pub fn set_theme(&mut self, theme: &str) {
+        self.settings.theme = theme.to_string();
+    }
+
     pub fn set_agent_page(&mut self, agent: settings_ui::AgentPage) -> bool {
         let changed = self.pages.agent != agent;
         self.pages.agent = agent;

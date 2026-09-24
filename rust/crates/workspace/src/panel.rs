@@ -258,6 +258,12 @@ pub enum PanelRequest {
         then: Box<PanelRequest>,
     },
     OpenMenu,
+    /// Run a command in a new terminal tab (`argv` spawned in `cwd`), titled `title`.
+    RunCommand {
+        title: String,
+        cwd: std::path::PathBuf,
+        argv: Vec<String>,
+    },
     /// Ask before acting; the answer comes back through `prompt_answered` with the same `tag`.
     Prompt {
         tag: u64,
@@ -267,8 +273,19 @@ pub enum PanelRequest {
     },
 }
 
+/// A command a side panel offers in the command palette; `id` comes back through `run_palette_entry`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaletteEntry {
+    pub label: String,
+    pub id: u64,
+}
+
 pub trait SidePanelView: 'static {
     fn kind(&self) -> PaneKind;
+    fn palette_entries(&self) -> Vec<PaletteEntry> {
+        Vec::new()
+    }
+    fn run_palette_entry(&mut self, _id: u64) {}
     fn render(&mut self, width: f32, height: f32) -> Node;
     fn click(&mut self, id: u64);
     fn click_at(&mut self, id: u64, _x: f32, _y: f32) {

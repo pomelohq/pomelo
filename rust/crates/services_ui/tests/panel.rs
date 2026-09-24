@@ -52,6 +52,8 @@ impl Fixture {
 repos:
   api:
     profiles: [staging]
+    shortcuts:
+      - { key: migrate, desc: Run migrations, cmd: echo migrated }
     services:
       web:
         type: backend
@@ -241,9 +243,14 @@ fn the_context_menu_offers_modes_and_profiles_with_the_current_ones_checked() {
         .collect();
     assert_eq!(now_checked, ["Mode: dev", "Env: staging"]);
     assert!(
-        !fixture.panel.open_menu(fixture.id(0, 0)),
-        "a group row has no menu"
+        fixture.panel.open_menu(fixture.id(0, 0)),
+        "a repo row's menu runs its commands"
     );
+    assert!(fixture
+        .panel
+        .menu_items()
+        .iter()
+        .all(|item| item.label.starts_with("Run: ")));
 }
 
 #[test]
@@ -408,4 +415,44 @@ fn stopping_a_shared_service_asks_while_other_workspaces_run_services() {
         assert!(Instant::now() < deadline, "confirming stops it");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn offers_services_and_repo_commands_in_the_palette_and_the_repo_menu() {
+    let mut fixture = Fixture::new();
+    fixture.panel.render(300.0, 400.0);
+    let entries = fixture.panel.palette_entries();
+    let labels: Vec<&str> = entries.iter().map(|entry| entry.label.as_str()).collect();
+    assert!(labels.contains(&"services: start api/web"), "{labels:?}");
+    assert!(labels.contains(&"services: start api/worker"), "{labels:?}");
+    let migrate = entries
+        .iter()
+        .find(|entry| entry.label == "run: api Run migrations")
+        .expect("the repo command is offered");
+    fixture.panel.run_palette_entry(migrate.id);
+    let requests = fixture.panel.take_requests();
+    let Some(PanelRequest::RunCommand { title, cwd, argv }) = requests.first() else {
+        panic!("runs in a terminal: {}", requests.len());
+    };
+    assert_eq!(title, "api: Run migrations");
+    assert!(cwd.ends_with("workspace--feat/api"));
+    assert!(
+        argv[2].contains("echo migrated") && argv[2].contains("export PATH="),
+        "{argv:?}"
+    );
+
+    assert!(
+        fixture.panel.open_menu(fixture.id(0, 0)),
+        "the repo row has a menu"
+    );
+    let items = fixture.panel.menu_items();
+    let run = items
+        .iter()
+        .find(|item| item.label == "Run: Run migrations")
+        .expect("listed");
+    fixture.panel.menu_action(run.id);
+    assert!(matches!(
+        fixture.panel.take_requests().first(),
+        Some(PanelRequest::RunCommand { .. })
+    ));
 }

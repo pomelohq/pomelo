@@ -38,6 +38,8 @@ pub enum PaneCommand {
     ActivateNextItem,
     ToggleZoom,
     TogglePinTab,
+    CloseActiveItem,
+    CloseAllItems,
 }
 
 #[derive(Default)]

@@ -4,6 +4,7 @@
 
 mod form;
 mod key_binding;
+pub mod keymap;
 pub mod pane;
 pub mod pane_group;
 pub mod pane_group_view;
@@ -23,8 +24,8 @@ pub use key_binding::render_keystroke;
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
     side_panel_kind, terminal_content, terminal_dock_body, AgentDot, DockPosition, OutlinePanel,
-    PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView, TerminalPanel, WorkspaceList,
-    WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
+    PaletteEntry, PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView, TerminalPanel,
+    WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use welcome::{
     is_welcome_id, WELCOME_NEW_PROJECT, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS,
@@ -1081,6 +1082,15 @@ pub trait TerminalPanelView: 'static {
     fn link_hovered(&self) -> bool;
     /// A new shell as a pane item, for placing outside the panel.
     fn new_item(&mut self, cwd: Option<std::path::PathBuf>) -> Option<Box<dyn Item>>;
+    /// A terminal running `argv` in `cwd`, titled `title`.
+    fn command_item(
+        &mut self,
+        _title: String,
+        _cwd: std::path::PathBuf,
+        _argv: Vec<String>,
+    ) -> Option<Box<dyn Item>> {
+        None
+    }
 }
 
 /// Pointer, keyboard and clipboard input for the items of a pane group (the editor area, the terminal panel),
@@ -1144,7 +1154,24 @@ pub trait ItemInput {
     ) -> bool;
 }
 
+/// A command the window adds to the command palette: its name, its binding as keystrokes (`cmd-k`, `cmd-s`)
+/// and the id the palette hands back when it is chosen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtraCommand {
+    pub name: String,
+    pub keys: Vec<String>,
+    pub id: u64,
+}
+
 pub trait FunctionView: ItemInput + 'static {
+    /// The window's own commands, listed in the command palette next to the editor's.
+    fn set_extra_commands(&mut self, _commands: Vec<ExtraCommand>) {}
+    /// Opens the palette with only `commands` (a switcher), showing `placeholder` in its query.
+    fn open_command_list(&mut self, _commands: Vec<ExtraCommand>, _placeholder: &'static str) {}
+    /// The window command picked in the palette, once.
+    fn take_extra_command(&mut self) -> Option<u64> {
+        None
+    }
     /// Once a frame before layout: bring the project's services (language servers, ...) up to date with the
     /// items open here and in `other`, another pane group such as the terminal panel.
     fn sync_items(&mut self, _other: Option<&mut pane_group_view::PaneGroupView>) {}

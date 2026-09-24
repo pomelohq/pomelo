@@ -511,6 +511,33 @@ impl TerminalPanelView for TerminalPanel {
             .map(|item| Box::new(item) as Box<dyn Item>)
     }
 
+    fn command_item(
+        &mut self,
+        title: String,
+        cwd: PathBuf,
+        argv: Vec<String>,
+    ) -> Option<Box<dyn Item>> {
+        let id = self.next_item_id;
+        self.next_item_id += 1;
+        let mut argv = argv.into_iter();
+        let program = argv.next()?;
+        match TerminalItem::command_output(
+            id,
+            cwd,
+            format!("command:{id}"),
+            title,
+            program.clone(),
+            argv.collect(),
+            self.waker.clone(),
+        ) {
+            Ok(item) => Some(Box::new(item)),
+            Err(error) => {
+                eprintln!("terminal: start {program:?}: {error}");
+                None
+            }
+        }
+    }
+
     fn link_hovered(&self) -> bool {
         let mut hovered = false;
         self.panes.group.for_each_pane(&mut |pane| {
