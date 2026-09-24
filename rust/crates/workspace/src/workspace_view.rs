@@ -1584,7 +1584,20 @@ impl WorkspaceView {
                 item(MENU_EDIT_PASTE, "Paste", false),
                 item(MENU_EDIT_REVEAL, "Reveal in Finder", true),
                 item(crate::MENU_EDIT_OPEN_TERMINAL, "Open in Terminal", false),
-            ];
+            ]
+            .into_iter()
+            .chain(
+                self.input_ref(self.menu_group)
+                    .and_then(|input| input.editor_split_diff())
+                    .map(|split| MenuItem {
+                        id: crate::MENU_EDIT_SPLIT_DIFF,
+                        label: "Split Diff".into(),
+                        checked: split,
+                        sep: true,
+                        disabled: false,
+                    }),
+            )
+            .collect();
         }
         if target == SIDEBAR_TOGGLE {
             let left = self.layout.sidebar_left();
@@ -1928,6 +1941,11 @@ impl WorkspaceView {
                     };
                     if let Some(input) = self.input(group) {
                         input.editor_key(key, false);
+                    }
+                }
+                crate::MENU_EDIT_SPLIT_DIFF => {
+                    if let Some(input) = self.input(group) {
+                        input.editor_key(EditKey::ToggleSplitDiff, false);
                     }
                 }
                 crate::MENU_EDIT_OPEN_TERMINAL => {
@@ -3672,6 +3690,12 @@ fn push_pane_group(
                 painted: fill,
                 clip: Some(b.rect),
             });
+            if let Some((painted, clip)) = pane.companion.take() {
+                overlays.push(Overlay {
+                    painted,
+                    clip: Some(clip),
+                });
+            }
             if !pane.back.is_empty() || !pane.back_tris.is_empty() {
                 let mut sp = Painted::default();
                 sp.rects.extend(pane.back.iter().copied());

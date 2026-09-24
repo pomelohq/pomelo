@@ -247,6 +247,7 @@ pub const MENU_EDIT_COPY_TRIM: u64 = 894;
 pub const MENU_EDIT_REVEAL: u64 = 895;
 pub const MENU_TREE_OPEN_TERMINAL: u64 = 884;
 pub const MENU_EDIT_OPEN_TERMINAL: u64 = 896;
+pub const MENU_EDIT_SPLIT_DIFF: u64 = 897;
 pub const TAB_MENU_TARGET: u64 = 852;
 pub const MENU_TAB_CLOSE: u64 = 900;
 pub const MENU_TAB_CLOSE_OTHERS: u64 = 901;
@@ -633,6 +634,15 @@ pub trait Item: 'static {
     fn h_scrollbar(&self, _content: ui::Rect) -> Vec<ui::Rect> {
         Vec::new()
     }
+    /// Width to keep at the left of a body `body_w` wide for a companion view (the old side of a split
+    /// diff); the text body gets the rest.
+    fn companion_width(&mut self, _body_w: f32) -> f32 {
+        0.0
+    }
+    /// The companion view, painted into `area` (left of the text body, scrolled with it).
+    fn paint_companion(&mut self, _area: ui::Rect) -> Option<ui::Painted> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -712,6 +722,8 @@ pub enum EditKey {
     GoToTypeDefinition,
     GoToImplementation,
     GoToPreviousHunk,
+    /// Switch a diff between one column and two.
+    ToggleSplitDiff,
     GitRestore,
     ToggleStaged,
     StageAndNext,
@@ -739,6 +751,8 @@ pub struct PanePlacement {
     pub node: Node,
     /// A body the item painted itself (a terminal), drawn clipped to the area below the chrome.
     pub painted: Option<(ui::Painted, ui::Rect)>,
+    /// A text body's companion view (the old side of a split diff), drawn over the body's left.
+    pub companion: Option<(ui::Painted, ui::Rect)>,
     pub body: Option<PaneBody>,
     pub back: Vec<ui::Rect>,
     pub back_tris: Vec<ui::Tri>,
@@ -903,6 +917,10 @@ pub trait ItemInput {
     fn editor_selected_text(&self) -> Option<String>;
     fn editor_right_press(&mut self, x: f32, y: f32) -> bool;
     fn editor_menu_anchor_at(&self, x: f32, y: f32) -> Option<(Vec<usize>, usize)>;
+    /// For a diff tab, whether it shows two columns; `None` for anything else.
+    fn editor_split_diff(&self) -> Option<bool> {
+        None
+    }
     fn editor_menu_y(&self, path: &[usize], line: usize) -> Option<f32>;
     fn editor_save(&mut self) -> Option<Result<(), String>>;
     fn editor_focused(&self) -> bool;
