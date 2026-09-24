@@ -1,0 +1,90 @@
+{
+  "default_branch": "develop",
+  "environments": {
+    "staging": {
+      "backend.api": "https://api.staging.example"
+    }
+  },
+  "prepare_main": [
+    "migrate"
+  ],
+  "repos": [
+    {
+      "alias": "api",
+      "default_branch": "trunk",
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "name": "api",
+      "profiles": [
+        "staging"
+      ],
+      "services": [
+        {
+          "cmd": "go run ./cmd/server",
+          "depends_on": [
+            "worker"
+          ],
+          "env": {
+            "PORT": "3000",
+            "URL": "{{api.server.url}}"
+          },
+          "has_port": true,
+          "mode": "debug",
+          "modes": {
+            "debug": "dlv debug"
+          },
+          "name": "server",
+          "proxy_port": 8080,
+          "type": "backend"
+        },
+        {
+          "cmd": "go run ./cmd/worker",
+          "name": "worker"
+        }
+      ],
+      "shell_env": ".env"
+    },
+    {
+      "alias": "web",
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "name": "client",
+      "services": [
+        {
+          "cmd": "npm run dev",
+          "has_port": true,
+          "name": "dev",
+          "profiles": [
+            "local",
+            "staging"
+          ],
+          "shortcuts": [
+            {
+              "cmd": "npm test",
+              "desc": "Run tests",
+              "key": "t"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "seed": [
+    "make seed"
+  ],
+  "session": "test-project",
+  "valid": true,
+  "workspaces": {
+    "full": [
+      "api/server",
+      "api/worker",
+      "web/dev"
+    ]
+  }
+}

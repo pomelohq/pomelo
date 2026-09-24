@@ -1,0 +1,17 @@
+[package]
+name = "pom_config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Project config (pom.yml + pom.d fragments): parse, merge, presets, defaults, validation."
+
+[lib]
+path = "src/pom_config.rs"
+
+[dependencies]
+saphyr-parser = "0.0.6"
+indexmap = "2"
+
+[dev-dependencies]
+tempfile = "3"
+serde_json.workspace = true

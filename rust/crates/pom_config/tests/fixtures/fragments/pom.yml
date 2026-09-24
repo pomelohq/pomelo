@@ -1,0 +1,11 @@
+session: demo
+default_branch: main
+repos:
+  api:
+    alias: api
+    setup: [old]
+    commands:
+      test: go test
+    services:
+      s:
+        cmd: go run .

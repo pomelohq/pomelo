@@ -1,0 +1,116 @@
+{
+  "default_branch": "main",
+  "prepare_main": [
+    "reset",
+    "migrate",
+    "seed"
+  ],
+  "session": "pomelo",
+  "shared_services": {
+    "cache": {
+      "capacity": 16,
+      "command": "redis-server --appendonly yes",
+      "image": "redis:7-alpine",
+      "ports": [
+        "6379"
+      ],
+      "type": "redis",
+      "volumes": [
+        "shared_redis:/data"
+      ]
+    },
+    "custom": {
+      "healthcheck": {
+        "interval": "1s",
+        "retries": 2
+      },
+      "image": "my/image",
+      "ports": [
+        "1234"
+      ]
+    },
+    "minio": {
+      "command": "server /data --console-address \":9001\"",
+      "db_password": "minioadmin",
+      "db_user": "minioadmin",
+      "environment": {
+        "MINIO_ROOT_PASSWORD": "minioadmin",
+        "MINIO_ROOT_USER": "minioadmin"
+      },
+      "image": "minio/minio",
+      "ports": [
+        "9000",
+        "9001"
+      ],
+      "volumes": [
+        "shared_minio:/data"
+      ]
+    },
+    "postgres": {
+      "command": "postgres -c shared_preload_libraries=pg_stat_statements",
+      "db_password": "postgres",
+      "db_user": "postgres",
+      "environment": {
+        "POSTGRES_DB": "postgres",
+        "POSTGRES_PASSWORD": "other",
+        "POSTGRES_USER": "postgres"
+      },
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 3,
+        "timeout": "3s"
+      },
+      "image": "postgres:16",
+      "ports": [
+        "5432"
+      ],
+      "volumes": [
+        "shared_postgres:/var/lib/postgresql/data"
+      ]
+    },
+    "redis": {
+      "capacity": 8,
+      "command": "redis-server --appendonly yes",
+      "image": "redis:7-alpine",
+      "ports": [
+        "6379"
+      ],
+      "volumes": [
+        "shared_redis:/data"
+      ]
+    },
+    "search": {
+      "environment": {
+        "DISABLE_SECURITY_PLUGIN": "true",
+        "OPENSEARCH_JAVA_OPTS": "-Xms256m -Xmx256m",
+        "discovery.type": "single-node"
+      },
+      "image": "opensearchproject/opensearch:2.11.0",
+      "ports": [
+        "9200",
+        "9600"
+      ],
+      "type": "opensearch",
+      "volumes": [
+        "shared_opensearch:/usr/share/opensearch/data"
+      ]
+    },
+    "zincsearch": {
+      "db_password": "admin",
+      "db_user": "admin",
+      "environment": {
+        "ZINC_DATA_PATH": "/data",
+        "ZINC_FIRST_ADMIN_PASSWORD": "admin",
+        "ZINC_FIRST_ADMIN_USER": "admin"
+      },
+      "image": "public.ecr.aws/zinclabs/zincsearch:latest",
+      "ports": [
+        "4080"
+      ],
+      "volumes": [
+        "shared_zincsearch:/data"
+      ]
+    }
+  },
+  "valid": true
+}

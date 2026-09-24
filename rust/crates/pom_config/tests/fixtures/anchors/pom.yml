@@ -1,0 +1,15 @@
+x-node: &node
+  type: frontend
+  cmd: npm start
+  env: &env
+    NODE_ENV: development
+repos:
+  web:
+    services:
+      a: *node
+      b:
+        <<: *node
+        cmd: npm run b
+        env:
+          <<: *env
+          EXTRA: "1"

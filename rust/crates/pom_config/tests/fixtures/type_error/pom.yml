@@ -1,0 +1,4 @@
+session: [a]
+repos:
+  api:
+    setup: npm i

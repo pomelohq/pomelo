@@ -1,0 +1,43 @@
+session: t
+preset: [tools, missing]
+presets:
+  infra:
+    env:
+      REDIS_URL: redis://x
+      SHARED: from-infra
+  pg:
+    env:
+      DATABASE_URL: postgres://y
+    migrate: [npm run migrate]
+  nest:
+    preset: [infra, pg]
+    seed_from_main: true
+    pre_start: source .env.local
+    copy: [.npmrc]
+    commands:
+      install: npm ci
+      custom: do-it
+    shortcuts:
+      - { cmd: npm run lint, desc: Lint }
+    services:
+      worker: node worker
+      api: node overridden
+  loop_a:
+    preset: loop_b
+    setup: [a]
+  loop_b:
+    preset: loop_a
+  tools:
+    services:
+      docs: mkdocs serve
+repos:
+  ai:
+    preset: nest
+    env:
+      SHARED: own
+    services:
+      api:
+        port: true
+        cmd: node main
+  looped:
+    preset: [loop_a]
