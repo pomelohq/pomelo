@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use pom_config::Config;
 use pom_paths::StateDir;
 use pom_services::ServiceRunner;
-use pom_workspace::{CreateRequest, DeleteRequest, Event, WorkspaceContext};
+use pom_sync::RepoState;
+use pom_workspace::{CreateRequest, DeleteRequest, Event, PrepareRequest, WorkspaceContext};
 use workspace::{OpStatus, StageState, WorkspaceOp};
 
 /// What an operation works against, captured when it is queued.
@@ -24,11 +25,16 @@ pub enum OpKind {
         display_name: String,
     },
     Delete(DeleteRequest),
+    /// Pull every repo of main from origin and migrate what moved.
+    RefreshMain,
+    /// Reset main's databases, migrate and seed.
+    PrepareMain(PrepareRequest),
 }
 
 /// An operation that ended, for the app to follow up (switch to a new workspace, show warnings, rescan).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finished {
+    pub title: String,
     pub branch: String,
     pub created: bool,
     pub ok: bool,
@@ -53,6 +59,36 @@ struct Queue {
 pub struct OpQueue {
     queue: Arc<Mutex<Queue>>,
     waker: Arc<dyn Fn() + Send + Sync>,
+}
+
+/// Folds one repo's refresh state into the card, whose stages are the repos.
+pub fn apply_repo_state(view: &mut WorkspaceOp, repo: &str, state: &RepoState) {
+    let stage = match state {
+        RepoState::Pending => StageState::Pending,
+        RepoState::Pulling | RepoState::Migrating => StageState::Running,
+        RepoState::NoChange | RepoState::Updated => StageState::Done,
+        RepoState::Skipped(_) => StageState::Skipped,
+        RepoState::Failed(_) => StageState::Failed,
+    };
+    let label = match state {
+        RepoState::Skipped(why) => format!("{repo}: skipped ({why})"),
+        RepoState::NoChange => format!("{repo}: up to date"),
+        RepoState::Updated => format!("{repo}: updated"),
+        RepoState::Migrating => format!("{repo}: migrating"),
+        _ => repo.to_string(),
+    };
+    view.status = OpStatus::Running;
+    let at = view
+        .stages
+        .iter()
+        .position(|(name, _)| name == repo || name.starts_with(&format!("{repo}: ")));
+    match at {
+        Some(at) => view.stages[at] = (label, stage),
+        None => view.stages.push((label, stage)),
+    }
+    if let RepoState::Failed(error) = state {
+        view.detail = format!("{repo}: {}", error.lines().next().unwrap_or_default());
+    }
 }
 
 /// Folds one pipeline event into the card.
@@ -106,9 +142,11 @@ impl OpQueue {
 
     /// Queues an operation; `title` is what its card says.
     pub fn enqueue(&self, kind: OpKind, title: String, context: OpContext) {
+        // Main's own operations leave its row in place; a created or deleted workspace's row hides meanwhile.
         let branch = match &kind {
             OpKind::Create { request, .. } => request.branch.clone(),
             OpKind::Delete(request) => request.branch.clone(),
+            OpKind::RefreshMain | OpKind::PrepareMain(_) => String::new(),
         };
         {
             let mut queue = self.lock();
@@ -152,7 +190,9 @@ impl OpQueue {
             match &mut op.kind {
                 OpKind::Create { request, .. } => request.from_stage = failed,
                 OpKind::Delete(request) => request.from_stage = failed,
+                OpKind::RefreshMain | OpKind::PrepareMain(_) => {}
             }
+            op.view.stages.clear();
             op.view.status = OpStatus::Queued;
             op.view.error.clear();
         }
@@ -233,6 +273,10 @@ impl OpQueue {
             }
             (self.waker)();
         };
+        if let OpKind::RefreshMain = kind {
+            self.run_refresh(id, context);
+            return;
+        }
         let (branch, created, result) = match kind {
             OpKind::Create {
                 request,
@@ -249,7 +293,14 @@ impl OpQueue {
                 false,
                 pom_workspace::delete(&workspace_context, request, &sink),
             ),
+            OpKind::PrepareMain(request) => (
+                context.config.global_default_branch().to_string(),
+                false,
+                pom_workspace::prepare_main(&workspace_context, request, &sink),
+            ),
+            OpKind::RefreshMain => return,
         };
+        let title = self.title_of(id);
         let mut queue = self.lock();
         let (ok, warnings) = match result {
             Ok(outcome) => {
@@ -259,11 +310,85 @@ impl OpQueue {
             Err(_) => (false, Vec::new()),
         };
         queue.finished.push(Finished {
+            title,
             branch,
             created,
             ok,
             warnings,
         });
+    }
+
+    fn title_of(&self, id: u64) -> String {
+        self.lock()
+            .ops
+            .iter()
+            .find(|op| op.view.id == id)
+            .map(|op| op.view.title.clone())
+            .unwrap_or_default()
+    }
+
+    fn run_refresh(&self, id: u64, context: &OpContext) {
+        let progress = |repo: &str, state: &RepoState| {
+            if let Some(op) = self.lock().ops.iter_mut().find(|op| op.view.id == id) {
+                apply_repo_state(&mut op.view, repo, state);
+            }
+            (self.waker)();
+        };
+        let lock_dir = std::path::Path::new(pom_lock::DEFAULT_LOCK_DIR);
+        let result = pom_sync::refresh_main(
+            &pom_sync::RefreshContext {
+                config: &context.config,
+                runner: &context.runner,
+                lock_dir,
+            },
+            &progress,
+        );
+        let title = self.title_of(id);
+        let mut queue = self.lock();
+        let (ok, warnings) = match result {
+            Ok(repos) => {
+                let failures: Vec<String> = repos
+                    .iter()
+                    .filter_map(|(repo, state)| match state {
+                        RepoState::Failed(error) => Some(format!("{repo}: {error}")),
+                        _ => None,
+                    })
+                    .collect();
+                let skipped = repos.iter().filter_map(|(repo, state)| match state {
+                    RepoState::Skipped(why) => Some(format!("{repo}: skipped ({why})")),
+                    _ => None,
+                });
+                let warnings: Vec<String> = failures.iter().cloned().chain(skipped).collect();
+                match failures.first() {
+                    None => {
+                        queue.ops.retain(|op| op.view.id != id);
+                        (true, warnings)
+                    }
+                    Some(first) => {
+                        fail(&mut queue, id, first);
+                        (false, warnings)
+                    }
+                }
+            }
+            Err(error) => {
+                fail(&mut queue, id, &error);
+                (false, Vec::new())
+            }
+        };
+        queue.finished.push(Finished {
+            title,
+            branch: String::new(),
+            created: false,
+            ok,
+            warnings,
+        });
+    }
+}
+
+fn fail(queue: &mut Queue, id: u64, error: &str) {
+    if let Some(op) = queue.ops.iter_mut().find(|op| op.view.id == id) {
+        op.view.status = OpStatus::Failed;
+        op.view.error = error.lines().next().unwrap_or_default().to_string();
     }
 }
 
@@ -291,6 +416,30 @@ mod tests {
             error: String::new(),
             retryable: true,
         }
+    }
+
+    #[test]
+    fn refresh_states_become_repo_stages() {
+        let mut view = card();
+        apply_repo_state(&mut view, "api", &RepoState::Pending);
+        apply_repo_state(&mut view, "web", &RepoState::Pending);
+        apply_repo_state(&mut view, "api", &RepoState::Pulling);
+        apply_repo_state(&mut view, "api", &RepoState::Updated);
+        apply_repo_state(
+            &mut view,
+            "web",
+            &RepoState::Skipped("uncommitted changes".into()),
+        );
+        assert_eq!(
+            view.stages,
+            [
+                ("api: updated".to_string(), StageState::Done),
+                (
+                    "web: skipped (uncommitted changes)".to_string(),
+                    StageState::Skipped
+                ),
+            ]
+        );
     }
 
     #[test]

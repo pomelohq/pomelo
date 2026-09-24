@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use crate as settings_ui;
 use pom_paths::StateDir;
 use settings::Settings;
-use settings_ui::{ConnectionStatus, JiraPage, TokenSource};
+use settings_ui::{ConnectionStatus, IntegrationsPage, TokenSource};
 use ui::{Context, Frame, Overlay, Painted, RawView, Rect, Window};
 
 const JIRA_FIELDS: [u64; 3] = [
@@ -60,8 +60,10 @@ pub struct SettingsView {
     pending: SideEffects,
     /// The state folder and session whose Jira settings the Integrations page edits.
     jira_session: Option<(StateDir, String)>,
-    jira: JiraPage,
+    jira: IntegrationsPage,
     jira_test: Option<Receiver<Result<String, String>>>,
+    /// The project's `pom.yml`, whose `sync:` applies until this window sets refresh-main.
+    project_config: Option<std::sync::Arc<pom_config::Config>>,
 }
 
 impl SettingsView {
@@ -93,9 +95,36 @@ impl SettingsView {
             viewport: (0.0, 0.0),
             pending: SideEffects::default(),
             jira_session: None,
-            jira: JiraPage::default(),
+            jira: IntegrationsPage::default(),
             jira_test: None,
+            project_config: None,
         }
+    }
+
+    pub fn set_project_config(&mut self, config: Option<std::sync::Arc<pom_config::Config>>) {
+        self.project_config = config;
+        let status = self.jira.status.clone();
+        self.reload_jira(status);
+    }
+
+    /// Saves refresh-main's schedule for the session (the background loop picks it up within seconds).
+    fn save_refresh(&mut self, enabled: bool, minutes: u64) {
+        let Some((state, session)) = self.jira_session.clone() else {
+            return;
+        };
+        let minutes = minutes.clamp(
+            settings_ui::REFRESH_MINUTES_MIN,
+            settings_ui::REFRESH_MINUTES_MAX,
+        );
+        let schedule = pom_sync::RefreshSchedule {
+            enabled,
+            interval_seconds: minutes * 60,
+        };
+        if let Err(error) = pom_sync::save_refresh_schedule(&state, &session, schedule) {
+            eprintln!("settings: save refresh-main: {error}");
+        }
+        let status = self.jira.status.clone();
+        self.reload_jira(status);
     }
 
     /// Keeps a value the app changed (the ticket picker's board) so this window's next save does not undo it.
@@ -117,7 +146,7 @@ impl SettingsView {
 
     fn reload_jira(&mut self, status: ConnectionStatus) {
         let Some((state, session)) = &self.jira_session else {
-            self.jira = JiraPage::default();
+            self.jira = IntegrationsPage::default();
             return;
         };
         let stored = pom_jira::JiraSettings::load(state, session);
@@ -128,8 +157,11 @@ impl SettingsView {
             Some((_, pom_jira::TokenOrigin::Environment)) => TokenSource::Environment,
             None => TokenSource::Missing,
         };
-        self.jira = JiraPage {
+        let refresh = pom_sync::refresh_schedule(state, session, self.project_config.as_deref());
+        self.jira = IntegrationsPage {
             session: session.clone(),
+            keep_main_fresh: refresh.enabled,
+            refresh_minutes: (refresh.interval_seconds / 60).max(settings_ui::REFRESH_MINUTES_MIN),
             site: stored.site,
             email: stored.email,
             token,
@@ -248,6 +280,12 @@ impl SettingsView {
         };
         if JIRA_FIELDS.contains(&id) {
             self.commit_jira(id, &buf);
+            return;
+        }
+        if id == settings_ui::CTRL_REFRESH_EDIT {
+            if let Ok(minutes) = buf.trim().parse::<u64>() {
+                self.save_refresh(self.jira.keep_main_fresh, minutes);
+            }
             return;
         }
         let Ok(v) = buf.trim().parse::<f32>() else {
@@ -686,6 +724,26 @@ impl SettingsView {
                 }
             }
             self.reload_jira(ConnectionStatus::Untested);
+        } else if id == settings_ui::CTRL_REFRESH_MAIN {
+            self.commit_edit();
+            self.save_refresh(!self.jira.keep_main_fresh, self.jira.refresh_minutes);
+        } else if id == settings_ui::CTRL_REFRESH_DEC || id == settings_ui::CTRL_REFRESH_INC {
+            self.commit_edit();
+            let minutes = self.jira.refresh_minutes;
+            let next = if id == settings_ui::CTRL_REFRESH_INC {
+                minutes + 5 - minutes % 5
+            } else {
+                minutes.saturating_sub(if minutes.is_multiple_of(5) {
+                    5
+                } else {
+                    minutes % 5
+                })
+            };
+            self.save_refresh(self.jira.keep_main_fresh, next);
+        } else if id == settings_ui::CTRL_REFRESH_EDIT {
+            self.commit_edit();
+            self.editing = Some((id, self.jira.refresh_minutes.to_string()));
+            self.close_popover();
         } else if id == settings_ui::CTRL_JIRA_TEST {
             self.commit_edit();
             if self.jira_test.is_none() {
@@ -806,6 +864,32 @@ mod tests {
         if no_env {
             assert_eq!(view.jira.token, TokenSource::Missing);
         }
+    }
+
+    #[test]
+    fn keep_main_fresh_saves_the_schedule_for_the_session() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = StateDir::new(temp.path());
+        let mut view = SettingsView::new(Settings::default());
+        view.set_jira_session(Some((state.clone(), "demo".into())));
+        assert!(!view.jira.keep_main_fresh);
+        assert_eq!(view.jira.refresh_minutes, 30);
+        view.click(settings_ui::CTRL_REFRESH_MAIN);
+        view.click(settings_ui::CTRL_REFRESH_DEC);
+        view.click(settings_ui::CTRL_REFRESH_EDIT);
+        view.key_backspace();
+        view.key_backspace();
+        view.key_text("7");
+        view.key_enter();
+        assert_eq!(
+            pom_sync::refresh_schedule(&state, "demo", None),
+            pom_sync::RefreshSchedule {
+                enabled: true,
+                interval_seconds: 7 * 60,
+            }
+        );
+        view.click(settings_ui::CTRL_REFRESH_INC);
+        assert_eq!(view.jira.refresh_minutes, 10);
     }
 
     #[test]
