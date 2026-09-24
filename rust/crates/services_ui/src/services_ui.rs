@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use pom_services::ServiceTarget;
 use terminal_ui::TerminalItem;
 use ui::{div, icon, label, theme, IconKind, Node, Rgba};
-use workspace::{MenuItem, PaneKind, PanelRequest, SidePanelView};
+use workspace::{MenuItem, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
 
 use model::{shared_key, Model, SharedRun, ALL_SHARED, WORKSPACE_GROUP};
 pub use model::{Action, ServicesContext, SharedConfig, Status};
@@ -24,6 +24,8 @@ const BUTTON: f32 = 18.0;
 const ROW_STRIDE: u64 = 16;
 const MENU_BASE: u64 = 9_000_000;
 const TAB_BUTTON_BASE: u64 = MENU_BASE + 1_000;
+/// Palette entries: a service by twice its index (plus one to stop it), a repo command from here on.
+const PALETTE_COMMAND_BASE: u64 = 50_000;
 
 pub struct TabButton {
     pub icon: IconKind,
@@ -115,6 +117,16 @@ pub struct ServicesPanel {
     next_item: u64,
     /// A shared stop waiting for the user to confirm, with its prompt tag.
     confirm: Option<(u64, SharedRun)>,
+    /// A repo's right-click menu: its commands.
+    repo_menu: Option<Vec<(MenuItem, RepoCommand)>>,
+}
+
+/// One of a repo's pre-written commands (the config's `shortcuts`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RepoCommand {
+    repo: String,
+    label: String,
+    cmd: String,
 }
 
 impl ServicesPanel {
@@ -133,6 +145,7 @@ impl ServicesPanel {
             tab_buttons: Vec::new(),
             next_item: 1 << 40,
             confirm: None,
+            repo_menu: None,
         }
     }
 
@@ -850,6 +863,66 @@ impl ServicesPanel {
         }
     }
 
+    /// Each repo's pre-written commands, for repos checked out in this workspace.
+    fn repo_commands(&self, repo: Option<&str>) -> Vec<RepoCommand> {
+        let Some(config) = self.model.context.config() else {
+            return Vec::new();
+        };
+        config
+            .repos
+            .iter()
+            .filter(|(name, _)| repo.is_none_or(|repo| repo == name.as_str()))
+            .filter(|(name, _)| self.root.join(name).is_dir())
+            .flat_map(|(name, dir)| {
+                dir.effective_shortcuts()
+                    .into_iter()
+                    .filter(|shortcut| !shortcut.cmd.trim().is_empty())
+                    .map(|shortcut| {
+                        let label = [&shortcut.desc, &shortcut.key, &shortcut.cmd]
+                            .into_iter()
+                            .find(|text| !text.trim().is_empty())
+                            .cloned()
+                            .unwrap_or_default();
+                        RepoCommand {
+                            repo: name.clone(),
+                            label,
+                            cmd: shortcut.cmd,
+                        }
+                    })
+            })
+            .collect()
+    }
+
+    /// Runs a repo command in a terminal tab, in the repo's worktree with the workspace's env.
+    fn run_command(&mut self, command: &RepoCommand) {
+        let context = self.model.context.clone();
+        let Some(config) = context.config() else {
+            return;
+        };
+        let env = context.runner.workspace_env(&config, &context.branch);
+        if let Err(error) = env.write_env_files() {
+            self.requests
+                .push(PanelRequest::Toast(format!("Env files: {error}")));
+        }
+        let exports: String = env
+            .repo_env(&command.repo)
+            .into_iter()
+            .map(|(key, value)| format!("export {key}={}; ", pom_services::shell_quote(&value)))
+            .collect();
+        let worktree = self.root.join(&command.repo);
+        let script = format!(
+            "export PATH={path}; {exports}cd {dir} && {cmd}; status=$?; printf '\\n[exited with %s]\\n' \"$status\"",
+            path = pom_services::shell_quote(pom_services::tool_path()),
+            dir = pom_services::shell_quote(&worktree.to_string_lossy()),
+            cmd = command.cmd,
+        );
+        self.requests.push(PanelRequest::RunCommand {
+            title: format!("{}: {}", command.repo, command.label),
+            cwd: worktree,
+            argv: vec!["zsh".into(), "-lc".into(), script],
+        });
+    }
+
     fn toggle_group(&mut self, key: String) {
         if !self.collapsed.remove(&key) {
             self.collapsed.insert(key);
@@ -868,6 +941,62 @@ impl ServicesPanel {
 impl SidePanelView for ServicesPanel {
     fn kind(&self) -> PaneKind {
         PaneKind::Services
+    }
+
+    fn palette_entries(&self) -> Vec<PaletteEntry> {
+        let context = &self.model.context;
+        let Some(config) = context.config() else {
+            return Vec::new();
+        };
+        let mut entries: Vec<PaletteEntry> = context
+            .targets(&config)
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let running =
+                    self.model.status(&context.runner.holder_name(target)) == Status::Running;
+                PaletteEntry {
+                    label: format!(
+                        "services: {} {}/{}",
+                        if running { "stop" } else { "start" },
+                        target.repo,
+                        target.service
+                    ),
+                    id: index as u64 * 2 + u64::from(running),
+                }
+            })
+            .collect();
+        entries.extend(
+            self.repo_commands(None)
+                .into_iter()
+                .enumerate()
+                .map(|(index, command)| PaletteEntry {
+                    label: format!("run: {} {}", command.repo, command.label),
+                    id: PALETTE_COMMAND_BASE + index as u64,
+                }),
+        );
+        entries
+    }
+
+    fn run_palette_entry(&mut self, id: u64) {
+        if let Some(index) = id.checked_sub(PALETTE_COMMAND_BASE) {
+            if let Some(command) = self.repo_commands(None).get(index as usize).cloned() {
+                self.run_command(&command);
+            }
+            return;
+        }
+        let context = self.model.context.clone();
+        let Some(config) = context.config() else {
+            return;
+        };
+        if let Some(target) = context.targets(&config).get((id / 2) as usize).cloned() {
+            let action = if id % 2 == 1 {
+                Action::Stop
+            } else {
+                Action::Start
+            };
+            self.model.run(action, target);
+        }
     }
 
     fn render(&mut self, width: f32, height: f32) -> Node {
@@ -1039,14 +1168,46 @@ impl SidePanelView for ServicesPanel {
         let Some((index, _)) = self.decode(id) else {
             return false;
         };
-        let Some(Row::Service { target, holder }) = self.rows.get(index).cloned() else {
-            return false;
-        };
-        self.menu = Some(self.build_menu(&target, &holder));
-        true
+        self.menu = None;
+        self.repo_menu = None;
+        match self.rows.get(index).cloned() {
+            Some(Row::Service { target, holder }) => {
+                self.menu = Some(self.build_menu(&target, &holder));
+                true
+            }
+            Some(Row::Group { key, .. }) if key != WORKSPACE_GROUP && key != SHARED_GROUP => {
+                let commands = self.repo_commands(Some(&key));
+                if commands.is_empty() {
+                    return false;
+                }
+                self.repo_menu = Some(
+                    commands
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, command)| {
+                            (
+                                MenuItem {
+                                    id: self.base + MENU_BASE + index as u64,
+                                    label: format!("Run: {}", command.label).into(),
+                                    checked: false,
+                                    sep: false,
+                                    disabled: false,
+                                },
+                                command,
+                            )
+                        })
+                        .collect(),
+                );
+                true
+            }
+            _ => false,
+        }
     }
 
     fn menu_items(&self) -> Vec<MenuItem> {
+        if let Some(items) = &self.repo_menu {
+            return items.iter().map(|(item, _)| item.clone()).collect();
+        }
         self.menu
             .as_ref()
             .map(|menu| menu.items.iter().map(|(item, _)| item.clone()).collect())
@@ -1054,6 +1215,12 @@ impl SidePanelView for ServicesPanel {
     }
 
     fn menu_action(&mut self, item: u64) {
+        if let Some(items) = self.repo_menu.take() {
+            if let Some((_, command)) = items.into_iter().find(|(entry, _)| entry.id == item) {
+                self.run_command(&command);
+            }
+            return;
+        }
         let Some(menu) = self.menu.take() else {
             return;
         };

@@ -349,6 +349,29 @@ fn pane_key(
     None
 }
 
+/// A key press in keymap terms: the typed character (shift applied, so `?` not `/`) or the named key.
+fn keymap_keystroke(
+    event: &winit::event::KeyEvent,
+    modifiers: terminal::Modifiers,
+) -> Option<workspace::keymap::Keystroke> {
+    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    let key = match (&event.logical_key, event.key_without_modifiers()) {
+        (Key::Character(typed), _) if typed.chars().all(|c| !c.is_control()) => {
+            typed.to_lowercase()
+        }
+        (_, Key::Character(base)) => base.to_lowercase(),
+        (Key::Named(_), _) => terminal_keystroke(event, modifiers)?.key,
+        _ => return None,
+    };
+    Some(workspace::keymap::Keystroke {
+        cmd: modifiers.cmd,
+        ctrl: modifiers.ctrl,
+        alt: modifiers.alt,
+        shift: modifiers.shift,
+        key,
+    })
+}
+
 /// A key press in the terminal's terms: named keys by name, character keys as typed without modifiers (so
 /// ctrl/alt bindings see the base letter rather than a composed character).
 fn terminal_keystroke(
@@ -573,6 +596,9 @@ struct App {
     agents: AgentTracker,
     next_agent_item: u64,
     scaffolding: Option<Scaffolding>,
+    keymap: workspace::keymap::Keymap,
+    /// The first keys of a longer binding typed so far (`cmd-k` of `cmd-k cmd-s`).
+    pending_keys: Vec<workspace::keymap::Keystroke>,
     dev_proxy: Option<pom_proxy::DevProxy>,
     agent_registration: Arc<std::sync::Mutex<settings_ui::AgentPage>>,
     settings_pages_at: Option<Instant>,
@@ -979,7 +1005,17 @@ impl App {
                 background: None,
             },
         );
+        let bindings = self.keymap_bindings();
+        self.with_workspace_view(id, |view, _| view.set_bindings(bindings));
         id
+    }
+
+    /// What each window action is bound to now, for the command palette.
+    fn keymap_bindings(&self) -> Vec<(workspace::keymap::Action, String)> {
+        workspace::keymap::Action::ALL
+            .iter()
+            .filter_map(|action| Some((*action, self.keymap.binding_for(*action)?)))
+            .collect()
     }
 
     fn open_project_in(&mut self, id: WindowId, config: Option<std::path::PathBuf>) {
@@ -1528,6 +1564,97 @@ impl App {
         }
     }
 
+    /// A key press through the keymap: runs a bound action (returns true), or remembers the first key of a
+    /// longer binding and lets the press go on to the editor as usual.
+    fn dispatch_keys(
+        &mut self,
+        id: WindowId,
+        stroke: workspace::keymap::Keystroke,
+        event_loop: &ActiveEventLoop,
+    ) -> bool {
+        use workspace::keymap::KeyMatch;
+        let in_settings = self.settings_window.as_ref().map(|w| w.id()) == Some(id);
+        if !in_settings && !self.mains.contains_key(&id) {
+            return false;
+        }
+        match self.keymap.match_keys(&self.pending_keys, &stroke) {
+            KeyMatch::Action(action) => {
+                self.pending_keys.clear();
+                if in_settings {
+                    if action == workspace::keymap::Action::OpenSettings {
+                        self.toggle_settings(event_loop);
+                        return true;
+                    }
+                    return false;
+                }
+                self.run_app_action(id, action, event_loop)
+            }
+            KeyMatch::Pending => {
+                self.pending_keys.push(stroke);
+                false
+            }
+            KeyMatch::None => {
+                self.pending_keys.clear();
+                false
+            }
+        }
+    }
+
+    /// Runs a keymap or palette action for the window `id`; false when it does not apply right now.
+    fn run_app_action(
+        &mut self,
+        id: WindowId,
+        action: workspace::keymap::Action,
+        event_loop: &ActiveEventLoop,
+    ) -> bool {
+        use workspace::keymap::Action;
+        let blocked = self.with_workspace_view(id, |v, _| v.window_modal_open() || v.menu_open())
+            == Some(true);
+        if blocked && action != Action::OpenSettings {
+            return false;
+        }
+        match action {
+            Action::OpenSettings | Action::OpenKeymap => self.toggle_settings(event_loop),
+            Action::OpenProject => {
+                self.handle_session_request(id, workspace::SessionRequest::ChooseFolder)
+            }
+            Action::NewProject => {
+                self.handle_session_request(id, workspace::SessionRequest::NewProject)
+            }
+            Action::NewWorkspace => self.open_create_workspace(id),
+            Action::CycleTheme => {
+                self.settings.theme = settings_ui::next_theme(&self.settings.theme).to_string();
+                self.apply_theme();
+                if let Err(error) = self.settings.save() {
+                    eprintln!("settings: save: {error}");
+                }
+                let theme = self.settings.theme.clone();
+                if self
+                    .with_settings_view(|view, _| view.set_theme(&theme))
+                    .is_some()
+                {
+                    self.settings_dirty = true;
+                }
+                self.mark_all_mains_dirty();
+            }
+            Action::CommandPalette => {
+                self.with_workspace_view(id, |v, _| {
+                    v.editor_key(workspace::EditKey::ToggleCommandPalette, false)
+                });
+            }
+            action => {
+                if self.with_workspace_view(id, |v, _| v.run_action(action)) != Some(true) {
+                    return false;
+                }
+                self.sync_workspace_effects(id, event_loop);
+            }
+        }
+        if let Some(m) = self.mains.get_mut(&id) {
+            m.dirty = true;
+        }
+        true
+    }
+
     /// Toggle the Settings window: open a real second window, or close it if already open.
     fn toggle_settings(&mut self, event_loop: &ActiveEventLoop) {
         if self.settings_window.is_some() {
@@ -1753,6 +1880,9 @@ impl App {
         if effects.fix_setup {
             self.open_fixer(id);
         }
+        if let Some(action) = effects.action {
+            self.run_app_action(id, action, event_loop);
+        }
         self.handle_workspace_requests(id);
         if let Some(m) = self.mains.get_mut(&id) {
             m.dirty = true;
@@ -1976,64 +2106,18 @@ impl ApplicationHandler for App {
         }
         if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
             if ke.state == ElementState::Pressed {
-                let toggle = matches!(&ke.logical_key, Key::Character(c) if c.as_str() == ",")
-                    && self.super_down;
                 let esc_on_settings = ke.logical_key == Key::Named(NamedKey::Escape)
                     && self.settings_window.as_ref().map(|w| w.id()) == Some(id);
-                if toggle {
-                    self.toggle_settings(event_loop);
-                    return;
-                }
-                let open_folder = matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "o")
-                    && self.super_down
-                    && !self.shift_down
-                    && !self.alt_down
-                    && !self.ctrl_down;
-                if open_folder && self.mains.contains_key(&id) {
-                    self.handle_session_request(id, workspace::SessionRequest::ChooseFolder);
-                    return;
-                }
-                let new_workspace = matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "n")
-                    && self.super_down
-                    && !self.shift_down
-                    && !self.alt_down
-                    && !self.ctrl_down;
-                if new_workspace && self.mains.contains_key(&id) {
-                    self.open_create_workspace(id);
-                    if let Some(m) = self.mains.get_mut(&id) {
-                        m.dirty = true;
+                let modifiers = terminal::Modifiers {
+                    shift: self.shift_down,
+                    alt: self.alt_down,
+                    ctrl: self.ctrl_down,
+                    cmd: self.super_down,
+                };
+                if let Some(stroke) = keymap_keystroke(ke, modifiers) {
+                    if self.dispatch_keys(id, stroke, event_loop) {
+                        return;
                     }
-                    return;
-                }
-                let quick_open = matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "p")
-                    && self.super_down
-                    && !self.shift_down
-                    && !self.alt_down
-                    && !self.ctrl_down;
-                let project_search = matches!(&ke.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("f"))
-                    && self.super_down
-                    && self.shift_down
-                    && !self.alt_down
-                    && !self.ctrl_down;
-                if project_search
-                    && self.mains.contains_key(&id)
-                    && self.with_workspace_view(id, |v, _| v.editor_focused()) != Some(true)
-                {
-                    self.with_workspace_view(id, |v, _| v.deploy_project_search());
-                    if let Some(m) = self.mains.get_mut(&id) {
-                        m.dirty = true;
-                    }
-                    return;
-                }
-                if quick_open
-                    && self.mains.contains_key(&id)
-                    && self.with_workspace_view(id, |v, _| v.editor_focused()) != Some(true)
-                {
-                    self.with_workspace_view(id, |v, _| v.open_file_finder());
-                    if let Some(m) = self.mains.get_mut(&id) {
-                        m.dirty = true;
-                    }
-                    return;
                 }
                 if esc_on_settings {
                     self.settings_ui = None;
@@ -2086,15 +2170,6 @@ impl ApplicationHandler for App {
             }
         }
         if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
-            let toggle_terminal = ke.state == ElementState::Pressed
-                && self.ctrl_down
-                && !self.super_down
-                && matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "`");
-            if toggle_terminal && self.mains.contains_key(&id) {
-                self.with_workspace_view(id, |v, _| v.toggle_terminal());
-                self.sync_workspace_effects(id, event_loop);
-                return;
-            }
             if ke.state == ElementState::Pressed
                 && self.mains.contains_key(&id)
                 && self.with_workspace_view(id, |v, _| v.terminal_focused()) == Some(true)
@@ -2332,7 +2407,6 @@ impl ApplicationHandler for App {
                         _ => None,
                     },
                     Key::Character(c) if cmd => match c.as_str() {
-                        "f" | "F" if shift => key(EditKey::DeployProjectSearch),
                         "f" => key(EditKey::DeploySearch),
                         "g" | "G" if shift => key(EditKey::SelectPreviousMatch),
                         "g" => key(EditKey::SelectNextMatch),
@@ -2345,8 +2419,6 @@ impl ApplicationHandler for App {
                         "'" => key(EditKey::ToggleSelectedDiffHunks),
                         "k" | "K" if shift => key(EditKey::DeleteLine),
                         "l" | "L" if shift => key(EditKey::SelectAllMatches),
-                        "p" | "P" if shift && !ctrl => key(EditKey::ToggleCommandPalette),
-                        "p" if !ctrl => key(EditKey::ToggleFileFinder),
                         "i" | "I" if shift => key(EditKey::ToggleIncludeIgnored),
                         "o" | "O" if shift => key(EditKey::ToggleOutline),
                         "p" if ctrl => key(EditKey::AddCursorAboveRow),
@@ -2905,6 +2977,11 @@ fn main() -> anyhow::Result<()> {
         notifications::start();
     }
     let mut app = App::default();
+    let (keymap, problems) = workspace::keymap::Keymap::load();
+    for problem in problems {
+        eprintln!("{problem}");
+    }
+    app.keymap = keymap;
     register_with_agents(app.agent_registration.clone());
     app.refresh_agents();
     event_loop.run_app(&mut app)?;

@@ -1004,6 +1004,21 @@ impl PaneGroupView {
                 self.toggle_zoom();
                 true
             }
+            PaneCommand::CloseActiveItem | PaneCommand::CloseAllItems => {
+                let Some((pane, index)) = self
+                    .pane_at(&self.active)
+                    .and_then(|pane| Some((pane.id, pane.active?)))
+                else {
+                    return false;
+                };
+                let which = if command == PaneCommand::CloseActiveItem {
+                    CloseTabs::This
+                } else {
+                    CloseTabs::All
+                };
+                self.close_tabs(pane, index, which);
+                true
+            }
             PaneCommand::TogglePinTab => match self.active_pane_mut() {
                 Some(pane) => {
                     if let Some(index) = pane.active {
@@ -2772,5 +2787,30 @@ mod tests {
             view.active_pane_mut().map(|pane| pane.tab_scroll),
             Some(0.0)
         );
+    }
+
+    #[test]
+    fn close_commands_close_the_active_tab_or_all_unpinned() {
+        let mut view = view();
+        if let Some(pane) = view.active_pane_mut() {
+            pane.add_item(Box::new(Plain("c")));
+        }
+        assert!(view.pane_command(PaneCommand::CloseActiveItem));
+        let titles = |view: &mut PaneGroupView| {
+            view.active_pane_mut()
+                .map(|pane| {
+                    pane.open
+                        .iter()
+                        .map(|item| item.title())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(titles(&mut view), ["a", "b"]);
+        if let Some(pane) = view.active_pane_mut() {
+            pane.toggle_pin(0);
+        }
+        assert!(view.pane_command(PaneCommand::CloseAllItems));
+        assert_eq!(titles(&mut view), ["a"], "pinned tabs stay");
     }
 }

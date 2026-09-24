@@ -61,6 +61,8 @@ pub struct WorkspaceEffects {
     /// Open (or focus) the workspace's coding agent.
     pub open_agent: bool,
     pub fix_setup: bool,
+    /// A command palette pick the app runs (settings, projects, themes...).
+    pub action: Option<crate::keymap::Action>,
 }
 
 /// What the WORKSPACES panel asked for: the new-workspace form, an action on a row (an index into
@@ -200,6 +202,7 @@ pub struct WorkspaceView {
     agent_focused: bool,
     /// The confirmation on screen and its highlighted button; it takes all input until answered.
     prompt_shown: Option<(crate::Prompt, usize)>,
+    bindings: Vec<(crate::keymap::Action, String)>,
     pointer: (f32, f32),
     press: (f32, f32),
     show_after_switch: Option<PaneKind>,
@@ -276,6 +279,7 @@ impl WorkspaceView {
             terminal_focused: false,
             agent_focused: false,
             prompt_shown: None,
+            bindings: Vec::new(),
             pointer: (0.0, 0.0),
             press: (0.0, 0.0),
             show_after_switch: None,
@@ -379,6 +383,94 @@ impl WorkspaceView {
         self.layout.active_panels[side.index()] = Some(Shown::Func(kind));
         self.toggle_side(side, false);
         self.pending.persist = true;
+    }
+
+    /// Runs a keymap or palette action that belongs to the window itself; false for the ones the app runs
+    /// (settings, projects, themes) and when a modal or prompt holds the keyboard.
+    pub fn run_action(&mut self, action: crate::keymap::Action) -> bool {
+        use crate::keymap::Action;
+        if self.prompt_shown.is_some() || self.window_modal.is_some() {
+            return false;
+        }
+        let function = |kind: PaneKind| {
+            PaneKind::ALL
+                .iter()
+                .position(|each| *each == kind)
+                .map(|index| FUNC_BASE + index as u64)
+        };
+        match action {
+            Action::ToggleLeftDock => self.header_click(SIDEBAR_TOGGLE),
+            Action::ToggleRightDock => self.header_click(RIGHT_TOGGLE),
+            Action::ToggleBottomDock => {
+                self.layout.bottom.collapsed = !self.layout.bottom.collapsed;
+                self.pending.persist = true;
+            }
+            Action::FocusFiles
+            | Action::FocusGit
+            | Action::FocusServices
+            | Action::FocusDatabase
+            | Action::FocusPullRequests => {
+                let kind = match action {
+                    Action::FocusFiles => PaneKind::Files,
+                    Action::FocusServices => PaneKind::Services,
+                    Action::FocusDatabase => PaneKind::Database,
+                    _ => PaneKind::Git,
+                };
+                if action == Action::FocusPullRequests {
+                    self.show_function(kind);
+                } else if let Some(id) = function(kind) {
+                    self.header_click(id);
+                }
+            }
+            Action::ToggleAgent => self.header_click(AGENT_TOGGLE),
+            Action::ToggleTerminal => self.toggle_terminal(),
+            Action::NewTerminal => self.open_terminal_at(None),
+            Action::CloseActiveItem | Action::CloseAllItems => {
+                let command = if action == Action::CloseActiveItem {
+                    crate::pane::PaneCommand::CloseActiveItem
+                } else {
+                    crate::pane::PaneCommand::CloseAllItems
+                };
+                let group = self.focused_group();
+                let handled = self
+                    .group_view_mut(group)
+                    .is_some_and(|panes| panes.pane_command(command));
+                self.ask_about_pending_close();
+                return handled;
+            }
+            Action::SwitchWorkspace => {
+                let Some(project) = self.layout.project.as_ref() else {
+                    return false;
+                };
+                let entries: Vec<crate::ExtraCommand> = project
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .map(|(index, branch)| {
+                        let label = project.label(index);
+                        crate::ExtraCommand {
+                            name: if label == branch.as_str() {
+                                branch.clone()
+                            } else {
+                                format!("{label}  {branch}")
+                            },
+                            keys: Vec::new(),
+                            id: PALETTE_WORKSPACE_BASE + index as u64,
+                        }
+                    })
+                    .collect();
+                self.set_terminal_focus(false);
+                self.set_agent_focus(false);
+                match self.layout.files_view.as_mut() {
+                    Some(files) => files.open_command_list(entries, "Switch to workspace..."),
+                    None => return false,
+                }
+            }
+            Action::FileFinder => self.open_file_finder(),
+            Action::ProjectSearch => self.deploy_project_search(),
+            _ => return false,
+        }
+        true
     }
 
     /// Show a form over the window (replacing any open one).
@@ -656,7 +748,84 @@ impl WorkspaceView {
     /// Called by the shell after every input it routes here, which is also when the panes may have changed.
     pub fn take_effects(&mut self) -> WorkspaceEffects {
         self.panes_input = true;
+        self.run_picked_command();
         std::mem::take(&mut self.pending)
+    }
+
+    /// The keymap's bindings, shown next to the window commands in the palette.
+    pub fn set_bindings(&mut self, bindings: Vec<(crate::keymap::Action, String)>) {
+        self.bindings = bindings;
+    }
+
+    /// The window's commands for the palette: its actions, then what each side panel offers.
+    fn palette_commands(&self) -> Vec<crate::ExtraCommand> {
+        use crate::keymap::Action;
+        let mut commands: Vec<crate::ExtraCommand> = Action::ALL
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| **action != Action::CommandPalette)
+            .map(|(index, action)| crate::ExtraCommand {
+                name: format!("workspace: {}", action.label().to_lowercase()),
+                keys: self
+                    .bindings
+                    .iter()
+                    .find(|(bound, _)| bound == action)
+                    .map(|(_, keys)| keys.split_whitespace().map(str::to_string).collect())
+                    .unwrap_or_default(),
+                id: PALETTE_ACTION_BASE + index as u64,
+            })
+            .collect();
+        for panel in &self.layout.side_panels {
+            let base = PALETTE_PANEL_BASE + panel.kind() as u64 * PALETTE_PANEL_STRIDE;
+            commands.extend(panel.palette_entries().into_iter().filter_map(|entry| {
+                (entry.id < PALETTE_PANEL_STRIDE).then(|| crate::ExtraCommand {
+                    name: entry.label,
+                    keys: Vec::new(),
+                    id: base + entry.id,
+                })
+            }));
+        }
+        commands
+    }
+
+    /// Runs the window command the palette handed back: actions this view owns here, the rest for the app,
+    /// panel entries by their panel.
+    fn run_picked_command(&mut self) {
+        let Some(id) = self
+            .layout
+            .files_view
+            .as_mut()
+            .and_then(|view| view.take_extra_command())
+        else {
+            return;
+        };
+        if let Some(index) = id
+            .checked_sub(PALETTE_WORKSPACE_BASE)
+            .filter(|index| *index < PALETTE_PANEL_BASE - PALETTE_WORKSPACE_BASE)
+        {
+            self.pending.activate_workspace = Some(index as usize);
+            return;
+        }
+        if let Some(index) = id
+            .checked_sub(PALETTE_ACTION_BASE)
+            .filter(|index| *index < PALETTE_WORKSPACE_BASE - PALETTE_ACTION_BASE)
+        {
+            let Some(action) = crate::keymap::Action::ALL.get(index as usize).copied() else {
+                return;
+            };
+            if !self.run_action(action) {
+                self.pending.action = Some(action);
+            }
+            return;
+        }
+        let Some(offset) = id.checked_sub(PALETTE_PANEL_BASE) else {
+            return;
+        };
+        let kind = PaneKind::from_index((offset / PALETTE_PANEL_STRIDE) as usize);
+        if let Some(panel) = kind.and_then(|kind| self.layout.side_panel_mut(kind)) {
+            panel.run_palette_entry(offset % PALETTE_PANEL_STRIDE);
+        }
+        self.apply_panel_requests();
     }
 
     fn width(&self) -> f32 {
@@ -2204,6 +2373,20 @@ impl WorkspaceView {
                 self.show_toast(message, Some(action));
                 self.toast_then = Some((kind, *then));
             }
+            crate::PanelRequest::RunCommand { title, cwd, argv } => {
+                let Some(view) = self.layout.terminal_view.as_mut() else {
+                    return;
+                };
+                match view.command_item(title, cwd, argv) {
+                    Some(item) => {
+                        view.accept_foreign_item(item);
+                        self.show_terminal();
+                        self.set_terminal_focus(true);
+                        self.panes_input = true;
+                    }
+                    None => self.show_toast("Could not start the command", None),
+                }
+            }
             crate::PanelRequest::OpenMenu => {
                 let (x, y) = self.press;
                 if let Some((_, rect)) = self.hit_with_rect(x, y) {
@@ -3160,6 +3343,15 @@ impl WorkspaceView {
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
         if self.prompt_shown.is_some() {
             return self.prompt_key(key, shift);
+        }
+        if key == EditKey::ToggleCommandPalette && self.window_modal.is_none() {
+            let commands = self.palette_commands();
+            self.set_terminal_focus(false);
+            self.set_agent_focus(false);
+            return self.layout.files_view.as_mut().is_some_and(|files| {
+                files.set_extra_commands(commands);
+                files.editor_key(key, shift)
+            });
         }
         if let Some(modal) = self.window_modal.as_mut() {
             let changed = modal.key(key, shift);
@@ -4378,6 +4570,10 @@ impl RawView for WorkspaceView {
     }
 }
 
+const PALETTE_ACTION_BASE: u64 = 1;
+const PALETTE_WORKSPACE_BASE: u64 = 500;
+const PALETTE_PANEL_BASE: u64 = 1_000;
+const PALETTE_PANEL_STRIDE: u64 = 100_000;
 const PROMPT_BUTTON_BASE: u64 = 999_000_000;
 const PROMPT_BUTTON_SPAN: u64 = 16;
 const PROMPT_BACKDROP: u64 = PROMPT_BUTTON_BASE + PROMPT_BUTTON_SPAN;

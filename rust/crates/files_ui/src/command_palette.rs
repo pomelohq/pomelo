@@ -21,6 +21,8 @@ pub enum PaletteAction {
     Key(EditKey),
     Text(TextTransform),
     Lines(LineTransform),
+    /// A window command, by the id it was listed with.
+    External(u64),
 }
 
 /// Click targets inside the palette, as offsets from the view's palette id base.
@@ -486,7 +488,7 @@ pub fn normalize_action_query(input: &str) -> String {
 pub struct Command {
     pub name: String,
     pub action: PaletteAction,
-    binding: &'static [&'static str],
+    binding: Vec<String>,
     usage: Option<u32>,
 }
 
@@ -567,6 +569,7 @@ pub struct CommandPalette {
     pub scrollbar: crate::list_scrollbar::ScrollbarReveal,
     /// The click id under the pointer.
     pub hovered: Option<u64>,
+    placeholder: &'static str,
 }
 
 /// Move a row list's first visible row by a wheel delta (positive = toward the top), carrying partial rows over
@@ -594,11 +597,38 @@ pub(crate) fn scroll_rows(
 }
 
 impl CommandPalette {
+    #[cfg(test)]
     pub fn new(memory: &PaletteMemory) -> Self {
-        let mut commands: Vec<Command> = COMMANDS
-            .iter()
-            .map(|&(action_name, action, binding)| {
-                let name = humanize_action_name(action_name);
+        Self::with_commands(memory, &[], true)
+    }
+
+    /// The editor's commands (when an editor is there to take them) and the window's `extra` ones.
+    pub fn with_commands(
+        memory: &PaletteMemory,
+        extra: &[workspace::ExtraCommand],
+        editor: bool,
+    ) -> Self {
+        let editor_commands =
+            COMMANDS
+                .iter()
+                .filter(|_| editor)
+                .map(|&(action_name, action, binding)| {
+                    (
+                        humanize_action_name(action_name),
+                        action,
+                        binding.iter().map(|key| key.to_string()).collect(),
+                    )
+                });
+        let window_commands = extra.iter().map(|command| {
+            (
+                command.name.clone(),
+                PaletteAction::External(command.id),
+                command.keys.clone(),
+            )
+        });
+        let mut commands: Vec<Command> = editor_commands
+            .chain(window_commands)
+            .map(|(name, action, binding)| {
                 let usage = memory.usage.get(&name).copied();
                 Command {
                     name,
@@ -624,9 +654,15 @@ impl CommandPalette {
             scroll_remainder: 0.0,
             scrollbar: Default::default(),
             hovered: None,
+            placeholder: PLACEHOLDER,
         };
         palette.update_matches();
         palette
+    }
+
+    pub fn with_placeholder(mut self, placeholder: &'static str) -> Self {
+        self.placeholder = placeholder;
+        self
     }
 
     pub fn update_matches(&mut self) {
@@ -766,7 +802,7 @@ impl CommandPalette {
             .h_px(HEAD_HEIGHT)
             .px(10.0)
             .child(self.field.render(
-                PLACEHOLDER,
+                self.placeholder,
                 true,
                 colors.editor_foreground,
                 INPUT_FONT * FieldFont::Ui.line_height(),

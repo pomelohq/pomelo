@@ -4757,6 +4757,8 @@ pub struct FilesView {
     finder_loading: Option<std::sync::mpsc::Receiver<file_finder::Candidates>>,
     recent_files: Vec<String>,
     palette_memory: command_palette::PaletteMemory,
+    extra_commands: Vec<workspace::ExtraCommand>,
+    picked_command: Option<u64>,
     /// The open symbol outline and the pane it navigates.
     outline: Option<(Vec<usize>, outline_view::OutlineView)>,
     /// Where the outline's preview last sat, kept for the next time it opens.
@@ -4864,6 +4866,8 @@ impl FilesView {
             finder_loading: None,
             recent_files: Vec::new(),
             palette_memory: command_palette::PaletteMemory::default(),
+            extra_commands: Vec::new(),
+            picked_command: None,
             outline: None,
             outline_preview: outline_view::PreviewLayout::Hidden,
             window_size: (1200.0, 800.0),
@@ -5477,8 +5481,13 @@ impl FilesView {
             return;
         }
         let path = self.panes.active.clone();
-        if self.go_to_line_item(&path).is_some() {
-            let palette = command_palette::CommandPalette::new(&self.palette_memory);
+        let editor = self.go_to_line_item(&path).is_some();
+        if editor || !self.extra_commands.is_empty() {
+            let palette = command_palette::CommandPalette::with_commands(
+                &self.palette_memory,
+                &self.extra_commands,
+                editor,
+            );
             self.palette = Some((path, palette));
         }
     }
@@ -5523,8 +5532,13 @@ impl FilesView {
         let Some(action) = palette.confirm(&mut self.palette_memory) else {
             return;
         };
+        if let command_palette::PaletteAction::External(id) = action {
+            self.picked_command = Some(id);
+            return;
+        }
         self.panes.active = path.clone();
         match action {
+            command_palette::PaletteAction::External(_) => {}
             command_palette::PaletteAction::Key(key) => {
                 if !self.modal_key(key, false) {
                     self.panes.editor_key_untracked(key, false);
@@ -5945,6 +5959,25 @@ impl ItemInput for FilesView {
 }
 
 impl FunctionView for FilesView {
+    fn set_extra_commands(&mut self, commands: Vec<workspace::ExtraCommand>) {
+        self.extra_commands = commands;
+    }
+
+    fn take_extra_command(&mut self) -> Option<u64> {
+        self.picked_command.take()
+    }
+
+    fn open_command_list(
+        &mut self,
+        commands: Vec<workspace::ExtraCommand>,
+        placeholder: &'static str,
+    ) {
+        let palette =
+            command_palette::CommandPalette::with_commands(&self.palette_memory, &commands, false)
+                .with_placeholder(placeholder);
+        self.palette = Some((self.panes.active.clone(), palette));
+    }
+
     fn modal(&mut self, viewport: (f32, f32)) -> Option<ModalView> {
         self.window_size = viewport;
         if let Some((path, view)) = self.outline.as_mut() {
@@ -7316,6 +7349,66 @@ mod command_palette_tests {
         assert!(view.go_to_line.is_some());
     }
 
+    fn modal_text(view: &mut FilesView) -> String {
+        let Some(modal) = view.modal((1200.0, 800.0)) else {
+            return String::new();
+        };
+        ui::render(
+            &modal.node,
+            ui::Rect::new(0.0, 0.0, 1200.0, 800.0, ui::Rgba::TRANSPARENT),
+        )
+        .texts
+        .iter()
+        .map(|t| t.text.clone())
+        .collect::<Vec<_>>()
+        .join("|")
+    }
+
+    #[test]
+    fn window_commands_are_listed_with_their_keys_and_handed_back() {
+        let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
+        view.set_extra_commands(vec![workspace::ExtraCommand {
+            name: "workspace: toggle left dock".into(),
+            keys: vec!["cmd-b".into()],
+            id: 42,
+        }]);
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        assert!(
+            view.palette.is_some(),
+            "opens without an editor when the window has commands"
+        );
+        let shown = modal_text(&mut view);
+        assert!(shown.contains("workspace: toggle left dock"), "{shown}");
+        assert!(
+            !shown.contains("editor: "),
+            "no editor, no editor commands: {shown}"
+        );
+        view.editor_text("left dock");
+        view.editor_key(EditKey::Enter, false);
+        assert_eq!(view.take_extra_command(), Some(42));
+        assert_eq!(view.take_extra_command(), None);
+
+        view.open_command_list(
+            vec![workspace::ExtraCommand {
+                name: "feat-login".into(),
+                keys: Vec::new(),
+                id: 7,
+            }],
+            "Switch to workspace...",
+        );
+        let shown = modal_text(&mut view);
+        assert!(
+            shown.contains("Switch to workspace...") && shown.contains("feat-login"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("toggle left dock"),
+            "only the list: {shown}"
+        );
+        view.editor_key(EditKey::Enter, false);
+        assert_eq!(view.take_extra_command(), Some(7));
+    }
+
     #[test]
     fn escape_and_outside_clicks_close_without_running() {
         let mut view = view_with("abc");
@@ -8431,5 +8524,51 @@ mod project_search_tests {
             }
         });
         assert_eq!(buffer_text, "let new = 1;\n");
+    }
+}
+
+#[cfg(test)]
+mod workspace_palette_tests {
+    use super::*;
+    use workspace::keymap::Action;
+
+    fn window() -> workspace::WorkspaceView {
+        let mut view = workspace::WorkspaceView::new(workspace::Layout {
+            project: Some(workspace::ProjectInfo {
+                name: "demo".into(),
+                workspaces: vec!["main".into(), "feat-login".into()],
+                active: "main".into(),
+                labels: vec![String::new(), "Login page".into()],
+                ..Default::default()
+            }),
+            files_view: Some(Box::new(FilesView::scanned(PathBuf::from("/nonexistent")))),
+            ..Default::default()
+        });
+        view.set_bindings(vec![(Action::ToggleLeftDock, "cmd-b".into())]);
+        view
+    }
+
+    fn pick(view: &mut workspace::WorkspaceView, query: &str) -> workspace::WorkspaceEffects {
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        view.editor_text(query);
+        view.editor_key(EditKey::Enter, false);
+        view.take_effects()
+    }
+
+    #[test]
+    fn palette_picks_run_window_actions_or_go_to_the_app() {
+        let mut view = window();
+        let collapsed = view.layout().left.collapsed;
+        let effects = pick(&mut view, "toggle left dock");
+        assert_eq!(effects.action, None, "the window ran it");
+        assert_ne!(view.layout().left.collapsed, collapsed);
+
+        let effects = pick(&mut view, "open settings");
+        assert_eq!(effects.action, Some(Action::OpenSettings));
+
+        assert!(view.run_action(Action::SwitchWorkspace));
+        view.editor_text("login");
+        view.editor_key(EditKey::Enter, false);
+        assert_eq!(view.take_effects().activate_workspace, Some(1));
     }
 }

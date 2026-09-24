@@ -234,6 +234,12 @@ pub fn chrome_flags(s: &Settings) -> ui::ChromeFlags {
 
 const THEMES: [&str; 4] = ["One Dark", "One Light", "Ayu Mirage", "Gruvbox Dark"];
 
+/// The theme after `current` in the theme list, wrapping around.
+pub fn next_theme(current: &str) -> &'static str {
+    let at = THEMES.iter().position(|theme| *theme == current);
+    THEMES[at.map_or(0, |at| (at + 1) % THEMES.len())]
+}
+
 /// Popover-item click ids start here (an item's id = POPOVER_BASE + its index in the option list).
 pub const POPOVER_BASE: u64 = 3000;
 
