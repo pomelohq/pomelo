@@ -48,6 +48,13 @@ impl SlotStore {
             .map(to_allocation)
     }
 
+    /// How many containers the service runs to fit every workspace's slot.
+    pub fn instance_count(&self, service: &str) -> u16 {
+        self.load()
+            .get(service)
+            .map_or(1, |slots| slots.instance_count.max(1))
+    }
+
     /// The workspace's slot, reusing an existing one; otherwise the lowest free slot of the first
     /// instance with room, or slot 0 of a new instance.
     pub fn allocate(

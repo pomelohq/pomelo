@@ -69,6 +69,7 @@ repos:
             state: StateDir::new(temp.path().join("state")),
             holders: SocketDir::new(temp.path().join("s")),
             binary,
+            docker: "docker".into(),
         });
         Fixture {
             temp,

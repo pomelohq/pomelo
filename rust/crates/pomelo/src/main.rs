@@ -314,6 +314,7 @@ impl ProjectServices {
             state: state.clone(),
             holders: pom_ptyhost::SocketDir::from_env(),
             binary,
+            docker: "docker".into(),
         });
         Some(ProjectServices {
             runner: Arc::new(runner),

@@ -254,7 +254,12 @@ impl PortManager {
     }
 
     fn claim_random(&self, lease: &mut Lease) -> Option<u16> {
-        (0..CLAIM_ATTEMPTS).find_map(|_| self.try_claim(lease, self.probe.candidate()))
+        (0..CLAIM_ATTEMPTS).find_map(|_| {
+            let port = self.probe.candidate();
+            (port >= PORT_LOW)
+                .then(|| self.try_claim(lease, port))
+                .flatten()
+        })
     }
 
     fn claim_preferred(&self, lease: &mut Lease, base: u16, span: u16) -> Option<u16> {
@@ -268,7 +273,7 @@ impl PortManager {
 
     /// Creates `ports.d/<port>` exclusively; a port another process holds (file or socket) is skipped.
     fn try_claim(&self, lease: &mut Lease, port: u16) -> Option<u16> {
-        if port < PORT_LOW || !self.probe.bindable(port) {
+        if port == 0 || !self.probe.bindable(port) {
             return None;
         }
         if let Err(error) = std::fs::create_dir_all(&self.dir) {
@@ -611,11 +616,11 @@ mod tests {
             manager.acquire_preferred(&shared_key("redis", 0), 16379, 100),
             Some(16380)
         );
-        // A base below the lease range (e.g. 5432) falls back to a random port.
-        let low = manager
-            .acquire_preferred(&shared_key("low", 0), 5432, 3)
-            .expect("port");
-        assert!(low >= PORT_LOW);
+        // A shared service keeps its well-known port even below the random range.
+        assert_eq!(
+            manager.acquire_preferred(&shared_key("low", 0), 5432, 3),
+            Some(5432)
+        );
     }
 
     #[test]
