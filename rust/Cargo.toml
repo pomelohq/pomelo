@@ -28,6 +28,7 @@ members = [
     "crates/pom_secrets",
     "crates/pom_forge",
     "crates/pom_doctor",
+    "crates/pom_detect",
     "crates/pull_request_ui",
     "crates/environment_ui",
     "crates/pom_layout",
