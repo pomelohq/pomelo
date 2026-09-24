@@ -4,6 +4,9 @@
 //! This crate is the composition root only: the framework lives in `ui`, the
 //! layout/dock system in `workspace`, self-update in `auto_update`.
 
+#[cfg(target_os = "macos")]
+mod notifications;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -370,9 +373,124 @@ struct App {
     shift_down: bool,
     alt_down: bool,
     ctrl_down: bool,
+    agents: AgentTracker,
+}
+
+/// What each workspace's coding agent last reported, and the watcher that says when it changes.
+#[derive(Default)]
+struct AgentTracker {
+    watcher: Option<pom_agent::AgentWatcher>,
+    states: std::collections::HashMap<String, pom_agent::AgentState>,
+    /// The first read only learns the current states; notifications start with the next change.
+    primed: bool,
+}
+
+fn agent_dot(state: pom_agent::AgentState) -> workspace::AgentDot {
+    match state {
+        pom_agent::AgentState::Idle => workspace::AgentDot::Idle,
+        pom_agent::AgentState::Thinking => workspace::AgentDot::Thinking,
+        pom_agent::AgentState::ToolUse => workspace::AgentDot::ToolUse,
+        pom_agent::AgentState::Compacting => workspace::AgentDot::Compacting,
+        pom_agent::AgentState::AwaitingInput => workspace::AgentDot::AwaitingInput,
+    }
 }
 
 impl App {
+    /// Re-reads agent states after a hook wrote one: updates every window's workspace dots and tells
+    /// the user about transitions in workspaces they are not looking at.
+    fn refresh_agents(&mut self) {
+        if self.agents.watcher.is_none() {
+            match pom_agent::AgentWatcher::new(&pom_paths::StateDir::from_env(), Arc::new(ui::wake))
+            {
+                Ok(watcher) => self.agents.watcher = Some(watcher),
+                Err(error) => {
+                    eprintln!("agent states will not update: {error}");
+                    return;
+                }
+            }
+        }
+        if !self
+            .agents
+            .watcher
+            .as_ref()
+            .is_some_and(pom_agent::AgentWatcher::take_changed)
+        {
+            return;
+        }
+        let fresh: std::collections::HashMap<String, pom_agent::AgentState> =
+            pom_agent::read_states(&pom_paths::StateDir::from_env())
+                .into_iter()
+                .map(|status| (status.branch, status.state))
+                .collect();
+        let mut notices = Vec::new();
+        let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+        for id in windows {
+            let Some(main) = self.mains.get(&id) else {
+                continue;
+            };
+            let Some(project) = main.project.as_ref() else {
+                continue;
+            };
+            let focused = main.window.has_focus();
+            let active = project.active_branch().to_string();
+            let session = project.session.clone();
+            let mut dots = std::collections::HashMap::new();
+            for workspace in &project.workspaces {
+                let Some(state) = fresh.get(&workspace.branch).copied() else {
+                    continue;
+                };
+                dots.insert(workspace.branch.clone(), agent_dot(state));
+                let before = self.agents.states.get(&workspace.branch).copied();
+                if !self.agents.primed || before == Some(state) {
+                    continue;
+                }
+                let Some((title, event)) = pom_agent::notification_for(before, state) else {
+                    continue;
+                };
+                if event == "working" || (focused && workspace.branch == active) {
+                    continue;
+                }
+                notices.push((
+                    title,
+                    format!("{session} - {}", workspace.branch),
+                    workspace.branch.clone(),
+                ));
+            }
+            self.with_workspace_view(id, |view, _| view.set_agent_states(dots));
+        }
+        #[cfg(target_os = "macos")]
+        for (title, body, branch) in notices {
+            notifications::post(title, &body, &branch);
+        }
+        self.agents.states = fresh;
+        self.agents.primed = true;
+    }
+
+    /// A clicked agent notification brings its workspace forward.
+    fn open_clicked_notification(&mut self) {
+        #[cfg(target_os = "macos")]
+        let Some(branch) = notifications::take_clicked() else {
+            return;
+        };
+        #[cfg(not(target_os = "macos"))]
+        let branch = String::new();
+        let found = self.mains.iter().find_map(|(id, main)| {
+            let index = main
+                .project
+                .as_ref()?
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.branch == branch)?;
+            Some((*id, index))
+        });
+        if let Some((id, index)) = found {
+            if let Some(main) = self.mains.get(&id) {
+                main.window.focus_window();
+            }
+            self.activate_workspace(id, index);
+        }
+    }
+
     /// Create a real OS window hosting a `WorkspaceView` for `layout`, wire its renderer + macOS chrome, and
     /// register it. Returns its `WindowId`. Used both for the first window and for "Open in new window".
     fn new_main_window(&mut self, event_loop: &ActiveEventLoop, layout: Layout) -> WindowId {
@@ -1004,6 +1122,8 @@ impl ApplicationHandler for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
         self.deliver_prompt_answers();
         self.reload_changed_projects();
+        self.refresh_agents();
+        self.open_clicked_notification();
         // Background work (language servers, terminals, git) can wake us hundreds of times a second: mark the
         // windows and let `about_to_wait` draw each at most once per display frame.
         for main in self.mains.values_mut() {
@@ -1980,25 +2100,30 @@ fn center_traffic_lights(window: &Window) {
     }
 }
 
-/// Points coding agents (Claude Code) at this app's MCP server. Skipped for a run on a throwaway state
-/// dir, whose wrapper would vanish, and when `POM_SKIP_GLOBAL_HOOK` asks to leave agents alone.
-fn register_with_agents() {
+/// Whether this run owns the user's real state: agent registration and notifications are skipped for a
+/// run on a throwaway state dir (its wrappers would vanish) and when `POM_SKIP_GLOBAL_HOOK` is set.
+fn uses_real_state() -> Option<(pom_agent::ClaudeHome, pom_paths::StateDir)> {
     if std::env::var_os("POM_SKIP_GLOBAL_HOOK").is_some() {
-        return;
+        return None;
     }
     let state = pom_paths::StateDir::from_env();
-    let (Some(claude), Ok(binary)) = (pom_agent::ClaudeHome::from_env(), std::env::current_exe())
-    else {
+    let claude = pom_agent::ClaudeHome::from_env()?;
+    (state.root() == claude.home.join(".local/state/pom")).then_some((claude, state))
+}
+
+/// Points coding agents (Claude Code) at this app's MCP server and hooks.
+fn register_with_agents() {
+    let (Some((claude, state)), Ok(binary)) = (uses_real_state(), std::env::current_exe()) else {
         return;
     };
-    if state.root() != claude.home.join(".local/state/pom") {
-        return;
-    }
     let spawned = std::thread::Builder::new()
         .name("agent-register".into())
         .spawn(move || {
             if let Err(error) = pom_agent::install_mcp(&claude, &state, &binary) {
                 eprintln!("could not register the MCP server with Claude Code: {error}");
+            }
+            if let Err(error) = pom_agent::install_hooks(&claude, &state, &binary) {
+                eprintln!("could not install the Claude Code hooks: {error}");
             }
         });
     if let Err(error) = spawned {
@@ -2008,7 +2133,10 @@ fn register_with_agents() {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if let Some(code) = pom_ptyhost::cli::run(&args).or_else(|| pom_mcp::run(&args)) {
+    if let Some(code) = pom_ptyhost::cli::run(&args)
+        .or_else(|| pom_mcp::run(&args))
+        .or_else(|| pom_agent::run(&args))
+    {
         std::process::exit(code);
     }
     let previous = std::panic::take_hook();
@@ -2041,7 +2169,12 @@ fn main() -> anyhow::Result<()> {
             eprintln!("wake after the event loop closed: {error}");
         }
     });
+    #[cfg(target_os = "macos")]
+    if uses_real_state().is_some() {
+        notifications::start();
+    }
     let mut app = App::default();
+    app.refresh_agents();
     event_loop.run_app(&mut app)?;
     Ok(())
 }

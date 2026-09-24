@@ -17,6 +17,7 @@ pom_config = { path = "../pom_config" }
 pom_core = { path = "../pom_core" }
 pom_layout = { path = "../pom_layout" }
 pom_mcp = { path = "../pom_mcp" }
+pom_agent = { path = "../pom_agent" }
 pom_paths = { path = "../pom_paths" }
 pom_ports = { path = "../pom_ports" }
 pom_ptyhost = { path = "../pom_ptyhost" }
