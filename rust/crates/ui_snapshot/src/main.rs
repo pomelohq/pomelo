@@ -199,6 +199,75 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Ok(which) = std::env::var("ENVTAB") {
+        use workspace::Item;
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("pom.yml"),
+            "session: myproject\npresets:\n  rails:\n    env:\n      RAILS_ENV: development\n      RAILS_LOG_TO_STDOUT: \"1\"\nshared_services:\n  postgres:\n    image: postgres:16\nrepos:\n  api:\n    preset: [rails]\n    databases:\n      main: \"api_{{branch.safe}}\"\n      cache: \"api_cache_{{branch.safe}}\"\n    env:\n      DATABASE_URL: \"postgresql://{{shared.postgres.url}}/{{db.main}}\"\n      STRIPE_KEY: \"{{secret.STRIPE_KEY}}\"\n      APP_HOST: \"{{api.web.host}}\"\n    services:\n      web:\n        cmd: rails s\n",
+        )?;
+        let config = std::sync::Arc::new(pom_config::Config::load(&dir.join("pom.yml"))?);
+        let state = pom_paths::StateDir::new(dir.join("state"));
+        let store = pom_secrets::SecretStore::new(state.clone(), "myproject");
+        for (name, value) in [
+            ("STRIPE_KEY", "sk_test_123"),
+            ("GITHUB_TOKEN", "ghp_example"),
+            ("SENTRY_DSN", "https://example.invalid/1"),
+        ] {
+            store
+                .set(name, value)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+        }
+        let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
+            pom_services::RunnerOptions {
+                project_root: dir.clone(),
+                session: "myproject".into(),
+                state: state.clone(),
+                holders: pom_ptyhost::SocketDir::new(dir.join("s")),
+                binary: "/nonexistent".into(),
+                docker: "/nonexistent".into(),
+            },
+        ));
+        let context = environment_ui::EnvironmentContext {
+            state,
+            runner,
+            config: std::sync::Arc::new(move || Some(config.clone())),
+            workspaces: vec![("main".into(), true), ("feat-login".into(), false)],
+            branch: "feat-login".into(),
+        };
+        let (width, height) = (820.0_f32, 420.0_f32);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let mut item: Box<dyn Item> = if which == "secrets" {
+            Box::new(environment_ui::SecretsItem::new(context))
+        } else {
+            Box::new(environment_ui::EnvItem::new(context))
+        };
+        let painted = item
+            .paint_body(body, true)
+            .ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            eprintln!("remove {}: {error}", dir.display());
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(query) = std::env::var("SEARCH") {
         let root = std::env::current_dir()?;
         let mut item =

@@ -23,6 +23,13 @@ const BUTTON: f32 = 18.0;
 /// Hit ids per row: the row itself plus its controls.
 const ROW_STRIDE: u64 = 16;
 const MENU_BASE: u64 = 9_000_000;
+const TAB_BUTTON_BASE: u64 = MENU_BASE + 1_000;
+
+pub struct TabButton {
+    pub icon: IconKind,
+    pub id: String,
+    pub open: std::sync::Arc<dyn Fn() -> Box<dyn workspace::Item>>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Control {
@@ -104,6 +111,7 @@ pub struct ServicesPanel {
     viewport_h: f32,
     menu: Option<OpenMenu>,
     requests: Vec<PanelRequest>,
+    tab_buttons: Vec<TabButton>,
     next_item: u64,
     /// A shared stop waiting for the user to confirm, with its prompt tag.
     confirm: Option<(u64, SharedRun)>,
@@ -122,6 +130,7 @@ impl ServicesPanel {
             viewport_h: 0.0,
             menu: None,
             requests: Vec::new(),
+            tab_buttons: Vec::new(),
             next_item: 1 << 40,
             confirm: None,
         }
@@ -225,6 +234,16 @@ impl ServicesPanel {
 
     fn id(&self, row: usize, control: Control) -> u64 {
         self.base + row as u64 * ROW_STRIDE + control as u64
+    }
+
+    pub fn with_tab_buttons(mut self, buttons: Vec<TabButton>) -> ServicesPanel {
+        self.tab_buttons = buttons;
+        self
+    }
+
+    fn tab_button_index(&self, id: u64) -> Option<usize> {
+        let index = id.checked_sub(self.base + TAB_BUTTON_BASE)? as usize;
+        (index < self.tab_buttons.len()).then_some(index)
     }
 
     fn decode(&self, id: u64) -> Option<(usize, Control)> {
@@ -875,6 +894,30 @@ impl SidePanelView for ServicesPanel {
                         .truncate(),
                 ),
             );
+        let mut header = header;
+        for (index, button) in self.tab_buttons.iter().enumerate() {
+            let id = self.base + TAB_BUTTON_BASE + index as u64;
+            let hot = self.hover == Some(id);
+            header = header.child(
+                div()
+                    .w_px(20.0)
+                    .h_px(20.0)
+                    .rounded(4.0)
+                    .items_center()
+                    .justify_center()
+                    .on_click(id)
+                    .bg(if hot {
+                        theme().element_hover
+                    } else {
+                        Rgba::TRANSPARENT
+                    })
+                    .child(icon(button.icon).size(12.0).color(if hot {
+                        theme().icon
+                    } else {
+                        theme().icon_muted
+                    })),
+            );
+        }
         let mut list = div().col().px(4.0);
         if self.rows.is_empty() {
             list = list.child(
@@ -902,6 +945,17 @@ impl SidePanelView for ServicesPanel {
     }
 
     fn click(&mut self, id: u64) {
+        if let Some(button) = self
+            .tab_button_index(id)
+            .and_then(|index| self.tab_buttons.get(index))
+        {
+            let open = button.open.clone();
+            self.requests.push(PanelRequest::Reveal {
+                id: button.id.clone(),
+                open: Box::new(move || Some(open())),
+            });
+            return;
+        }
         let Some((index, control)) = self.decode(id) else {
             return;
         };
@@ -963,7 +1017,7 @@ impl SidePanelView for ServicesPanel {
     }
 
     fn set_hover(&mut self, id: Option<u64>) -> bool {
-        let id = id.filter(|id| self.decode(*id).is_some());
+        let id = id.filter(|id| self.decode(*id).is_some() || self.tab_button_index(*id).is_some());
         if self.hover == id {
             return false;
         }
