@@ -142,6 +142,8 @@ pub struct PaneGroupView {
     /// The pane zoomed to cover the workspace (by id; it stays zoomed while focus is elsewhere).
     zoomed: Option<u64>,
     pending_close: Option<CloseRequest>,
+    /// Each pane's tab strip as last laid out: its path, the rect it shows in, and how far it can scroll.
+    strips: Vec<(Vec<usize>, Rect, f32)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -170,6 +172,7 @@ impl PaneGroupView {
             popover_sources: Vec::new(),
             zoomed: None,
             pending_close: None,
+            strips: Vec::new(),
         }
     }
 
@@ -518,7 +521,77 @@ impl PaneGroupView {
     }
 
     fn render_chrome(&self, pane: &Pane, p: usize, width: f32) -> Node {
-        render_pane(pane, &self.tab_bar(p), self.pane_ids(p), self.hover, width)
+        render_pane(pane, &self.tab_bar(p), self.pane_ids(p), width)
+    }
+
+    /// The pane's tab strip: its node, where it lays out (scrolled) and the rect it shows in. Keeps the active
+    /// tab in view when it changed; a wheel over the strip holds until then.
+    fn place_strip(&mut self, path: &[usize], p: usize, rect: Rect) -> Option<(Node, Rect, Rect)> {
+        let scale = ui::ui_text_scale();
+        let (nav, buttons) = crate::pane::tab_bar_edges(&self.tab_bar(p));
+        let ids = self.pane_ids(p);
+        let hover = self.hover;
+        let pane = self.group.leaf_at_mut(path)?;
+        if pane.open.is_empty() {
+            return None;
+        }
+        let tab_h = crate::pane::TAB_H * scale;
+        let view = Rect::new(
+            rect.x + nav * scale,
+            rect.y,
+            (rect.w - (nav + buttons) * scale).max(0.0),
+            tab_h,
+            Rgba::TRANSPARENT,
+        );
+        let node = crate::pane::render_tab_strip(pane, ids, hover);
+        let measured = ui::render(&node, Rect::new(0.0, 0.0, 1.0e6, tab_h, Rgba::TRANSPARENT));
+        let spans: Vec<(f32, f32)> = (0..pane.open.len())
+            .map(|index| {
+                measured
+                    .hits
+                    .iter()
+                    .find(|(_, id)| *id == ids.tab_activate + index as u64)
+                    .map_or((0.0, 0.0), |(r, _)| (r.x, r.w))
+            })
+            .collect();
+        let content = spans.iter().map(|(x, w)| x + w).fold(0.0, f32::max) + 1.0;
+        let max_scroll = (content - view.w).max(0.0);
+        if pane.active != pane.tab_scroll_active {
+            if let Some(span) = pane.active.and_then(|index| spans.get(index)) {
+                pane.tab_scroll = crate::pane::scroll_into_view(pane.tab_scroll, *span, view.w);
+            }
+            pane.tab_scroll_active = pane.active;
+        }
+        pane.tab_scroll = pane.tab_scroll.clamp(0.0, max_scroll);
+        let at = Rect::new(
+            view.x - pane.tab_scroll,
+            view.y,
+            content,
+            tab_h,
+            Rgba::TRANSPARENT,
+        );
+        self.strips.push((path.to_vec(), view, max_scroll));
+        Some((node, at, view))
+    }
+
+    /// A wheel over a pane's tab strip scrolls it sideways (either wheel axis).
+    fn scroll_tabs(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        let Some((path, _, max_scroll)) = self
+            .strips
+            .iter()
+            .find(|(_, view, _)| contains(view, x, y))
+            .cloned()
+        else {
+            return false;
+        };
+        let delta = if dx.abs() > dy.abs() { dx } else { dy };
+        let Some(pane) = self.group.leaf_at_mut(&path) else {
+            return false;
+        };
+        let next = (pane.tab_scroll - delta).clamp(0.0, max_scroll);
+        let moved = (next - pane.tab_scroll).abs() > f32::EPSILON;
+        pane.tab_scroll = next;
+        moved || max_scroll > 0.0
     }
 
     /// Lay the panes out in `area`: each pane's chrome and body, and the dividers between them.
@@ -526,6 +599,7 @@ impl PaneGroupView {
         let mut placements = Vec::new();
         let mut pane_order = Vec::new();
         let mut pane_rects = Vec::new();
+        self.strips.clear();
         if self
             .zoomed
             .is_some_and(|id| self.group.path_of(id).is_none())
@@ -547,9 +621,11 @@ impl PaneGroupView {
                 Some(pane) => self.render_chrome(pane, p, leaf.rect.w / ui::ui_text_scale()),
                 None => continue,
             };
+            let strip = self.place_strip(&leaf.path, p, leaf.rect);
             placements.push(PanePlacement {
                 rect: leaf.rect,
                 node: chrome,
+                strip,
                 painted,
                 ..body
             });
@@ -1515,6 +1591,9 @@ impl ItemInput for PaneGroupView {
     }
 
     fn editor_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        if self.scroll_tabs(x, y, dx, dy) {
+            return true;
+        }
         let Some(path) = self.pane_path_at(x, y) else {
             return false;
         };
@@ -1842,6 +1921,9 @@ impl ItemInput for PaneGroupView {
         (delta_x, delta_y): (f32, f32),
         modifiers: terminal::Modifiers,
     ) -> bool {
+        if self.scroll_tabs(x, y, delta_x, delta_y) {
+            return true;
+        }
         let Some(path) = self.pane_path_at(x, y) else {
             return false;
         };
@@ -1938,6 +2020,7 @@ fn layout_body(
     let mut placement = PanePlacement {
         rect,
         node: ui::div().into(),
+        strip: None,
         painted: None,
         companion: None,
         footer: None,
@@ -2626,5 +2709,68 @@ mod tests {
         assert!(back.restore(&saved, &mut make_plain));
         assert_eq!(back.pane_at(&[]).map(|pane| pane.pinned), Some(1));
         assert_eq!(titles_of(&back), ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn a_crowded_tab_bar_scrolls_and_keeps_the_active_tab_in_view() {
+        let mut view = view();
+        const NAMES: [&str; 12] = [
+            "alpha.rs",
+            "beta.rs",
+            "gamma.rs",
+            "delta.rs",
+            "epsilon.rs",
+            "zeta.rs",
+            "eta.rs",
+            "theta.rs",
+            "iota.rs",
+            "kappa.rs",
+            "lambda.rs",
+            "mu.rs",
+        ];
+        if let Some(pane) = view.active_pane_mut() {
+            for name in NAMES {
+                pane.add_item(Box::new(Plain(name)));
+            }
+        }
+        let narrow = Rect::new(0.0, 0.0, 300.0, 400.0, Rgba::TRANSPARENT);
+        let (placements, _) = view.layout(narrow);
+        let (_, at, shown) = placements[0].strip.clone().expect("tab strip");
+        assert!(
+            at.x < shown.x,
+            "scrolled so the last-added (active) tab shows"
+        );
+        assert!(at.x + at.w >= shown.x + shown.w - 1.0);
+        let scrolled = view
+            .active_pane_mut()
+            .map(|pane| pane.tab_scroll)
+            .unwrap_or(0.0);
+        assert!(scrolled > 0.0);
+
+        let (x, y) = (shown.x + 10.0, shown.y + 5.0);
+        assert!(
+            view.editor_scroll(x, y, 0.0, 40.0),
+            "a wheel over the strip scrolls it"
+        );
+        let after = view
+            .active_pane_mut()
+            .map(|pane| pane.tab_scroll)
+            .unwrap_or(0.0);
+        assert!((after - (scrolled - 40.0)).abs() < 0.01);
+        view.layout(narrow);
+        let held = view
+            .active_pane_mut()
+            .map(|pane| pane.tab_scroll)
+            .unwrap_or(0.0);
+        assert!(
+            (held - after).abs() < 0.01,
+            "the wheel wins until another tab activates"
+        );
+
+        assert!(view.editor_scroll(x, y, 0.0, 10_000.0));
+        assert_eq!(
+            view.active_pane_mut().map(|pane| pane.tab_scroll),
+            Some(0.0)
+        );
     }
 }
