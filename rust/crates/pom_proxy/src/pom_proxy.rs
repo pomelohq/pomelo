@@ -176,6 +176,15 @@ impl DevProxy {
     }
 }
 
+/// Something accepts connections on the local port (the app's proxy, or `pom proxy` in a terminal).
+pub fn listening(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(300),
+    )
+    .is_ok()
+}
+
 fn bind(address: &str) -> std::io::Result<tokio::net::TcpListener> {
     let listener = std::net::TcpListener::bind(address)?;
     listener.set_nonblocking(true)?;

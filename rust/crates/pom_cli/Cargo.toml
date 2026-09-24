@@ -22,6 +22,9 @@ pom_mcp = { path = "../pom_mcp" }
 pom_agent = { path = "../pom_agent" }
 pom_paths = { path = "../pom_paths" }
 pom_ports = { path = "../pom_ports" }
+pom_proxy = { path = "../pom_proxy" }
+pom_sessions = { path = "../pom_sessions" }
+pom_env = { path = "../pom_env" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_services = { path = "../pom_services" }
 pom_workspace = { path = "../pom_workspace" }
