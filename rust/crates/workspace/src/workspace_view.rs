@@ -298,6 +298,10 @@ impl WorkspaceView {
         self.layout.side_panels = panels;
     }
 
+    pub fn set_agent_states(&mut self, states: std::collections::HashMap<String, crate::AgentDot>) {
+        self.layout.agent_states = states;
+    }
+
     pub fn update_project(&mut self, project: crate::ProjectInfo) {
         self.layout.project = Some(project);
     }
@@ -656,12 +660,17 @@ impl WorkspaceView {
                 )),
             }
         }
-        let workspaces: Vec<(String, bool)> = self
+        let workspaces: Vec<crate::panel::WorkspaceRow> = self
             .layout
             .project
             .iter()
             .flat_map(|project| project.workspaces.iter())
-            .map(|branch| (branch.clone(), false))
+            .map(|branch| {
+                (
+                    branch.clone(),
+                    self.layout.agent_states.get(branch).copied(),
+                )
+            })
             .collect();
         let current = self
             .layout

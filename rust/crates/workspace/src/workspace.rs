@@ -16,9 +16,9 @@ mod workspace_view;
 pub use key_binding::render_keystroke;
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
-    side_panel_kind, terminal_content, terminal_dock_body, DockPosition, OutlinePanel, PaneKind,
-    Panel, PanelRequest, ProjectPanel, SidePanelView, TerminalPanel, SIDE_PANEL_BASE,
-    SIDE_PANEL_SPAN,
+    side_panel_kind, terminal_content, terminal_dock_body, AgentDot, DockPosition, OutlinePanel,
+    PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView, TerminalPanel, WorkspaceRow,
+    SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use welcome::{
     is_welcome_id, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,
@@ -151,7 +151,7 @@ impl Dock {
     pub fn render_body(
         &mut self,
         region: Rect,
-        rows: &[(String, bool)],
+        rows: &[crate::panel::WorkspaceRow],
         current: usize,
     ) -> Painted {
         self.panel.sync(rows, current);
@@ -375,6 +375,8 @@ pub struct Layout {
     pub files_view: Option<Box<dyn FunctionView>>,
     pub terminal_view: Option<Box<dyn TerminalPanelView>>,
     pub side_panels: Vec<Box<dyn SidePanelView>>,
+    /// Branch -> what its coding agent last reported.
+    pub agent_states: std::collections::HashMap<String, AgentDot>,
     pub files_tree_w: f32,
 }
 
@@ -1161,6 +1163,7 @@ impl Default for Layout {
             files_view: None,
             terminal_view: None,
             side_panels: Vec::new(),
+            agent_states: std::collections::HashMap::new(),
             files_tree_w: FILES_TREE_W,
         }
     }

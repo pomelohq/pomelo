@@ -268,6 +268,31 @@ pub trait SidePanelView: 'static {
     fn prompt_answered(&mut self, _tag: u64, _answer: usize) {}
 }
 
+/// What a workspace's coding agent is doing, as the dot on its row shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentDot {
+    Idle,
+    Thinking,
+    ToolUse,
+    Compacting,
+    AwaitingInput,
+}
+
+impl AgentDot {
+    fn color(self) -> Rgba {
+        match self {
+            AgentDot::Idle => theme().success,
+            AgentDot::Thinking => theme().warning,
+            AgentDot::ToolUse => theme().info,
+            AgentDot::Compacting => theme().text_accent,
+            AgentDot::AwaitingInput => theme().error,
+        }
+    }
+}
+
+/// A row of the WORKSPACES list: the branch and its agent, if one reported.
+pub type WorkspaceRow = (String, Option<AgentDot>);
+
 /// A dockable piece of UI. Mirrors the framework's `Panel` (position + icon + render), trimmed to what we draw now.
 pub trait Panel: 'static {
     fn position(&self) -> DockPosition;
@@ -275,14 +300,14 @@ pub trait Panel: 'static {
     fn icon(&self) -> IconKind;
     /// The panel's title (dock header).
     fn title(&self) -> &str;
-    fn sync(&mut self, _rows: &[(String, bool)], _current: usize) {}
+    fn sync(&mut self, _rows: &[WorkspaceRow], _current: usize) {}
     /// The panel body as an element tree, laid into the dock region by the caller.
     fn render(&mut self) -> Node;
 }
 
 #[derive(Default)]
 pub struct ProjectPanel {
-    rows: Vec<(String, bool)>,
+    rows: Vec<WorkspaceRow>,
     current: usize,
 }
 
@@ -299,7 +324,7 @@ impl Panel for ProjectPanel {
         "WORKSPACES"
     }
 
-    fn sync(&mut self, rows: &[(String, bool)], current: usize) {
+    fn sync(&mut self, rows: &[WorkspaceRow], current: usize) {
         self.rows = rows.to_vec();
         self.current = current;
     }
@@ -311,12 +336,8 @@ impl Panel for ProjectPanel {
             .py(10.0)
             .gap(2.0)
             .child(panel_header(self.title()));
-        for (i, (name, running)) in self.rows.iter().enumerate() {
-            let dot = if *running {
-                theme().icon_accent
-            } else {
-                theme().icon_muted
-            };
+        for (i, (name, agent)) in self.rows.iter().enumerate() {
+            let dot = agent.map_or(theme().icon_muted, AgentDot::color);
             let row = div()
                 .row()
                 .h_px(28.0)
@@ -427,7 +448,13 @@ mod tests {
     #[test]
     fn project_panel_lists_workspaces() {
         let mut p = ProjectPanel::default();
-        p.sync(&[("api".into(), true), ("web".into(), false)], 0);
+        p.sync(
+            &[
+                ("api".into(), Some(AgentDot::Thinking)),
+                ("web".into(), None),
+            ],
+            0,
+        );
         assert_eq!(p.position(), DockPosition::Left);
         let node = p.render();
         let painted = ui::render(
@@ -448,7 +475,7 @@ mod tests {
     fn long_workspace_names_stay_inside_the_panel() {
         let mut p = ProjectPanel::default();
         let long = "proj-101-a-very-long-branch-name-that-does-not-fit-in-the-dock".to_string();
-        p.sync(&[("main".into(), false), (long.clone(), false)], 0);
+        p.sync(&[("main".into(), None), (long.clone(), None)], 0);
         let painted = ui::render(
             &p.render(),
             ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),

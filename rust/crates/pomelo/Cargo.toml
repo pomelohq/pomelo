@@ -33,4 +33,5 @@ anyhow.workspace = true
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = ["NSWindow", "NSView", "NSButton", "NSResponder", "NSControl", "NSAlert", "NSApplication", "NSOpenPanel", "NSSavePanel", "NSPanel", "block2"] }
 block2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString", "NSURL", "NSBundle", "NSError"] }
+objc2-user-notifications = { version = "0.2", features = ["block2", "UNUserNotificationCenter", "UNNotification", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger"] }
