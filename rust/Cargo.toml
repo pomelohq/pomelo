@@ -40,6 +40,7 @@ members = [
     "crates/workspaces_ui",
     "crates/pom_jira",
     "crates/pom_sync",
+    "crates/pom_db",
 ]
 
 [workspace.package]

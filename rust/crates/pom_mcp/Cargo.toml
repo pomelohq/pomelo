@@ -10,6 +10,7 @@ path = "src/pom_mcp.rs"
 
 [dependencies]
 pom_config = { path = "../pom_config" }
+pom_db = { path = "../pom_db" }
 pom_core = { path = "../pom_core" }
 pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
