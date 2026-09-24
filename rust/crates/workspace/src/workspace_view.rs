@@ -78,6 +78,7 @@ pub enum SessionRequest {
     Forget(usize),
     Reveal(usize),
     ChooseFolder,
+    NewProject,
 }
 
 /// A workspace's views and dock visibility while another workspace has the window.
@@ -3994,6 +3995,8 @@ impl WorkspaceView {
             }
         } else if id == crate::WELCOME_OPEN_PROJECT {
             self.pending.session = Some(SessionRequest::ChooseFolder);
+        } else if id == crate::WELCOME_NEW_PROJECT {
+            self.pending.session = Some(SessionRequest::NewProject);
         } else if id == crate::WELCOME_OPEN_SETTINGS {
             self.pending.open_settings = true;
         } else if crate::is_welcome_id(id) {

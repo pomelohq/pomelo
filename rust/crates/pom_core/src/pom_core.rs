@@ -1,3 +1,4 @@
+mod scaffold;
 mod watch;
 
 use std::collections::BTreeMap;
@@ -8,6 +9,7 @@ use pom_layout::Workspace;
 use pom_paths::{write_atomic, StateDir};
 use pom_sessions::{Projects, Sessions};
 
+pub use scaffold::{scaffold_session, RepoSpec, ScaffoldRequest};
 pub use watch::ConfigWatcher;
 
 /// The previous app remembers the last opened project here; kept so both can hand off to each other.

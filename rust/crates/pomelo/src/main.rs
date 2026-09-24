@@ -528,6 +528,13 @@ impl ProjectServices {
     }
 }
 
+/// A new project being cloned and detected off the main thread, and the window that asked for it.
+struct Scaffolding {
+    window: WindowId,
+    name: String,
+    receiver: std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>,
+}
+
 #[derive(Default)]
 struct App {
     // All main windows share one reactive `Application` (the framework's single App, many windows); each `MainWindow`
@@ -555,6 +562,7 @@ struct App {
     ctrl_down: bool,
     agents: AgentTracker,
     next_agent_item: u64,
+    scaffolding: Option<Scaffolding>,
     /// The main window last focused: Settings edits its project's Jira settings.
     focused_main: Option<WindowId>,
 }
@@ -715,6 +723,24 @@ impl App {
     }
 
     fn open_fixer(&mut self, id: WindowId) {
+        let prompt = match self.mains.get(&id) {
+            Some(main) => pom_doctor::fix_prompt(&main.doctor_findings),
+            None => return,
+        };
+        self.open_task_agent(id, |context| {
+            pom_agent::claude_task_launch(context, "fixer", &prompt)
+        });
+    }
+
+    fn open_onboarder(&mut self, id: WindowId) {
+        self.open_task_agent(id, pom_agent::onboard_launch);
+    }
+
+    fn open_task_agent(
+        &mut self,
+        id: WindowId,
+        launch: impl FnOnce(&pom_agent::LaunchContext<'_>) -> pom_agent::AgentLaunch,
+    ) {
         let Some(main) = self.mains.get(&id) else {
             return;
         };
@@ -731,21 +757,16 @@ impl App {
         let is_main = project
             .active_workspace()
             .is_none_or(|workspace| workspace.is_main);
-        let prompt = pom_doctor::fix_prompt(&main.doctor_findings);
-        let mut launch = pom_agent::claude_task_launch(
-            &pom_agent::LaunchContext {
-                state: &state,
-                home: &home,
-                binary: &binary,
-                tool_path: pom_services::tool_path(),
-                session: &project.session,
-                branch: &branch,
-                is_main,
-                cwd: &cwd,
-            },
-            "fixer",
-            &prompt,
-        );
+        let mut launch = launch(&pom_agent::LaunchContext {
+            state: &state,
+            home: &home,
+            binary: &binary,
+            tool_path: pom_services::tool_path(),
+            session: &project.session,
+            branch: &branch,
+            is_main,
+            cwd: &cwd,
+        });
         launch.holder = format!("{}-{}", launch.holder, self.next_agent_item);
         self.open_agent_item(id, launch);
     }
@@ -1210,13 +1231,83 @@ impl App {
                     }
                 }
             }
-            workspace::SessionRequest::ChooseFolder =>
-            {
-                #[cfg(target_os = "macos")]
-                if let Some(folder) = choose_folder() {
+            workspace::SessionRequest::ChooseFolder => {
+                if let Some(folder) = choose_folders(false).into_iter().next() {
                     self.open_folder_in(id, &folder);
                 }
             }
+            workspace::SessionRequest::NewProject => {
+                let modal = workspaces_ui::NewProjectModal::new(
+                    pom_paths::sessions_root(),
+                    Box::new(|| choose_folders(true)),
+                );
+                self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
+            }
+        }
+    }
+
+    pub(crate) fn start_scaffold(&mut self, id: WindowId, project: &workspaces_ui::NewProject) {
+        if self.scaffolding.is_some() {
+            self.with_workspace_view(id, |view, _| {
+                view.show_toast("Another project is still being created", None)
+            });
+            return;
+        }
+        let request = pom_core::ScaffoldRequest {
+            name: project.name.clone(),
+            root: String::new(),
+            default_branch: project.default_branch.clone(),
+            repos: project
+                .repos
+                .iter()
+                .map(|(path, alias)| pom_core::RepoSpec {
+                    path: path.clone(),
+                    alias: alias.clone(),
+                })
+                .collect(),
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = pom_core::scaffold_session(&request, &pom_paths::StateDir::from_env());
+            if sender.send(result).is_err() {
+                eprintln!("scaffold: the app stopped waiting");
+            }
+            ui::wake();
+        });
+        let message = format!("Creating {}: cloning repositories...", project.name);
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+        self.scaffolding = Some(Scaffolding {
+            window: id,
+            name: project.name.clone(),
+            receiver,
+        });
+    }
+
+    fn poll_scaffold(&mut self) {
+        let Some(scaffolding) = self.scaffolding.as_ref() else {
+            return;
+        };
+        let result = match scaffolding.receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("stopped unexpectedly".into()),
+        };
+        let Some(Scaffolding { window, name, .. }) = self.scaffolding.take() else {
+            return;
+        };
+        match result {
+            Ok(session_dir) => {
+                self.refresh_sessions();
+                self.open_folder_in(window, &session_dir);
+                self.open_onboarder(window);
+            }
+            Err(error) => {
+                let message = format!("Failed to create {name}: {error}");
+                self.with_workspace_view(window, |view, _| view.show_toast(message, None));
+            }
+        }
+        if let Some(main) = self.mains.get_mut(&window) {
+            main.dirty = true;
         }
     }
 
@@ -1599,6 +1690,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.poll_scaffold();
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {
             self.poll_workspaces(id);
@@ -2525,25 +2617,38 @@ fn show_prompt(
 }
 
 #[cfg(target_os = "macos")]
-fn choose_folder() -> Option<std::path::PathBuf> {
+fn choose_folders(multiple: bool) -> Vec<std::path::PathBuf> {
     use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
     use objc2_foundation::{MainThreadMarker, NSString};
-    let mtm = MainThreadMarker::new()?;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Vec::new();
+    };
     let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    let (prompt, message) = if multiple {
+        ("Add", "Choose the git repositories of the project")
+    } else {
+        ("Open", "Choose a project folder with a pom.yml")
+    };
     unsafe {
         panel.setCanChooseFiles(false);
         panel.setCanChooseDirectories(true);
-        panel.setAllowsMultipleSelection(false);
-        panel.setPrompt(Some(&NSString::from_str("Open")));
-        panel.setMessage(Some(&NSString::from_str(
-            "Choose a project folder with a pom.yml",
-        )));
+        panel.setAllowsMultipleSelection(multiple);
+        panel.setPrompt(Some(&NSString::from_str(prompt)));
+        panel.setMessage(Some(&NSString::from_str(message)));
     }
     if unsafe { panel.runModal() } != NSModalResponseOK {
-        return None;
+        return Vec::new();
     }
-    let path = unsafe { panel.URL()?.path()? };
-    Some(std::path::PathBuf::from(path.to_string()))
+    let urls = unsafe { panel.URLs() };
+    urls.iter()
+        .filter_map(|url| unsafe { url.path() })
+        .map(|path| std::path::PathBuf::from(path.to_string()))
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn choose_folders(_multiple: bool) -> Vec<std::path::PathBuf> {
+    Vec::new()
 }
 
 // Center the macOS traffic lights in our taller top bar: resize the titlebar container

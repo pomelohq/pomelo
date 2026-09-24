@@ -10,8 +10,10 @@ path = "src/pom_core.rs"
 
 [dependencies]
 pom_config = { path = "../pom_config" }
+pom_detect = { path = "../pom_detect" }
 pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
+pom_secrets = { path = "../pom_secrets" }
 pom_sessions = { path = "../pom_sessions" }
 serde_json.workspace = true
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }

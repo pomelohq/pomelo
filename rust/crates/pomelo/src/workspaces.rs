@@ -209,6 +209,8 @@ impl App {
                 self.queue_create(id, create);
             } else if let Some(rename) = value.downcast_ref::<RenameWorkspace>() {
                 self.rename_workspace(id, rename);
+            } else if let Some(project) = value.downcast_ref::<workspaces_ui::NewProject>() {
+                self.start_scaffold(id, project);
             }
         }
         let tickets_changed = match self.mains.get_mut(&id) {

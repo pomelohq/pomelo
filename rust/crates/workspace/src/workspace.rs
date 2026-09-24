@@ -27,8 +27,8 @@ pub use panel::{
     WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use welcome::{
-    is_welcome_id, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,
-    WELCOME_RECENT_MAX,
+    is_welcome_id, WELCOME_NEW_PROJECT, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS,
+    WELCOME_RECENT_BASE, WELCOME_RECENT_MAX,
 };
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
