@@ -41,6 +41,14 @@ pub struct Settings {
     pub jira_only_mine: bool,
     /// The Jira board the ticket picker opened on last (0: none yet).
     pub jira_board: i64,
+    pub notify_claude: bool,
+    /// Also alert for the workspace on screen in the focused window.
+    pub notify_when_focused: bool,
+    /// macOS system sound per agent event; empty plays nothing.
+    pub sound_working: String,
+    pub sound_finished: String,
+    pub sound_needs_input: String,
+    pub sound_compacting: String,
 }
 
 impl Default for Settings {
@@ -73,11 +81,66 @@ impl Default for Settings {
             agent_command: "claude".into(),
             jira_only_mine: false,
             jira_board: 0,
+            notify_claude: true,
+            notify_when_focused: false,
+            sound_working: String::new(),
+            sound_finished: "Glass".into(),
+            sound_needs_input: "Ping".into(),
+            sound_compacting: String::new(),
         }
     }
 }
 
+pub const AGENT_EVENTS: [(&str, &str); 4] = [
+    ("working", "Started Working"),
+    ("finished", "Finished"),
+    ("needs_input", "Needs Your Input"),
+    ("compacting", "Compacting"),
+];
+
+pub const SYSTEM_SOUNDS: [&str; 14] = [
+    "Basso",
+    "Blow",
+    "Bottle",
+    "Frog",
+    "Funk",
+    "Glass",
+    "Hero",
+    "Morse",
+    "Ping",
+    "Pop",
+    "Purr",
+    "Sosumi",
+    "Submarine",
+    "Tink",
+];
+
 impl Settings {
+    pub fn sound_for(&self, event: &str) -> &str {
+        match event {
+            "working" => &self.sound_working,
+            "finished" => &self.sound_finished,
+            "needs_input" => &self.sound_needs_input,
+            "compacting" => &self.sound_compacting,
+            _ => "",
+        }
+    }
+
+    pub fn sound_for_mut(&mut self, event: &str) -> Option<&mut String> {
+        match event {
+            "working" => Some(&mut self.sound_working),
+            "finished" => Some(&mut self.sound_finished),
+            "needs_input" => Some(&mut self.sound_needs_input),
+            "compacting" => Some(&mut self.sound_compacting),
+            _ => None,
+        }
+    }
+
+    /// Whether an agent event is announced; `viewing` means the user is looking at that workspace.
+    pub fn announces(&self, viewing: bool) -> bool {
+        self.notify_claude && (!viewing || self.notify_when_focused)
+    }
+
     pub fn path() -> Option<PathBuf> {
         let home = std::env::var_os("HOME")?;
         Some(PathBuf::from(home).join(".config/pomelo/settings.json"))
@@ -117,6 +180,19 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn announcing_follows_the_master_switch_and_the_focus_rule() {
+        let mut s = Settings::default();
+        assert!(s.announces(false));
+        assert!(!s.announces(true));
+        s.notify_when_focused = true;
+        assert!(s.announces(true));
+        s.notify_claude = false;
+        assert!(!s.announces(false));
+        assert_eq!(s.sound_for("finished"), "Glass");
+        assert_eq!(s.sound_for("working"), "");
     }
 
     #[test]

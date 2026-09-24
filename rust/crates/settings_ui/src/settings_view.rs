@@ -19,12 +19,20 @@ const JIRA_FIELDS: [u64; 3] = [
     settings_ui::CTRL_JIRA_TOKEN,
 ];
 
+fn is_free_text(id: u64) -> bool {
+    JIRA_FIELDS.contains(&id) || id == settings_ui::CTRL_AGENT_COMMAND
+}
+
 /// Cross-window work the shell must do after an input the view handled: re-apply the UI font to every window's
 /// text renderer, and/or repaint the other windows because a shared global (theme/scale/weight) changed.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 pub struct SideEffects {
     pub reapply_font: bool,
     pub redraw_others: bool,
+    pub reinstall_agents: bool,
+    pub test_notification: bool,
+    pub start_servers: bool,
+    pub play_sound: Option<String>,
 }
 
 /// Innermost hit id under `(x, y)` (regions pushed outer-first, inner-last), like `ui::Window::hit_at`.
@@ -60,7 +68,7 @@ pub struct SettingsView {
     pending: SideEffects,
     /// The state folder and session whose Jira settings the Integrations page edits.
     jira_session: Option<(StateDir, String)>,
-    jira: IntegrationsPage,
+    pages: settings_ui::PageState,
     jira_test: Option<Receiver<Result<String, String>>>,
     /// The project's `pom.yml`, whose `sync:` applies until this window sets refresh-main.
     project_config: Option<std::sync::Arc<pom_config::Config>>,
@@ -95,15 +103,33 @@ impl SettingsView {
             viewport: (0.0, 0.0),
             pending: SideEffects::default(),
             jira_session: None,
-            jira: IntegrationsPage::default(),
+            pages: settings_ui::PageState::default(),
             jira_test: None,
             project_config: None,
         }
     }
 
+    pub fn set_agent_page(&mut self, agent: settings_ui::AgentPage) -> bool {
+        let changed = self.pages.agent != agent;
+        self.pages.agent = agent;
+        changed
+    }
+
+    pub fn set_network_page(&mut self, network: settings_ui::NetworkPage) -> bool {
+        let changed = self.pages.network != network;
+        self.pages.network = network;
+        changed
+    }
+
+    fn persist(&mut self) {
+        if let Err(error) = self.settings.save() {
+            eprintln!("settings: save: {error}");
+        }
+    }
+
     pub fn set_project_config(&mut self, config: Option<std::sync::Arc<pom_config::Config>>) {
         self.project_config = config;
-        let status = self.jira.status.clone();
+        let status = self.pages.jira.status.clone();
         self.reload_jira(status);
     }
 
@@ -123,7 +149,7 @@ impl SettingsView {
         if let Err(error) = pom_sync::save_refresh_schedule(&state, &session, schedule) {
             eprintln!("settings: save refresh-main: {error}");
         }
-        let status = self.jira.status.clone();
+        let status = self.pages.jira.status.clone();
         self.reload_jira(status);
     }
 
@@ -146,7 +172,7 @@ impl SettingsView {
 
     fn reload_jira(&mut self, status: ConnectionStatus) {
         let Some((state, session)) = &self.jira_session else {
-            self.jira = IntegrationsPage::default();
+            self.pages.jira = IntegrationsPage::default();
             return;
         };
         let stored = pom_jira::JiraSettings::load(state, session);
@@ -158,7 +184,7 @@ impl SettingsView {
             None => TokenSource::Missing,
         };
         let refresh = pom_sync::refresh_schedule(state, session, self.project_config.as_deref());
-        self.jira = IntegrationsPage {
+        self.pages.jira = IntegrationsPage {
             session: session.clone(),
             keep_main_fresh: refresh.enabled,
             refresh_minutes: (refresh.interval_seconds / 60).max(settings_ui::REFRESH_MINUTES_MIN),
@@ -215,7 +241,7 @@ impl SettingsView {
             }
         });
         self.jira_test = Some(receiver);
-        self.jira.status = ConnectionStatus::Testing;
+        self.pages.jira.status = ConnectionStatus::Testing;
     }
 
     /// Picks up a finished connection check; returns whether the page changed.
@@ -230,7 +256,7 @@ impl SettingsView {
             Err(TryRecvError::Disconnected) => ConnectionStatus::Failed("the check stopped".into()),
         };
         self.jira_test = None;
-        self.jira.status = status;
+        self.pages.jira.status = status;
         true
     }
 
@@ -242,7 +268,7 @@ impl SettingsView {
     pub fn key_paste(&mut self, text: &str) -> bool {
         let line: String = text.chars().filter(|c| !c.is_control()).collect();
         match self.editing.as_mut() {
-            Some((id, buf)) if JIRA_FIELDS.contains(id) && !line.is_empty() => {
+            Some((id, buf)) if is_free_text(*id) && !line.is_empty() => {
                 buf.push_str(&line);
                 true
             }
@@ -282,9 +308,22 @@ impl SettingsView {
             self.commit_jira(id, &buf);
             return;
         }
+        if id == settings_ui::CTRL_AGENT_COMMAND {
+            let command = buf.trim();
+            let command = if command.is_empty() {
+                Settings::default().agent_command
+            } else {
+                command.to_string()
+            };
+            if command != self.settings.agent_command {
+                self.settings.agent_command = command;
+                self.persist();
+            }
+            return;
+        }
         if id == settings_ui::CTRL_REFRESH_EDIT {
             if let Ok(minutes) = buf.trim().parse::<u64>() {
-                self.save_refresh(self.jira.keep_main_fresh, minutes);
+                self.save_refresh(self.pages.jira.keep_main_fresh, minutes);
             }
             return;
         }
@@ -322,7 +361,7 @@ impl SettingsView {
         let (page, total_h) = settings_ui::page(
             self.selected,
             &self.settings,
-            &self.jira,
+            &self.pages,
             self.editing.as_ref().map(|(id, buf)| (*id, buf.as_str())),
             &self.search_query,
             w,
@@ -549,7 +588,7 @@ impl SettingsView {
             self.scroll_accum = 0.0;
             true
         } else if let Some((id, buf)) = self.editing.as_mut() {
-            let free_text = JIRA_FIELDS.contains(id);
+            let free_text = is_free_text(*id);
             let add: String = text
                 .chars()
                 .filter(|c| {
@@ -666,6 +705,12 @@ impl SettingsView {
             if let Some(cid) = self.popover {
                 if settings_ui::apply_choice(cid, idx, &self.fonts, &mut self.settings) {
                     let _ = self.settings.save();
+                    if let Some(event) = settings_ui::sound_event(cid) {
+                        let sound = self.settings.sound_for(event);
+                        if !sound.is_empty() {
+                            self.pending.play_sound = Some(sound.to_string());
+                        }
+                    }
                     if cid == settings_ui::CTRL_FONT_FAMILY {
                         self.pending.reapply_font = true;
                     }
@@ -707,11 +752,24 @@ impl SettingsView {
                 let max = (self.page_total_h - clip_h).max(0.0);
                 self.page_scroll = off.clamp(0.0, max);
             }
+        } else if id == settings_ui::CTRL_AGENT_COMMAND {
+            self.commit_edit();
+            self.editing = Some((id, self.settings.agent_command.clone()));
+            self.close_popover();
+        } else if id == settings_ui::CTRL_REINSTALL_AGENTS {
+            self.commit_edit();
+            self.pending.reinstall_agents = true;
+        } else if id == settings_ui::CTRL_TEST_NOTIFICATION {
+            self.commit_edit();
+            self.pending.test_notification = true;
+        } else if id == settings_ui::CTRL_START_SERVERS {
+            self.commit_edit();
+            self.pending.start_servers = true;
         } else if JIRA_FIELDS.contains(&id) {
             self.commit_edit();
             let seed = match id {
-                settings_ui::CTRL_JIRA_SITE => self.jira.site.clone(),
-                settings_ui::CTRL_JIRA_EMAIL => self.jira.email.clone(),
+                settings_ui::CTRL_JIRA_SITE => self.pages.jira.site.clone(),
+                settings_ui::CTRL_JIRA_EMAIL => self.pages.jira.email.clone(),
                 _ => String::new(),
             };
             self.editing = Some((id, seed));
@@ -726,10 +784,13 @@ impl SettingsView {
             self.reload_jira(ConnectionStatus::Untested);
         } else if id == settings_ui::CTRL_REFRESH_MAIN {
             self.commit_edit();
-            self.save_refresh(!self.jira.keep_main_fresh, self.jira.refresh_minutes);
+            self.save_refresh(
+                !self.pages.jira.keep_main_fresh,
+                self.pages.jira.refresh_minutes,
+            );
         } else if id == settings_ui::CTRL_REFRESH_DEC || id == settings_ui::CTRL_REFRESH_INC {
             self.commit_edit();
-            let minutes = self.jira.refresh_minutes;
+            let minutes = self.pages.jira.refresh_minutes;
             let next = if id == settings_ui::CTRL_REFRESH_INC {
                 minutes + 5 - minutes % 5
             } else {
@@ -739,10 +800,10 @@ impl SettingsView {
                     minutes % 5
                 })
             };
-            self.save_refresh(self.jira.keep_main_fresh, next);
+            self.save_refresh(self.pages.jira.keep_main_fresh, next);
         } else if id == settings_ui::CTRL_REFRESH_EDIT {
             self.commit_edit();
-            self.editing = Some((id, self.jira.refresh_minutes.to_string()));
+            self.editing = Some((id, self.pages.jira.refresh_minutes.to_string()));
             self.close_popover();
         } else if id == settings_ui::CTRL_JIRA_TEST {
             self.commit_edit();
@@ -842,7 +903,7 @@ mod tests {
         view.set_jira_session(Some((state.clone(), "demo".into())));
         let no_env = std::env::var_os(pom_jira::DEFAULT_TOKEN_ENV).is_none();
         if no_env {
-            assert_eq!(view.jira.token, TokenSource::Missing);
+            assert_eq!(view.pages.jira.token, TokenSource::Missing);
         }
 
         view.click(settings_ui::CTRL_JIRA_SITE);
@@ -854,7 +915,7 @@ mod tests {
 
         let saved = pom_jira::JiraSettings::load(&state, "demo");
         assert_eq!(saved.site, "acme.atlassian.net");
-        assert_eq!(view.jira.token, TokenSource::Secret);
+        assert_eq!(view.pages.jira.token, TokenSource::Secret);
         let secret = pom_secrets::SecretStore::new(state.clone(), "demo")
             .get(pom_jira::TOKEN_SECRET)
             .expect("secret");
@@ -862,7 +923,7 @@ mod tests {
 
         view.click(settings_ui::CTRL_JIRA_RESET_TOKEN);
         if no_env {
-            assert_eq!(view.jira.token, TokenSource::Missing);
+            assert_eq!(view.pages.jira.token, TokenSource::Missing);
         }
     }
 
@@ -872,8 +933,8 @@ mod tests {
         let state = StateDir::new(temp.path());
         let mut view = SettingsView::new(Settings::default());
         view.set_jira_session(Some((state.clone(), "demo".into())));
-        assert!(!view.jira.keep_main_fresh);
-        assert_eq!(view.jira.refresh_minutes, 30);
+        assert!(!view.pages.jira.keep_main_fresh);
+        assert_eq!(view.pages.jira.refresh_minutes, 30);
         view.click(settings_ui::CTRL_REFRESH_MAIN);
         view.click(settings_ui::CTRL_REFRESH_DEC);
         view.click(settings_ui::CTRL_REFRESH_EDIT);
@@ -889,7 +950,7 @@ mod tests {
             }
         );
         view.click(settings_ui::CTRL_REFRESH_INC);
-        assert_eq!(view.jira.refresh_minutes, 10);
+        assert_eq!(view.pages.jira.refresh_minutes, 10);
     }
 
     #[test]
@@ -938,5 +999,34 @@ mod tests {
         assert_eq!(hit, Some(settings_ui::POPOVER_BASE + 1));
         let frame = app.draw(h).expect("frame");
         assert_eq!(frame.overlays.len(), 2, "popover closed after choosing");
+    }
+
+    #[test]
+    fn action_buttons_hand_their_work_to_the_app() {
+        let mut view = SettingsView::new(Settings::default());
+        view.click(settings_ui::CTRL_TEST_NOTIFICATION);
+        view.click(settings_ui::CTRL_REINSTALL_AGENTS);
+        view.click(settings_ui::CTRL_START_SERVERS);
+        let effects = view.take_side_effects();
+        assert!(effects.test_notification && effects.reinstall_agents && effects.start_servers);
+        assert!(!view.take_side_effects().test_notification);
+        view.click(settings_ui::CTRL_AGENT_COMMAND);
+        assert_eq!(
+            view.editing,
+            Some((settings_ui::CTRL_AGENT_COMMAND, "claude".to_string()))
+        );
+        assert!(view.key_text("-x"));
+        assert_eq!(
+            view.editing.as_ref().map(|(_, text)| text.as_str()),
+            Some("claude-x")
+        );
+        assert!(view.set_network_page(settings_ui::NetworkPage {
+            proxy_port: 8767,
+            ..Default::default()
+        }));
+        assert!(!view.set_network_page(settings_ui::NetworkPage {
+            proxy_port: 8767,
+            ..Default::default()
+        }));
     }
 }

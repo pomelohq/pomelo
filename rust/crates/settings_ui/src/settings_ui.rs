@@ -101,18 +101,27 @@ const APPEARANCE_SECTIONS: [&str; 2] = ["Theme", "UI Font"];
 const WINDOW_LAYOUT_SECTIONS: [&str; 5] = ["Status Bar", "Title Bar", "Window", "Docks", "Panels"];
 
 const INTEGRATIONS_SECTIONS: [&str; 2] = ["Jira", "Main Workspace"];
+const AGENT_SECTIONS: [&str; 2] = ["Command", "Claude Code"];
+const NOTIFICATIONS_SECTIONS: [&str; 2] = ["Delivery", "Alert Sounds"];
+const NETWORK_SECTIONS: [&str; 3] = ["Reverse Proxy", "Webhook Fan-out", "Recent Requests"];
 
-const CATEGORIES: [(&str, &[&str]); 6] = [
+const CATEGORIES: [(&str, &[&str]); 9] = [
     ("General", &[]),
     ("Appearance", &APPEARANCE_SECTIONS),
     ("Window & Layout", &WINDOW_LAYOUT_SECTIONS),
     ("Editor", &[]),
     ("Terminal", &[]),
+    ("Agent", &AGENT_SECTIONS),
+    ("Notifications", &NOTIFICATIONS_SECTIONS),
+    ("Network", &NETWORK_SECTIONS),
     ("Integrations", &INTEGRATIONS_SECTIONS),
 ];
 
 pub const WINDOW_LAYOUT: usize = 2;
-pub const INTEGRATIONS: usize = 5;
+pub const AGENT: usize = 5;
+pub const NOTIFICATIONS: usize = 6;
+pub const NETWORK: usize = 7;
+pub const INTEGRATIONS: usize = 8;
 
 /// Index of the Appearance category (the only page with real content for now).
 pub const APPEARANCE: usize = 1;
@@ -174,6 +183,14 @@ pub const CTRL_REFRESH_MAIN: u64 = 236;
 pub const CTRL_REFRESH_DEC: u64 = 237;
 pub const CTRL_REFRESH_INC: u64 = 238;
 pub const CTRL_REFRESH_EDIT: u64 = 239;
+pub const CTRL_AGENT_COMMAND: u64 = 240;
+pub const CTRL_REINSTALL_AGENTS: u64 = 241;
+pub const CTRL_NOTIFY: u64 = 243;
+pub const CTRL_NOTIFY_FOCUSED: u64 = 244;
+pub const CTRL_TEST_NOTIFICATION: u64 = 245;
+/// A sound dropdown per agent event: id = base + index into `settings::AGENT_EVENTS`.
+pub const CTRL_SOUND_BASE: u64 = 246;
+pub const CTRL_START_SERVERS: u64 = 250;
 pub const REFRESH_MINUTES_MIN: u64 = 1;
 pub const REFRESH_MINUTES_MAX: u64 = 1440;
 pub const WIN_W_MIN: f32 = 640.0;
@@ -230,8 +247,16 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_SIDEBAR_SIDE
             | CTRL_AGENT_SIDE
             | CTRL_TERMINAL_SIDE
-    )
+    ) || sound_event(id).is_some()
 }
+
+/// The agent event a sound dropdown id stands for.
+pub fn sound_event(id: u64) -> Option<&'static str> {
+    let index = id.checked_sub(CTRL_SOUND_BASE)? as usize;
+    settings::AGENT_EVENTS.get(index).map(|(event, _)| *event)
+}
+
+const NO_SOUND: &str = "None";
 
 fn cap(s: &str) -> String {
     let mut c = s.chars();
@@ -249,6 +274,10 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
         CTRL_MODE => sv(&["System", "Light", "Dark"]),
         CTRL_SIDEBAR_SIDE | CTRL_AGENT_SIDE => sv(&["Left", "Right"]),
         CTRL_TERMINAL_SIDE => sv(&["Left", "Right", "Bottom"]),
+        id if sound_event(id).is_some() => std::iter::once(NO_SOUND)
+            .chain(settings::SYSTEM_SOUNDS)
+            .map(str::to_string)
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -262,7 +291,10 @@ pub fn control_value(id: u64, s: &Settings) -> String {
         CTRL_SIDEBAR_SIDE => cap(&s.sidebar_side),
         CTRL_AGENT_SIDE => cap(&s.agent_side),
         CTRL_TERMINAL_SIDE => cap(&s.terminal_side),
-        _ => String::new(),
+        id => match sound_event(id) {
+            Some(event) => sound_label(s.sound_for(event)),
+            None => String::new(),
+        },
     }
 }
 
@@ -279,9 +311,26 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
         CTRL_SIDEBAR_SIDE => s.sidebar_side = val.to_lowercase(),
         CTRL_AGENT_SIDE => s.agent_side = val.to_lowercase(),
         CTRL_TERMINAL_SIDE => s.terminal_side = val.to_lowercase(),
-        _ => return false,
+        id => {
+            let Some(sound) = sound_event(id).and_then(|event| s.sound_for_mut(event)) else {
+                return false;
+            };
+            *sound = if val == NO_SOUND {
+                String::new()
+            } else {
+                val.clone()
+            };
+        }
     }
     true
+}
+
+fn sound_label(sound: &str) -> String {
+    if sound.is_empty() {
+        NO_SOUND.to_string()
+    } else {
+        sound.to_string()
+    }
 }
 
 pub fn is_default(id: u64, s: &Settings) -> bool {
@@ -305,7 +354,10 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_JIRA_ONLY_MINE => s.jira_only_mine == d.jira_only_mine,
         CTRL_WIN_W_EDIT => s.window_width == d.window_width,
         CTRL_WIN_H_EDIT => s.window_height == d.window_height,
-        _ => true,
+        CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
+        CTRL_NOTIFY => s.notify_claude == d.notify_claude,
+        CTRL_NOTIFY_FOCUSED => s.notify_when_focused == d.notify_when_focused,
+        id => sound_event(id).is_none_or(|event| s.sound_for(event) == d.sound_for(event)),
     }
 }
 
@@ -331,7 +383,19 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_JIRA_ONLY_MINE => s.jira_only_mine = d.jira_only_mine,
         CTRL_WIN_W_EDIT => s.window_width = d.window_width,
         CTRL_WIN_H_EDIT => s.window_height = d.window_height,
-        _ => return false,
+        CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
+        CTRL_NOTIFY => s.notify_claude = d.notify_claude,
+        CTRL_NOTIFY_FOCUSED => s.notify_when_focused = d.notify_when_focused,
+        id => {
+            let Some(event) = sound_event(id) else {
+                return false;
+            };
+            let default = d.sound_for(event).to_string();
+            let Some(sound) = s.sound_for_mut(event) else {
+                return false;
+            };
+            *sound = default;
+        }
     }
     changed
 }
@@ -377,6 +441,14 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         }
         CTRL_JIRA_ONLY_MINE => {
             s.jira_only_mine = !s.jira_only_mine;
+            true
+        }
+        CTRL_NOTIFY => {
+            s.notify_claude = !s.notify_claude;
+            true
+        }
+        CTRL_NOTIFY_FOCUSED => {
+            s.notify_when_focused = !s.notify_when_focused;
             true
         }
         _ => false,
@@ -757,7 +829,7 @@ pub fn chrome(
 pub fn page(
     selected: usize,
     s: &Settings,
-    jira: &IntegrationsPage,
+    state: &PageState,
     editing: Option<(u64, &str)>,
     search: &str,
     w: f32,
@@ -777,10 +849,17 @@ pub fn page(
         )],
         ..Default::default()
     };
+    let jira = &state.jira;
     let tree: Node = if selected == APPEARANCE {
         render_page(&appearance_page(s), search, editing, w)
     } else if selected == WINDOW_LAYOUT {
         render_page(&window_layout_page(s), search, editing, w)
+    } else if selected == AGENT {
+        render_page(&agent_page(s, &state.agent), search, editing, w)
+    } else if selected == NOTIFICATIONS {
+        render_page(&notifications_page(s), search, editing, w)
+    } else if selected == NETWORK {
+        render_page(&network_page(&state.network), search, editing, w)
     } else if selected == INTEGRATIONS && !jira.session.is_empty() {
         render_page(&integrations_page(s, jira), search, editing, w)
     } else if selected == INTEGRATIONS {
@@ -826,14 +905,14 @@ pub fn panel(
     hovered: Option<u64>,
     expanded: &[bool],
     s: &Settings,
-    jira: &IntegrationsPage,
+    state: &PageState,
     w: f32,
     h: f32,
     editing: Option<(u64, &str)>,
     search: &str,
     search_active: bool,
 ) -> ui::Painted {
-    let (mut out, _) = page(selected, s, jira, editing, search, w, h, 0.0);
+    let (mut out, _) = page(selected, s, state, editing, search, w, h, 0.0);
     let ch = chrome(
         selected,
         hovered,
@@ -979,6 +1058,9 @@ fn page_for(cat: usize) -> Option<Page> {
             &Settings::default(),
             &IntegrationsPage::default(),
         )),
+        AGENT => Some(agent_page(&Settings::default(), &AgentPage::default())),
+        NOTIFICATIONS => Some(notifications_page(&Settings::default())),
+        NETWORK => Some(network_page(&NetworkPage::default())),
         _ => None,
     }
 }
@@ -1120,10 +1202,18 @@ enum Control {
         label: &'static str,
         enabled: bool,
     },
+    /// A server's Running/Stopped chip.
+    Status {
+        running: bool,
+    },
+    /// A read-only value.
+    Value {
+        text: String,
+    },
 }
 
 struct SettingRow {
-    title: &'static str,
+    title: std::borrow::Cow<'static, str>,
     description: std::borrow::Cow<'static, str>,
     control: Control,
     reset: Option<u64>,
@@ -1149,7 +1239,7 @@ fn appearance_page(s: &Settings) -> Page {
         items: vec![
             PageItem::Header("Theme"),
             PageItem::Row(SettingRow {
-                title: "Theme",
+                title: "Theme".into(),
                 description: "Color theme applied across the whole app.".into(),
                 control: Control::Dropdown {
                     id: CTRL_THEME,
@@ -1159,7 +1249,7 @@ fn appearance_page(s: &Settings) -> Page {
             }),
             PageItem::Header("UI Font"),
             PageItem::Row(SettingRow {
-                title: "Font Family",
+                title: "Font Family".into(),
                 description: "Font family used for interface text.".into(),
                 control: Control::Dropdown {
                     id: CTRL_FONT_FAMILY,
@@ -1168,7 +1258,7 @@ fn appearance_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_FONT_FAMILY, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Font Size",
+                title: "Font Size".into(),
                 description: "Font size for UI elements.".into(),
                 control: Control::Stepper {
                     dec: CTRL_FONT_SIZE_DEC,
@@ -1179,7 +1269,7 @@ fn appearance_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_FONT_SIZE_EDIT, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Font Weight",
+                title: "Font Weight".into(),
                 description: "Font weight for UI elements (100-900).".into(),
                 control: Control::Stepper {
                     dec: CTRL_FONT_WEIGHT_DEC,
@@ -1190,7 +1280,7 @@ fn appearance_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_FONT_WEIGHT_EDIT, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Font Features",
+                title: "Font Features".into(),
                 description: "The OpenType features to enable for rendering in UI elements.".into(),
                 control: Control::EditInJson {
                     id: CTRL_FONT_FEATURES,
@@ -1198,7 +1288,7 @@ fn appearance_page(s: &Settings) -> Page {
                 reset: None,
             }),
             PageItem::Row(SettingRow {
-                title: "Font Fallbacks",
+                title: "Font Fallbacks".into(),
                 description: "The font fallbacks to use for rendering in the UI.".into(),
                 control: Control::EditInJson {
                     id: CTRL_FONT_FALLBACKS,
@@ -1215,7 +1305,7 @@ fn window_layout_page(s: &Settings) -> Page {
         items: vec![
             PageItem::Header("Status Bar"),
             PageItem::Row(SettingRow {
-                title: "Show Diagnostics",
+                title: "Show Diagnostics".into(),
                 description: "Show the error/warning count in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_DIAGNOSTICS,
@@ -1224,7 +1314,7 @@ fn window_layout_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_SHOW_DIAGNOSTICS, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Show Cursor Position",
+                title: "Show Cursor Position".into(),
                 description: "Show the line and column of the cursor in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_CURSOR,
@@ -1233,7 +1323,7 @@ fn window_layout_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_SHOW_CURSOR, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Show Language",
+                title: "Show Language".into(),
                 description: "Show the active language of the editor in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_LANGUAGE,
@@ -1243,7 +1333,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Header("Title Bar"),
             PageItem::Row(SettingRow {
-                title: "Show Branch",
+                title: "Show Branch".into(),
                 description: "Show the current git branch in the title bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_BRANCH,
@@ -1252,7 +1342,7 @@ fn window_layout_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_SHOW_BRANCH, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Show Session Name",
+                title: "Show Session Name".into(),
                 description: "Show the current session name in the title bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_SESSION,
@@ -1262,7 +1352,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Header("Window"),
             PageItem::Row(SettingRow {
-                title: "Window Width",
+                title: "Window Width".into(),
                 description: "Default width (px) of a new window.".into(),
                 control: Control::Stepper {
                     dec: CTRL_WIN_W_DEC,
@@ -1273,7 +1363,7 @@ fn window_layout_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_WIN_W_EDIT, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Window Height",
+                title: "Window Height".into(),
                 description: "Default height (px) of a new window.".into(),
                 control: Control::Stepper {
                     dec: CTRL_WIN_H_DEC,
@@ -1285,7 +1375,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Header("Docks"),
             PageItem::Row(SettingRow {
-                title: "Sidebar Side",
+                title: "Sidebar Side".into(),
                 description: "Which side the WORKSPACES sidebar docks on.".into(),
                 control: Control::Dropdown {
                     id: CTRL_SIDEBAR_SIDE,
@@ -1294,7 +1384,7 @@ fn window_layout_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_SIDEBAR_SIDE, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Agent Dock Side",
+                title: "Agent Dock Side".into(),
                 description: "Which side of the editor the agent dock renders on.".into(),
                 control: Control::Dropdown {
                     id: CTRL_AGENT_SIDE,
@@ -1303,7 +1393,7 @@ fn window_layout_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_AGENT_SIDE, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Terminal Dock Side",
+                title: "Terminal Dock Side".into(),
                 description: "Which content area the terminal renders in.".into(),
                 control: Control::Dropdown {
                     id: CTRL_TERMINAL_SIDE,
@@ -1313,7 +1403,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Header("Panels"),
             PageItem::Row(SettingRow {
-                title: "Show Agent Button",
+                title: "Show Agent Button".into(),
                 description: "Show the agent toggle in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_AGENT,
@@ -1322,7 +1412,7 @@ fn window_layout_page(s: &Settings) -> Page {
                 reset: reset_if_changed(CTRL_SHOW_AGENT, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Show Terminal Button",
+                title: "Show Terminal Button".into(),
                 description: "Show the terminal toggle in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_TERMINAL,
@@ -1365,10 +1455,269 @@ pub struct IntegrationsPage {
     pub status: ConnectionStatus,
 }
 
+/// How far registering this app with Claude Code got.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Registration {
+    #[default]
+    Pending,
+    Done,
+    /// A run on a throwaway state folder leaves the real agent config alone.
+    Skipped,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentPage {
+    pub mcp: Registration,
+    pub hooks: Registration,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RequestRow {
+    pub time: String,
+    pub method: String,
+    pub path: String,
+    pub profile: String,
+    pub target: String,
+    pub status: u16,
+    pub ms: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NetworkPage {
+    pub proxy_running: bool,
+    pub webhook_running: bool,
+    pub proxy_port: u16,
+    pub webhook_port: u16,
+    /// Newest first.
+    pub requests: Vec<RequestRow>,
+}
+
+/// What the pages show that lives outside the settings file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageState {
+    pub jira: IntegrationsPage,
+    pub agent: AgentPage,
+    pub network: NetworkPage,
+}
+
+fn registration_text(registration: &Registration, done: &str) -> String {
+    match registration {
+        Registration::Pending => "Registering...".into(),
+        Registration::Done => done.into(),
+        Registration::Skipped => "Not registered: this run uses a temporary state folder.".into(),
+        Registration::Failed(error) => format!("Failed: {error}"),
+    }
+}
+
+fn agent_page(s: &Settings, agent: &AgentPage) -> Page {
+    let can_reinstall = !matches!(agent.mcp, Registration::Pending | Registration::Skipped);
+    Page {
+        title: "Agent",
+        items: vec![
+            PageItem::Header("Command"),
+            PageItem::Row(SettingRow {
+                title: "Agent Command".into(),
+                description: "The AI CLI the Agent button opens in a workspace.".into(),
+                control: Control::TextInput {
+                    id: CTRL_AGENT_COMMAND,
+                    value: s.agent_command.clone(),
+                    placeholder: "claude",
+                    masked: false,
+                },
+                reset: reset_if_changed(CTRL_AGENT_COMMAND, s),
+            }),
+            PageItem::Header("Claude Code"),
+            PageItem::Row(SettingRow {
+                title: "MCP Server".into(),
+                description: registration_text(
+                    &agent.mcp,
+                    "Registered in ~/.claude.json: every Claude session gets the pom tools for its workspace.",
+                )
+                .into(),
+                control: Control::Button {
+                    id: CTRL_REINSTALL_AGENTS,
+                    label: "Reinstall",
+                    enabled: can_reinstall,
+                },
+                reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Activity Hooks".into(),
+                description: registration_text(
+                    &agent.hooks,
+                    "Installed in ~/.claude/settings.json: workspace dots and notifications follow what Claude is doing.",
+                )
+                .into(),
+                control: Control::Value {
+                    text: String::new(),
+                },
+                reset: None,
+            }),
+        ],
+    }
+}
+
+fn notifications_page(s: &Settings) -> Page {
+    let mut items = vec![
+        PageItem::Header("Delivery"),
+        PageItem::Row(SettingRow {
+            title: "Notify on Claude Activity".into(),
+            description: "The master switch for banners and sounds when a workspace's Claude starts, finishes, needs input or compacts. Needs macOS notification permission.".into(),
+            control: Control::Toggle {
+                id: CTRL_NOTIFY,
+                on: s.notify_claude,
+            },
+            reset: reset_if_changed(CTRL_NOTIFY, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Alert While Viewing".into(),
+            description: "Also alert for the workspace on screen in the focused window.".into(),
+            control: Control::Toggle {
+                id: CTRL_NOTIFY_FOCUSED,
+                on: s.notify_when_focused,
+            },
+            reset: reset_if_changed(CTRL_NOTIFY_FOCUSED, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Test Notification".into(),
+            description: "Posts a sample banner to check that delivery works.".into(),
+            control: Control::Button {
+                id: CTRL_TEST_NOTIFICATION,
+                label: "Send",
+                enabled: true,
+            },
+            reset: None,
+        }),
+        PageItem::Header("Alert Sounds"),
+    ];
+    for (index, (event, title)) in settings::AGENT_EVENTS.iter().enumerate() {
+        let id = CTRL_SOUND_BASE + index as u64;
+        items.push(PageItem::Row(SettingRow {
+            title: (*title).into(),
+            description: "A macOS sound played with the notification; picking one plays it.".into(),
+            control: Control::Dropdown {
+                id,
+                value: sound_label(s.sound_for(event)),
+            },
+            reset: reset_if_changed(id, s),
+        }));
+    }
+    Page {
+        title: "Notifications",
+        items,
+    }
+}
+
+fn network_page(network: &NetworkPage) -> Page {
+    let mut items = vec![
+        PageItem::Header("Reverse Proxy"),
+        PageItem::Row(SettingRow {
+            title: "Status".into(),
+            description: "Serves every workspace's services behind one port.".into(),
+            control: Control::Status {
+                running: network.proxy_running,
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "From the Frontend".into(),
+            description: "Point the frontend's backend base URL here: same origin, cookies like production, retargeted when the environment switches.".into(),
+            control: Control::Value {
+                text: "/_pom_dev/<repo>/<service>".into(),
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "Proxy Port".into(),
+            description: format!(
+                "Open a service directly at <service>.<repo>.<ticket or branch>.localhost:{}. Set POM_WEB_PORT to move it (the proxy takes that port + 2).",
+                network.proxy_port
+            )
+            .into(),
+            control: Control::Value {
+                text: network.proxy_port.to_string(),
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "Bind Address".into(),
+            description: "Only this machine can reach the proxy.".into(),
+            control: Control::Value {
+                text: "127.0.0.1".into(),
+            },
+            reset: None,
+        }),
+        PageItem::Header("Webhook Fan-out"),
+        PageItem::Row(SettingRow {
+            title: "Status".into(),
+            description: "Hands each incoming webhook to every workspace running the service.".into(),
+            control: Control::Status {
+                running: network.webhook_running,
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "Listen Port".into(),
+            description: format!(
+                "Point an external webhook (Stripe, GitHub...) at localhost:{}/<repo>/<service>.",
+                network.webhook_port
+            )
+            .into(),
+            control: Control::Value {
+                text: network.webhook_port.to_string(),
+            },
+            reset: None,
+        }),
+    ];
+    if !network.proxy_running || !network.webhook_running {
+        items.push(PageItem::Row(SettingRow {
+            title: "Servers".into(),
+            description: "A port was taken, likely by another Pomelo. Free it, then start again."
+                .into(),
+            control: Control::Button {
+                id: CTRL_START_SERVERS,
+                label: "Start Servers",
+                enabled: true,
+            },
+            reset: None,
+        }));
+    }
+    items.push(PageItem::Header("Recent Requests"));
+    if network.requests.is_empty() {
+        items.push(PageItem::Row(SettingRow {
+            title: "No Requests Yet".into(),
+            description: "Requests the frontend sends through /_pom_dev/ show up here.".into(),
+            control: Control::Value {
+                text: String::new(),
+            },
+            reset: None,
+        }));
+    }
+    for request in &network.requests {
+        items.push(PageItem::Row(SettingRow {
+            title: format!("{} {}", request.method, request.path).into(),
+            description: format!(
+                "{} - {} - {} - {} ms",
+                request.time, request.profile, request.target, request.ms
+            )
+            .into(),
+            control: Control::Value {
+                text: request.status.to_string(),
+            },
+            reset: None,
+        }));
+    }
+    Page {
+        title: "Network",
+        items,
+    }
+}
+
 fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
     let token_row = match jira.token {
         TokenSource::Missing => SettingRow {
-            title: "API Token",
+            title: "API Token".into(),
             description: "Create one in your Atlassian account under Security > API tokens. Stored encrypted for this project; or set `JIRA_API_TOKEN`.".into(),
             control: Control::TextInput {
                 id: CTRL_JIRA_TOKEN,
@@ -1379,7 +1728,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
             reset: None,
         },
         TokenSource::Secret => SettingRow {
-            title: "API Token",
+            title: "API Token".into(),
             description: "Stored encrypted for this project.".into(),
             control: Control::Configured {
                 label: "API Token Configured",
@@ -1390,7 +1739,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
             reset: None,
         },
         TokenSource::Environment => SettingRow {
-            title: "API Token",
+            title: "API Token".into(),
             description: "Read from `JIRA_API_TOKEN`; unset it to use a stored token instead.".into(),
             control: Control::Configured {
                 label: "API Token Set in Environment Variable",
@@ -1415,7 +1764,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
         items: vec![
             PageItem::Header("Jira"),
             PageItem::Row(SettingRow {
-                title: "Site URL",
+                title: "Site URL".into(),
                 description: "Your Jira Cloud address.".into(),
                 control: Control::TextInput {
                     id: CTRL_JIRA_SITE,
@@ -1426,7 +1775,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                 reset: None,
             }),
             PageItem::Row(SettingRow {
-                title: "Account Email",
+                title: "Account Email".into(),
                 description: "The email you sign in to Jira with.".into(),
                 control: Control::TextInput {
                     id: CTRL_JIRA_EMAIL,
@@ -1438,7 +1787,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
             }),
             PageItem::Row(token_row),
             PageItem::Row(SettingRow {
-                title: "Connection",
+                title: "Connection".into(),
                 description: connection,
                 control: Control::Button {
                     id: CTRL_JIRA_TEST,
@@ -1448,7 +1797,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                 reset: None,
             }),
             PageItem::Row(SettingRow {
-                title: "Only Show My Tickets",
+                title: "Only Show My Tickets".into(),
                 description: "The new-workspace ticket picker lists only tickets assigned to you."
                     .into(),
                 control: Control::Toggle {
@@ -1459,7 +1808,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
             }),
             PageItem::Header("Main Workspace"),
             PageItem::Row(SettingRow {
-                title: "Keep Main Fresh",
+                title: "Keep Main Fresh".into(),
                 description: "Pulls every repo of main from origin and runs its migrations on a schedule, so new workspaces start from current code and data. Repos with uncommitted changes are skipped.".into(),
                 control: Control::Toggle {
                     id: CTRL_REFRESH_MAIN,
@@ -1468,7 +1817,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                 reset: None,
             }),
             PageItem::Row(SettingRow {
-                title: "Refresh Every",
+                title: "Refresh Every".into(),
                 description: "Minutes between refreshes, on the clock: every 30 runs at :00 and :30.".into(),
                 control: Control::Stepper {
                     dec: CTRL_REFRESH_DEC,
@@ -1589,9 +1938,11 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
                         enabled,
                     } => configured_card(label, *button, button_label, *enabled),
                     Control::Button { id, label, enabled } => action_button(*id, label, *enabled),
+                    Control::Status { running } => status_chip(*running),
+                    Control::Value { text } => value_text(text),
                 };
                 col = col.child(row_frame(
-                    row.title,
+                    &row.title,
                     &row.description,
                     control,
                     row.reset,
@@ -1862,6 +2213,25 @@ fn action_button(id: u64, text: &str, enabled: bool) -> Node {
     }
 }
 
+fn status_chip(running: bool) -> Node {
+    let (color, text) = if running {
+        (theme().success, "Running")
+    } else {
+        (theme().error, "Stopped")
+    };
+    div()
+        .row()
+        .items_center()
+        .gap(6.0)
+        .child(div().w_px(7.0).h_px(7.0).rounded(3.5).bg(color))
+        .child(label(text).size(12.0).color(color))
+        .into()
+}
+
+fn value_text(text: &str) -> Node {
+    label(text).size(12.0).mono().color(title_c()).into()
+}
+
 /// The reference renders `.unimplemented()` fields as an Outlined, Medium "Edit in settings.json" button.
 fn edit_in_json_button(id: u64) -> Node {
     ui::button_sized(
@@ -1926,7 +2296,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
-            &IntegrationsPage::default(),
+            &PageState::default(),
             1200.0,
             800.0,
             None,
@@ -1947,7 +2317,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
-            &IntegrationsPage::default(),
+            &PageState::default(),
             1200.0,
             800.0,
             None,
@@ -2033,7 +2403,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
-            &IntegrationsPage::default(),
+            &PageState::default(),
             1200.0,
             800.0,
             None,
@@ -2053,7 +2423,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
-            &IntegrationsPage::default(),
+            &PageState::default(),
             1200.0,
             800.0,
             None,
@@ -2062,5 +2432,136 @@ mod tests {
         );
         assert!(p.texts.iter().any(|x| x.text == "General"));
         assert!(p.texts.iter().any(|x| x.text == "No settings here yet."));
+    }
+
+    fn texts_of(category: usize, state: &PageState, settings: &Settings) -> Vec<ui::Text> {
+        panel(
+            category,
+            None,
+            &[false; CATEGORY_COUNT],
+            settings,
+            state,
+            1400.0,
+            2400.0,
+            None,
+            "",
+            false,
+        )
+        .texts
+    }
+
+    #[test]
+    fn notifications_page_lists_delivery_and_a_sound_per_event() {
+        let texts = texts_of(NOTIFICATIONS, &PageState::default(), &Settings::default());
+        for expected in [
+            "Notify on Claude Activity",
+            "Alert While Viewing",
+            "Glass",
+            "Ping",
+        ] {
+            assert!(texts.iter().any(|t| t.text == expected), "{expected}");
+        }
+        let headers: Vec<_> = texts
+            .iter()
+            .filter(|t| t.text == "Delivery" || t.text == "Alert Sounds")
+            .filter(|t| t.mono)
+            .collect();
+        assert_eq!(headers.len(), 2, "section headers are mono");
+    }
+
+    #[test]
+    fn sound_dropdowns_offer_none_and_system_sounds_and_store_the_pick() {
+        let mut s = Settings::default();
+        let finished = CTRL_SOUND_BASE + 1;
+        assert!(is_dropdown(finished));
+        assert_eq!(sound_event(finished), Some("finished"));
+        let items = control_items(finished, &[]);
+        assert_eq!(items[0], "None");
+        assert_eq!(control_value(finished, &s), "Glass");
+        let hero = items.iter().position(|item| item == "Hero").unwrap_or(0);
+        assert!(apply_choice(finished, hero, &[], &mut s));
+        assert_eq!(s.sound_finished, "Hero");
+        assert!(!is_default(finished, &s));
+        assert!(apply_choice(finished, 0, &[], &mut s));
+        assert_eq!(s.sound_finished, "");
+        assert!(reset_to_default(finished, &mut s));
+        assert_eq!(s.sound_finished, "Glass");
+        assert!(handle_control(CTRL_NOTIFY, &mut s));
+        assert!(!s.notify_claude);
+    }
+
+    #[test]
+    fn network_page_shows_status_ports_and_recent_requests() {
+        let state = PageState {
+            network: NetworkPage {
+                proxy_running: true,
+                webhook_running: false,
+                proxy_port: 8767,
+                webhook_port: 8766,
+                requests: vec![RequestRow {
+                    time: "10:00:00".into(),
+                    method: "GET".into(),
+                    path: "/_pom_dev/api/server/v1".into(),
+                    profile: "local".into(),
+                    target: "127.0.0.1:4000".into(),
+                    status: 200,
+                    ms: 7,
+                }],
+            },
+            ..PageState::default()
+        };
+        let p = panel(
+            NETWORK,
+            None,
+            &[false; CATEGORY_COUNT],
+            &Settings::default(),
+            &state,
+            1400.0,
+            2400.0,
+            None,
+            "",
+            false,
+        );
+        for expected in [
+            "Running",
+            "Stopped",
+            "8767",
+            "8766",
+            "GET /_pom_dev/api/server/v1",
+            "200",
+        ] {
+            assert!(p.texts.iter().any(|t| t.text == expected), "{expected}");
+        }
+        assert!(p.hits.iter().any(|(_, id)| *id == CTRL_START_SERVERS));
+    }
+
+    #[test]
+    fn agent_page_edits_the_command_and_reinstalls_once_registration_ran() {
+        let pending = panel(
+            AGENT,
+            None,
+            &[false; CATEGORY_COUNT],
+            &Settings::default(),
+            &PageState::default(),
+            1400.0,
+            2400.0,
+            None,
+            "",
+            false,
+        );
+        assert!(pending.hits.iter().any(|(_, id)| *id == CTRL_AGENT_COMMAND));
+        assert!(!pending
+            .hits
+            .iter()
+            .any(|(_, id)| *id == CTRL_REINSTALL_AGENTS));
+        let state = PageState {
+            agent: AgentPage {
+                mcp: Registration::Done,
+                hooks: Registration::Failed("read-only".into()),
+            },
+            ..PageState::default()
+        };
+        let texts = texts_of(AGENT, &state, &Settings::default());
+        assert!(texts.iter().any(|t| t.text.contains("Failed: read-only")));
     }
 }

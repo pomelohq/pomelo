@@ -564,6 +564,8 @@ struct App {
     next_agent_item: u64,
     scaffolding: Option<Scaffolding>,
     dev_proxy: Option<pom_proxy::DevProxy>,
+    agent_registration: Arc<std::sync::Mutex<settings_ui::AgentPage>>,
+    settings_pages_at: Option<Instant>,
     /// The main window last focused: Settings edits its project's Jira settings.
     focused_main: Option<WindowId>,
 }
@@ -639,11 +641,13 @@ impl App {
                 let Some((title, event)) = pom_agent::notification_for(before, state) else {
                     continue;
                 };
-                if event == "working" || (focused && workspace.branch == active) {
+                let viewing = focused && workspace.branch == active;
+                if !self.settings.announces(viewing) {
                     continue;
                 }
                 notices.push((
                     title,
+                    event,
                     format!("{session} - {}", workspace.branch),
                     workspace.branch.clone(),
                 ));
@@ -651,8 +655,15 @@ impl App {
             self.with_workspace_view(id, |view, _| view.set_agent_states(dots));
         }
         #[cfg(target_os = "macos")]
-        for (title, body, branch) in notices {
-            notifications::post(title, &body, &branch);
+        for (title, event, body, branch) in notices {
+            if event != "working" {
+                notifications::post(title, &body, &branch);
+            }
+            // The dev build shares the installed app's agent state; only one of them should chime.
+            let sound = self.settings.sound_for(event);
+            if !sound.is_empty() && !is_dev_build() {
+                notifications::play_sound(sound);
+            }
         }
         self.agents.states = fresh;
         self.agents.primed = true;
@@ -1006,6 +1017,71 @@ impl App {
         self.install_project_views(id);
         self.refresh_sessions();
         self.sync_dev_proxy();
+    }
+
+    /// Binds again after a port another instance held was freed.
+    fn restart_dev_proxy(&mut self) {
+        self.dev_proxy = None;
+        self.sync_dev_proxy();
+    }
+
+    /// Hands the settings window what it shows from outside the settings file: agent registration and the
+    /// servers' state and traffic. Throttled, since it runs on every loop turn.
+    fn refresh_settings_pages(&mut self) {
+        const INTERVAL: Duration = Duration::from_millis(500);
+        const REQUESTS_SHOWN: usize = 50;
+        if self.settings_entity.is_none()
+            || self
+                .settings_pages_at
+                .is_some_and(|at| at.elapsed() < INTERVAL)
+        {
+            return;
+        }
+        self.settings_pages_at = Some(Instant::now());
+        let agent = self
+            .agent_registration
+            .lock()
+            .map(|page| page.clone())
+            .unwrap_or_default();
+        let ports = self
+            .dev_proxy
+            .as_ref()
+            .map_or_else(pom_proxy::Ports::from_env, pom_proxy::DevProxy::ports);
+        let network = settings_ui::NetworkPage {
+            proxy_running: self
+                .dev_proxy
+                .as_ref()
+                .is_some_and(pom_proxy::DevProxy::proxy_running),
+            webhook_running: self
+                .dev_proxy
+                .as_ref()
+                .is_some_and(pom_proxy::DevProxy::webhook_running),
+            proxy_port: ports.proxy,
+            webhook_port: ports.webhook,
+            requests: self
+                .dev_proxy
+                .as_ref()
+                .map(|proxy| proxy.log(REQUESTS_SHOWN))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|entry| settings_ui::RequestRow {
+                    time: entry.time,
+                    method: entry.method,
+                    path: entry.path,
+                    profile: entry.profile,
+                    target: entry.target,
+                    status: entry.status,
+                    ms: entry.ms,
+                })
+                .collect(),
+        };
+        let changed = self.with_settings_view(|view, _| {
+            let agent_changed = view.set_agent_page(agent);
+            view.set_network_page(network) || agent_changed
+        });
+        if changed == Some(true) {
+            self.settings_dirty = true;
+        }
     }
 
     /// Points the dev proxy and webhook relay at the projects the windows have open, starting them with the
@@ -1559,6 +1635,25 @@ impl App {
         if effects.reapply_font || effects.redraw_others {
             self.mark_all_mains_dirty();
         }
+        if effects.reinstall_agents {
+            register_with_agents(self.agent_registration.clone());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if effects.test_notification {
+                notifications::post_test();
+            }
+            if let Some(sound) = &effects.play_sound {
+                notifications::play_sound(sound);
+            }
+        }
+        if effects.start_servers {
+            self.restart_dev_proxy();
+        }
+        if effects.reinstall_agents || effects.start_servers {
+            self.settings_pages_at = None;
+            self.refresh_settings_pages();
+        }
         // Any view mutation (click/scroll/key) may have changed the frame; repaint the settings window.
         self.settings_dirty = true;
     }
@@ -1725,6 +1820,7 @@ impl ApplicationHandler for App {
         for id in windows {
             self.poll_workspaces(id);
         }
+        self.refresh_settings_pages();
         if self.with_settings_view(|view, _| view.tick()) == Some(true) {
             self.draw_settings();
         }
@@ -2767,6 +2863,12 @@ fn center_traffic_lights(window: &Window) {
     }
 }
 
+fn is_dev_build() -> bool {
+    std::env::current_exe()
+        .ok()
+        .is_some_and(|exe| exe.to_string_lossy().contains("PomeloDev.app"))
+}
+
 /// Whether this run owns the user's real state: agent registration and notifications are skipped for a
 /// run on a throwaway state dir (its wrappers would vanish) and when `POM_SKIP_GLOBAL_HOOK` is set.
 fn uses_real_state() -> Option<(pom_agent::ClaudeHome, pom_paths::StateDir)> {
@@ -2778,20 +2880,41 @@ fn uses_real_state() -> Option<(pom_agent::ClaudeHome, pom_paths::StateDir)> {
     (state.root() == claude.home.join(".local/state/pom")).then_some((claude, state))
 }
 
-/// Points coding agents (Claude Code) at this app's MCP server and hooks.
-fn register_with_agents() {
+/// Points coding agents (Claude Code) at this app's MCP server and hooks, reporting how it went.
+fn register_with_agents(status: Arc<std::sync::Mutex<settings_ui::AgentPage>>) {
+    let report = move |page: settings_ui::AgentPage| {
+        if let Ok(mut current) = status.lock() {
+            *current = page;
+        }
+        ui::wake();
+    };
     let (Some((claude, state)), Ok(binary)) = (uses_real_state(), std::env::current_exe()) else {
+        report(settings_ui::AgentPage {
+            mcp: settings_ui::Registration::Skipped,
+            hooks: settings_ui::Registration::Skipped,
+        });
         return;
     };
+    report(settings_ui::AgentPage::default());
     let spawned = std::thread::Builder::new()
         .name("agent-register".into())
         .spawn(move || {
-            if let Err(error) = pom_agent::install_mcp(&claude, &state, &binary) {
-                eprintln!("could not register the MCP server with Claude Code: {error}");
-            }
-            if let Err(error) = pom_agent::install_hooks(&claude, &state, &binary) {
-                eprintln!("could not install the Claude Code hooks: {error}");
-            }
+            let outcome = |result: Result<bool, pom_agent::InstallError>, what: &str| match result {
+                Ok(_) => settings_ui::Registration::Done,
+                Err(error) => {
+                    eprintln!("could not {what}: {error}");
+                    settings_ui::Registration::Failed(error.to_string())
+                }
+            };
+            let mcp = outcome(
+                pom_agent::install_mcp(&claude, &state, &binary),
+                "register the MCP server with Claude Code",
+            );
+            let hooks = outcome(
+                pom_agent::install_hooks(&claude, &state, &binary),
+                "install the Claude Code hooks",
+            );
+            report(settings_ui::AgentPage { mcp, hooks });
         });
     if let Err(error) = spawned {
         eprintln!("agent registration: {error}");
@@ -2828,7 +2951,6 @@ fn main() -> anyhow::Result<()> {
         previous(info);
     }));
 
-    register_with_agents();
     let event_loop = EventLoop::new()?;
     let proxy = event_loop.create_proxy();
     ui::set_waker(move || {
@@ -2841,6 +2963,7 @@ fn main() -> anyhow::Result<()> {
         notifications::start();
     }
     let mut app = App::default();
+    register_with_agents(app.agent_registration.clone());
     app.refresh_agents();
     event_loop.run_app(&mut app)?;
     Ok(())
