@@ -231,9 +231,10 @@ impl Pane {
     }
 
     pub fn close_tab(&mut self, index: usize) {
-        if self.remove_item(index).is_none() {
+        let Some(mut item) = self.remove_item(index) else {
             return;
-        }
+        };
+        item.closed();
         self.active = if self.open.is_empty() {
             None
         } else {

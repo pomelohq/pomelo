@@ -27,8 +27,16 @@ pub fn listen_and_serve(
         .mode(0o700)
         .create(dir.root())?;
     let socket = dir.socket(name);
+    let pidfile = dir.pidfile(name);
     remove_quietly(&socket);
-    let listener = UnixListener::bind(&socket)?;
+    std::fs::write(&pidfile, format!("{}\n{name}\n", std::process::id()))?;
+    let listener = match UnixListener::bind(&socket) {
+        Ok(listener) => listener,
+        Err(error) => {
+            remove_quietly(&pidfile);
+            return Err(error);
+        }
+    };
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     remove_quietly(&dir.crash_log(name));
     let crash_log = dir.crash_log(name);
@@ -40,13 +48,16 @@ pub fn listen_and_serve(
             eprintln!("ptyhost: crash log: {error}");
         }
     }));
-    let session = Session::start(options)?;
-    std::fs::write(
-        dir.pidfile(name),
-        format!("{}\n{name}\n", std::process::id()),
-    )?;
+    let session = match Session::start(options) {
+        Ok(session) => session,
+        Err(error) => {
+            remove_quietly(&socket);
+            remove_quietly(&pidfile);
+            return Err(error);
+        }
+    };
     serve(listener, session.clone())?;
-    let (socket, pidfile, watched) = (socket, dir.pidfile(name), session.clone());
+    let watched = session.clone();
     std::thread::Builder::new()
         .name("ptyhost-cleanup".into())
         .spawn(move || {
@@ -131,6 +142,11 @@ fn serve_client(session: &Session, mut stream: UnixStream) -> io::Result<()> {
         }
         Ok(())
     })();
+    if let Err(error) = stream.shutdown(std::net::Shutdown::Both) {
+        if error.kind() != io::ErrorKind::NotConnected {
+            eprintln!("ptyhost: close client: {error}");
+        }
+    }
     session.remove_client(client);
     session.unsubscribe(&subscription);
     result

@@ -1104,9 +1104,12 @@ impl PaneGroupView {
             .filter(|closed| !**closed)
             .count();
         let mut at = 0;
-        pane.open.retain(|_| {
+        pane.open.retain_mut(|item| {
             let closed = closing.get(at).copied().unwrap_or(false);
             at += 1;
+            if closed {
+                item.closed();
+            }
             !closed
         });
         let kept_before = |position: usize| {

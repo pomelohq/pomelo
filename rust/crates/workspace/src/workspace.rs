@@ -477,6 +477,7 @@ pub trait Item: 'static {
     fn abs_path(&self) -> Option<std::path::PathBuf> {
         None
     }
+    fn closed(&mut self) {}
     /// This item's state to restore it from next session; `None` for items that are not restored.
     fn serialize(&self) -> Option<persistence::SerializedItem> {
         None

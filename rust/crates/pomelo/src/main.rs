@@ -62,11 +62,26 @@ fn now_seconds() -> i64 {
         .map_or(0, |elapsed| elapsed.as_secs() as i64)
 }
 
-fn terminal_view(root: std::path::PathBuf) -> Box<dyn workspace::TerminalPanelView> {
-    Box::new(terminal_ui::TerminalPanel::new(
-        root,
-        std::sync::Arc::new(ui::wake),
-    ))
+fn terminal_view(
+    root: std::path::PathBuf,
+    workspace_key: &str,
+) -> Box<dyn workspace::TerminalPanelView> {
+    let waker = std::sync::Arc::new(ui::wake);
+    match std::env::current_exe() {
+        Ok(binary) => Box::new(terminal_ui::TerminalPanel::with_holders(
+            root,
+            waker,
+            terminal_ui::HolderScope {
+                dir: pom_ptyhost::SocketDir::from_env(),
+                binary,
+                prefix: format!("term-{workspace_key}"),
+            },
+        )),
+        Err(error) => {
+            eprintln!("terminals will not survive a restart: {error}");
+            Box::new(terminal_ui::TerminalPanel::new(root, waker))
+        }
+    }
 }
 
 fn project_info(project: &pom_core::Project) -> workspace::ProjectInfo {
@@ -406,12 +421,26 @@ impl App {
             Box::new(files_ui::FilesView::new(root)) as Box<dyn workspace::FunctionView>
         });
         let terminal_root = workspace_root.unwrap_or_else(home_dir);
+        let workspace_key = project.map_or_else(
+            || "home".to_string(),
+            |project| {
+                format!(
+                    "{}-{}",
+                    pom_env::branch_safe(&project.session),
+                    pom_env::branch_safe(project.active_branch())
+                )
+            },
+        );
         let title = project.map_or_else(
             || "Pomelo".to_string(),
             |project| format!("{} - {} - Pomelo", project.session, project.active_branch()),
         );
         self.with_workspace_view(id, |view, _| {
-            view.set_project(info, files, Some(terminal_view(terminal_root)));
+            view.set_project(
+                info,
+                files,
+                Some(terminal_view(terminal_root, &workspace_key)),
+            );
             view.set_config_problem(problem, &config_path);
         });
         if let Some(main) = self.mains.get_mut(&id) {

@@ -27,16 +27,46 @@ fn terminal_of(pane: &mut Pane) -> Option<&mut TerminalItem> {
 }
 
 /// A new shell in `cwd` (the project root when `None`), noting the failure for the empty panel to show.
+#[derive(Clone, Debug)]
+pub struct HolderScope {
+    pub dir: pom_ptyhost::SocketDir,
+    pub binary: PathBuf,
+    pub prefix: String,
+}
+
+impl HolderScope {
+    fn new_name(&self, id: u64) -> String {
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis());
+        format!("{}-{millis}-{id}", self.prefix)
+    }
+
+    fn options(&self, name: String) -> terminal::HolderOptions {
+        terminal::HolderOptions {
+            dir: self.dir.clone(),
+            name,
+            binary: self.binary.clone(),
+        }
+    }
+
+    fn owns(&self, name: &str) -> bool {
+        name.strip_prefix(&self.prefix)
+            .is_some_and(|rest| rest.starts_with('-'))
+    }
+}
+
 fn spawn_terminal(
     root: &Path,
     waker: &Waker,
     next_item_id: &mut u64,
     spawn_error: &mut Option<String>,
     cwd: Option<PathBuf>,
+    holder: Option<terminal::HolderOptions>,
 ) -> Option<TerminalItem> {
     let id = *next_item_id;
     *next_item_id += 1;
-    match TerminalItem::spawn(id, root.to_path_buf(), cwd, waker.clone()) {
+    match TerminalItem::spawn(id, root.to_path_buf(), cwd, waker.clone(), holder) {
         Ok(item) => {
             *spawn_error = None;
             Some(item)
@@ -51,6 +81,7 @@ fn spawn_terminal(
 pub struct TerminalPanel {
     root: PathBuf,
     waker: Waker,
+    holders: Option<HolderScope>,
     panes: PaneGroupView,
     next_item_id: u64,
     focused: bool,
@@ -92,6 +123,7 @@ impl TerminalPanel {
         Self {
             root,
             waker,
+            holders: None,
             panes,
             next_item_id: 0,
             focused: false,
@@ -101,14 +133,41 @@ impl TerminalPanel {
         }
     }
 
+    pub fn with_holders(root: PathBuf, waker: Waker, scope: HolderScope) -> Self {
+        let mut panel = Self::new(root, waker);
+        panel.holders = Some(scope);
+        panel
+    }
+
     fn spawn_item(&mut self, cwd: Option<PathBuf>) -> Option<TerminalItem> {
+        let holder = self
+            .holders
+            .as_ref()
+            .map(|scope| scope.options(scope.new_name(self.next_item_id)));
         spawn_terminal(
             &self.root,
             &self.waker,
             &mut self.next_item_id,
             &mut self.spawn_error,
             cwd,
+            holder,
         )
+    }
+
+    fn reap_unclaimed(&self, kept: &[String]) {
+        let Some(scope) = self.holders.clone() else {
+            return;
+        };
+        let unclaimed: Vec<String> = scope
+            .dir
+            .holders()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| scope.owns(name) && !kept.contains(name))
+            .collect();
+        if !unclaimed.is_empty() {
+            std::thread::spawn(move || scope.dir.kill_holders_now(&unclaimed));
+        }
     }
 
     fn active_pane(&mut self) -> Option<&mut Pane> {
@@ -190,15 +249,25 @@ impl TerminalPanelView for TerminalPanel {
     }
 
     fn restore_panes(&mut self, saved: &SerializedMember) -> bool {
-        let (root, waker) = (&self.root, &self.waker);
+        let (root, waker, holders) = (&self.root, &self.waker, &self.holders);
         let (next_item_id, spawn_error) = (&mut self.next_item_id, &mut self.spawn_error);
+        let mut kept: Vec<String> = Vec::new();
         let mut make_item = |item: &SerializedItem| -> Option<Box<dyn Item>> {
             let cwd = crate::item::saved_cwd(item)?;
             let cwd = cwd.is_dir().then_some(cwd);
-            spawn_terminal(root, waker, next_item_id, spawn_error, cwd)
+            let holder = holders.as_ref().map(|scope| {
+                let name = crate::item::saved_holder(item)
+                    .filter(|name| scope.owns(name) && scope.dir.holder_alive(name))
+                    .unwrap_or_else(|| scope.new_name(*next_item_id));
+                kept.push(name.clone());
+                scope.options(name)
+            });
+            spawn_terminal(root, waker, next_item_id, spawn_error, cwd, holder)
                 .map(|terminal| Box::new(terminal) as Box<dyn Item>)
         };
-        self.panes.restore(saved, &mut make_item)
+        let restored = self.panes.restore(saved, &mut make_item);
+        self.reap_unclaimed(&kept);
+        restored
     }
 
     fn render(&mut self, region: Rect, focused: bool) -> (Painted, EditorLayout) {
@@ -442,6 +511,148 @@ mod tests {
 
     fn panel() -> TerminalPanel {
         TerminalPanel::new(std::env::temp_dir(), std::sync::Arc::new(|| {}))
+    }
+
+    #[test]
+    fn holder_process_entry() {
+        let Ok(spec) = std::env::var("POMELO_TEST_HOLDER") else {
+            return;
+        };
+        let Some((dir, name)) = spec.split_once('|') else {
+            return;
+        };
+        let started = pom_ptyhost::listen_and_serve(
+            &pom_ptyhost::SocketDir::new(dir),
+            name,
+            pom_ptyhost::StartOptions {
+                argv: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    format!("printf shell-of-{name}; exec cat"),
+                ],
+                dir: PathBuf::from("/"),
+                env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+                cols: 80,
+                rows: 24,
+                on_exit: None,
+            },
+        );
+        if let Ok(session) = started {
+            session.wait();
+        }
+        std::process::exit(0);
+    }
+
+    fn start_holder(dir: &pom_ptyhost::SocketDir, name: &str) -> std::process::Child {
+        let child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "panel::tests::holder_process_entry",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(
+                "POMELO_TEST_HOLDER",
+                format!("{}|{name}", dir.root().display()),
+            )
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("holder process");
+        pom_ptyhost::wait_for_holder(dir, name, std::time::Duration::from_secs(10))
+            .expect("holder up");
+        child
+    }
+
+    #[test]
+    fn closing_a_tab_ends_its_shell() {
+        let temp = tempfile::Builder::new()
+            .prefix("pty")
+            .tempdir_in("/tmp")
+            .expect("temp");
+        let dir = pom_ptyhost::SocketDir::new(temp.path());
+        let mut holder = start_holder(&dir, "term-close-main-1");
+        let scope = HolderScope {
+            dir: dir.clone(),
+            binary: PathBuf::from("/nonexistent"),
+            prefix: "term-close-main".into(),
+        };
+        let mut panel =
+            TerminalPanel::with_holders(std::env::temp_dir(), std::sync::Arc::new(|| {}), scope);
+        let saved = SerializedMember::Pane(workspace::persistence::SerializedPane {
+            active: true,
+            items: vec![SerializedItem {
+                kind: crate::item::TERMINAL_KIND.into(),
+                data: serde_json::json!({ "cwd": "/", "holder": "term-close-main-1" }),
+            }],
+            active_item: Some(0),
+            pinned_count: 0,
+        });
+        assert!(panel.restore_panes(&saved));
+        panel.panes.close_tab(&[], 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while dir.holder_alive("term-close-main-1") && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!dir.holder_alive("term-close-main-1"));
+        holder.wait().expect("reap holder process");
+    }
+
+    #[test]
+    fn restored_tabs_reattach_and_unclaimed_shells_are_reaped() {
+        let temp = tempfile::Builder::new()
+            .prefix("pty")
+            .tempdir_in("/tmp")
+            .expect("temp");
+        let dir = pom_ptyhost::SocketDir::new(temp.path());
+        let mut kept = start_holder(&dir, "term-demo-main-1");
+        let mut stray = start_holder(&dir, "term-demo-main-2");
+        let mut other = start_holder(&dir, "term-other-main-1");
+        let scope = HolderScope {
+            dir: dir.clone(),
+            binary: PathBuf::from("/nonexistent"),
+            prefix: "term-demo-main".into(),
+        };
+        let mut panel =
+            TerminalPanel::with_holders(std::env::temp_dir(), std::sync::Arc::new(|| {}), scope);
+        let saved = SerializedMember::Pane(workspace::persistence::SerializedPane {
+            active: true,
+            items: vec![SerializedItem {
+                kind: crate::item::TERMINAL_KIND.into(),
+                data: serde_json::json!({ "cwd": "/", "holder": "term-demo-main-1" }),
+            }],
+            active_item: Some(0),
+            pinned_count: 0,
+        });
+        assert!(panel.restore_panes(&saved));
+        let reattached = panel
+            .active_terminal()
+            .and_then(|item| item.terminal().holder().map(|holder| holder.name.clone()));
+        assert_eq!(reattached.as_deref(), Some("term-demo-main-1"));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while dir.holder_alive("term-demo-main-2") && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            !dir.holder_alive("term-demo-main-2"),
+            "the unclaimed shell is reaped"
+        );
+        assert!(
+            dir.holder_alive("term-demo-main-1"),
+            "the restored tab's shell keeps running"
+        );
+        assert!(
+            dir.holder_alive("term-other-main-1"),
+            "another workspace's shells are left alone"
+        );
+
+        drop(panel);
+        for name in ["term-demo-main-1", "term-other-main-1"] {
+            dir.kill_holder(name).expect("kill");
+        }
+        for child in [&mut kept, &mut stray, &mut other] {
+            child.wait().expect("reap holder process");
+        }
     }
 
     #[test]

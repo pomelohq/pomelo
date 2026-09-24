@@ -108,10 +108,12 @@ impl TerminalItem {
         root: PathBuf,
         cwd: Option<PathBuf>,
         waker: Waker,
+        holder: Option<terminal::HolderOptions>,
     ) -> anyhow::Result<Self> {
         let start_dir = cwd.unwrap_or_else(|| root.clone());
         let options = TerminalOptions {
             working_directory: Some(start_dir.clone()),
+            holder,
             ..TerminalOptions::default()
         };
         let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
@@ -416,16 +418,27 @@ pub(crate) fn saved_cwd(item: &workspace::persistence::SerializedItem) -> Option
         .flatten()
 }
 
+pub(crate) fn saved_holder(item: &workspace::persistence::SerializedItem) -> Option<String> {
+    (item.kind == TERMINAL_KIND)
+        .then(|| item.data.get("holder")?.as_str().map(str::to_string))
+        .flatten()
+}
+
 impl Item for TerminalItem {
     fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
         let cwd = self
             .terminal
             .process_info()
             .map_or_else(|| self.start_dir.clone(), |info| info.cwd.clone());
+        let holder = self.terminal.holder().map(|holder| holder.name.clone());
         Some(workspace::persistence::SerializedItem {
             kind: TERMINAL_KIND.into(),
-            data: serde_json::json!({ "cwd": cwd }),
+            data: serde_json::json!({ "cwd": cwd, "holder": holder }),
         })
+    }
+
+    fn closed(&mut self) {
+        self.terminal.terminate();
     }
 
     fn id(&self) -> Option<String> {
@@ -461,6 +474,9 @@ impl Item for TerminalItem {
     }
 
     fn set_focused(&mut self, focused: bool) {
+        if focused {
+            self.terminal.make_primary();
+        }
         self.focus_changed(focused);
     }
 
