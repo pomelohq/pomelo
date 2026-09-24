@@ -6,6 +6,7 @@
 
 #[cfg(target_os = "macos")]
 mod notifications;
+mod workspaces;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -118,7 +119,42 @@ fn git_panel(project: &pom_core::Project) -> Box<dyn workspace::SidePanelView> {
     ))
 }
 
-fn project_info(project: &pom_core::Project) -> workspace::ProjectInfo {
+/// The window's view of the project; `runner` (when services run) counts each workspace's running services.
+fn project_info(
+    project: &pom_core::Project,
+    runner: Option<&pom_services::ServiceRunner>,
+) -> workspace::ProjectInfo {
+    let running_holders = runner
+        .map(|runner| runner.running_holders())
+        .unwrap_or_default();
+    let running = project
+        .workspaces
+        .iter()
+        .map(|workspace| {
+            let (Some(runner), Some(config)) = (runner, project.config.as_ref()) else {
+                return 0;
+            };
+            let target = |repo: &str, service: &str| pom_services::ServiceTarget {
+                branch: workspace.branch.clone(),
+                is_main: workspace.is_main,
+                repo: repo.to_string(),
+                service: service.to_string(),
+            };
+            let mut holders = Vec::new();
+            for (repo, dir) in &config.repos {
+                for service in dir.services.keys() {
+                    holders.push(runner.holder_name(&target(repo, service)));
+                }
+            }
+            for service in config.workspace_services.keys() {
+                holders.push(runner.holder_name(&target("", service)));
+            }
+            holders
+                .iter()
+                .filter(|holder| running_holders.contains(holder))
+                .count()
+        })
+        .collect();
     workspace::ProjectInfo {
         name: project.session.clone(),
         branch: project.branch().to_string(),
@@ -129,6 +165,12 @@ fn project_info(project: &pom_core::Project) -> workspace::ProjectInfo {
             .map(|workspace| workspace.branch.clone())
             .collect(),
         active: project.active_branch().to_string(),
+        labels: project
+            .workspaces
+            .iter()
+            .map(|workspace| pom_layout::WorkspaceState::load(&workspace.path).display_name)
+            .collect(),
+        running,
     }
 }
 
@@ -330,6 +372,8 @@ struct MainWindow {
     /// The project's other workspaces, keyed by folder, kept alive while this one has the window.
     parked: std::collections::HashMap<std::path::PathBuf, workspace::ParkedWorkspace>,
     services: Option<ProjectServices>,
+    /// Workspace creations and deletions started from this window.
+    ops: workspaces_ui::OpQueue,
 }
 
 struct ProjectServices {
@@ -672,6 +716,7 @@ impl App {
                 watcher: None,
                 parked: std::collections::HashMap::new(),
                 services: None,
+                ops: workspaces_ui::OpQueue::new(Arc::new(ui::wake)),
             },
         );
         id
@@ -709,7 +754,11 @@ impl App {
             return;
         };
         let project = main.project.as_ref();
-        let info = project.map(project_info);
+        let runner = main
+            .services
+            .as_ref()
+            .map(|services| services.runner.as_ref());
+        let info = project.map(|project| project_info(project, runner));
         let problem = project.and_then(config_problem);
         let config_path = project
             .map(|project| project.config_path.clone())
@@ -789,7 +838,11 @@ impl App {
             self.install_project_views(id);
             return;
         };
-        let info = project_info(project);
+        let runner = main
+            .services
+            .as_ref()
+            .map(|services| services.runner.as_ref());
+        let info = project_info(project, runner);
         let problem = config_problem(project);
         let config_path = project.config_path.clone();
         let title = format!("{} - {} - Pomelo", project.session, project.active_branch());
@@ -840,9 +893,13 @@ impl App {
                 rerooted.push(*id);
                 continue;
             }
+            let runner = main
+                .services
+                .as_ref()
+                .map(|services| services.runner.as_ref());
             updates.push((
                 *id,
-                project_info(project),
+                project_info(project, runner),
                 config_problem(project),
                 project.config_path.clone(),
             ));
@@ -1195,6 +1252,7 @@ impl App {
         if effects.open_agent {
             self.open_agent(id);
         }
+        self.handle_workspace_requests(id);
         if let Some(m) = self.mains.get_mut(&id) {
             m.dirty = true;
         }
@@ -1207,6 +1265,7 @@ impl App {
         };
         for (id, token, answer) in answers {
             self.with_workspace_view(id, |v, _| v.prompt_answered(token, answer));
+            self.handle_workspace_requests(id);
             if let Some(m) = self.mains.get_mut(&id) {
                 m.dirty = true;
             }
@@ -1265,6 +1324,10 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+        for id in windows {
+            self.poll_workspaces(id);
+        }
         // Coalesce per-window redraws (scroll/hover bursts) into one per iteration.
         let now = Instant::now();
         let mut next_frame: Option<Instant> = None;
@@ -1437,6 +1500,18 @@ impl ApplicationHandler for App {
                     && !self.ctrl_down;
                 if open_folder && self.mains.contains_key(&id) {
                     self.handle_session_request(id, workspace::SessionRequest::ChooseFolder);
+                    return;
+                }
+                let new_workspace = matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "n")
+                    && self.super_down
+                    && !self.shift_down
+                    && !self.alt_down
+                    && !self.ctrl_down;
+                if new_workspace && self.mains.contains_key(&id) {
+                    self.open_create_workspace(id);
+                    if let Some(m) = self.mains.get_mut(&id) {
+                        m.dirty = true;
+                    }
                     return;
                 }
                 if esc_on_settings {
@@ -1985,6 +2060,8 @@ impl ApplicationHandler for App {
                     None => return,
                 };
                 self.reset_caret();
+                // Row menus offer what applies now (e.g. Stop All Services only while some run).
+                self.refresh_project_info(id);
                 if self.with_workspace_view(id, |v, _| v.right_click(lx, ly)) == Some(true) {
                     if let Some(m) = self.mains.get_mut(&id) {
                         m.dirty = true;

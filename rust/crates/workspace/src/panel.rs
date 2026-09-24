@@ -297,8 +297,21 @@ impl AgentDot {
     }
 }
 
-/// A row of the WORKSPACES list: the branch and its agent, if one reported.
-pub type WorkspaceRow = (String, Option<AgentDot>);
+/// A row of the WORKSPACES list: its index in `ProjectInfo::workspaces`, what it is called and its agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceRow {
+    pub index: usize,
+    pub label: String,
+    pub agent: Option<AgentDot>,
+}
+
+/// What the WORKSPACES panel shows: the workspaces, which one is current, and creations/deletions in flight.
+pub struct WorkspaceList<'a> {
+    pub rows: &'a [WorkspaceRow],
+    pub current: usize,
+    pub ops: &'a [crate::WorkspaceOp],
+    pub expanded: &'a [u64],
+}
 
 /// A dockable piece of UI. Mirrors the framework's `Panel` (position + icon + render), trimmed to what we draw now.
 pub trait Panel: 'static {
@@ -307,7 +320,7 @@ pub trait Panel: 'static {
     fn icon(&self) -> IconKind;
     /// The panel's title (dock header).
     fn title(&self) -> &str;
-    fn sync(&mut self, _rows: &[WorkspaceRow], _current: usize) {}
+    fn sync(&mut self, _list: &WorkspaceList<'_>) {}
     /// The panel body as an element tree, laid into the dock region by the caller.
     fn render(&mut self) -> Node;
 }
@@ -316,6 +329,8 @@ pub trait Panel: 'static {
 pub struct ProjectPanel {
     rows: Vec<WorkspaceRow>,
     current: usize,
+    ops: Vec<crate::WorkspaceOp>,
+    expanded: Vec<u64>,
 }
 
 impl Panel for ProjectPanel {
@@ -331,43 +346,187 @@ impl Panel for ProjectPanel {
         "WORKSPACES"
     }
 
-    fn sync(&mut self, rows: &[WorkspaceRow], current: usize) {
-        self.rows = rows.to_vec();
-        self.current = current;
+    fn sync(&mut self, list: &WorkspaceList<'_>) {
+        self.rows = list.rows.to_vec();
+        self.current = list.current;
+        self.ops = list.ops.to_vec();
+        self.expanded = list.expanded.to_vec();
     }
 
     fn render(&mut self) -> Node {
-        let mut col = div()
-            .col()
-            .px(10.0)
-            .py(10.0)
-            .gap(2.0)
-            .child(panel_header(self.title()));
-        for (i, (name, agent)) in self.rows.iter().enumerate() {
-            let dot = agent.map_or(theme().icon_muted, AgentDot::color);
-            let row = div()
+        let header = div()
+            .row()
+            .items_center()
+            .justify_between()
+            .child(panel_header(self.title()))
+            .child(
+                div()
+                    .row()
+                    .items_center()
+                    .justify_center()
+                    .w_px(22.0)
+                    .h_px(22.0)
+                    .rounded(4.0)
+                    .on_click(crate::WORKSPACE_NEW)
+                    .child(icon(IconKind::Plus).size(14.0).color(theme().icon_muted)),
+            );
+        let mut col = div().col().px(10.0).py(10.0).gap(2.0).child(header);
+        for (position, op) in self.ops.iter().enumerate() {
+            let expanded = self.expanded.contains(&op.id);
+            col = col.child(op_row(op, position, expanded));
+        }
+        for row in &self.rows {
+            let current = row.index == self.current;
+            let dot = row.agent.map_or(theme().icon_muted, AgentDot::color);
+            let line = div()
                 .row()
                 .h_px(28.0)
                 .px(4.0)
                 .gap(8.0)
                 .items_center()
                 .rounded(4.0)
-                .on_click(crate::WORKSPACE_ROW_BASE + i as u64)
-                .bg(if i == self.current {
+                .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64)
+                .bg(if current {
                     theme().element_selected
                 } else {
                     Rgba::TRANSPARENT
                 })
                 .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(dot))
-                .child(label(name.clone()).truncate().color(if i == self.current {
+                .child(label(row.label.clone()).truncate().color(if current {
                     theme().text
                 } else {
                     theme().text_muted
                 }));
-            col = col.child(row);
+            col = col.child(line);
         }
         col.into()
     }
+}
+
+/// A creation or deletion in flight: its title, the stage it is on and a progress bar; expanded, every stage.
+/// A failed one shows its error with Retry (when it can resume) and a dismiss button.
+fn op_row(op: &crate::WorkspaceOp, position: usize, expanded: bool) -> Node {
+    use crate::{OpStatus, StageState};
+    let colors = theme();
+    let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
+    let (status_icon, status_color) = match op.status {
+        OpStatus::Queued => (IconKind::ChevronRight, colors.icon_muted),
+        OpStatus::Running => (IconKind::RotateCw, colors.icon_muted),
+        OpStatus::Done => (IconKind::Check, colors.success),
+        OpStatus::Failed => (IconKind::Warning, colors.error),
+    };
+    let subtitle = match op.status {
+        OpStatus::Queued => "queued".to_string(),
+        OpStatus::Done => "done".to_string(),
+        OpStatus::Failed => op.error.clone(),
+        OpStatus::Running => op
+            .stages
+            .iter()
+            .find(|(_, state)| *state == StageState::Running)
+            .map_or_else(|| "starting".to_string(), |(name, _)| name.clone()),
+    };
+    let mut title_row = div()
+        .row()
+        .items_center()
+        .gap(6.0)
+        .child(icon(status_icon).size(12.0).color(status_color))
+        .child(
+            div().row().flex(1.0).child(
+                label(op.title.clone())
+                    .size(13.0)
+                    .color(colors.text)
+                    .truncate(),
+            ),
+        );
+    if op.status == OpStatus::Failed {
+        if op.retryable {
+            title_row = title_row.child(
+                div()
+                    .row()
+                    .items_center()
+                    .h_px(18.0)
+                    .px(4.0)
+                    .rounded(4.0)
+                    .border(1.0, colors.border_variant)
+                    .on_click(base + crate::WORKSPACE_OP_RETRY)
+                    .child(label("Retry").size(12.0).color(colors.text)),
+            );
+        }
+        title_row = title_row.child(
+            div()
+                .row()
+                .items_center()
+                .justify_center()
+                .w_px(18.0)
+                .h_px(18.0)
+                .rounded(4.0)
+                .on_click(base + crate::WORKSPACE_OP_DISMISS)
+                .child(icon(IconKind::Close).size(12.0).color(colors.icon_muted)),
+        );
+    }
+    let subtitle_color = if op.status == OpStatus::Failed {
+        colors.error
+    } else {
+        colors.text_muted
+    };
+    let mut card = div()
+        .col()
+        .gap(4.0)
+        .p(6.0)
+        .rounded(4.0)
+        .border(1.0, colors.border_variant)
+        .on_click(base + crate::WORKSPACE_OP_TOGGLE)
+        .child(title_row)
+        .child(
+            div()
+                .row()
+                .child(label(subtitle).size(12.0).color(subtitle_color).truncate()),
+        );
+    if op.status == OpStatus::Running || op.status == OpStatus::Queued {
+        let total = op.stages.len().max(1) as f32;
+        let finished = op
+            .stages
+            .iter()
+            .filter(|(_, state)| matches!(state, StageState::Done | StageState::Skipped))
+            .count() as f32;
+        card = card.child(crate::form::progress_bar(finished / total));
+    }
+    if expanded {
+        for (name, state) in &op.stages {
+            let (kind, color) = match state {
+                StageState::Pending => (IconKind::ChevronRight, colors.text_disabled),
+                StageState::Running => (IconKind::RotateCw, colors.icon_muted),
+                StageState::Done => (IconKind::Check, colors.success),
+                StageState::Skipped => (IconKind::SquareMinus, colors.text_disabled),
+                StageState::Failed => (IconKind::XCircle, colors.error),
+            };
+            card = card.child(
+                div()
+                    .row()
+                    .items_center()
+                    .gap(6.0)
+                    .child(icon(kind).size(12.0).color(color))
+                    .child(
+                        label(name.clone())
+                            .size(12.0)
+                            .color(colors.text_muted)
+                            .truncate(),
+                    ),
+            );
+            if *state == StageState::Running && !op.detail.is_empty() {
+                card = card.child(
+                    div().row().pl(18.0).child(
+                        label(op.detail.clone())
+                            .size(11.0)
+                            .mono()
+                            .color(colors.text_muted)
+                            .truncate(),
+                    ),
+                );
+            }
+        }
+    }
+    card.into()
 }
 
 /// The right dock's outline placeholder: a header plus a muted "nothing here yet" line. A stand-in until a real
@@ -452,16 +611,66 @@ pub fn terminal_content() -> Node {
 mod tests {
     use super::*;
 
+    fn row(index: usize, label: &str, agent: Option<AgentDot>) -> WorkspaceRow {
+        WorkspaceRow {
+            index,
+            label: label.into(),
+            agent,
+        }
+    }
+
+    fn list<'a>(rows: &'a [WorkspaceRow], ops: &'a [crate::WorkspaceOp]) -> WorkspaceList<'a> {
+        WorkspaceList {
+            rows,
+            current: 0,
+            ops,
+            expanded: &[],
+        }
+    }
+
+    #[test]
+    fn a_failed_creation_offers_retry_and_dismiss() {
+        let op = crate::WorkspaceOp {
+            id: 7,
+            branch: "feat-x".into(),
+            title: "feat-x".into(),
+            status: crate::OpStatus::Failed,
+            stages: vec![
+                ("Validating".into(), crate::StageState::Done),
+                ("Creating git worktrees".into(), crate::StageState::Failed),
+            ],
+            detail: String::new(),
+            error: "web: git worktree add failed".into(),
+            retryable: true,
+        };
+        let mut p = ProjectPanel::default();
+        p.sync(&list(&[], std::slice::from_ref(&op)));
+        let painted = ui::render(
+            &p.render(),
+            ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),
+        );
+        let text: String = painted.texts.iter().map(|t| t.text.clone()).collect();
+        assert!(text.contains("feat-x") && text.contains("Retry"), "{text}");
+        let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
+        for part in [
+            crate::WORKSPACE_OP_RETRY,
+            crate::WORKSPACE_OP_DISMISS,
+            crate::WORKSPACE_NEW,
+        ] {
+            let id = if part == crate::WORKSPACE_NEW {
+                part
+            } else {
+                crate::WORKSPACE_OP_BASE + part
+            };
+            assert!(ids.contains(&id), "{id} in {ids:?}");
+        }
+    }
+
     #[test]
     fn project_panel_lists_workspaces() {
         let mut p = ProjectPanel::default();
-        p.sync(
-            &[
-                ("api".into(), Some(AgentDot::Thinking)),
-                ("web".into(), None),
-            ],
-            0,
-        );
+        let rows = [row(0, "api", Some(AgentDot::Thinking)), row(1, "web", None)];
+        p.sync(&list(&rows, &[]));
         assert_eq!(p.position(), DockPosition::Left);
         let node = p.render();
         let painted = ui::render(
@@ -482,7 +691,8 @@ mod tests {
     fn long_workspace_names_stay_inside_the_panel() {
         let mut p = ProjectPanel::default();
         let long = "proj-101-a-very-long-branch-name-that-does-not-fit-in-the-dock".to_string();
-        p.sync(&[("main".into(), None), (long.clone(), None)], 0);
+        let rows = [row(0, "main", None), row(1, &long, None)];
+        p.sync(&list(&rows, &[]));
         let painted = ui::render(
             &p.render(),
             ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),

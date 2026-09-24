@@ -431,6 +431,14 @@ impl Div {
         self.pad[2] = rem(v);
         self
     }
+    pub fn pt(mut self, v: f32) -> Self {
+        self.pad[0] = rem(v);
+        self
+    }
+    pub fn pb(mut self, v: f32) -> Self {
+        self.pad[2] = rem(v);
+        self
+    }
     pub fn pl(mut self, v: f32) -> Self {
         self.pad[3] = rem(v);
         self

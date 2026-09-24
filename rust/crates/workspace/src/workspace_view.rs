@@ -33,6 +33,7 @@ const PANES_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 const CLOSE_PROMPT_TOKENS: u64 = 1 << 40;
 const FORGET_PROMPT_TOKENS: u64 = 1 << 41;
 const PANEL_PROMPT_TOKENS: u64 = 1 << 42;
+const DELETE_WORKSPACE_PROMPT_TOKENS: u64 = 1 << 43;
 /// The gap a zoomed view leaves around it (on its dock's inner side only, for a dock panel).
 const ZOOM_PADDING: f32 = 8.0;
 const TOAST_ANIM: Duration = Duration::from_millis(160);
@@ -58,6 +59,15 @@ pub struct WorkspaceEffects {
     pub activate_workspace: Option<usize>,
     /// Open (or focus) the workspace's coding agent.
     pub open_agent: bool,
+}
+
+/// What the WORKSPACES panel asked for: the new-workspace form, an action on a row (an index into
+/// `ProjectInfo::workspaces`) or a button on an operation card (by operation id).
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkspaceRequests {
+    pub new_workspace: bool,
+    pub row: Option<(usize, crate::RowAction)>,
+    pub op: Option<(u64, crate::OpAction)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +153,16 @@ pub enum ResizeCursor {
 pub struct WorkspaceView {
     /// Where the open modal was drawn last frame, for dismissing it on outside presses.
     modal_rect: Option<Rect>,
+    /// A form over the whole window; it takes the keyboard while open.
+    window_modal: Option<Box<dyn crate::WindowModal>>,
+    /// How the last window modal ended, until the app takes it.
+    modal_result: Option<crate::ModalResult>,
+    workspace_ops: Vec<crate::WorkspaceOp>,
+    /// Operation cards showing their stages.
+    expanded_ops: Vec<u64>,
+    /// The WORKSPACES row a context menu was opened on.
+    menu_workspace: Option<usize>,
+    workspace_requests: WorkspaceRequests,
     /// Where the caret popover was drawn last frame, so scrolling over it scrolls it.
     popover_rects: Vec<Rect>,
     /// For each drawn popover, the pane group it belongs to and its index there.
@@ -212,6 +232,12 @@ impl WorkspaceView {
             menu_tab: None,
             menu_group: InputGroup::Center,
             modal_rect: None,
+            window_modal: None,
+            modal_result: None,
+            workspace_ops: Vec::new(),
+            expanded_ops: Vec::new(),
+            menu_workspace: None,
+            workspace_requests: WorkspaceRequests::default(),
             popover_rects: Vec::new(),
             popover_groups: Vec::new(),
             panes_restored: false,
@@ -300,6 +326,66 @@ impl WorkspaceView {
         self.layout.side_panels = panels;
     }
 
+    /// Show a form over the window (replacing any open one).
+    pub fn open_window_modal(&mut self, modal: Box<dyn crate::WindowModal>) {
+        self.menu = None;
+        self.layout.session_menu = false;
+        self.window_modal = Some(modal);
+    }
+
+    pub fn window_modal_open(&self) -> bool {
+        self.window_modal.is_some()
+    }
+
+    /// How the last window modal ended (submitted or cancelled), once.
+    pub fn take_modal_result(&mut self) -> Option<crate::ModalResult> {
+        self.modal_result.take()
+    }
+
+    /// Polls the open modal's background work; returns whether it needs a redraw.
+    pub fn tick_window_modal(&mut self) -> bool {
+        let changed = self.window_modal.as_mut().is_some_and(|modal| modal.tick());
+        self.settle_window_modal();
+        changed
+    }
+
+    fn settle_window_modal(&mut self) {
+        let result = self
+            .window_modal
+            .as_mut()
+            .and_then(|modal| modal.take_result());
+        if let Some(result) = result {
+            self.window_modal = None;
+            self.modal_result = Some(result);
+        }
+    }
+
+    fn cancel_window_modal(&mut self) {
+        if self.window_modal.take().is_some() {
+            self.modal_result = Some(crate::ModalResult::Cancelled);
+        }
+    }
+
+    /// Shows or hides an operation card's stages.
+    pub fn toggle_workspace_op(&mut self, op_id: u64) {
+        match self.expanded_ops.iter().position(|id| *id == op_id) {
+            Some(at) => {
+                self.expanded_ops.remove(at);
+            }
+            None => self.expanded_ops.push(op_id),
+        }
+    }
+
+    pub fn take_workspace_requests(&mut self) -> WorkspaceRequests {
+        std::mem::take(&mut self.workspace_requests)
+    }
+
+    pub fn set_workspace_ops(&mut self, ops: Vec<crate::WorkspaceOp>) {
+        self.expanded_ops
+            .retain(|id| ops.iter().any(|op| op.id == *id));
+        self.workspace_ops = ops;
+    }
+
     pub fn set_agent_states(&mut self, states: std::collections::HashMap<String, crate::AgentDot>) {
         self.layout.agent_states = states;
     }
@@ -356,6 +442,7 @@ impl WorkspaceView {
 
     pub fn ticking(&self) -> bool {
         self.toast.is_some()
+            || self.window_modal.as_ref().is_some_and(|modal| modal.busy())
             || self.panes_write_at.is_some()
             || self.panes_check_owed
             || self.layout.files_view.as_ref().is_some_and(|v| v.is_busy())
@@ -662,16 +749,33 @@ impl WorkspaceView {
                 )),
             }
         }
+        let busy: Vec<&str> = self
+            .workspace_ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.status,
+                    crate::OpStatus::Queued | crate::OpStatus::Running
+                )
+            })
+            .map(|op| op.branch.as_str())
+            .collect();
         let workspaces: Vec<crate::panel::WorkspaceRow> = self
             .layout
             .project
             .iter()
-            .flat_map(|project| project.workspaces.iter())
-            .map(|branch| {
-                (
-                    branch.clone(),
-                    self.layout.agent_states.get(branch).copied(),
-                )
+            .flat_map(|project| {
+                project
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, branch)| (project, index, branch))
+            })
+            .filter(|(_, _, branch)| !busy.contains(&branch.as_str()))
+            .map(|(project, index, branch)| crate::panel::WorkspaceRow {
+                index,
+                label: project.label(index).to_string(),
+                agent: self.layout.agent_states.get(branch).copied(),
             })
             .collect();
         let current = self
@@ -680,9 +784,17 @@ impl WorkspaceView {
             .as_ref()
             .and_then(|project| project.workspaces.iter().position(|b| *b == project.active))
             .unwrap_or(0);
+        let workspace_ops = self.workspace_ops.clone();
+        let expanded_ops = self.expanded_ops.clone();
+        let list = crate::panel::WorkspaceList {
+            rows: &workspaces,
+            current,
+            ops: &workspace_ops,
+            expanded: &expanded_ops,
+        };
         if !self.layout.left.collapsed {
             let region = self.layout.left_region(w, h);
-            let p = self.layout.left.render_body(region, &workspaces, current);
+            let p = self.layout.left.render_body(region, &list);
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
         }
@@ -768,9 +880,7 @@ impl WorkspaceView {
                     .function_panel_painted(DockPosition::Right, region)
                     .unwrap_or_default(),
                 // Agent (the right dock's default panel) and the empty case both render the OutlinePanel.
-                Some(Shown::Agent) | None => {
-                    self.layout.right.render_body(region, &workspaces, current)
-                }
+                Some(Shown::Agent) | None => self.layout.right.render_body(region, &list),
             };
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
@@ -1129,12 +1239,20 @@ impl WorkspaceView {
 
         self.modal_rect = None;
         let viewport = (w, h);
-        if let Some(modal) = self
-            .layout
-            .files_view
-            .as_mut()
-            .and_then(|v| v.modal(viewport))
-        {
+        let window_modal = self.window_modal.as_mut().map(|modal| crate::ModalView {
+            width: modal.width(),
+            node: modal.render(),
+            elevation: crate::Elevation::Modal,
+        });
+        let modal = match window_modal {
+            Some(modal) => Some(modal),
+            None => self
+                .layout
+                .files_view
+                .as_mut()
+                .and_then(|v| v.modal(viewport)),
+        };
+        if let Some(modal) = modal {
             // Modal widths are design px; the tree scales them with the UI text size.
             let modal_w = modal.width * ui::ui_text_scale();
             let x = ((w - modal_w) / 2.0).max(8.0);
@@ -1472,6 +1590,67 @@ impl WorkspaceView {
         }
     }
 
+    fn workspace_row_menu_items(&self) -> Vec<MenuItem> {
+        let (Some(project), Some(index)) = (self.layout.project.as_ref(), self.menu_workspace)
+        else {
+            return Vec::new();
+        };
+        let item = |id: u64, label: &'static str, sep: bool| MenuItem {
+            id,
+            label: label.into(),
+            checked: false,
+            sep,
+            disabled: false,
+        };
+        let mut items = vec![item(crate::MENU_WS_RENAME, "Rename...", false)];
+        if project
+            .running
+            .get(index)
+            .is_some_and(|running| *running > 0)
+        {
+            items.push(item(crate::MENU_WS_STOP, "Stop All Services", false));
+        }
+        let is_main = project.workspaces.get(index) == Some(&project.branch);
+        if !is_main {
+            items.push(item(crate::MENU_WS_DELETE, "Delete Workspace", true));
+        }
+        items
+    }
+
+    fn apply_workspace_row_menu(&mut self, item: u64) {
+        let Some(index) = self.menu_workspace.take() else {
+            return;
+        };
+        match item {
+            crate::MENU_WS_RENAME => {
+                self.workspace_requests.row = Some((index, crate::RowAction::Rename));
+            }
+            crate::MENU_WS_STOP => {
+                self.workspace_requests.row = Some((index, crate::RowAction::StopServices));
+            }
+            crate::MENU_WS_DELETE => self.ask_to_delete_workspace(index),
+            _ => {}
+        }
+    }
+
+    /// The reference's destructive-confirmation shape: the question names the target, the detail says what
+    /// goes, and the confirming answer comes first.
+    fn ask_to_delete_workspace(&mut self, index: usize) {
+        let Some(project) = self.layout.project.as_ref() else {
+            return;
+        };
+        self.pending_prompt = Some(crate::Prompt {
+            token: DELETE_WORKSPACE_PROMPT_TOKENS + index as u64,
+            message: format!("Delete workspace \"{}\"?", project.label(index)),
+            detail: Some(
+                "Stops its services and removes its worktrees, databases and folder. Local branches \
+                 with unpushed commits are kept. This cannot be undone."
+                    .into(),
+            ),
+            buttons: vec!["Delete".into(), "Cancel".into()],
+        });
+    }
+
     fn menuable(id: u64) -> bool {
         id == SIDEBAR_TOGGLE
             || id == AGENT_TOGGLE
@@ -1481,6 +1660,9 @@ impl WorkspaceView {
 
     /// The context-menu items for a given status-bar button (dock positions valid for it + Hide Button).
     fn menu_items(&self, target: u64) -> Vec<MenuItem> {
+        if target == crate::WORKSPACE_ROW_MENU_TARGET {
+            return self.workspace_row_menu_items();
+        }
         if target == crate::TAB_MENU_TARGET {
             return self.tab_menu_items();
         }
@@ -1814,6 +1996,10 @@ impl WorkspaceView {
 
     /// Apply a context-menu item to its target button.
     fn apply_menu(&mut self, target: u64, item: u64) {
+        if target == crate::WORKSPACE_ROW_MENU_TARGET {
+            self.apply_workspace_row_menu(item);
+            return;
+        }
         if target == crate::TAB_MENU_TARGET {
             self.apply_tab_menu(item);
             return;
@@ -2032,6 +2218,20 @@ impl WorkspaceView {
     /// Right-click: open the context menu for a status-bar button; elsewhere closes any menu. Returns true if
     /// something changed (repaint).
     pub fn right_click(&mut self, x: f32, y: f32) -> bool {
+        if self.window_modal.is_some() {
+            return false;
+        }
+        let row = self
+            .hit(x, y)
+            .filter(|id| (crate::WORKSPACE_ROW_BASE..crate::WORKSPACE_ROW_END).contains(id));
+        if let Some(id) = row {
+            self.menu = Some((x, y, y, crate::WORKSPACE_ROW_MENU_TARGET));
+            self.menu_workspace = Some((id - crate::WORKSPACE_ROW_BASE) as usize);
+            self.menu_path = None;
+            self.submenu = None;
+            self.menu_editor_anchor = None;
+            return true;
+        }
         if let Some(id) = self.hit(x, y).filter(|id| crate::is_side_panel_id(*id)) {
             let kind = crate::side_panel_kind(id);
             let opened = kind
@@ -2397,12 +2597,27 @@ impl WorkspaceView {
         if let Some(rect) = self.modal_rect.take() {
             let inside = x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
             if !inside {
-                if let Some(v) = self.layout.files_view.as_mut() {
-                    v.dismiss_modal();
+                match self.window_modal.as_ref() {
+                    Some(modal) if modal.dismissable() => self.cancel_window_modal(),
+                    Some(_) => self.modal_rect = Some(rect),
+                    None => {
+                        if let Some(v) = self.layout.files_view.as_mut() {
+                            v.dismiss_modal();
+                        }
+                    }
                 }
                 return;
             }
             self.modal_rect = Some(rect);
+            if self.window_modal.is_some() {
+                if let Some(id) = self.hit(x, y).filter(|id| crate::is_window_modal_id(*id)) {
+                    if let Some(modal) = self.window_modal.as_mut() {
+                        modal.click(id);
+                    }
+                    self.settle_window_modal();
+                }
+                return;
+            }
         }
         // A click while a context menu is open either picks an item or dismisses it.
         if let Some((_, _, _, target)) = self.menu {
@@ -2536,6 +2751,12 @@ impl WorkspaceView {
     }
 
     pub fn editor_copy_to_clipboard(&mut self) -> bool {
+        if let Some(modal) = self.window_modal.as_ref() {
+            if let Some(text) = modal.copy() {
+                Self::clip_set(&text);
+            }
+            return true;
+        }
         let copied = self
             .input_ref(self.focused_group())
             .and_then(|v| v.editor_copy());
@@ -2550,6 +2771,13 @@ impl WorkspaceView {
     }
 
     pub fn editor_cut_to_clipboard(&mut self) -> bool {
+        if let Some(modal) = self.window_modal.as_mut() {
+            let cut = modal.cut();
+            if let Some(text) = &cut {
+                Self::clip_set(text);
+            }
+            return cut.is_some();
+        }
         let copied = self
             .input(self.focused_group())
             .and_then(|v| v.editor_cut());
@@ -2567,6 +2795,9 @@ impl WorkspaceView {
         let Some(text) = Self::clip_get().filter(|t| !t.is_empty()) else {
             return false;
         };
+        if let Some(modal) = self.window_modal.as_mut() {
+            return modal.paste(&text);
+        }
         let slices = crate::slices_for(&text);
         let group = self.text_group();
         self.input(group)
@@ -2579,18 +2810,27 @@ impl WorkspaceView {
         text: &str,
         selected: Option<std::ops::Range<usize>>,
     ) -> bool {
+        if self.window_modal.is_some() {
+            return false;
+        }
         self.input(self.focused_group())
             .map(|v| v.editor_ime_preedit(text, selected))
             .unwrap_or(false)
     }
 
     pub fn editor_ime_commit(&mut self, text: &str) -> bool {
+        if let Some(modal) = self.window_modal.as_mut() {
+            return modal.text(text);
+        }
         self.input(self.focused_group())
             .map(|v| v.editor_ime_commit(text))
             .unwrap_or(false)
     }
 
     pub fn editor_text(&mut self, text: &str) -> bool {
+        if let Some(modal) = self.window_modal.as_mut() {
+            return modal.text(text);
+        }
         let group = self.text_group();
         self.input(group)
             .map(|v| v.editor_text(text))
@@ -2612,6 +2852,11 @@ impl WorkspaceView {
     }
 
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
+        if let Some(modal) = self.window_modal.as_mut() {
+            let changed = modal.key(key, shift);
+            self.settle_window_modal();
+            return changed || self.window_modal.is_none();
+        }
         let claimed = self
             .layout
             .files_view
@@ -2631,6 +2876,9 @@ impl WorkspaceView {
     }
 
     pub fn editor_save(&mut self) -> Option<Result<(), String>> {
+        if self.window_modal.is_some() {
+            return None;
+        }
         self.input(self.focused_group())
             .and_then(|v| v.editor_save())
     }
@@ -2645,6 +2893,9 @@ impl WorkspaceView {
     }
 
     pub fn editor_focused(&self) -> bool {
+        if self.window_modal.is_some() {
+            return true;
+        }
         self.input_ref(self.focused_group())
             .is_some_and(|input| input.editor_focused())
     }
@@ -2899,6 +3150,9 @@ impl WorkspaceView {
 
     /// Whether key presses go raw to a terminal: the focused group's active item takes raw keystrokes.
     pub fn terminal_focused(&self) -> bool {
+        if self.window_modal.is_some() {
+            return false;
+        }
         self.input_ref(self.focused_group())
             .is_some_and(|input| input.active_wants_keystrokes())
     }
@@ -2923,6 +3177,9 @@ impl WorkspaceView {
     /// Run a pane key on the focused pane group. Moving focus past the group's edge crosses between the center
     /// and the terminal panel when the panel sits on that side. Returns false when the key should fall through.
     pub fn pane_command(&mut self, command: crate::pane::PaneCommand) -> bool {
+        if self.window_modal.is_some() {
+            return false;
+        }
         use crate::pane::PaneCommand;
         use crate::pane_group::SplitDirection;
         let toward_panel = match self.layout.terminal_side {
@@ -3116,6 +3373,13 @@ impl WorkspaceView {
     }
 
     pub fn prompt_answered(&mut self, token: u64, answer: usize) {
+        if token >= DELETE_WORKSPACE_PROMPT_TOKENS {
+            if answer == 0 {
+                let index = (token - DELETE_WORKSPACE_PROMPT_TOKENS) as usize;
+                self.workspace_requests.row = Some((index, crate::RowAction::Delete));
+            }
+            return;
+        }
         if token >= PANEL_PROMPT_TOKENS {
             if let Some((asked, kind, tag)) = self.panel_prompt.take() {
                 if asked == token {
@@ -3272,6 +3536,9 @@ impl WorkspaceView {
         }
         // An open modal swallows scrolling over it so the editor underneath stays put.
         if let Some(rect) = self.modal_rect {
+            if self.window_modal.is_some() {
+                return false;
+            }
             if x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h {
                 return self
                     .layout
@@ -3516,6 +3783,26 @@ impl WorkspaceView {
             let index = (id - crate::WELCOME_RECENT_BASE) as usize;
             if self.layout.sessions.get(index).is_some_and(|s| !s.missing) {
                 self.pending.session = Some(SessionRequest::Switch(index));
+            }
+        } else if id == crate::WORKSPACE_NEW {
+            self.workspace_requests.new_workspace = true;
+        } else if (crate::WORKSPACE_OP_BASE..crate::WORKSPACE_OP_END).contains(&id) {
+            let offset = id - crate::WORKSPACE_OP_BASE;
+            let position = (offset / crate::WORKSPACE_OP_STRIDE) as usize;
+            let Some(op) = self.workspace_ops.get(position) else {
+                return;
+            };
+            match offset % crate::WORKSPACE_OP_STRIDE {
+                crate::WORKSPACE_OP_RETRY => {
+                    self.workspace_requests.op = Some((op.id, crate::OpAction::Retry));
+                }
+                crate::WORKSPACE_OP_DISMISS => {
+                    self.workspace_requests.op = Some((op.id, crate::OpAction::Dismiss));
+                }
+                _ => {
+                    let op_id = op.id;
+                    self.toggle_workspace_op(op_id);
+                }
             }
         } else if (crate::WORKSPACE_ROW_BASE..crate::WORKSPACE_ROW_END).contains(&id) {
             let index = (id - crate::WORKSPACE_ROW_BASE) as usize;
@@ -3942,6 +4229,7 @@ mod tests {
             config_path: std::path::PathBuf::from("/projects/alpha/pom.yml"),
             workspaces: vec!["trunk".into(), "feat-login".into()],
             active: "feat-login".into(),
+            ..Default::default()
         }
     }
 

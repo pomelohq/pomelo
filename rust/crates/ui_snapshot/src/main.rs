@@ -99,6 +99,8 @@ fn main() -> anyhow::Result<()> {
                 "proj-101-a-very-long-branch-name-for-the-workspace-panel".into(),
             ],
             active: "feat-login".into(),
+            labels: vec![String::new(), "Login page".into(), String::new()],
+            running: vec![0, 2, 0],
         });
         let current = project.as_ref().map(|_| 0);
         let mut app = ui::Application::new();
@@ -142,6 +144,76 @@ fn main() -> anyhow::Result<()> {
                     )),
                     std::path::Path::new("/projects/myproject/pom.yml"),
                 )
+            });
+        }
+        // wscreate / wsrename: the workspace forms; wsops: creation cards (one running, one failed).
+        let namer: workspaces_ui::Namer = std::sync::Arc::new(|seed: &str, _: &str| {
+            Ok(pom_agent::NameSuggestion {
+                name: seed.to_string(),
+                slug: seed.to_string(),
+            })
+        });
+        if mode == "wscreate" {
+            let mut modal = workspaces_ui::CreateWorkspaceModal::new(
+                vec!["api".into(), "web".into(), "mobile".into()],
+                vec!["main".into(), "feat-login".into()],
+                namer.clone(),
+            );
+            workspace::WindowModal::text(&mut modal, "Fix checkout page");
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 101);
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        if mode == "wsrename" {
+            let modal = workspaces_ui::RenameWorkspaceModal::new("feat-login", "Login page", namer);
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        if mode == "wsops" {
+            use workspace::{OpStatus, StageState, WorkspaceOp};
+            let stages = |states: [StageState; 7]| -> Vec<(String, StageState)> {
+                [
+                    "Validating config and hosts",
+                    "Provisioning workspace",
+                    "Starting shared services and databases",
+                    "Creating git worktrees (parallel)",
+                    "Configuring repos (parallel)",
+                    "Running setup commands (parallel)",
+                    "Seeding databases (parallel)",
+                ]
+                .iter()
+                .zip(states)
+                .map(|(label, state)| (label.to_string(), state))
+                .collect()
+            };
+            use StageState::{Done, Failed, Pending, Running};
+            let ops = vec![
+                WorkspaceOp {
+                    id: 1,
+                    branch: "fix-checkout".into(),
+                    title: "Fix checkout page".into(),
+                    status: OpStatus::Running,
+                    stages: stages([Done, Done, Done, Running, Pending, Pending, Pending]),
+                    detail: "worktree: web".into(),
+                    error: String::new(),
+                    retryable: true,
+                },
+                WorkspaceOp {
+                    id: 2,
+                    branch: "proj-101".into(),
+                    title: "PROJ-101 Payments".into(),
+                    status: OpStatus::Failed,
+                    stages: stages([Done, Done, Failed, Pending, Pending, Pending, Pending]),
+                    detail: String::new(),
+                    error: "shared services: docker: No such file or directory".into(),
+                    retryable: true,
+                },
+            ];
+            entity.update(app.app_mut(), |view, _| {
+                view.set_workspace_ops(ops);
+                view.toggle_workspace_op(1);
             });
         }
         // Background work (the diff's hunks) settles over a few frames.

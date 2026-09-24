@@ -146,7 +146,7 @@ fn plan_repos(
         .collect()
 }
 
-pub(crate) fn validate_branch_name(branch: &str) -> Result<(), String> {
+pub fn validate_branch_name(branch: &str) -> Result<(), String> {
     if branch.trim().is_empty() {
         return Err("the workspace needs a branch name".into());
     }
