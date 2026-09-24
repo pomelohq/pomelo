@@ -240,6 +240,11 @@ pub enum PanelRequest {
     OpenItem(Box<dyn crate::Item>),
     /// Open a file in the editor.
     OpenFile(std::path::PathBuf),
+    /// Open a file as a diff against `base` (its earlier text; `None` when it is new).
+    OpenDiff {
+        path: std::path::PathBuf,
+        base: Option<String>,
+    },
     Reveal {
         id: String,
         open: Box<dyn FnOnce() -> Option<Box<dyn crate::Item>>>,

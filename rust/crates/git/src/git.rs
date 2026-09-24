@@ -12,7 +12,7 @@ mod blame;
 mod branch_changes;
 pub use blame::{blame, entry_for_row, inline_text, relative_timestamp, BlameEntry};
 pub use branch_changes::{
-    branch_changes, discard_uncommitted, ChangeStatus, FileChange, RepoChanges,
+    branch_changes, discard_uncommitted, file_at, ChangeStatus, FileChange, RepoChanges,
 };
 
 /// What the buffer is compared against. `None` means the file has no version there (new, or not staged).

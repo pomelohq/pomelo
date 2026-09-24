@@ -39,6 +39,8 @@ pub struct RepoChanges {
     pub base: String,
     pub ahead: u32,
     pub behind: u32,
+    /// The commit the branch left the base at; `None` when only uncommitted work is compared.
+    pub fork_point: Option<String>,
     pub files: Vec<FileChange>,
     /// Why nothing could be read, when git failed.
     pub error: Option<String>,
@@ -115,6 +117,7 @@ fn fill(root: &Path, default_branch: &str, changes: &mut RepoChanges) -> Result<
         (None, true) => "HEAD".to_string(),
         (None, false) => String::new(),
     };
+    changes.fork_point = fork_point.clone();
     let uncommitted = uncommitted_paths(root)?;
     let mut files = Vec::new();
     if !against.is_empty() {
@@ -231,6 +234,16 @@ fn count_lines(path: &Path) -> Option<u32> {
     let lines = bytes.iter().filter(|byte| **byte == b'\n').count();
     let unterminated = usize::from(bytes.last().is_some_and(|byte| *byte != b'\n'));
     u32::try_from(lines + unterminated).ok()
+}
+
+/// The file's text at `revision`, `None` when it did not exist there (or is not text).
+pub fn file_at(root: &Path, revision: &str, path: &str) -> Option<String> {
+    let text = git(root, &["show", &format!("{revision}:{path}")]).ok()?;
+    Some(if text.contains('\r') {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    })
 }
 
 /// Puts a file back as HEAD has it (staged and working-tree changes gone); a file HEAD does not have
