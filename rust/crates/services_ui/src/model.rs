@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use pom_config::Config;
-use pom_services::{ServiceRunner, ServiceTarget};
+use pom_services::{ServiceRunner, ServiceTarget, SharedAction};
 
 /// The project's config, replaced in place when `pom.yml` changes so every panel sees the new one.
 pub type SharedConfig = Arc<RwLock<Option<Arc<Config>>>>;
@@ -16,6 +16,20 @@ pub(crate) const WORKSPACE_GROUP: &str = "_ws";
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Polling pauses once the panel has not been drawn for this long (hidden, or another workspace).
 const VISIBLE_GRACE: Duration = Duration::from_secs(3);
+/// Asking Docker is a subprocess, so shared containers are checked only every this many polls.
+const SHARED_POLL_EVERY: u32 = 5;
+pub(crate) const ALL_SHARED: &str = "*";
+
+/// A shared-service action: one container, or the whole stack when `name` is `ALL_SHARED`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedRun {
+    pub name: String,
+    pub action: Action,
+}
+
+pub(crate) fn shared_key(name: &str) -> String {
+    format!("shared:{name}")
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -100,6 +114,7 @@ pub struct Shared {
     pub pending: HashMap<String, Action>,
     pub errors: HashMap<String, String>,
     pub toasts: Vec<String>,
+    pub shared_running: HashSet<String>,
     drawn_at: Option<Instant>,
 }
 
@@ -143,10 +158,21 @@ impl Model {
         let spawned = std::thread::Builder::new()
             .name("services-poll".into())
             .spawn(move || {
+                if refresh_shared(&context, &shared) {
+                    (context.waker)();
+                }
+                let mut polls: u32 = 0;
                 while !stop.load(Ordering::Relaxed) {
                     std::thread::sleep(POLL_INTERVAL);
-                    let visible = shared.lock().is_ok_and(|shared| shared.visible());
-                    if visible && refresh(&context, &shared) {
+                    polls = polls.wrapping_add(1);
+                    if !shared.lock().is_ok_and(|shared| shared.visible()) {
+                        continue;
+                    }
+                    let mut changed = refresh(&context, &shared);
+                    if polls.is_multiple_of(SHARED_POLL_EVERY) {
+                        changed |= refresh_shared(&context, &shared);
+                    }
+                    if changed {
                         (context.waker)();
                     }
                 }
@@ -228,6 +254,63 @@ impl Model {
         }
     }
 
+    pub fn shared_running(&self, name: &str) -> bool {
+        self.shared
+            .lock()
+            .is_ok_and(|shared| shared.shared_running.contains(name))
+    }
+
+    /// Like `run`, for shared containers (Docker can take a while to pull and start them).
+    pub fn run_shared(&self, run: SharedRun) {
+        let Some(config) = self.context.config() else {
+            return;
+        };
+        let key = shared_key(&run.name);
+        {
+            let Ok(mut shared) = self.shared.lock() else {
+                return;
+            };
+            if shared.pending.contains_key(&key) {
+                return;
+            }
+            shared.pending.insert(key.clone(), run.action);
+            shared.errors.remove(&key);
+        }
+        (self.context.waker)();
+        let (context, shared) = (self.context.clone(), self.shared.clone());
+        let busy_key = key.clone();
+        let spawned = std::thread::Builder::new()
+            .name("services-shared".into())
+            .spawn(move || {
+                let runner = &context.runner;
+                let result = match (run.name.as_str(), run.action) {
+                    (ALL_SHARED, Action::Stop) => runner.stop_shared(),
+                    (ALL_SHARED, _) => runner.ensure_shared(&config),
+                    (name, Action::Stop) => runner.shared_action(&config, name, SharedAction::Stop),
+                    (name, Action::Start) => {
+                        runner.shared_action(&config, name, SharedAction::Start)
+                    }
+                    (name, _) => runner.shared_action(&config, name, SharedAction::Restart),
+                };
+                refresh_shared(&context, &shared);
+                if let Ok(mut shared) = shared.lock() {
+                    shared.pending.remove(&key);
+                    if let Err(error) = result {
+                        shared.errors.insert(key, error.to_string());
+                    }
+                }
+                (context.waker)();
+            });
+        if let Err(error) = spawned {
+            if let Ok(mut shared) = self.shared.lock() {
+                shared.pending.remove(&busy_key);
+                shared
+                    .toasts
+                    .push(format!("Could not run the action: {error}"));
+            }
+        }
+    }
+
     pub fn take_toasts(&self) -> Vec<String> {
         self.shared
             .lock()
@@ -240,6 +323,24 @@ impl Drop for Model {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
     }
+}
+
+fn refresh_shared(context: &ServicesContext, shared: &Mutex<Shared>) -> bool {
+    let has_shared = context
+        .config()
+        .is_some_and(|config| !config.shared_services.is_empty());
+    if !has_shared {
+        return false;
+    }
+    let running = context.runner.shared_running();
+    let Ok(mut shared) = shared.lock() else {
+        return false;
+    };
+    if shared.shared_running == running {
+        return false;
+    }
+    shared.shared_running = running;
+    true
 }
 
 fn refresh(context: &ServicesContext, shared: &Mutex<Shared>) -> bool {

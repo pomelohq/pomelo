@@ -11,8 +11,10 @@ use terminal_ui::TerminalItem;
 use ui::{div, icon, label, theme, IconKind, Node, Rgba};
 use workspace::{MenuItem, PaneKind, PanelRequest, SidePanelView};
 
+use model::{shared_key, Model, SharedRun, ALL_SHARED, WORKSPACE_GROUP};
 pub use model::{Action, ServicesContext, SharedConfig, Status};
-use model::{Model, WORKSPACE_GROUP};
+
+const SHARED_GROUP: &str = "_shared";
 
 const ROW_H: f32 = 22.0;
 const INDENT: f32 = 16.0;
@@ -64,9 +66,13 @@ enum Row {
         target: ServiceTarget,
         holder: String,
     },
+    Shared {
+        name: String,
+    },
     Error {
-        target: ServiceTarget,
         message: String,
+        /// The service to move to a new port when the error is about its port.
+        relocate: Option<ServiceTarget>,
     },
 }
 
@@ -99,6 +105,8 @@ pub struct ServicesPanel {
     menu: Option<OpenMenu>,
     requests: Vec<PanelRequest>,
     next_item: u64,
+    /// A shared stop waiting for the user to confirm, with its prompt tag.
+    confirm: Option<(u64, SharedRun)>,
 }
 
 impl ServicesPanel {
@@ -115,6 +123,7 @@ impl ServicesPanel {
             menu: None,
             requests: Vec::new(),
             next_item: 1 << 40,
+            confirm: None,
         }
     }
 
@@ -174,7 +183,40 @@ impl ServicesPanel {
                     holder,
                 });
                 if let Some(message) = error {
-                    rows.push(Row::Error { target, message });
+                    let relocate = message.contains("port").then_some(target);
+                    rows.push(Row::Error { message, relocate });
+                }
+            }
+        }
+        if !config.shared_services.is_empty() {
+            let names: Vec<String> = config.shared_services.keys().cloned().collect();
+            let collapsed = self.collapsed.contains(SHARED_GROUP);
+            rows.push(Row::Group {
+                key: SHARED_GROUP.to_string(),
+                label: "Shared".to_string(),
+                running: names
+                    .iter()
+                    .filter(|name| self.model.shared_running(name))
+                    .count(),
+                total: names.len(),
+                collapsed,
+            });
+            if let Some(message) = self.model.error(&shared_key(ALL_SHARED)) {
+                rows.push(Row::Error {
+                    message,
+                    relocate: None,
+                });
+            }
+            if !collapsed {
+                for name in names {
+                    let error = self.model.error(&shared_key(&name));
+                    rows.push(Row::Shared { name });
+                    if let Some(message) = error {
+                        rows.push(Row::Error {
+                            message,
+                            relocate: None,
+                        });
+                    }
                 }
             }
         }
@@ -246,11 +288,11 @@ impl ServicesPanel {
         }
         match row {
             Row::Group {
+                key,
                 label: text,
                 running,
                 total,
                 collapsed,
-                ..
             } => {
                 let chevron = if *collapsed {
                     IconKind::ChevronRight
@@ -286,7 +328,16 @@ impl ServicesPanel {
                             .flex(1.0)
                             .pl(4.0)
                             .items_center()
-                            .child(label(text.clone()).color(theme().text).truncate()),
+                            .gap(6.0)
+                            .child(label(text.clone()).color(theme().text).truncate())
+                            .child(if key == SHARED_GROUP {
+                                label("all workspaces")
+                                    .size(11.0)
+                                    .color(theme().text_placeholder)
+                                    .into()
+                            } else {
+                                Node::from(div())
+                            }),
                     )
                     .child(trailing)
                     .into()
@@ -356,7 +407,57 @@ impl ServicesPanel {
                     .child(trailing)
                     .into()
             }
-            Row::Error { message, .. } => {
+            Row::Shared { name } => {
+                let running = self.model.shared_running(name);
+                let pending = self.model.pending(&shared_key(name));
+                let trailing: Node = match (pending, hovered) {
+                    (Some(action), _) => label(action.progress_label())
+                        .size(11.0)
+                        .color(theme().text_muted)
+                        .into(),
+                    (None, true) if running => div()
+                        .row()
+                        .gap(2.0)
+                        .child(self.button(self.id(index, Control::Restart), IconKind::RotateCw))
+                        .child(self.button(self.id(index, Control::Stop), IconKind::Stop))
+                        .into(),
+                    (None, true) => self.button(self.id(index, Control::Start), IconKind::Play),
+                    (None, false) => label(format!(
+                        ":{}",
+                        self.model.context.runner.shared_host_port(name)
+                    ))
+                    .size(11.0)
+                    .color(theme().text_muted)
+                    .into(),
+                };
+                let dot = if running {
+                    theme().success
+                } else {
+                    theme().icon_muted
+                };
+                body.on_click(self.id(index, Control::Row))
+                    .child(self.guide_column())
+                    .child(
+                        div()
+                            .row()
+                            .w_px(INDENT)
+                            .h_px(ROW_H)
+                            .items_center()
+                            .justify_center()
+                            .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(dot)),
+                    )
+                    .child(
+                        div()
+                            .row()
+                            .flex(1.0)
+                            .pl(2.0)
+                            .items_center()
+                            .child(label(name.clone()).color(theme().text).truncate()),
+                    )
+                    .child(trailing)
+                    .into()
+            }
+            Row::Error { message, relocate } => {
                 let first_line = message.lines().next().unwrap_or_default().to_string();
                 let mut line =
                     div()
@@ -368,7 +469,7 @@ impl ServicesPanel {
                                 label(first_line).size(11.0).color(theme().error).truncate(),
                             ),
                         );
-                if message.contains("port") {
+                if relocate.is_some() {
                     let id = self.id(index, Control::NewPort);
                     let hot = self.hover == Some(id);
                     line = line.child(
@@ -507,6 +608,99 @@ impl ServicesPanel {
             }
             Status::Stopped => {}
         }
+    }
+
+    /// Stopping a shared container pulls it from under every workspace, so ask first while services of
+    /// other workspaces are running.
+    fn run_shared(&mut self, run: SharedRun) {
+        if run.action != Action::Stop {
+            self.model.run_shared(run);
+            return;
+        }
+        let others = self.other_workspace_services();
+        if others == 0 {
+            self.model.run_shared(run);
+            return;
+        }
+        let message = if run.name == ALL_SHARED {
+            "Stop all shared services?".to_string()
+        } else {
+            format!("Stop {}?", run.name)
+        };
+        let noun = if others == 1 { "service" } else { "services" };
+        let tag = self.next_item;
+        self.next_item += 1;
+        self.requests.push(PanelRequest::Prompt {
+            tag,
+            message,
+            detail: Some(format!(
+                "Shared services are used by all workspaces; {others} {noun} in other workspaces are still running."
+            )),
+            buttons: vec!["Stop".to_string(), "Cancel".to_string()],
+        });
+        self.confirm = Some((tag, run));
+    }
+
+    fn other_workspace_services(&self) -> usize {
+        let context = &self.model.context;
+        let Some(config) = context.config() else {
+            return 0;
+        };
+        let own: HashSet<String> = context
+            .targets(&config)
+            .iter()
+            .map(|target| context.runner.holder_name(target))
+            .collect();
+        context
+            .runner
+            .running_holders()
+            .into_iter()
+            .filter(|holder| !own.contains(holder))
+            .count()
+    }
+
+    /// Follows a shared container's log in a read-only tab.
+    fn open_shared_logs(&mut self, name: &str) {
+        let runner = &self.model.context.runner;
+        let mut args = vec![
+            format!("PATH={}", pom_services::tool_path()),
+            "docker".to_string(),
+            "compose".to_string(),
+            "-f".to_string(),
+            runner.compose_file().to_string_lossy().into_owned(),
+            "-p".to_string(),
+            runner.compose_project(),
+            "logs".to_string(),
+            "-f".to_string(),
+            "--tail".to_string(),
+            "200".to_string(),
+        ];
+        args.push(name.to_string());
+        let (root, waker) = (self.root.clone(), self.model.context.waker.clone());
+        let item_number = self.next_item;
+        self.next_item += 1;
+        let item_id = format!("shared-log:{name}");
+        let title = format!("{name} (shared)");
+        self.requests.push(PanelRequest::Reveal {
+            id: item_id.clone(),
+            open: Box::new(move || {
+                match TerminalItem::command_output(
+                    item_number,
+                    root,
+                    item_id,
+                    title,
+                    "/usr/bin/env".to_string(),
+                    args,
+                    waker,
+                ) {
+                    Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
+                    Err(error) => {
+                        eprintln!("services: shared log: {error}");
+                        None
+                    }
+                }
+            }),
+        });
     }
 
     fn content_height(&self) -> f32 {
@@ -716,12 +910,19 @@ impl SidePanelView for ServicesPanel {
         };
         match (row, control) {
             (Row::Group { key, .. }, Control::Row) => self.toggle_group(key),
-            (Row::Group { .. }, Control::StartAll | Control::StopAll) => {
+            (Row::Group { key, .. }, Control::StartAll | Control::StopAll) => {
                 let action = if control == Control::StartAll {
                     Action::Start
                 } else {
                     Action::Stop
                 };
+                if key == SHARED_GROUP {
+                    self.run_shared(SharedRun {
+                        name: ALL_SHARED.to_string(),
+                        action,
+                    });
+                    return;
+                }
                 for target in self.row_targets(index) {
                     let holder = self.model.context.runner.holder_name(&target);
                     let running = self.model.status(&holder) == Status::Running;
@@ -741,8 +942,21 @@ impl SidePanelView for ServicesPanel {
                     self.requests.push(PanelRequest::OpenUrl(url));
                 }
             }
-            (Row::Error { target, .. }, Control::NewPort) => {
-                self.model.run(Action::Relocate, target)
+            (
+                Row::Error {
+                    relocate: Some(target),
+                    ..
+                },
+                Control::NewPort,
+            ) => self.model.run(Action::Relocate, target),
+            (Row::Shared { name }, Control::Row) => self.open_shared_logs(&name),
+            (Row::Shared { name }, Control::Start | Control::Stop | Control::Restart) => {
+                let action = match control {
+                    Control::Start => Action::Start,
+                    Control::Stop => Action::Stop,
+                    _ => Action::Restart,
+                };
+                self.run_shared(SharedRun { name, action });
             }
             _ => {}
         }
@@ -796,6 +1010,14 @@ impl SidePanelView for ServicesPanel {
             .map(|(_, action)| *action);
         if let Some(action) = action {
             self.apply_menu(menu, action);
+        }
+    }
+
+    fn prompt_answered(&mut self, tag: u64, answer: usize) {
+        match self.confirm.take() {
+            Some((asked, run)) if asked == tag && answer == 0 => self.model.run_shared(run),
+            Some((asked, run)) if asked != tag => self.confirm = Some((asked, run)),
+            _ => {}
         }
     }
 

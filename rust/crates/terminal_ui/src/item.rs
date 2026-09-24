@@ -156,11 +156,30 @@ impl TerminalItem {
         log: &Path,
         waker: Waker,
     ) -> anyhow::Result<Self> {
+        let args = vec!["-n".into(), "+2".into(), log.to_string_lossy().into_owned()];
+        Self::command_output(
+            id,
+            root,
+            item_id,
+            title,
+            "/usr/bin/tail".into(),
+            args,
+            waker,
+        )
+    }
+
+    /// A read-only tab running `program` (a log follower, ...); it stays open after the program ends.
+    pub fn command_output(
+        id: u64,
+        root: PathBuf,
+        item_id: String,
+        title: String,
+        program: String,
+        args: Vec<String>,
+        waker: Waker,
+    ) -> anyhow::Result<Self> {
         let options = TerminalOptions {
-            shell: Some((
-                "/usr/bin/tail".to_string(),
-                vec!["-n".into(), "+2".into(), log.to_string_lossy().into_owned()],
-            )),
+            shell: Some((program, args)),
             working_directory: Some(root.clone()),
             ..TerminalOptions::default()
         };

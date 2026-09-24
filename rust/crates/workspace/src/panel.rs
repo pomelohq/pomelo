@@ -245,6 +245,13 @@ pub enum PanelRequest {
     OpenUrl(String),
     Copy(String),
     Toast(String),
+    /// Ask before acting; the answer comes back through `prompt_answered` with the same `tag`.
+    Prompt {
+        tag: u64,
+        message: String,
+        detail: Option<String>,
+        buttons: Vec<String>,
+    },
 }
 
 pub trait SidePanelView: 'static {
@@ -257,6 +264,8 @@ pub trait SidePanelView: 'static {
     fn menu_items(&self) -> Vec<crate::MenuItem>;
     fn menu_action(&mut self, item: u64);
     fn take_requests(&mut self) -> Vec<PanelRequest>;
+    /// The button (index into the prompt's buttons) picked for the prompt asked with `tag`.
+    fn prompt_answered(&mut self, _tag: u64, _answer: usize) {}
 }
 
 /// A dockable piece of UI. Mirrors the framework's `Panel` (position + icon + render), trimmed to what we draw now.

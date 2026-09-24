@@ -32,6 +32,7 @@ const PANES_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 /// Prompt tokens the view hands out itself, above the ones features number from 1.
 const CLOSE_PROMPT_TOKENS: u64 = 1 << 40;
 const FORGET_PROMPT_TOKENS: u64 = 1 << 41;
+const PANEL_PROMPT_TOKENS: u64 = 1 << 42;
 /// The gap a zoomed view leaves around it (on its dock's inner side only, for a dock panel).
 const ZOOM_PADDING: f32 = 8.0;
 const TOAST_ANIM: Duration = Duration::from_millis(160);
@@ -157,6 +158,8 @@ pub struct WorkspaceView {
     /// The zoom showing this frame, for drawing and routing input.
     zoom: Option<Zoom>,
     pending_prompt: Option<crate::Prompt>,
+    /// The side panel prompt waiting for an answer: its token, panel and the panel's tag.
+    panel_prompt: Option<(u64, PaneKind, u64)>,
     /// A tab close waiting on the save prompt: its token, pane group and request.
     close_prompt: Option<(u64, InputGroup, crate::pane_group_view::CloseRequest)>,
     next_prompt_token: u64,
@@ -217,6 +220,7 @@ impl WorkspaceView {
             panes_input: true,
             zoom: None,
             pending_prompt: None,
+            panel_prompt: None,
             close_prompt: None,
             next_prompt_token: CLOSE_PROMPT_TOKENS,
             terminal_focused: false,
@@ -1695,14 +1699,36 @@ impl WorkspaceView {
     }
 
     fn apply_panel_requests(&mut self) {
-        let requests: Vec<crate::PanelRequest> = self
+        let requests: Vec<(PaneKind, crate::PanelRequest)> = self
             .layout
             .side_panels
             .iter_mut()
-            .flat_map(|panel| panel.take_requests())
+            .flat_map(|panel| {
+                let kind = panel.kind();
+                panel
+                    .take_requests()
+                    .into_iter()
+                    .map(move |request| (kind, request))
+            })
             .collect();
-        for request in requests {
+        for (kind, request) in requests {
             match request {
+                crate::PanelRequest::Prompt {
+                    tag,
+                    message,
+                    detail,
+                    buttons,
+                } => {
+                    let token = PANEL_PROMPT_TOKENS + self.next_prompt_token;
+                    self.next_prompt_token += 1;
+                    self.panel_prompt = Some((token, kind, tag));
+                    self.pending_prompt = Some(crate::Prompt {
+                        token,
+                        message,
+                        detail,
+                        buttons,
+                    });
+                }
                 crate::PanelRequest::OpenItem(item) => {
                     if let Some(files) = self.layout.files_view.as_mut() {
                         files.add_center_item(item);
@@ -3027,6 +3053,17 @@ impl WorkspaceView {
     }
 
     pub fn prompt_answered(&mut self, token: u64, answer: usize) {
+        if token >= PANEL_PROMPT_TOKENS {
+            if let Some((asked, kind, tag)) = self.panel_prompt.take() {
+                if asked == token {
+                    if let Some(panel) = self.layout.side_panel_mut(kind) {
+                        panel.prompt_answered(tag, answer);
+                    }
+                    self.apply_panel_requests();
+                }
+            }
+            return;
+        }
         if token >= FORGET_PROMPT_TOKENS {
             if answer == 0 {
                 let index = (token - FORGET_PROMPT_TOKENS) as usize;

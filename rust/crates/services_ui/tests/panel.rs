@@ -73,6 +73,7 @@ repos:
             state: StateDir::new(temp.path().join("state")),
             holders: holders.clone(),
             binary: wrapper_script(temp.path()),
+            docker: "docker".into(),
         });
         let panel = ServicesPanel::new(
             ServicesContext {
@@ -255,4 +256,156 @@ fn collapsing_a_repo_hides_its_services() {
         !fixture.panel.open_menu(fixture.id(1, 0)),
         "no service row is left under the collapsed group"
     );
+}
+
+struct SharedFixture {
+    _temp: tempfile::TempDir,
+    log: PathBuf,
+    holders: SocketDir,
+    panel: ServicesPanel,
+}
+
+fn shared_fixture() -> SharedFixture {
+    let temp = tempfile::Builder::new()
+        .prefix("svs")
+        .tempdir_in("/tmp")
+        .expect("temp");
+    let root = temp.path().join("project");
+    std::fs::create_dir_all(&root).expect("root");
+    std::fs::write(
+        root.join("pom.yml"),
+        "session: demo\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\nrepos:\n  api:\n    services:\n      web: rails s\n",
+    )
+    .expect("pom.yml");
+    let config = Config::load(&root.join("pom.yml")).expect("config");
+    let log = temp.path().join("docker.log");
+    let docker = temp.path().join("docker");
+    std::fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in\n  compose*\" ps \"*) echo postgres ;;\nesac\nexit 0\n",
+            log.display()
+        ),
+    )
+    .expect("docker");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::write(root.join(pom_services::COMPOSE_FILE), "").expect("compose file");
+    let holders = SocketDir::new(temp.path().join("s"));
+    let runner = ServiceRunner::new(RunnerOptions {
+        project_root: root.clone(),
+        session: "demo".into(),
+        state: StateDir::new(temp.path().join("state")),
+        holders: holders.clone(),
+        binary: PathBuf::from("/nonexistent"),
+        docker,
+    });
+    let panel = ServicesPanel::new(
+        ServicesContext {
+            runner: Arc::new(runner),
+            config: Arc::new(RwLock::new(Some(Arc::new(config)))),
+            branch: "main".into(),
+            is_main: true,
+            waker: Arc::new(|| {}),
+        },
+        root,
+    );
+    SharedFixture {
+        _temp: temp,
+        log,
+        holders,
+        panel,
+    }
+}
+
+/// Rows: 0 api, 1 web, 2 Shared, 3 postgres, 4 redis.
+fn shared_row(row: u64, control: u64) -> u64 {
+    workspace::side_panel_base(PaneKind::Services) + row * ROW_STRIDE + control
+}
+
+fn wait_until_postgres_runs(fixture: &mut SharedFixture) {
+    let deadline = Instant::now() + TIMEOUT;
+    // The first container check runs on the poller thread; a running row offers Stop (control 2).
+    loop {
+        fixture.panel.render(300.0, 400.0);
+        fixture.panel.set_hover(Some(shared_row(3, 0)));
+        let node = fixture.panel.render(300.0, 400.0);
+        let painted = ui::render(
+            &node,
+            ui::Rect::new(0.0, 0.0, 300.0, 400.0, ui::Rgba::TRANSPARENT),
+        );
+        if painted.hits.iter().any(|(_, id)| *id == shared_row(3, 2)) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "postgres never showed as running"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn docker_calls(fixture: &SharedFixture) -> String {
+    std::fs::read_to_string(&fixture.log).unwrap_or_default()
+}
+
+#[test]
+fn shared_services_show_their_container_state_and_take_actions() {
+    let mut fixture = shared_fixture();
+    wait_until_postgres_runs(&mut fixture);
+    fixture.panel.click(shared_row(3, 2));
+    let deadline = Instant::now() + TIMEOUT;
+    while !docker_calls(&fixture).contains("stop postgres") {
+        assert!(
+            Instant::now() < deadline,
+            "nothing else runs, so it stops without asking"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    fixture.panel.click(shared_row(4, 0));
+    let requests = fixture.panel.take_requests();
+    assert!(
+        matches!(requests.first(), Some(PanelRequest::Reveal { id, .. }) if id == "shared-log:redis"),
+        "clicking a shared service follows its log"
+    );
+}
+
+#[test]
+fn stopping_a_shared_service_asks_while_other_workspaces_run_services() {
+    let mut fixture = shared_fixture();
+    let other = "svc-demo-feat_x-api-web";
+    std::fs::create_dir_all(fixture.holders.root()).expect("sockets");
+    std::fs::write(
+        fixture.holders.pidfile(other),
+        format!("{}\n{other}\n", std::process::id()),
+    )
+    .expect("pidfile");
+    wait_until_postgres_runs(&mut fixture);
+
+    fixture.panel.click(shared_row(3, 2));
+    let asked = |panel: &mut ServicesPanel| {
+        panel
+            .take_requests()
+            .into_iter()
+            .find_map(|request| match request {
+                PanelRequest::Prompt { tag, detail, .. } => Some((tag, detail.unwrap_or_default())),
+                _ => None,
+            })
+    };
+    let (tag, detail) = asked(&mut fixture.panel).expect("a confirmation prompt");
+    assert!(detail.contains("1 service in other workspaces"), "{detail}");
+    fixture.panel.prompt_answered(tag, 1);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !docker_calls(&fixture).contains("stop postgres"),
+        "cancel keeps it running"
+    );
+
+    fixture.panel.click(shared_row(3, 2));
+    let (tag, _) = asked(&mut fixture.panel).expect("asked again");
+    fixture.panel.prompt_answered(tag, 0);
+    let deadline = Instant::now() + TIMEOUT;
+    while !docker_calls(&fixture).contains("stop postgres") {
+        assert!(Instant::now() < deadline, "confirming stops it");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

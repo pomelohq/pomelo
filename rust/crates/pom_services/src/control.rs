@@ -22,6 +22,8 @@ use crate::tool_path::tool_path;
 /// A repo named like this (or empty) addresses a workspace-level service.
 const WORKSPACE_REPO: &str = "_ws";
 const LOCAL_PROFILE: &str = "local";
+/// A just-started Postgres takes a few seconds before it accepts connections.
+const DATABASE_WAIT: Duration = Duration::from_secs(30);
 /// Start returns once the holder accepts clients, so its console can be opened right away.
 const HOLDER_START_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -93,17 +95,20 @@ pub struct RunnerOptions {
     pub holders: SocketDir,
     /// The binary that hosts holders (`<binary> pty run ...`); the app passes itself.
     pub binary: PathBuf,
+    /// The Docker CLI that runs shared services (usually just `docker`, found on the tool PATH).
+    pub docker: PathBuf,
 }
 
 /// Runs one project's services.
 pub struct ServiceRunner {
-    project_root: PathBuf,
-    session: String,
-    ports: PortManager,
-    slots: SlotStore,
+    pub(crate) project_root: PathBuf,
+    pub(crate) session: String,
+    pub(crate) ports: PortManager,
+    pub(crate) slots: SlotStore,
     secrets: SecretStore,
     holders: SocketDir,
     binary: PathBuf,
+    pub(crate) docker: PathBuf,
     /// `repo~service` -> mode picked for this app run.
     modes: Mutex<HashMap<String, String>>,
 }
@@ -124,6 +129,7 @@ impl ServiceRunner {
             session: options.session,
             holders: options.holders,
             binary: options.binary,
+            docker: options.docker,
             modes: Mutex::new(HashMap::new()),
         }
     }
@@ -146,6 +152,18 @@ impl ServiceRunner {
         }
     }
 
+    /// Running service holders of this project, in every workspace.
+    pub fn running_holders(&self) -> Vec<String> {
+        let session = pom_env::branch_safe(&self.session);
+        let prefixes = [format!("svc-{session}-"), format!("ws-{session}-")];
+        self.holders
+            .holders()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| prefixes.iter().any(|prefix| name.starts_with(prefix)))
+            .collect()
+    }
+
     pub fn is_running(&self, target: &ServiceTarget) -> bool {
         self.holders.holder_alive(&self.holder_name(target))
     }
@@ -159,9 +177,35 @@ impl ServiceRunner {
         if target.is_workspace_level() {
             self.start_workspace_service(config, target, &holder)?;
         } else {
+            self.prepare_shared(config, &target.branch);
             self.start_repo_service(config, target, &holder)?;
         }
         Ok(holder)
+    }
+
+    /// Shared services and the workspace's databases come up before a repo service needs them. A failure
+    /// here is not fatal: the service may not use them, and its console shows what went wrong if it does.
+    fn prepare_shared(&self, config: &Config, branch: &str) {
+        if config.shared_services.is_empty() {
+            return;
+        }
+        if let Err(error) = self.ensure_shared(config) {
+            eprintln!("services: shared services: {error}");
+            return;
+        }
+        let deadline = std::time::Instant::now() + DATABASE_WAIT;
+        loop {
+            match self.ensure_databases(config, branch) {
+                Ok(()) => return,
+                Err(error) if still_starting(&error) && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                Err(error) => {
+                    eprintln!("services: {error}");
+                    return;
+                }
+            }
+        }
     }
 
     /// Stops the service's whole process tree. Its port lease stays, so a restart reuses the port;
@@ -460,6 +504,17 @@ impl EnvSources for ServiceRunner {
             }
         }
     }
+}
+
+fn still_starting(error: &ServiceError) -> bool {
+    let text = error.to_string();
+    [
+        "connection to server",
+        "the database system is starting up",
+        "Connection refused",
+    ]
+    .iter()
+    .any(|sign| text.contains(sign))
 }
 
 /// `cd <dir> && <pre_start> && export PORT BIND_IP && <cmd>`, prefixed by the shell env assignments.
