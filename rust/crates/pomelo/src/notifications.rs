@@ -108,8 +108,32 @@ pub fn start() {
     }
 }
 
-/// Posts a notification; clicking it later reports `branch` through `take_clicked`.
+/// Posts a silent notification (the event's own sound plays separately, so it is the user's pick);
+/// clicking it later reports `branch` through `take_clicked`.
 pub fn post(title: &str, body: &str, branch: &str) {
+    deliver(title, body, branch, false);
+}
+
+pub fn post_test() {
+    deliver(
+        "Pomelo",
+        "Test notification - delivery is working.",
+        "",
+        true,
+    );
+}
+
+/// A macOS system sound by name (Glass, Ping...).
+pub fn play_sound(name: &str) {
+    // SAFETY: looking up and playing a named system sound; the shared instance outlives the call.
+    unsafe {
+        if let Some(sound) = objc2_app_kit::NSSound::soundNamed(&NSString::from_str(name)) {
+            sound.play();
+        }
+    }
+}
+
+fn deliver(title: &str, body: &str, branch: &str, sound: bool) {
     let Ok(slot) = CENTER.lock() else {
         return;
     };
@@ -117,13 +141,19 @@ pub fn post(title: &str, body: &str, branch: &str) {
         return;
     };
     let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let identifier = format!("{IDENTIFIER_PREFIX}{branch}:{sequence}");
+    let identifier = if branch.is_empty() {
+        format!("pomelo-test:{sequence}")
+    } else {
+        format!("{IDENTIFIER_PREFIX}{branch}:{sequence}")
+    };
     // SAFETY: building and adding a request with owned Foundation objects.
     unsafe {
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(title));
         content.setBody(&NSString::from_str(body));
-        content.setSound(Some(&UNNotificationSound::defaultSound()));
+        if sound {
+            content.setSound(Some(&UNNotificationSound::defaultSound()));
+        }
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
             &NSString::from_str(&identifier),
             &content,

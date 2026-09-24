@@ -833,6 +833,49 @@ fn main() -> anyhow::Result<()> {
     } else {
         settings_ui::IntegrationsPage::default()
     };
+    // LIVE=1: the Agent and Network pages with registration done and some proxy traffic.
+    let live = std::env::var("LIVE").is_ok();
+    let state = settings_ui::PageState {
+        jira,
+        agent: if live {
+            settings_ui::AgentPage {
+                mcp: settings_ui::Registration::Done,
+                hooks: settings_ui::Registration::Done,
+            }
+        } else {
+            settings_ui::AgentPage::default()
+        },
+        network: settings_ui::NetworkPage {
+            proxy_running: live,
+            webhook_running: live,
+            proxy_port: 8767,
+            webhook_port: 8766,
+            requests: if live {
+                vec![
+                    settings_ui::RequestRow {
+                        time: "10:42:07".into(),
+                        method: "GET".into(),
+                        path: "/_pom_dev/api/server/v1/me".into(),
+                        profile: "local".into(),
+                        target: "127.0.0.1:41822".into(),
+                        status: 200,
+                        ms: 12,
+                    },
+                    settings_ui::RequestRow {
+                        time: "10:42:05".into(),
+                        method: "POST".into(),
+                        path: "/_pom_dev/api/server/v1/login".into(),
+                        profile: "staging".into(),
+                        target: "https://api.staging.example.com".into(),
+                        status: 401,
+                        ms: 184,
+                    },
+                ]
+            } else {
+                Vec::new()
+            },
+        },
+    };
     let fs_edit = std::env::var("FSEDIT").ok();
     let editing = fs_edit
         .as_deref()
@@ -843,7 +886,7 @@ fn main() -> anyhow::Result<()> {
     if let Ok(scroll) = std::env::var("SCROLL").unwrap_or_default().parse::<f32>() {
         let clip = settings_ui::content_region(lw, lh);
         let (page, total_h) =
-            settings_ui::page(category, &settings, &jira, None, &search, lw, lh, scroll);
+            settings_ui::page(category, &settings, &state, None, &search, lw, lh, scroll);
         let mut chrome =
             settings_ui::chrome(category, None, Some(0), &expanded, lw, lh, &search, false);
         if let Some(bar) = settings_ui::content_scrollbar(clip, total_h, scroll) {
@@ -870,7 +913,7 @@ fn main() -> anyhow::Result<()> {
         None,
         &expanded,
         &settings,
-        &jira,
+        &state,
         lw,
         lh,
         editing,
