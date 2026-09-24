@@ -181,11 +181,12 @@ impl ServiceRunner {
 
     /// Creates the workspace's databases in the shared Postgres; existing ones are left alone.
     pub fn ensure_databases(&self, config: &Config, branch: &str) -> Result<(), ServiceError> {
-        let names = database_names(config, branch);
-        if names.is_empty() {
-            return Ok(());
-        }
-        let postgres = config
+        self.create_databases(config, &database_names(config, branch))
+    }
+
+    /// The shared Postgres: its connection and the container publishing it, if one of ours does.
+    fn postgres(&self, config: &Config) -> Postgres {
+        let def = config
             .shared_services
             .values()
             .find(|def| !def.db_user.is_empty());
@@ -195,42 +196,35 @@ impl ServiceRunner {
                 .cloned()
                 .unwrap_or_else(|| fallback.to_string())
         };
-        let host = pick(postgres.map(|def| &def.host), "localhost");
-        let user = pick(postgres.map(|def| &def.db_user), POSTGRES);
-        let password = pick(postgres.map(|def| &def.db_password), POSTGRES);
         let port = match self.shared_host_port(POSTGRES) {
             0 => DEFAULT_PG_PORT,
             port => port,
         };
-        let container = self.published_container(port);
+        Postgres {
+            container: self.published_container(port),
+            host: pick(def.map(|def| &def.host), "localhost"),
+            user: pick(def.map(|def| &def.db_user), POSTGRES),
+            password: pick(def.map(|def| &def.db_password), POSTGRES),
+            port,
+        }
+    }
+
+    /// Creates each database unless it exists (pg_stat_statements enabled in new ones).
+    pub fn create_databases(&self, config: &Config, names: &[String]) -> Result<(), ServiceError> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let postgres = self.postgres(config);
         let mut failures = Vec::new();
         for name in names {
-            let create = format!("CREATE DATABASE \"{name}\"");
-            let output = self.psql(
-                container.as_deref(),
-                &host,
-                port,
-                &user,
-                &password,
-                POSTGRES,
-                &create,
-            )?;
-            let stderr = String::from_utf8_lossy(&output.stdout).into_owned()
-                + &String::from_utf8_lossy(&output.stderr);
-            if !output.status.success() && !stderr.contains("already exists") {
-                failures.push(format!("{name}: {}", stderr.trim()));
+            let output = self.psql(&postgres, POSTGRES, &format!("CREATE DATABASE \"{name}\""))?;
+            let text = output_text(&output);
+            if !output.status.success() && !text.contains("already exists") {
+                failures.push(format!("{name}: {}", text.trim()));
                 continue;
             }
             let extension = "CREATE EXTENSION IF NOT EXISTS pg_stat_statements";
-            if let Err(error) = self.psql(
-                container.as_deref(),
-                &host,
-                port,
-                &user,
-                &password,
-                &name,
-                extension,
-            ) {
+            if let Err(error) = self.psql(&postgres, name, extension) {
                 eprintln!("services: pg_stat_statements on {name}: {error}");
             }
         }
@@ -241,6 +235,89 @@ impl ServiceRunner {
                 "could not create databases: {}",
                 failures.join("; ")
             ))))
+        }
+    }
+
+    pub fn database_exists(&self, config: &Config, name: &str) -> bool {
+        let postgres = self.postgres(config);
+        let query = format!(
+            "SELECT 1 FROM pg_database WHERE datname = '{}'",
+            name.replace('\'', "''")
+        );
+        self.psql_rows(&postgres, &query)
+            .is_ok_and(|rows| rows.trim() == "1")
+    }
+
+    /// Replaces `target` with a copy of `template` (a workspace starting from main's data).
+    pub fn clone_database(
+        &self,
+        config: &Config,
+        template: &str,
+        target: &str,
+    ) -> Result<(), ServiceError> {
+        let postgres = self.postgres(config);
+        self.terminate(&postgres, target);
+        self.drop_one(&postgres, target)?;
+        // Postgres refuses to copy a database anyone is connected to.
+        self.terminate(&postgres, template);
+        let output = self.psql(
+            &postgres,
+            POSTGRES,
+            &format!("CREATE DATABASE \"{target}\" TEMPLATE \"{template}\""),
+        )?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(ServiceError::Io(std::io::Error::other(format!(
+                "clone {target} from {template}: {}",
+                output_text(&output).trim()
+            ))))
+        }
+    }
+
+    /// Drops the databases, disconnecting whoever uses them.
+    pub fn drop_databases(&self, config: &Config, names: &[String]) -> Result<(), ServiceError> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let postgres = self.postgres(config);
+        let mut failures = Vec::new();
+        for name in names {
+            self.terminate(&postgres, name);
+            if let Err(error) = self.drop_one(&postgres, name) {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(ServiceError::Io(std::io::Error::other(failures.join("; "))))
+        }
+    }
+
+    fn drop_one(&self, postgres: &Postgres, name: &str) -> Result<(), ServiceError> {
+        let output = self.psql(
+            postgres,
+            POSTGRES,
+            &format!("DROP DATABASE IF EXISTS \"{name}\""),
+        )?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(ServiceError::Io(std::io::Error::other(format!(
+                "drop {name}: {}",
+                output_text(&output).trim()
+            ))))
+        }
+    }
+
+    fn terminate(&self, postgres: &Postgres, name: &str) {
+        let sql = format!(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
+            name.replace('\'', "''")
+        );
+        if let Err(error) = self.psql(postgres, POSTGRES, &sql) {
+            eprintln!("services: disconnect {name}: {error}");
         }
     }
 
@@ -307,35 +384,14 @@ impl ServiceRunner {
             .map(str::to_string)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn psql(
-        &self,
-        container: Option<&str>,
-        host: &str,
-        port: u16,
-        user: &str,
-        password: &str,
-        database: &str,
-        sql: &str,
-    ) -> Result<Output, ServiceError> {
-        let args: Vec<String> = match container {
-            Some(container) => [
-                "exec", container, "psql", "-U", user, "-d", database, "-c", sql,
-            ]
-            .map(str::to_string)
-            .to_vec(),
-            None => vec![
-                "run".into(),
-                "--rm".into(),
-                format!("--add-host={host}:host-gateway"),
-                PSQL_IMAGE.into(),
-                "psql".into(),
-                format!("postgresql://{user}:{password}@{host}:{port}/{database}"),
-                "-c".into(),
-                sql.into(),
-            ],
-        };
-        self.docker(&args)
+    fn psql(&self, postgres: &Postgres, database: &str, sql: &str) -> Result<Output, ServiceError> {
+        self.docker(&postgres.psql_args(database, &["-c", sql]))
+    }
+
+    /// A query's rows as unaligned text.
+    fn psql_rows(&self, postgres: &Postgres, sql: &str) -> Result<String, ServiceError> {
+        let output = self.docker(&postgres.psql_args(POSTGRES, &["-tAc", sql]))?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     fn compose_args(&self, file: &Path, rest: &[&str]) -> Vec<String> {
@@ -372,6 +428,42 @@ impl ServiceRunner {
                 ))
             })
     }
+}
+
+struct Postgres {
+    container: Option<String>,
+    host: String,
+    port: u16,
+    user: String,
+    password: String,
+}
+
+impl Postgres {
+    /// Docker arguments running `psql` on `database`: inside our container, or a throwaway client.
+    fn psql_args(&self, database: &str, rest: &[&str]) -> Vec<String> {
+        let mut args: Vec<String> = match &self.container {
+            Some(container) => ["exec", container, "psql", "-U", &self.user, "-d", database]
+                .map(str::to_string)
+                .to_vec(),
+            None => vec![
+                "run".into(),
+                "--rm".into(),
+                format!("--add-host={}:host-gateway", self.host),
+                PSQL_IMAGE.into(),
+                "psql".into(),
+                format!(
+                    "postgresql://{}:{}@{}:{}/{database}",
+                    self.user, self.password, self.host, self.port
+                ),
+            ],
+        };
+        args.extend(rest.iter().map(|arg| arg.to_string()));
+        args
+    }
+}
+
+fn output_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr)
 }
 
 /// Database names of a workspace: shared-service refs as named, and `databases:` session-prefixed.

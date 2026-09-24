@@ -36,6 +36,7 @@ members = [
     "crates/pom_mcp",
     "crates/pom_agent",
     "crates/git_ui",
+    "crates/pom_workspace",
 ]
 
 [workspace.package]
