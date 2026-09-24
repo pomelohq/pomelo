@@ -3,6 +3,7 @@
 
 mod background;
 mod forms;
+mod new_project;
 mod ops;
 mod ticket_picker;
 mod tickets;
@@ -11,6 +12,7 @@ use std::sync::Arc;
 
 pub use background::{BackgroundContext, BackgroundSync, REFRESH_TITLE};
 pub use forms::{CreateWorkspace, CreateWorkspaceModal, RenameWorkspace, RenameWorkspaceModal};
+pub use new_project::{FolderChooser, NewProject, NewProjectModal};
 pub use ops::{apply_event, apply_repo_state, Finished, OpContext, OpKind, OpQueue};
 pub use tickets::{TicketSource, TicketStatuses};
 

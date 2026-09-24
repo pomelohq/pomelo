@@ -617,6 +617,27 @@ fn main() -> anyhow::Result<()> {
                 view.open_window_modal(Box::new(modal))
             });
         }
+        if mode == "newproject" {
+            let mut modal = workspaces_ui::NewProjectModal::new(
+                std::path::PathBuf::from("/Users/dev/pom"),
+                Box::new(|| {
+                    vec![
+                        std::path::PathBuf::from("/Users/dev/code/api"),
+                        std::path::PathBuf::from("/Users/dev/code/web"),
+                    ]
+                }),
+            );
+            workspace::WindowModal::text(&mut modal, "myproject");
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 6);
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 4);
+            workspace::WindowModal::text(&mut modal, "git@github.com:acme/worker.git");
+            workspace::WindowModal::key(&mut modal, workspace::EditKey::Enter, false);
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 201);
+            workspace::WindowModal::text(&mut modal, "fe");
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
         if mode == "wsrename" {
             let modal = workspaces_ui::RenameWorkspaceModal::new("feat-login", "Login page", namer);
             entity.update(app.app_mut(), |view, _| {

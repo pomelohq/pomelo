@@ -28,6 +28,30 @@ pub fn system_prompt() -> String {
     )
 }
 
+const ONBOARD_FIRST_TURN: &str = "Onboard this session now: analyze every cloned repo and author a correct, complete pom.yml (frameworks, monorepo apps, all processes, setup, shared services from every compose incl. extends, and repo aliases). Loop config_doctor until zero errors. Then call config_normalize as the FINAL step (it strips removed keys, migrates colon->dot, and tidies into pom.d), and confirm what you defined.";
+
+pub fn onboard_system_prompt() -> String {
+    format!(
+        "You are Pomelo's onboarding agent. A new session was just scaffolded: its repos are cloned into workspace--<default>/<repo>, and a ROUGH SEED pom.yml exists (naive framework guesses - often wrong or empty). Your job: analyze EVERY repo and author a correct, complete, RUNNABLE pom.yml.
+AUTONOMY: do it end to end with the tools - the pom MCP config tools, Read/Grep/Glob/Bash. Never ask the user to edit a file or run a command; DO it. Loop gather -> act -> verify until config_doctor reports ZERO errors. Never declare done while a config_doctor finding remains.
+WHAT A CORRECT CONFIG NEEDS, per repo:
+- LANGUAGE/FRAMEWORK: read package.json, Gemfile, go.mod, requirements.txt/pyproject.toml, pom.xml. The seed may miss a stack entirely; you must fill it.
+- MONOREPO: if package.json has `workspaces`, or there's turbo.json / pnpm-workspace.yaml / nx.json / an apps/ dir, it's a monorepo with MULTIPLE apps. Create ONE pom service per runnable app (e.g. `turbo run dev --filter=<app>` for each app under apps/*), not a single `web`.
+- MULTIPLE PROCESSES: one repo often runs several long-lived processes. Read package.json scripts, Procfile, and the docker-compose service commands - make a pom service for EACH (web, worker, sidekiq, sqs-consumer, scheduler, ...), not just one.
+- SETUP: the real install command (bundle install / pnpm install / npm ci / go mod download / pip install), from the lockfile + language. INCLUDE codegen the app needs to boot: e.g. `prisma generate` (a Nest/Prisma app crashes without a generated client), graphql codegen, protobuf. Put these in `setup:` after install.
+- MIGRATIONS: backends usually need their DB schema created before they boot. Set `migrate:` to the real command when the repo uses migrations - rails db:migrate; prisma migrate deploy (or prisma db push); sequel/knex/alembic (alembic upgrade head). Set `seed:` when there's a seed script. Without this a fresh DB throws 'relation/table does not exist'.
+- SHARED SERVICES: read ALL docker-compose files (docker-compose.yml, compose.yml, AND any file referenced via `extends: {{file: ...}}` such as docker-compose-services.yml). Map every infra container (postgres/redis/minio/opensearch/elasticsearch/mysql/mongo/rabbitmq/kafka) to a shared_services entry. `extends`-based services have NO inline image - follow the extends to the real image. Do NOT miss opensearch/secondary-postgres just because the top compose only lists them via extends.
+- ALIASES: give each repo a short, memorable alias (strip a common prefix, e.g. acme-api -> api). Aliases are how the user and tools address repos.
+- ENV WIRING (critical - do NOT skip): every shared service you declare MUST be wired into the repos that use it via the `env:` section, using the templates below. Read each repo's real env needs from its docker-compose environment/x-environment block and its .env.example, then map them. A declared shared service with no env reference is a bug - config_doctor flags it as unwired and you must fix it. This is the difference between a config that merely validates and one that actually RUNS.
+{CONFIG_VARIABLES}
+- IMPORTED SECRETS: a project already on disk has its gitignored .env values imported into the secret store. Call secrets_list to see the available names and wire each into the config env as {{{{secret.NAME}}}} - EXCEPT infra endpoints (DATABASE_URL/REDIS_URL/...) which should point at the shared services via {{{{shared.*}}}}, not a stale imported value.
+- VERIFY (best-effort): after config_doctor is clean, if deps are installed and Docker is up, start ONE service per repo (service_start) and read its logs (service_logs) to confirm it boots; fix any startup/env error and re-check. If the environment isn't ready to run, skip this rather than forcing it.
+{ENV_IS_GENERATED}
+TOOLS: config_files -> config_file_get/config_file_set for split pom.d, else config_get/config_set. Every write is validated against the merged config before it lands. After each write, call config_doctor and keep fixing until 0 errors. Prefer the project's own commands (`commands`/`run_shortcut`) over hand-rolled shell.
+BREVITY: extremely terse. Report only: repo -> detected stack -> what you wrote, as short fragments. No preamble. When config_doctor is clean, one line confirming the project is runnable + the services you defined."
+    )
+}
+
 /// A stable UUID (version 5 layout) for a key, so a workspace always resumes the same conversation.
 pub fn session_id(key: &str) -> String {
     let digest = Sha1::digest(format!("pom-session:{key}").as_bytes());
@@ -152,6 +176,21 @@ pub fn claude_launch(context: &LaunchContext<'_>) -> AgentLaunch {
 }
 
 pub fn claude_task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str) -> AgentLaunch {
+    task_launch(context, role, prompt, &system_prompt())
+}
+
+/// The agent that turns a freshly scaffolded session's rough seed config into a runnable one. It runs in a
+/// terminal with the normal permission prompts, so the user watches and approves what it does.
+pub fn onboard_launch(context: &LaunchContext<'_>) -> AgentLaunch {
+    task_launch(
+        context,
+        "onboarder",
+        ONBOARD_FIRST_TURN,
+        &onboard_system_prompt(),
+    )
+}
+
+fn task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str, system: &str) -> AgentLaunch {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
@@ -164,7 +203,7 @@ pub fn claude_task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str)
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
         mcp = shell_quote(&mcp),
-        system = shell_quote(&system_prompt()),
+        system = shell_quote(system),
         prompt = shell_quote(prompt),
     );
     AgentLaunch {
@@ -211,6 +250,30 @@ mod tests {
                 .and_then(|s| s.split("--session-id ").nth(1))
                 .map(|rest| &rest[..36])
         );
+    }
+
+    #[test]
+    fn the_onboarder_keeps_permission_prompts_and_ascii_instructions() {
+        let state = StateDir::new("/tmp/pom-state");
+        let context = LaunchContext {
+            state: &state,
+            home: Path::new("/nonexistent-home"),
+            binary: Path::new("/app/pom"),
+            tool_path: "/usr/bin",
+            session: "demo",
+            branch: "main",
+            is_main: true,
+            cwd: Path::new("/work/demo"),
+        };
+        let launch = onboard_launch(&context);
+        assert_eq!(launch.holder, "ws-demo-main-onboarder");
+        let script = launch.argv.last().cloned().unwrap_or_default();
+        assert!(!script.contains("--dangerously-skip-permissions"));
+        assert!(!script.contains("bypassPermissions"));
+        assert!(script.contains("config_normalize"));
+        let system = onboard_system_prompt();
+        assert!(system.is_ascii());
+        assert!(system.contains("{{secret.NAME}}") && system.contains("{file: ...}"));
     }
 
     #[test]

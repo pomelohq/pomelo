@@ -4,6 +4,7 @@ use crate::Session;
 
 pub const WELCOME_OPEN_PROJECT: u64 = 600;
 pub const WELCOME_OPEN_SETTINGS: u64 = 601;
+pub const WELCOME_NEW_PROJECT: u64 = 602;
 /// A recent session button: id = base + index into `Layout::sessions`.
 pub const WELCOME_RECENT_BASE: u64 = 1000;
 pub const WELCOME_RECENT_MAX: usize = 5;
@@ -18,6 +19,7 @@ const BUTTON_H: f32 = 28.0;
 pub fn is_welcome_id(id: u64) -> bool {
     id == WELCOME_OPEN_PROJECT
         || id == WELCOME_OPEN_SETTINGS
+        || id == WELCOME_NEW_PROJECT
         || (WELCOME_RECENT_BASE..WELCOME_RECENT_END).contains(&id)
 }
 
@@ -40,6 +42,14 @@ pub fn welcome_page(sessions: &[Session], area_w: f32, hovered: Option<u64>) -> 
             ),
     );
     let get_started = section("Get Started", content_w).children([
+        section_button(
+            WELCOME_NEW_PROJECT,
+            IconKind::Plus,
+            "New Project",
+            "",
+            content_w,
+            hovered,
+        ),
         section_button(
             WELCOME_OPEN_PROJECT,
             IconKind::FolderOpen,
