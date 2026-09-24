@@ -204,6 +204,10 @@ pub struct WorkspaceView {
     press: (f32, f32),
     show_after_switch: Option<PaneKind>,
     toast_then: Option<(PaneKind, crate::PanelRequest)>,
+    /// The failed background operation the toast offers to retry.
+    toast_retry_op: Option<u64>,
+    /// Background operations whose failure was already announced.
+    announced_failures: Vec<u64>,
     /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
     terminal_click: Option<(Instant, f32, f32, u32)>,
     layout: Layout,
@@ -276,6 +280,8 @@ impl WorkspaceView {
             press: (0.0, 0.0),
             show_after_switch: None,
             toast_then: None,
+            toast_retry_op: None,
+            announced_failures: Vec::new(),
             terminal_click: None,
             toast: None,
             notification: None,
@@ -432,11 +438,30 @@ impl WorkspaceView {
     pub fn set_workspace_ops(&mut self, ops: Vec<crate::WorkspaceOp>) {
         self.expanded_ops
             .retain(|id| ops.iter().any(|op| op.id == *id));
+        self.announced_failures
+            .retain(|id| ops.iter().any(|op| op.id == *id));
+        let failed = ops.iter().find(|op| {
+            op.quiet
+                && op.status == crate::OpStatus::Failed
+                && !self.announced_failures.contains(&op.id)
+        });
+        if let Some(op) = failed {
+            self.announced_failures.push(op.id);
+            let message = format!("{} failed: {}", op.title, op.error);
+            self.show_toast(message, op.retryable.then(|| "Retry".to_string()));
+            self.toast_then = None;
+            self.toast_retry_op = Some(op.id);
+        }
         self.workspace_ops = ops;
     }
 
     pub fn set_agent_states(&mut self, states: std::collections::HashMap<String, crate::AgentDot>) {
         self.layout.agent_states = states;
+    }
+
+    /// Returns whether the badge changed.
+    pub fn set_services_running(&mut self, running: bool) -> bool {
+        std::mem::replace(&mut self.layout.services_running, running) != running
     }
 
     pub fn update_project(&mut self, project: crate::ProjectInfo) {
@@ -513,6 +538,7 @@ impl WorkspaceView {
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, action: Option<String>) {
+        self.toast_retry_op = None;
         let now = Instant::now();
         self.toast = Some(Toast {
             message: message.into(),
@@ -4132,6 +4158,15 @@ impl WorkspaceView {
     fn header_click(&mut self, id: u64) {
         if id == TOAST_CLOSE || id == TOAST_ACTION {
             self.toast = None;
+            if let Some(op) = self.toast_retry_op.take() {
+                let action = if id == TOAST_ACTION {
+                    crate::OpAction::Retry
+                } else {
+                    crate::OpAction::Dismiss
+                };
+                self.workspace_requests.op = Some((op, action));
+                return;
+            }
             let then = self.toast_then.take();
             if let (TOAST_ACTION, Some((kind, then))) = (id, then) {
                 self.apply_request(kind, then);
@@ -5140,6 +5175,74 @@ mod tests {
             v.take_effects().session
         });
         assert_eq!(moved, None, "Down moves the highlight to Cancel");
+    }
+
+    #[test]
+    fn the_services_button_shows_a_dot_while_a_service_runs() {
+        let (mut app, h, e) = open();
+        let services = FUNC_BASE + 1;
+        let dots = |app: &mut Application| {
+            let frame = app.draw(h).expect("frame");
+            let button = app
+                .window(h)
+                .and_then(|w| w.rect_of(services))
+                .expect("services button laid out");
+            std::iter::once(&frame.base)
+                .chain(frame.overlays.iter().map(|overlay| &overlay.painted))
+                .flat_map(|painted| painted.rects.iter())
+                .filter(|r| {
+                    r.color == ui::theme().success
+                        && r.x >= button.x
+                        && r.x + r.w <= button.x + button.w
+                        && r.y >= button.y
+                        && r.y + r.h <= button.y + button.h
+                })
+                .count()
+        };
+        assert_eq!(dots(&mut app), 0);
+        assert!(e.update(app.app_mut(), |v, _| v.set_services_running(true)));
+        assert_eq!(dots(&mut app), 1);
+        assert!(
+            !e.update(app.app_mut(), |v, _| v.set_services_running(true)),
+            "no change, no repaint"
+        );
+        e.update(app.app_mut(), |v, _| v.set_services_running(false));
+        assert_eq!(dots(&mut app), 0);
+    }
+
+    #[test]
+    fn a_failed_background_update_toasts_once_with_retry() {
+        let (mut app, h, e) = open();
+        let failed = crate::WorkspaceOp {
+            id: 9,
+            branch: String::new(),
+            title: "Updating main".into(),
+            status: crate::OpStatus::Failed,
+            stages: Vec::new(),
+            detail: String::new(),
+            error: "api: migrate failed".into(),
+            retryable: true,
+            quiet: true,
+        };
+        e.update(app.app_mut(), |v, _| {
+            v.set_workspace_ops(vec![failed.clone()])
+        });
+        let text = frame_text(&app.draw(h).expect("frame"));
+        assert!(
+            text.contains("Updating main failed: api: migrate failed"),
+            "{text}"
+        );
+        assert!(text.contains("Retry"), "{text}");
+        let request = e.update(app.app_mut(), |v, _| {
+            v.header_click(TOAST_ACTION);
+            v.take_workspace_requests().op
+        });
+        assert_eq!(request, Some((9, crate::OpAction::Retry)));
+        let again = e.update(app.app_mut(), |v, _| {
+            v.set_workspace_ops(vec![failed]);
+            v.toast.is_some()
+        });
+        assert!(!again, "announced once");
     }
 
     #[test]

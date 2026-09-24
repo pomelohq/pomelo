@@ -434,6 +434,8 @@ struct MainWindow {
     pull_requests: Option<pull_request_ui::PullRequests>,
     doctor: Option<std::sync::mpsc::Receiver<Vec<pom_doctor::Finding>>>,
     doctor_findings: Vec<pom_doctor::Finding>,
+    /// When the Services badge last checked the active workspace's services.
+    services_checked: Option<Instant>,
     /// Refresh-main, auto-push and the port reaper, when this process holds the session's primary lock.
     background: Option<workspaces_ui::BackgroundSync>,
 }
@@ -964,6 +966,7 @@ impl App {
                 pull_requests: None,
                 doctor: None,
                 doctor_findings: Vec::new(),
+                services_checked: None,
                 background: None,
             },
         );

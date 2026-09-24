@@ -259,6 +259,8 @@ pub struct WorkspaceOp {
     pub error: String,
     /// Whether a failed run can resume from its failed stage.
     pub retryable: bool,
+    /// Background upkeep (keeping main fresh): one quiet line while it runs, a toast if it fails.
+    pub quiet: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -496,6 +498,8 @@ pub struct Layout {
     pub side_panels: Vec<Box<dyn SidePanelView>>,
     /// Branch -> what its coding agent last reported.
     pub agent_states: std::collections::HashMap<String, AgentDot>,
+    /// A repo service of the active workspace is running (shared services don't count).
+    pub services_running: bool,
     pub files_tree_w: f32,
 }
 
@@ -1368,6 +1372,7 @@ impl Default for Layout {
             files_view: None,
             terminal_view: None,
             agent_view: None,
+            services_running: false,
             side_panels: Vec::new(),
             agent_states: std::collections::HashMap::new(),
             files_tree_w: FILES_TREE_W,
@@ -2224,8 +2229,21 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
 pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
     let dim = text_dim_c();
     // A dock toggle: the icon turns accent (blue) when its dock is open; the fill only shows on hover/press.
-    let toggle = |kind: ui::IconKind, id: u64, active: bool| {
+    let badged = |kind: ui::IconKind, id: u64, active: bool, badge: bool| {
         let color = if active { theme().icon_accent } else { dim };
+        let mut glyph = div()
+            .row()
+            .gap(1.0)
+            .child(ui::icon(kind).size(13.0).color(color));
+        if badge {
+            glyph = glyph.child(
+                div()
+                    .col()
+                    .h_px(13.0)
+                    .justify_end()
+                    .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(theme().success)),
+            );
+        }
         let mut b = div()
             .w_px(26.0)
             .h_px(20.0)
@@ -2233,12 +2251,13 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             .items_center()
             .justify_center()
             .on_click(id)
-            .child(ui::icon(kind).size(13.0).color(color));
+            .child(glyph);
         if hovered == Some(id) {
             b = b.bg(theme().element_hover);
         }
         b
     };
+    let toggle = |kind: ui::IconKind, id: u64, active: bool| badged(kind, id, active, false);
     // A small vertical divider between groups (a thin), 1px on the theme border color.
     let vsep = || div().w_px(1.0).h_px(14.0).bg(theme().border);
     let agent_left = layout.agent_side == DockPosition::Left;
@@ -2262,10 +2281,11 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             {
                 continue;
             }
-            row = row.child(toggle(
+            row = row.child(badged(
                 kind.icon(),
                 FUNC_BASE + i as u64,
                 layout.func_active(i),
+                *kind == PaneKind::Services && layout.services_running,
             ));
             has = true;
         }

@@ -197,9 +197,35 @@ impl App {
         }
     }
 
+    /// Lights the status bar's Services badge while a repo service of the active workspace runs (checked at
+    /// most once a second: it lists the holders on disk).
+    fn poll_services_badge(&mut self, id: WindowId) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        if main.services_checked.is_some_and(|at| at.elapsed() < EVERY) {
+            return;
+        }
+        main.services_checked = Some(std::time::Instant::now());
+        let running = match (main.services.as_ref(), main.project.as_ref()) {
+            (Some(services), Some(project)) => services
+                .runner
+                .repo_service_running(project.active_branch()),
+            _ => false,
+        };
+        if self.with_workspace_view(id, |view, _| view.set_services_running(running)) == Some(true)
+        {
+            if let Some(main) = self.mains.get_mut(&id) {
+                main.dirty = true;
+            }
+        }
+    }
+
     /// Picks up a closed form, the operations' progress and whatever finished.
     pub(crate) fn poll_workspaces(&mut self, id: WindowId) {
         self.poll_doctor(id);
+        self.poll_services_badge(id);
         let result = self.with_workspace_view(id, |view, _| {
             view.tick_window_modal();
             view.take_modal_result()

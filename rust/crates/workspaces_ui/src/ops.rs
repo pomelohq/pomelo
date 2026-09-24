@@ -148,8 +148,15 @@ impl OpQueue {
             OpKind::Delete(request) => request.branch.clone(),
             OpKind::RefreshMain | OpKind::PrepareMain(_) => String::new(),
         };
+        let quiet = matches!(kind, OpKind::RefreshMain);
         {
             let mut queue = self.lock();
+            if quiet {
+                // A fresh run supersedes the last failed one, which only lived on as its toast.
+                queue
+                    .ops
+                    .retain(|op| !(op.view.quiet && op.view.status == OpStatus::Failed));
+            }
             queue.next_id += 1;
             let id = queue.next_id;
             queue.ops.push(Op {
@@ -164,6 +171,7 @@ impl OpQueue {
                     detail: String::new(),
                     error: String::new(),
                     retryable: true,
+                    quiet,
                 },
             });
         }
@@ -415,6 +423,7 @@ mod tests {
             detail: String::new(),
             error: String::new(),
             retryable: true,
+            quiet: false,
         }
     }
 
