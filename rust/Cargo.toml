@@ -28,6 +28,7 @@ members = [
     "crates/pom_secrets",
     "crates/pom_layout",
     "crates/pom_core",
+    "crates/pom_ptyhost",
 ]
 
 [workspace.package]
