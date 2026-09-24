@@ -19,6 +19,24 @@ pub struct WorkspaceEnv<'a> {
     pub sources: &'a dyn EnvSources,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvLine {
+    pub key: String,
+    pub value: String,
+    pub source: String,
+    pub secret: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServiceExplain {
+    pub repo: String,
+    pub alias: String,
+    pub service: String,
+    pub cmd: String,
+    pub databases: IndexMap<String, String>,
+    pub env: Vec<EnvLine>,
+}
+
 impl WorkspaceEnv<'_> {
     fn folder(&self) -> PathBuf {
         pom_layout::workspace_folder(self.project_root, self.branch)
@@ -70,6 +88,57 @@ impl WorkspaceEnv<'_> {
         let mut merged = dir.env.clone();
         merged.extend(own.env.clone());
         self.resolve(&merged, env_name, &self.db_names(dir))
+    }
+
+    pub fn explain_service(
+        &self,
+        repo: &str,
+        service: &str,
+        env_name: &str,
+    ) -> Option<ServiceExplain> {
+        let dir = self.config.repos.get(repo)?;
+        let own = dir.services.get(service)?;
+        let mut merged = dir.env.clone();
+        merged.extend(own.env.clone());
+        let databases = self.db_names(dir);
+        let env = self
+            .resolve(&merged, env_name, &databases)
+            .into_iter()
+            .map(|(key, value)| {
+                let template = merged.get(&key).map_or("", String::as_str);
+                let source = if dir.own_env.contains_key(&key) || own.env.contains_key(&key) {
+                    "own".to_string()
+                } else {
+                    dir.presets
+                        .iter()
+                        .find(|name| {
+                            self.config
+                                .presets
+                                .get(name.as_str())
+                                .is_some_and(|preset| preset.env.contains_key(&key))
+                        })
+                        .map_or_else(String::new, |name| format!("preset:{name}"))
+                };
+                let secret = template
+                    .split("{{")
+                    .skip(1)
+                    .any(|token| token.trim_start().starts_with("secret."));
+                EnvLine {
+                    key,
+                    value,
+                    source,
+                    secret,
+                }
+            })
+            .collect();
+        Some(ServiceExplain {
+            repo: repo.to_string(),
+            alias: alias(repo, dir).to_string(),
+            service: service.to_string(),
+            cmd: own.active_cmd("").to_string(),
+            databases,
+            env,
+        })
     }
 
     /// The repo-level env (no service overlay), for commands run in the repo's worktree.

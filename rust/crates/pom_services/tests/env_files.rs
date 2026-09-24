@@ -115,3 +115,63 @@ fn a_workspace_without_a_folder_is_left_alone() {
         Vec::<(String, String)>::new()
     );
 }
+
+#[test]
+fn explains_where_each_service_value_comes_from() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = temp.path();
+    std::fs::write(
+        root.join("pom.yml"),
+        r#"session: demo
+presets:
+  rails:
+    env:
+      RAILS_ENV: development
+      LOG: info
+repos:
+  api:
+    alias: be
+    preset: [rails]
+    databases:
+      main: "app_{{branch.safe}}"
+    env:
+      LOG: debug
+      TOKEN: "{{secret.TOKEN}}"
+    services:
+      server:
+        cmd: rails s
+        env:
+          PORT: "{{be.server.port}}"
+"#,
+    )
+    .expect("pom.yml");
+    let config = Config::load(&root.join("pom.yml")).expect("config");
+    let env = WorkspaceEnv {
+        config: &config,
+        project_root: root,
+        branch: "feat/a",
+        sources: &Pinned,
+    };
+    let explain = env.explain_service("api", "server", "").expect("explain");
+    assert_eq!(explain.alias, "be");
+    assert_eq!(explain.cmd, "rails s");
+    assert_eq!(
+        explain.databases.get("main").map(String::as_str),
+        Some("demo_app_feat_a")
+    );
+    let line = |key: &str| {
+        explain
+            .env
+            .iter()
+            .find(|line| line.key == key)
+            .cloned()
+            .expect(key)
+    };
+    assert_eq!(line("RAILS_ENV").source, "preset:rails");
+    assert_eq!(line("LOG").source, "own", "the repo overrides the preset");
+    assert_eq!(line("LOG").value, "debug");
+    assert!(line("TOKEN").secret);
+    assert_eq!(line("TOKEN").value, "s3cret");
+    assert_eq!(line("PORT").source, "own");
+    assert!(env.explain_service("api", "missing", "").is_none());
+}

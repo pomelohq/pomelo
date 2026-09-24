@@ -114,6 +114,8 @@ pub enum IconKind {
     Merged,
     Clock,
     Filter,
+    Copy,
+    Trash,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

@@ -485,16 +485,46 @@ impl ProjectServices {
         let is_main = project
             .active_workspace()
             .is_none_or(|workspace| workspace.is_main);
-        Box::new(services_ui::ServicesPanel::new(
-            services_ui::ServicesContext {
-                runner: self.runner.clone(),
-                config: self.config.clone(),
-                branch: project.active_branch().to_string(),
-                is_main,
-                waker: Arc::new(ui::wake),
+        let config = self.config.clone();
+        let environment = environment_ui::EnvironmentContext {
+            state: pom_paths::StateDir::from_env(),
+            runner: self.runner.clone(),
+            config: Arc::new(move || config.read().ok().and_then(|config| config.clone())),
+            workspaces: project
+                .workspaces
+                .iter()
+                .map(|workspace| (workspace.branch.clone(), workspace.is_main))
+                .collect(),
+            branch: project.active_branch().to_string(),
+        };
+        let for_secrets = environment.clone();
+        let tabs = vec![
+            services_ui::TabButton {
+                icon: ui::IconKind::Key,
+                id: "secrets".into(),
+                open: Arc::new(move || {
+                    Box::new(environment_ui::SecretsItem::new(for_secrets.clone()))
+                }),
             },
-            project.active_root(),
-        ))
+            services_ui::TabButton {
+                icon: ui::IconKind::Server,
+                id: "environment".into(),
+                open: Arc::new(move || Box::new(environment_ui::EnvItem::new(environment.clone()))),
+            },
+        ];
+        Box::new(
+            services_ui::ServicesPanel::new(
+                services_ui::ServicesContext {
+                    runner: self.runner.clone(),
+                    config: self.config.clone(),
+                    branch: project.active_branch().to_string(),
+                    is_main,
+                    waker: Arc::new(ui::wake),
+                },
+                project.active_root(),
+            )
+            .with_tab_buttons(tabs),
+        )
     }
 }
 
