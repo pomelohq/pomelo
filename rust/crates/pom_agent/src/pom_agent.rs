@@ -1,6 +1,7 @@
 mod claude;
 mod hooks;
 mod launch;
+mod naming;
 mod watch;
 
 pub use claude::{install_mcp, mcp_config_json, ClaudeHome, InstallError};
@@ -11,4 +12,5 @@ pub use hooks::{
 pub use launch::{
     claude_launch, resolve_claude, session_id, system_prompt, AgentLaunch, LaunchContext,
 };
+pub use naming::{claude_available, naming_prompt, parse_suggestion, suggest_name, NameSuggestion};
 pub use watch::AgentWatcher;

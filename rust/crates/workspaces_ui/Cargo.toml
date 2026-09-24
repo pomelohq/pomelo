@@ -1,0 +1,22 @@
+[package]
+name = "workspaces_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Creating, renaming and deleting workspaces from the app: the forms and the queue of running operations."
+
+[lib]
+path = "src/workspaces_ui.rs"
+
+[dependencies]
+pom_agent = { path = "../pom_agent" }
+pom_config = { path = "../pom_config" }
+pom_layout = { path = "../pom_layout" }
+pom_paths = { path = "../pom_paths" }
+pom_services = { path = "../pom_services" }
+pom_workspace = { path = "../pom_workspace" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }
+
+[dev-dependencies]
+tempfile = "3"

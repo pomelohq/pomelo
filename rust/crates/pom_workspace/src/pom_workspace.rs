@@ -17,7 +17,7 @@ use pom_paths::StateDir;
 use pom_services::ServiceRunner;
 use serde::{Deserialize, Serialize};
 
-pub use create::{create, CreateRequest, CREATE_STAGES};
+pub use create::{create, validate_branch_name, CreateRequest, CREATE_STAGES};
 pub use delete::{delete, DeleteRequest, DELETE_STAGES};
 pub use git::branch_is_safe_to_delete;
 pub use prepare::{prepare_main, PrepareRequest};

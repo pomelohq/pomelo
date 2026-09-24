@@ -2,6 +2,7 @@
 //! right dock, both resizable via a divider and collapsing to a fixed icon rail instead of vanishing, plus the
 //! content area. Computes rectangles, text runs and hit regions; the app drives input and rendering.
 
+mod form;
 mod key_binding;
 pub mod pane;
 pub mod pane_group;
@@ -13,12 +14,17 @@ pub mod tab_drag;
 pub mod text_field;
 mod welcome;
 mod workspace_view;
+pub use form::{
+    checkbox, is_window_modal_id, modal_button, modal_footer, modal_frame, modal_header,
+    modal_section, outlined_button, progress_bar, status_line, InputField, ModalResult,
+    WindowModal, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
+};
 pub use key_binding::render_keystroke;
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
     side_panel_kind, terminal_content, terminal_dock_body, AgentDot, DockPosition, OutlinePanel,
-    PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView, TerminalPanel, WorkspaceRow,
-    SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
+    PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView, TerminalPanel, WorkspaceList,
+    WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use welcome::{
     is_welcome_id, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,
@@ -27,7 +33,8 @@ pub use welcome::{
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
 pub use workspace_view::{
-    ParkedWorkspace, ResizeCursor, SessionRequest, WorkspaceEffects, WorkspaceView,
+    ParkedWorkspace, ResizeCursor, SessionRequest, WorkspaceEffects, WorkspaceRequests,
+    WorkspaceView,
 };
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the
@@ -148,13 +155,8 @@ impl Dock {
     }
 
     /// Render the dock's panel body into `region`, after syncing it with the current session data.
-    pub fn render_body(
-        &mut self,
-        region: Rect,
-        rows: &[crate::panel::WorkspaceRow],
-        current: usize,
-    ) -> Painted {
-        self.panel.sync(rows, current);
+    pub fn render_body(&mut self, region: Rect, list: &crate::panel::WorkspaceList<'_>) -> Painted {
+        self.panel.sync(list);
         render(&self.panel.render(), region)
     }
 }
@@ -176,6 +178,65 @@ pub struct ProjectInfo {
     pub workspaces: Vec<String>,
     /// The workspace this window works in (its files, terminal, branch).
     pub active: String,
+    /// Display names by workspace (same order as `workspaces`; empty shows the branch).
+    pub labels: Vec<String>,
+    /// Running services by workspace (same order as `workspaces`).
+    pub running: Vec<usize>,
+}
+
+impl ProjectInfo {
+    /// What the WORKSPACES list calls the workspace at `index`: its display name, else its branch.
+    pub fn label(&self, index: usize) -> &str {
+        match self.labels.get(index) {
+            Some(label) if !label.is_empty() => label,
+            _ => self.workspaces.get(index).map_or("", String::as_str),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpStatus {
+    Queued,
+    Running,
+    Done,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StageState {
+    Pending,
+    Running,
+    Done,
+    Skipped,
+    Failed,
+}
+
+/// A workspace being created or deleted, as the WORKSPACES panel shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceOp {
+    pub id: u64,
+    pub branch: String,
+    pub title: String,
+    pub status: OpStatus,
+    pub stages: Vec<(String, StageState)>,
+    /// The latest progress line of the running stage.
+    pub detail: String,
+    pub error: String,
+    /// Whether a failed run can resume from its failed stage.
+    pub retryable: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpAction {
+    Retry,
+    Dismiss,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowAction {
+    Rename,
+    StopServices,
+    Delete,
 }
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
@@ -198,6 +259,20 @@ pub const NOTIFICATION_CLOSE: u64 = 621;
 pub const SIDE_PANEL_MENU_TARGET: u64 = 1500;
 pub const WORKSPACE_ROW_BASE: u64 = 2000;
 pub const WORKSPACE_ROW_END: u64 = 3000;
+/// The WORKSPACES header's new-workspace button.
+pub const WORKSPACE_NEW: u64 = 14;
+/// A workspace operation card: base + position * stride + part.
+pub const WORKSPACE_OP_BASE: u64 = 3000;
+pub const WORKSPACE_OP_END: u64 = 4000;
+pub const WORKSPACE_OP_STRIDE: u64 = 4;
+pub const WORKSPACE_OP_TOGGLE: u64 = 0;
+pub const WORKSPACE_OP_RETRY: u64 = 1;
+pub const WORKSPACE_OP_DISMISS: u64 = 2;
+/// The context menu of a WORKSPACES row, and its items.
+pub const WORKSPACE_ROW_MENU_TARGET: u64 = 1600;
+pub const MENU_WS_RENAME: u64 = 940;
+pub const MENU_WS_STOP: u64 = 941;
+pub const MENU_WS_DELETE: u64 = 942;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,
