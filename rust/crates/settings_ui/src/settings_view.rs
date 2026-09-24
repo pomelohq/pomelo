@@ -20,8 +20,16 @@ const JIRA_FIELDS: [u64; 3] = [
 ];
 
 fn is_free_text(id: u64) -> bool {
-    JIRA_FIELDS.contains(&id) || id == settings_ui::CTRL_AGENT_COMMAND
+    JIRA_FIELDS.contains(&id)
+        || id == settings_ui::CTRL_AGENT_COMMAND
+        || id == settings_ui::CTRL_TERM_SHELL
 }
+
+const NUMBER_FIELDS: [u64; 3] = [
+    settings_ui::CTRL_BUFFER_FONT_EDIT,
+    settings_ui::CTRL_TERM_FONT_EDIT,
+    settings_ui::CTRL_SCROLLBACK_EDIT,
+];
 
 /// Cross-window work the shell must do after an input the view handled: re-apply the UI font to every window's
 /// text renderer, and/or repaint the other windows because a shared global (theme/scale/weight) changed.
@@ -33,6 +41,9 @@ pub struct SideEffects {
     pub test_notification: bool,
     pub start_servers: bool,
     pub play_sound: Option<String>,
+    pub toggle_login_item: bool,
+    pub check_updates: bool,
+    pub edit_keymap: bool,
 }
 
 /// Innermost hit id under `(x, y)` (regions pushed outer-first, inner-last), like `ui::Window::hit_at`.
@@ -117,6 +128,29 @@ impl SettingsView {
     pub fn set_agent_page(&mut self, agent: settings_ui::AgentPage) -> bool {
         let changed = self.pages.agent != agent;
         self.pages.agent = agent;
+        changed
+    }
+
+    /// Shows a page (by its index in the navbar), as a key binding asks.
+    pub fn select_category(&mut self, category: usize) {
+        if category < settings_ui::CATEGORY_COUNT {
+            self.commit_edit();
+            self.close_popover();
+            self.selected = category;
+            self.page_scroll = 0.0;
+            self.active_section = None;
+        }
+    }
+
+    pub fn set_general_page(&mut self, general: settings_ui::GeneralPage) -> bool {
+        let changed = self.pages.general != general;
+        self.pages.general = general;
+        changed
+    }
+
+    pub fn set_keymap_page(&mut self, keymap: settings_ui::KeymapPage) -> bool {
+        let changed = self.pages.keymap != keymap;
+        self.pages.keymap = keymap;
         changed
     }
 
@@ -311,6 +345,38 @@ impl SettingsView {
         };
         if JIRA_FIELDS.contains(&id) {
             self.commit_jira(id, &buf);
+            return;
+        }
+        if id == settings_ui::CTRL_TERM_SHELL {
+            let shell = buf.trim().to_string();
+            if shell != self.settings.terminal_shell {
+                self.settings.terminal_shell = shell;
+                self.persist();
+            }
+            return;
+        }
+        if NUMBER_FIELDS.contains(&id) {
+            let Ok(value) = buf.trim().parse::<f32>() else {
+                return;
+            };
+            let changed = match id {
+                settings_ui::CTRL_BUFFER_FONT_EDIT => {
+                    let next = value.clamp(settings_ui::FONT_SIZE_MIN, settings_ui::FONT_SIZE_MAX);
+                    std::mem::replace(&mut self.settings.buffer_font_size, next) != next
+                }
+                settings_ui::CTRL_TERM_FONT_EDIT => {
+                    let next = value.clamp(settings_ui::FONT_SIZE_MIN, settings_ui::FONT_SIZE_MAX);
+                    std::mem::replace(&mut self.settings.terminal_font_size, next) != next
+                }
+                _ => {
+                    let next = (value as u32)
+                        .clamp(settings_ui::SCROLLBACK_MIN, settings_ui::SCROLLBACK_MAX);
+                    std::mem::replace(&mut self.settings.terminal_scrollback, next) != next
+                }
+            };
+            if changed {
+                self.persist();
+            }
             return;
         }
         if id == settings_ui::CTRL_AGENT_COMMAND {
@@ -757,10 +823,37 @@ impl SettingsView {
                 let max = (self.page_total_h - clip_h).max(0.0);
                 self.page_scroll = off.clamp(0.0, max);
             }
-        } else if id == settings_ui::CTRL_AGENT_COMMAND {
+        } else if id == settings_ui::CTRL_AGENT_COMMAND || id == settings_ui::CTRL_TERM_SHELL {
             self.commit_edit();
-            self.editing = Some((id, self.settings.agent_command.clone()));
+            let seed = if id == settings_ui::CTRL_TERM_SHELL {
+                self.settings.terminal_shell.clone()
+            } else {
+                self.settings.agent_command.clone()
+            };
+            self.editing = Some((id, seed));
             self.close_popover();
+        } else if NUMBER_FIELDS.contains(&id) {
+            self.commit_edit();
+            let seed = match id {
+                settings_ui::CTRL_BUFFER_FONT_EDIT => {
+                    format!("{:.0}", self.settings.buffer_font_size)
+                }
+                settings_ui::CTRL_TERM_FONT_EDIT => {
+                    format!("{:.0}", self.settings.terminal_font_size)
+                }
+                _ => self.settings.terminal_scrollback.to_string(),
+            };
+            self.editing = Some((id, seed));
+            self.close_popover();
+        } else if id == settings_ui::CTRL_START_AT_LOGIN {
+            self.commit_edit();
+            self.pending.toggle_login_item = true;
+        } else if id == settings_ui::CTRL_CHECK_UPDATES {
+            self.commit_edit();
+            self.pending.check_updates = true;
+        } else if id == settings_ui::CTRL_EDIT_KEYMAP {
+            self.commit_edit();
+            self.pending.edit_keymap = true;
         } else if id == settings_ui::CTRL_REINSTALL_AGENTS {
             self.commit_edit();
             self.pending.reinstall_agents = true;
@@ -1033,5 +1126,29 @@ mod tests {
             proxy_port: 8767,
             ..Default::default()
         }));
+    }
+
+    #[test]
+    fn startup_update_and_keymap_buttons_go_to_the_app() {
+        let mut view = SettingsView::new(Settings::default());
+        view.click(settings_ui::CTRL_START_AT_LOGIN);
+        view.click(settings_ui::CTRL_CHECK_UPDATES);
+        view.click(settings_ui::CTRL_EDIT_KEYMAP);
+        let effects = view.take_side_effects();
+        assert!(effects.toggle_login_item && effects.check_updates && effects.edit_keymap);
+        view.click(settings_ui::CTRL_TERM_SHELL);
+        assert!(view.key_text("/bin/bash -l"));
+        assert_eq!(
+            view.editing.as_ref().map(|(_, text)| text.as_str()),
+            Some("/bin/bash -l")
+        );
+        view.click(settings_ui::CTRL_SCROLLBACK_EDIT);
+        assert_eq!(
+            view.editing.as_ref().map(|(_, text)| text.as_str()),
+            Some("10000"),
+            "the shell edit was committed and the number field seeded"
+        );
+        view.select_category(settings_ui::KEYMAP);
+        assert_eq!(view.selected, settings_ui::KEYMAP);
     }
 }

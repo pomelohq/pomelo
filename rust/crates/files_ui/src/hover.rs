@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use ui::{div, theme, Node, Rect, Rgba};
 
 use crate::markdown_view::{self, Markdown, MarkdownLayout, MarkdownStyle};
-use crate::{char_advance, DiagnosticEntry, FileItem, EDIT_LINE_H};
+use crate::{char_advance, edit_line_h, DiagnosticEntry, FileItem};
 
 pub(crate) const HOVER_DELAY: Duration = Duration::from_millis(300);
 const HIDING_DELAY: Duration = Duration::from_millis(300);
@@ -204,7 +204,7 @@ impl FileItem {
         if local_y < 0.0 || local_x < gutter {
             return None;
         }
-        let row = ((self.scroll_y + local_y) / EDIT_LINE_H) as usize;
+        let row = ((self.scroll_y + local_y) / edit_line_h()) as usize;
         if row >= self.disp_count() {
             return None;
         }
@@ -434,7 +434,7 @@ impl FileItem {
     }
 
     pub(crate) fn scroll_hover_popover(&mut self, index: usize, dy: f32) -> bool {
-        let rows = (-dy / (EDIT_LINE_H * ui::ui_text_scale())).round() as isize;
+        let rows = (-dy / (edit_line_h() * ui::ui_text_scale())).round() as isize;
         if rows == 0 {
             return false;
         }
@@ -477,21 +477,21 @@ impl FileItem {
             .min(text_width / 2.0)
             .max(MIN_POPOVER_CHARACTERS * em)
             / scale;
-        let max_height = (MAX_POPOVER_LINES * EDIT_LINE_H)
+        let max_height = (MAX_POPOVER_LINES * edit_line_h())
             .min(self.body_h / 2.0)
-            .max(MIN_POPOVER_LINES * EDIT_LINE_H)
+            .max(MIN_POPOVER_LINES * edit_line_h())
             / scale;
 
         let (mut row, x) = self.position(anchor);
         let first_visible = self.first_line();
-        let last_visible = first_visible + (self.body_h / EDIT_LINE_H).ceil() as usize;
+        let last_visible = first_visible + (self.body_h / edit_line_h()).ceil() as usize;
         row = row.clamp(
             first_visible,
             last_visible.saturating_sub(1).max(first_visible),
         );
         let hovered_x = content.x + crate::gutter_width(self.line_count()) + x - self.scroll_x;
-        let hovered_y = content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
-        let line_height = EDIT_LINE_H;
+        let hovered_y = content.y + row as f32 * edit_line_h() - self.scroll_y;
+        let line_height = edit_line_h();
 
         let mut measured: Vec<Measured> = Vec::new();
         if let Some(diagnostic) = self.hover.diagnostic.as_ref() {
@@ -642,7 +642,7 @@ mod tests {
             "a.rs",
             Some(text.into()),
         );
-        item.set_body_height(20.0 * EDIT_LINE_H);
+        item.set_body_height(20.0 * edit_line_h());
         item.ensure_visible();
         item.diagnostics = vec![DiagnosticEntry {
             range: 8..9,
@@ -657,11 +657,11 @@ mod tests {
     /// Local coordinates in the left part of char `column` on `row`, nearest the boundary before it.
     fn point(item: &FileItem, row: usize, column: usize) -> (f32, f32) {
         let x = crate::gutter_width(item.line_count()) + (column as f32 + 0.25) * char_advance();
-        (x, row as f32 * EDIT_LINE_H + EDIT_LINE_H / 2.0)
+        (x, row as f32 * edit_line_h() + edit_line_h() / 2.0)
     }
 
     fn content() -> Rect {
-        Rect::new(0.0, 0.0, 1200.0, 20.0 * EDIT_LINE_H, Rgba::TRANSPARENT)
+        Rect::new(0.0, 0.0, 1200.0, 20.0 * edit_line_h(), Rgba::TRANSPARENT)
     }
 
     #[test]
@@ -708,7 +708,7 @@ mod tests {
         let popovers = item.hover_popover_nodes(content());
         assert_eq!(popovers.len(), 2);
         // The anchor is on the first line, so there is no room above: they stack below it.
-        assert!(popovers[0].2 >= EDIT_LINE_H);
+        assert!(popovers[0].2 >= edit_line_h());
         assert!(popovers[1].2 > popovers[0].2);
     }
 

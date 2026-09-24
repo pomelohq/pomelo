@@ -53,9 +53,35 @@ use workspace::{
     ItemInput, ModalView, FUNC_VIEW_BASE,
 };
 
-// Editor text metrics (design px). Each source line is `EDIT_LINE_H` tall with `EDIT_FONT` mono text. Caret/selection geometry uses these plus the mono advance so it aligns with the glyphs.
-const EDIT_FONT: f32 = 15.0; // matches the reference's default buffer font size
-const EDIT_LINE_H: f32 = 24.0; // ~15 * 1.618 ("comfortable" line height), snapped to a whole pixel
+// Editor text metrics (design px). Each source line is `edit_line_h()` tall with `edit_font()` mono text. Caret/selection geometry uses these plus the mono advance so it aligns with the glyphs.
+const DEFAULT_EDIT_FONT: f32 = 15.0; // matches the reference's default buffer font size
+/// The buffer font size in hundredths of a design px, set from the app's settings.
+static EDIT_FONT_HUNDREDTHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1500);
+static SOFT_WRAP_DEFAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SPLIT_DIFF_DEFAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub(crate) fn edit_font() -> f32 {
+    EDIT_FONT_HUNDREDTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
+/// ~1.618 times the font ("comfortable" line height), snapped to a whole pixel: 24 at the default 15.
+pub(crate) fn edit_line_h() -> f32 {
+    (edit_font() * 1.618).round()
+}
+
+/// The editor defaults from the app's settings: buffer font size, soft wrap for new files, and whether diffs
+/// open side by side. Returns whether the font changed, so open files can lay out again.
+pub fn set_editor_defaults(font_size: f32, soft_wrap: bool, split_diff: bool) -> bool {
+    use std::sync::atomic::Ordering;
+    let hundredths = (font_size.clamp(6.0, 72.0) * 100.0).round() as u32;
+    SOFT_WRAP_DEFAULT.store(soft_wrap, Ordering::Relaxed);
+    SPLIT_DIFF_DEFAULT.store(split_diff, Ordering::Relaxed);
+    EDIT_FONT_HUNDREDTHS.swap(hundredths, Ordering::Relaxed) != hundredths
+}
+
+pub fn default_buffer_font_size() -> f32 {
+    DEFAULT_EDIT_FONT
+}
 const MESSAGE_PAD: f32 = 8.0;
 const CARET_W: f32 = 2.0;
 const VERTICAL_SCROLL_MARGIN: f32 = 3.0;
@@ -79,7 +105,7 @@ const TAB_COLS: usize = 4; // indent-guide spacing: one guide per this many lead
 
 /// The monospace advance of one column at the editor font (Lilex is monospace, so every column is this wide).
 fn char_advance() -> f32 {
-    ui::measure_text_width("M", EDIT_FONT, true, 400)
+    ui::measure_text_width("M", edit_font(), true, 400)
 }
 
 /// Gutter layout: `left_padding` (room for run/breakpoint markers), right-aligned line numbers, `right_padding`
@@ -105,7 +131,7 @@ impl GutterDimensions {
             left_padding,
             right_padding,
             width: digits as f32 * ch + left_padding + right_padding,
-            margin: ui::mono_descent(EDIT_FONT),
+            margin: ui::mono_descent(edit_font()),
         }
     }
 
@@ -449,8 +475,9 @@ struct DiagnosticEntry {
 
 /// Where a wavy underline sits in a line: below the baseline by most of the font's descent, as text is
 /// centered in the line box. Ascent and descent are the mono font's 1.025 and 0.275 em.
-const DIAGNOSTIC_UNDERLINE_TOP: f32 =
-    (EDIT_LINE_H - EDIT_FONT * 1.3) / 2.0 + EDIT_FONT * 1.025 + EDIT_FONT * 0.275 * 0.618;
+fn diagnostic_underline_top() -> f32 {
+    (edit_line_h() - edit_font() * 1.3) / 2.0 + edit_font() * 1.025 + edit_font() * 0.275 * 0.618
+}
 const DIAGNOSTIC_UNDERLINE_THICKNESS: f32 = 1.0;
 
 fn diagnostic_color(severity: lsp::lsp_types::DiagnosticSeverity) -> Rgba {
@@ -546,7 +573,9 @@ impl FileItem {
             wraps: Vec::new(),
             wrap_width: 0.0,
             lang,
-            soft_wrap: if lang == Lang::Markdown {
+            soft_wrap: if lang == Lang::Markdown
+                || SOFT_WRAP_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)
+            {
                 SoftWrap::EditorWidth
             } else {
                 SoftWrap::None
@@ -561,7 +590,7 @@ impl FileItem {
             highlighted_rows: None,
             git,
             branch_diff: false,
-            split: true,
+            split: SPLIT_DIFF_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
             split_active: false,
             split_left: Vec::new(),
             expanded: Vec::new(),
@@ -655,7 +684,8 @@ impl FileItem {
                 }
                 rects.push(Rect::wavy_underline(
                     content.x + gw + left - self.scroll_x,
-                    content.y + row as f32 * EDIT_LINE_H - self.scroll_y + DIAGNOSTIC_UNDERLINE_TOP,
+                    content.y + row as f32 * edit_line_h() - self.scroll_y
+                        + diagnostic_underline_top(),
                     right - left,
                     DIAGNOSTIC_UNDERLINE_THICKNESS,
                     diagnostic_color(entry.severity),
@@ -848,6 +878,15 @@ impl FileItem {
         }
     }
 
+    /// The buffer font changed: everything measured at the old size lays out again.
+    fn invalidate_metrics(&mut self) {
+        self.rows = None;
+        self.wraps.iter_mut().for_each(|wrap| *wrap = None);
+        self.wrap_width = 0.0;
+        self.char_widths.borrow_mut().clear();
+        self.ensure_visible();
+    }
+
     fn toggle_soft_wrap(&mut self) {
         self.soft_wrap_override = match self.soft_wrap_override {
             Some(_) => None,
@@ -1013,14 +1052,14 @@ impl FileItem {
         let ui_colors = theme();
         let dcount = self.disp_count();
         let first = self.first_line().min(dcount);
-        let visible = (self.body_h / EDIT_LINE_H).ceil() as usize + 2;
+        let visible = (self.body_h / edit_line_h()).ceil() as usize + 2;
         let last = (first + visible).min(dcount);
         let base_lines = self
             .base
             .as_ref()
             .map_or(1, |base| base.buffer.rope.len_lines());
         let gutter = gutter_width(base_lines);
-        let offset = first as f32 * EDIT_LINE_H - self.scroll_y;
+        let offset = first as f32 * edit_line_h() - self.scroll_y;
         let mut numbers = div().col().w_px(gutter);
         let mut text = div().col().flex(1.0).pl(char_advance());
         let mut bands = Vec::new();
@@ -1028,42 +1067,42 @@ impl FileItem {
         let fill = if light { 0.16 } else { 0.12 };
         for row_index in first..last {
             let side = self.split_left.get(row_index).copied().unwrap_or_default();
-            let y = area.y + row_index as f32 * EDIT_LINE_H - self.scroll_y;
+            let y = area.y + row_index as f32 * edit_line_h() - self.scroll_y;
             if side.changed && side.base.is_some() {
                 bands.push(Rect::new(
                     area.x,
                     y,
                     area.w,
-                    EDIT_LINE_H,
+                    edit_line_h(),
                     ui_colors.version_control_deleted.alpha(fill),
                 ));
             }
             let Some(base_line) = side.base else {
-                numbers = numbers.child(div().h_px(EDIT_LINE_H));
-                text = text.child(div().h_px(EDIT_LINE_H));
+                numbers = numbers.child(div().h_px(edit_line_h()));
+                text = text.child(div().h_px(edit_line_h()));
                 continue;
             };
             numbers = numbers.child(
                 div()
                     .row()
-                    .h_px(EDIT_LINE_H)
+                    .h_px(edit_line_h())
                     .items_center()
                     .justify_end()
                     .pr(char_advance())
                     .child(
                         label((base_line + 1).to_string())
-                            .size(EDIT_FONT)
+                            .size(edit_font())
                             .mono()
                             .color(ui_colors.editor_line_number),
                     ),
             );
-            let mut row = div().row().h_px(EDIT_LINE_H).items_center();
+            let mut row = div().row().h_px(edit_line_h()).items_center();
             let segments = self.base_line_segments(base_line, &colors);
             if segments.is_empty() {
-                row = row.child(label(" ").size(EDIT_FONT).mono());
+                row = row.child(label(" ").size(edit_font()).mono());
             }
             for (segment, color) in segments {
-                row = row.child(label(segment).size(EDIT_FONT).mono().color(color));
+                row = row.child(label(segment).size(edit_font()).mono().color(color));
             }
             text = text.child(row);
         }
@@ -1085,7 +1124,7 @@ impl FileItem {
             area.x,
             area.y + offset.min(0.0),
             area.w + 4000.0,
-            area.h + EDIT_LINE_H * 2.0,
+            area.h + edit_line_h() * 2.0,
             Rgba::TRANSPARENT,
         );
         let rendered = ui::render(&node, top);
@@ -1203,7 +1242,7 @@ impl FileItem {
         if self.buffer.is_none() {
             return;
         }
-        let top = self.position(self.scroll_anchor).0 as f32 * EDIT_LINE_H;
+        let top = self.position(self.scroll_anchor).0 as f32 * edit_line_h();
         self.scroll_y = (top + self.scroll_anchor_offset).clamp(0.0, self.max_scroll());
     }
 
@@ -1220,7 +1259,7 @@ impl FileItem {
         self.scroll_y = scroll_y;
         let top_row = self.first_line();
         self.scroll_anchor = self.row_start_offset(top_row);
-        self.scroll_anchor_offset = self.scroll_y - top_row as f32 * EDIT_LINE_H;
+        self.scroll_anchor_offset = self.scroll_y - top_row as f32 * edit_line_h();
     }
 
     fn row(&self, row: usize) -> Option<DisplayRow> {
@@ -1539,12 +1578,12 @@ impl FileItem {
 
     /// Total content height (px), in display rows.
     fn content_h(&self) -> f32 {
-        self.disp_count() as f32 * EDIT_LINE_H
+        self.disp_count() as f32 * edit_line_h()
     }
 
     /// The last row may scroll up to the top of the viewport.
     fn max_scroll(&self) -> f32 {
-        (self.disp_count().saturating_sub(1)) as f32 * EDIT_LINE_H
+        (self.disp_count().saturating_sub(1)) as f32 * edit_line_h()
     }
 
     /// The text viewport width (px): the body minus the padding and the fixed gutter.
@@ -1564,7 +1603,7 @@ impl FileItem {
 
     /// First visible line index, and the sub-line offset the shell shifts the body up by (in `(-line_h, 0]`).
     fn first_line(&self) -> usize {
-        (self.scroll_y / EDIT_LINE_H).floor().max(0.0) as usize
+        (self.scroll_y / edit_line_h()).floor().max(0.0) as usize
     }
 
     /// Scroll just enough to show the selections with up to `VERTICAL_SCROLL_MARGIN` rows around them, falling
@@ -1577,7 +1616,7 @@ impl FileItem {
             return;
         };
         let row_of = |offset: usize| self.position(offset).0 as f32;
-        let visible_lines = self.body_h / EDIT_LINE_H;
+        let visible_lines = self.body_h / edit_line_h();
         let mut target_top = row_of(first.head());
         let mut target_bottom = row_of(last.head()) + 1.0;
         if target_bottom - target_top > visible_lines {
@@ -1589,13 +1628,13 @@ impl FileItem {
             .clamp(0.0, VERTICAL_SCROLL_MARGIN);
         let target_top = (target_top - margin).max(0.0);
         let target_bottom = target_bottom + margin;
-        let start_row = self.scroll_y / EDIT_LINE_H;
+        let start_row = self.scroll_y / edit_line_h();
         let needs_up = target_top < start_row;
         let needs_down = target_bottom >= start_row + visible_lines;
         if needs_up && !needs_down {
-            self.set_scroll_y(target_top * EDIT_LINE_H);
+            self.set_scroll_y(target_top * edit_line_h());
         } else if needs_down && !needs_up {
-            self.set_scroll_y((target_bottom - visible_lines) * EDIT_LINE_H);
+            self.set_scroll_y((target_bottom - visible_lines) * edit_line_h());
         }
     }
 
@@ -1606,7 +1645,7 @@ impl FileItem {
             return;
         };
         let first_row = self.first_line();
-        let last_row = first_row + (self.body_h / EDIT_LINE_H).ceil() as usize + 1;
+        let last_row = first_row + (self.body_h / edit_line_h()).ceil() as usize + 1;
         let em = char_advance();
         let viewport = self.text_viewport_w();
         let (mut target_left, mut target_right) = (f32::INFINITY, 0.0f32);
@@ -1654,7 +1693,7 @@ impl FileItem {
     fn offset_at_local(&self, local_x: f32, local_y: f32) -> Option<usize> {
         let b = self.buffer.as_ref()?;
         let gw = gutter_width(self.line_count());
-        let row = ((self.scroll_y + local_y) / EDIT_LINE_H).max(0.0) as usize;
+        let row = ((self.scroll_y + local_y) / edit_line_h()).max(0.0) as usize;
         if row >= self.disp_count() {
             return Some(b.rope.len_chars());
         }
@@ -1835,7 +1874,7 @@ impl FileItem {
         let colors = syntax_theme();
         let mut layout = LineLayout::default();
         for (segment, _) in self.line_segments(line, &colors) {
-            let (glyphs, width) = ui::measure_glyphs(&segment, EDIT_FONT, true, 400);
+            let (glyphs, width) = ui::measure_glyphs(&segment, edit_font(), true, 400);
             let (base_index, base_x) = (layout.len, layout.width);
             layout
                 .glyphs
@@ -1856,10 +1895,11 @@ impl FileItem {
         };
         let gw = gutter_width(self.line_count());
         let first = self.first_line();
-        let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
+        let last =
+            (first + (self.body_h / edit_line_h()).ceil() as usize + 2).min(self.disp_count());
         // Rounded connected selection shape (reference metrics): radius 0.15*line, right-edge overshoot 0.3*line.
-        let radius = 0.15 * EDIT_LINE_H;
-        let overshoot = 0.3 * EDIT_LINE_H;
+        let radius = 0.15 * edit_line_h();
+        let overshoot = 0.3 * edit_line_h();
         let text_x = content.x + gw - self.scroll_x;
         // The reference tints the selection with the player color (a translucent blue) behind the text, not the
         // opaque gray UI-list selection.
@@ -1905,11 +1945,11 @@ impl FileItem {
                 rows.push((text_x + start_x, text_x + end_x.max(start_x + 1.0)));
             }
             let Some(top) = top_row else { continue };
-            let top_y = content.y + top as f32 * EDIT_LINE_H - self.scroll_y;
+            let top_y = content.y + top as f32 * edit_line_h() - self.scroll_y;
             tris.extend(ui::selection_path(
                 &rows,
                 top_y,
-                EDIT_LINE_H,
+                edit_line_h(),
                 radius,
                 sel_color,
             ));
@@ -1930,9 +1970,10 @@ impl FileItem {
         }
         let gw = gutter_width(self.line_count());
         let first = self.first_line();
-        let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
+        let last =
+            (first + (self.body_h / edit_line_h()).ceil() as usize + 2).min(self.disp_count());
         let color = theme().editor_invisible;
-        let symbol = EDIT_FONT / 2.0;
+        let symbol = edit_font() / 2.0;
         let mut tris = Vec::new();
         for row_index in first..last {
             let Some(row) = self.row(row_index) else {
@@ -1943,8 +1984,8 @@ impl FileItem {
             }
             let line_start = b.rope.line_to_char(row.line);
             let layout = self.line_layout(row.line);
-            let row_y = content.y + row_index as f32 * EDIT_LINE_H - self.scroll_y;
-            let center_y = row_y + EDIT_LINE_H / 2.0;
+            let row_y = content.y + row_index as f32 * edit_line_h() - self.scroll_y;
+            let center_y = row_y + edit_line_h() / 2.0;
             let origin_x = content.x + gw - self.scroll_x - layout.x_for_index(row.start)
                 + row.indent as f32 * char_advance();
             let mut index = 0usize;
@@ -2262,9 +2303,9 @@ impl FileItem {
         let b = self.buffer.as_ref()?;
         let (row, x) = self.position(b.newest().head());
         let x = content.x + gutter_width(self.line_count()) + x - self.scroll_x;
-        let row_top = content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
+        let row_top = content.y + row as f32 * edit_line_h() - self.scroll_y;
         let height = menu.height() * ui::ui_text_scale();
-        let below = row_top + EDIT_LINE_H;
+        let below = row_top + edit_line_h();
         let room_below = content.y + self.body_h - below;
         let room_above = row_top - content.y;
         if height > room_below && room_above > room_below {
@@ -2295,12 +2336,12 @@ impl FileItem {
         let gap = MENU_GAP * scale;
         let (mut top, mut bottom) = (y - gap, y + height + gap);
         if above {
-            bottom += EDIT_LINE_H;
+            bottom += edit_line_h();
         } else {
-            top -= EDIT_LINE_H;
+            top -= edit_line_h();
         }
         let right = x + width + gap;
-        let max_menu_height = (MAX_VISIBLE as f32 * EDIT_LINE_H + 8.0) * scale;
+        let max_menu_height = (MAX_VISIBLE as f32 * edit_line_h() + 8.0) * scale;
         let room_right = viewport.0 - right;
         if room_right >= ASIDE_MIN_WIDTH * scale {
             let max_width = (room_right - 1.0).min(ASIDE_MAX_WIDTH * scale);
@@ -2598,7 +2639,7 @@ impl FileItem {
         } else {
             (0.12, 0.06, 0.36)
         };
-        let row_y = |row: usize| content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
+        let row_y = |row: usize| content.y + row as f32 * edit_line_h() - self.scroll_y;
         let line_count = self.line_count();
         let display_row = |line: usize| {
             if line >= line_count {
@@ -2613,7 +2654,7 @@ impl FileItem {
             if top >= bottom {
                 return;
             }
-            let (y, h) = (row_y(top), (bottom - top) as f32 * EDIT_LINE_H);
+            let (y, h) = (row_y(top), (bottom - top) as f32 * edit_line_h());
             let alpha = if staged { hollow_fill } else { fill };
             rects.push(Rect::new(content.x, y, content.w, h, color.alpha(alpha)));
             if staged {
@@ -2659,10 +2700,10 @@ impl FileItem {
     /// Uncommitted changes as strips at the gutter's left edge: added, modified, and a half-pill between the
     /// lines where some were deleted. Staged changes are drawn hollow.
     fn diff_hunk_rects(&self, content: Rect, first: usize, last: usize) -> Vec<Rect> {
-        let strip_width = (0.275 * EDIT_LINE_H).floor();
-        let deleted_width = (0.35 * EDIT_LINE_H).floor();
+        let strip_width = (0.275 * edit_line_h()).floor();
+        let deleted_width = (0.35 * edit_line_h()).floor();
         let colors = theme();
-        let row_y = |row: usize| content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
+        let row_y = |row: usize| content.y + row as f32 * edit_line_h() - self.scroll_y;
         let line_count = self.line_count();
         let display_row = |line: usize| {
             if line >= line_count {
@@ -2691,12 +2732,12 @@ impl FileItem {
                 }
                 let mut pill = Rect::new(
                     content.x - deleted_width,
-                    row_y(top) - EDIT_LINE_H / 2.0,
+                    row_y(top) - edit_line_h() / 2.0,
                     deleted_width * 2.0,
-                    EDIT_LINE_H,
+                    edit_line_h(),
                     color,
                 );
-                pill.radius = EDIT_LINE_H;
+                pill.radius = edit_line_h();
                 pill
             } else {
                 if bottom <= first || top >= last {
@@ -2706,7 +2747,7 @@ impl FileItem {
                     content.x,
                     row_y(top),
                     strip_width,
-                    (bottom - top) as f32 * EDIT_LINE_H,
+                    (bottom - top) as f32 * edit_line_h(),
                     color,
                 )
             };
@@ -2864,9 +2905,9 @@ impl FileItem {
     fn scroll_line_to_center(&mut self, line: usize) {
         self.ensure_visible();
         let row = self.disp_of(line) as f32;
-        let visible = self.body_h / EDIT_LINE_H;
+        let visible = self.body_h / edit_line_h();
         let margin = ((visible - 1.0) / 2.0).floor().max(0.0);
-        self.set_scroll_y((row - margin).max(0.0) * EDIT_LINE_H);
+        self.set_scroll_y((row - margin).max(0.0) * edit_line_h());
     }
 
     fn preview_line(&mut self, target: Option<(usize, usize)>) {
@@ -3193,7 +3234,7 @@ impl Item for FileItem {
         // (`body_y_offset`) so scroll is pixel-smooth.
         let dcount = self.disp_count();
         let first = self.first_line().min(dcount);
-        let visible = (self.body_h / EDIT_LINE_H).ceil() as usize + 2;
+        let visible = (self.body_h / edit_line_h()).ceil() as usize + 2;
         let last = (first + visible).min(dcount);
         // Text rows only (no gutter): the shell shifts this node left by `scroll_x`. The gutter is a separate
         // fixed overlay (see `gutter`), so long lines scroll under a stationary line-number column.
@@ -3205,30 +3246,30 @@ impl Item for FileItem {
                 break;
             };
             if row.spacer {
-                body = body.child(div().h_px(EDIT_LINE_H));
+                body = body.child(div().h_px(edit_line_h()));
                 continue;
             }
             if let Some(index) = row.block {
                 body = body.child(
                     self.block_row(index)
-                        .unwrap_or_else(|| div().h_px(EDIT_LINE_H).into()),
+                        .unwrap_or_else(|| div().h_px(edit_line_h()).into()),
                 );
                 continue;
             }
-            let mut r = div().row().h_px(EDIT_LINE_H).items_center();
+            let mut r = div().row().h_px(edit_line_h()).items_center();
             if let Some(base_line) = row.deleted {
                 let segments = self.base_line_segments(base_line, &colors);
                 if segments.is_empty() {
-                    r = r.child(label(" ").size(EDIT_FONT).mono());
+                    r = r.child(label(" ").size(edit_font()).mono());
                 }
                 for (text, color) in segments {
-                    r = r.child(label(text).size(EDIT_FONT).mono().color(color));
+                    r = r.child(label(text).size(edit_font()).mono().color(color));
                 }
                 body = body.child(r);
                 continue;
             }
             if row.indent > 0 {
-                r = r.child(label(" ".repeat(row.indent)).size(EDIT_FONT).mono());
+                r = r.child(label(" ".repeat(row.indent)).size(edit_font()).mono());
             }
             let mut byte = 0usize;
             let mut empty = true;
@@ -3242,7 +3283,7 @@ impl Item for FileItem {
                     empty = false;
                     r = r.child(
                         label(segment[from..to].to_string())
-                            .size(EDIT_FONT)
+                            .size(edit_font())
                             .mono()
                             .color(color),
                     );
@@ -3250,7 +3291,7 @@ impl Item for FileItem {
                 byte = segment_end;
             }
             if empty && row.indent == 0 {
-                r = r.child(label(" ").size(EDIT_FONT).mono());
+                r = r.child(label(" ").size(edit_font()).mono());
             }
             let inline_block = matches!(
                 &inline_diagnostic,
@@ -3267,7 +3308,7 @@ impl Item for FileItem {
                         .child(div().w_px(INLINE_BLAME_PADDING * char_advance()))
                         .child(icon(IconKind::FileGit).size(16.0).color(hint))
                         .child(div().w_px(8.0))
-                        .child(label(text).size(EDIT_FONT).mono().color(hint));
+                        .child(label(text).size(edit_font()).mono().color(hint));
                 }
             }
             // The row resumes after the placeholder with the text following the fold's end, so a block reads `{...}`.
@@ -3280,13 +3321,13 @@ impl Item for FileItem {
                             .bg(theme().element_hover)
                             .child(
                                 label("...".to_string())
-                                    .size(EDIT_FONT)
+                                    .size(edit_font())
                                     .mono()
                                     .color(theme().text_muted),
                             ),
                     );
                     for (text, color) in tail {
-                        r = r.child(label(text).size(EDIT_FONT).mono().color(color));
+                        r = r.child(label(text).size(edit_font()).mono().color(color));
                     }
                 }
             }
@@ -3316,7 +3357,7 @@ impl Item for FileItem {
             .collect();
         let dcount = self.disp_count();
         let first = self.first_line().min(dcount);
-        let visible = (self.body_h / EDIT_LINE_H).ceil() as usize + 2;
+        let visible = (self.body_h / edit_line_h()).ceil() as usize + 2;
         let last = (first + visible).min(dcount);
         let mut col = div().col().flex(1.0);
         for row_index in first..last {
@@ -3328,7 +3369,7 @@ impl Item for FileItem {
                 .hunk_at_line(line)
                 .then_some(fold_base + pane_group_view::HUNK_FROM_FOLD + line as u64);
             if row.is_virtual() || row.start > 0 {
-                let mut cell = div().w_px(dims.full_width()).h_px(EDIT_LINE_H);
+                let mut cell = div().w_px(dims.full_width()).h_px(edit_line_h());
                 if let Some(id) = hunk_click {
                     cell = cell.on_click(id);
                 }
@@ -3348,7 +3389,7 @@ impl Item for FileItem {
                     && (self.gutter_hovered || cursor_rows.contains(&row_index));
             let mut fold_cell = div()
                 .w_px(dims.fold_area_width())
-                .h_px(EDIT_LINE_H)
+                .h_px(edit_line_h())
                 .items_center()
                 .justify_center();
             if show_toggle {
@@ -3365,11 +3406,11 @@ impl Item for FileItem {
                 div()
                     .row()
                     .w_px(dims.full_width())
-                    .h_px(EDIT_LINE_H)
+                    .h_px(edit_line_h())
                     .items_center()
                     .child({
                         // The change strip sits in the left padding; clicking it expands the change.
-                        let strip = div().w_px(dims.left_padding).h_px(EDIT_LINE_H);
+                        let strip = div().w_px(dims.left_padding).h_px(edit_line_h());
                         match hunk_click {
                             Some(id) => strip.on_click(id),
                             None => strip,
@@ -3378,7 +3419,7 @@ impl Item for FileItem {
                     .child(div().flex(1.0))
                     .child(
                         label((line + 1).to_string())
-                            .size(EDIT_FONT)
+                            .size(edit_font())
                             .mono()
                             .color(number_color),
                     )
@@ -3567,14 +3608,14 @@ impl Item for FileItem {
 
     fn buffer_line_at(&self, local_y: f32) -> Option<usize> {
         self.buffer.as_ref()?;
-        let row = ((self.scroll_y + local_y) / EDIT_LINE_H).max(0.0) as usize;
+        let row = ((self.scroll_y + local_y) / edit_line_h()).max(0.0) as usize;
         Some(self.buf_of(row.min(self.disp_count().saturating_sub(1))))
     }
 
     fn line_screen_y(&self, content: Rect, line: usize) -> Option<f32> {
         self.buffer.as_ref()?;
-        let y = content.y + self.disp_of(line) as f32 * EDIT_LINE_H - self.scroll_y;
-        (y + EDIT_LINE_H > content.y && y < content.y + self.body_h).then_some(y)
+        let y = content.y + self.disp_of(line) as f32 * edit_line_h() - self.scroll_y;
+        (y + edit_line_h() > content.y && y < content.y + self.body_h).then_some(y)
     }
 
     fn body_x_offset(&self) -> f32 {
@@ -3633,7 +3674,7 @@ impl Item for FileItem {
 
     fn drag_select(&mut self, x: f32, y: f32, body: Rect) {
         let text_bottom = body.y + body.h;
-        let vertical_margin = EDIT_LINE_H.min(body.h / 3.0);
+        let vertical_margin = edit_line_h().min(body.h / 3.0);
         let delta_rows = if y < body.y + vertical_margin {
             -drag_autoscroll_rows(body.y + vertical_margin - y)
         } else if y > text_bottom - vertical_margin {
@@ -3652,7 +3693,7 @@ impl Item for FileItem {
         } else {
             0.0
         };
-        self.scroll_by(-delta_rows * EDIT_LINE_H);
+        self.scroll_by(-delta_rows * edit_line_h());
         self.scroll_by_x(-delta_columns * em);
         self.place_cursor((x - body.x).max(0.0), y - body.y, true);
     }
@@ -3680,7 +3721,7 @@ impl Item for FileItem {
     }
 
     fn body_y_offset(&self) -> f32 {
-        self.first_line() as f32 * EDIT_LINE_H - self.scroll_y
+        self.first_line() as f32 * edit_line_h() - self.scroll_y
     }
 
     fn scroll_by(&mut self, dy: f32) -> bool {
@@ -3854,7 +3895,7 @@ impl Item for FileItem {
             _ => {}
         }
         // One row of the previous page stays on screen.
-        let page_rows = ((self.body_h / EDIT_LINE_H) as usize).saturating_sub(1);
+        let page_rows = ((self.body_h / edit_line_h()) as usize).saturating_sub(1);
         let motion = match key {
             EditKey::Left => Some(Motion::Left),
             EditKey::Right => Some(Motion::Right),
@@ -4086,15 +4127,15 @@ impl Item for FileItem {
             .iter()
             .filter_map(|s| {
                 let (row, x) = self.position(s.head());
-                let y = content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
-                if y + EDIT_LINE_H <= content.y || y >= content.y + self.body_h {
+                let y = content.y + row as f32 * edit_line_h() - self.scroll_y;
+                if y + edit_line_h() <= content.y || y >= content.y + self.body_h {
                     return None;
                 }
                 Some(Rect::new(
                     content.x + gw + x - self.scroll_x,
                     y,
                     CARET_W,
-                    EDIT_LINE_H,
+                    edit_line_h(),
                     theme().player_cursor,
                 ))
             })
@@ -4107,9 +4148,10 @@ impl Item for FileItem {
         };
         let cw = char_advance();
         let gw = gutter_width(self.line_count());
-        let row_y = |row: usize| content.y + row as f32 * EDIT_LINE_H - self.scroll_y;
+        let row_y = |row: usize| content.y + row as f32 * edit_line_h() - self.scroll_y;
         let first = self.first_line();
-        let last = (first + (self.body_h / EDIT_LINE_H).ceil() as usize + 2).min(self.disp_count());
+        let last =
+            (first + (self.body_h / edit_line_h()).ceil() as usize + 2).min(self.disp_count());
         let mut rects = self.expanded_hunk_rects(content, first, last);
 
         // Every caret's display line is highlighted across the gutter and text, except rows that also hold a
@@ -4127,7 +4169,7 @@ impl Item for FileItem {
                     content.x,
                     row_y(row),
                     content.w,
-                    EDIT_LINE_H,
+                    edit_line_h(),
                     theme().editor_active_line,
                 ));
             }
@@ -4140,7 +4182,7 @@ impl Item for FileItem {
                     content.x,
                     row_y(top),
                     content.w,
-                    (bottom + 1 - top) as f32 * EDIT_LINE_H,
+                    (bottom + 1 - top) as f32 * edit_line_h(),
                     theme().editor_highlighted_line,
                 ));
             }
@@ -4160,7 +4202,7 @@ impl Item for FileItem {
                     content.x + gw + left - self.scroll_x,
                     row_y(row),
                     (right - left).max(1.0),
-                    EDIT_LINE_H,
+                    edit_line_h(),
                     theme().element_hover,
                 ));
             }
@@ -4188,7 +4230,7 @@ impl Item for FileItem {
                     content.x + gw + left - self.scroll_x,
                     row_y(row),
                     (right - left).max(1.0),
-                    EDIT_LINE_H,
+                    edit_line_h(),
                     color,
                 ));
             }
@@ -4202,7 +4244,7 @@ impl Item for FileItem {
                     content.x + gw + start_x - self.scroll_x,
                     row_y(row),
                     (end_x - start_x).max(1.0),
-                    EDIT_LINE_H,
+                    edit_line_h(),
                     theme().editor_document_highlight_bracket_background,
                 ));
             }
@@ -4224,7 +4266,7 @@ impl Item for FileItem {
                 };
                 rects.push(Rect::new(
                     content.x + gw + left - self.scroll_x,
-                    row_y(row) + EDIT_LINE_H - 4.0,
+                    row_y(row) + edit_line_h() - 4.0,
                     (right - left).max(1.0),
                     1.0,
                     theme().text,
@@ -4257,7 +4299,7 @@ impl Item for FileItem {
                 content.x + gw + (depth * TAB_COLS) as f32 * cw - self.scroll_x,
                 row_y(top),
                 1.0,
-                (bottom + 1 - top) as f32 * EDIT_LINE_H,
+                (bottom + 1 - top) as f32 * edit_line_h(),
                 guide,
             ));
         }
@@ -4284,8 +4326,8 @@ impl Item for FileItem {
             Rgba::TRANSPARENT,
         );
         // Rows are the scroll unit; the range runs one page past the last row.
-        let page = self.body_h / EDIT_LINE_H;
-        let total = (self.content_h() + self.body_h) / EDIT_LINE_H;
+        let page = self.body_h / edit_line_h();
+        let total = (self.content_h() + self.body_h) / edit_line_h();
         let Some((thumb_len, unit)) = thumb_metrics(track.h, page, total) else {
             return Vec::new();
         };
@@ -4327,7 +4369,7 @@ impl Item for FileItem {
                 )
             }));
         }
-        let thumb_y = track.y + self.scroll_y / EDIT_LINE_H * unit;
+        let thumb_y = track.y + self.scroll_y / edit_line_h() * unit;
         rects.push(Rect::new(
             track.x,
             thumb_y,
@@ -4464,7 +4506,7 @@ fn wrap_boundaries(
         }
         *widths
             .entry(c)
-            .or_insert_with(|| ui::measure_text_width(&c.to_string(), EDIT_FONT, true, 400))
+            .or_insert_with(|| ui::measure_text_width(&c.to_string(), edit_font(), true, 400))
     };
     editor::wrap::wrap_line(&text, wrap_width, width_of).into()
 }
@@ -5967,6 +6009,19 @@ impl FunctionView for FilesView {
         self.picked_command.take()
     }
 
+    fn editor_metrics_changed(&mut self) {
+        self.panes.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                if let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                {
+                    file.invalidate_metrics();
+                }
+            }
+        });
+    }
+
     fn open_command_list(
         &mut self,
         commands: Vec<workspace::ExtraCommand>,
@@ -6955,12 +7010,12 @@ mod scroll_tests {
     fn item(lines: usize, visible_rows: usize) -> FileItem {
         let text: String = (0..lines).map(|i| format!("line {i}\n")).collect();
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text));
-        item.set_body_height(visible_rows as f32 * EDIT_LINE_H);
+        item.set_body_height(visible_rows as f32 * edit_line_h());
         item
     }
 
     fn top_row(item: &FileItem) -> f32 {
-        item.scroll_y / EDIT_LINE_H
+        item.scroll_y / edit_line_h()
     }
 
     #[test]
@@ -6984,19 +7039,19 @@ mod scroll_tests {
     #[test]
     fn last_row_can_scroll_to_the_top() {
         let mut item = item(20, 10);
-        item.scroll_by(-1000.0 * EDIT_LINE_H);
+        item.scroll_by(-1000.0 * edit_line_h());
         assert_eq!(top_row(&item), 20.0);
     }
 
     #[test]
     fn view_stays_on_the_same_text_when_lines_are_inserted_above() {
         let mut item = item(100, 10);
-        item.scroll_by(-40.0 * EDIT_LINE_H);
+        item.scroll_by(-40.0 * edit_line_h());
         if let Some(b) = item.buffer.as_mut() {
             b.place_cursor(0);
             b.insert_text("new\nnew\n");
         }
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         assert_eq!(top_row(&item), 42.0);
     }
 }
@@ -7012,7 +7067,7 @@ mod wrap_tests {
         let body_w =
             (columns as f32 + 2.0) * em + gutter_width(item.line_count()) + SCROLLBAR_WIDTH;
         item.set_body_width(body_w);
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         item
     }
 
@@ -7081,7 +7136,7 @@ mod line_command_tests {
     fn moving_a_folded_block_keeps_it_folded() {
         let text = "x\nfn a() {\n    y;\n}\n";
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         item.do_toggle_fold(1);
         item.ensure_visible();
         if let Some(b) = item.buffer.as_mut() {
@@ -7116,7 +7171,7 @@ mod search_bar_tests {
 
     fn item(text: &str) -> FileItem {
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         item
     }
 
@@ -7175,7 +7230,7 @@ mod go_to_line_tests {
     fn view_with(text: &str) -> FilesView {
         let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
-        item.set_body_height(4.0 * EDIT_LINE_H);
+        item.set_body_height(4.0 * edit_line_h());
         if let Member::Leaf(pane) = &mut view.panes.group {
             pane.open.push(Box::new(item));
             pane.active = Some(0);
@@ -7222,7 +7277,7 @@ mod navigation_tests {
     fn view_with(text: &str) -> FilesView {
         let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
-        item.set_body_height(4.0 * EDIT_LINE_H);
+        item.set_body_height(4.0 * edit_line_h());
         if let Member::Leaf(pane) = &mut view.panes.group {
             pane.open.push(Box::new(item));
             pane.active = Some(0);
@@ -7314,7 +7369,7 @@ mod command_palette_tests {
     fn view_with(text: &str) -> FilesView {
         let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
-        item.set_body_height(4.0 * EDIT_LINE_H);
+        item.set_body_height(4.0 * edit_line_h());
         if let Member::Leaf(pane) = &mut view.panes.group {
             pane.open.push(Box::new(item));
             pane.active = Some(0);
@@ -7431,7 +7486,7 @@ mod outline_tests {
     fn rust_view(text: &str) -> FilesView {
         let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.rs", Some(text.into()));
-        item.set_body_height(4.0 * EDIT_LINE_H);
+        item.set_body_height(4.0 * edit_line_h());
         item.refresh();
         while item.syntax.as_ref().is_some_and(Syntax::is_parsing) {
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -7584,7 +7639,7 @@ mod git_gutter_tests {
         assert!(git(&["commit", "-q", "-m", "init"]));
 
         let mut item = FileItem::new(root.clone(), "a.txt", Some("one\nTWO\nthree\n".into()));
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         settle(&mut item);
         let kinds: Vec<(Range<usize>, git::HunkKind)> = item
             .git
@@ -7599,11 +7654,11 @@ mod git_gutter_tests {
                 (3..3, git::HunkKind::Deleted)
             ]
         );
-        let content = Rect::new(0.0, 0.0, 400.0, 10.0 * EDIT_LINE_H, Rgba::TRANSPARENT);
+        let content = Rect::new(0.0, 0.0, 400.0, 10.0 * edit_line_h(), Rgba::TRANSPARENT);
         let strips = item.diff_hunk_rects(content, 0, 10);
         assert_eq!(strips.len(), 2);
-        assert_eq!(strips[0].y, EDIT_LINE_H);
-        assert_eq!(strips[0].w, (0.275 * EDIT_LINE_H).floor());
+        assert_eq!(strips[0].y, edit_line_h());
+        assert_eq!(strips[0].w, (0.275 * edit_line_h()).floor());
         assert!(strips[1].x < 0.0);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -7649,7 +7704,7 @@ mod hunk_action_tests {
         fn open(&self, text: &str) -> FileItem {
             std::fs::write(self.0.join("a.txt"), text).unwrap();
             let mut item = FileItem::new(self.0.clone(), "a.txt", Some(text.into()));
-            item.set_body_height(10.0 * EDIT_LINE_H);
+            item.set_body_height(10.0 * edit_line_h());
             settle(&mut item);
             item
         }
@@ -7688,7 +7743,7 @@ mod hunk_action_tests {
             Some("a\nB\nc\nd\n".into()),
             Some("a\nb\nc\n".into()),
         );
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         assert_eq!(item.id().as_deref(), Some("diff:a.txt"));
         assert_eq!(item.title(), "a.txt (diff)");
         assert!(
@@ -7724,7 +7779,7 @@ mod hunk_action_tests {
             Some(text.into()),
             Some(base.into()),
         );
-        item.set_body_height(40.0 * EDIT_LINE_H);
+        item.set_body_height(40.0 * edit_line_h());
         let wide = 400.0 * char_advance();
         for _ in 0..3000 {
             let companion = item.companion_width(wide);
@@ -7838,11 +7893,11 @@ mod hunk_action_tests {
         item.input_key(EditKey::Up, false);
         assert_eq!(caret_line(&item), 0);
 
-        let content = Rect::new(0.0, 0.0, 400.0, 10.0 * EDIT_LINE_H, Rgba::TRANSPARENT);
+        let content = Rect::new(0.0, 0.0, 400.0, 10.0 * edit_line_h(), Rgba::TRANSPARENT);
         let bands = item.expanded_hunk_rects(content, 0, 10);
         assert_eq!(bands.len(), 2);
-        assert_eq!(bands[0].y, EDIT_LINE_H);
-        assert_eq!(bands[1].y, 2.0 * EDIT_LINE_H);
+        assert_eq!(bands[0].y, edit_line_h());
+        assert_eq!(bands[1].y, 2.0 * edit_line_h());
 
         item.input_key(EditKey::Escape, false);
         item.ensure_visible();
@@ -7937,7 +7992,7 @@ mod diagnostic_tests {
 
     fn item(text: &str) -> FileItem {
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "a.rs", Some(text.into()));
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         item
     }
 
@@ -7993,7 +8048,8 @@ mod diagnostic_tests {
         assert!(rects.iter().all(|r| r.radius < 0.0));
         assert_eq!(rects.last().unwrap().color, theme().error);
         assert!(
-            rects[0].y > DIAGNOSTIC_UNDERLINE_TOP - 1.0 && rects[0].y + rects[0].h <= EDIT_LINE_H
+            rects[0].y > diagnostic_underline_top() - 1.0
+                && rects[0].y + rects[0].h <= edit_line_h()
         );
         assert!(item.diagnostic_rects(content, 1, 2).is_empty());
     }
@@ -8013,7 +8069,7 @@ mod snippet_tests {
         std::fs::write(dir.join("rust.json"), json).unwrap();
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), name, Some(text.into()));
         item.snippet_dir = Some(dir);
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         let end = item.buffer.as_ref().unwrap().rope.len_chars();
         item.buffer.as_mut().unwrap().place_cursor(end);
         item
@@ -8104,7 +8160,7 @@ mod completion_tests {
 
     fn item(name: &str, text: &str) -> FileItem {
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), name, Some(text.into()));
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         let end = item.buffer.as_ref().unwrap().rope.len_chars();
         item.buffer.as_mut().unwrap().place_cursor(end);
         item
@@ -8172,14 +8228,14 @@ mod completion_tests {
     fn menu_opens_below_the_caret_or_above_near_the_bottom() {
         let mut item = item("a.rs", "hello help\nhel");
         item.input_key(EditKey::ShowCompletions, false);
-        let content = Rect::new(0.0, 0.0, 800.0, 10.0 * EDIT_LINE_H, Rgba::TRANSPARENT);
+        let content = Rect::new(0.0, 0.0, 800.0, 10.0 * edit_line_h(), Rgba::TRANSPARENT);
         let (_, _, y) = item.completion_menu_popover(content).unwrap();
-        assert_eq!(y, 2.0 * EDIT_LINE_H);
+        assert_eq!(y, 2.0 * edit_line_h());
         let lines: String = (0..9).map(|i| format!("help{i}\n")).collect();
         let mut item = super::completion_tests::item("a.rs", &format!("{lines}hel"));
         item.input_key(EditKey::ShowCompletions, false);
         let (_, _, y) = item.completion_menu_popover(content).unwrap();
-        assert!(y < 9.0 * EDIT_LINE_H, "{y}");
+        assert!(y < 9.0 * edit_line_h(), "{y}");
     }
 }
 

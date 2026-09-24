@@ -7,7 +7,7 @@ use std::ops::Range;
 use ui::{div, theme, Node, Rgba};
 
 use crate::markdown_view::{Markdown, MarkdownLayout, MarkdownStyle};
-use crate::{char_advance, DiagnosticEntry, FileItem, EDIT_LINE_H};
+use crate::{char_advance, edit_line_h, DiagnosticEntry, FileItem};
 
 const BLOCK_MAX_CHARACTERS: f32 = 120.0;
 const BLOCK_PADDING_LEFT: f32 = 6.0;
@@ -27,7 +27,7 @@ pub(crate) struct ActiveDiagnostic {
 /// Every block line one editor line tall, so the block fills whole rows.
 fn block_style() -> MarkdownStyle {
     MarkdownStyle {
-        line_height: EDIT_LINE_H,
+        line_height: edit_line_h(),
         paragraph_spacing: 0.0,
         code_block_margin: 0.0,
         heading_margin_top: 0.0,
@@ -193,7 +193,7 @@ impl FileItem {
         if layout.line_count() == 1 && fits && !self.is_soft_wrapped(line) {
             return Some(BlockPlacement::Inline { row_line: line });
         }
-        let count = (layout.height() / EDIT_LINE_H).ceil().max(1.0) as usize;
+        let count = (layout.height() / edit_line_h()).ceil().max(1.0) as usize;
         Some(BlockPlacement::Rows { line, count })
     }
 
@@ -219,7 +219,7 @@ impl FileItem {
         Some(
             div()
                 .row()
-                .h_px(EDIT_LINE_H)
+                .h_px(edit_line_h())
                 .child(div().w_px(x / scale))
                 .child(self.block_segment(&layout, index, 1))
                 .into(),
@@ -244,7 +244,7 @@ impl FileItem {
             .as_ref()
             .map_or(lsp::lsp_types::DiagnosticSeverity::ERROR, |a| a.severity);
         let (background, border) = block_colors(severity);
-        let height = EDIT_LINE_H;
+        let height = edit_line_h();
         div()
             .row()
             .w_px(Self::block_width(layout))
@@ -290,7 +290,7 @@ mod tests {
             "a.rs",
             Some(text.into()),
         );
-        item.set_body_height(10.0 * EDIT_LINE_H);
+        item.set_body_height(10.0 * edit_line_h());
         item.set_body_width(1000.0);
         item.ensure_visible();
         item.diagnostics = diagnostics;

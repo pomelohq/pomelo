@@ -101,27 +101,36 @@ const APPEARANCE_SECTIONS: [&str; 2] = ["Theme", "UI Font"];
 const WINDOW_LAYOUT_SECTIONS: [&str; 5] = ["Status Bar", "Title Bar", "Window", "Docks", "Panels"];
 
 const INTEGRATIONS_SECTIONS: [&str; 2] = ["Jira", "Main Workspace"];
+const GENERAL_SECTIONS: [&str; 2] = ["Startup", "Updates"];
+const EDITOR_SECTIONS: [&str; 2] = ["Buffer Font", "Behavior"];
+const TERMINAL_SECTIONS: [&str; 2] = ["Font", "Shell"];
+const KEYMAP_SECTIONS: [&str; 1] = ["Bindings"];
 const AGENT_SECTIONS: [&str; 2] = ["Command", "Claude Code"];
 const NOTIFICATIONS_SECTIONS: [&str; 2] = ["Delivery", "Alert Sounds"];
 const NETWORK_SECTIONS: [&str; 3] = ["Reverse Proxy", "Webhook Fan-out", "Recent Requests"];
 
-const CATEGORIES: [(&str, &[&str]); 9] = [
-    ("General", &[]),
+const CATEGORIES: [(&str, &[&str]); 10] = [
+    ("General", &GENERAL_SECTIONS),
     ("Appearance", &APPEARANCE_SECTIONS),
     ("Window & Layout", &WINDOW_LAYOUT_SECTIONS),
-    ("Editor", &[]),
-    ("Terminal", &[]),
+    ("Editor", &EDITOR_SECTIONS),
+    ("Terminal", &TERMINAL_SECTIONS),
+    ("Keymap", &KEYMAP_SECTIONS),
     ("Agent", &AGENT_SECTIONS),
     ("Notifications", &NOTIFICATIONS_SECTIONS),
     ("Network", &NETWORK_SECTIONS),
     ("Integrations", &INTEGRATIONS_SECTIONS),
 ];
 
+pub const GENERAL: usize = 0;
 pub const WINDOW_LAYOUT: usize = 2;
-pub const AGENT: usize = 5;
-pub const NOTIFICATIONS: usize = 6;
-pub const NETWORK: usize = 7;
-pub const INTEGRATIONS: usize = 8;
+pub const EDITOR: usize = 3;
+pub const TERMINAL: usize = 4;
+pub const KEYMAP: usize = 5;
+pub const AGENT: usize = 6;
+pub const NOTIFICATIONS: usize = 7;
+pub const NETWORK: usize = 8;
+pub const INTEGRATIONS: usize = 9;
 
 /// Index of the Appearance category (the only page with real content for now).
 pub const APPEARANCE: usize = 1;
@@ -191,6 +200,35 @@ pub const CTRL_TEST_NOTIFICATION: u64 = 245;
 /// A sound dropdown per agent event: id = base + index into `settings::AGENT_EVENTS`.
 pub const CTRL_SOUND_BASE: u64 = 246;
 pub const CTRL_START_SERVERS: u64 = 250;
+pub const CTRL_START_AT_LOGIN: u64 = 260;
+pub const CTRL_AUTO_UPDATE: u64 = 261;
+pub const CTRL_CHECK_UPDATES: u64 = 262;
+pub const CTRL_BUFFER_FONT_DEC: u64 = 263;
+pub const CTRL_BUFFER_FONT_INC: u64 = 264;
+pub const CTRL_BUFFER_FONT_EDIT: u64 = 265;
+pub const CTRL_SOFT_WRAP: u64 = 266;
+pub const CTRL_DIFF_VIEW: u64 = 267;
+pub const CTRL_EXTERNAL_EDITOR: u64 = 268;
+pub const CTRL_TERM_FONT_DEC: u64 = 269;
+pub const CTRL_TERM_FONT_INC: u64 = 270;
+pub const CTRL_TERM_FONT_EDIT: u64 = 271;
+pub const CTRL_TERM_SHELL: u64 = 272;
+pub const CTRL_SCROLLBACK_DEC: u64 = 273;
+pub const CTRL_SCROLLBACK_INC: u64 = 274;
+pub const CTRL_SCROLLBACK_EDIT: u64 = 275;
+pub const CTRL_EDIT_KEYMAP: u64 = 276;
+pub const SCROLLBACK_MIN: u32 = 1_000;
+pub const SCROLLBACK_MAX: u32 = 100_000;
+
+/// Editors "Open in External Editor" knows, in the order it tries them when none is picked.
+pub const EXTERNAL_EDITORS: [&str; 6] = [
+    "Visual Studio Code",
+    "Cursor",
+    "Zed",
+    "Windsurf",
+    "Sublime Text",
+    "IntelliJ IDEA",
+];
 pub const REFRESH_MINUTES_MIN: u64 = 1;
 pub const REFRESH_MINUTES_MAX: u64 = 1440;
 pub const WIN_W_MIN: f32 = 640.0;
@@ -253,6 +291,9 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_SIDEBAR_SIDE
             | CTRL_AGENT_SIDE
             | CTRL_TERMINAL_SIDE
+            | CTRL_SOFT_WRAP
+            | CTRL_DIFF_VIEW
+            | CTRL_EXTERNAL_EDITOR
     ) || sound_event(id).is_some()
 }
 
@@ -280,6 +321,12 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
         CTRL_MODE => sv(&["System", "Light", "Dark"]),
         CTRL_SIDEBAR_SIDE | CTRL_AGENT_SIDE => sv(&["Left", "Right"]),
         CTRL_TERMINAL_SIDE => sv(&["Left", "Right", "Bottom"]),
+        CTRL_SOFT_WRAP => sv(&["None", "Editor Width"]),
+        CTRL_DIFF_VIEW => sv(&["Split", "Unified"]),
+        CTRL_EXTERNAL_EDITOR => std::iter::once("Auto")
+            .chain(EXTERNAL_EDITORS)
+            .map(str::to_string)
+            .collect(),
         id if sound_event(id).is_some() => std::iter::once(NO_SOUND)
             .chain(settings::SYSTEM_SOUNDS)
             .map(str::to_string)
@@ -297,6 +344,9 @@ pub fn control_value(id: u64, s: &Settings) -> String {
         CTRL_SIDEBAR_SIDE => cap(&s.sidebar_side),
         CTRL_AGENT_SIDE => cap(&s.agent_side),
         CTRL_TERMINAL_SIDE => cap(&s.terminal_side),
+        CTRL_SOFT_WRAP => if s.soft_wrap { "Editor Width" } else { "None" }.to_string(),
+        CTRL_DIFF_VIEW => if s.split_diff { "Split" } else { "Unified" }.to_string(),
+        CTRL_EXTERNAL_EDITOR => external_editor_label(&s.external_editor),
         id => match sound_event(id) {
             Some(event) => sound_label(s.sound_for(event)),
             None => String::new(),
@@ -317,6 +367,15 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
         CTRL_SIDEBAR_SIDE => s.sidebar_side = val.to_lowercase(),
         CTRL_AGENT_SIDE => s.agent_side = val.to_lowercase(),
         CTRL_TERMINAL_SIDE => s.terminal_side = val.to_lowercase(),
+        CTRL_SOFT_WRAP => s.soft_wrap = val == "Editor Width",
+        CTRL_DIFF_VIEW => s.split_diff = val == "Split",
+        CTRL_EXTERNAL_EDITOR => {
+            s.external_editor = if val == "Auto" {
+                String::new()
+            } else {
+                val.clone()
+            }
+        }
         id => {
             let Some(sound) = sound_event(id).and_then(|event| s.sound_for_mut(event)) else {
                 return false;
@@ -329,6 +388,14 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
         }
     }
     true
+}
+
+fn external_editor_label(editor: &str) -> String {
+    if editor.is_empty() {
+        "Auto".to_string()
+    } else {
+        editor.to_string()
+    }
 }
 
 fn sound_label(sound: &str) -> String {
@@ -361,6 +428,14 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_WIN_W_EDIT => s.window_width == d.window_width,
         CTRL_WIN_H_EDIT => s.window_height == d.window_height,
         CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
+        CTRL_AUTO_UPDATE => s.auto_update == d.auto_update,
+        CTRL_BUFFER_FONT_EDIT => s.buffer_font_size == d.buffer_font_size,
+        CTRL_SOFT_WRAP => s.soft_wrap == d.soft_wrap,
+        CTRL_DIFF_VIEW => s.split_diff == d.split_diff,
+        CTRL_EXTERNAL_EDITOR => s.external_editor == d.external_editor,
+        CTRL_TERM_FONT_EDIT => s.terminal_font_size == d.terminal_font_size,
+        CTRL_TERM_SHELL => s.terminal_shell == d.terminal_shell,
+        CTRL_SCROLLBACK_EDIT => s.terminal_scrollback == d.terminal_scrollback,
         CTRL_NOTIFY => s.notify_claude == d.notify_claude,
         CTRL_NOTIFY_FOCUSED => s.notify_when_focused == d.notify_when_focused,
         id => sound_event(id).is_none_or(|event| s.sound_for(event) == d.sound_for(event)),
@@ -390,6 +465,14 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_WIN_W_EDIT => s.window_width = d.window_width,
         CTRL_WIN_H_EDIT => s.window_height = d.window_height,
         CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
+        CTRL_AUTO_UPDATE => s.auto_update = d.auto_update,
+        CTRL_BUFFER_FONT_EDIT => s.buffer_font_size = d.buffer_font_size,
+        CTRL_SOFT_WRAP => s.soft_wrap = d.soft_wrap,
+        CTRL_DIFF_VIEW => s.split_diff = d.split_diff,
+        CTRL_EXTERNAL_EDITOR => s.external_editor = d.external_editor,
+        CTRL_TERM_FONT_EDIT => s.terminal_font_size = d.terminal_font_size,
+        CTRL_TERM_SHELL => s.terminal_shell = d.terminal_shell,
+        CTRL_SCROLLBACK_EDIT => s.terminal_scrollback = d.terminal_scrollback,
         CTRL_NOTIFY => s.notify_claude = d.notify_claude,
         CTRL_NOTIFY_FOCUSED => s.notify_when_focused = d.notify_when_focused,
         id => {
@@ -452,6 +535,38 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         CTRL_NOTIFY => {
             s.notify_claude = !s.notify_claude;
             true
+        }
+        CTRL_AUTO_UPDATE => {
+            s.auto_update = !s.auto_update;
+            true
+        }
+        CTRL_BUFFER_FONT_DEC => {
+            set_clamped(&mut s.buffer_font_size, -1.0, FONT_SIZE_MIN, FONT_SIZE_MAX)
+        }
+        CTRL_BUFFER_FONT_INC => {
+            set_clamped(&mut s.buffer_font_size, 1.0, FONT_SIZE_MIN, FONT_SIZE_MAX)
+        }
+        CTRL_TERM_FONT_DEC => set_clamped(
+            &mut s.terminal_font_size,
+            -1.0,
+            FONT_SIZE_MIN,
+            FONT_SIZE_MAX,
+        ),
+        CTRL_TERM_FONT_INC => {
+            set_clamped(&mut s.terminal_font_size, 1.0, FONT_SIZE_MIN, FONT_SIZE_MAX)
+        }
+        CTRL_SCROLLBACK_DEC | CTRL_SCROLLBACK_INC => {
+            let step: i64 = if id == CTRL_SCROLLBACK_INC {
+                1_000
+            } else {
+                -1_000
+            };
+            let next = (i64::from(s.terminal_scrollback) + step)
+                .clamp(i64::from(SCROLLBACK_MIN), i64::from(SCROLLBACK_MAX))
+                as u32;
+            let changed = next != s.terminal_scrollback;
+            s.terminal_scrollback = next;
+            changed
         }
         CTRL_NOTIFY_FOCUSED => {
             s.notify_when_focused = !s.notify_when_focused;
@@ -860,6 +975,14 @@ pub fn page(
         render_page(&appearance_page(s), search, editing, w)
     } else if selected == WINDOW_LAYOUT {
         render_page(&window_layout_page(s), search, editing, w)
+    } else if selected == GENERAL {
+        render_page(&general_page(s, &state.general), search, editing, w)
+    } else if selected == EDITOR {
+        render_page(&editor_page(s), search, editing, w)
+    } else if selected == TERMINAL {
+        render_page(&terminal_page(s), search, editing, w)
+    } else if selected == KEYMAP {
+        render_page(&keymap_page(&state.keymap), search, editing, w)
     } else if selected == AGENT {
         render_page(&agent_page(s, &state.agent), search, editing, w)
     } else if selected == NOTIFICATIONS {
@@ -1065,6 +1188,10 @@ fn page_for(cat: usize) -> Option<Page> {
             &IntegrationsPage::default(),
         )),
         AGENT => Some(agent_page(&Settings::default(), &AgentPage::default())),
+        GENERAL => Some(general_page(&Settings::default(), &GeneralPage::default())),
+        EDITOR => Some(editor_page(&Settings::default())),
+        TERMINAL => Some(terminal_page(&Settings::default())),
+        KEYMAP => Some(keymap_page(&KeymapPage::default())),
         NOTIFICATIONS => Some(notifications_page(&Settings::default())),
         NETWORK => Some(network_page(&NetworkPage::default())),
         _ => None,
@@ -1499,12 +1626,30 @@ pub struct NetworkPage {
     pub requests: Vec<RequestRow>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GeneralPage {
+    pub start_at_login: bool,
+    pub version: String,
+    /// Only the installed app replaces itself; a dev build says so.
+    pub updates_apply: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeymapPage {
+    /// (what it does, its action name, its binding or empty when unbound).
+    pub rows: Vec<(String, String, String)>,
+    /// Mistakes found in the user's keymap file.
+    pub problems: Vec<String>,
+}
+
 /// What the pages show that lives outside the settings file.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PageState {
     pub jira: IntegrationsPage,
     pub agent: AgentPage,
     pub network: NetworkPage,
+    pub general: GeneralPage,
+    pub keymap: KeymapPage,
 }
 
 fn registration_text(registration: &Registration, done: &str) -> String {
@@ -1513,6 +1658,196 @@ fn registration_text(registration: &Registration, done: &str) -> String {
         Registration::Done => done.into(),
         Registration::Skipped => "Not registered: this run uses a temporary state folder.".into(),
         Registration::Failed(error) => format!("Failed: {error}"),
+    }
+}
+
+fn general_page(s: &Settings, general: &GeneralPage) -> Page {
+    Page {
+        title: "General",
+        items: vec![
+            PageItem::Header("Startup"),
+            PageItem::Row(SettingRow {
+                title: "Start at Login".into(),
+                description: "Open Pomelo when you log in to this Mac.".into(),
+                control: Control::Toggle {
+                    id: CTRL_START_AT_LOGIN,
+                    on: general.start_at_login,
+                },
+                reset: None,
+            }),
+            PageItem::Header("Updates"),
+            PageItem::Row(SettingRow {
+                title: "Version".into(),
+                description: "The build you are running.".into(),
+                control: Control::Value {
+                    text: general.version.clone(),
+                },
+                reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Check for Updates Automatically".into(),
+                description: "On launch, download and install a newer release, then relaunch."
+                    .into(),
+                control: Control::Toggle {
+                    id: CTRL_AUTO_UPDATE,
+                    on: s.auto_update,
+                },
+                reset: reset_if_changed(CTRL_AUTO_UPDATE, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Check Now".into(),
+                description: if general.updates_apply {
+                    "Looks for a newer release right away."
+                } else {
+                    "Only the installed Pomelo updates itself; this build does not."
+                }
+                .into(),
+                control: Control::Button {
+                    id: CTRL_CHECK_UPDATES,
+                    label: "Check for Updates",
+                    enabled: general.updates_apply,
+                },
+                reset: None,
+            }),
+        ],
+    }
+}
+
+fn editor_page(s: &Settings) -> Page {
+    Page {
+        title: "Editor",
+        items: vec![
+            PageItem::Header("Buffer Font"),
+            PageItem::Row(SettingRow {
+                title: "Font Size".into(),
+                description: "Text size of the code editor.".into(),
+                control: Control::Stepper {
+                    dec: CTRL_BUFFER_FONT_DEC,
+                    inc: CTRL_BUFFER_FONT_INC,
+                    edit: CTRL_BUFFER_FONT_EDIT,
+                    value: format!("{:.0}", s.buffer_font_size),
+                },
+                reset: reset_if_changed(CTRL_BUFFER_FONT_EDIT, s),
+            }),
+            PageItem::Header("Behavior"),
+            PageItem::Row(SettingRow {
+                title: "Soft Wrap".into(),
+                description: "How newly opened files wrap long lines.".into(),
+                control: Control::Dropdown {
+                    id: CTRL_SOFT_WRAP,
+                    value: control_value(CTRL_SOFT_WRAP, s),
+                },
+                reset: reset_if_changed(CTRL_SOFT_WRAP, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Diff View".into(),
+                description: "Side by side when the pane is wide enough, or one column.".into(),
+                control: Control::Dropdown {
+                    id: CTRL_DIFF_VIEW,
+                    value: control_value(CTRL_DIFF_VIEW, s),
+                },
+                reset: reset_if_changed(CTRL_DIFF_VIEW, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "External Editor".into(),
+                description:
+                    "What \"Open in External Editor\" uses; Auto picks the first installed.".into(),
+                control: Control::Dropdown {
+                    id: CTRL_EXTERNAL_EDITOR,
+                    value: control_value(CTRL_EXTERNAL_EDITOR, s),
+                },
+                reset: reset_if_changed(CTRL_EXTERNAL_EDITOR, s),
+            }),
+        ],
+    }
+}
+
+fn terminal_page(s: &Settings) -> Page {
+    Page {
+        title: "Terminal",
+        items: vec![
+            PageItem::Header("Font"),
+            PageItem::Row(SettingRow {
+                title: "Font Size".into(),
+                description: "Text size of terminals and agents.".into(),
+                control: Control::Stepper {
+                    dec: CTRL_TERM_FONT_DEC,
+                    inc: CTRL_TERM_FONT_INC,
+                    edit: CTRL_TERM_FONT_EDIT,
+                    value: format!("{:.0}", s.terminal_font_size),
+                },
+                reset: reset_if_changed(CTRL_TERM_FONT_EDIT, s),
+            }),
+            PageItem::Header("Shell"),
+            PageItem::Row(SettingRow {
+                title: "Shell".into(),
+                description: "What new terminals run; empty runs your login shell.".into(),
+                control: Control::TextInput {
+                    id: CTRL_TERM_SHELL,
+                    value: s.terminal_shell.clone(),
+                    placeholder: "login shell",
+                    masked: false,
+                },
+                reset: reset_if_changed(CTRL_TERM_SHELL, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Scrollback".into(),
+                description: "Lines of history each new terminal keeps.".into(),
+                control: Control::Stepper {
+                    dec: CTRL_SCROLLBACK_DEC,
+                    inc: CTRL_SCROLLBACK_INC,
+                    edit: CTRL_SCROLLBACK_EDIT,
+                    value: s.terminal_scrollback.to_string(),
+                },
+                reset: reset_if_changed(CTRL_SCROLLBACK_EDIT, s),
+            }),
+        ],
+    }
+}
+
+fn keymap_page(keymap: &KeymapPage) -> Page {
+    let mut items = vec![
+        PageItem::Header("Bindings"),
+        PageItem::Row(SettingRow {
+            title: "Edit Keybindings".into(),
+            description:
+                "Opens keymap.json; later entries override these defaults, null unbinds a key."
+                    .into(),
+            control: Control::Button {
+                id: CTRL_EDIT_KEYMAP,
+                label: "Open keymap.json",
+                enabled: true,
+            },
+            reset: None,
+        }),
+    ];
+    for problem in &keymap.problems {
+        items.push(PageItem::Row(SettingRow {
+            title: "Problem".into(),
+            description: problem.clone().into(),
+            control: Control::Value {
+                text: String::new(),
+            },
+            reset: None,
+        }));
+    }
+    for (label, name, binding) in &keymap.rows {
+        items.push(PageItem::Row(SettingRow {
+            title: label.clone().into(),
+            description: name.clone().into(),
+            control: Control::Value {
+                text: if binding.is_empty() {
+                    "Unbound".to_string()
+                } else {
+                    binding.clone()
+                },
+            },
+            reset: None,
+        }));
+    }
+    Page {
+        title: "Keymap",
+        items,
     }
 }
 
@@ -2422,22 +2757,26 @@ mod tests {
     }
 
     #[test]
-    fn stub_page_for_other_categories() {
+    fn every_category_has_its_page() {
         let expanded = [false; CATEGORY_COUNT];
-        let p = panel(
-            0,
-            None,
-            &expanded,
-            &Settings::default(),
-            &PageState::default(),
-            1200.0,
-            800.0,
-            None,
-            "",
-            false,
-        );
-        assert!(p.texts.iter().any(|x| x.text == "General"));
-        assert!(p.texts.iter().any(|x| x.text == "No settings here yet."));
+        for (category, (name, _)) in CATEGORIES.iter().enumerate() {
+            let p = panel(
+                category,
+                None,
+                &expanded,
+                &Settings::default(),
+                &PageState::default(),
+                1200.0,
+                800.0,
+                None,
+                "",
+                false,
+            );
+            assert!(
+                !p.texts.iter().any(|x| x.text == "No settings here yet."),
+                "{name}"
+            );
+        }
     }
 
     fn texts_of(category: usize, state: &PageState, settings: &Settings) -> Vec<ui::Text> {
@@ -2569,5 +2908,71 @@ mod tests {
         };
         let texts = texts_of(AGENT, &state, &Settings::default());
         assert!(texts.iter().any(|t| t.text.contains("Failed: read-only")));
+    }
+
+    #[test]
+    fn general_editor_terminal_and_keymap_pages_show_their_settings() {
+        let settings = Settings::default();
+        let state = PageState {
+            general: GeneralPage {
+                start_at_login: true,
+                version: "0.9.0".into(),
+                updates_apply: false,
+            },
+            keymap: KeymapPage {
+                rows: vec![(
+                    "Git".into(),
+                    "git_panel::ToggleFocus".into(),
+                    "ctrl-shift-g".into(),
+                )],
+                problems: vec!["keymap.json: unknown action \"x\"".into()],
+            },
+            ..PageState::default()
+        };
+        let general = texts_of(GENERAL, &state, &settings);
+        for expected in ["Start at Login", "0.9.0", "Check for Updates Automatically"] {
+            assert!(general.iter().any(|t| t.text == expected), "{expected}");
+        }
+        let editor = texts_of(EDITOR, &state, &settings);
+        for expected in ["15", "None", "Split", "Auto"] {
+            assert!(editor.iter().any(|t| t.text == expected), "{expected}");
+        }
+        let terminal = texts_of(TERMINAL, &state, &settings);
+        assert!(terminal.iter().any(|t| t.text == "10000"));
+        let keymap = texts_of(KEYMAP, &state, &settings);
+        assert!(keymap.iter().any(|t| t.text == "ctrl-shift-g"));
+        assert!(keymap.iter().any(|t| t.text.contains("unknown action")));
+    }
+
+    #[test]
+    fn editor_and_terminal_controls_change_their_settings_within_bounds() {
+        let mut s = Settings::default();
+        assert!(handle_control(CTRL_BUFFER_FONT_INC, &mut s));
+        assert_eq!(s.buffer_font_size, 16.0);
+        assert!(!is_default(CTRL_BUFFER_FONT_EDIT, &s));
+        assert!(reset_to_default(CTRL_BUFFER_FONT_EDIT, &mut s));
+        assert_eq!(s.buffer_font_size, 15.0);
+        assert!(handle_control(CTRL_TERM_FONT_DEC, &mut s));
+        assert_eq!(s.terminal_font_size, 14.0);
+        s.terminal_scrollback = SCROLLBACK_MAX;
+        assert!(
+            !handle_control(CTRL_SCROLLBACK_INC, &mut s),
+            "held at the maximum"
+        );
+        assert!(handle_control(CTRL_SCROLLBACK_DEC, &mut s));
+        assert_eq!(s.terminal_scrollback, SCROLLBACK_MAX - 1_000);
+
+        assert!(apply_choice(CTRL_SOFT_WRAP, 1, &[], &mut s));
+        assert!(s.soft_wrap);
+        assert!(apply_choice(CTRL_DIFF_VIEW, 1, &[], &mut s));
+        assert!(!s.split_diff);
+        let items = control_items(CTRL_EXTERNAL_EDITOR, &[]);
+        let zed_like = items.iter().position(|item| item == "Cursor").unwrap_or(0);
+        assert!(apply_choice(CTRL_EXTERNAL_EDITOR, zed_like, &[], &mut s));
+        assert_eq!(s.external_editor, "Cursor");
+        assert!(apply_choice(CTRL_EXTERNAL_EDITOR, 0, &[], &mut s));
+        assert_eq!(control_value(CTRL_EXTERNAL_EDITOR, &s), "Auto");
+        assert!(handle_control(CTRL_AUTO_UPDATE, &mut s));
+        assert!(!s.auto_update);
     }
 }

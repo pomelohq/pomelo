@@ -301,7 +301,7 @@ impl OutlineView {
 
     /// A row's height in design px: a code-font line plus the item padding.
     fn row_height() -> f32 {
-        crate::EDIT_FONT * 1.4 + 10.0
+        crate::edit_font() * 1.4 + 10.0
     }
 
     /// Resize for a window of `viewport` real px.
@@ -393,7 +393,7 @@ impl OutlineView {
         // The pane gives up the picker's border and the divider beside or above it.
         let (width, height) = self.size().preview;
         let (width, height) = (width - 3.0, height - 3.0);
-        let rows = (height / crate::EDIT_LINE_H).floor().max(1.0) as usize;
+        let rows = (height / crate::edit_line_h()).floor().max(1.0) as usize;
         let columns = ((width - gutter_width) / crate::char_advance())
             .floor()
             .max(1.0) as usize;
@@ -611,7 +611,7 @@ fn render_preview(content: Option<PreviewContent>) -> Node {
         let mut line = div()
             .row()
             .items_center()
-            .h_px(crate::EDIT_LINE_H)
+            .h_px(crate::edit_line_h())
             .child(
                 div()
                     .row()
@@ -621,7 +621,7 @@ fn render_preview(content: Option<PreviewContent>) -> Node {
                     .pr(8.0)
                     .child(
                         label(row.number.to_string())
-                            .size(crate::EDIT_FONT)
+                            .size(crate::edit_font())
                             .mono()
                             .color(number_color),
                     ),
@@ -665,7 +665,7 @@ fn preview_segments(segments: Vec<(String, Rgba)>, name: Option<Range<usize>>) -
 }
 
 fn preview_run(text: String, color: Rgba, marked: bool, highlight: Rgba) -> Node {
-    let text = label(text).size(crate::EDIT_FONT).mono().color(color);
+    let text = label(text).size(crate::edit_font()).mono().color(color);
     if marked {
         div().row().bg(highlight).child(text).into()
     } else {
@@ -699,7 +699,7 @@ fn label_segments(symbol: &Symbol, positions: &[usize]) -> Vec<Node> {
     }
     runs.into_iter()
         .map(|(text, color, matched)| {
-            let text = label(text).size(crate::EDIT_FONT).mono().color(color);
+            let text = label(text).size(crate::edit_font()).mono().color(color);
             if matched {
                 div().row().bg(highlight).child(text).into()
             } else {

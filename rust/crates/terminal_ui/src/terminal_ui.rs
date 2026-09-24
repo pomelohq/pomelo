@@ -17,7 +17,38 @@ pub use contrast::{apca_contrast, ensure_minimum_contrast};
 pub use item::TerminalItem;
 pub use panel::{HolderScope, TerminalPanel};
 
-pub const FONT_SIZE: f32 = 15.0;
+pub const DEFAULT_FONT_SIZE: f32 = 15.0;
+/// Terminal text size in hundredths of a design px, set from the app's settings.
+static FONT_HUNDREDTHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1500);
+
+pub fn font_size() -> f32 {
+    FONT_HUNDREDTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
+/// The terminal settings: text size, the shell new terminals run (empty: the login shell) and how many
+/// lines of history they keep.
+pub fn set_terminal_defaults(size: f32, shell: &str, scrollback: usize) {
+    use std::sync::atomic::Ordering;
+    FONT_HUNDREDTHS.store(
+        (size.clamp(6.0, 72.0) * 100.0).round() as u32,
+        Ordering::Relaxed,
+    );
+    if let Ok(mut current) = defaults().lock() {
+        current.shell = shell.trim().to_string();
+        current.scrollback = scrollback;
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Defaults {
+    pub shell: String,
+    pub scrollback: usize,
+}
+
+pub(crate) fn defaults() -> &'static std::sync::Mutex<Defaults> {
+    static DEFAULTS: std::sync::OnceLock<std::sync::Mutex<Defaults>> = std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(Default::default)
+}
 /// The "standard" terminal line height (the comfortable one is 1.618).
 pub const LINE_HEIGHT: f32 = 1.3;
 pub const MINIMUM_CONTRAST: f32 = 45.0;
@@ -310,7 +341,8 @@ impl GridPainter {
             {
                 foreground = theme.link_text_hover;
                 let x = cell.column as f32 * metrics.cell_width;
-                let y = row as f32 * metrics.line_height + (metrics.line_height + FONT_SIZE) / 2.0;
+                let y =
+                    row as f32 * metrics.line_height + (metrics.line_height + font_size()) / 2.0;
                 match overlays.last_mut() {
                     Some(last)
                         if last.y == y && (last.x + last.w - x).abs() < 0.01 && last.h == 1.0 =>
@@ -391,7 +423,7 @@ impl GridPainter {
                         line.child(div().w_px((run.column - column) as f32 * metrics.cell_width));
                 }
                 let mut text = label(run.text)
-                    .size(FONT_SIZE)
+                    .size(font_size())
                     .mono()
                     .color(run.style.foreground);
                 if run.style.bold {

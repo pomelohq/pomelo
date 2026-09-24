@@ -393,7 +393,7 @@ impl CompletionsMenu {
     }
 
     pub fn scroll_aside(&mut self, dy: f32) -> bool {
-        let rows = (-dy / (crate::EDIT_LINE_H * ui::ui_text_scale())).round() as isize;
+        let rows = (-dy / (crate::edit_line_h() * ui::ui_text_scale())).round() as isize;
         let before = self.aside_scroll;
         self.aside_scroll = (self.aside_scroll as isize + rows).max(0) as usize;
         self.aside_scroll != before
@@ -435,7 +435,7 @@ impl CompletionsMenu {
             &mut self.scroll_top,
             &mut remainder,
             dy,
-            crate::EDIT_LINE_H * ui::ui_text_scale(),
+            crate::edit_line_h() * ui::ui_text_scale(),
             max_top,
         );
         if moved {
@@ -450,7 +450,7 @@ impl CompletionsMenu {
 
     /// Height in design px.
     pub fn height(&self) -> f32 {
-        self.visible() as f32 * crate::EDIT_LINE_H + PADDING_Y
+        self.visible() as f32 * crate::edit_line_h() + PADDING_Y
     }
 
     /// Rows in the code font, matched letters bold, the selection tinted; row clicks are `id_base + row`.
@@ -462,7 +462,7 @@ impl CompletionsMenu {
                 .row()
                 .flex(1.0)
                 .items_center()
-                .h_px(crate::EDIT_LINE_H)
+                .h_px(crate::edit_line_h())
                 .px(6.0)
                 .rounded(4.0)
                 .on_click(id_base + row as u64);
@@ -667,7 +667,8 @@ fn lsp_row_runs(
         _ => "",
     };
     let label_color = crate::color_of(&syntax, capture);
-    let char_width = ui::measure_text_width("M", crate::EDIT_FONT, true, 400) / ui::ui_text_scale();
+    let char_width =
+        ui::measure_text_width("M", crate::edit_font(), true, 400) / ui::ui_text_scale();
     let fits = (available / char_width.max(1.0)).floor() as usize;
     let shown: Vec<char> = if chars.len() > fits {
         let mut cut: Vec<char> = chars.iter().take(fits.saturating_sub(3)).copied().collect();
@@ -698,7 +699,7 @@ fn lsp_row_runs(
 }
 
 fn code_run(text: String, color: Rgba, bold: bool) -> Node {
-    let run = label(text).size(crate::EDIT_FONT).mono().color(color);
+    let run = label(text).size(crate::edit_font()).mono().color(color);
     if bold {
         run.weight(700).into()
     } else {
@@ -708,7 +709,7 @@ fn code_run(text: String, color: Rgba, bold: bool) -> Node {
 
 fn word_run(text: String, bold: bool) -> Node {
     let run = label(text)
-        .size(crate::EDIT_FONT)
+        .size(crate::edit_font())
         .mono()
         .color(theme().editor_foreground);
     if bold {

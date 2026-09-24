@@ -551,6 +551,27 @@ impl WorkspaceView {
         self.layout.agent_states = states;
     }
 
+    /// The active editor's file, else the workspace folder: what an external editor should open.
+    pub fn external_target(&self) -> Option<std::path::PathBuf> {
+        let files = self.layout.files_view.as_ref()?;
+        files.active_file_path().or_else(|| files.root_dir())
+    }
+
+    pub fn open_file(&mut self, path: &std::path::Path) {
+        if let Some(files) = self.layout.files_view.as_mut() {
+            files.open_file_at(path, None, None);
+            self.set_terminal_focus(false);
+            self.set_agent_focus(false);
+            self.panes_input = true;
+        }
+    }
+
+    pub fn editor_metrics_changed(&mut self) {
+        if let Some(files) = self.layout.files_view.as_mut() {
+            files.editor_metrics_changed();
+        }
+    }
+
     /// Returns whether the badge changed.
     pub fn set_services_running(&mut self, running: bool) -> bool {
         std::mem::replace(&mut self.layout.services_running, running) != running
