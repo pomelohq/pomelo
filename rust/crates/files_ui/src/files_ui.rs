@@ -31,6 +31,7 @@ mod command_palette;
 mod completions_menu;
 mod definition;
 mod diagnostic_nav;
+mod file_finder;
 mod fuzzy;
 mod git_diff;
 mod go_to_line;
@@ -127,6 +128,7 @@ const MAX_PANES: usize = 6; // ceiling on total leaf panes in the group
 // Click ids in the feature-view space: tree rows below FUNC_VIEW_BASE + 1M, the editor pane group from there up
 // to pane_group_view::ID_SPAN, then the ranges below (checked high-to-low in `on_click`, so they must not overlap).
 const STICKY_BASE: u64 = FUNC_VIEW_BASE + pane_group_view::ID_SPAN;
+const FINDER_BASE: u64 = FUNC_VIEW_BASE + 14_400_000; // + row
 const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 14_500_000; // + PaletteClick
 const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 14_600_000; // + row
 const COMPLETION_BASE: u64 = FUNC_VIEW_BASE + 14_700_000; // + row
@@ -358,6 +360,18 @@ impl FileItem {
         }
         footer.focused && footer.view.key(key, shift)
     }
+}
+
+pub fn file_finder_preview(paths: Vec<String>, recent: Vec<String>, query: &str) -> Node {
+    let active = recent.first().cloned();
+    let mut finder = file_finder::FileFinder::new(
+        std::sync::Arc::new(file_finder::Candidates::new(paths)),
+        recent,
+        active,
+    );
+    finder.field.insert(query);
+    finder.update_matches();
+    finder.render(FINDER_BASE)
 }
 
 fn reads_only(key: EditKey) -> bool {
@@ -4701,6 +4715,8 @@ pub struct FilesView {
     tree: Vec<FileNode>,
     /// The tree walk still running off the UI thread; the tree fills in as it reports.
     scan: Option<files::BackgroundScan>,
+    entries: Vec<files::FileEntry>,
+    watcher: Option<files::TreeWatcher>,
     expanded: HashSet<String>,
     /// The editor area's split panes and their tabs.
     panes: PaneGroupView,
@@ -4729,6 +4745,10 @@ pub struct FilesView {
     tree_vw: f32,
     go_to_line: Option<(Vec<usize>, go_to_line::GoToLine)>,
     palette: Option<(Vec<usize>, command_palette::CommandPalette)>,
+    finder: Option<(Vec<usize>, file_finder::FileFinder)>,
+    finder_candidates: std::sync::Arc<file_finder::Candidates>,
+    finder_loading: Option<std::sync::mpsc::Receiver<file_finder::Candidates>>,
+    recent_files: Vec<String>,
     palette_memory: command_palette::PaletteMemory,
     /// The open symbol outline and the pane it navigates.
     outline: Option<(Vec<usize>, outline_view::OutlineView)>,
@@ -4751,9 +4771,29 @@ impl FilesView {
     /// never stalls the window.
     pub fn new(root: PathBuf) -> Self {
         let scan = files::BackgroundScan::start(root.clone(), std::sync::Arc::new(ui::wake));
+        let watcher = files::TreeWatcher::new(&root, std::sync::Arc::new(ui::wake))
+            .map_err(|error| eprintln!("file tree watch failed: {error}"))
+            .ok();
         let mut view = Self::with_tree(root, Vec::new());
         view.scan = Some(scan);
+        view.watcher = watcher;
         view
+    }
+
+    fn apply_disk_changes(&mut self) -> bool {
+        let Some(changes) = self.watcher.as_ref().map(files::TreeWatcher::take_changes) else {
+            return false;
+        };
+        if changes.is_empty() {
+            return false;
+        }
+        if self.scan.is_none() {
+            files::apply_changes(&self.root, &mut self.entries, &changes);
+            self.tree = files::build_tree(&self.entries);
+            self.flat_dirty = true;
+        }
+        self.panes.refresh_disk_state();
+        true
     }
 
     #[cfg(test)]
@@ -4771,6 +4811,7 @@ impl FilesView {
             self.scan = None;
         }
         self.tree = files::build_tree(&update.entries);
+        self.entries = update.entries;
         self.flat_dirty = true;
         true
     }
@@ -4782,6 +4823,8 @@ impl FilesView {
             root,
             tree,
             scan: None,
+            entries: Vec::new(),
+            watcher: None,
             expanded: HashSet::new(),
             panes: PaneGroupView::new(PaneGroupConfig {
                 id_base: FUNC_VIEW_BASE,
@@ -4809,6 +4852,10 @@ impl FilesView {
             other_dirty: Vec::new(),
             go_to_line: None,
             palette: None,
+            finder: None,
+            finder_candidates: Default::default(),
+            finder_loading: None,
+            recent_files: Vec::new(),
             palette_memory: command_palette::PaletteMemory::default(),
             outline: None,
             outline_preview: outline_view::PreviewLayout::Hidden,
@@ -5184,6 +5231,121 @@ impl FilesView {
         self.preview_outline(restore);
     }
 
+    fn active_relative(&self) -> Option<String> {
+        let path = self.panes.active_item()?.abs_path()?;
+        Some(
+            path.strip_prefix(&self.root)
+                .ok()?
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
+    fn note_recent(&mut self) {
+        let Some(active) = self.active_relative() else {
+            return;
+        };
+        if self.recent_files.first() == Some(&active) {
+            return;
+        }
+        self.recent_files.retain(|path| *path != active);
+        self.recent_files.insert(0, active);
+        self.recent_files.truncate(file_finder::MAX_RECENT);
+    }
+
+    fn load_finder_candidates(&mut self, include_ignored: bool) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let root = self.root.clone();
+        let spawned = std::thread::Builder::new()
+            .name("file-finder-list".into())
+            .spawn(move || {
+                let candidates =
+                    file_finder::Candidates::new(files::project_files(&root, include_ignored));
+                if sender.send(candidates).is_ok() {
+                    ui::wake();
+                }
+            });
+        if spawned.is_ok() {
+            self.finder_loading = Some(receiver);
+        }
+    }
+
+    fn poll_finder_candidates(&mut self) -> bool {
+        let Some(candidates) = self
+            .finder_loading
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+        else {
+            return false;
+        };
+        self.finder_loading = None;
+        self.finder_candidates = std::sync::Arc::new(candidates);
+        if let Some((_, finder)) = self.finder.as_mut() {
+            finder.set_candidates(self.finder_candidates.clone());
+        }
+        true
+    }
+
+    fn toggle_finder(&mut self) {
+        if self.finder.take().is_some() {
+            return;
+        }
+        self.note_recent();
+        let finder = file_finder::FileFinder::new(
+            self.finder_candidates.clone(),
+            self.recent_files.clone(),
+            self.active_relative(),
+        );
+        self.finder = Some((self.panes.active.clone(), finder));
+        self.load_finder_candidates(false);
+    }
+
+    fn finder_key(&mut self, key: EditKey, shift: bool) {
+        let Some((_, finder)) = self.finder.as_mut() else {
+            return;
+        };
+        match key {
+            EditKey::Escape | EditKey::ToggleFileFinder => self.finder = None,
+            EditKey::Enter => self.confirm_finder(false),
+            EditKey::ReplaceAll => self.confirm_finder(true),
+            EditKey::Up => finder.select_previous(),
+            EditKey::Down => finder.select_next(),
+            EditKey::ToggleIncludeIgnored => {
+                finder.include_ignored = !finder.include_ignored;
+                let include = finder.include_ignored;
+                self.load_finder_candidates(include);
+            }
+            _ => {
+                if finder.field.key(key, shift) {
+                    finder.update_matches();
+                }
+            }
+        }
+    }
+
+    fn finder_input(&mut self, text: &str) {
+        if let Some((_, finder)) = self.finder.as_mut() {
+            finder.field.insert(&text.replace('\n', ""));
+            finder.update_matches();
+        }
+    }
+
+    fn confirm_finder(&mut self, split: bool) {
+        let Some((path, finder)) = self.finder.take() else {
+            return;
+        };
+        let Some(target) = finder.confirm() else {
+            return;
+        };
+        self.panes.active = path;
+        if split && self.panes.active_item().is_some() {
+            self.pane_command(PaneCommand::Split(SplitDirection::Right));
+        }
+        let full = self.root.join(&target.path);
+        self.open_file_at(&full, target.row, target.column);
+        self.note_recent();
+    }
+
     fn toggle_palette(&mut self) {
         if self.palette.take().is_some() {
             return;
@@ -5294,7 +5456,17 @@ impl FilesView {
         }
         if key == EditKey::ToggleCommandPalette {
             self.go_to_line = None;
+            self.finder = None;
             self.toggle_palette();
+            return true;
+        }
+        if self.finder.is_some() {
+            self.finder_key(key, shift);
+            return true;
+        }
+        if key == EditKey::ToggleFileFinder {
+            self.go_to_line = None;
+            self.toggle_finder();
             return true;
         }
         if self.go_to_line.is_some() {
@@ -5320,6 +5492,10 @@ impl FilesView {
         }
         if self.palette.is_some() {
             self.palette_input(text);
+            return true;
+        }
+        if self.finder.is_some() {
+            self.finder_input(text);
             return true;
         }
         if self.go_to_line.is_some() {
@@ -5553,7 +5729,7 @@ impl ItemInput for FilesView {
     }
 
     fn editor_focused(&self) -> bool {
-        self.tree_edit_active() || self.panes.editor_focused()
+        self.finder.is_some() || self.tree_edit_active() || self.panes.editor_focused()
     }
 
     fn cursor_position(&self) -> Option<String> {
@@ -5562,7 +5738,11 @@ impl ItemInput for FilesView {
 
     fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)> {
         let popovers = self.panes.editor_popovers(viewport);
-        if self.outline.is_some() || self.palette.is_some() || self.go_to_line.is_some() {
+        if self.outline.is_some()
+            || self.palette.is_some()
+            || self.finder.is_some()
+            || self.go_to_line.is_some()
+        {
             return Vec::new();
         }
         popovers
@@ -5673,6 +5853,13 @@ impl FunctionView for FilesView {
                 elevation: Elevation::Modal,
             });
         }
+        if let Some((_, finder)) = self.finder.as_ref() {
+            return Some(ModalView {
+                node: finder.render(FINDER_BASE),
+                width: file_finder::WIDTH,
+                elevation: Elevation::Modal,
+            });
+        }
         let (_, modal) = self.go_to_line.as_ref()?;
         Some(ModalView {
             node: modal.render(),
@@ -5705,12 +5892,16 @@ impl FunctionView for FilesView {
         if let Some((_, palette)) = self.palette.as_mut() {
             return palette.scroll_by(dy);
         }
+        if let Some((_, finder)) = self.finder.as_mut() {
+            return finder.scroll_by(dy);
+        }
         false
     }
 
     fn dismiss_modal(&mut self) {
         self.close_outline(false);
         self.palette = None;
+        self.finder = None;
         self.close_go_to_line(false);
     }
 
@@ -5963,6 +6154,13 @@ impl FunctionView for FilesView {
             ));
             return true;
         }
+        if id >= FINDER_BASE {
+            if let Some((_, finder)) = self.finder.as_mut() {
+                finder.select_row((id - FINDER_BASE) as usize);
+            }
+            self.confirm_finder(false);
+            return true;
+        }
         // A pinned sticky breadcrumb folder: collapse it and scroll so it becomes the top row.
         if id >= STICKY_BASE {
             let k = (id - STICKY_BASE) as usize;
@@ -6017,11 +6215,21 @@ impl FunctionView for FilesView {
     fn set_hover(&mut self, id: Option<u64>) -> bool {
         // Tab hits reveal a close button and modal rows light up, so only changes there need a repaint.
         let tab_changed = self.panes.set_hover(id);
-        let modal = |x: Option<u64>| x.is_some_and(|v| (PALETTE_BASE..MODAL_END).contains(&v));
+        let modal = |x: Option<u64>| x.is_some_and(|v| (FINDER_BASE..MODAL_END).contains(&v));
         let entered = self.hover != id;
         let changed = tab_changed || (entered && (modal(self.hover) || modal(id)));
         self.hover = id;
-        let over_modal = id.filter(|v| (PALETTE_BASE..MODAL_END).contains(v));
+        let over_modal = id.filter(|v| (FINDER_BASE..MODAL_END).contains(v));
+        if let Some((_, finder)) = self.finder.as_mut() {
+            finder.hovered = over_modal.filter(|v| *v < PALETTE_BASE);
+            if let Some(row) = finder
+                .hovered
+                .filter(|_| entered)
+                .map(|v| (v - FINDER_BASE) as usize)
+            {
+                finder.select_row(row);
+            }
+        }
         let mut outline_hovered_row = None;
         if let Some((_, view)) = self.outline.as_mut() {
             view.hovered = over_modal;
@@ -6136,6 +6344,7 @@ impl FunctionView for FilesView {
                 key,
                 EditKey::NewCenterTerminal
                     | EditKey::ToggleCommandPalette
+                    | EditKey::ToggleFileFinder
                     | EditKey::ToggleOutline
                     | EditKey::ToggleGoToLine
             )
@@ -6144,6 +6353,7 @@ impl FunctionView for FilesView {
     fn accepts_pane_keys(&self) -> bool {
         self.outline.is_none()
             && self.palette.is_none()
+            && self.finder.is_none()
             && self.go_to_line.is_none()
             && !self.tree_edit_active()
     }
@@ -6240,6 +6450,9 @@ impl FunctionView for FilesView {
 
     fn tick_items(&mut self, clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
         let mut outcome = workspace::ItemTick::default();
+        outcome.changed |= self.poll_finder_candidates();
+        outcome.changed |= self.apply_disk_changes();
+        self.note_recent();
         let mut closed: Vec<(u64, String)> = Vec::new();
         self.panes.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {
@@ -7908,5 +8121,86 @@ mod footer_tests {
         let runs = &recorded.borrow().runs;
         assert_eq!(runs.len(), 1);
         assert!(runs[0].all);
+    }
+}
+
+#[cfg(test)]
+mod file_finder_tests {
+    use super::*;
+
+    fn project() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("src")).expect("dir");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n\nfn other() {}\n").expect("write");
+        std::fs::write(root.join("src/lib.rs"), "pub fn lib() {}\n").expect("write");
+        std::fs::write(root.join("README.md"), "readme\n").expect("write");
+        temp
+    }
+
+    fn settle(view: &mut FilesView) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while view.finder_loading.is_some() && std::time::Instant::now() < deadline {
+            view.tick_items(&|| None);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn active_path(view: &FilesView) -> Option<PathBuf> {
+        view.panes.active_item().and_then(|item| item.abs_path())
+    }
+
+    #[test]
+    fn opens_the_picked_file_at_the_asked_line() {
+        let temp = project();
+        let root = temp.path().to_path_buf();
+        let mut view = FilesView::scanned(root.clone());
+        view.editor_key(EditKey::ToggleFileFinder, false);
+        assert!(view.finder.is_some());
+        assert!(
+            view.editor_focused(),
+            "typing goes to the finder even with no file open"
+        );
+        settle(&mut view);
+        view.editor_text("main:3");
+        view.editor_key(EditKey::Enter, false);
+        assert!(view.finder.is_none());
+        assert_eq!(active_path(&view), Some(root.join("src/main.rs")));
+        assert_eq!(
+            view.cursor_position()
+                .as_deref()
+                .map(|position| position.starts_with("3:")),
+            Some(true)
+        );
+
+        view.editor_key(EditKey::ToggleFileFinder, false);
+        let recent: Vec<String> = view
+            .finder
+            .as_ref()
+            .map(|(_, finder)| {
+                finder
+                    .matches()
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(recent, ["src/main.rs"]);
+        view.editor_key(EditKey::Escape, false);
+        assert!(view.finder.is_none());
+    }
+
+    #[test]
+    fn cmd_enter_opens_the_file_beside_the_current_one() {
+        let temp = project();
+        let root = temp.path().to_path_buf();
+        let mut view = FilesView::scanned(root.clone());
+        view.open_file_at(&root.join("README.md"), None, None);
+        view.editor_key(EditKey::ToggleFileFinder, false);
+        settle(&mut view);
+        view.editor_text("lib");
+        view.editor_key(EditKey::ReplaceAll, false);
+        assert_eq!(view.panes.group.leaf_count(), 2);
+        assert_eq!(active_path(&view), Some(root.join("src/lib.rs")));
     }
 }

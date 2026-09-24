@@ -854,6 +854,8 @@ pub enum EditKey {
     Transpose,
     ToggleGoToLine,
     ToggleCommandPalette,
+    ToggleFileFinder,
+    ToggleIncludeIgnored,
     ToggleOutline,
     NewCenterTerminal,
     TogglePickerPreview,
