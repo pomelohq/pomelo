@@ -386,6 +386,8 @@ struct MainWindow {
     ops: workspaces_ui::OpQueue,
     /// The project's Jira ticket status per workspace.
     tickets: Option<workspaces_ui::TicketStatuses>,
+    /// Refresh-main, auto-push and the port reaper, when this process holds the session's primary lock.
+    background: Option<workspaces_ui::BackgroundSync>,
 }
 
 struct ProjectServices {
@@ -732,6 +734,7 @@ impl App {
                 services: None,
                 ops: workspaces_ui::OpQueue::new(Arc::new(ui::wake)),
                 tickets: None,
+                background: None,
             },
         );
         id
@@ -756,7 +759,20 @@ impl App {
         let tickets = project.as_ref().map(|project| {
             workspaces_ui::TicketStatuses::new(state.clone(), &project.session, Arc::new(ui::wake))
         });
+        let background = services
+            .as_ref()
+            .zip(self.mains.get(&id))
+            .map(|(services, main)| {
+                let config = services.config.clone();
+                workspaces_ui::BackgroundSync::start(workspaces_ui::BackgroundContext {
+                    runner: services.runner.clone(),
+                    state: state.clone(),
+                    config: Arc::new(move || config.read().ok().and_then(|config| config.clone())),
+                    ops: main.ops.clone(),
+                })
+            });
         if let Some(main) = self.mains.get_mut(&id) {
+            main.background = background;
             main.tickets = tickets;
             main.project = project;
             main.watcher = watcher;
@@ -1120,6 +1136,13 @@ impl App {
             .or_else(|| self.mains.values().find(|main| main.project.is_some()))
             .and_then(|main| main.project.as_ref())
             .map(|project| (pom_paths::StateDir::from_env(), project.session.clone()));
+        let project_config = self
+            .focused_main
+            .and_then(|id| self.mains.get(&id))
+            .or_else(|| self.mains.values().find(|main| main.project.is_some()))
+            .and_then(|main| main.project.as_ref())
+            .and_then(|project| project.config.clone())
+            .map(Arc::new);
         let (handle, entity) = app.open_raw_window::<settings_ui::SettingsView>(
             ui::WindowOptions {
                 title: "Settings".into(),
@@ -1131,6 +1154,7 @@ impl App {
                 let mut view = settings_ui::SettingsView::new(settings);
                 view.set_fonts(fonts);
                 view.set_jira_session(jira_session);
+                view.set_project_config(project_config);
                 view
             },
         );

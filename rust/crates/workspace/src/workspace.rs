@@ -239,6 +239,8 @@ pub enum RowAction {
     Rename,
     StopServices,
     Delete,
+    UpdateMain,
+    PrepareMain,
 }
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
@@ -275,6 +277,8 @@ pub const WORKSPACE_ROW_MENU_TARGET: u64 = 1600;
 pub const MENU_WS_RENAME: u64 = 940;
 pub const MENU_WS_STOP: u64 = 941;
 pub const MENU_WS_DELETE: u64 = 942;
+pub const MENU_WS_UPDATE_MAIN: u64 = 943;
+pub const MENU_WS_PREPARE_MAIN: u64 = 944;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,

@@ -1,0 +1,22 @@
+[package]
+name = "pom_sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Keeping main fresh and branches pushed: refresh-main on a schedule, auto-push with WIP snapshots, under the session's primary lock."
+
+[lib]
+path = "src/pom_sync.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_layout = { path = "../pom_layout" }
+pom_lock = { path = "../pom_lock" }
+pom_paths = { path = "../pom_paths" }
+pom_services = { path = "../pom_services" }
+libc = "0.2"
+serde_json.workspace = true
+
+[dev-dependencies]
+pom_ptyhost = { path = "../pom_ptyhost" }
+tempfile = "3"

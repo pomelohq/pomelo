@@ -391,15 +391,17 @@ fn main() -> anyhow::Result<()> {
     let expanded = vec![true; settings_ui::CATEGORY_COUNT];
     // JIRA=1: the Integrations page as a configured project sees it.
     let jira = if std::env::var("JIRA").is_ok() {
-        settings_ui::JiraPage {
+        settings_ui::IntegrationsPage {
             session: "myproject".into(),
+            keep_main_fresh: true,
+            refresh_minutes: 30,
             site: "https://acme.atlassian.net".into(),
             email: "you@example.com".into(),
             token: settings_ui::TokenSource::Secret,
             status: settings_ui::ConnectionStatus::SignedIn("Sam (you@example.com)".into()),
         }
     } else {
-        settings_ui::JiraPage::default()
+        settings_ui::IntegrationsPage::default()
     };
     let fs_edit = std::env::var("FSEDIT").ok();
     let editing = fs_edit

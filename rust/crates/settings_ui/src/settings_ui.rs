@@ -100,7 +100,7 @@ fn nav_item_box(active: bool, hovered: bool) -> Div {
 const APPEARANCE_SECTIONS: [&str; 2] = ["Theme", "UI Font"];
 const WINDOW_LAYOUT_SECTIONS: [&str; 5] = ["Status Bar", "Title Bar", "Window", "Docks", "Panels"];
 
-const INTEGRATIONS_SECTIONS: [&str; 1] = ["Jira"];
+const INTEGRATIONS_SECTIONS: [&str; 2] = ["Jira", "Main Workspace"];
 
 const CATEGORIES: [(&str, &[&str]); 6] = [
     ("General", &[]),
@@ -170,6 +170,12 @@ pub const CTRL_JIRA_TOKEN: u64 = 232;
 pub const CTRL_JIRA_RESET_TOKEN: u64 = 233;
 pub const CTRL_JIRA_TEST: u64 = 234;
 pub const CTRL_JIRA_ONLY_MINE: u64 = 235;
+pub const CTRL_REFRESH_MAIN: u64 = 236;
+pub const CTRL_REFRESH_DEC: u64 = 237;
+pub const CTRL_REFRESH_INC: u64 = 238;
+pub const CTRL_REFRESH_EDIT: u64 = 239;
+pub const REFRESH_MINUTES_MIN: u64 = 1;
+pub const REFRESH_MINUTES_MAX: u64 = 1440;
 pub const WIN_W_MIN: f32 = 640.0;
 pub const WIN_W_MAX: f32 = 4000.0;
 pub const WIN_H_MIN: f32 = 480.0;
@@ -751,7 +757,7 @@ pub fn chrome(
 pub fn page(
     selected: usize,
     s: &Settings,
-    jira: &JiraPage,
+    jira: &IntegrationsPage,
     editing: Option<(u64, &str)>,
     search: &str,
     w: f32,
@@ -820,7 +826,7 @@ pub fn panel(
     hovered: Option<u64>,
     expanded: &[bool],
     s: &Settings,
-    jira: &JiraPage,
+    jira: &IntegrationsPage,
     w: f32,
     h: f32,
     editing: Option<(u64, &str)>,
@@ -971,7 +977,7 @@ fn page_for(cat: usize) -> Option<Page> {
         WINDOW_LAYOUT => Some(window_layout_page(&Settings::default())),
         INTEGRATIONS => Some(integrations_page(
             &Settings::default(),
-            &JiraPage::default(),
+            &IntegrationsPage::default(),
         )),
         _ => None,
     }
@@ -1346,17 +1352,20 @@ pub enum ConnectionStatus {
     Failed(String),
 }
 
-/// The Jira settings of the session the settings window was opened from (empty `session`: no project open).
+/// The per-project settings of the session the settings window was opened from (empty `session`: no project
+/// open): Jira, and keeping main fresh.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct JiraPage {
+pub struct IntegrationsPage {
     pub session: String,
+    pub keep_main_fresh: bool,
+    pub refresh_minutes: u64,
     pub site: String,
     pub email: String,
     pub token: TokenSource,
     pub status: ConnectionStatus,
 }
 
-fn integrations_page(s: &Settings, jira: &JiraPage) -> Page {
+fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
     let token_row = match jira.token {
         TokenSource::Missing => SettingRow {
             title: "API Token",
@@ -1447,6 +1456,27 @@ fn integrations_page(s: &Settings, jira: &JiraPage) -> Page {
                     on: s.jira_only_mine,
                 },
                 reset: reset_if_changed(CTRL_JIRA_ONLY_MINE, s),
+            }),
+            PageItem::Header("Main Workspace"),
+            PageItem::Row(SettingRow {
+                title: "Keep Main Fresh",
+                description: "Pulls every repo of main from origin and runs its migrations on a schedule, so new workspaces start from current code and data. Repos with uncommitted changes are skipped.".into(),
+                control: Control::Toggle {
+                    id: CTRL_REFRESH_MAIN,
+                    on: jira.keep_main_fresh,
+                },
+                reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Refresh Every",
+                description: "Minutes between refreshes, on the clock: every 30 runs at :00 and :30.".into(),
+                control: Control::Stepper {
+                    dec: CTRL_REFRESH_DEC,
+                    inc: CTRL_REFRESH_INC,
+                    edit: CTRL_REFRESH_EDIT,
+                    value: jira.refresh_minutes.to_string(),
+                },
+                reset: None,
             }),
         ],
     }
@@ -1896,7 +1926,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
-            &JiraPage::default(),
+            &IntegrationsPage::default(),
             1200.0,
             800.0,
             None,
@@ -1917,7 +1947,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
-            &JiraPage::default(),
+            &IntegrationsPage::default(),
             1200.0,
             800.0,
             None,
@@ -2003,7 +2033,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
-            &JiraPage::default(),
+            &IntegrationsPage::default(),
             1200.0,
             800.0,
             None,
@@ -2023,7 +2053,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
-            &JiraPage::default(),
+            &IntegrationsPage::default(),
             1200.0,
             800.0,
             None,

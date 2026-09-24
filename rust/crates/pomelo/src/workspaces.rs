@@ -92,6 +92,32 @@ impl App {
             }
             workspace::RowAction::StopServices => self.stop_workspace_services(id, &target),
             workspace::RowAction::Delete => self.delete_workspace(id, index, &target),
+            workspace::RowAction::UpdateMain => {
+                self.queue_main_op(id, OpKind::RefreshMain, workspaces_ui::REFRESH_TITLE)
+            }
+            workspace::RowAction::PrepareMain => self.queue_main_op(
+                id,
+                OpKind::PrepareMain(pom_workspace::PrepareRequest::default()),
+                "Preparing main",
+            ),
+        }
+    }
+
+    fn queue_main_op(&mut self, id: WindowId, kind: OpKind, title: &str) {
+        let Some(context) = self.op_context(id) else {
+            return;
+        };
+        if let Some(main) = self.mains.get(&id) {
+            let already = main.ops.snapshot().iter().any(|op| {
+                op.title == title
+                    && matches!(
+                        op.status,
+                        workspace::OpStatus::Queued | workspace::OpStatus::Running
+                    )
+            });
+            if !already {
+                main.ops.enqueue(kind, title.to_string(), context);
+            }
         }
     }
 
@@ -228,7 +254,7 @@ impl App {
             if !done.warnings.is_empty() {
                 let message = format!(
                     "{} finished with {}: {}",
-                    done.branch,
+                    done.title,
                     if done.warnings.len() == 1 {
                         "a warning".to_string()
                     } else {

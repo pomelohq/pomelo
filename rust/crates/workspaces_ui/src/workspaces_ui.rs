@@ -1,6 +1,7 @@
 //! Workspaces from the app: the create and rename forms, and the queue that runs creations and deletions in
 //! the background while the WORKSPACES panel shows their progress.
 
+mod background;
 mod forms;
 mod ops;
 mod ticket_picker;
@@ -8,8 +9,9 @@ mod tickets;
 
 use std::sync::Arc;
 
+pub use background::{BackgroundContext, BackgroundSync, REFRESH_TITLE};
 pub use forms::{CreateWorkspace, CreateWorkspaceModal, RenameWorkspace, RenameWorkspaceModal};
-pub use ops::{apply_event, Finished, OpContext, OpKind, OpQueue};
+pub use ops::{apply_event, apply_repo_state, Finished, OpContext, OpKind, OpQueue};
 pub use tickets::{TicketSource, TicketStatuses};
 
 /// Asks for a display name and branch slug from a seed slug and a description (Claude in the app).

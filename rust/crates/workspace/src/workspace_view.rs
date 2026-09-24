@@ -34,6 +34,7 @@ const CLOSE_PROMPT_TOKENS: u64 = 1 << 40;
 const FORGET_PROMPT_TOKENS: u64 = 1 << 41;
 const PANEL_PROMPT_TOKENS: u64 = 1 << 42;
 const DELETE_WORKSPACE_PROMPT_TOKENS: u64 = 1 << 43;
+const PREPARE_MAIN_PROMPT_TOKEN: u64 = 1 << 44;
 /// The gap a zoomed view leaves around it (on its dock's inner side only, for a dock panel).
 const ZOOM_PADDING: f32 = 8.0;
 const TOAST_ANIM: Duration = Duration::from_millis(160);
@@ -1612,7 +1613,14 @@ impl WorkspaceView {
             items.push(item(crate::MENU_WS_STOP, "Stop All Services", false));
         }
         let is_main = project.workspaces.get(index) == Some(&project.branch);
-        if !is_main {
+        if is_main {
+            items.push(item(
+                crate::MENU_WS_UPDATE_MAIN,
+                "Update Main from Origin",
+                true,
+            ));
+            items.push(item(crate::MENU_WS_PREPARE_MAIN, "Prepare Main...", false));
+        } else {
             items.push(item(crate::MENU_WS_DELETE, "Delete Workspace", true));
         }
         items
@@ -1630,6 +1638,21 @@ impl WorkspaceView {
                 self.workspace_requests.row = Some((index, crate::RowAction::StopServices));
             }
             crate::MENU_WS_DELETE => self.ask_to_delete_workspace(index),
+            crate::MENU_WS_UPDATE_MAIN => {
+                self.workspace_requests.row = Some((index, crate::RowAction::UpdateMain));
+            }
+            crate::MENU_WS_PREPARE_MAIN => {
+                self.pending_prompt = Some(crate::Prompt {
+                    token: PREPARE_MAIN_PROMPT_TOKEN + index as u64,
+                    message: "Reset main's databases?".into(),
+                    detail: Some(
+                        "Drops and recreates main's databases, runs each repo's migrations, then seeds. \
+                         New workspaces copy these databases. Data in them now is lost."
+                            .into(),
+                    ),
+                    buttons: vec!["Prepare Main".into(), "Cancel".into()],
+                });
+            }
             _ => {}
         }
     }
@@ -3374,6 +3397,13 @@ impl WorkspaceView {
     }
 
     pub fn prompt_answered(&mut self, token: u64, answer: usize) {
+        if token >= PREPARE_MAIN_PROMPT_TOKEN {
+            if answer == 0 {
+                let index = (token - PREPARE_MAIN_PROMPT_TOKEN) as usize;
+                self.workspace_requests.row = Some((index, crate::RowAction::PrepareMain));
+            }
+            return;
+        }
         if token >= DELETE_WORKSPACE_PROMPT_TOKENS {
             if answer == 0 {
                 let index = (token - DELETE_WORKSPACE_PROMPT_TOKENS) as usize;
