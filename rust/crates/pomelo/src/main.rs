@@ -1618,6 +1618,21 @@ impl ApplicationHandler for App {
                     && !self.shift_down
                     && !self.alt_down
                     && !self.ctrl_down;
+                let project_search = matches!(&ke.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("f"))
+                    && self.super_down
+                    && self.shift_down
+                    && !self.alt_down
+                    && !self.ctrl_down;
+                if project_search
+                    && self.mains.contains_key(&id)
+                    && self.with_workspace_view(id, |v, _| v.editor_focused()) != Some(true)
+                {
+                    self.with_workspace_view(id, |v, _| v.deploy_project_search());
+                    if let Some(m) = self.mains.get_mut(&id) {
+                        m.dirty = true;
+                    }
+                    return;
+                }
                 if quick_open
                     && self.mains.contains_key(&id)
                     && self.with_workspace_view(id, |v, _| v.editor_focused()) != Some(true)
@@ -1925,6 +1940,7 @@ impl ApplicationHandler for App {
                         _ => None,
                     },
                     Key::Character(c) if cmd => match c.as_str() {
+                        "f" | "F" if shift => key(EditKey::DeployProjectSearch),
                         "f" => key(EditKey::DeploySearch),
                         "g" | "G" if shift => key(EditKey::SelectPreviousMatch),
                         "g" => key(EditKey::SelectNextMatch),

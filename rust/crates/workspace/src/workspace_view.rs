@@ -3033,6 +3033,16 @@ impl WorkspaceView {
         }
     }
 
+    pub fn deploy_project_search(&mut self) {
+        if self.window_modal.is_some() {
+            return;
+        }
+        self.set_terminal_focus(false);
+        if let Some(files) = self.layout.files_view.as_mut() {
+            files.editor_key(EditKey::DeployProjectSearch, false);
+        }
+    }
+
     pub fn editor_focused(&self) -> bool {
         if self.window_modal.is_some() || self.panel_text_kind().is_some() {
             return true;

@@ -113,6 +113,7 @@ pub enum IconKind {
     PullRequest,
     Merged,
     Clock,
+    Filter,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

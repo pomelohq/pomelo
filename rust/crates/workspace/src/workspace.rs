@@ -855,6 +855,7 @@ pub enum EditKey {
     ToggleGoToLine,
     ToggleCommandPalette,
     ToggleFileFinder,
+    DeployProjectSearch,
     ToggleIncludeIgnored,
     ToggleOutline,
     NewCenterTerminal,

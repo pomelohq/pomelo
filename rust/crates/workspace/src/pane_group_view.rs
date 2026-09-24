@@ -253,7 +253,12 @@ impl PaneGroupView {
     }
 
     pub fn reveal_item(&mut self, id: &str) -> bool {
-        for path in self.pane_order.clone() {
+        let order = if self.pane_order.is_empty() {
+            vec![self.active.clone()]
+        } else {
+            self.pane_order.clone()
+        };
+        for path in order {
             let Some(pane) = self.group.leaf_at_mut(&path) else {
                 continue;
             };

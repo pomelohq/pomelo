@@ -17,6 +17,7 @@ name = "tree"
 harness = false
 
 [dependencies]
+globset = "0.4"
 ignore = "0.4"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 trash = "5"

@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod search;
 mod watch;
 pub use watch::TreeWatcher;
 

@@ -40,6 +40,7 @@ mod list_scrollbar;
 mod lsp_completion;
 mod markdown_view;
 mod outline_view;
+mod project_search;
 mod saved_state;
 mod snippet_store;
 mod tree_actions;
@@ -372,6 +373,12 @@ pub fn file_finder_preview(paths: Vec<String>, recent: Vec<String>, query: &str)
     finder.field.insert(query);
     finder.update_matches();
     finder.render(FINDER_BASE)
+}
+
+pub fn project_search_preview(root: PathBuf, query: &str, filters: bool) -> Box<dyn Item> {
+    let mut search = project_search::ProjectSearch::new(root, query);
+    search.wait_for_results(filters);
+    Box::new(search)
 }
 
 fn reads_only(key: EditKey) -> bool {
@@ -5346,6 +5353,125 @@ impl FilesView {
         self.note_recent();
     }
 
+    fn deploy_project_search(&mut self) {
+        let seed = self
+            .panes
+            .active_item()
+            .and_then(|item| item.selected_text())
+            .filter(|text| !text.contains('\n'))
+            .unwrap_or_default();
+        let revealed = self.panes.reveal_item(project_search::ITEM_ID);
+        if revealed {
+            if let Some(search) = self
+                .panes
+                .active_item_mut()
+                .and_then(|item| item.as_any_mut())
+                .and_then(|any| any.downcast_mut::<project_search::ProjectSearch>())
+            {
+                search.set_query(&seed);
+            }
+            return;
+        }
+        let search = project_search::ProjectSearch::new(self.root.clone(), &seed);
+        self.add_center_item(Box::new(search));
+    }
+
+    fn serve_project_search(&mut self) -> bool {
+        let mut opened = None;
+        let mut replace = None;
+        self.panes.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                if let Some(search) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<project_search::ProjectSearch>())
+                {
+                    if let Some(request) = search.take_open() {
+                        opened = Some((pane.id, request));
+                    }
+                    if let Some(request) = search.take_replace() {
+                        replace = Some(request);
+                    }
+                }
+            }
+        });
+        let changed = opened.is_some() || replace.is_some();
+        if let Some((pane_id, request)) = opened {
+            if let Some(path) = self.panes.group.path_of(pane_id) {
+                self.panes.active = path;
+            }
+            let full = self.root.join(&request.path);
+            self.open_file_at(&full, Some(request.row), Some(request.column));
+        }
+        if let Some(request) = replace {
+            self.replace_in_project(request);
+        }
+        changed
+    }
+
+    fn replace_in_project(&mut self, request: project_search::ReplaceRequest) {
+        let query = match editor::search::SearchQuery::new(
+            &request.query,
+            request.options,
+            Some(request.replacement.clone()),
+        ) {
+            Ok(query) => query,
+            Err(error) => {
+                eprintln!("replace all: {error}");
+                return;
+            }
+        };
+        let mut open_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        let wanted: std::collections::HashSet<PathBuf> = request
+            .paths
+            .iter()
+            .map(|relative| self.root.join(relative))
+            .collect();
+        self.panes.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                else {
+                    continue;
+                };
+                let Some(path) = file.abs_path() else {
+                    continue;
+                };
+                if !wanted.contains(&path) || !open_paths.insert(path) {
+                    continue;
+                }
+                let ranges = file.find(&query);
+                if !ranges.is_empty() {
+                    file.replace_all(&query, &ranges);
+                }
+            }
+        });
+        for relative in &request.paths {
+            let full = self.root.join(relative);
+            if open_paths.contains(&full) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&full) else {
+                continue;
+            };
+            if let Some(replaced) = project_search::replace_in_text(&text, &query) {
+                if let Err(error) = files::write(&self.root, relative, &replaced) {
+                    eprintln!("replace all: write {relative}: {error}");
+                }
+            }
+        }
+        self.panes.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                if let Some(search) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<project_search::ProjectSearch>())
+                {
+                    search.search();
+                }
+            }
+        });
+    }
+
     fn toggle_palette(&mut self) {
         if self.palette.take().is_some() {
             return;
@@ -5467,6 +5593,11 @@ impl FilesView {
         if key == EditKey::ToggleFileFinder {
             self.go_to_line = None;
             self.toggle_finder();
+            return true;
+        }
+        if key == EditKey::DeployProjectSearch {
+            self.go_to_line = None;
+            self.deploy_project_search();
             return true;
         }
         if self.go_to_line.is_some() {
@@ -6345,6 +6476,7 @@ impl FunctionView for FilesView {
                 EditKey::NewCenterTerminal
                     | EditKey::ToggleCommandPalette
                     | EditKey::ToggleFileFinder
+                    | EditKey::DeployProjectSearch
                     | EditKey::ToggleOutline
                     | EditKey::ToggleGoToLine
             )
@@ -6452,6 +6584,7 @@ impl FunctionView for FilesView {
         let mut outcome = workspace::ItemTick::default();
         outcome.changed |= self.poll_finder_candidates();
         outcome.changed |= self.apply_disk_changes();
+        outcome.changed |= self.serve_project_search();
         self.note_recent();
         let mut closed: Vec<(u64, String)> = Vec::new();
         self.panes.group.for_each_pane_mut(&mut |pane| {
@@ -8202,5 +8335,101 @@ mod file_finder_tests {
         view.editor_key(EditKey::ReplaceAll, false);
         assert_eq!(view.panes.group.leaf_count(), 2);
         assert_eq!(active_path(&view), Some(root.join("src/lib.rs")));
+    }
+}
+
+#[cfg(test)]
+mod project_search_tests {
+    use super::*;
+
+    fn search_item(view: &mut FilesView) -> Option<&mut project_search::ProjectSearch> {
+        view.panes
+            .active_item_mut()
+            .and_then(|item| item.as_any_mut())
+            .and_then(|any| any.downcast_mut::<project_search::ProjectSearch>())
+    }
+
+    fn settle(view: &mut FilesView) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            view.tick_items(&|| None);
+            let busy = view.panes.active_item().is_some_and(|item| item.is_busy());
+            if !busy {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn deploys_one_tab_opens_results_and_replaces_everywhere() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().to_path_buf();
+        std::fs::write(root.join("open.rs"), "let old = 1;\n").expect("write");
+        std::fs::write(root.join("closed.rs"), "old();\nold();\n").expect("write");
+        std::fs::write(root.join("unopened.rs"), "old\n").expect("write");
+        let mut view = FilesView::scanned(root.clone());
+        view.open_file_at(&root.join("open.rs"), None, None);
+
+        view.editor_key(EditKey::DeployProjectSearch, false);
+        assert!(search_item(&mut view).is_some());
+        view.editor_key(EditKey::DeployProjectSearch, false);
+        let tabs = view
+            .panes
+            .active_pane_mut()
+            .map_or(0, |pane| pane.open.len());
+        assert_eq!(tabs, 2, "the search tab is reused");
+
+        if let Some(search) = search_item(&mut view) {
+            search.set_query("old");
+        }
+        settle(&mut view);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut asked = false;
+        while !asked && std::time::Instant::now() < deadline {
+            if let Some(search) = search_item(&mut view) {
+                asked = search.open_first_result();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            view.tick_items(&|| None);
+        }
+        view.tick_items(&|| None);
+        let opened = view.panes.active_item().and_then(|item| item.abs_path());
+        assert_eq!(opened, Some(root.join("closed.rs")));
+
+        view.editor_key(EditKey::DeployProjectSearch, false);
+        if let Some(search) = search_item(&mut view) {
+            search.replace_all_with("new");
+        }
+        view.tick_items(&|| None);
+        assert_eq!(
+            std::fs::read_to_string(root.join("unopened.rs")).unwrap_or_default(),
+            "new\n",
+            "a file no tab holds is rewritten on disk"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("open.rs")).unwrap_or_default(),
+            "let old = 1;\n",
+            "an open file changes in its tab, not on disk"
+        );
+        let mut buffer_text = String::new();
+        view.panes.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                if let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                {
+                    if file.abs_path() == Some(root.join("open.rs")) {
+                        buffer_text = file
+                            .buffer
+                            .as_ref()
+                            .map(|buffer| buffer.text())
+                            .unwrap_or_default();
+                    }
+                }
+            }
+        });
+        assert_eq!(buffer_text, "let new = 1;\n");
     }
 }
