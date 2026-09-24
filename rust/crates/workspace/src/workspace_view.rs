@@ -11,8 +11,8 @@ use crate::{
     MENU_COPY_REL_PATH, MENU_DOCK_BOTTOM, MENU_DOCK_LEFT, MENU_DOCK_RIGHT, MENU_EDIT_COPY,
     MENU_EDIT_CUT, MENU_EDIT_PASTE, MENU_EDIT_SELECT_ALL, MENU_HIDE, MENU_REVEAL,
     MENU_SUBMENU_COPY, MENU_TREE_OPEN, RIGHT_TOGGLE, SESSION_DELETE_BASE, SESSION_ITEM_BASE,
-    SESSION_NEW, SESSION_OPEN, SESSION_OPENNEW_BASE, SESSION_OPENTHIS_BASE, SESSION_REVEAL_BASE,
-    SESSION_SEARCH, SESSION_TRIGGER, SIDEBAR_TOGGLE, TREE_MENU_TARGET,
+    SESSION_OPEN, SESSION_OPENNEW_BASE, SESSION_OPENTHIS_BASE, SESSION_REVEAL_BASE, SESSION_SEARCH,
+    SESSION_TRIGGER, SIDEBAR_TOGGLE, TREE_MENU_TARGET,
 };
 use std::time::{Duration, Instant};
 use ui::{Context, Frame, IconKind, Overlay, Painted, RawView, Rect, Rgba, Window};
@@ -31,6 +31,7 @@ const TOAST_DISMISS: Duration = Duration::from_secs(10);
 const PANES_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 /// Prompt tokens the view hands out itself, above the ones features number from 1.
 const CLOSE_PROMPT_TOKENS: u64 = 1 << 40;
+const FORGET_PROMPT_TOKENS: u64 = 1 << 41;
 /// The gap a zoomed view leaves around it (on its dock's inner side only, for a dock panel).
 const ZOOM_PADDING: f32 = 8.0;
 const TOAST_ANIM: Duration = Duration::from_millis(160);
@@ -46,12 +47,28 @@ struct Toast {
     rect: Rect,
 }
 
-/// Work the shell must do after an input the view handled: persist dock geometry, and/or open a new window for
-/// a session ("Open in new window").
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkspaceEffects {
     pub persist: bool,
     pub open_new_window: Option<usize>,
+    pub session: Option<SessionRequest>,
+    pub open_settings: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionRequest {
+    Switch(usize),
+    Forget(usize),
+    Reveal(usize),
+    ChooseFolder,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Notification {
+    title: String,
+    message: String,
+    primary: Option<String>,
+    target: Option<(std::path::PathBuf, Option<u32>)>,
 }
 
 /// A zoomed group drawn over the workspace: its frame (with the border on `sides`) and the content inside it.
@@ -137,6 +154,8 @@ pub struct WorkspaceView {
     /// The pane group an editor context menu was opened in.
     menu_group: InputGroup,
     toast: Option<Toast>,
+    notification: Option<Notification>,
+    shown_problem: Option<String>,
     pending: WorkspaceEffects,
 }
 
@@ -174,8 +193,69 @@ impl WorkspaceView {
             pointer: (0.0, 0.0),
             terminal_click: None,
             toast: None,
+            notification: None,
+            shown_problem: None,
             pending: WorkspaceEffects::default(),
         }
+    }
+
+    pub fn set_project(
+        &mut self,
+        project: Option<crate::ProjectInfo>,
+        files_view: Option<Box<dyn crate::FunctionView>>,
+        terminal_view: Option<Box<dyn crate::TerminalPanelView>>,
+    ) {
+        self.persist_panes(true);
+        self.layout.project = project;
+        self.layout.files_view = files_view;
+        self.layout.terminal_view = terminal_view;
+        self.layout.session_menu = false;
+        self.panes_restored = false;
+        self.saved_panes = None;
+        self.panes_write_at = None;
+        self.panes_check_owed = false;
+        self.terminal_focused = false;
+        self.zoom = None;
+        self.menu = None;
+        self.notification = None;
+        self.shown_problem = None;
+    }
+
+    pub fn update_project(&mut self, project: crate::ProjectInfo) {
+        self.layout.project = Some(project);
+    }
+
+    pub fn set_sessions(&mut self, sessions: Vec<crate::Session>, current: Option<usize>) {
+        self.layout.sessions = sessions;
+        self.layout.current_session = current;
+    }
+
+    pub fn set_config_problem(
+        &mut self,
+        problem: Option<(String, Option<u32>)>,
+        config_path: &std::path::Path,
+    ) {
+        let Some((message, line)) = problem else {
+            self.shown_problem = None;
+            self.notification = None;
+            return;
+        };
+        if self.shown_problem.as_deref() == Some(message.as_str()) {
+            return;
+        }
+        self.shown_problem = Some(message.clone());
+        self.notification = Some(Notification {
+            title: "Invalid pom.yml".into(),
+            message,
+            primary: Some("Open pom.yml".into()),
+            target: Some((config_path.to_path_buf(), line)),
+        });
+    }
+
+    pub fn notification_text(&self) -> Option<(&str, &str)> {
+        self.notification
+            .as_ref()
+            .map(|n| (n.title.as_str(), n.message.as_str()))
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, action: Option<String>) {
@@ -463,6 +543,15 @@ impl WorkspaceView {
                     }
                 }
             }
+        } else if self.layout.project.is_none() {
+            let page = crate::welcome::welcome_page(
+                &self.layout.sessions,
+                cr.w / ui::ui_text_scale(),
+                self.session_menu_hover,
+            );
+            let p = ui::render(&page, cr);
+            panel_hits.extend(p.hits.iter().copied());
+            blit(p);
         } else {
             match self.layout.shown_on(DockPosition::Left) {
                 Some(Shown::Terminal) => {
@@ -477,16 +566,17 @@ impl WorkspaceView {
                 )),
             }
         }
-        let sessions: Vec<(String, bool)> = self
+        let workspaces: Vec<(String, bool)> = self
             .layout
-            .sessions
+            .project
             .iter()
-            .map(|s| (s.name.clone(), s.running))
+            .flat_map(|project| project.workspaces.iter())
+            .map(|branch| (branch.clone(), false))
             .collect();
-        let current = self.layout.current_session;
+        let current = 0;
         if !self.layout.left.collapsed {
             let region = self.layout.left_region(w, h);
-            let p = self.layout.left.render_body(region, &sessions, current);
+            let p = self.layout.left.render_body(region, &workspaces, current);
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
         }
@@ -571,7 +661,7 @@ impl WorkspaceView {
                 Some(Shown::Func(k)) => ui::render(&function_dock_body(k), region),
                 // Agent (the right dock's default panel) and the empty case both render the OutlinePanel.
                 Some(Shown::Agent) | None => {
-                    self.layout.right.render_body(region, &sessions, current)
+                    self.layout.right.render_body(region, &workspaces, current)
                 }
             };
             panel_hits.extend(p.hits.iter().copied());
@@ -828,6 +918,14 @@ impl WorkspaceView {
             painted.tris.extend(p.tris);
             painted.texts.extend(p.texts);
             painted.icons.extend(p.icons);
+            overlays.push(Overlay {
+                painted,
+                clip: None,
+            });
+        }
+        if let Some(notification) = &self.notification {
+            let painted = notification_card(notification, w, h, self.session_menu_hover);
+            header_hits.extend(painted.hits.iter().copied());
             overlays.push(Overlay {
                 painted,
                 clip: None,
@@ -2755,6 +2853,13 @@ impl WorkspaceView {
     }
 
     pub fn prompt_answered(&mut self, token: u64, answer: usize) {
+        if token >= FORGET_PROMPT_TOKENS {
+            if answer == 0 {
+                let index = (token - FORGET_PROMPT_TOKENS) as usize;
+                self.pending.session = Some(SessionRequest::Forget(index));
+            }
+            return;
+        }
         if let Some((pending, group, request)) = self.close_prompt.take() {
             if pending == token {
                 // Save, Don't Save, Cancel (or Save all, Discard all, Cancel).
@@ -2990,6 +3095,26 @@ impl WorkspaceView {
         true
     }
 
+    fn close_session_menu(&mut self) {
+        self.layout.session_menu = false;
+        self.session_search_query.clear();
+    }
+
+    fn ask_to_forget_session(&mut self, index: usize) {
+        let Some(session) = self.layout.sessions.get(index) else {
+            return;
+        };
+        if Some(index) == self.layout.current_session {
+            return;
+        }
+        self.pending_prompt = Some(crate::Prompt {
+            token: FORGET_PROMPT_TOKENS + index as u64,
+            message: format!("Remove \"{}\" from the session list?", session.name),
+            detail: Some("Files on disk are left untouched.".into()),
+            buttons: vec!["Remove".into(), "Cancel".into()],
+        });
+    }
+
     fn header_click(&mut self, id: u64) {
         if id == TOAST_CLOSE || id == TOAST_ACTION {
             self.toast = None;
@@ -3060,46 +3185,51 @@ impl WorkspaceView {
             self.session_menu_hover = None;
         } else if id == SESSION_SEARCH {
             // Clicking the search field keeps the menu open (it is always the focus while open).
-        } else if id == SESSION_NEW || id == SESSION_OPEN {
-            self.layout.session_menu = false;
-            self.session_search_query.clear();
-            let msg = if id == SESSION_NEW {
-                "New session - coming soon"
-            } else {
-                "Open a session - coming soon"
-            };
-            self.show_toast(msg, Some("Docs".into()));
-        } else if (SESSION_REVEAL_BASE..SESSION_REVEAL_BASE + 100).contains(&id) {
-            // Reveal in Finder: no session path yet (placeholder until the core backend lands).
-        } else if (SESSION_OPENNEW_BASE..SESSION_OPENNEW_BASE + 100).contains(&id) {
-            let i = (id - SESSION_OPENNEW_BASE) as usize;
-            if i < self.layout.sessions.len() {
-                self.pending.open_new_window = Some(i);
+        } else if id == SESSION_OPEN {
+            self.close_session_menu();
+            self.pending.session = Some(SessionRequest::ChooseFolder);
+        } else if let Some(index) = session_index(id, SESSION_REVEAL_BASE) {
+            self.close_session_menu();
+            if index < self.layout.sessions.len() {
+                self.pending.session = Some(SessionRequest::Reveal(index));
             }
-            self.layout.session_menu = false;
-            self.session_search_query.clear();
-        } else if (SESSION_OPENTHIS_BASE..SESSION_OPENTHIS_BASE + 100).contains(&id) {
-            let i = (id - SESSION_OPENTHIS_BASE) as usize;
-            if i < self.layout.sessions.len() {
-                self.layout.current_session = i;
+        } else if let Some(index) = session_index(id, SESSION_OPENNEW_BASE) {
+            if index < self.layout.sessions.len() {
+                self.pending.open_new_window = Some(index);
             }
-            self.layout.session_menu = false;
-            self.session_search_query.clear();
-        } else if (SESSION_DELETE_BASE..SESSION_DELETE_BASE + 100).contains(&id) {
-            let i = (id - SESSION_DELETE_BASE) as usize;
-            if i < self.layout.sessions.len() && self.layout.sessions.len() > 1 {
-                self.layout.sessions.remove(i);
-                if self.layout.current_session >= i && self.layout.current_session > 0 {
-                    self.layout.current_session -= 1;
+            self.close_session_menu();
+        } else if let Some(index) = session_index(id, SESSION_DELETE_BASE) {
+            self.close_session_menu();
+            self.ask_to_forget_session(index);
+        } else if let Some(index) = session_index(id, SESSION_OPENTHIS_BASE)
+            .or_else(|| session_index(id, SESSION_ITEM_BASE))
+        {
+            self.close_session_menu();
+            let openable = self.layout.sessions.get(index).is_some_and(|s| !s.missing);
+            if openable && Some(index) != self.layout.current_session {
+                self.pending.session = Some(SessionRequest::Switch(index));
+            }
+        } else if id == crate::WELCOME_OPEN_PROJECT {
+            self.pending.session = Some(SessionRequest::ChooseFolder);
+        } else if id == crate::WELCOME_OPEN_SETTINGS {
+            self.pending.open_settings = true;
+        } else if crate::is_welcome_id(id) {
+            let index = (id - crate::WELCOME_RECENT_BASE) as usize;
+            if self.layout.sessions.get(index).is_some_and(|s| !s.missing) {
+                self.pending.session = Some(SessionRequest::Switch(index));
+            }
+        } else if id == crate::NOTIFICATION_CLOSE {
+            self.notification = None;
+        } else if id == crate::NOTIFICATION_PRIMARY {
+            if let Some(Notification {
+                target: Some((path, line)),
+                ..
+            }) = self.notification.take()
+            {
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    files.open_file_at(&path, line, line.map(|_| 1));
                 }
             }
-        } else if (SESSION_ITEM_BASE..SESSION_ITEM_BASE + 100).contains(&id) {
-            let i = (id - SESSION_ITEM_BASE) as usize;
-            if i < self.layout.sessions.len() {
-                self.layout.current_session = i;
-            }
-            self.layout.session_menu = false;
-            self.session_search_query.clear();
         }
     }
 }
@@ -3345,6 +3475,116 @@ fn push_pane_group(
     }
 }
 
+const NOTIFICATION_W: f32 = 448.0;
+const NOTIFICATION_MARGIN: f32 = 12.0;
+const NOTIFICATION_PAD: f32 = 12.0;
+const NOTIFICATION_MAX_LINES: usize = 12;
+
+fn notification_card(notification: &Notification, w: f32, h: f32, hovered: Option<u64>) -> Painted {
+    let scale = ui::ui_text_scale();
+    let card_w = (NOTIFICATION_W * scale)
+        .min(w - 2.0 * NOTIFICATION_MARGIN)
+        .max(0.0);
+    let close_w = 20.0;
+    let text_w = (card_w / scale - 2.0 * NOTIFICATION_PAD - close_w - 16.0).max(40.0);
+    let mut message = ui::div().col().gap(2.0);
+    let lines: Vec<&str> = notification.message.lines().collect();
+    for line in lines.iter().take(NOTIFICATION_MAX_LINES) {
+        message = message.child(
+            ui::label(line.to_string())
+                .label_size(ui::LabelSize::Small)
+                .color(ui::theme().text_muted)
+                .wrap(text_w),
+        );
+    }
+    if lines.len() > NOTIFICATION_MAX_LINES {
+        message = message.child(
+            ui::label("...")
+                .label_size(ui::LabelSize::Small)
+                .color(ui::theme().text_muted),
+        );
+    }
+    let mut close = ui::div()
+        .w_px(close_w)
+        .h_px(close_w)
+        .rounded(4.0)
+        .items_center()
+        .justify_center()
+        .on_click(crate::NOTIFICATION_CLOSE)
+        .child(
+            ui::icon(IconKind::Close)
+                .size(12.0)
+                .color(ui::theme().icon_muted),
+        );
+    if hovered == Some(crate::NOTIFICATION_CLOSE) {
+        close = close.bg(ui::theme().ghost_element_hover);
+    }
+    let header = ui::div()
+        .row()
+        .justify_between()
+        .gap(16.0)
+        .child(
+            ui::div()
+                .col()
+                .gap(2.0)
+                .child(
+                    ui::label(notification.title.clone())
+                        .label_size(ui::LabelSize::Default)
+                        .color(ui::theme().text),
+                )
+                .child(message),
+        )
+        .child(close);
+    let mut card = ui::div()
+        .col()
+        .p(NOTIFICATION_PAD)
+        .gap(8.0)
+        .rounded(8.0)
+        .bg(ui::theme().elevated_surface_background)
+        .border(1.0, ui::theme().border)
+        .child(header);
+    if let Some(primary) = &notification.primary {
+        let mut button = ui::div()
+            .h_px(22.0)
+            .px(4.0)
+            .items_center()
+            .rounded(4.0)
+            .on_click(crate::NOTIFICATION_PRIMARY)
+            .child(
+                ui::label(primary.clone())
+                    .label_size(ui::LabelSize::Small)
+                    .color(ui::theme().text),
+            );
+        if hovered == Some(crate::NOTIFICATION_PRIMARY) {
+            button = button.bg(ui::theme().ghost_element_hover);
+        }
+        card = card.child(ui::div().row().child(button));
+    }
+    let node: ui::Node = ui::div().col().child(card).into();
+    let probe = ui::render(&node, Rect::new(0.0, 0.0, card_w, h, Rgba::TRANSPARENT));
+    let card_h = probe.rects.iter().map(|r| r.y + r.h).fold(0.0, f32::max);
+    let x = w - NOTIFICATION_MARGIN - card_w;
+    let y = (h - crate::STATUS_BAR_H - NOTIFICATION_MARGIN - card_h).max(crate::TOP_BAR_H);
+    let rect = Rect::new(x, y, card_w, card_h, Rgba::TRANSPARENT);
+    let mut painted = Painted::default();
+    painted
+        .rects
+        .extend(elevation_shadow(rect, crate::Elevation::Modal));
+    let content = ui::render(&node, Rect::new(x, y, card_w, card_h, Rgba::TRANSPARENT));
+    painted.rects.extend(content.rects);
+    painted.tris.extend(content.tris);
+    painted.texts.extend(content.texts);
+    painted.icons.extend(content.icons);
+    painted.hits.extend(content.hits);
+    painted
+}
+
+fn session_index(id: u64, base: u64) -> Option<usize> {
+    (base..base + 100)
+        .contains(&id)
+        .then(|| (id - base) as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3367,8 +3607,32 @@ mod tests {
         assert!(coverage(90.0) > 0.0);
     }
 
-    fn open() -> (Application, ui::WindowHandle, ui::Entity<WorkspaceView>) {
+    fn sample_sessions() -> Vec<crate::Session> {
+        ["alpha", "beta", "gone"]
+            .iter()
+            .map(|name| crate::Session {
+                name: name.to_string(),
+                path: std::path::PathBuf::from(format!("/projects/{name}")),
+                running: false,
+                missing: *name == "gone",
+            })
+            .collect()
+    }
+
+    fn sample_project() -> crate::ProjectInfo {
+        crate::ProjectInfo {
+            name: "alpha".into(),
+            branch: "trunk".into(),
+            config_path: std::path::PathBuf::from("/projects/alpha/pom.yml"),
+            workspaces: vec!["trunk".into(), "feat-login".into()],
+        }
+    }
+
+    fn open_with(
+        project: Option<crate::ProjectInfo>,
+    ) -> (Application, ui::WindowHandle, ui::Entity<WorkspaceView>) {
         let mut app = Application::new();
+        let current = project.as_ref().map(|_| 0);
         let (h, e) = app.open_raw_window(
             ui::WindowOptions {
                 width: 1200.0,
@@ -3376,9 +3640,29 @@ mod tests {
                 scale: 2.0,
                 ..Default::default()
             },
-            |_| WorkspaceView::new(Layout::default()),
+            move |_| {
+                let mut view = WorkspaceView::new(Layout {
+                    project,
+                    ..Layout::default()
+                });
+                view.set_sessions(sample_sessions(), current);
+                view
+            },
         );
         (app, h, e)
+    }
+
+    fn open() -> (Application, ui::WindowHandle, ui::Entity<WorkspaceView>) {
+        open_with(Some(sample_project()))
+    }
+
+    fn frame_text(frame: &ui::Frame) -> String {
+        std::iter::once(&frame.base)
+            .chain(frame.overlays.iter().map(|overlay| &overlay.painted))
+            .flat_map(|painted| painted.texts.iter())
+            .map(|text| text.text.as_str())
+            .collect::<Vec<_>>()
+            .join("|")
     }
 
     #[test]
@@ -3393,17 +3677,19 @@ mod tests {
         assert!(e.read(app.app()).menu_open(), "menu opened");
         let frame = app.draw(h).expect("frame");
         assert!(!frame.overlays.is_empty(), "menu overlays present");
+        let text = frame_text(&frame);
+        assert!(text.contains("beta") && text.contains("missing"), "{text}");
+        assert!(!text.contains("New session"), "{text}");
     }
 
     #[test]
     fn open_in_new_window_flags_an_effect() {
         let (mut app, h, e) = open();
-        // Open the menu first so the row actions are laid out.
         app.draw(h);
         let trigger = app
             .window(h)
             .and_then(|w| w.center_of(SESSION_TRIGGER))
-            .unwrap();
+            .expect("header trigger laid out");
         e.update(app.app_mut(), |v, _| v.mouse_down(trigger.0, trigger.1));
         e.update(app.app_mut(), |v, _| {
             v.header_click(SESSION_OPENNEW_BASE + 1)
@@ -3411,5 +3697,163 @@ mod tests {
         let effects = e.update(app.app_mut(), |v, _| v.take_effects());
         assert_eq!(effects.open_new_window, Some(1));
         assert!(!e.read(app.app()).menu_open(), "menu closed after action");
+    }
+
+    #[test]
+    fn chrome_shows_the_project_branch_and_workspaces() {
+        let (mut app, h, _) = open();
+        let text = frame_text(&app.draw(h).expect("frame"));
+        assert!(
+            text.contains("trunk") && text.contains("feat-login"),
+            "{text}"
+        );
+        assert!(
+            text.contains("WORKSPACES") && text.contains("alpha"),
+            "{text}"
+        );
+        assert!(!text.contains("Welcome to Pomelo"), "{text}");
+    }
+
+    #[test]
+    fn no_project_shows_the_welcome_page_with_recent_sessions() {
+        let (mut app, h, e) = open_with(None);
+        let frame = app.draw(h).expect("frame");
+        let text = frame_text(&frame);
+        for expected in [
+            "Welcome to Pomelo",
+            "GET STARTED",
+            "Open Project",
+            "RECENT SESSIONS",
+            "alpha",
+            "beta",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+        assert!(
+            !text.contains("gone"),
+            "missing sessions are not offered: {text}"
+        );
+        assert!(text.contains("Open a Project"), "{text}");
+
+        let open_project = app
+            .window(h)
+            .and_then(|w| w.center_of(crate::WELCOME_OPEN_PROJECT))
+            .expect("open project button");
+        e.update(app.app_mut(), |v, _| {
+            v.mouse_down(open_project.0, open_project.1)
+        });
+        let effects = e.update(app.app_mut(), |v, _| v.take_effects());
+        assert_eq!(effects.session, Some(SessionRequest::ChooseFolder));
+
+        e.update(app.app_mut(), |v, _| {
+            v.header_click(crate::WELCOME_RECENT_BASE + 1)
+        });
+        let effects = e.update(app.app_mut(), |v, _| v.take_effects());
+        assert_eq!(effects.session, Some(SessionRequest::Switch(1)));
+
+        e.update(app.app_mut(), |v, _| {
+            v.header_click(crate::WELCOME_OPEN_SETTINGS)
+        });
+        assert!(
+            e.update(app.app_mut(), |v, _| v.take_effects())
+                .open_settings
+        );
+    }
+
+    #[test]
+    fn switching_skips_the_current_and_missing_sessions() {
+        let (mut app, _, e) = open();
+        let mut switch = |id: u64| {
+            e.update(app.app_mut(), |v, _| {
+                v.header_click(id);
+                v.take_effects().session
+            })
+        };
+        assert_eq!(
+            switch(SESSION_ITEM_BASE + 1),
+            Some(SessionRequest::Switch(1))
+        );
+        assert_eq!(
+            switch(SESSION_OPENTHIS_BASE + 1),
+            Some(SessionRequest::Switch(1))
+        );
+        assert_eq!(switch(SESSION_ITEM_BASE), None);
+        assert_eq!(switch(SESSION_ITEM_BASE + 2), None);
+        assert_eq!(
+            switch(SESSION_REVEAL_BASE + 1),
+            Some(SessionRequest::Reveal(1))
+        );
+        assert_eq!(switch(SESSION_OPEN), Some(SessionRequest::ChooseFolder));
+    }
+
+    #[test]
+    fn removing_a_session_asks_first() {
+        let (mut app, _, e) = open();
+        let prompt = e.update(app.app_mut(), |v, _| {
+            v.header_click(SESSION_DELETE_BASE + 2);
+            v.take_prompt()
+        });
+        let prompt = prompt.expect("confirmation prompt");
+        assert!(prompt.message.contains("gone"));
+        assert_eq!(prompt.buttons, ["Remove", "Cancel"]);
+
+        let cancelled = e.update(app.app_mut(), |v, _| {
+            v.prompt_answered(prompt.token, 1);
+            v.take_effects().session
+        });
+        assert_eq!(cancelled, None);
+        let confirmed = e.update(app.app_mut(), |v, _| {
+            v.prompt_answered(prompt.token, 0);
+            v.take_effects().session
+        });
+        assert_eq!(confirmed, Some(SessionRequest::Forget(2)));
+
+        let current = e.update(app.app_mut(), |v, _| {
+            v.header_click(SESSION_DELETE_BASE);
+            v.take_prompt()
+        });
+        assert!(current.is_none(), "the open session can't be removed");
+    }
+
+    #[test]
+    fn config_problem_notification_shows_dismisses_and_clears() {
+        let (mut app, h, e) = open();
+        let config = std::path::PathBuf::from("/projects/alpha/pom.yml");
+        let problem = |message: &str| Some((message.to_string(), Some(4)));
+        e.update(app.app_mut(), |v, _| {
+            v.set_config_problem(problem("line 4: cannot unmarshal"), &config)
+        });
+        let text = frame_text(&app.draw(h).expect("frame"));
+        assert!(text.contains("Invalid pom.yml"), "{text}");
+        assert!(text.contains("line 4: cannot unmarshal"), "{text}");
+        assert!(text.contains("Open pom.yml"), "{text}");
+
+        let close = app
+            .window(h)
+            .and_then(|w| w.center_of(crate::NOTIFICATION_CLOSE))
+            .expect("close button");
+        e.update(app.app_mut(), |v, _| v.mouse_down(close.0, close.1));
+        assert!(e.read(app.app()).notification_text().is_none());
+
+        e.update(app.app_mut(), |v, _| {
+            v.set_config_problem(problem("line 4: cannot unmarshal"), &config)
+        });
+        assert!(
+            e.read(app.app()).notification_text().is_none(),
+            "a dismissed problem stays hidden while unchanged"
+        );
+        e.update(app.app_mut(), |v, _| {
+            v.set_config_problem(problem("line 9: other"), &config)
+        });
+        assert_eq!(
+            e.read(app.app())
+                .notification_text()
+                .map(|(_, m)| m.to_string()),
+            Some("line 9: other".to_string())
+        );
+        e.update(app.app_mut(), |v, _| v.set_config_problem(None, &config));
+        assert!(e.read(app.app()).notification_text().is_none());
+        let text = frame_text(&app.draw(h).expect("frame"));
+        assert!(!text.contains("Invalid pom.yml"), "{text}");
     }
 }

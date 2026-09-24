@@ -199,17 +199,14 @@ pub trait Panel: 'static {
     fn icon(&self) -> IconKind;
     /// The panel's title (dock header).
     fn title(&self) -> &str;
-    /// Sync workspace data the panel wants to show. Default no-op; the workspace list panel overrides it.
-    fn sync(&mut self, _sessions: &[(String, bool)], _current: usize) {}
+    fn sync(&mut self, _rows: &[(String, bool)], _current: usize) {}
     /// The panel body as an element tree, laid into the dock region by the caller.
     fn render(&mut self) -> Node;
 }
 
-/// The left dock's workspace list: a header plus one row per session (a status dot + name, current one
-/// emphasized). Data is synced from the `Layout` each frame via `set_sessions`.
 #[derive(Default)]
 pub struct ProjectPanel {
-    sessions: Vec<(String, bool)>,
+    rows: Vec<(String, bool)>,
     current: usize,
 }
 
@@ -226,8 +223,8 @@ impl Panel for ProjectPanel {
         "WORKSPACES"
     }
 
-    fn sync(&mut self, sessions: &[(String, bool)], current: usize) {
-        self.sessions = sessions.to_vec();
+    fn sync(&mut self, rows: &[(String, bool)], current: usize) {
+        self.rows = rows.to_vec();
         self.current = current;
     }
 
@@ -238,7 +235,7 @@ impl Panel for ProjectPanel {
             .py(10.0)
             .gap(2.0)
             .child(panel_header(self.title()));
-        for (i, (name, running)) in self.sessions.iter().enumerate() {
+        for (i, (name, running)) in self.rows.iter().enumerate() {
             let dot = if *running {
                 theme().icon_accent
             } else {
@@ -351,7 +348,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn project_panel_lists_sessions() {
+    fn project_panel_lists_workspaces() {
         let mut p = ProjectPanel::default();
         p.sync(&[("api".into(), true), ("web".into(), false)], 0);
         assert_eq!(p.position(), DockPosition::Left);

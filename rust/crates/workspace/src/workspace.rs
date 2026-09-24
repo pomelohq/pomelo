@@ -2,6 +2,7 @@
 //! right dock, both resizable via a divider and collapsing to a fixed icon rail instead of vanishing, plus the
 //! content area. Computes rectangles, text runs and hit regions; the app drives input and rendering.
 
+mod key_binding;
 pub mod pane;
 pub mod pane_group;
 pub mod pane_group_view;
@@ -10,14 +11,20 @@ pub mod persistence;
 pub mod search_bar;
 pub mod tab_drag;
 pub mod text_field;
+mod welcome;
 mod workspace_view;
+pub use key_binding::render_keystroke;
 pub use panel::{
     function_bar, function_content, function_dock_body, terminal_content, terminal_dock_body,
     DockPosition, OutlinePanel, PaneKind, Panel, ProjectPanel, TerminalPanel,
 };
+pub use welcome::{
+    is_welcome_id, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,
+    WELCOME_RECENT_MAX,
+};
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
-pub use workspace_view::{ResizeCursor, WorkspaceEffects, WorkspaceView};
+pub use workspace_view::{ResizeCursor, SessionRequest, WorkspaceEffects, WorkspaceView};
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the
 /// first line's indentation.
@@ -53,7 +60,7 @@ pub fn slices_for(text: &str) -> Option<Vec<ClipboardSlice>> {
     })
 }
 
-use ui::{div, folder_icon, label, plus_icon, render, theme, Node, Painted, Rect, Rgba, Text};
+use ui::{div, folder_icon, label, render, theme, Node, Painted, Rect, Rgba, Text};
 
 pub const TOP_BAR_H: f32 = 38.0;
 pub const STATUS_BAR_H: f32 = 24.0; // the thin status strip at the very bottom (a component, not a dock)
@@ -140,35 +147,32 @@ impl Dock {
     pub fn render_body(
         &mut self,
         region: Rect,
-        sessions: &[(String, bool)],
+        rows: &[(String, bool)],
         current: usize,
     ) -> Painted {
-        self.panel.sync(sessions, current);
+        self.panel.sync(rows, current);
         render(&self.panel.render(), region)
     }
 }
 
-/// A dev session (a project workspace). `running` drives the status dot; `missing` marks a session whose files
-/// are gone (shown struck-through with a delete affordance), mirroring the app's session switcher.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
     pub name: String,
+    pub path: std::path::PathBuf,
     pub running: bool,
     pub missing: bool,
 }
 
-impl Session {
-    fn new(name: &str, running: bool) -> Self {
-        Self {
-            name: name.into(),
-            running,
-            missing: false,
-        }
-    }
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProjectInfo {
+    pub name: String,
+    pub branch: String,
+    pub config_path: std::path::PathBuf,
+    pub workspaces: Vec<String>,
 }
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
 pub const SESSION_TRIGGER: u64 = 1;
-pub const SESSION_NEW: u64 = 2;
 pub const SESSION_OPEN: u64 = 3;
 pub const SESSION_SEARCH: u64 = 4;
 /// The status bar's leftmost button toggles the WORKSPACES sidebar (the sidebar toggle).
@@ -181,6 +185,8 @@ pub const RIGHT_TOGGLE: u64 = 7;
 pub const AGENT_TOGGLE: u64 = 8;
 pub const TOAST_ACTION: u64 = 9;
 pub const TOAST_CLOSE: u64 = 10;
+pub const NOTIFICATION_PRIMARY: u64 = 620;
+pub const NOTIFICATION_CLOSE: u64 = 621;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,
@@ -350,7 +356,8 @@ pub struct Layout {
     /// Which content area each function's content renders in (its dock side), index = `PaneKind::ALL` index.
     pub func_side: Vec<DockPosition>,
     pub sessions: Vec<Session>,
-    pub current_session: usize,
+    pub current_session: Option<usize>,
+    pub project: Option<ProjectInfo>,
     pub session_menu: bool,
     /// Pixel scroll offset of the (scrollable) session menu list.
     pub session_scroll: f32,
@@ -1120,19 +1127,8 @@ impl Default for Layout {
                 collapsed: false,
                 panel: Box::new(TerminalPanel),
             },
-            // Placeholder sessions until the core backend lands. Generic names only.
-            sessions: vec![
-                Session::new("myproject", true),
-                Session::new("api", false),
-                Session::new("web", false),
-                Session::new("feat-login", false),
-                Session::new("docs", false),
-                Session::new("worker", false),
-                Session::new("gateway", false),
-                Session::new("admin", false),
-                Session::new("mobile", false),
-                Session::new("demo", false),
-            ],
+            sessions: Vec::new(),
+            project: None,
             sidebar_side: DockPosition::Left,
             agent_side: DockPosition::Right,
             agent_hidden: false,
@@ -1146,7 +1142,7 @@ impl Default for Layout {
             ],
             func_hidden: vec![false; PaneKind::ALL.len()],
             func_side: vec![DockPosition::Left; PaneKind::ALL.len()],
-            current_session: 0,
+            current_session: None,
             session_menu: false,
             session_scroll: 0.0,
             files_view: None,
@@ -1384,8 +1380,8 @@ impl Layout {
         let zr = self.editor_r(w);
 
         let mut top = div().items_center().justify_center().bg(top_bar_c());
-        if ui::chrome().branch {
-            top = top.child(label("main  -  8").size(14.0).color(text_dim_c()));
+        if let Some(project) = self.project.as_ref().filter(|_| ui::chrome().branch) {
+            top = top.child(label(project.branch.clone()).size(14.0).color(text_dim_c()));
         }
         band(
             top.into(),
@@ -1585,10 +1581,10 @@ impl Layout {
     /// session name as a subtle Button-style trigger, like the reference's project name button.
     pub fn header(&self, w: f32, hovered: Option<u64>) -> Painted {
         let name = self
-            .sessions
-            .get(self.current_session)
+            .current_session
+            .and_then(|index| self.sessions.get(index))
             .map(|s| s.name.as_str())
-            .unwrap_or("no session");
+            .unwrap_or("Open a Project");
         let active = hovered == Some(SESSION_TRIGGER) || self.session_menu;
         let mut trigger = div()
             .row()
@@ -1655,14 +1651,14 @@ impl Layout {
             .map(|(i, _)| i)
             .collect();
         let mut entries = Vec::new();
-        if matches.contains(&self.current_session) {
+        if let Some(current) = self.current_session.filter(|c| matches.contains(c)) {
             entries.push((Some("This Window"), None));
-            entries.push((None, Some(self.current_session)));
+            entries.push((None, Some(current)));
         }
         let recent: Vec<usize> = matches
             .iter()
             .copied()
-            .filter(|&i| i != self.current_session)
+            .filter(|&i| Some(i) != self.current_session)
             .collect();
         if !recent.is_empty() {
             entries.push((Some("Recent"), None));
@@ -1690,7 +1686,7 @@ impl Layout {
         let pad = MENU_PAD * scale;
         let search_h = MENU_SEARCH_H * scale;
         let div_h = MENU_DIV_H * scale;
-        let footer_h = (MENU_ACTION_H * 2.0 + 2.0) * scale; // two actions + a gap
+        let footer_h = MENU_ACTION_H * scale;
         let (content_h, region_h) = self.session_list_metrics(query);
         let max_scroll = (content_h - region_h).max(0.0);
         let scroll = self.session_scroll.clamp(0.0, max_scroll);
@@ -1774,12 +1770,6 @@ impl Layout {
             .col()
             .gap(2.0)
             .child(action_row(
-                plus_icon().into(),
-                "New session...",
-                SESSION_NEW,
-                hovered,
-            ))
-            .child(action_row(
                 folder_icon().into(),
                 "Open a session...",
                 SESSION_OPEN,
@@ -1809,8 +1799,9 @@ impl Layout {
                         .child(label(h).size(12.0).color(text_dim_c())),
                 );
             } else if let Some(i) = item {
-                let s = &self.sessions[i];
-                col = col.child(session_row(i, s, i == self.current_session, hovered));
+                if let Some(s) = self.sessions.get(i) {
+                    col = col.child(session_row(i, s, Some(i) == self.current_session, hovered));
+                }
             }
         }
         let mut list = render(
@@ -1920,6 +1911,13 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
     if current {
         left = left.child(ui::check_icon().size(15.0));
     }
+    if s.missing {
+        left = left.child(
+            label("missing")
+                .label_size(ui::LabelSize::XSmall)
+                .color(theme().text_disabled),
+        );
+    }
     let mut r = div()
         .row()
         .items_center()
@@ -1930,30 +1928,32 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
     if row_hover {
         // Hover: row action buttons pinned to the right (open in new window, open in this window, reveal,
         // delete) -- mirroring the reference's on-hover row actions.
-        let actions = div()
-            .row()
-            .items_center()
-            .gap(2.0)
-            .child(icon_button(
-                ui::arrow_up_right_icon().into(),
-                SESSION_OPENNEW_BASE + i as u64,
-                hovered,
-            ))
-            .child(icon_button(
-                ui::window_icon().into(),
-                SESSION_OPENTHIS_BASE + i as u64,
-                hovered,
-            ))
-            .child(icon_button(
-                ui::folder_icon().into(),
-                SESSION_REVEAL_BASE + i as u64,
-                hovered,
-            ))
-            .child(icon_button(
+        let mut actions = div().row().items_center().gap(2.0);
+        if !s.missing {
+            actions = actions
+                .child(icon_button(
+                    ui::arrow_up_right_icon().into(),
+                    SESSION_OPENNEW_BASE + i as u64,
+                    hovered,
+                ))
+                .child(icon_button(
+                    ui::window_icon().into(),
+                    SESSION_OPENTHIS_BASE + i as u64,
+                    hovered,
+                ))
+                .child(icon_button(
+                    ui::folder_icon().into(),
+                    SESSION_REVEAL_BASE + i as u64,
+                    hovered,
+                ));
+        }
+        if !current {
+            actions = actions.child(icon_button(
                 ui::close_icon().into(),
                 SESSION_DELETE_BASE + i as u64,
                 hovered,
             ));
+        }
         r = r
             .justify_between()
             .bg(theme().element_hover)

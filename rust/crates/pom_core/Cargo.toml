@@ -1,0 +1,19 @@
+[package]
+name = "pom_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pomelo core: the open project (config, workspaces), the session list, and config hot-reload."
+
+[lib]
+path = "src/pom_core.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_layout = { path = "../pom_layout" }
+pom_paths = { path = "../pom_paths" }
+pom_sessions = { path = "../pom_sessions" }
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+
+[dev-dependencies]
+tempfile = "3"
