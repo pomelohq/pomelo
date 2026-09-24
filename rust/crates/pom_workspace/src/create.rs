@@ -70,6 +70,7 @@ pub fn create(
         from_stage: request.from_stage,
         state: context.state,
         sink,
+        resumable: true,
     };
     let default_branch = context.config.global_default_branch();
     let planned = plan_repos(context, request, default_branch);

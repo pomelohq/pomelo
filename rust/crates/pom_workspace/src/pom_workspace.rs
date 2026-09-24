@@ -6,6 +6,7 @@ mod create;
 mod delete;
 mod git;
 mod node_modules;
+mod prepare;
 
 use std::path::Path;
 use std::process::Command;
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub use create::{create, CreateRequest, CREATE_STAGES};
 pub use delete::{delete, DeleteRequest, DELETE_STAGES};
 pub use git::branch_is_safe_to_delete;
+pub use prepare::{prepare_main, PrepareRequest};
 
 /// Lines of a failed command's output kept in its warning.
 const OUTPUT_TAIL_LINES: usize = 20;
@@ -29,6 +31,8 @@ pub enum Operation {
     Create,
     #[serde(rename = "DeleteWorkspace")]
     Delete,
+    #[serde(rename = "PrepareMain")]
+    PrepareMain,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,10 +182,12 @@ pub(crate) struct Run<'a> {
     pub operation: Operation,
     pub branch: &'a str,
     pub workspace: &'a Path,
-    pub labels: &'static [&'static str],
+    pub labels: &'a [&'static str],
     pub from_stage: usize,
     pub state: &'a StateDir,
     pub sink: EventSink<'a>,
+    /// Whether a failure is kept in `pipeline-<branch>.json` for resuming.
+    pub resumable: bool,
 }
 
 impl Run<'_> {
@@ -211,7 +217,10 @@ impl Run<'_> {
                 Ok(StageResult::Done) => (self.sink)(Event::StageCompleted { index }),
                 Ok(StageResult::Skipped) => (self.sink)(Event::StageSkipped { index }),
                 Err(message) => {
-                    self.save_failure(index, &message);
+                    // A first-stage failure changed nothing, so there is nothing to resume.
+                    if self.resumable && index > 0 {
+                        self.save_failure(index, &message);
+                    }
                     self.clear_active();
                     (self.sink)(Event::Failed {
                         index,
@@ -226,9 +235,11 @@ impl Run<'_> {
             }
         }
         self.clear_active();
-        if let Err(error) = std::fs::remove_file(state_path(self.state, self.branch)) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("workspace: clear pipeline state: {error}");
+        if self.resumable {
+            if let Err(error) = std::fs::remove_file(state_path(self.state, self.branch)) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("workspace: clear pipeline state: {error}");
+                }
             }
         }
         let warnings = warnings.into_inner().unwrap_or_default();

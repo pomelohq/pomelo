@@ -3,7 +3,7 @@ name = "pom_cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The `pom` command line: start, stop and inspect a workspace's services from a terminal."
+description = "The `pom` command line: workspaces and their services from a terminal."
 
 [lib]
 path = "src/pom_cli.rs"
@@ -22,6 +22,7 @@ pom_paths = { path = "../pom_paths" }
 pom_ports = { path = "../pom_ports" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_services = { path = "../pom_services" }
+pom_workspace = { path = "../pom_workspace" }
 
 [dev-dependencies]
 serde_json.workspace = true
