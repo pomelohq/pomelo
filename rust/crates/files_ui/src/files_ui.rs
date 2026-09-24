@@ -305,6 +305,78 @@ struct FileItem {
     navigation: Option<(Vec<lsp::DefinitionTarget>, Option<f32>)>,
     link: Option<definition::LinkState>,
     active_diagnostic: Option<diagnostic_nav::ActiveDiagnostic>,
+    scratch: Option<(String, String)>,
+    footer: Option<Footer>,
+}
+
+struct Footer {
+    view: Box<dyn workspace::ItemFooter>,
+    area: Option<Rect>,
+    focused: bool,
+    pressed: bool,
+    version: Option<u64>,
+}
+
+impl Footer {
+    fn contains(&self, x: f32, y: f32) -> bool {
+        let grip = FOOTER_GRIP * ui::ui_text_scale();
+        self.area.is_some_and(|area| {
+            x >= area.x && x < area.x + area.w && y >= area.y - grip && y < area.y + area.h
+        })
+    }
+}
+
+const FOOTER_GRIP: f32 = 4.0;
+
+impl FileItem {
+    fn run_request(&self, all: bool) -> Option<workspace::RunRequest> {
+        let buffer = self.buffer.as_ref()?;
+        let caret_char = buffer.newest().head().min(buffer.rope.len_chars());
+        Some(workspace::RunRequest {
+            text: buffer.text(),
+            selection: buffer
+                .selected_text()
+                .filter(|selected| !selected.trim().is_empty()),
+            caret: buffer.rope.char_to_byte(caret_char),
+            all,
+        })
+    }
+
+    fn footer_key(&mut self, key: EditKey, shift: bool) -> bool {
+        let request = if key == EditKey::ReplaceAll {
+            self.run_request(shift)
+        } else {
+            None
+        };
+        let Some(footer) = self.footer.as_mut() else {
+            return false;
+        };
+        if let Some(request) = request {
+            footer.view.run(request);
+            return true;
+        }
+        footer.focused && footer.view.key(key, shift)
+    }
+}
+
+pub fn scratch_editor(
+    id: String,
+    title: String,
+    text: &str,
+    footer: Box<dyn workspace::ItemFooter>,
+) -> Box<dyn Item> {
+    let mut item = FileItem::new(std::env::temp_dir(), "console.sql", Some(text.to_string()));
+    item.saved_mtime = None;
+    item.git = git_diff::GitDiff::default();
+    item.scratch = Some((id, title));
+    item.footer = Some(Footer {
+        view: footer,
+        area: None,
+        focused: false,
+        pressed: false,
+        version: item.buffer.as_ref().map(EditorBuffer::version),
+    });
+    Box::new(item)
 }
 
 /// A problem a language server reported, over a char range of the buffer.
@@ -454,6 +526,8 @@ impl FileItem {
             navigation: None,
             link: None,
             active_diagnostic: None,
+            scratch: None,
+            footer: None,
         }
     }
 
@@ -2828,6 +2902,105 @@ impl Searchable for FileItem {
 }
 
 impl Item for FileItem {
+    fn footer_height(&mut self, body_h: f32) -> f32 {
+        self.footer
+            .as_mut()
+            .map_or(0.0, |footer| footer.view.height(body_h))
+    }
+
+    fn paint_footer(&mut self, area: Rect) -> Option<ui::Painted> {
+        let footer = self.footer.as_mut()?;
+        footer.area = Some(area);
+        footer.view.paint(area)
+    }
+
+    fn pointer_down(
+        &mut self,
+        x: f32,
+        y: f32,
+        click_count: u32,
+        _modifiers: terminal::Modifiers,
+    ) -> bool {
+        let Some(footer) = self.footer.as_mut() else {
+            return false;
+        };
+        footer.focused = footer.contains(x, y);
+        footer.pressed = footer.focused && footer.view.pointer_down(x, y, click_count);
+        let pressed = footer.pressed;
+        if let Some(all) = footer.view.take_run() {
+            if let Some(request) = self.run_request(all) {
+                if let Some(footer) = self.footer.as_mut() {
+                    footer.view.run(request);
+                }
+            }
+        }
+        pressed
+    }
+
+    fn pointer_drag(&mut self, x: f32, y: f32, _modifiers: terminal::Modifiers) -> bool {
+        self.footer
+            .as_mut()
+            .filter(|footer| footer.pressed)
+            .is_some_and(|footer| footer.view.pointer_drag(x, y))
+    }
+
+    fn pointer_up(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) {
+        if let Some(footer) = self.footer.as_mut().filter(|footer| footer.pressed) {
+            footer.pressed = false;
+            footer.view.pointer_up();
+        }
+    }
+
+    fn pointer_move(
+        &mut self,
+        x: f32,
+        y: f32,
+        _modifiers: terminal::Modifiers,
+        _focused: bool,
+    ) -> bool {
+        self.footer
+            .as_mut()
+            .is_some_and(|footer| footer.view.pointer_move(x, y))
+    }
+
+    fn pointer_scroll(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_y: f32,
+        modifiers: terminal::Modifiers,
+    ) -> bool {
+        self.footer
+            .as_mut()
+            .filter(|footer| footer.contains(x, y))
+            .is_some_and(|footer| footer.view.scroll(0.0, delta_y, modifiers.shift))
+    }
+
+    fn pointer_scroll_x(&mut self, x: f32, y: f32, delta_x: f32) -> bool {
+        self.footer
+            .as_mut()
+            .filter(|footer| footer.contains(x, y))
+            .is_some_and(|footer| footer.view.scroll(delta_x, 0.0, false))
+    }
+
+    fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
+        let version = self.buffer.as_ref().map(EditorBuffer::version);
+        let text = self.buffer.as_ref().map(|buffer| buffer.text());
+        let Some(footer) = self.footer.as_mut() else {
+            return workspace::ItemTick::default();
+        };
+        if footer.version != version {
+            footer.version = version;
+            if let Some(text) = text {
+                footer.view.text_changed(&text);
+            }
+        }
+        workspace::ItemTick {
+            changed: footer.view.tick(),
+            ..workspace::ItemTick::default()
+        }
+    }
+
     fn companion_width(&mut self, body_w: f32) -> f32 {
         let wide = self.branch_diff
             && self.split
@@ -2850,10 +3023,16 @@ impl Item for FileItem {
     }
 
     fn abs_path(&self) -> Option<PathBuf> {
+        if self.scratch.is_some() {
+            return None;
+        }
         Some(self.root.join(&self.path))
     }
 
     fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
+        if let Some(footer) = self.footer.as_ref().filter(|_| self.scratch.is_some()) {
+            return footer.view.serialize();
+        }
         if self.branch_diff {
             return None;
         }
@@ -2896,6 +3075,9 @@ impl Item for FileItem {
     }
 
     fn id(&self) -> Option<String> {
+        if let Some((id, _)) = &self.scratch {
+            return Some(id.clone());
+        }
         Some(if self.branch_diff {
             format!("{DIFF_ID_PREFIX}{}", self.path)
         } else {
@@ -2904,6 +3086,12 @@ impl Item for FileItem {
     }
 
     fn title(&self) -> String {
+        if let Some(title) = self.footer.as_ref().and_then(|footer| footer.view.title()) {
+            return title;
+        }
+        if let Some((_, title)) = &self.scratch {
+            return title.clone();
+        }
         if self.branch_diff {
             format!("{} (diff)", self.name)
         } else {
@@ -2916,6 +3104,9 @@ impl Item for FileItem {
     }
 
     fn clone_on_split(&self) -> Option<Box<dyn Item>> {
+        if self.scratch.is_some() {
+            return None;
+        }
         let text = self.buffer.as_ref().map(|b| b.text_for_save());
         let mut item = FileItem::new(self.root.clone(), &self.path, text);
         item.saved_mtime = self.saved_mtime;
@@ -3216,6 +3407,9 @@ impl Item for FileItem {
     }
 
     fn save(&mut self) -> Result<(), String> {
+        if self.scratch.is_some() {
+            return Ok(());
+        }
         let Some(b) = self.buffer.as_mut() else {
             return Ok(());
         };
@@ -3230,6 +3424,9 @@ impl Item for FileItem {
     }
 
     fn is_dirty(&self) -> bool {
+        if self.scratch.is_some() {
+            return false;
+        }
         self.conflict || self.buffer.as_ref().is_some_and(|b| b.is_dirty())
     }
 
@@ -3238,6 +3435,9 @@ impl Item for FileItem {
     }
 
     fn refresh_disk_state(&mut self) {
+        if self.scratch.is_some() {
+            return;
+        }
         let Ok(disk) = files::mtime(&self.root, &self.path) else {
             return;
         };
@@ -3269,7 +3469,10 @@ impl Item for FileItem {
 
     fn is_busy(&self) -> bool {
         // Keep repainting while a parse runs or the scrollbars wait to hide.
-        self.syntax.as_ref().is_some_and(|s| s.is_parsing())
+        self.footer
+            .as_ref()
+            .is_some_and(|footer| footer.view.busy())
+            || self.syntax.as_ref().is_some_and(|s| s.is_parsing())
             || self.scrollbars_revealed()
             || self.git.is_busy()
             || self.hover.is_busy()
@@ -3472,6 +3675,12 @@ impl Item for FileItem {
     }
 
     fn copy(&self) -> Option<CopiedText> {
+        if let Some(footer) = self.footer.as_ref().filter(|footer| footer.focused) {
+            return footer.view.copy().map(|text| CopiedText {
+                text,
+                slices: Vec::new(),
+            });
+        }
         self.buffer.as_ref().map(|b| copied_text(b.copy()))
     }
 
@@ -3507,6 +3716,9 @@ impl Item for FileItem {
     }
 
     fn input_key(&mut self, key: EditKey, shift: bool) {
+        if self.footer_key(key, shift) {
+            return;
+        }
         if key == EditKey::Hover {
             if let Some(caret) = self.buffer.as_ref().map(|b| b.newest().head()) {
                 self.show_hover(caret, true);
@@ -5832,8 +6044,14 @@ impl FunctionView for FilesView {
         Some(self.panes.serialize())
     }
 
-    fn restore_panes(&mut self, saved: &workspace::persistence::SerializedMember) -> bool {
-        self.panes.restore(saved, &mut saved_state::restore_item)
+    fn restore_panes(
+        &mut self,
+        saved: &workspace::persistence::SerializedMember,
+        fallback: &mut dyn FnMut(&workspace::persistence::SerializedItem) -> Option<Box<dyn Item>>,
+    ) -> bool {
+        self.panes.restore(saved, &mut |item| {
+            saved_state::restore_item(item).or_else(|| fallback(item))
+        })
     }
 
     fn zoom_shown(&self) -> bool {
@@ -7538,5 +7756,101 @@ mod self_painted_item_tests {
         exit.set(true);
         assert!(view.tick_items(&|| None).changed);
         assert!(!view.active_wants_keystrokes());
+    }
+}
+
+#[cfg(test)]
+mod footer_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use workspace::{ItemFooter, RunRequest};
+
+    #[derive(Default)]
+    struct Recorded {
+        runs: Vec<RunRequest>,
+        texts: Vec<String>,
+        run_button: bool,
+    }
+
+    struct Results(Rc<RefCell<Recorded>>);
+
+    impl ItemFooter for Results {
+        fn height(&mut self, _body_h: f32) -> f32 {
+            100.0
+        }
+        fn paint(&mut self, _area: Rect) -> Option<ui::Painted> {
+            None
+        }
+        fn pointer_down(&mut self, _x: f32, _y: f32, _click_count: u32) -> bool {
+            self.0.borrow_mut().run_button = true;
+            true
+        }
+        fn take_run(&mut self) -> Option<bool> {
+            std::mem::take(&mut self.0.borrow_mut().run_button).then_some(true)
+        }
+        fn run(&mut self, request: RunRequest) {
+            self.0.borrow_mut().runs.push(request);
+        }
+        fn text_changed(&mut self, text: &str) {
+            self.0.borrow_mut().texts.push(text.to_string());
+        }
+    }
+
+    fn console(text: &str) -> (Box<dyn Item>, Rc<RefCell<Recorded>>) {
+        let recorded = Rc::new(RefCell::new(Recorded::default()));
+        let item = scratch_editor(
+            "console:1".into(),
+            "query 1".into(),
+            text,
+            Box::new(Results(recorded.clone())),
+        );
+        (item, recorded)
+    }
+
+    #[test]
+    fn cmd_enter_hands_the_footer_the_text_caret_and_selection() {
+        let (mut item, recorded) = console("select 1;\nselect 2;");
+        item.input_key(EditKey::DocumentEnd, false);
+        item.input_key(EditKey::ReplaceAll, false);
+        item.input_key(EditKey::Left, true);
+        item.input_key(EditKey::ReplaceAll, true);
+        let runs = &recorded.borrow().runs;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].caret, "select 1;\nselect 2;".len());
+        assert_eq!(runs[0].selection, None);
+        assert!(!runs[0].all);
+        assert_eq!(runs[1].selection.as_deref(), Some(";"));
+        assert!(runs[1].all);
+    }
+
+    #[test]
+    fn a_scratch_tab_never_touches_disk_and_reports_edits() {
+        let (mut item, recorded) = console("select 1;");
+        assert_eq!(item.abs_path(), None);
+        assert!(!item.is_dirty());
+        item.input_text("x");
+        item.tick(&|| None);
+        assert_eq!(recorded.borrow().texts.len(), 1);
+        assert!(!item.is_dirty());
+    }
+
+    #[test]
+    fn a_press_on_the_footer_can_ask_for_a_run() {
+        let (mut item, recorded) = console("select 1;");
+        let body = Rect::new(0.0, 0.0, 400.0, 400.0, ui::Rgba::TRANSPARENT);
+        let footer_h = item.footer_height(body.h);
+        item.paint_footer(Rect::new(
+            0.0,
+            body.h - footer_h,
+            400.0,
+            footer_h,
+            ui::Rgba::TRANSPARENT,
+        ));
+        assert!(!item.pointer_down(10.0, 50.0, 1, terminal::Modifiers::default()));
+        assert!(item.pointer_down(10.0, 350.0, 1, terminal::Modifiers::default()));
+        let runs = &recorded.borrow().runs;
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].all);
     }
 }

@@ -347,7 +347,7 @@ mod tests {
             panic!("the editor area should save its panes");
         };
         let mut back = crate::FilesView::scanned(root.clone());
-        assert!(back.restore_panes(&saved));
+        assert!(back.restore_panes(&saved, &mut |_| None));
         assert_eq!(back.panes.group.leaf_count(), 2);
         assert_eq!(back.panes.active, vec![1]);
         let titles: Vec<String> = back
