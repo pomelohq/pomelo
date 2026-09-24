@@ -1980,6 +1980,32 @@ fn center_traffic_lights(window: &Window) {
     }
 }
 
+/// Points coding agents (Claude Code) at this app's MCP server. Skipped for a run on a throwaway state
+/// dir, whose wrapper would vanish, and when `POM_SKIP_GLOBAL_HOOK` asks to leave agents alone.
+fn register_with_agents() {
+    if std::env::var_os("POM_SKIP_GLOBAL_HOOK").is_some() {
+        return;
+    }
+    let state = pom_paths::StateDir::from_env();
+    let (Some(claude), Ok(binary)) = (pom_agent::ClaudeHome::from_env(), std::env::current_exe())
+    else {
+        return;
+    };
+    if state.root() != claude.home.join(".local/state/pom") {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("agent-register".into())
+        .spawn(move || {
+            if let Err(error) = pom_agent::install_mcp(&claude, &state, &binary) {
+                eprintln!("could not register the MCP server with Claude Code: {error}");
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("agent registration: {error}");
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(code) = pom_ptyhost::cli::run(&args).or_else(|| pom_mcp::run(&args)) {
@@ -2007,6 +2033,7 @@ fn main() -> anyhow::Result<()> {
         previous(info);
     }));
 
+    register_with_agents();
     let event_loop = EventLoop::new()?;
     let proxy = event_loop.create_proxy();
     ui::set_waker(move || {
