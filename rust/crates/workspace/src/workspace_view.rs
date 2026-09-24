@@ -1762,6 +1762,13 @@ impl WorkspaceView {
                     self.set_terminal_focus(false);
                     self.panes_input = true;
                 }
+                crate::PanelRequest::OpenFile(path) => {
+                    if let Some(files) = self.layout.files_view.as_mut() {
+                        files.open_file_at(&path, None, None);
+                        self.set_terminal_focus(false);
+                        self.panes_input = true;
+                    }
+                }
                 crate::PanelRequest::OpenUrl(url) => {
                     if let Err(error) = std::process::Command::new("open").arg(&url).spawn() {
                         self.show_toast(format!("Failed to open {url}: {error}"), None);

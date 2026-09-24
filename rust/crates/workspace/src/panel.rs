@@ -238,6 +238,8 @@ pub fn side_panel_kind(id: u64) -> Option<PaneKind> {
 
 pub enum PanelRequest {
     OpenItem(Box<dyn crate::Item>),
+    /// Open a file in the editor.
+    OpenFile(std::path::PathBuf),
     Reveal {
         id: String,
         open: Box<dyn FnOnce() -> Option<Box<dyn crate::Item>>>,

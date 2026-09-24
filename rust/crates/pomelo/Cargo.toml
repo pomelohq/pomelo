@@ -26,6 +26,7 @@ pom_services = { path = "../pom_services" }
 pom_mcp = { path = "../pom_mcp" }
 pom_agent = { path = "../pom_agent" }
 services_ui = { path = "../services_ui" }
+git_ui = { path = "../git_ui" }
 winit.workspace = true
 anyhow.workspace = true
 
