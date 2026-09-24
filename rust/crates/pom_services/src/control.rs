@@ -235,6 +235,34 @@ impl ServiceRunner {
         self.start(config, target)
     }
 
+    /// Drops every port lease of the workspace and leases fresh ones, rewriting its env files: the way
+    /// out when something outside took the workspace's ports.
+    pub fn relocate_workspace(&self, config: &Config, branch: &str) -> Result<(), ServiceError> {
+        let ws_key = pom_env::port_ws_key(branch);
+        self.ports.release_workspace(&ws_key);
+        self.acquire_workspace_ports(config, &ws_key);
+        self.workspace_env(config, branch).write_env_files()?;
+        Ok(())
+    }
+
+    /// The workspace's env, resolved against this runner's leases, slots and secrets.
+    pub fn workspace_env<'a>(&'a self, config: &'a Config, branch: &'a str) -> WorkspaceEnv<'a> {
+        WorkspaceEnv {
+            config,
+            project_root: &self.project_root,
+            branch,
+            sources: self,
+        }
+    }
+
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
     pub fn set_mode(
         &self,
         config: &Config,

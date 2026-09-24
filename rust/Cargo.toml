@@ -33,6 +33,7 @@ members = [
     "crates/pom_services",
     "crates/services_ui",
     "crates/pom_cli",
+    "crates/pom_mcp",
 ]
 
 [workspace.package]

@@ -1982,7 +1982,7 @@ fn center_traffic_lights(window: &Window) {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if let Some(code) = pom_ptyhost::cli::run(&args) {
+    if let Some(code) = pom_ptyhost::cli::run(&args).or_else(|| pom_mcp::run(&args)) {
         std::process::exit(code);
     }
     let previous = std::panic::take_hook();
