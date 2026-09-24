@@ -618,7 +618,8 @@ impl FilesView {
     }
 
     fn reload_tree(&mut self) {
-        self.tree = files::build_tree(&files::list(&self.root));
+        self.entries = files::list(&self.root);
+        self.tree = files::build_tree(&self.entries);
         self.flat_dirty = true;
     }
 

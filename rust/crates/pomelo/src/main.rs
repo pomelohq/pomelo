@@ -1613,6 +1613,21 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                let quick_open = matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "p")
+                    && self.super_down
+                    && !self.shift_down
+                    && !self.alt_down
+                    && !self.ctrl_down;
+                if quick_open
+                    && self.mains.contains_key(&id)
+                    && self.with_workspace_view(id, |v, _| v.editor_focused()) != Some(true)
+                {
+                    self.with_workspace_view(id, |v, _| v.open_file_finder());
+                    if let Some(m) = self.mains.get_mut(&id) {
+                        m.dirty = true;
+                    }
+                    return;
+                }
                 if esc_on_settings {
                     self.settings_ui = None;
                     self.settings_window = None;
@@ -1923,6 +1938,8 @@ impl ApplicationHandler for App {
                         "k" | "K" if shift => key(EditKey::DeleteLine),
                         "l" | "L" if shift => key(EditKey::SelectAllMatches),
                         "p" | "P" if shift && !ctrl => key(EditKey::ToggleCommandPalette),
+                        "p" if !ctrl => key(EditKey::ToggleFileFinder),
+                        "i" | "I" if shift => key(EditKey::ToggleIncludeIgnored),
                         "o" | "O" if shift => key(EditKey::ToggleOutline),
                         "p" if ctrl => key(EditKey::AddCursorAboveRow),
                         "n" if ctrl => key(EditKey::AddCursorBelowRow),

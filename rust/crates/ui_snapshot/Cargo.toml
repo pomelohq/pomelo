@@ -17,6 +17,7 @@ settings = { path = "../settings" }
 settings_ui = { path = "../settings_ui" }
 workspace = { path = "../workspace" }
 git_ui = { path = "../git_ui" }
+files = { path = "../files" }
 files_ui = { path = "../files_ui" }
 workspaces_ui = { path = "../workspaces_ui" }
 pom_agent = { path = "../pom_agent" }

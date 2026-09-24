@@ -4,6 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
+mod watch;
+pub use watch::TreeWatcher;
+
 /// Directory names never descended into (the Go walk's `skipDirNames` plus `target`: the walk is eager and
 /// recursive, and a Rust `target/` has enough files to stall the synchronous rebuild on window open).
 const SKIP_DIRS: &[&str] = &[".git", ".pom", "node_modules", ".ddata", "target"];
@@ -66,6 +69,62 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<FileEntry>) {
             walk(root, &full, out);
         }
     }
+}
+
+pub fn project_files(root: &Path, include_ignored: bool) -> Vec<String> {
+    let mut walker = ignore::WalkBuilder::new(root);
+    walker
+        .hidden(false)
+        .git_ignore(!include_ignored)
+        .git_exclude(!include_ignored)
+        .git_global(!include_ignored)
+        .ignore(!include_ignored)
+        .parents(true)
+        .filter_entry(|entry| entry.file_name() != ".git");
+    let mut files: Vec<String> = walker
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .filter_map(|entry| rel_path(root, entry.path()))
+        .collect();
+    files.sort();
+    files
+}
+
+pub fn apply_changes(root: &Path, entries: &mut Vec<FileEntry>, changed: &[String]) {
+    let mut changed: Vec<&String> = changed.iter().collect();
+    changed.sort();
+    changed.dedup();
+    let mut roots: Vec<&String> = Vec::new();
+    for path in changed {
+        if !roots
+            .last()
+            .is_some_and(|parent| path.starts_with(&format!("{parent}/")))
+        {
+            roots.push(path);
+        }
+    }
+    for path in roots {
+        if path.split('/').any(|part| SKIP_DIRS.contains(&part)) {
+            continue;
+        }
+        let under = format!("{path}/");
+        entries.retain(|entry| entry.path != *path && !entry.path.starts_with(&under));
+        let full = root.join(path);
+        let Ok(meta) = std::fs::metadata(&full) else {
+            continue;
+        };
+        entries.push(FileEntry {
+            repo: String::new(),
+            path: path.clone(),
+            is_dir: meta.is_dir(),
+            size: if meta.is_dir() { 0 } else { meta.len() },
+        });
+        if meta.is_dir() {
+            walk(root, &full, entries);
+        }
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
 }
 
 /// How often a running scan hands the UI what it has found so far.
@@ -559,5 +618,54 @@ mod tests {
         );
         assert_eq!(mtime(&root, "new/dir/a.txt").unwrap(), written);
         assert!(write(&root, "../escape", "x").is_err());
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+
+    #[test]
+    fn only_changed_paths_are_read_again() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("src/old"))?;
+        std::fs::write(root.join("src/old/a.rs"), "a")?;
+        std::fs::write(root.join("README.md"), "r")?;
+        let mut entries = list(root);
+        std::fs::remove_dir_all(root.join("src/old"))?;
+        std::fs::create_dir_all(root.join("src/new"))?;
+        std::fs::write(root.join("src/new/b.rs"), "b")?;
+        std::fs::write(root.join("NOTES.md"), "n")?;
+        apply_changes(
+            root,
+            &mut entries,
+            &[
+                "src/old".into(),
+                "src/old/a.rs".into(),
+                "src/new".into(),
+                "NOTES.md".into(),
+            ],
+        );
+        assert_eq!(entries, list(root));
+        Ok(())
+    }
+
+    #[test]
+    fn quick_open_skips_ignored_files_unless_asked() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        std::fs::create_dir_all(root.join(".git"))?;
+        std::fs::write(root.join(".git/HEAD"), "ref")?;
+        std::fs::write(root.join(".gitignore"), "dist/\n")?;
+        std::fs::create_dir_all(root.join("dist"))?;
+        std::fs::write(root.join("dist/app.js"), "x")?;
+        std::fs::write(root.join("main.rs"), "fn main() {}")?;
+        assert_eq!(project_files(root, false), [".gitignore", "main.rs"]);
+        assert_eq!(
+            project_files(root, true),
+            [".gitignore", "dist/app.js", "main.rs"]
+        );
+        Ok(())
     }
 }

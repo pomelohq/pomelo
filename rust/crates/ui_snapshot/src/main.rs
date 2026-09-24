@@ -199,6 +199,38 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Ok(query) = std::env::var("FINDER") {
+        let root = std::env::current_dir()?;
+        let paths = files::project_files(&root, false);
+        let recent = vec![
+            "crates/files_ui/src/files_ui.rs".to_string(),
+            "crates/workspace/src/workspace_view.rs".to_string(),
+        ];
+        let node = files_ui::file_finder_preview(paths, recent, &query);
+        let (width, height) = (560.0_f32, 460.0_f32);
+        let painted = ui::render(
+            &ui::div().p(8.0).child(node).into(),
+            ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT),
+        );
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if std::env::var("PRTAB").is_ok() {
         use workspace::Item;
         let (width, height) = (720.0_f32, 520.0_f32);
