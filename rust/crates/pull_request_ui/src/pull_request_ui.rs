@@ -121,6 +121,11 @@ impl PullRequests {
                         changed
                     })
                     .unwrap_or(false);
+                if targets_changed {
+                    // What the cache already knows shows now; the network round can take a while.
+                    shared.changed.store(true, Ordering::SeqCst);
+                    (shared.waker)();
+                }
                 let mut prs_changed = false;
                 if let Some(client) = pom_forge::resolve(&shared.state, &shared.session) {
                     // The UI reads the cache every frame, so it is never held across the network call.
@@ -140,7 +145,7 @@ impl PullRequests {
                     }
                 }
                 shared.refreshing.store(false, Ordering::SeqCst);
-                if targets_changed || prs_changed {
+                if prs_changed {
                     shared.changed.store(true, Ordering::SeqCst);
                     (shared.waker)();
                 }

@@ -69,8 +69,8 @@ fn lists_the_branch_changes_and_discards_after_confirming() {
     let shown = texts(&mut panel);
     assert!(shown.contains("2 changed files"), "{shown}");
     assert!(shown.contains("api|feat"), "{shown}");
-    assert!(shown.contains("app.rs |+1|-0"), "{shown}");
-    assert!(shown.contains("new.rs |src/deep|+2|-0"), "{shown}");
+    assert!(shown.contains("app.rs|+1|-0"), "{shown}");
+    assert!(shown.contains("new.rs|src/deep|+2|-0"), "{shown}");
 
     // Rows: 0 repo, 1 app.rs, 2 src/deep/new.rs.
     panel.click(row(1));
@@ -371,10 +371,75 @@ fn the_repo_row_opens_its_pull_request() {
     panel.render(320.0, 400.0);
     panel.wait_for_scan();
     let shown = texts(&mut panel);
+    assert!(
+        shown.contains("Pull Requests|1|#42"),
+        "listed at the top: {shown}"
+    );
     assert!(shown.contains("web|main|#42"), "{shown}");
-    panel.click(row(0) + 2);
+    // Rows: 0 the pull requests header, 1 web's pull request, 2 the repo.
+    panel.click(row(1));
     assert!(matches!(
         panel.take_requests().as_slice(),
         [PanelRequest::Reveal { id, .. }] if id == "pr:web:main"
     ));
+    panel.click(row(2) + 2);
+    assert!(matches!(
+        panel.take_requests().as_slice(),
+        [PanelRequest::Reveal { id, .. }] if id == "pr:web:main"
+    ));
+    panel.click(row(0));
+    assert!(
+        !texts(&mut panel).contains("Pull Requests|1|#42"),
+        "the list folds"
+    );
+}
+
+#[test]
+fn shows_one_repo_at_a_time_and_picks_another_from_the_selector() {
+    let temp = tempfile::tempdir().expect("temp");
+    let mut sources = Vec::new();
+    for name in ["web", "api", "infra"] {
+        let root = temp.path().join(name);
+        std::fs::create_dir_all(&root).expect("repo");
+        run(&root, &["init", "-q", "-b", "main"]);
+        run(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join(format!("{name}.rs")), "one\n").expect("write");
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "base"]);
+        run(&root, &["checkout", "-q", "-b", "feat"]);
+        std::fs::write(root.join(format!("{name}.rs")), "one\ntwo\n").expect("write");
+        sources.push(RepoSource {
+            name: name.into(),
+            root,
+            default_branch: "main".into(),
+        });
+    }
+    let mut panel = GitPanel::new(sources, None, Arc::new(|| {}));
+    panel.render(320.0, 400.0);
+    panel.wait_for_scan();
+    let shown = texts(&mut panel);
+    assert!(
+        shown.contains("web.rs") && !shown.contains("api.rs"),
+        "{shown}"
+    );
+
+    panel.click(footer(6));
+    assert!(panel.text_focused(), "the selector takes typing");
+    let shown = texts(&mut panel);
+    assert!(
+        shown.contains("api|infra|web|Select a repository..."),
+        "sorted, filter below: {shown}"
+    );
+    panel.text("inf");
+    assert!(panel.key(workspace::EditKey::Enter, false));
+    let shown = texts(&mut panel);
+    assert!(
+        shown.contains("infra.rs") && !shown.contains("web.rs"),
+        "{shown}"
+    );
+    assert!(!panel.text_focused(), "picking closes it");
+
+    panel.click(footer(6));
+    assert!(panel.key(workspace::EditKey::Escape, false));
+    assert!(!texts(&mut panel).contains("Select a repository..."));
 }

@@ -414,9 +414,14 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String, String)> {
         rest.split_once(':')?
     };
     let host = host.split(':').next()?.to_string();
-    if !host.contains("github") {
+    // An SSH config alias (`git@work:acme/web`) has no dot; it stands for GitHub, as the forge assumes.
+    let host = if host.contains("github") {
+        host
+    } else if !host.contains('.') && !host.is_empty() {
+        "github.com".to_string()
+    } else {
         return None;
-    }
+    };
     let mut segments = path.trim_matches('/').rsplitn(2, '/');
     let repo = segments.next()?.to_string();
     let owner = segments.next()?.rsplit('/').next()?.to_string();
@@ -625,6 +630,13 @@ mod tests {
             create_pull_request_url("https://gitlab.com/acme/web.git", "main"),
             None
         );
+        for alias in ["work:acme/web", "git@work:acme/web.git"] {
+            assert_eq!(
+                parse_github_remote(alias),
+                Some(("github.com".into(), "acme".into(), "web".into())),
+                "{alias}"
+            );
+        }
     }
 
     #[test]

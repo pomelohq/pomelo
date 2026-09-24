@@ -416,20 +416,24 @@ fn main() -> anyhow::Result<()> {
     if let Ok(repo) = std::env::var("GITPANEL") {
         use workspace::SidePanelView;
         let (width, height) = (360.0_f32, 560.0_f32);
-        let mut panel = git_ui::GitPanel::new(
-            vec![git_ui::RepoSource {
-                name: std::path::Path::new(&repo)
+        // GITPANEL=<repo>[,<repo>...]; SELECTOR=1 opens the repository selector.
+        let sources: Vec<git_ui::RepoSource> = repo
+            .split(',')
+            .map(|path| git_ui::RepoSource {
+                name: std::path::Path::new(path)
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default(),
-                root: repo.clone().into(),
+                root: path.into(),
                 default_branch: "main".into(),
-            }],
-            None,
-            std::sync::Arc::new(|| {}),
-        );
+            })
+            .collect();
+        let mut panel = git_ui::GitPanel::new(sources, None, std::sync::Arc::new(|| {}));
         panel.render(width, height);
         panel.wait_for_scan();
+        if std::env::var("SELECTOR").is_ok() {
+            panel.click(workspace::side_panel_base(workspace::PaneKind::Git) + 9_001_006);
+        }
         if let Ok(hover) = std::env::var("HOVERROW") {
             if let Ok(row) = hover.parse::<u64>() {
                 panel.set_hover(Some(
