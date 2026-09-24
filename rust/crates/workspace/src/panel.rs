@@ -60,6 +60,30 @@ impl PaneKind {
         PaneKind::Database,
     ];
 
+    pub fn index(self) -> usize {
+        match self {
+            PaneKind::Files => 0,
+            PaneKind::Services => 1,
+            PaneKind::Git => 2,
+            PaneKind::Jira => 3,
+            PaneKind::Database => 4,
+            PaneKind::Review => 5,
+        }
+    }
+
+    pub fn from_index(index: usize) -> Option<PaneKind> {
+        [
+            PaneKind::Files,
+            PaneKind::Services,
+            PaneKind::Git,
+            PaneKind::Jira,
+            PaneKind::Database,
+            PaneKind::Review,
+        ]
+        .get(index)
+        .copied()
+    }
+
     pub fn icon(self) -> IconKind {
         match self {
             PaneKind::Files => IconKind::Folder,
@@ -190,6 +214,49 @@ pub fn panel_header(title: &str) -> Node {
                 .color(theme().text_muted),
         )
         .into()
+}
+
+pub const SIDE_PANEL_BASE: u64 = 800_000_000;
+pub const SIDE_PANEL_SPAN: u64 = 100_000_000;
+
+const SIDE_PANEL_SLICE: u64 = 10_000_000;
+
+pub fn is_side_panel_id(id: u64) -> bool {
+    (SIDE_PANEL_BASE..SIDE_PANEL_BASE + SIDE_PANEL_SPAN).contains(&id)
+}
+
+pub fn side_panel_base(kind: PaneKind) -> u64 {
+    SIDE_PANEL_BASE + kind.index() as u64 * SIDE_PANEL_SLICE
+}
+
+pub fn side_panel_kind(id: u64) -> Option<PaneKind> {
+    if !is_side_panel_id(id) {
+        return None;
+    }
+    PaneKind::from_index(((id - SIDE_PANEL_BASE) / SIDE_PANEL_SLICE) as usize)
+}
+
+pub enum PanelRequest {
+    OpenItem(Box<dyn crate::Item>),
+    Reveal {
+        id: String,
+        open: Box<dyn FnOnce() -> Option<Box<dyn crate::Item>>>,
+    },
+    OpenUrl(String),
+    Copy(String),
+    Toast(String),
+}
+
+pub trait SidePanelView: 'static {
+    fn kind(&self) -> PaneKind;
+    fn render(&mut self, width: f32, height: f32) -> Node;
+    fn click(&mut self, id: u64);
+    fn set_hover(&mut self, id: Option<u64>) -> bool;
+    fn scroll(&mut self, dy: f32) -> bool;
+    fn open_menu(&mut self, id: u64) -> bool;
+    fn menu_items(&self) -> Vec<crate::MenuItem>;
+    fn menu_action(&mut self, item: u64);
+    fn take_requests(&mut self) -> Vec<PanelRequest>;
 }
 
 /// A dockable piece of UI. Mirrors the framework's `Panel` (position + icon + render), trimmed to what we draw now.

@@ -98,6 +98,9 @@ pub enum IconKind {
     DiffUnified,
     DiffSplit,
     FileGit,
+    Play,
+    Stop,
+    RotateCw,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

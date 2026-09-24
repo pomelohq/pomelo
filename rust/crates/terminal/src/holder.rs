@@ -24,6 +24,7 @@ pub struct HolderOptions {
     pub dir: SocketDir,
     pub name: String,
     pub binary: PathBuf,
+    pub attach_only: bool,
 }
 
 pub(crate) struct HolderBackend {
@@ -43,6 +44,12 @@ impl HolderBackend {
         listener: L,
     ) -> io::Result<HolderBackend> {
         if !options.dir.holder_alive(&options.name) {
+            if options.attach_only {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("{} is not running", options.name),
+                ));
+            }
             pom_ptyhost::spawn_holder(&options.dir, &spawn)?;
         }
         pom_ptyhost::wait_for_holder(&options.dir, &options.name, HOLDER_START_TIMEOUT)?;

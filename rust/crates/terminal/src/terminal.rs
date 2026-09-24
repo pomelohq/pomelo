@@ -1137,6 +1137,7 @@ mod tests {
                 dir: dir.clone(),
                 name: "appsh-test".into(),
                 binary: PathBuf::from("/nonexistent"),
+                attach_only: false,
             }),
             ..TerminalOptions::default()
         };

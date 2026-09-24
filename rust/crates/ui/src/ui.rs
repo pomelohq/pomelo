@@ -814,6 +814,9 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::DiffUnified => svg!("diff_unified.svg"),
         IconKind::DiffSplit => svg!("diff_split.svg"),
         IconKind::FileGit => svg!("file_git.svg"),
+        IconKind::Play => svg!("play.svg"),
+        IconKind::Stop => svg!("stop.svg"),
+        IconKind::RotateCw => svg!("rotate_cw.svg"),
     }
 }
 
