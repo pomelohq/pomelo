@@ -50,6 +50,10 @@ pub struct Pane {
     pub search: Box<SearchBar>,
     /// The first `pinned` tabs are pinned: they stay at the front and survive bulk closes.
     pub pinned: usize,
+    /// How far the tab strip is scrolled, in logical px.
+    pub tab_scroll: f32,
+    /// The active tab the strip last scrolled into view; wheeling the strip holds until another tab activates.
+    pub tab_scroll_active: Option<usize>,
 }
 
 impl PaneId for Pane {
@@ -300,13 +304,7 @@ pub struct PaneClickIds {
 /// The pane chrome: a tab bar whose full-width bottom border the active tab punches through (so it merges with
 /// the body below), then the find bar when open. The body itself is drawn by the owner. An empty pane draws
 /// nothing.
-pub fn render_pane(
-    pane: &Pane,
-    config: &TabBarConfig,
-    ids: PaneClickIds,
-    hover: Option<u64>,
-    width: f32,
-) -> Node {
+pub fn render_pane(pane: &Pane, config: &TabBarConfig, ids: PaneClickIds, width: f32) -> Node {
     if pane.open.is_empty() {
         return div().col().flex(1.0).into();
     }
@@ -325,6 +323,31 @@ pub fn render_pane(
             ))
             .child(div().w_px(1.0).h_px(TAB_H).bg(theme().border));
     }
+    tab_bar = tab_bar.child(
+        div()
+            .col()
+            .flex(1.0)
+            .h_px(TAB_H)
+            .child(div().flex(1.0))
+            .child(div().h_px(1.0).bg(theme().border)),
+    );
+    if !config.buttons.is_empty() {
+        tab_bar = tab_bar.child(div().w_px(1.0).h_px(TAB_H).bg(theme().border));
+        for button in &config.buttons {
+            tab_bar = tab_bar.child(tab_bar_button(button.icon, button.id));
+        }
+    }
+    let mut chrome = div().col().flex(1.0).child(tab_bar);
+    if !pane.search.dismissed {
+        chrome = chrome.child(pane.search.render(ids.search, width));
+    }
+    chrome.into()
+}
+
+/// The tabs themselves, laid out at their natural widths; the owner draws them over the tab bar's middle,
+/// scrolled and clipped to it.
+pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> Node {
+    let mut strip = div().row().h_px(TAB_H);
     for (index, item) in pane.open.iter().enumerate() {
         let is_active = pane.active == Some(index);
         let activate_id = ids.tab_activate + index as u64;
@@ -390,29 +413,37 @@ pub fn render_pane(
             .on_click(activate_id)
             .child(content)
             .child(div().h_px(1.0).bg(underline));
-        tab_bar = tab_bar
+        strip = strip
             .child(cell)
             .child(div().w_px(1.0).h_px(TAB_H).bg(theme().border));
     }
-    tab_bar = tab_bar.child(
-        div()
-            .col()
-            .flex(1.0)
-            .h_px(TAB_H)
-            .child(div().flex(1.0))
-            .child(div().h_px(1.0).bg(theme().border)),
-    );
-    if !config.buttons.is_empty() {
-        tab_bar = tab_bar.child(div().w_px(1.0).h_px(TAB_H).bg(theme().border));
-        for button in &config.buttons {
-            tab_bar = tab_bar.child(tab_bar_button(button.icon, button.id));
-        }
+    strip.into()
+}
+
+/// Design-px widths of the tab bar's fixed parts around the strip: (leading nav, trailing buttons).
+pub fn tab_bar_edges(config: &TabBarConfig) -> (f32, f32) {
+    let nav = if config.show_nav {
+        26.0 * 2.0 + 1.0
+    } else {
+        0.0
+    };
+    let buttons = if config.buttons.is_empty() {
+        0.0
+    } else {
+        1.0 + 26.0 * config.buttons.len() as f32
+    };
+    (nav, buttons)
+}
+
+/// The scroll that keeps `span` (x, width) in a `view`-wide strip with the least movement.
+pub fn scroll_into_view(scroll: f32, (x, w): (f32, f32), view: f32) -> f32 {
+    if x < scroll {
+        x
+    } else if x + w > scroll + view {
+        (x + w - view).max(0.0)
+    } else {
+        scroll
     }
-    let mut chrome = div().col().flex(1.0).child(tab_bar);
-    if !pane.search.dismissed {
-        chrome = chrome.child(pane.search.render(ids.search, width));
-    }
-    chrome.into()
 }
 
 fn nav_button(kind: IconKind, id: u64, enabled: bool) -> Node {
@@ -538,11 +569,10 @@ mod tests {
         pane.add_item(Box::new(Plain("shell")));
         let bare = TabBarConfig::default();
         let painted = ui::render(
-            &render_pane(&pane, &bare, ids(), None, 600.0),
+            &render_pane(&pane, &bare, ids(), 600.0),
             ui::Rect::new(0.0, 0.0, 600.0, 40.0, ui::Rgba::TRANSPARENT),
         );
         let hit_ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
-        assert!(hit_ids.contains(&100) && hit_ids.contains(&200));
         assert!(!hit_ids.contains(&300));
         let full = TabBarConfig {
             show_nav: true,
@@ -552,16 +582,28 @@ mod tests {
             }],
         };
         let painted = ui::render(
-            &render_pane(&pane, &full, ids(), None, 600.0),
+            &render_pane(&pane, &full, ids(), 600.0),
             ui::Rect::new(0.0, 0.0, 600.0, 40.0, ui::Rgba::TRANSPARENT),
         );
         assert!(painted.hits.iter().any(|(_, id)| *id == 500));
-        assert!(painted.texts.iter().any(|text| text.text == "shell"));
+        let strip = ui::render(
+            &render_tab_strip(&pane, ids(), None),
+            ui::Rect::new(0.0, 0.0, 600.0, 40.0, ui::Rgba::TRANSPARENT),
+        );
+        assert!(strip.texts.iter().any(|text| text.text == "shell"));
+        assert!(strip.hits.iter().any(|(_, id)| *id == 100));
         let empty = Pane::new(2);
         let painted = ui::render(
-            &render_pane(&empty, &full, ids(), None, 600.0),
+            &render_pane(&empty, &full, ids(), 600.0),
             ui::Rect::new(0.0, 0.0, 600.0, 40.0, ui::Rgba::TRANSPARENT),
         );
         assert!(painted.hits.is_empty());
+    }
+
+    #[test]
+    fn scrolling_brings_a_span_in_with_the_least_movement() {
+        assert_eq!(scroll_into_view(0.0, (50.0, 100.0), 300.0), 0.0);
+        assert_eq!(scroll_into_view(0.0, (250.0, 100.0), 300.0), 50.0);
+        assert_eq!(scroll_into_view(200.0, (100.0, 50.0), 300.0), 100.0);
     }
 }

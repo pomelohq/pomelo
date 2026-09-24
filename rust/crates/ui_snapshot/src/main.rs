@@ -536,6 +536,18 @@ fn main() -> anyhow::Result<()> {
                     workspace::FunctionView::open_diff(&mut files, &path, base);
                     Box::new(files) as Box<dyn workspace::FunctionView>
                 });
+                // OPENFILES=<a,b,...>: open each file as a tab (the tab strip scrolls once they overflow).
+                let files_view = files_view.or_else(|| {
+                    let list = std::env::var("OPENFILES").ok()?;
+                    let paths: Vec<std::path::PathBuf> =
+                        list.split(',').map(std::path::PathBuf::from).collect();
+                    let root = paths.first()?.parent()?.to_path_buf();
+                    let mut files = files_ui::FilesView::new(root);
+                    for path in &paths {
+                        workspace::FunctionView::open_file_at(&mut files, path, None, None);
+                    }
+                    Some(Box::new(files) as Box<dyn workspace::FunctionView>)
+                });
                 let mut view = workspace::WorkspaceView::new(workspace::Layout {
                     project,
                     files_view,

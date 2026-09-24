@@ -4547,6 +4547,18 @@ fn push_pane_group(
             painted: chrome,
             clip: Some(pane.rect),
         });
+        if let Some((node, at, view)) = pane.strip.take() {
+            let strip = ui::render(&node, at);
+            for (r, id) in strip.hits.iter().copied() {
+                if r.x + r.w > view.x && r.x < view.x + view.w {
+                    hits.push((r, id));
+                }
+            }
+            overlays.push(Overlay {
+                painted: strip,
+                clip: Some(view),
+            });
+        }
         if let Some(b) = &pane.body {
             let text_clip = b.text_clip;
             let mut fill = Painted::default();

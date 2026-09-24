@@ -927,6 +927,8 @@ pub enum DividerAxis {
 pub struct PanePlacement {
     pub rect: ui::Rect,
     pub node: Node,
+    /// The tabs: laid out at the first rect (scrolled), shown only inside the second.
+    pub strip: Option<(Node, ui::Rect, ui::Rect)>,
     /// A body the item painted itself (a terminal), drawn clipped to the area below the chrome.
     pub painted: Option<(ui::Painted, ui::Rect)>,
     /// A text body's companion view (the old side of a split diff), drawn over the body's left.
