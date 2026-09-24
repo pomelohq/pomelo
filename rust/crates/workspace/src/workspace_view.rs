@@ -188,6 +188,8 @@ pub struct WorkspaceView {
     next_prompt_token: u64,
     terminal_focused: bool,
     pointer: (f32, f32),
+    press: (f32, f32),
+    toast_then: Option<(PaneKind, crate::PanelRequest)>,
     /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
     terminal_click: Option<(Instant, f32, f32, u32)>,
     layout: Layout,
@@ -254,6 +256,8 @@ impl WorkspaceView {
             next_prompt_token: CLOSE_PROMPT_TOKENS,
             terminal_focused: false,
             pointer: (0.0, 0.0),
+            press: (0.0, 0.0),
+            toast_then: None,
             terminal_click: None,
             toast: None,
             notification: None,
@@ -1945,66 +1949,95 @@ impl WorkspaceView {
             })
             .collect();
         for (kind, request) in requests {
-            match request {
-                crate::PanelRequest::Prompt {
-                    tag,
+            self.apply_request(kind, request);
+        }
+    }
+
+    fn apply_request(&mut self, kind: PaneKind, request: crate::PanelRequest) {
+        match request {
+            crate::PanelRequest::Prompt {
+                tag,
+                message,
+                detail,
+                buttons,
+            } => {
+                let token = PANEL_PROMPT_TOKENS + self.next_prompt_token;
+                self.next_prompt_token += 1;
+                self.panel_prompt = Some((token, kind, tag));
+                self.pending_prompt = Some(crate::Prompt {
+                    token,
                     message,
                     detail,
                     buttons,
-                } => {
-                    let token = PANEL_PROMPT_TOKENS + self.next_prompt_token;
-                    self.next_prompt_token += 1;
-                    self.panel_prompt = Some((token, kind, tag));
-                    self.pending_prompt = Some(crate::Prompt {
-                        token,
-                        message,
-                        detail,
-                        buttons,
-                    });
-                }
-                crate::PanelRequest::OpenItem(item) => {
-                    if let Some(files) = self.layout.files_view.as_mut() {
-                        files.add_center_item(item);
-                        self.set_terminal_focus(false);
-                        self.panes_input = true;
-                    }
-                }
-                crate::PanelRequest::Reveal { id, open } => {
-                    let Some(files) = self.layout.files_view.as_mut() else {
-                        continue;
-                    };
-                    let revealed = files
-                        .pane_group_mut()
-                        .is_some_and(|group| group.reveal_item(&id));
-                    if !revealed {
-                        if let Some(item) = open() {
-                            files.add_center_item(item);
-                        }
-                    }
+                });
+            }
+            crate::PanelRequest::OpenItem(item) => {
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    files.add_center_item(item);
                     self.set_terminal_focus(false);
                     self.panes_input = true;
                 }
-                crate::PanelRequest::OpenDiff { path, base } => {
-                    if let Some(files) = self.layout.files_view.as_mut() {
-                        files.open_diff(&path, base);
-                        self.set_terminal_focus(false);
-                        self.panes_input = true;
+            }
+            crate::PanelRequest::Reveal { id, open } => {
+                let Some(files) = self.layout.files_view.as_mut() else {
+                    return;
+                };
+                let revealed = files
+                    .pane_group_mut()
+                    .is_some_and(|group| group.reveal_item(&id));
+                if !revealed {
+                    if let Some(item) = open() {
+                        files.add_center_item(item);
                     }
                 }
-                crate::PanelRequest::OpenFile(path) => {
-                    if let Some(files) = self.layout.files_view.as_mut() {
-                        files.open_file_at(&path, None, None);
-                        self.set_terminal_focus(false);
-                        self.panes_input = true;
-                    }
+                self.set_terminal_focus(false);
+                self.panes_input = true;
+            }
+            crate::PanelRequest::OpenDiff { path, base } => {
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    files.open_diff(&path, base);
+                    self.set_terminal_focus(false);
+                    self.panes_input = true;
                 }
-                crate::PanelRequest::OpenUrl(url) => {
-                    if let Err(error) = std::process::Command::new("open").arg(&url).spawn() {
-                        self.show_toast(format!("Failed to open {url}: {error}"), None);
-                    }
+            }
+            crate::PanelRequest::OpenFile(path) => {
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    files.open_file_at(&path, None, None);
+                    self.set_terminal_focus(false);
+                    self.panes_input = true;
                 }
-                crate::PanelRequest::Copy(text) => Self::clip_set(&text),
-                crate::PanelRequest::Toast(message) => self.show_toast(message, None),
+            }
+            crate::PanelRequest::OpenUrl(url) => {
+                if let Err(error) = std::process::Command::new("open").arg(&url).spawn() {
+                    self.show_toast(format!("Failed to open {url}: {error}"), None);
+                }
+            }
+            crate::PanelRequest::Copy(text) => Self::clip_set(&text),
+            crate::PanelRequest::Toast(message) => {
+                self.toast_then = None;
+                self.show_toast(message, None);
+            }
+            crate::PanelRequest::ToastAction {
+                message,
+                action,
+                then,
+            } => {
+                self.show_toast(message, Some(action));
+                self.toast_then = Some((kind, *then));
+            }
+            crate::PanelRequest::OpenMenu => {
+                let (x, y) = self.press;
+                if let Some((_, rect)) = self.hit_with_rect(x, y) {
+                    self.menu = Some((
+                        rect.x,
+                        rect.y,
+                        rect.y + rect.h,
+                        crate::SIDE_PANEL_MENU_TARGET + kind.index() as u64,
+                    ));
+                    self.menu_path = None;
+                    self.submenu = None;
+                    self.menu_editor_anchor = None;
+                }
             }
         }
     }
@@ -2621,6 +2654,7 @@ impl WorkspaceView {
 
     /// Left-button press: route a header/menu click, close the menu, toggle a dock, or begin a divider drag.
     pub fn mouse_down(&mut self, x: f32, y: f32) {
+        self.press = (x, y);
         let pressed_panel = self.hit(x, y).and_then(crate::side_panel_kind);
         for panel in self.layout.side_panels.iter_mut() {
             if pressed_panel != Some(panel.kind()) {
@@ -2832,8 +2866,7 @@ impl WorkspaceView {
             return modal.paste(&text);
         }
         if let Some(panel) = self.panel_with_text() {
-            let line: String = text.chars().filter(|c| !c.is_control()).collect();
-            return panel.text(&line);
+            return panel.text(&text);
         }
         let slices = crate::slices_for(&text);
         let group = self.text_group();
@@ -3765,6 +3798,10 @@ impl WorkspaceView {
     fn header_click(&mut self, id: u64) {
         if id == TOAST_CLOSE || id == TOAST_ACTION {
             self.toast = None;
+            let then = self.toast_then.take();
+            if let (TOAST_ACTION, Some((kind, then))) = (id, then) {
+                self.apply_request(kind, then);
+            }
             return;
         }
         if crate::is_terminal_id(id) {
@@ -3776,8 +3813,16 @@ impl WorkspaceView {
             return;
         }
         if let Some(kind) = crate::side_panel_kind(id) {
+            let (x, y) = self.press;
+            let scale = ui::ui_text_scale();
+            let (local_x, local_y) = self
+                .hit_with_rect(x, y)
+                .filter(|(hit, _)| *hit == id)
+                .map_or((0.0, 0.0), |(_, rect)| {
+                    ((x - rect.x) / scale, (y - rect.y) / scale)
+                });
             if let Some(panel) = self.layout.side_panel_mut(kind) {
-                panel.click(id);
+                panel.click_at(id, local_x, local_y);
             }
             self.apply_panel_requests();
             return;

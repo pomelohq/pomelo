@@ -1,4 +1,3 @@
-
 mod console;
 mod grid;
 mod panel;
