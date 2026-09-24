@@ -1,0 +1,26 @@
+session: acme
+environments:
+  staging:
+    backend.api: https://api.staging.example
+    web.app: ""
+    api.server: http://user@10.0.0.5:9000/x
+repos:
+  acme-api:
+    alias: api
+    proxy_port: 4000
+    services:
+      server: go run .
+  backend:
+    services:
+      api: go run ./api
+  web:
+    services:
+      app: vite
+shared_services:
+  postgres:
+    db_user: acme
+    db_password: pw
+  cache:
+    type: redis
+  search:
+    type: opensearch

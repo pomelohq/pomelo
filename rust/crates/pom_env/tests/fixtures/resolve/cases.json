@@ -1,0 +1,141 @@
+{
+  "config": "pom.yml",
+  "contexts": [
+    {
+      "branch": "proj-1147-add-log",
+      "ws_key": "ws-proj-1147-add-log",
+      "env_name": "",
+      "db_names": {
+        "main": "acme_proj_1147_add_log"
+      },
+      "inputs": [
+        "{{branch}}",
+        "{{branch.safe}}",
+        "{{branch.host}}",
+        "{{branch.hash}}",
+        "{{branch.nope}}",
+        "{{bind_ip}}",
+        "{{api.server.path}}",
+        "{{api.server.host}}",
+        "{{api.server.url}}",
+        "{{api.server.ws}}",
+        "{{api.server}}",
+        "{{api.server.port}}",
+        "{{api.server.bogus}}",
+        "{{acme-api.server.url}}",
+        "{{backend.api.url}}",
+        "{{backend.api.ws}}",
+        "{{nope.x.y}}",
+        "{{api}}",
+        "{{shared.postgres.user}}",
+        "{{shared.postgres.pass}}",
+        "{{shared.postgres.host}}",
+        "{{shared.postgres.port}}",
+        "{{shared.postgres.url}}",
+        "{{shared.postgres}}",
+        "{{shared.postgres.slot}}",
+        "{{shared.cache.url}}",
+        "{{shared.cache.port}}",
+        "{{shared.search.user}}",
+        "{{shared.missing.url}}",
+        "{{shared}}",
+        "{{db.main}}",
+        "{{db.main.url}}",
+        "{{db.other}}",
+        "{{db}}",
+        "{{slot.cache}}",
+        "{{slot}}",
+        "{{secret.API_KEY}}",
+        "DB={{db.main}}?x=1",
+        "{{ db.main | upper }}",
+        "a {{branch}} b {{unterminated"
+      ]
+    },
+    {
+      "branch": "feat/Add_Login",
+      "ws_key": "main:feat/Add_Login",
+      "env_name": "staging",
+      "db_names": {},
+      "inputs": [
+        "{{backend.api.url}}",
+        "{{backend.api.ws}}",
+        "{{backend.api.path}}",
+        "{{backend.api.port}}",
+        "{{web.app.url}}",
+        "{{api.server.host}}",
+        "{{branch.host}}",
+        "{{db.main.url}}",
+        "{{backend.api.host}}",
+        "{{api.server.host}}",
+        "{{api.server.port}}",
+        "{{api.server.url}}"
+      ]
+    },
+    {
+      "branch": "main",
+      "ws_key": "main:main",
+      "env_name": "local",
+      "db_names": {
+        "main": "acme"
+      },
+      "inputs": [
+        "{{backend.api.url}}",
+        "{{api.server.host}}",
+        "{{db.main.url}}"
+      ]
+    }
+  ],
+  "branches": [
+    "main",
+    "proj-855",
+    "PROJ-855",
+    "feat/add-login",
+    "bss_send_confirm",
+    "-weird-/",
+    "proj-1147-add-log",
+    "Feature/\u00dcBER-cool",
+    "a/b/c",
+    "x-",
+    "proj-1069-rent-manager-let-partners-map-their-own-custom-fields-udfs-to-acme-fields"
+  ],
+  "shared_ports": [
+    [
+      "acme",
+      "postgres"
+    ],
+    [
+      "acme",
+      "redis"
+    ],
+    [
+      "demo",
+      "postgres#1"
+    ],
+    [
+      "\u00fc",
+      "x"
+    ]
+  ],
+  "diverges": [
+    {
+      "context": 1,
+      "input": "{{backend.api.port}}",
+      "value": "443"
+    },
+    {
+      "context": 1,
+      "input": "{{backend.api.host}}",
+      "value": "api.staging.example"
+    },
+    {
+      "context": 1,
+      "input": "{{api.server.host}}",
+      "value": "10.0.0.5"
+    },
+    {
+      "context": 1,
+      "input": "{{api.server.port}}",
+      "value": "9000"
+    }
+  ]
+}
