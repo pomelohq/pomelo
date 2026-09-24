@@ -21,6 +21,7 @@ auto_update = { path = "../auto_update" }
 pom_core = { path = "../pom_core" }
 pom_paths = { path = "../pom_paths" }
 pom_ptyhost = { path = "../pom_ptyhost" }
+pom_env = { path = "../pom_env" }
 winit.workspace = true
 anyhow.workspace = true
 

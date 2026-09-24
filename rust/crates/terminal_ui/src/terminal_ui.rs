@@ -15,7 +15,7 @@ use ui::{div, label, Node, Rect, Rgba, ThemeColors};
 
 pub use contrast::{apca_contrast, ensure_minimum_contrast};
 pub use item::TerminalItem;
-pub use panel::TerminalPanel;
+pub use panel::{HolderScope, TerminalPanel};
 
 pub const FONT_SIZE: f32 = 15.0;
 /// The "standard" terminal line height (the comfortable one is 1.618).

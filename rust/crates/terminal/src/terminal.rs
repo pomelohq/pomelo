@@ -1,6 +1,7 @@
 //! Terminal core: a shell running on a PTY, its output parsed by a VT emulator into a scrollback grid, and a
 //! snapshot of that grid for a view to draw. No rendering here; `terminal_ui` draws `Content`.
 
+mod holder;
 pub mod hyperlinks;
 pub mod input;
 pub mod mouse;
@@ -25,6 +26,7 @@ use alacritty_terminal::tty;
 pub use alacritty_terminal::term::cell::Flags;
 pub use alacritty_terminal::term::TermMode;
 pub use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
+pub use holder::HolderOptions;
 pub use hyperlinks::{HyperlinkMatch, PathWithPosition};
 pub use input::{Keystroke, Modifiers, TerminalAction};
 pub use mouse::{GridPoint, MouseButton, Side};
@@ -250,6 +252,7 @@ pub struct TerminalOptions {
     pub env: HashMap<String, String>,
     pub scroll_history: usize,
     pub cursor_shape: CursorShape,
+    pub holder: Option<HolderOptions>,
 }
 
 impl Default for TerminalOptions {
@@ -260,13 +263,39 @@ impl Default for TerminalOptions {
             env: HashMap::new(),
             scroll_history: DEFAULT_SCROLL_HISTORY_LINES,
             cursor_shape: CursorShape::Block,
+            holder: None,
+        }
+    }
+}
+
+enum Backend {
+    Local(Notifier),
+    Holder(holder::HolderBackend),
+}
+
+impl Backend {
+    fn notify(&mut self, bytes: impl Into<Cow<'static, [u8]>>) {
+        match self {
+            Backend::Local(notifier) => notifier.notify(bytes),
+            Backend::Holder(holder) => holder.write(&bytes.into()),
+        }
+    }
+
+    fn resize(&mut self, size: WindowSize) {
+        match self {
+            Backend::Local(notifier) => {
+                if let Err(error) = notifier.0.send(Msg::Resize(size)) {
+                    eprintln!("terminal resize: {error}");
+                }
+            }
+            Backend::Holder(holder) => holder.resize(size),
         }
     }
 }
 
 pub struct Terminal {
     term: Arc<FairMutex<Term<Listener>>>,
-    pty: Notifier,
+    pty: Backend,
     events: mpsc::Receiver<BackendEvent>,
     pending_resize: Option<TerminalBounds>,
     pending_scroll_to_bottom: bool,
@@ -322,6 +351,41 @@ impl Terminal {
         };
         let bounds = TerminalBounds::default();
         let term = Arc::new(FairMutex::new(Term::new(config, &bounds, listener.clone())));
+        if let Some(holder_options) = options.holder {
+            let env: Vec<(String, String)> = terminal_env(options.env).into_iter().collect();
+            let argv = match options.shell {
+                Some((program, args)) => std::iter::once(program).chain(args).collect(),
+                None => login_shell_argv(),
+            };
+            let cwd = options
+                .working_directory
+                .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+                .unwrap_or_else(|| PathBuf::from("/"));
+            let size = bounds.window_size();
+            let spawn = pom_ptyhost::SpawnRequest {
+                binary: &holder_options.binary,
+                name: &holder_options.name,
+                cwd: &cwd,
+                cols: size.num_cols,
+                rows: size.num_lines,
+                argv: &argv,
+                env: &env,
+            };
+            let backend = holder::HolderBackend::attach(
+                holder_options.clone(),
+                spawn,
+                term.clone(),
+                listener,
+            )?;
+            let process = pty_info::PtyProcessInfo::for_shell(backend.shell_pid.unwrap_or(0));
+            return Ok(Self::with_backend(
+                term,
+                Backend::Holder(backend),
+                events,
+                bounds,
+                process,
+            ));
+        }
         let pty_options = tty::Options {
             shell: options
                 .shell
@@ -338,7 +402,23 @@ impl Terminal {
         let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
         let pty = Notifier(event_loop.channel());
         event_loop.spawn();
-        Ok(Self {
+        Ok(Self::with_backend(
+            term,
+            Backend::Local(pty),
+            events,
+            bounds,
+            process,
+        ))
+    }
+
+    fn with_backend(
+        term: Arc<FairMutex<Term<Listener>>>,
+        pty: Backend,
+        events: mpsc::Receiver<BackendEvent>,
+        bounds: TerminalBounds,
+        process: pty_info::PtyProcessInfo,
+    ) -> Self {
+        Self {
             term,
             pty,
             events,
@@ -361,7 +441,32 @@ impl Terminal {
             selecting: false,
             mouse_down_position: None,
             last_mouse: None,
-        })
+        }
+    }
+
+    pub fn holder(&self) -> Option<&HolderOptions> {
+        match &self.pty {
+            Backend::Holder(holder) => Some(&holder.options),
+            Backend::Local(_) => None,
+        }
+    }
+
+    pub fn terminate(&mut self) {
+        if let Backend::Holder(holder) = &self.pty {
+            let (dir, name) = (holder.options.dir.clone(), holder.options.name.clone());
+            holder.detach();
+            std::thread::spawn(move || {
+                if let Err(error) = dir.kill_holder(&name) {
+                    eprintln!("terminal holder kill: {error}");
+                }
+            });
+        }
+    }
+
+    pub fn make_primary(&mut self) {
+        if let Backend::Holder(holder) = &mut self.pty {
+            holder.make_primary();
+        }
     }
 
     pub fn content(&self) -> &Content {
@@ -762,9 +867,7 @@ impl Terminal {
             return false;
         };
         self.content.bounds = bounds;
-        if let Err(error) = self.pty.0.send(Msg::Resize(bounds.window_size())) {
-            eprintln!("terminal resize: {error}");
-        }
+        self.pty.resize(bounds.window_size());
         self.term.lock().resize(bounds);
         self.content_version += 1;
         self.snapshot();
@@ -939,10 +1042,23 @@ fn backend_side(side: Side) -> BackendSide {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        if let Err(error) = self.pty.0.send(Msg::Shutdown) {
-            eprintln!("terminal shutdown: {error}");
+        match &self.pty {
+            Backend::Local(notifier) => {
+                if let Err(error) = notifier.0.send(Msg::Shutdown) {
+                    eprintln!("terminal shutdown: {error}");
+                }
+            }
+            Backend::Holder(holder) => holder.detach(),
         }
     }
+}
+
+fn login_shell_argv() -> Vec<String> {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string());
+    vec![shell, "-l".to_string()]
 }
 
 #[cfg(test)]
@@ -994,6 +1110,65 @@ mod tests {
             shell: Some(("/bin/sh".into(), vec!["-c".into(), script.into()])),
             ..TerminalOptions::default()
         }
+    }
+
+    #[test]
+    fn a_holder_backed_terminal_survives_being_dropped() -> anyhow::Result<()> {
+        let temp = tempfile::Builder::new().prefix("pty").tempdir_in("/tmp")?;
+        let dir = pom_ptyhost::SocketDir::new(temp.path());
+        let session = pom_ptyhost::listen_and_serve(
+            &dir,
+            "appsh-test",
+            pom_ptyhost::StartOptions {
+                argv: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "printf held-shell; exec cat".into(),
+                ],
+                dir: PathBuf::from("/"),
+                env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+                cols: 80,
+                rows: 24,
+                on_exit: None,
+            },
+        )?;
+        let options = || TerminalOptions {
+            holder: Some(HolderOptions {
+                dir: dir.clone(),
+                name: "appsh-test".into(),
+                binary: PathBuf::from("/nonexistent"),
+            }),
+            ..TerminalOptions::default()
+        };
+        let host = host();
+        let mut terminal = Terminal::spawn(options(), Arc::new(|| {}))?;
+        assert!(terminal
+            .holder()
+            .is_some_and(|holder| holder.name == "appsh-test"));
+        wait_for(&mut terminal, &host, |t, _| {
+            t.screen_text().contains("held-shell")
+        });
+        terminal.input(&b"typed-through\n"[..]);
+        wait_for(&mut terminal, &host, |t, _| {
+            t.screen_text().contains("typed-through")
+        });
+        drop(terminal);
+
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            session.exit_status().is_none(),
+            "dropping the terminal only detaches"
+        );
+        let mut reattached = Terminal::spawn(options(), Arc::new(|| {}))?;
+        wait_for(&mut reattached, &host, |t, _| {
+            let screen = t.screen_text();
+            screen.contains("held-shell") && screen.contains("typed-through")
+        });
+        session.kill();
+        wait_for(&mut reattached, &host, |t, outcome| {
+            outcome.close || t.child_exit().is_some()
+        });
+        Ok(())
     }
 
     #[test]

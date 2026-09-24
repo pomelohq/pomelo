@@ -15,7 +15,7 @@ pub struct ProcessInfo {
 pub(crate) struct PtyProcessInfo {
     system: System,
     refresh_kind: ProcessRefreshKind,
-    pty_fd: i32,
+    pty_fd: Option<i32>,
     shell_pid: u32,
     last_foreground: Option<Pid>,
     pub(crate) current: Option<ProcessInfo>,
@@ -23,6 +23,14 @@ pub(crate) struct PtyProcessInfo {
 
 impl PtyProcessInfo {
     pub(crate) fn new(pty_fd: i32, shell_pid: u32) -> Self {
+        Self::with_source(Some(pty_fd), shell_pid)
+    }
+
+    pub(crate) fn for_shell(shell_pid: u32) -> Self {
+        Self::with_source(None, shell_pid)
+    }
+
+    fn with_source(pty_fd: Option<i32>, shell_pid: u32) -> Self {
         Self {
             system: System::new(),
             refresh_kind: ProcessRefreshKind::nothing()
@@ -39,7 +47,10 @@ impl PtyProcessInfo {
 
     /// The PTY's foreground process group leader, or the shell before one is set.
     fn foreground_pid(&self) -> Option<Pid> {
-        let pid = unsafe { libc::tcgetpgrp(self.pty_fd) };
+        let pid = match self.pty_fd {
+            Some(fd) => unsafe { libc::tcgetpgrp(fd) },
+            None => terminal_foreground_group(self.shell_pid),
+        };
         if pid > 0 {
             return Some(Pid::from_u32(pid as u32));
         }
@@ -83,6 +94,28 @@ impl PtyProcessInfo {
     }
 }
 
+fn terminal_foreground_group(pid: u32) -> i32 {
+    if pid == 0 {
+        return 0;
+    }
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    if written == size {
+        info.e_tpgid as i32
+    } else {
+        0
+    }
+}
+
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
@@ -118,6 +151,30 @@ pub fn title_for(info: &ProcessInfo, truncate_parts: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreground_group_is_read_from_the_shell_pid() -> std::io::Result<()> {
+        let session = pom_ptyhost::Session::start(pom_ptyhost::StartOptions {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            dir: PathBuf::from("/"),
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cols: 80,
+            rows: 24,
+            on_exit: None,
+        })?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let pid = session.pid();
+        assert_eq!(terminal_foreground_group(pid), pid as i32);
+        let mut info = PtyProcessInfo::for_shell(pid);
+        assert!(info.refresh());
+        assert!(info
+            .current
+            .as_ref()
+            .is_some_and(|process| process.name.contains("sleep") || process.name == "sh"));
+        session.kill();
+        assert_eq!(terminal_foreground_group(0), 0);
+        Ok(())
+    }
 
     #[test]
     fn titles_join_directory_and_command() {
