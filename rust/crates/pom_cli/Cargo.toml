@@ -1,0 +1,25 @@
+[package]
+name = "pom_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The `pom` command line: start, stop and inspect a workspace's services from a terminal."
+
+[lib]
+path = "src/pom_cli.rs"
+
+[[bin]]
+name = "pom"
+path = "src/bin/pom.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_core = { path = "../pom_core" }
+pom_layout = { path = "../pom_layout" }
+pom_paths = { path = "../pom_paths" }
+pom_ports = { path = "../pom_ports" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+pom_services = { path = "../pom_services" }
+
+[dev-dependencies]
+tempfile = "3"

@@ -32,6 +32,7 @@ members = [
     "crates/pom_ports",
     "crates/pom_services",
     "crates/services_ui",
+    "crates/pom_cli",
 ]
 
 [workspace.package]
