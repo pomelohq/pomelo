@@ -87,6 +87,28 @@ fn terminal_view(
     }
 }
 
+/// The Git panel for the active workspace: every repo checked out there, against its default branch.
+fn git_panel(project: &pom_core::Project) -> Box<dyn workspace::SidePanelView> {
+    let sources = project
+        .active_workspace()
+        .map(|workspace| {
+            workspace
+                .repos
+                .iter()
+                .map(|repo| git_ui::RepoSource {
+                    name: repo.name.clone(),
+                    root: repo.path.clone(),
+                    default_branch: project.config.as_ref().map_or_else(
+                        || "main".to_string(),
+                        |config| config.default_branch_for(&repo.name).to_string(),
+                    ),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Box::new(git_ui::GitPanel::new(sources, Arc::new(ui::wake)))
+}
+
 fn project_info(project: &pom_core::Project) -> workspace::ProjectInfo {
     workspace::ProjectInfo {
         name: project.session.clone(),
@@ -687,10 +709,13 @@ impl App {
         let files: Option<Box<dyn workspace::FunctionView>> = workspace_root.clone().map(|root| {
             Box::new(files_ui::FilesView::new(root)) as Box<dyn workspace::FunctionView>
         });
-        let side_panels: Vec<Box<dyn workspace::SidePanelView>> = match (&main.services, project) {
-            (Some(services), Some(project)) => vec![services.panel(project)],
-            _ => Vec::new(),
-        };
+        let mut side_panels: Vec<Box<dyn workspace::SidePanelView>> = Vec::new();
+        if let (Some(services), Some(project)) = (&main.services, project) {
+            side_panels.push(services.panel(project));
+        }
+        if let Some(project) = project {
+            side_panels.push(git_panel(project));
+        }
         let terminal_root = workspace_root.unwrap_or_else(home_dir);
         let workspace_key = project.map_or_else(
             || "home".to_string(),

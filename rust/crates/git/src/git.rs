@@ -9,7 +9,11 @@ use std::process::{Command, Stdio};
 use imara_diff::{sources::lines, Algorithm, Diff, InternedInput};
 
 mod blame;
+mod branch_changes;
 pub use blame::{blame, entry_for_row, inline_text, relative_timestamp, BlameEntry};
+pub use branch_changes::{
+    branch_changes, discard_uncommitted, ChangeStatus, FileChange, RepoChanges,
+};
 
 /// What the buffer is compared against. `None` means the file has no version there (new, or not staged).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

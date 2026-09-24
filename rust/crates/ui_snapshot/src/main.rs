@@ -13,6 +13,58 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(settings_ui::APPEARANCE);
 
+    // With GITPANEL=<repo dir>, render the Git panel for that repository (against `main`).
+    if let Ok(repo) = std::env::var("GITPANEL") {
+        use workspace::SidePanelView;
+        let (width, height) = (360.0_f32, 420.0_f32);
+        let mut panel = git_ui::GitPanel::new(
+            vec![git_ui::RepoSource {
+                name: std::path::Path::new(&repo)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                root: repo.clone().into(),
+                default_branch: "main".into(),
+            }],
+            std::sync::Arc::new(|| {}),
+        );
+        panel.render(width, height);
+        panel.wait_for_scan();
+        if let Ok(hover) = std::env::var("HOVERROW") {
+            if let Ok(row) = hover.parse::<u64>() {
+                panel.set_hover(Some(
+                    workspace::side_panel_base(workspace::PaneKind::Git) + row * 4,
+                ));
+            }
+        }
+        let node = panel.render(width, height);
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        ui::set_ui_text_scale(2.0);
+        let painted = ui::render(
+            &ui::div()
+                .bg(ui::theme().panel_background)
+                .child(node)
+                .into(),
+            ui::Rect::new(0.0, 0.0, width * 2.0, height * 2.0, ui::Rgba::TRANSPARENT),
+        );
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().panel_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     let scale = 2.0_f32;
     let (lw, lh) = match std::env::var("MAINVIEW") {
         Ok(_) => (1200.0_f32, 780.0_f32),

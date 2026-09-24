@@ -101,6 +101,9 @@ pub enum IconKind {
     Play,
     Stop,
     RotateCw,
+    SquarePlus,
+    SquareDot,
+    SquareMinus,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -303,6 +306,8 @@ pub struct Label {
     pub wrap: f32,
     /// Shrink when its row overflows and cut the text with a trailing "...".
     pub truncate: bool,
+    /// Cut from the front instead ("...rest"), keeping the end of a path visible.
+    pub truncate_start: bool,
 }
 
 pub fn div() -> Div {
@@ -335,6 +340,7 @@ pub fn label(text: impl Into<String>) -> Label {
         weight: crate::ui_font_weight(),
         wrap: 0.0,
         truncate: false,
+        truncate_start: false,
     }
 }
 
@@ -360,6 +366,11 @@ impl Label {
     }
     pub fn truncate(mut self) -> Self {
         self.truncate = true;
+        self
+    }
+    pub fn truncate_start(mut self) -> Self {
+        self.truncate = true;
+        self.truncate_start = true;
         self
     }
     /// Wrap to `w` design px across multiple lines instead of a single line.
@@ -809,7 +820,9 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
         }
         Node::Label(l) => {
             let (lw, lh) = l.intrinsic();
-            let text = if l.truncate && lw > area.w + 0.5 {
+            let text = if l.truncate_start && lw > area.w + 0.5 {
+                truncate_start_to_width(&l.text, area.w, l.size, l.mono, l.weight)
+            } else if l.truncate && lw > area.w + 0.5 {
                 truncate_to_width(&l.text, area.w, l.size, l.mono, l.weight)
             } else {
                 l.text.clone()
@@ -1031,6 +1044,24 @@ fn truncate_to_width(text: &str, width: f32, size: f32, mono: bool, weight: u16)
     }
     let end = boundaries.get(low).copied().unwrap_or(text.len());
     format!("{}{TRUNCATION_MARK}", text[..end].trim_end())
+}
+
+fn truncate_start_to_width(text: &str, width: f32, size: f32, mono: bool, weight: u16) -> String {
+    let measure = |candidate: &str| crate::measure_text_width(candidate, size, mono, weight);
+    let boundaries: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
+    // The fewest leading characters to drop so the rest plus the mark fits.
+    let (mut low, mut high) = (0usize, boundaries.len());
+    while low < high {
+        let middle = (low + high) / 2;
+        let start = boundaries.get(middle).copied().unwrap_or(text.len());
+        if measure(&format!("{TRUNCATION_MARK}{}", text[start..].trim_start())) <= width {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    let start = boundaries.get(low).copied().unwrap_or(text.len());
+    format!("{TRUNCATION_MARK}{}", text[start..].trim_start())
 }
 
 fn align_off(container: f32, item: f32, center: bool) -> f32 {

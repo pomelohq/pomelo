@@ -14,5 +14,6 @@ ui = { path = "../ui" }
 settings = { path = "../settings" }
 settings_ui = { path = "../settings_ui" }
 workspace = { path = "../workspace" }
+git_ui = { path = "../git_ui" }
 anyhow.workspace = true
 png = "0.17"
