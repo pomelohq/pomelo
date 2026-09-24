@@ -4125,6 +4125,8 @@ struct Row {
 pub struct FilesView {
     root: PathBuf,
     tree: Vec<FileNode>,
+    /// The tree walk still running off the UI thread; the tree fills in as it reports.
+    scan: Option<files::BackgroundScan>,
     expanded: HashSet<String>,
     /// The editor area's split panes and their tabs.
     panes: PaneGroupView,
@@ -4171,13 +4173,41 @@ pub struct FilesView {
 pub(crate) use workspace::syntax_theme;
 
 impl FilesView {
+    /// Opens at once with an empty tree; the tree fills in from a background walk so a large workspace
+    /// never stalls the window.
     pub fn new(root: PathBuf) -> Self {
+        let scan = files::BackgroundScan::start(root.clone(), std::sync::Arc::new(ui::wake));
+        let mut view = Self::with_tree(root, Vec::new());
+        view.scan = Some(scan);
+        view
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scanned(root: PathBuf) -> Self {
         let tree = files::build_tree(&files::list(&root));
+        Self::with_tree(root, tree)
+    }
+
+    /// Take the newest scan progress into the tree; returns whether the tree changed.
+    fn apply_scan(&mut self) -> bool {
+        let Some(update) = self.scan.as_ref().and_then(files::BackgroundScan::latest) else {
+            return false;
+        };
+        if !update.scanning {
+            self.scan = None;
+        }
+        self.tree = files::build_tree(&update.entries);
+        self.flat_dirty = true;
+        true
+    }
+
+    fn with_tree(root: PathBuf, tree: Vec<FileNode>) -> Self {
         let lsp =
             (!cfg!(test)).then(|| lsp::LspStore::new(root.clone(), std::sync::Arc::new(ui::wake)));
         Self {
             root,
             tree,
+            scan: None,
             expanded: HashSet::new(),
             panes: PaneGroupView::new(PaneGroupConfig {
                 id_base: FUNC_VIEW_BASE,
@@ -5112,6 +5142,7 @@ impl FunctionView for FilesView {
     }
 
     fn render_tree(&mut self) -> Option<workspace::TreePanel> {
+        self.apply_scan();
         // Left: the file tree. Rebuild the flattened visible rows + the click-id mapping.
         // Re-flatten only when the tree structure changed (expand/collapse), not on scroll.
         if self.flat_dirty {
@@ -5738,6 +5769,93 @@ mod line_layout_tests {
     use super::*;
 
     #[test]
+    fn scrolling_an_editor_past_its_end_leaves_the_tree_alone() {
+        let root = std::env::temp_dir().join(format!("pomelo-scroll-chain-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        for index in 0..200 {
+            std::fs::write(root.join(format!("file{index:03}.txt")), "x\n").expect("file");
+        }
+        let mut files = FilesView::scanned(root.clone());
+        files.open_path("file000.txt");
+        let mut app = ui::Application::new();
+        let (handle, entity) = app.open_raw_window(
+            ui::WindowOptions {
+                width: 1200.0,
+                height: 800.0,
+                scale: 2.0,
+                ..Default::default()
+            },
+            move |_| {
+                workspace::WorkspaceView::new(workspace::Layout {
+                    project: Some(workspace::ProjectInfo::default()),
+                    files_view: Some(Box::new(files)),
+                    ..Default::default()
+                })
+            },
+        );
+        app.draw(handle);
+        let (center, tree) = {
+            let view = entity.read(app.app());
+            let layout = view.layout();
+            (
+                layout.center_region(1200.0, 800.0),
+                layout.tree_region(1200.0, 800.0),
+            )
+        };
+        let tree_scroll = |app: &ui::Application| {
+            entity
+                .read(app.app())
+                .layout()
+                .files_view
+                .as_ref()
+                .map_or(0.0, |view| view.scroll_offset())
+        };
+        for _ in 0..20 {
+            entity.update(app.app_mut(), |view, _| {
+                view.scroll(
+                    center.x + center.w / 2.0,
+                    center.y + center.h / 2.0,
+                    0.0,
+                    -200.0,
+                )
+            });
+        }
+        assert_eq!(
+            tree_scroll(&app),
+            0.0,
+            "the editor's overscroll moved the tree"
+        );
+        entity.update(app.app_mut(), |view, _| {
+            view.scroll(tree.x + tree.w / 2.0, tree.y + tree.h / 2.0, 0.0, -200.0)
+        });
+        assert!(
+            tree_scroll(&app) > 0.0,
+            "scrolling over the tree scrolls it"
+        );
+        if let Err(error) = std::fs::remove_dir_all(&root) {
+            eprintln!("leaving {}: {error}", root.display());
+        }
+    }
+
+    #[test]
+    fn new_view_opens_empty_and_fills_its_tree_from_the_scan() {
+        let root = std::env::temp_dir().join(format!("pomelo-scan-view-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("dirs");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("file");
+        let mut view = FilesView::new(root.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while view.scan.is_some() && std::time::Instant::now() < deadline {
+            view.render_tree();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(view.scan.is_none(), "scan finished");
+        assert_eq!(view.tree, FilesView::scanned(root.clone()).tree);
+        if let Err(error) = std::fs::remove_dir_all(&root) {
+            eprintln!("leaving {}: {error}", root.display());
+        }
+    }
+
+    #[test]
     fn display_index_expands_tabs_and_multibyte() {
         let b = EditorBuffer::from_text("\tab\u{e9}c\n");
         assert_eq!(FileItem::display_index(&b, 0, 0), 0);
@@ -6062,7 +6180,7 @@ mod go_to_line_tests {
     use super::*;
 
     fn view_with(text: &str) -> FilesView {
-        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
         item.set_body_height(4.0 * EDIT_LINE_H);
         if let Member::Leaf(pane) = &mut view.panes.group {
@@ -6109,7 +6227,7 @@ mod navigation_tests {
     use super::*;
 
     fn view_with(text: &str) -> FilesView {
-        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
         item.set_body_height(4.0 * EDIT_LINE_H);
         if let Member::Leaf(pane) = &mut view.panes.group {
@@ -6201,7 +6319,7 @@ mod command_palette_tests {
     use super::*;
 
     fn view_with(text: &str) -> FilesView {
-        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
         item.set_body_height(4.0 * EDIT_LINE_H);
         if let Member::Leaf(pane) = &mut view.panes.group {
@@ -6258,7 +6376,7 @@ mod outline_tests {
     use super::*;
 
     fn rust_view(text: &str) -> FilesView {
-        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.rs", Some(text.into()));
         item.set_body_height(4.0 * EDIT_LINE_H);
         item.refresh();
@@ -6912,7 +7030,7 @@ mod self_painted_item_tests {
 
     #[test]
     fn center_items_paint_take_keys_and_close_themselves() {
-        let mut view = FilesView::new(PathBuf::from("/nonexistent"));
+        let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
         assert!(view.editor_key(EditKey::NewCenterTerminal, false));
         assert_eq!(
             view.take_request(),

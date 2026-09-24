@@ -248,13 +248,14 @@ impl Panel for ProjectPanel {
                 .gap(8.0)
                 .items_center()
                 .rounded(4.0)
+                .on_click(crate::WORKSPACE_ROW_BASE + i as u64)
                 .bg(if i == self.current {
                     theme().element_selected
                 } else {
                     Rgba::TRANSPARENT
                 })
                 .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(dot))
-                .child(label(name.clone()).color(if i == self.current {
+                .child(label(name.clone()).truncate().color(if i == self.current {
                     theme().text
                 } else {
                     theme().text_muted
@@ -361,5 +362,28 @@ mod tests {
         assert!(text.contains("WORKSPACES"));
         assert!(text.contains("api"));
         assert!(text.contains("web"));
+        assert!(painted
+            .hits
+            .iter()
+            .any(|(_, id)| *id == crate::WORKSPACE_ROW_BASE + 1));
+    }
+
+    #[test]
+    fn long_workspace_names_stay_inside_the_panel() {
+        let mut p = ProjectPanel::default();
+        let long = "proj-101-a-very-long-branch-name-that-does-not-fit-in-the-dock".to_string();
+        p.sync(&[("main".into(), false), (long.clone(), false)], 0);
+        let painted = ui::render(
+            &p.render(),
+            ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),
+        );
+        let row = painted
+            .texts
+            .iter()
+            .find(|t| t.text.starts_with("proj-101"))
+            .expect("long row");
+        assert!(row.text.ends_with("...") && row.text.len() < long.len());
+        let width = ui::measure_text_width(&row.text, row.size, false, row.weight);
+        assert!(row.x + width <= 240.0, "row text ends at {}", row.x + width);
     }
 }

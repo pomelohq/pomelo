@@ -757,7 +757,7 @@ mod tests {
     fn renames_reach_tabs_in_the_other_pane_group() {
         let root = std::env::temp_dir().join(format!("pomelo-tree-other-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).unwrap();
-        let mut view = FilesView::new(root.clone());
+        let mut view = FilesView::scanned(root.clone());
         let mut other = PaneGroupView::new(workspace::pane_group_view::PaneGroupConfig {
             id_base: 0,
             show_nav: false,

@@ -79,6 +79,7 @@ fn project_info(project: &pom_core::Project) -> workspace::ProjectInfo {
             .iter()
             .map(|workspace| workspace.branch.clone())
             .collect(),
+        active: project.active_branch().to_string(),
     }
 }
 
@@ -274,8 +275,11 @@ struct MainWindow {
     entity: ui::Entity<workspace::WorkspaceView>,
     cursor: (f64, f64),
     dirty: bool,
+    last_drawn: Instant,
     project: Option<pom_core::Project>,
     watcher: Option<pom_core::ConfigWatcher>,
+    /// The project's other workspaces, keyed by folder, kept alive while this one has the window.
+    parked: std::collections::HashMap<std::path::PathBuf, workspace::ParkedWorkspace>,
 }
 
 #[derive(Default)]
@@ -355,8 +359,10 @@ impl App {
                 entity,
                 cursor: (0.0, 0.0),
                 dirty: false,
+                last_drawn: Instant::now(),
                 project: None,
                 watcher: None,
+                parked: std::collections::HashMap::new(),
             },
         );
         id
@@ -375,22 +381,34 @@ impl App {
                 .map_err(|error| eprintln!("config watch failed: {error}"))
                 .ok()
         });
-        let info = project.as_ref().map(project_info);
-        let problem = project.as_ref().and_then(config_problem);
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.project = project;
+            main.watcher = watcher;
+            main.parked.clear();
+        }
+        self.install_project_views(id);
+        self.refresh_sessions();
+    }
+
+    /// Root the window's file tree and terminal in its active workspace (or show the welcome page).
+    fn install_project_views(&mut self, id: WindowId) {
+        let Some(main) = self.mains.get(&id) else {
+            return;
+        };
+        let project = main.project.as_ref();
+        let info = project.map(project_info);
+        let problem = project.and_then(config_problem);
         let config_path = project
-            .as_ref()
             .map(|project| project.config_path.clone())
             .unwrap_or_default();
-        let files: Option<Box<dyn workspace::FunctionView>> = project.as_ref().map(|project| {
-            Box::new(files_ui::FilesView::new(project.root.clone()))
-                as Box<dyn workspace::FunctionView>
+        let workspace_root = project.map(pom_core::Project::active_root);
+        let files: Option<Box<dyn workspace::FunctionView>> = workspace_root.clone().map(|root| {
+            Box::new(files_ui::FilesView::new(root)) as Box<dyn workspace::FunctionView>
         });
-        let terminal_root = project
-            .as_ref()
-            .map_or_else(home_dir, |project| project.root.clone());
-        let title = project.as_ref().map_or_else(
+        let terminal_root = workspace_root.unwrap_or_else(home_dir);
+        let title = project.map_or_else(
             || "Pomelo".to_string(),
-            |project| format!("{} - Pomelo", project.session),
+            |project| format!("{} - {} - Pomelo", project.session, project.active_branch()),
         );
         self.with_workspace_view(id, |view, _| {
             view.set_project(info, files, Some(terminal_view(terminal_root)));
@@ -398,11 +416,54 @@ impl App {
         });
         if let Some(main) = self.mains.get_mut(&id) {
             main.window.set_title(&title);
-            main.project = project;
-            main.watcher = watcher;
             main.dirty = true;
         }
-        self.refresh_sessions();
+    }
+
+    fn activate_workspace(&mut self, id: WindowId, index: usize) {
+        let state = pom_paths::StateDir::from_env();
+        let Some(project) = self.mains.get_mut(&id).and_then(|m| m.project.as_mut()) else {
+            return;
+        };
+        let Some(branch) = project.workspaces.get(index).map(|w| w.branch.clone()) else {
+            return;
+        };
+        let leaving = project.active_root();
+        match project.set_active(&branch, &state) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => {
+                self.with_workspace_view(id, |view, _| {
+                    view.show_toast(format!("Failed to switch workspace: {error}"), None)
+                });
+                return;
+            }
+        }
+        let Some(parked) = self.with_workspace_view(id, |view, _| view.park()) else {
+            return;
+        };
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        main.parked.insert(leaving, parked);
+        let Some(project) = main.project.as_ref() else {
+            return;
+        };
+        let entering = project.active_root();
+        let Some(parked) = main.parked.remove(&entering) else {
+            self.install_project_views(id);
+            return;
+        };
+        let info = project_info(project);
+        let problem = config_problem(project);
+        let config_path = project.config_path.clone();
+        let title = format!("{} - {} - Pomelo", project.session, project.active_branch());
+        main.window.set_title(&title);
+        main.dirty = true;
+        self.with_workspace_view(id, |view, _| {
+            view.resume(info, parked);
+            view.set_config_problem(problem, &config_path);
+        });
     }
 
     fn refresh_sessions(&mut self) {
@@ -424,26 +485,38 @@ impl App {
     fn reload_changed_projects(&mut self) {
         let state = pom_paths::StateDir::from_env();
         let mut updates = Vec::new();
+        let mut rerooted = Vec::new();
         for (id, main) in self.mains.iter_mut() {
             let changed = main.watcher.as_ref().is_some_and(|w| w.take_changed());
             let Some(project) = main.project.as_mut().filter(|_| changed) else {
                 continue;
             };
-            if project.reload(&state) {
-                updates.push((
-                    *id,
-                    project_info(project),
-                    config_problem(project),
-                    project.config_path.clone(),
-                ));
-                main.dirty = true;
+            let root_before = project.active_root();
+            if !project.reload(&state) {
+                continue;
             }
+            main.dirty = true;
+            // The active workspace was removed (or main moved into its folder): follow it.
+            main.parked.retain(|root, _| root.is_dir());
+            if project.active_root() != root_before {
+                rerooted.push(*id);
+                continue;
+            }
+            updates.push((
+                *id,
+                project_info(project),
+                config_problem(project),
+                project.config_path.clone(),
+            ));
         }
         for (id, info, problem, config_path) in updates {
             self.with_workspace_view(id, |view, _| {
                 view.update_project(info);
                 view.set_config_problem(problem, &config_path);
             });
+        }
+        for id in rerooted {
+            self.install_project_views(id);
         }
     }
 
@@ -515,6 +588,7 @@ impl App {
         let Some(m) = self.mains.get_mut(&id) else {
             return;
         };
+        m.last_drawn = Instant::now();
         let (w, h) = m.ui.size();
         let scale = m.window.scale_factor() as f32;
         app.resize(m.handle, w, h, scale);
@@ -777,6 +851,9 @@ impl App {
         if effects.open_settings {
             self.toggle_settings(event_loop);
         }
+        if let Some(index) = effects.activate_workspace {
+            self.activate_workspace(id, index);
+        }
         if let Some(m) = self.mains.get_mut(&id) {
             m.dirty = true;
         }
@@ -824,6 +901,7 @@ impl App {
 }
 
 const CARET_BLINK: Duration = Duration::from_millis(500);
+const FRAME_INTERVAL: Duration = Duration::from_micros(8_333);
 
 impl ApplicationHandler for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
@@ -836,20 +914,29 @@ impl ApplicationHandler for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
         self.deliver_prompt_answers();
         self.reload_changed_projects();
-        let windows: Vec<WindowId> = self.mains.keys().copied().collect();
-        for id in windows {
-            self.draw_main(id);
+        // Background work (language servers, terminals, git) can wake us hundreds of times a second: mark the
+        // windows and let `about_to_wait` draw each at most once per display frame.
+        for main in self.mains.values_mut() {
+            main.dirty = true;
         }
     }
 
-    // Blink the settings caret: while the settings window is open, wake on a timer to toggle caret visibility.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Coalesce per-window redraws (scroll/hover bursts) into one per iteration.
+        let now = Instant::now();
+        let mut next_frame: Option<Instant> = None;
         let dirty: Vec<WindowId> = self
             .mains
             .iter()
             .filter(|(_, m)| m.dirty)
-            .map(|(id, _)| *id)
+            .filter_map(|(id, m)| {
+                let due = m.last_drawn + FRAME_INTERVAL;
+                if now >= due {
+                    return Some(*id);
+                }
+                next_frame = Some(next_frame.map_or(due, |at| at.min(due)));
+                None
+            })
             .collect();
         for id in dirty {
             if let Some(m) = self.mains.get_mut(&id) {
@@ -884,7 +971,10 @@ impl ApplicationHandler for App {
         let needs_caret =
             self.settings_window.is_some() || self.any_menu_open() || !editor_windows.is_empty();
         if !needs_caret && ticking.is_empty() {
-            event_loop.set_control_flow(ControlFlow::Wait);
+            event_loop.set_control_flow(match next_frame {
+                Some(at) => ControlFlow::WaitUntil(at),
+                None => ControlFlow::Wait,
+            });
             return;
         }
         // Coalesce hot-path updates (scroll, hover) into one redraw per loop iteration so a burst of trackpad
@@ -924,6 +1014,9 @@ impl ApplicationHandler for App {
                 last + CARET_BLINK
             };
             wake = Some(wake.map_or(caret_wake, |w| w.min(caret_wake)));
+        }
+        if let Some(at) = next_frame {
+            wake = Some(wake.map_or(at, |w| w.min(at)));
         }
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),

@@ -34,7 +34,12 @@ fn main() -> anyhow::Result<()> {
             name: "myproject".into(),
             branch: "main".into(),
             config_path: "/projects/myproject/pom.yml".into(),
-            workspaces: vec!["main".into(), "feat-login".into()],
+            workspaces: vec![
+                "main".into(),
+                "feat-login".into(),
+                "proj-101-a-very-long-branch-name-for-the-workspace-panel".into(),
+            ],
+            active: "feat-login".into(),
         });
         let current = project.as_ref().map(|_| 0);
         let mut app = ui::Application::new();

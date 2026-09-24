@@ -446,7 +446,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.rs"), "fn main() { helper(); }\n").unwrap();
         std::fs::write(root.join("b.rs"), "\npub fn helper() {}\n").unwrap();
-        let mut view = FilesView::new(root.clone());
+        let mut view = FilesView::scanned(root.clone());
         let mut first = FileItem::new(
             root.clone(),
             "a.rs",
@@ -476,7 +476,7 @@ mod tests {
             std::env::temp_dir().join(format!("pomelo-definition-other-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("b.rs"), "\npub fn helper() {}\n").unwrap();
-        let mut view = FilesView::new(root.clone());
+        let mut view = FilesView::scanned(root.clone());
         let mut other = workspace::pane_group_view::PaneGroupView::new(
             workspace::pane_group_view::PaneGroupConfig {
                 id_base: 0,

@@ -33,22 +33,13 @@ pub struct HighlightRun {
 }
 
 pub struct Syntax {
-    language: Language,
-    query: Query,
-    /// Query capture index -> recognized theme key.
-    capture_keys: Vec<Option<&'static str>>,
+    queries: std::sync::Arc<LanguageQueries>,
     tree: Option<Tree>,
     /// Buffer version the tree's positions reflect (edits fed through `Tree::edit` up to here).
     interpolated_version: u64,
     /// Buffer version the tree was last actually parsed against.
     parsed_version: u64,
     background: Option<Receiver<(Option<Tree>, u64)>>,
-    indent: Option<IndentQuery>,
-    indent_regexes: IndentRegexes,
-    brackets: Option<BracketQuery>,
-    overrides: Option<OverrideQuery>,
-    outline: Option<OutlineQuery>,
-    injection_query: Option<InjectionQuery>,
     injections: Injections,
     /// Buffer version the injection layers' positions reflect.
     injections_interpolated: u64,
@@ -63,9 +54,37 @@ pub struct Syntax {
     synced: Option<(Tree, u64)>,
 }
 
-impl Syntax {
-    /// `None` for plain text or when the grammar's query fails to compile against the linked tree-sitter.
-    pub fn new(lang: Lang) -> Option<Self> {
+/// A language's grammar and compiled queries. Compiling them costs tens of milliseconds, so each language is
+/// compiled once and shared by every open file.
+struct LanguageQueries {
+    language: Language,
+    query: Query,
+    /// Query capture index -> recognized theme key.
+    capture_keys: Vec<Option<&'static str>>,
+    indent: Option<IndentQuery>,
+    indent_regexes: IndentRegexes,
+    brackets: Option<BracketQuery>,
+    overrides: Option<OverrideQuery>,
+    outline: Option<OutlineQuery>,
+    injection_query: Option<InjectionQuery>,
+}
+
+impl LanguageQueries {
+    fn for_lang(lang: Lang) -> Option<std::sync::Arc<LanguageQueries>> {
+        type Cache = std::sync::Mutex<
+            std::collections::HashMap<Lang, Option<std::sync::Arc<LanguageQueries>>>,
+        >;
+        static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+        let cache = CACHE.get_or_init(Default::default);
+        if let Some(compiled) = cache.lock().ok()?.get(&lang) {
+            return compiled.clone();
+        }
+        // Compiled outside the lock so a slow language doesn't hold up files of another.
+        let compiled = LanguageQueries::compile(lang).map(std::sync::Arc::new);
+        cache.lock().ok()?.entry(lang).or_insert(compiled).clone()
+    }
+
+    fn compile(lang: Lang) -> Option<LanguageQueries> {
         let (language, source) = grammar(lang)?;
         let query = Query::new(&language, source).ok()?;
         let capture_keys = query
@@ -73,21 +92,30 @@ impl Syntax {
             .iter()
             .map(|name| recognized_key(name))
             .collect();
-        Some(Self {
+        Some(LanguageQueries {
             indent: IndentQuery::new(lang, &language),
             brackets: BracketQuery::new(&language),
             overrides: OverrideQuery::new(lang, &language),
             outline: OutlineQuery::new(lang, &language),
             injection_query: InjectionQuery::new(lang, &language),
+            indent_regexes: IndentRegexes::new(&crate::language::config(lang).indent),
+            language,
+            query,
+            capture_keys,
+        })
+    }
+}
+
+impl Syntax {
+    /// `None` for plain text or when the grammar's query fails to compile against the linked tree-sitter.
+    pub fn new(lang: Lang) -> Option<Self> {
+        Some(Self {
+            queries: LanguageQueries::for_lang(lang)?,
             injections: Injections::default(),
             injections_interpolated: 0,
             injections_parsed: None,
             injection_base: None,
             injection_edits: Vec::new(),
-            indent_regexes: IndentRegexes::new(&crate::language::config(lang).indent),
-            language,
-            query,
-            capture_keys,
             tree: None,
             interpolated_version: 0,
             parsed_version: 0,
@@ -140,7 +168,9 @@ impl Syntax {
         if self.parsed_version != version || self.injections_parsed == Some(version) {
             return;
         }
-        if let (Some(tree), Some(query)) = (self.tree.as_ref(), self.injection_query.as_ref()) {
+        if let (Some(tree), Some(query)) =
+            (self.tree.as_ref(), self.queries.injection_query.as_ref())
+        {
             let changed: Option<Vec<Range<usize>>> = self.injection_base.as_ref().map(|base| {
                 let mut changed: Vec<Range<usize>> = base
                     .changed_ranges(tree)
@@ -172,7 +202,7 @@ impl Syntax {
             return;
         }
         let mut parser = Parser::new();
-        if parser.set_language(&self.language).is_err() {
+        if parser.set_language(&self.queries.language).is_err() {
             return;
         }
         let started = Instant::now();
@@ -208,7 +238,7 @@ impl Syntax {
         }
         self.background = None;
         let mut parser = Parser::new();
-        if parser.set_language(&self.language).is_err() {
+        if parser.set_language(&self.queries.language).is_err() {
             return;
         }
         let rope = &buffer.rope;
@@ -233,19 +263,19 @@ impl Syntax {
             .into_iter()
             .filter(|request| request.before_version == before_version)
             .collect();
-        if requests.is_empty() || self.indent.is_none() {
+        if requests.is_empty() || self.queries.indent.is_none() {
             return;
         }
         // Edits wait on the parse, as the indent query needs the tree for the new text.
         self.parse_now(buffer);
-        let (Some(tree), Some(query)) = (self.tree.as_ref(), self.indent.as_ref()) else {
+        let (Some(tree), Some(query)) = (self.tree.as_ref(), self.queries.indent.as_ref()) else {
             return;
         };
         let view = IndentView {
             rope: &buffer.rope,
             tree,
             query,
-            regexes: &self.indent_regexes,
+            regexes: &self.queries.indent_regexes,
         };
         let sizes =
             compute_autoindents(&requests, &before_tree, &view, IndentSize::spaces(TAB_SIZE));
@@ -253,7 +283,7 @@ impl Syntax {
     }
 
     fn parse_in_background(&mut self, rope: Rope, version: u64) {
-        let language = self.language.clone();
+        let language = self.queries.language.clone();
         let old_tree = self.tree.clone();
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
@@ -298,7 +328,8 @@ impl Syntax {
         rope: &Rope,
         range: Range<usize>,
     ) -> Vec<(Range<usize>, Range<usize>)> {
-        let (Some(tree), Some(brackets)) = (self.tree.as_ref(), self.brackets.as_ref()) else {
+        let (Some(tree), Some(brackets)) = (self.tree.as_ref(), self.queries.brackets.as_ref())
+        else {
             return Vec::new();
         };
         let len = rope.len_bytes();
@@ -340,7 +371,7 @@ impl Syntax {
 
     /// The file's symbols in source order, nested by containment.
     pub fn outline(&self, rope: &Rope) -> Vec<OutlineItem> {
-        match (self.outline.as_ref(), self.tree.as_ref()) {
+        match (self.queries.outline.as_ref(), self.tree.as_ref()) {
             (Some(outline), Some(tree)) => outline.items(rope, tree),
             _ => Vec::new(),
         }
@@ -427,7 +458,7 @@ impl Syntax {
         let Some(tree) = self.tree.as_ref() else {
             return scope;
         };
-        if let Some(overrides) = self.overrides.as_ref() {
+        if let Some(overrides) = self.queries.overrides.as_ref() {
             match overrides.name_at(rope, tree, byte) {
                 Some("string") => scope.in_string = true,
                 Some("comment") => scope.in_comment = true,
@@ -462,8 +493,8 @@ impl Syntax {
         let mut cursor = QueryCursor::new();
         cursor.set_byte_range(range.clone());
         let text = |node: Node| rope_chunks(rope, node.byte_range());
-        let mut root = cursor.captures(&self.query, tree.root_node(), text);
-        while let Some((start, end, key)) = next_capture(&mut root, &self.capture_keys) {
+        let mut root = cursor.captures(&self.queries.query, tree.root_node(), text);
+        while let Some((start, end, key)) = next_capture(&mut root, &self.queries.capture_keys) {
             captures.push((start, end, key, 0));
         }
         if !self.injections.is_empty() {

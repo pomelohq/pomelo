@@ -1,5 +1,6 @@
 mod watch;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use pom_config::{Config, CONFIG_FILE_NAME};
@@ -11,6 +12,8 @@ pub use watch::ConfigWatcher;
 
 /// The previous app remembers the last opened project here; kept so both can hand off to each other.
 const LAST_PROJECT_FILE: &str = "last_project";
+/// Project root -> the workspace branch last active in it.
+const ACTIVE_WORKSPACES_FILE: &str = "active_workspaces.json";
 
 /// A project opened from its `pom.yml`. A config that fails to load or validate still opens: the
 /// workspace stays usable and the error is shown until the file is fixed.
@@ -22,6 +25,8 @@ pub struct Project {
     pub config: Option<Config>,
     pub error: Option<ConfigProblem>,
     pub workspaces: Vec<Workspace>,
+    /// Branch of the workspace this window works in; empty means the main workspace.
+    active: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,9 +48,48 @@ impl Project {
             config: None,
             error: None,
             workspaces: Vec::new(),
+            active: String::new(),
         };
         project.reload(state);
+        project.active = remembered_workspace(state, &project.root).unwrap_or_default();
         project
+    }
+
+    /// The branch of the active workspace: the chosen one while it still exists on disk, else main.
+    pub fn active_branch(&self) -> &str {
+        self.active_workspace()
+            .map_or_else(|| self.branch(), |workspace| workspace.branch.as_str())
+    }
+
+    pub fn active_workspace(&self) -> Option<&Workspace> {
+        self.workspaces
+            .iter()
+            .find(|workspace| !self.active.is_empty() && workspace.branch == self.active)
+            .or_else(|| self.workspaces.iter().find(|workspace| workspace.is_main))
+    }
+
+    /// Where the active workspace's files live: its folder, or the project root while it has none.
+    pub fn active_root(&self) -> PathBuf {
+        self.active_workspace().map_or_else(
+            || pom_layout::workspace_root(&self.root, self.branch(), true),
+            |workspace| workspace.path.clone(),
+        )
+    }
+
+    /// Switch to the workspace of `branch` and remember it for this project; false when it isn't one
+    /// of the project's workspaces or is already active.
+    pub fn set_active(&mut self, branch: &str, state: &StateDir) -> std::io::Result<bool> {
+        if branch == self.active_branch()
+            || !self
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.branch == branch)
+        {
+            return Ok(false);
+        }
+        self.active = branch.to_string();
+        remember_workspace(state, &self.root, branch)?;
+        Ok(true)
     }
 
     /// Re-reads the config and rescans workspaces; returns whether anything the UI shows changed.
@@ -107,6 +151,24 @@ impl Project {
         sessions.save(state)?;
         Projects::register(state, &self.session, &self.root)
     }
+}
+
+fn read_active_workspaces(state: &StateDir) -> BTreeMap<String, String> {
+    std::fs::read_to_string(state.path(ACTIVE_WORKSPACES_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn remembered_workspace(state: &StateDir, root: &Path) -> Option<String> {
+    read_active_workspaces(state).remove(root.to_string_lossy().as_ref())
+}
+
+fn remember_workspace(state: &StateDir, root: &Path, branch: &str) -> std::io::Result<()> {
+    let mut active = read_active_workspaces(state);
+    active.insert(root.to_string_lossy().into_owned(), branch.to_string());
+    let text = serde_json::to_string_pretty(&active).map_err(std::io::Error::other)?;
+    write_atomic(&state.path(ACTIVE_WORKSPACES_FILE), text.as_bytes(), 0o644)
 }
 
 /// `pom.yml` directly inside `dir`, if there is one.
@@ -231,6 +293,40 @@ mod tests {
             .map(|w| w.branch.as_str())
             .collect();
         assert_eq!(branches, ["trunk", "feat-x"]);
+    }
+
+    #[test]
+    fn active_workspace_switches_roots_and_is_remembered() {
+        let fixture = Fixture::new();
+        let config = fixture.project("acme", "session: acme\n");
+        let root = config.parent().map(Path::to_path_buf).unwrap_or_default();
+        std::fs::create_dir_all(root.join("api/.git")).expect("legacy main repo");
+        std::fs::create_dir_all(root.join("workspace--feat-x/api/.git")).expect("worktree");
+        let mut project = Project::open(&config, &fixture.state);
+        assert_eq!(project.active_branch(), "main");
+        assert_eq!(project.active_root(), root);
+
+        assert!(project
+            .set_active("feat-x", &fixture.state)
+            .expect("activate"));
+        assert!(!project.set_active("feat-x", &fixture.state).expect("again"));
+        assert!(!project
+            .set_active("ghost", &fixture.state)
+            .expect("unknown"));
+        assert_eq!(project.active_branch(), "feat-x");
+        assert_eq!(project.active_root(), root.join("workspace--feat-x"));
+
+        let reopened = Project::open(&config, &fixture.state);
+        assert_eq!(reopened.active_branch(), "feat-x");
+
+        std::fs::remove_dir_all(root.join("workspace--feat-x")).expect("remove worktree");
+        let mut project = reopened;
+        project.reload(&fixture.state);
+        assert_eq!(
+            project.active_branch(),
+            "main",
+            "a removed workspace falls back to main"
+        );
     }
 
     #[test]

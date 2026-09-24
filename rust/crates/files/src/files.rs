@@ -68,6 +68,194 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<FileEntry>) {
     }
 }
 
+/// How often a running scan hands the UI what it has found so far.
+const SCAN_PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// What a background scan has found: the entries so far (sorted like `list`) and whether it is still going.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanUpdate {
+    pub entries: Vec<FileEntry>,
+    pub scanning: bool,
+}
+
+#[derive(Default)]
+struct ScanState {
+    queue: std::collections::VecDeque<PathBuf>,
+    active: usize,
+    entries: Vec<FileEntry>,
+    changed: bool,
+    cancelled: bool,
+}
+
+impl ScanState {
+    fn done(&self) -> bool {
+        self.cancelled || (self.queue.is_empty() && self.active == 0)
+    }
+}
+
+type SharedScan = std::sync::Arc<(std::sync::Mutex<ScanState>, std::sync::Condvar)>;
+
+/// Walks a tree off the UI thread, one worker per CPU pulling directories from a shared queue, and posts
+/// progress every `SCAN_PROGRESS_INTERVAL` until done, so a large workspace never blocks a frame. Dropping it
+/// stops the walk.
+pub struct BackgroundScan {
+    shared: SharedScan,
+    updates: std::sync::mpsc::Receiver<ScanUpdate>,
+}
+
+impl BackgroundScan {
+    pub fn start(root: PathBuf, wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> BackgroundScan {
+        let shared: SharedScan = std::sync::Arc::new(Default::default());
+        if let Ok(mut state) = shared.0.lock() {
+            state.queue.push_back(root.clone());
+        }
+        let workers = std::thread::available_parallelism().map_or(4, |count| count.get());
+        for index in 0..workers {
+            let (shared, root) = (shared.clone(), root.clone());
+            let spawned = std::thread::Builder::new()
+                .name(format!("files-scan-{index}"))
+                .spawn(move || scan_worker(&root, &shared));
+            if let Err(error) = spawned {
+                eprintln!("failed to start a file scan worker: {error}");
+            }
+        }
+        let (sender, updates) = std::sync::mpsc::channel();
+        let progress = shared.clone();
+        let spawned = std::thread::Builder::new()
+            .name("files-scan-progress".into())
+            .spawn(move || scan_progress(&progress, &sender, &*wake));
+        if let Err(error) = spawned {
+            eprintln!("failed to start the file scan: {error}");
+        }
+        BackgroundScan { shared, updates }
+    }
+
+    /// The newest update since the last call; earlier ones are superseded and dropped.
+    pub fn latest(&self) -> Option<ScanUpdate> {
+        self.updates.try_iter().last()
+    }
+
+    /// Block until the walk finishes and return everything it found (for tests and tools).
+    pub fn wait(self) -> Vec<FileEntry> {
+        let mut last = Vec::new();
+        for update in self.updates.iter() {
+            last = update.entries;
+            if !update.scanning {
+                break;
+            }
+        }
+        last
+    }
+}
+
+impl Drop for BackgroundScan {
+    fn drop(&mut self) {
+        let (lock, wakeup) = &*self.shared;
+        if let Ok(mut state) = lock.lock() {
+            state.cancelled = true;
+        }
+        wakeup.notify_all();
+    }
+}
+
+fn scan_worker(root: &Path, shared: &SharedScan) {
+    let (lock, wakeup) = &**shared;
+    loop {
+        let dir = {
+            let Ok(mut state) = lock.lock() else {
+                return;
+            };
+            loop {
+                if state.done() {
+                    wakeup.notify_all();
+                    return;
+                }
+                if let Some(dir) = state.queue.pop_front() {
+                    state.active += 1;
+                    break dir;
+                }
+                state = match wakeup.wait(state) {
+                    Ok(state) => state,
+                    Err(_) => return,
+                };
+            }
+        };
+        let mut found = Vec::new();
+        let mut subdirs = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Ok(meta) = entry.metadata() else {
+                    continue;
+                };
+                let is_dir = meta.is_dir();
+                if is_dir && SKIP_DIRS.contains(&name.to_string_lossy().as_ref()) {
+                    continue;
+                }
+                let full = entry.path();
+                let Some(path) = rel_path(root, &full) else {
+                    continue;
+                };
+                found.push(FileEntry {
+                    repo: String::new(),
+                    path,
+                    is_dir,
+                    size: if is_dir { 0 } else { meta.len() },
+                });
+                if is_dir {
+                    subdirs.push(full);
+                }
+            }
+        }
+        let Ok(mut state) = lock.lock() else {
+            return;
+        };
+        state.entries.extend(found);
+        state.queue.extend(subdirs);
+        state.active -= 1;
+        state.changed = true;
+        wakeup.notify_all();
+    }
+}
+
+fn scan_progress(
+    shared: &SharedScan,
+    sender: &std::sync::mpsc::Sender<ScanUpdate>,
+    wake: &(dyn Fn() + Send + Sync),
+) {
+    let (lock, wakeup) = &**shared;
+    loop {
+        let (entries, scanning) = {
+            let Ok(state) = lock.lock() else {
+                return;
+            };
+            let Ok((mut state, _)) =
+                wakeup.wait_timeout_while(state, SCAN_PROGRESS_INTERVAL, |state| !state.done())
+            else {
+                return;
+            };
+            if state.cancelled {
+                return;
+            }
+            let scanning = !state.done();
+            if scanning && !state.changed {
+                continue;
+            }
+            state.changed = false;
+            (state.entries.clone(), scanning)
+        };
+        let mut entries = entries;
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        if sender.send(ScanUpdate { entries, scanning }).is_err() {
+            return;
+        }
+        wake();
+        if !scanning {
+            return;
+        }
+    }
+}
+
 /// The forward-slash path of `full` relative to `root` (`None` if `full` is not under `root`).
 fn rel_path(root: &Path, full: &Path) -> Option<String> {
     let rel = full.strip_prefix(root).ok()?;
@@ -275,6 +463,58 @@ mod tests {
         std::fs::write(base.join(".git/HEAD"), b"ref: x").unwrap();
         std::fs::write(base.join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
         base
+    }
+
+    #[test]
+    fn background_scan_finds_what_list_finds() {
+        let root = tmp("scan");
+        for index in 0..40 {
+            let dir = root.join(format!("pkg{index}/src/deep"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("lib.rs"), b"").unwrap();
+        }
+        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
+        let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = wakes.clone();
+        let scan = BackgroundScan::start(
+            root.clone(),
+            std::sync::Arc::new(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        );
+        assert_eq!(scan.wait(), list(&root));
+        assert!(wakes.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn background_scan_reports_progress_then_finishes() {
+        let root = tmp("scan-progress");
+        let scan = BackgroundScan::start(root.clone(), std::sync::Arc::new(|| {}));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut last = None;
+        while std::time::Instant::now() < deadline {
+            if let Some(update) = scan.latest() {
+                let finished = !update.scanning;
+                last = Some(update);
+                if finished {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let last = last.expect("an update arrived");
+        assert!(!last.scanning);
+        assert_eq!(last.entries, list(&root));
+        drop(scan);
+    }
+
+    #[test]
+    fn missing_root_scans_to_nothing() {
+        let scan = BackgroundScan::start(
+            PathBuf::from("/nonexistent/pom-scan"),
+            std::sync::Arc::new(|| {}),
+        );
+        assert!(scan.wait().is_empty());
     }
 
     #[test]

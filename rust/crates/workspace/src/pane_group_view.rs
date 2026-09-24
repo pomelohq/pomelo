@@ -431,10 +431,13 @@ impl PaneGroupView {
         self.for_each_item_mut(&mut |item| item.refresh_disk_state());
     }
 
+    /// Whether a visible item still needs frames. Hidden tabs finish their work when shown, so a stuck or slow
+    /// background tab can't keep the window redrawing.
     pub fn is_busy(&self) -> bool {
         let mut busy = false;
-        self.group
-            .for_each_pane(&mut |pane| busy |= pane.open.iter().any(|item| item.is_busy()));
+        self.group.for_each_pane(&mut |pane| {
+            busy |= pane.active_item().is_some_and(|item| item.is_busy())
+        });
         busy
     }
 

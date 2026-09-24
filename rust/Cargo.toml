@@ -58,3 +58,31 @@ tree-sitter-json = "0.24.8"
 # Upstream hardcodes it off with no public toggle. See vendor/wgpu-hal/src/metal/surface.rs:69.
 [patch.crates-io]
 wgpu-hal = { path = "vendor/wgpu-hal" }
+
+# Our crates stay unoptimized for fast rebuilds; the hot third-party code on every frame (syntax queries, text
+# shaping, the rope, GPU submission) is optimized so a dev build scrolls smoothly.
+[profile.dev.package]
+tree-sitter = { opt-level = 3 }
+cosmic-text = { opt-level = 3 }
+glyphon = { opt-level = 3 }
+swash = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+skrifa = { opt-level = 3 }
+read-fonts = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+fontdb = { opt-level = 3 }
+ropey = { opt-level = 3 }
+resvg = { opt-level = 3 }
+usvg = { opt-level = 3 }
+tiny-skia = { opt-level = 3 }
+tiny-skia-path = { opt-level = 3 }
+wgpu = { opt-level = 3 }
+wgpu-core = { opt-level = 3 }
+wgpu-hal = { opt-level = 3 }
+wgpu-types = { opt-level = 3 }
+naga = { opt-level = 3 }
+alacritty_terminal = { opt-level = 3 }
+vte = { opt-level = 3 }
+imara-diff = { opt-level = 3 }
+nucleo-matcher = { opt-level = 3 }
+serde_json = { opt-level = 3 }
