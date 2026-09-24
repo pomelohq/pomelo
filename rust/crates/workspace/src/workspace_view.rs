@@ -776,6 +776,7 @@ impl WorkspaceView {
                 index,
                 label: project.label(index).to_string(),
                 agent: self.layout.agent_states.get(branch).copied(),
+                ticket: project.tickets.get(index).cloned().unwrap_or_default(),
             })
             .collect();
         let current = self

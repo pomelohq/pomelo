@@ -100,15 +100,19 @@ fn nav_item_box(active: bool, hovered: bool) -> Div {
 const APPEARANCE_SECTIONS: [&str; 2] = ["Theme", "UI Font"];
 const WINDOW_LAYOUT_SECTIONS: [&str; 5] = ["Status Bar", "Title Bar", "Window", "Docks", "Panels"];
 
-const CATEGORIES: [(&str, &[&str]); 5] = [
+const INTEGRATIONS_SECTIONS: [&str; 1] = ["Jira"];
+
+const CATEGORIES: [(&str, &[&str]); 6] = [
     ("General", &[]),
     ("Appearance", &APPEARANCE_SECTIONS),
     ("Window & Layout", &WINDOW_LAYOUT_SECTIONS),
     ("Editor", &[]),
     ("Terminal", &[]),
+    ("Integrations", &INTEGRATIONS_SECTIONS),
 ];
 
 pub const WINDOW_LAYOUT: usize = 2;
+pub const INTEGRATIONS: usize = 5;
 
 /// Index of the Appearance category (the only page with real content for now).
 pub const APPEARANCE: usize = 1;
@@ -160,6 +164,12 @@ pub const CTRL_SHOW_CURSOR: u64 = 223;
 pub const CTRL_SHOW_LANGUAGE: u64 = 224;
 pub const CTRL_SHOW_BRANCH: u64 = 225;
 pub const CTRL_SHOW_SESSION: u64 = 226;
+pub const CTRL_JIRA_SITE: u64 = 230;
+pub const CTRL_JIRA_EMAIL: u64 = 231;
+pub const CTRL_JIRA_TOKEN: u64 = 232;
+pub const CTRL_JIRA_RESET_TOKEN: u64 = 233;
+pub const CTRL_JIRA_TEST: u64 = 234;
+pub const CTRL_JIRA_ONLY_MINE: u64 = 235;
 pub const WIN_W_MIN: f32 = 640.0;
 pub const WIN_W_MAX: f32 = 4000.0;
 pub const WIN_H_MIN: f32 = 480.0;
@@ -286,6 +296,7 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_SHOW_LANGUAGE => s.show_language == d.show_language,
         CTRL_SHOW_BRANCH => s.show_branch == d.show_branch,
         CTRL_SHOW_SESSION => s.show_session_name == d.show_session_name,
+        CTRL_JIRA_ONLY_MINE => s.jira_only_mine == d.jira_only_mine,
         CTRL_WIN_W_EDIT => s.window_width == d.window_width,
         CTRL_WIN_H_EDIT => s.window_height == d.window_height,
         _ => true,
@@ -311,6 +322,7 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_SHOW_LANGUAGE => s.show_language = d.show_language,
         CTRL_SHOW_BRANCH => s.show_branch = d.show_branch,
         CTRL_SHOW_SESSION => s.show_session_name = d.show_session_name,
+        CTRL_JIRA_ONLY_MINE => s.jira_only_mine = d.jira_only_mine,
         CTRL_WIN_W_EDIT => s.window_width = d.window_width,
         CTRL_WIN_H_EDIT => s.window_height = d.window_height,
         _ => return false,
@@ -355,6 +367,10 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         }
         CTRL_SHOW_SESSION => {
             s.show_session_name = !s.show_session_name;
+            true
+        }
+        CTRL_JIRA_ONLY_MINE => {
+            s.jira_only_mine = !s.jira_only_mine;
             true
         }
         _ => false,
@@ -731,9 +747,11 @@ pub fn chrome(
 
 /// The scrollable page for `selected`, laid out in the content region offset up by `scroll`. Returns the
 /// `Painted` (with a fixed content-region background rect first) and the total content height for clamping.
+#[allow(clippy::too_many_arguments)]
 pub fn page(
     selected: usize,
     s: &Settings,
+    jira: &JiraPage,
     editing: Option<(u64, &str)>,
     search: &str,
     w: f32,
@@ -757,6 +775,19 @@ pub fn page(
         render_page(&appearance_page(s), search, editing, w)
     } else if selected == WINDOW_LAYOUT {
         render_page(&window_layout_page(s), search, editing, w)
+    } else if selected == INTEGRATIONS && !jira.session.is_empty() {
+        render_page(&integrations_page(s, jira), search, editing, w)
+    } else if selected == INTEGRATIONS {
+        div()
+            .col()
+            .gap(16.0)
+            .child(
+                label("Integrations")
+                    .label_size(LabelSize::Large)
+                    .color(title_c()),
+            )
+            .child(label("Open a project first: Jira is set up per project.").color(dim_c()))
+            .into()
     } else {
         stub_body(CATEGORIES[selected].0)
     };
@@ -789,13 +820,14 @@ pub fn panel(
     hovered: Option<u64>,
     expanded: &[bool],
     s: &Settings,
+    jira: &JiraPage,
     w: f32,
     h: f32,
     editing: Option<(u64, &str)>,
     search: &str,
     search_active: bool,
 ) -> ui::Painted {
-    let (mut out, _) = page(selected, s, editing, search, w, h, 0.0);
+    let (mut out, _) = page(selected, s, jira, editing, search, w, h, 0.0);
     let ch = chrome(
         selected,
         hovered,
@@ -937,6 +969,10 @@ fn page_for(cat: usize) -> Option<Page> {
     match cat {
         APPEARANCE => Some(appearance_page(&Settings::default())),
         WINDOW_LAYOUT => Some(window_layout_page(&Settings::default())),
+        INTEGRATIONS => Some(integrations_page(
+            &Settings::default(),
+            &JiraPage::default(),
+        )),
         _ => None,
     }
 }
@@ -1059,11 +1095,30 @@ enum Control {
         id: u64,
         on: bool,
     },
+    /// A one-line text field (the reference's settings input field); `masked` hides what is typed.
+    TextInput {
+        id: u64,
+        value: String,
+        placeholder: &'static str,
+        masked: bool,
+    },
+    /// A stored secret: what is set, and a button to clear it (disabled when it comes from the environment).
+    Configured {
+        label: &'static str,
+        button: u64,
+        button_label: &'static str,
+        enabled: bool,
+    },
+    Button {
+        id: u64,
+        label: &'static str,
+        enabled: bool,
+    },
 }
 
 struct SettingRow {
     title: &'static str,
-    description: &'static str,
+    description: std::borrow::Cow<'static, str>,
     control: Control,
     reset: Option<u64>,
 }
@@ -1089,7 +1144,7 @@ fn appearance_page(s: &Settings) -> Page {
             PageItem::Header("Theme"),
             PageItem::Row(SettingRow {
                 title: "Theme",
-                description: "Color theme applied across the whole app.",
+                description: "Color theme applied across the whole app.".into(),
                 control: Control::Dropdown {
                     id: CTRL_THEME,
                     value: s.theme.clone(),
@@ -1099,7 +1154,7 @@ fn appearance_page(s: &Settings) -> Page {
             PageItem::Header("UI Font"),
             PageItem::Row(SettingRow {
                 title: "Font Family",
-                description: "Font family used for interface text.",
+                description: "Font family used for interface text.".into(),
                 control: Control::Dropdown {
                     id: CTRL_FONT_FAMILY,
                     value: s.ui_font.clone(),
@@ -1108,7 +1163,7 @@ fn appearance_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Font Size",
-                description: "Font size for UI elements.",
+                description: "Font size for UI elements.".into(),
                 control: Control::Stepper {
                     dec: CTRL_FONT_SIZE_DEC,
                     inc: CTRL_FONT_SIZE_INC,
@@ -1119,7 +1174,7 @@ fn appearance_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Font Weight",
-                description: "Font weight for UI elements (100-900).",
+                description: "Font weight for UI elements (100-900).".into(),
                 control: Control::Stepper {
                     dec: CTRL_FONT_WEIGHT_DEC,
                     inc: CTRL_FONT_WEIGHT_INC,
@@ -1130,7 +1185,7 @@ fn appearance_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Font Features",
-                description: "The OpenType features to enable for rendering in UI elements.",
+                description: "The OpenType features to enable for rendering in UI elements.".into(),
                 control: Control::EditInJson {
                     id: CTRL_FONT_FEATURES,
                 },
@@ -1138,7 +1193,7 @@ fn appearance_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Font Fallbacks",
-                description: "The font fallbacks to use for rendering in the UI.",
+                description: "The font fallbacks to use for rendering in the UI.".into(),
                 control: Control::EditInJson {
                     id: CTRL_FONT_FALLBACKS,
                 },
@@ -1155,7 +1210,7 @@ fn window_layout_page(s: &Settings) -> Page {
             PageItem::Header("Status Bar"),
             PageItem::Row(SettingRow {
                 title: "Show Diagnostics",
-                description: "Show the error/warning count in the status bar.",
+                description: "Show the error/warning count in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_DIAGNOSTICS,
                     on: s.show_diagnostics,
@@ -1164,7 +1219,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Show Cursor Position",
-                description: "Show the line and column of the cursor in the status bar.",
+                description: "Show the line and column of the cursor in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_CURSOR,
                     on: s.show_cursor_position,
@@ -1173,7 +1228,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Show Language",
-                description: "Show the active language of the editor in the status bar.",
+                description: "Show the active language of the editor in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_LANGUAGE,
                     on: s.show_language,
@@ -1183,7 +1238,7 @@ fn window_layout_page(s: &Settings) -> Page {
             PageItem::Header("Title Bar"),
             PageItem::Row(SettingRow {
                 title: "Show Branch",
-                description: "Show the current git branch in the title bar.",
+                description: "Show the current git branch in the title bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_BRANCH,
                     on: s.show_branch,
@@ -1192,7 +1247,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Show Session Name",
-                description: "Show the current session name in the title bar.",
+                description: "Show the current session name in the title bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_SESSION,
                     on: s.show_session_name,
@@ -1202,7 +1257,7 @@ fn window_layout_page(s: &Settings) -> Page {
             PageItem::Header("Window"),
             PageItem::Row(SettingRow {
                 title: "Window Width",
-                description: "Default width (px) of a new window.",
+                description: "Default width (px) of a new window.".into(),
                 control: Control::Stepper {
                     dec: CTRL_WIN_W_DEC,
                     inc: CTRL_WIN_W_INC,
@@ -1213,7 +1268,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Window Height",
-                description: "Default height (px) of a new window.",
+                description: "Default height (px) of a new window.".into(),
                 control: Control::Stepper {
                     dec: CTRL_WIN_H_DEC,
                     inc: CTRL_WIN_H_INC,
@@ -1225,7 +1280,7 @@ fn window_layout_page(s: &Settings) -> Page {
             PageItem::Header("Docks"),
             PageItem::Row(SettingRow {
                 title: "Sidebar Side",
-                description: "Which side the WORKSPACES sidebar docks on.",
+                description: "Which side the WORKSPACES sidebar docks on.".into(),
                 control: Control::Dropdown {
                     id: CTRL_SIDEBAR_SIDE,
                     value: cap(&s.sidebar_side),
@@ -1234,7 +1289,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Agent Dock Side",
-                description: "Which side of the editor the agent dock renders on.",
+                description: "Which side of the editor the agent dock renders on.".into(),
                 control: Control::Dropdown {
                     id: CTRL_AGENT_SIDE,
                     value: cap(&s.agent_side),
@@ -1243,7 +1298,7 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Terminal Dock Side",
-                description: "Which content area the terminal renders in.",
+                description: "Which content area the terminal renders in.".into(),
                 control: Control::Dropdown {
                     id: CTRL_TERMINAL_SIDE,
                     value: cap(&s.terminal_side),
@@ -1253,7 +1308,7 @@ fn window_layout_page(s: &Settings) -> Page {
             PageItem::Header("Panels"),
             PageItem::Row(SettingRow {
                 title: "Show Agent Button",
-                description: "Show the agent toggle in the status bar.",
+                description: "Show the agent toggle in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_AGENT,
                     on: !s.agent_hidden,
@@ -1262,12 +1317,136 @@ fn window_layout_page(s: &Settings) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Show Terminal Button",
-                description: "Show the terminal toggle in the status bar.",
+                description: "Show the terminal toggle in the status bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_TERMINAL,
                     on: !s.terminal_hidden,
                 },
                 reset: reset_if_changed(CTRL_SHOW_TERMINAL, s),
+            }),
+        ],
+    }
+}
+
+/// Where the Jira token comes from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum TokenSource {
+    #[default]
+    Missing,
+    Secret,
+    Environment,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ConnectionStatus {
+    #[default]
+    Untested,
+    Testing,
+    SignedIn(String),
+    Failed(String),
+}
+
+/// The Jira settings of the session the settings window was opened from (empty `session`: no project open).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JiraPage {
+    pub session: String,
+    pub site: String,
+    pub email: String,
+    pub token: TokenSource,
+    pub status: ConnectionStatus,
+}
+
+fn integrations_page(s: &Settings, jira: &JiraPage) -> Page {
+    let token_row = match jira.token {
+        TokenSource::Missing => SettingRow {
+            title: "API Token",
+            description: "Create one in your Atlassian account under Security > API tokens. Stored encrypted for this project; or set `JIRA_API_TOKEN`.".into(),
+            control: Control::TextInput {
+                id: CTRL_JIRA_TOKEN,
+                value: String::new(),
+                placeholder: "xxxxxxxxxxxxxxxxxxxx",
+                masked: true,
+            },
+            reset: None,
+        },
+        TokenSource::Secret => SettingRow {
+            title: "API Token",
+            description: "Stored encrypted for this project.".into(),
+            control: Control::Configured {
+                label: "API Token Configured",
+                button: CTRL_JIRA_RESET_TOKEN,
+                button_label: "Reset Token",
+                enabled: true,
+            },
+            reset: None,
+        },
+        TokenSource::Environment => SettingRow {
+            title: "API Token",
+            description: "Read from `JIRA_API_TOKEN`; unset it to use a stored token instead.".into(),
+            control: Control::Configured {
+                label: "API Token Set in Environment Variable",
+                button: CTRL_JIRA_RESET_TOKEN,
+                button_label: "Reset Token",
+                enabled: false,
+            },
+            reset: None,
+        },
+    };
+    let (connection, testing) = match &jira.status {
+        ConnectionStatus::Untested => ("Checks the site, email and token.".into(), false),
+        ConnectionStatus::Testing => ("Connecting...".into(), true),
+        ConnectionStatus::SignedIn(who) => (format!("Signed in as {who}.").into(), false),
+        ConnectionStatus::Failed(error) => (format!("Failed: {error}").into(), false),
+    };
+    let ready = !jira.site.trim().is_empty()
+        && !jira.email.trim().is_empty()
+        && jira.token != TokenSource::Missing;
+    Page {
+        title: "Integrations",
+        items: vec![
+            PageItem::Header("Jira"),
+            PageItem::Row(SettingRow {
+                title: "Site URL",
+                description: "Your Jira Cloud address.".into(),
+                control: Control::TextInput {
+                    id: CTRL_JIRA_SITE,
+                    value: jira.site.clone(),
+                    placeholder: "https://acme.atlassian.net",
+                    masked: false,
+                },
+                reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Account Email",
+                description: "The email you sign in to Jira with.".into(),
+                control: Control::TextInput {
+                    id: CTRL_JIRA_EMAIL,
+                    value: jira.email.clone(),
+                    placeholder: "you@example.com",
+                    masked: false,
+                },
+                reset: None,
+            }),
+            PageItem::Row(token_row),
+            PageItem::Row(SettingRow {
+                title: "Connection",
+                description: connection,
+                control: Control::Button {
+                    id: CTRL_JIRA_TEST,
+                    label: "Test Connection",
+                    enabled: ready && !testing,
+                },
+                reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Only Show My Tickets",
+                description: "The new-workspace ticket picker lists only tickets assigned to you."
+                    .into(),
+                control: Control::Toggle {
+                    id: CTRL_JIRA_ONLY_MINE,
+                    on: s.jira_only_mine,
+                },
+                reset: reset_if_changed(CTRL_JIRA_ONLY_MINE, s),
             }),
         ],
     }
@@ -1364,10 +1543,26 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
                     }
                     Control::EditInJson { id } => edit_in_json_button(*id),
                     Control::Toggle { id, on } => toggle_switch(*on, *id),
+                    Control::TextInput {
+                        id,
+                        value,
+                        placeholder,
+                        masked,
+                    } => {
+                        let buf = editing.and_then(|(edit, b)| (edit == *id).then_some(b));
+                        text_input(value, placeholder, *masked, *id, buf)
+                    }
+                    Control::Configured {
+                        label,
+                        button,
+                        button_label,
+                        enabled,
+                    } => configured_card(label, *button, button_label, *enabled),
+                    Control::Button { id, label, enabled } => action_button(*id, label, *enabled),
                 };
                 col = col.child(row_frame(
                     row.title,
-                    row.description,
+                    &row.description,
                     control,
                     row.reset,
                     left_col_w,
@@ -1541,6 +1736,102 @@ fn stepper(value: &str, dec: u64, inc: u64, edit_id: u64, edit: Option<&str>) ->
         .into()
 }
 
+/// The reference's settings input field: a 32px box at least 256px wide on the editor background, its border
+/// focused while editing. Clicking it starts editing; Enter saves and Escape cancels.
+fn text_input(value: &str, placeholder: &str, masked: bool, id: u64, edit: Option<&str>) -> Node {
+    let editing = edit.is_some();
+    let shown = edit.unwrap_or(value);
+    let text = if masked {
+        "*".repeat(shown.chars().count())
+    } else {
+        shown.to_string()
+    };
+    let mut row = div().row().items_center().gap(1.0).flex(1.0);
+    row = if text.is_empty() && !editing {
+        row.child(
+            label(placeholder)
+                .size(12.0)
+                .color(theme().text_placeholder),
+        )
+    } else {
+        row.child(label(text).size(12.0).color(title_c()).truncate())
+    };
+    if editing {
+        row = row.child(caret(ui::caret_phase()));
+    }
+    div()
+        .row()
+        .w_px(256.0)
+        .h_px(32.0)
+        .px(8.0)
+        .items_center()
+        .rounded(ROUND)
+        .bg(theme().editor_background)
+        .border(
+            1.0,
+            if editing {
+                theme().border_focused
+            } else {
+                border_c()
+            },
+        )
+        .on_click(id)
+        .child(row)
+        .into()
+}
+
+/// A stored secret: a check, what is set, and the button that clears it (the reference's configured-key card).
+fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -> Node {
+    let mut clear = div()
+        .row()
+        .h_px(22.0)
+        .px(6.0)
+        .items_center()
+        .rounded(4.0)
+        .border(1.0, theme().border_variant)
+        .child(label(button_label).size(12.0).color(if enabled {
+            title_c()
+        } else {
+            theme().text_disabled
+        }));
+    if enabled {
+        clear = clear.on_click(button);
+    }
+    div()
+        .row()
+        .h_px(32.0)
+        .px(8.0)
+        .gap(8.0)
+        .items_center()
+        .rounded(ROUND)
+        .bg(chip_c())
+        .border(1.0, border_c())
+        .child(
+            ui::icon(ui::IconKind::Check)
+                .size(12.0)
+                .color(theme().success),
+        )
+        .child(label(text).size(12.0).color(title_c()))
+        .child(clear)
+        .into()
+}
+
+fn action_button(id: u64, text: &str, enabled: bool) -> Node {
+    if enabled {
+        ui::button_sized(id, text, ui::ButtonStyle::Outlined, ui::ButtonSize::Medium).into()
+    } else {
+        div()
+            .row()
+            .h_px(28.0)
+            .px(8.0)
+            .items_center()
+            .rounded(4.0)
+            .border(1.0, theme().border_variant)
+            .child(label(text).size(14.0).color(theme().text_disabled))
+            .into()
+    }
+}
+
 /// The reference renders `.unimplemented()` fields as an Outlined, Medium "Edit in settings.json" button.
 fn edit_in_json_button(id: u64) -> Node {
     ui::button_sized(
@@ -1605,6 +1896,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
+            &JiraPage::default(),
             1200.0,
             800.0,
             None,
@@ -1625,6 +1917,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
+            &JiraPage::default(),
             1200.0,
             800.0,
             None,
@@ -1710,6 +2003,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
+            &JiraPage::default(),
             1200.0,
             800.0,
             None,
@@ -1729,6 +2023,7 @@ mod tests {
             None,
             &expanded,
             &Settings::default(),
+            &JiraPage::default(),
             1200.0,
             800.0,
             None,

@@ -38,6 +38,7 @@ members = [
     "crates/git_ui",
     "crates/pom_workspace",
     "crates/workspaces_ui",
+    "crates/pom_jira",
 ]
 
 [workspace.package]
