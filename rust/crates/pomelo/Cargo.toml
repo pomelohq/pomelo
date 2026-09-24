@@ -27,6 +27,7 @@ pom_mcp = { path = "../pom_mcp" }
 pom_agent = { path = "../pom_agent" }
 services_ui = { path = "../services_ui" }
 workspaces_ui = { path = "../workspaces_ui" }
+database_ui = { path = "../database_ui" }
 pom_workspace = { path = "../pom_workspace" }
 pom_layout = { path = "../pom_layout" }
 pom_jira = { path = "../pom_jira" }

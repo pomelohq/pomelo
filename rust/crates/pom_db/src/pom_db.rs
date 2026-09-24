@@ -203,6 +203,18 @@ impl Connector<'_> {
     }
 }
 
+/// Every row of the table the filter keeps, in the typed order (what an export writes).
+pub fn table_select(table: &Table, filter: &str, order: &str) -> String {
+    let mut sql = format!("SELECT * FROM {}", table.sql_name());
+    if !filter.trim().is_empty() {
+        sql.push_str(&format!(" WHERE {}", filter.trim()));
+    }
+    if !order.trim().is_empty() {
+        sql.push_str(&format!(" ORDER BY {}", order.trim()));
+    }
+    sql
+}
+
 /// The table browser's query: `SELECT *` with the typed filter and order, one page at `offset`.
 pub fn table_query(
     table: &Table,
@@ -211,13 +223,7 @@ pub fn table_query(
     limit: usize,
     offset: usize,
 ) -> String {
-    let mut sql = format!("SELECT * FROM {}", table.sql_name());
-    if !filter.trim().is_empty() {
-        sql.push_str(&format!(" WHERE {}", filter.trim()));
-    }
-    if !order.trim().is_empty() {
-        sql.push_str(&format!(" ORDER BY {}", order.trim()));
-    }
+    let mut sql = table_select(table, filter, order);
     sql.push_str(&format!(" LIMIT {limit}"));
     if offset > 0 {
         sql.push_str(&format!(" OFFSET {offset}"));

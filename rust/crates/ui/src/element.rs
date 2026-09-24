@@ -104,6 +104,9 @@ pub enum IconKind {
     SquarePlus,
     SquareDot,
     SquareMinus,
+    Table,
+    Eye,
+    Key,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

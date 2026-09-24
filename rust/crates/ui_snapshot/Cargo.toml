@@ -19,5 +19,12 @@ files_ui = { path = "../files_ui" }
 workspaces_ui = { path = "../workspaces_ui" }
 pom_agent = { path = "../pom_agent" }
 pom_jira = { path = "../pom_jira" }
+database_ui = { path = "../database_ui" }
+pom_db = { path = "../pom_db" }
+pom_config = { path = "../pom_config" }
+pom_services = { path = "../pom_services" }
+pom_paths = { path = "../pom_paths" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+terminal = { path = "../terminal" }
 anyhow.workspace = true
 png = "0.17"

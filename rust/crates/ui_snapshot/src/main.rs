@@ -13,6 +13,158 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(settings_ui::APPEARANCE);
 
+    // DATABASE=panel|table: the Database panel with sample tables, or a table tab with a sample page.
+    if let Ok(which) = std::env::var("DATABASE") {
+        use workspace::{Item, SidePanelView};
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-db-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("pom.yml"),
+            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\nrepos:\n  api:\n    databases:\n      main: \"api_{{branch.safe}}\"\n  web:\n    databases:\n      main: \"web_{{branch.safe}}\"\n",
+        )?;
+        let config = std::sync::Arc::new(pom_config::Config::load(&dir.join("pom.yml"))?);
+        let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
+            pom_services::RunnerOptions {
+                project_root: dir.clone(),
+                session: "myproject".into(),
+                state: pom_paths::StateDir::new(dir.join("state")),
+                holders: pom_ptyhost::SocketDir::new(dir.join("s")),
+                binary: "/nonexistent".into(),
+                docker: "/nonexistent".into(),
+            },
+        ));
+        let context = database_ui::DatabaseContext {
+            runner,
+            config: std::sync::Arc::new(move || Some(config.clone())),
+            branch: "feat-login".into(),
+            waker: std::sync::Arc::new(|| {}),
+        };
+        let table = |schema: &str, name: &str, kind: pom_db::TableKind, count: Option<usize>| {
+            pom_db::Table {
+                schema: schema.into(),
+                name: name.into(),
+                kind,
+                count,
+            }
+        };
+        let (width, height) = if which == "panel" {
+            (320.0_f32, 420.0_f32)
+        } else {
+            (900.0_f32, 460.0_f32)
+        };
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = if which == "panel" {
+            let mut panel = database_ui::DatabasePanel::new(context);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            panel.show_tables(
+                "myproject_api_feat-login",
+                vec![
+                    table("billing", "invoices", pom_db::TableKind::Table, None),
+                    table("public", "sessions", pom_db::TableKind::Table, None),
+                    table("public", "users", pom_db::TableKind::Table, None),
+                    table("public", "active_users", pom_db::TableKind::View, None),
+                ],
+            );
+            panel.show_tables(
+                "redis",
+                vec![
+                    table("", "session", pom_db::TableKind::Keyspace, Some(42)),
+                    table("", "user", pom_db::TableKind::Keyspace, Some(7)),
+                ],
+            );
+            panel.set_hover(Some(
+                workspace::side_panel_base(workspace::PaneKind::Database) + 5 * 4,
+            ));
+            let node = panel.render(width, height);
+            ui::render(
+                &ui::div()
+                    .bg(ui::theme().panel_background)
+                    .child(node)
+                    .into(),
+                body,
+            )
+        } else {
+            let database = pom_db::list_databases(
+                &pom_config::Config::load(&dir.join("pom.yml"))?,
+                "feat-login",
+            )
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no database"))?;
+            let mut item = database_ui::TableItem::new(
+                context,
+                database,
+                table("public", "users", pom_db::TableKind::Table, None),
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while item.is_busy() && std::time::Instant::now() < deadline {
+                item.tick(&|| None);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let names = ["Ann", "Bob", "Cy", "Di", "Ed", "Flo", "Gus", "Hal"];
+            let rows = (0..40)
+                .map(|row| {
+                    vec![
+                        Some((row + 1).to_string()),
+                        Some(format!(
+                            "{}@example.com",
+                            names[row % names.len()].to_lowercase()
+                        )),
+                        Some(names[row % names.len()].to_string()),
+                        (row % 4 != 0)
+                            .then(|| format!("2026-09-{:02} 10:{:02}:00", row % 28 + 1, row % 60)),
+                        Some(if row % 3 == 0 { "admin" } else { "member" }.to_string()),
+                    ]
+                })
+                .collect();
+            item.show_page(
+                pom_db::QueryResult {
+                    columns: ["id", "email", "name", "last_seen_at", "role"]
+                        .map(str::to_string)
+                        .to_vec(),
+                    rows,
+                    ..pom_db::QueryResult::default()
+                },
+                Some(1234),
+            );
+            item.paint_body(body, true);
+            item.pointer_down(
+                330.0,
+                37.0 + 27.0 + 22.0 * 2.5,
+                1,
+                terminal::Modifiers::default(),
+            );
+            item.pointer_move(
+                200.0,
+                37.0 + 27.0 + 22.0 * 5.5,
+                terminal::Modifiers::default(),
+                true,
+            );
+            item.paint_body(body, true)
+                .ok_or_else(|| anyhow::anyhow!("no body"))?
+        };
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            eprintln!("remove {}: {error}", dir.display());
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     // With GITPANEL=<repo dir>, render the Git panel for that repository (against `main`).
     if let Ok(repo) = std::env::var("GITPANEL") {
         use workspace::SidePanelView;

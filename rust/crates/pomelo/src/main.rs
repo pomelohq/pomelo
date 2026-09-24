@@ -420,6 +420,18 @@ impl ProjectServices {
         }
     }
 
+    fn database_panel(&self, project: &pom_core::Project) -> Box<dyn workspace::SidePanelView> {
+        let config = self.config.clone();
+        Box::new(database_ui::DatabasePanel::new(
+            database_ui::DatabaseContext {
+                runner: self.runner.clone(),
+                config: Arc::new(move || config.read().ok().and_then(|config| config.clone())),
+                branch: project.active_branch().to_string(),
+                waker: Arc::new(ui::wake),
+            },
+        ))
+    }
+
     fn panel(&self, project: &pom_core::Project) -> Box<dyn workspace::SidePanelView> {
         let is_main = project
             .active_workspace()
@@ -805,6 +817,7 @@ impl App {
         let mut side_panels: Vec<Box<dyn workspace::SidePanelView>> = Vec::new();
         if let (Some(services), Some(project)) = (&main.services, project) {
             side_panels.push(services.panel(project));
+            side_panels.push(services.database_panel(project));
         }
         if let Some(project) = project {
             side_panels.push(git_panel(project));

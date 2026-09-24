@@ -532,6 +532,10 @@ pub trait Item: 'static {
         false
     }
     fn pointer_up(&mut self, _x: f32, _y: f32, _modifiers: terminal::Modifiers) {}
+    /// A sideways scroll (trackpad) over a self-painted body; returns whether it moved.
+    fn pointer_scroll_x(&mut self, _x: f32, _y: f32, _delta_x: f32) -> bool {
+        false
+    }
     fn pointer_scroll(
         &mut self,
         _x: f32,
@@ -1033,7 +1037,7 @@ pub trait ItemInput {
         &mut self,
         x: f32,
         y: f32,
-        delta_y: f32,
+        delta: (f32, f32),
         modifiers: terminal::Modifiers,
     ) -> bool;
 }

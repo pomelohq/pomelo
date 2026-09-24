@@ -1834,7 +1834,7 @@ impl ItemInput for PaneGroupView {
         &mut self,
         x: f32,
         y: f32,
-        delta_y: f32,
+        (delta_x, delta_y): (f32, f32),
         modifiers: terminal::Modifiers,
     ) -> bool {
         let Some(path) = self.pane_path_at(x, y) else {
@@ -1843,7 +1843,10 @@ impl ItemInput for PaneGroupView {
         self.group
             .leaf_at_mut(&path)
             .and_then(Pane::active_item_mut)
-            .is_some_and(|item| item.pointer_scroll(x, y, delta_y, modifiers))
+            .is_some_and(|item| {
+                let sideways = delta_x != 0.0 && item.pointer_scroll_x(x, y, delta_x);
+                item.pointer_scroll(x, y, delta_y, modifiers) || sideways
+            })
     }
 }
 
