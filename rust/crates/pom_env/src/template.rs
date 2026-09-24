@@ -69,6 +69,17 @@ pub fn refs(text: &str) -> Vec<String> {
     out
 }
 
+pub fn slot_refs(text: &str) -> Vec<String> {
+    refs(text)
+        .into_iter()
+        .filter_map(|key| {
+            key.strip_prefix("shared.")
+                .and_then(|rest| rest.strip_suffix(".slot"))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +126,14 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(resolve(input, lookup, filter), want, "{input}");
         }
+    }
+
+    #[test]
+    fn slot_refs_pick_shared_slots() {
+        assert_eq!(
+            slot_refs("db{{shared.redis.slot}} {{shared.redis.url}} {{shared.pg.slot}}"),
+            ["redis", "pg"]
+        );
     }
 
     #[test]
