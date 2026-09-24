@@ -221,11 +221,6 @@ impl InputField {
         error: Option<&str>,
     ) -> Node {
         let colors = theme();
-        let border = match (error.is_some(), focused) {
-            (true, _) => colors.error_border,
-            (false, true) => colors.border_focused,
-            (false, false) => colors.border_variant,
-        };
         let mut title = div().row().items_center().gap(6.0).child(
             label(self.label.to_string())
                 .label_size(LabelSize::Small)
@@ -238,7 +233,29 @@ impl InputField {
                     .color(colors.text_muted),
             );
         }
-        let input = div()
+        let input = self.render_input(click_id, focused, error.is_some());
+        let mut column = div().col().gap(4.0).child(title).child(input);
+        if let Some(error) = error {
+            column = column.child(
+                label(error.to_string())
+                    .label_size(LabelSize::Small)
+                    .color(colors.error),
+            );
+        }
+        column.into()
+    }
+}
+
+impl InputField {
+    /// Just the input box, for forms that lay out the title themselves.
+    pub fn render_input(&self, click_id: u64, focused: bool, error: bool) -> Node {
+        let colors = theme();
+        let border = match (error, focused) {
+            (true, _) => colors.error_border,
+            (false, true) => colors.border_focused,
+            (false, false) => colors.border_variant,
+        };
+        div()
             .row()
             .items_center()
             .h_px(INPUT_HEIGHT + 12.0)
@@ -253,16 +270,8 @@ impl InputField {
                 colors.text,
                 INPUT_HEIGHT,
                 self.font,
-            ));
-        let mut column = div().col().gap(4.0).child(title).child(input);
-        if let Some(error) = error {
-            column = column.child(
-                label(error.to_string())
-                    .label_size(LabelSize::Small)
-                    .color(colors.error),
-            );
-        }
-        column.into()
+            ))
+            .into()
     }
 }
 

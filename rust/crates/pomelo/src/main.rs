@@ -185,6 +185,15 @@ fn project_info(
                     .unwrap_or_default()
             })
             .collect(),
+        ticket_categories: project
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                tickets
+                    .and_then(|tickets| tickets.category(&workspace.branch))
+                    .unwrap_or_default()
+            })
+            .collect(),
         prs: project
             .workspaces
             .iter()

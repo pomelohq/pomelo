@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use pom_jira::{Board, SprintIssue};
 use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
-use workspace::{outlined_button, status_line, InputField, WINDOW_MODAL_BASE};
+use workspace::{status_line, InputField, WINDOW_MODAL_BASE};
 
 use crate::TicketSource;
 
@@ -173,35 +173,51 @@ impl TicketPicker {
 
     pub fn render(&self, focused: bool) -> Node {
         let colors = theme();
-        let mut column = div().col().gap(4.0).child(self.field.render(
-            TICKET_FIELD,
-            focused,
-            Some("optional; pick from the sprint or type a key"),
-            None,
-        ));
-        let mut status = div().row().items_center().gap(8.0);
+        let mut header = div()
+            .row()
+            .items_center()
+            .gap(6.0)
+            .child(
+                label(self.field.label)
+                    .label_size(LabelSize::Small)
+                    .color(colors.text),
+            )
+            .child(
+                div().row().flex(1.0).child(
+                    label("optional; pick from the sprint or type a key")
+                        .label_size(LabelSize::Small)
+                        .color(colors.text_muted)
+                        .truncate(),
+                ),
+            );
         if let Some(board) = self
             .boards
             .iter()
             .find(|board| Some(board.id) == self.board)
         {
-            status = status.child(outlined_button(
-                BOARD,
-                Some(IconKind::ChevronUpDown),
+            header = header.child(board_chip(
                 &board.name,
                 self.boards.len() > 1 && self.loading.is_none(),
             ));
         }
+        let mut column = div()
+            .col()
+            .gap(4.0)
+            .child(header)
+            .child(self.field.render_input(TICKET_FIELD, focused, false));
         if self.loading.is_some() {
-            status = status.child(status_line(
+            column = column.child(status_line(
                 IconKind::RotateCw,
                 colors.icon_muted,
                 "Loading the sprint...",
             ));
         } else if let Some(error) = &self.error {
-            status = status.child(status_line(IconKind::Warning, colors.warning, error));
+            column = column.child(status_line(
+                IconKind::Warning,
+                colors.warning,
+                &format!("Couldn't load the sprint ({error}); type a ticket key instead"),
+            ));
         }
-        column = column.child(status);
         let suggestions = self.suggestions();
         if focused && !suggestions.is_empty() {
             let mut list = div()
@@ -221,6 +237,31 @@ impl TicketPicker {
         }
         column.into()
     }
+}
+
+/// The board the sprint comes from, cycled by clicking when there are several.
+fn board_chip(name: &str, enabled: bool) -> Node {
+    let colors = theme();
+    let mut chip = div()
+        .row()
+        .h_px(20.0)
+        .px(6.0)
+        .gap(4.0)
+        .items_center()
+        .rounded(4.0)
+        .child(
+            label(name.to_string())
+                .label_size(LabelSize::Small)
+                .color(colors.text_muted),
+        );
+    if enabled {
+        chip = chip.on_click(BOARD).child(
+            icon(IconKind::ChevronUpDown)
+                .size(11.0)
+                .color(colors.icon_muted),
+        );
+    }
+    chip.into()
 }
 
 fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool) -> Node {

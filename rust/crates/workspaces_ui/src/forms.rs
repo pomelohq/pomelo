@@ -263,8 +263,20 @@ impl CreateWorkspaceModal {
     fn repos_list(&self) -> Node {
         let colors = theme();
         let mut list = div().col().gap(2.0);
-        for (index, (repo, picked)) in self.repos.iter().enumerate() {
-            list = list.child(checkbox(REPO_BASE + index as u64, *picked, repo));
+        for (pair, repos) in self.repos.chunks(2).enumerate() {
+            let mut line = div().row().gap(12.0);
+            for (offset, (repo, picked)) in repos.iter().enumerate() {
+                let index = pair * 2 + offset;
+                line = line.child(div().row().flex(1.0).child(checkbox(
+                    REPO_BASE + index as u64,
+                    *picked,
+                    repo,
+                )));
+            }
+            if repos.len() == 1 {
+                line = line.child(div().row().flex(1.0));
+            }
+            list = list.child(line);
         }
         div()
             .col()
@@ -279,7 +291,7 @@ impl CreateWorkspaceModal {
                             .color(colors.text),
                     )
                     .child(
-                        label("none checked means all")
+                        label("all of them when none is checked")
                             .label_size(LabelSize::Small)
                             .color(colors.text_muted),
                     ),
@@ -310,20 +322,22 @@ impl WindowModal for CreateWorkspaceModal {
         if let Some(tickets) = &self.tickets {
             section = section.child(tickets.render(self.focus == CreateFocus::Ticket));
         }
-        section = section
-            .child(self.name.render(
+        let names = div()
+            .row()
+            .gap(12.0)
+            .child(div().col().flex(1.0).child(self.name.render(
                 NAME_FIELD,
                 self.focus == CreateFocus::Name,
-                Some("kept as typed"),
                 None,
-            ))
-            .child(self.branch.render(
+                None,
+            )))
+            .child(div().col().flex(1.0).child(self.branch.render(
                 BRANCH_FIELD,
                 self.focus == CreateFocus::Branch,
-                Some("the git branch of every repo"),
+                Some("of every repo"),
                 branch_error.as_deref(),
-            ))
-            .child(refine_row);
+            )));
+        section = section.child(names).child(refine_row);
         if !self.repos.is_empty() {
             section = section.child(self.repos_list());
         }

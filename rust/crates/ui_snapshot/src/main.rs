@@ -504,6 +504,7 @@ fn main() -> anyhow::Result<()> {
             labels: vec![String::new(), "Login page".into(), String::new()],
             running: vec![0, 2, 0],
             tickets: vec![String::new(), String::new(), "In Progress".into()],
+            ticket_categories: vec![String::new(), String::new(), "indeterminate".into()],
             prs: vec![
                 None,
                 Some(workspace::PrSummary {
