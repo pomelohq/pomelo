@@ -56,6 +56,8 @@ pub struct WorkspaceEffects {
     pub open_settings: bool,
     /// Work in this workspace (an index into `ProjectInfo::workspaces`) in this window.
     pub activate_workspace: Option<usize>,
+    /// Open (or focus) the workspace's coding agent.
+    pub open_agent: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3036,6 +3038,26 @@ impl WorkspaceView {
         self.pending.persist = true;
     }
 
+    /// Focus the terminal tab whose item has `id`, or add the item `make` builds; shows the terminal.
+    pub fn open_terminal_item(
+        &mut self,
+        id: &str,
+        make: impl FnOnce() -> Option<Box<dyn crate::Item>>,
+    ) {
+        let Some(view) = self.layout.terminal_view.as_mut() else {
+            return;
+        };
+        if !view.panes().reveal_item(id) {
+            let Some(item) = make() else {
+                return;
+            };
+            view.accept_foreign_item(item);
+        }
+        self.show_terminal();
+        self.set_terminal_focus(true);
+        self.panes_input = true;
+    }
+
     /// The terminal toggle: focus the terminal (showing it first), or hide it when it already has focus.
     pub fn toggle_terminal(&mut self) {
         if self.terminal_focused() {
@@ -3416,12 +3438,7 @@ impl WorkspaceView {
             self.toggle_side(side, was_visible);
             self.pending.persist = true;
         } else if id == AGENT_TOGGLE {
-            // The agent button: activate the agent in the right dock, toggling it if already visible.
-            let was_visible = self.layout.dock_open(DockPosition::Right)
-                && self.layout.shown_on(DockPosition::Right) == Some(Shown::Agent);
-            self.layout.active_panels[DockPosition::Right.index()] = Some(Shown::Agent);
-            self.toggle_side(DockPosition::Right, was_visible);
-            self.pending.persist = true;
+            self.pending.open_agent = true;
         } else if id == RIGHT_TOGGLE {
             self.layout.right.collapsed = !self.layout.right.collapsed;
             self.pending.persist = true;
