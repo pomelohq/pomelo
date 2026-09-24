@@ -35,6 +35,8 @@ pub struct Settings {
     pub show_language: bool,
     pub show_branch: bool,
     pub show_session_name: bool,
+    /// The AI CLI the Agent button opens in a workspace; `claude` also gets pom's MCP server and prompt.
+    pub agent_command: String,
 }
 
 impl Default for Settings {
@@ -64,6 +66,7 @@ impl Default for Settings {
             show_language: true,
             show_branch: true,
             show_session_name: true,
+            agent_command: "claude".into(),
         }
     }
 }

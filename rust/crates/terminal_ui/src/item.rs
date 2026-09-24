@@ -49,6 +49,8 @@ pub struct TerminalItem {
 struct Console {
     item_id: String,
     title: String,
+    /// A service's output stays readable after it exits; an agent's tab goes when the agent quits.
+    keep_after_exit: bool,
 }
 
 /// What a link points at: URLs as they are; paths only when they name an existing file, tried as written and
@@ -144,7 +146,39 @@ impl TerminalItem {
             ..TerminalOptions::default()
         };
         let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
-        item.console = Some(Console { item_id, title });
+        item.console = Some(Console {
+            item_id,
+            title,
+            keep_after_exit: true,
+        });
+        Ok(item)
+    }
+
+    /// A coding agent running `argv` in its own holder, started when not running yet. Closing the tab
+    /// leaves the agent running; the tab closes when the agent exits.
+    pub fn agent(
+        id: u64,
+        root: PathBuf,
+        item_id: String,
+        title: String,
+        holder: terminal::HolderOptions,
+        argv: Vec<String>,
+        waker: Waker,
+    ) -> anyhow::Result<Self> {
+        let mut argv = argv.into_iter();
+        let program = argv.next().unwrap_or_else(|| "zsh".to_string());
+        let options = TerminalOptions {
+            shell: Some((program, argv.collect())),
+            working_directory: Some(root.clone()),
+            holder: Some(holder),
+            ..TerminalOptions::default()
+        };
+        let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
+        item.console = Some(Console {
+            item_id,
+            title,
+            keep_after_exit: false,
+        });
         Ok(item)
     }
 
@@ -184,7 +218,11 @@ impl TerminalItem {
             ..TerminalOptions::default()
         };
         let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
-        item.console = Some(Console { item_id, title });
+        item.console = Some(Console {
+            item_id,
+            title,
+            keep_after_exit: true,
+        });
         Ok(item)
     }
 
@@ -616,7 +654,11 @@ impl Item for TerminalItem {
         ItemTick {
             changed: result.changed || result.title_changed,
             clipboard_store: result.clipboard_store,
-            close: result.close && self.console.is_none(),
+            close: result.close
+                && !self
+                    .console
+                    .as_ref()
+                    .is_some_and(|console| console.keep_after_exit),
         }
     }
 

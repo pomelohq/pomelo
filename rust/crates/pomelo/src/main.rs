@@ -374,6 +374,7 @@ struct App {
     alt_down: bool,
     ctrl_down: bool,
     agents: AgentTracker,
+    next_agent_item: u64,
 }
 
 /// What each workspace's coding agent last reported, and the watcher that says when it changes.
@@ -464,6 +465,101 @@ impl App {
         }
         self.agents.states = fresh;
         self.agents.primed = true;
+    }
+
+    /// Opens the workspace's coding agent in the terminal panel, or focuses its tab. The agent runs in
+    /// its own holder, so it survives the app and the tab reattaches to it.
+    fn open_agent(&mut self, id: WindowId) {
+        let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
+            return;
+        };
+        let (Ok(binary), Some(home)) = (std::env::current_exe(), std::env::var_os("HOME")) else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home);
+        let state = pom_paths::StateDir::from_env();
+        let cwd = project.active_root();
+        let branch = project.active_branch().to_string();
+        let is_main = project
+            .active_workspace()
+            .is_none_or(|workspace| workspace.is_main);
+        let command = self.settings.agent_command.trim().to_string();
+        let mut words = command.split_whitespace();
+        let program = words.next().unwrap_or("claude");
+        let is_claude = std::path::Path::new(program)
+            .file_name()
+            .is_some_and(|name| name == "claude");
+        let launch = if is_claude {
+            let mut launch = pom_agent::claude_launch(&pom_agent::LaunchContext {
+                state: &state,
+                home: &home,
+                binary: &binary,
+                tool_path: pom_services::tool_path(),
+                session: &project.session,
+                branch: &branch,
+                is_main,
+                cwd: &cwd,
+            });
+            let extra: Vec<&str> = words.collect();
+            if let (false, Some(script)) = (extra.is_empty(), launch.argv.last_mut()) {
+                script.push(' ');
+                script.push_str(&extra.join(" "));
+            }
+            launch
+        } else {
+            let name = std::path::Path::new(program).file_name().map_or_else(
+                || "agent".to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            pom_agent::AgentLaunch {
+                holder: format!(
+                    "ws-{}-{}-agent-{name}",
+                    pom_env::branch_safe(&project.session),
+                    pom_env::branch_safe(&branch)
+                ),
+                cwd: cwd.clone(),
+                argv: vec![
+                    "zsh".into(),
+                    "-lc".into(),
+                    format!(
+                        "export PATH='{}'; exec {command}",
+                        pom_services::tool_path().replace('\'', r"'\''")
+                    ),
+                ],
+                title: name,
+            }
+        };
+        let item_id = format!("agent:{}", launch.holder);
+        let item_number = self.next_agent_item;
+        self.next_agent_item += 1;
+        self.with_workspace_view(id, |view, _| {
+            view.open_terminal_item(&item_id, || {
+                let options = terminal::HolderOptions {
+                    dir: pom_ptyhost::SocketDir::from_env(),
+                    name: launch.holder.clone(),
+                    binary: binary.clone(),
+                    attach_only: false,
+                };
+                match terminal_ui::TerminalItem::agent(
+                    item_number,
+                    launch.cwd.clone(),
+                    item_id.clone(),
+                    launch.title.clone(),
+                    options,
+                    launch.argv.clone(),
+                    Arc::new(ui::wake),
+                ) {
+                    Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
+                    Err(error) => {
+                        eprintln!("could not open the agent: {error}");
+                        None
+                    }
+                }
+            });
+        });
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.dirty = true;
+        }
     }
 
     /// A clicked agent notification brings its workspace forward.
@@ -1061,6 +1157,9 @@ impl App {
         }
         if let Some(index) = effects.activate_workspace {
             self.activate_workspace(id, index);
+        }
+        if effects.open_agent {
+            self.open_agent(id);
         }
         if let Some(m) = self.mains.get_mut(&id) {
             m.dirty = true;
