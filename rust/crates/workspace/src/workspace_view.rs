@@ -3581,13 +3581,15 @@ impl WorkspaceView {
         if let Some(group) = self.zoom_group_at(x, y) {
             let modifiers = terminal_modifiers();
             return self.input(group).is_some_and(|input| {
-                input.item_pointer_scroll(x, y, dy, modifiers) || input.editor_scroll(x, y, dx, dy)
+                input.item_pointer_scroll(x, y, (dx, dy), modifiers)
+                    || input.editor_scroll(x, y, dx, dy)
             });
         }
         if !self.layout.session_menu && self.panel_body_at(x, y) {
             let modifiers = terminal_modifiers();
             return self.input(InputGroup::Panel).is_some_and(|input| {
-                input.item_pointer_scroll(x, y, dy, modifiers) || input.editor_scroll(x, y, dx, dy)
+                input.item_pointer_scroll(x, y, (dx, dy), modifiers)
+                    || input.editor_scroll(x, y, dx, dy)
             });
         }
         if !self.layout.session_menu {
@@ -3598,7 +3600,7 @@ impl WorkspaceView {
             // the gesture to the file tree.
             if over_center {
                 return self.layout.files_view.as_mut().is_some_and(|view| {
-                    view.item_pointer_scroll(x, y, dy, terminal_modifiers())
+                    view.item_pointer_scroll(x, y, (dx, dy), terminal_modifiers())
                         || view.editor_scroll(x, y, dx, dy)
                 });
             }

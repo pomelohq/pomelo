@@ -5358,10 +5358,10 @@ impl ItemInput for FilesView {
         &mut self,
         x: f32,
         y: f32,
-        delta_y: f32,
+        delta: (f32, f32),
         modifiers: terminal::Modifiers,
     ) -> bool {
-        self.panes.item_pointer_scroll(x, y, delta_y, modifiers)
+        self.panes.item_pointer_scroll(x, y, delta, modifiers)
     }
 }
 
