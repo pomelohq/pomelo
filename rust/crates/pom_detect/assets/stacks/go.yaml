@@ -1,0 +1,57 @@
+- id: go
+  language: go
+  framework: ""
+  priority: 0
+  detect:
+    markers: [go.mod]
+  default_pm: ""
+  install:
+    "": "go mod download"
+  run:
+    - { kind: server, cmd: "go run ." }
+  default_port: 8080
+  dep_cache: global-shared
+
+- id: go.gin
+  language: go
+  framework: gin
+  priority: 20
+  detect:
+    in_manifest: [{ file: go.mod, pattern: "gin-gonic/gin" }]
+  run:
+    - { kind: server, cmd: "go run ." }
+  default_port: 8080
+  dep_cache: global-shared
+
+- id: go.echo
+  language: go
+  framework: echo
+  priority: 20
+  detect:
+    in_manifest: [{ file: go.mod, pattern: "labstack/echo" }]
+  run:
+    - { kind: server, cmd: "go run ." }
+  default_port: 1323
+  dep_cache: global-shared
+
+- id: go.fiber
+  language: go
+  framework: fiber
+  priority: 20
+  detect:
+    in_manifest: [{ file: go.mod, pattern: "gofiber/fiber" }]
+  run:
+    - { kind: server, cmd: "go run ." }
+  default_port: 3000
+  dep_cache: global-shared
+
+- id: go.chi
+  language: go
+  framework: chi
+  priority: 18
+  detect:
+    in_manifest: [{ file: go.mod, pattern: "go-chi/chi" }]
+  run:
+    - { kind: server, cmd: "go run ." }
+  default_port: 8080
+  dep_cache: global-shared

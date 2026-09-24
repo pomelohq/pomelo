@@ -1,0 +1,63 @@
+- id: python
+  language: python
+  framework: ""
+  priority: 0
+  detect:
+    any_markers: [requirements.txt, pyproject.toml, setup.py, Pipfile]
+  package_managers:
+    - { lockfile: uv.lock, pm: uv }
+    - { lockfile: poetry.lock, pm: poetry }
+    - { lockfile: pdm.lock, pm: pdm }
+    - { lockfile: Pipfile.lock, pm: pipenv }
+    - { lockfile: requirements.txt, pm: pip }
+  default_pm: pip
+  install:
+    pip: "python -m venv .venv && .venv/bin/pip install -r requirements.txt"
+    uv: "uv sync"
+    poetry: "poetry install"
+    pdm: "pdm install"
+    pipenv: "pipenv install"
+  run:
+    - { kind: server, cmd: "python app.py" }
+  default_port: 8000
+  dep_cache: per-project
+
+- id: python.django
+  language: python
+  framework: django
+  priority: 20
+  detect:
+    markers: ["**/manage.py"]
+  run:
+    - { kind: server, cmd: "python manage.py runserver 0.0.0.0:{{port}}" }
+    - { kind: worker, cmd: "celery -A app worker -l INFO", when_dep: celery }
+  setup: ["python manage.py migrate"]
+  default_port: 8000
+  dep_cache: per-project
+
+- id: python.fastapi
+  language: python
+  framework: fastapi
+  priority: 20
+  detect:
+    any_manifest:
+      - { file: requirements.txt, pattern: "fastapi" }
+      - { file: pyproject.toml, pattern: "fastapi" }
+  run:
+    - { kind: server, cmd: "uvicorn app:app --host 0.0.0.0 --port {{port}} --reload" }
+    - { kind: worker, cmd: "celery -A app worker -l INFO", when_dep: celery }
+  default_port: 8000
+  dep_cache: per-project
+
+- id: python.flask
+  language: python
+  framework: flask
+  priority: 15
+  detect:
+    any_manifest:
+      - { file: requirements.txt, pattern: "[Ff]lask" }
+      - { file: pyproject.toml, pattern: "[Ff]lask" }
+  run:
+    - { kind: server, cmd: "flask run --host 0.0.0.0 --port {{port}}" }
+  default_port: 5000
+  dep_cache: per-project

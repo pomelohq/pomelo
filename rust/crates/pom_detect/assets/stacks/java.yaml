@@ -1,0 +1,62 @@
+- id: java
+  language: java
+  framework: ""
+  priority: 0
+  detect:
+    any_markers: [pom.xml, build.gradle, build.gradle.kts]
+  package_managers:
+    - { lockfile: pom.xml, pm: maven }
+    - { lockfile: build.gradle, pm: gradle }
+    - { lockfile: build.gradle.kts, pm: gradle }
+  default_pm: maven
+  install:
+    maven: "./mvnw -q compile"
+    gradle: "./gradlew build"
+  run:
+    - { kind: server, cmd: "./mvnw exec:java", when_pm: maven }
+    - { kind: server, cmd: "./gradlew run", when_pm: gradle }
+  default_port: 0
+  dep_cache: global-shared
+
+- id: java.spring-boot
+  language: java
+  framework: spring-boot
+  priority: 20
+  detect:
+    any_manifest:
+      - { file: pom.xml, pattern: "spring-boot" }
+      - { file: build.gradle, pattern: "spring" }
+      - { file: build.gradle.kts, pattern: "spring" }
+  run:
+    - { kind: server, cmd: "./mvnw spring-boot:run", when_pm: maven }
+    - { kind: server, cmd: "./gradlew bootRun", when_pm: gradle }
+  default_port: 8080
+  dep_cache: global-shared
+
+- id: java.quarkus
+  language: java
+  framework: quarkus
+  priority: 22
+  detect:
+    any_manifest:
+      - { file: pom.xml, pattern: "quarkus" }
+      - { file: build.gradle, pattern: "quarkus" }
+  run:
+    - { kind: server, cmd: "./mvnw quarkus:dev", when_pm: maven }
+    - { kind: server, cmd: "./gradlew quarkusDev", when_pm: gradle }
+  default_port: 8080
+  dep_cache: global-shared
+
+- id: java.micronaut
+  language: java
+  framework: micronaut
+  priority: 22
+  detect:
+    any_manifest:
+      - { file: pom.xml, pattern: "micronaut" }
+      - { file: build.gradle, pattern: "micronaut" }
+  run:
+    - { kind: server, cmd: "./mvnw mn:run", when_pm: maven }
+    - { kind: server, cmd: "./gradlew run", when_pm: gradle }
+  default_port: 8080
+  dep_cache: global-shared
