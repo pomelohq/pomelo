@@ -82,6 +82,8 @@ wgpu-hal = { path = "vendor/wgpu-hal" }
 # Our crates stay unoptimized for fast rebuilds; the hot third-party code on every frame (syntax queries, text
 # shaping, the rope, GPU submission) is optimized so a dev build scrolls smoothly.
 [profile.dev.package]
+# Third-party debug info piles up as unpacked object files on macOS (tens of GB) and nobody steps into it.
+"*" = { debug = false }
 tree-sitter = { opt-level = 3 }
 cosmic-text = { opt-level = 3 }
 glyphon = { opt-level = 3 }
