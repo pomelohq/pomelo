@@ -21,6 +21,7 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_LOG_LINES: usize = 200;
 const MAX_LOG_LINES: usize = 2000;
 const WORKSPACE_REPO: &str = "_ws";
+const DEFAULT_QUERY_LIMIT: usize = 200;
 
 /// The workspace an agent works in. Config and workspaces are read fresh on every call, so edits made
 /// through the config tools apply immediately.
@@ -97,6 +98,24 @@ fn positive(args: &ToolArgs, key: &str) -> Option<usize> {
 }
 
 impl Workspace {
+    fn connector<'a>(&'a self, config: &'a Config) -> pom_db::Connector<'a> {
+        pom_db::Connector {
+            runner: &self.runner,
+            config,
+            branch: &self.branch,
+        }
+    }
+
+    fn database(&self, config: &Config, name: &str) -> Result<pom_db::Database, String> {
+        if name.is_empty() {
+            return Err("db is required (a name from db_list)".into());
+        }
+        pom_db::list_databases(config, &self.branch)
+            .into_iter()
+            .find(|database| database.name == name)
+            .ok_or_else(|| format!("no database {name:?} in this branch (see db_list)"))
+    }
+
     fn config(&self) -> Result<Config, String> {
         Config::load(&self.config_path).map_err(|error| error.to_string())
     }
@@ -553,6 +572,85 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
             pretty(&databases)
         }),
     ));
+
+    let ws = workspace.clone();
+    tools.push(tool(
+        "db_list",
+        "List the databases you can browse in THIS branch, each with `name` (use it as `db` in db_tables/db_columns/db_query), `engine` (postgres|redis), `repo`, and `label`. Includes shared Redis keyspaces. Prefer this + db_query to inspect data over spinning up psql via run_in_env.",
+        None,
+        true,
+        Box::new(move |_| pretty(&pom_db::list_databases(&ws.config()?, &ws.branch))),
+    ));
+
+    let db_schema = || {
+        json!({
+            "type": "object",
+            "properties": { "db": { "type": "string", "description": "database name from db_list" } },
+            "required": ["db"],
+        })
+    };
+    let ws = workspace.clone();
+    tools.push(tool(
+        "db_tables",
+        "List a database's tables/views (postgres) or keyspaces (redis). `db` is a `name` from db_list.",
+        Some(db_schema()),
+        true,
+        Box::new(move |args| {
+            let config = ws.config()?;
+            let database = ws.database(&config, &text(args, "db"))?;
+            pretty(&ws.connector(&config).tables(&database)?)
+        }),
+    ));
+
+    let ws = workspace.clone();
+    tools.push(tool(
+        "db_columns",
+        "List every column (schema/table/name/type) in a database - use to learn the schema before writing a query. `db` is a `name` from db_list.",
+        Some(db_schema()),
+        true,
+        Box::new(move |args| {
+            let config = ws.config()?;
+            let database = ws.database(&config, &text(args, "db"))?;
+            pretty(&ws.connector(&config).columns(&database)?)
+        }),
+    ));
+
+    let ws = workspace.clone();
+    tools.push(Tool {
+        max_result_chars: 12000,
+        ..tool(
+            "db_query",
+            "Run SQL against a branch database (postgres) or a command against Redis, returning columns + rows. `db` is a `name` from db_list. Reads are safe; writes hit the REAL per-branch DB - verify with a SELECT first. Results are capped by `limit` (default 200).",
+            Some(json!({
+                "type": "object",
+                "properties": {
+                    "db": { "type": "string", "description": "database name from db_list" },
+                    "sql": { "type": "string", "description": "SQL (postgres) or a Redis command (e.g. `GET key`)" },
+                    "limit": { "type": "integer", "description": "max rows (default 200)" },
+                },
+                "required": ["db", "sql"],
+            })),
+            false,
+            Box::new(move |args| {
+                let sql = text(args, "sql");
+                if sql.trim().is_empty() {
+                    return Err("sql is required".into());
+                }
+                let config = ws.config()?;
+                let database = ws.database(&config, &text(args, "db"))?;
+                let limit = positive(args, "limit").unwrap_or(DEFAULT_QUERY_LIMIT);
+                let result = ws.connector(&config).query(&database, &sql, limit)?;
+                let mut out = json!({ "columns": result.columns, "rows": result.rows });
+                if result.truncated {
+                    out["truncated"] = json!(true);
+                }
+                if let Some(count) = result.rows_affected.filter(|count| *count > 0) {
+                    out["rows_affected"] = json!(count);
+                }
+                pretty(&out)
+            }),
+        )
+    });
 
     for action in ["start", "stop", "restart"] {
         let ws = workspace.clone();

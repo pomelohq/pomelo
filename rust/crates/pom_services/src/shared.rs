@@ -16,6 +16,16 @@ pub const SHARED_NETWORK: &str = "pomelo-shared";
 const PREFERRED_SPAN: u16 = 100;
 const POSTGRES: &str = "postgres";
 const DEFAULT_PG_PORT: u16 = 5432;
+const DEFAULT_REDIS_PORT: u16 = 6379;
+
+/// Where a shared database server listens and the login to use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Endpoint {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub password: String,
+}
 /// Used to reach a Postgres not published by one of our containers.
 const PSQL_IMAGE: &str = "postgres:16-alpine";
 
@@ -184,8 +194,8 @@ impl ServiceRunner {
         self.create_databases(config, &database_names(config, branch))
     }
 
-    /// The shared Postgres: its connection and the container publishing it, if one of ours does.
-    fn postgres(&self, config: &Config) -> Postgres {
+    /// Where the shared Postgres listens and how to log in (the service with a `db_user`, else the defaults).
+    pub fn postgres_endpoint(&self, config: &Config) -> Endpoint {
         let def = config
             .shared_services
             .values()
@@ -196,16 +206,40 @@ impl ServiceRunner {
                 .cloned()
                 .unwrap_or_else(|| fallback.to_string())
         };
-        let port = match self.shared_host_port(POSTGRES) {
-            0 => DEFAULT_PG_PORT,
-            port => port,
-        };
-        Postgres {
-            container: self.published_container(port),
+        Endpoint {
             host: pick(def.map(|def| &def.host), "localhost"),
+            port: match self.shared_host_port(POSTGRES) {
+                0 => DEFAULT_PG_PORT,
+                port => port,
+            },
             user: pick(def.map(|def| &def.db_user), POSTGRES),
             password: pick(def.map(|def| &def.db_password), POSTGRES),
-            port,
+        }
+    }
+
+    /// The Redis URL a workspace uses for shared service `name`: its instance's port and its slot's database.
+    pub fn redis_url(&self, name: &str, branch: &str) -> String {
+        let slot = self.slots.get(name, &pom_env::port_ws_key(branch));
+        let base = match self.shared_host_port(name) {
+            0 => DEFAULT_REDIS_PORT,
+            port => port,
+        };
+        let port = base + slot.map_or(0, |slot| slot.instance);
+        format!(
+            "redis://localhost:{port}/{}",
+            slot.map_or(0, |slot| slot.slot)
+        )
+    }
+
+    /// The shared Postgres: its connection and the container publishing it, if one of ours does.
+    fn postgres(&self, config: &Config) -> Postgres {
+        let endpoint = self.postgres_endpoint(config);
+        Postgres {
+            container: self.published_container(endpoint.port),
+            host: endpoint.host,
+            user: endpoint.user,
+            password: endpoint.password,
+            port: endpoint.port,
         }
     }
 

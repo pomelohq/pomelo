@@ -29,6 +29,8 @@ impl Fixture {
 default_branch: main
 repos:
   api:
+    databases:
+      main: "api_{{branch.safe}}"
     env:
       GREETING: "hi-{{branch.safe}}"
     commands:
@@ -140,6 +142,8 @@ fn an_agent_in_a_workspace_sees_and_drives_it() {
             ("config_validate", json!({"yaml": "session: [broken"})),
             ("service_url", json!({"service": "nope"})),
             ("workspace_info", json!({})),
+            ("db_list", json!({})),
+            ("db_query", json!({"db": "nope", "sql": "select 1"})),
         ],
     );
     assert!(!replies[0].1, "{}", replies[0].0);
@@ -178,6 +182,16 @@ fn an_agent_in_a_workspace_sees_and_drives_it() {
     assert_eq!(
         info["repos"][0]["services"][0]["tmux_window"],
         "svc-demo-feat-api-web"
+    );
+    let databases: Value = serde_json::from_str(&replies[7].0).expect("db_list json");
+    assert_eq!(
+        databases,
+        json!([{"name": "demo_api_feat", "engine": "postgres", "repo": "api", "label": "main"}])
+    );
+    assert!(
+        replies[8].1 && replies[8].0.contains("no database \"nope\""),
+        "{:?}",
+        replies[8]
     );
 }
 
