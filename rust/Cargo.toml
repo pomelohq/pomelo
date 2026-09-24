@@ -27,6 +27,7 @@ members = [
     "crates/pom_lock",
     "crates/pom_secrets",
     "crates/pom_forge",
+    "crates/pull_request_ui",
     "crates/pom_layout",
     "crates/pom_core",
     "crates/pom_ptyhost",

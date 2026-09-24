@@ -191,6 +191,7 @@ pub struct GitPanel {
     commit: CommitArea,
     active_repo: usize,
     remote_prompt: Option<(u64, Vec<String>, RemoteRequest)>,
+    pull_requests: Option<pull_request_ui::PullRequests>,
 }
 
 impl GitPanel {
@@ -227,8 +228,14 @@ impl GitPanel {
             commit: CommitArea::new(waker.clone()),
             active_repo: 0,
             remote_prompt: None,
+            pull_requests: None,
             waker,
         }
+    }
+
+    pub fn with_pull_requests(mut self, pull_requests: pull_request_ui::PullRequests) -> GitPanel {
+        self.pull_requests = Some(pull_requests);
+        self
     }
 
     fn scanner(&self) -> Scanner {
@@ -403,21 +410,24 @@ impl GitPanel {
                 if changes.behind > 0 {
                     position.push(format!("{} behind", changes.behind));
                 }
-                body.child(icon(chevron).size(12.0).color(theme().icon_muted))
+                let badge = self.pr_badge(index, *repo);
+                let mut title = div()
+                    .row()
+                    .flex(1.0)
+                    .gap(6.0)
+                    .items_center()
+                    .child(label(name).size(12.0).color(theme().text))
                     .child(
-                        div()
-                            .row()
-                            .flex(1.0)
-                            .gap(6.0)
-                            .items_center()
-                            .child(label(name).size(12.0).color(theme().text))
-                            .child(
-                                label(changes.branch.clone())
-                                    .size(12.0)
-                                    .color(theme().text_muted)
-                                    .truncate(),
-                            ),
-                    )
+                        label(changes.branch.clone())
+                            .size(12.0)
+                            .color(theme().text_muted)
+                            .truncate(),
+                    );
+                if let Some(badge) = badge {
+                    title = title.child(badge);
+                }
+                body.child(icon(chevron).size(12.0).color(theme().icon_muted))
+                    .child(title)
                     .child(
                         label(position.join(", "))
                             .size(12.0)
@@ -449,6 +459,76 @@ impl GitPanel {
                     .into()
             }
         }
+    }
+
+    fn pr_badge(&self, row: usize, repo: usize) -> Option<Node> {
+        let source = self.sources.get(repo)?;
+        let (target, pr) = self.pull_requests.as_ref()?.for_checkout(&source.root)?;
+        if pr.is_none() && target.head == source.default_branch {
+            return None;
+        }
+        let colors = theme();
+        let id = self.id(row, Control::Review);
+        let hot = self.hover == Some(id);
+        let (text, color) = match &pr {
+            Some(pr) => {
+                let color = match (pr.state.as_str(), pr.is_draft) {
+                    ("MERGED", _) => workspace::PrSeverity::Merged.color(),
+                    ("CLOSED", _) => colors.error,
+                    (_, true) => colors.text_muted,
+                    _ if pr.conflict || pr.checks == "fail" || pr.review == "changes" => {
+                        colors.error
+                    }
+                    _ if pr.checks == "pending" || pr.review == "review" => colors.warning,
+                    _ => colors.success,
+                };
+                (format!("#{}", pr.number), color)
+            }
+            None => ("Create Pull Request".to_string(), colors.text_accent),
+        };
+        Some(
+            div()
+                .row()
+                .h_px(18.0)
+                .px(5.0)
+                .gap(3.0)
+                .items_center()
+                .rounded(9.0)
+                .bg(Rgba::new(
+                    color.r,
+                    color.g,
+                    color.b,
+                    if hot { 0.24 } else { 0.14 },
+                ))
+                .on_click(id)
+                .child(icon(IconKind::PullRequest).size(11.0).color(color))
+                .child(label(text).size(11.0).color(color))
+                .into(),
+        )
+    }
+
+    fn open_pull_request(&mut self, repo: usize) {
+        let (Some(prs), Some(source)) =
+            (self.pull_requests.clone(), self.sources.get(repo).cloned())
+        else {
+            return;
+        };
+        let Some((target, pr)) = prs.for_checkout(&source.root) else {
+            return;
+        };
+        if pr.is_some() {
+            self.requests.push(PanelRequest::Reveal {
+                id: pull_request_ui::PullRequests::item_id(&target),
+                open: Box::new(move || Some(prs.item(target))),
+            });
+            return;
+        }
+        let url = working_copy::remote_url(&source.root, "origin")
+            .and_then(|remote| working_copy::create_pull_request_url(&remote, &target.head));
+        self.requests.push(match url {
+            Some(url) => PanelRequest::OpenUrl(url),
+            None => PanelRequest::Toast("Only GitHub remotes can start a pull request here".into()),
+        });
     }
 
     fn file(&self, repo: usize, file: usize) -> Option<(PathBuf, FileChange)> {
@@ -1250,6 +1330,10 @@ impl SidePanelView for GitPanel {
             return;
         };
         match self.rows.get(index).cloned() {
+            Some(Row::Repo { index: repo }) if control == Control::Review => {
+                self.active_repo = repo;
+                self.open_pull_request(repo)
+            }
             Some(Row::Repo { index: repo }) => {
                 self.active_repo = repo;
                 self.toggle_repo(repo)

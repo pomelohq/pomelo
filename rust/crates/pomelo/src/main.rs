@@ -89,7 +89,10 @@ fn terminal_view(
 }
 
 /// The Git panel for the active workspace: every repo checked out there, against its default branch.
-fn git_panel(project: &pom_core::Project) -> Box<dyn workspace::SidePanelView> {
+fn git_panel(
+    project: &pom_core::Project,
+    pull_requests: Option<&pull_request_ui::PullRequests>,
+) -> Box<dyn workspace::SidePanelView> {
     let sources = project
         .active_workspace()
         .map(|workspace| {
@@ -112,11 +115,11 @@ fn git_panel(project: &pom_core::Project) -> Box<dyn workspace::SidePanelView> {
         pom_env::branch_safe(&project.session),
         pom_env::branch_safe(project.active_branch())
     ));
-    Box::new(git_ui::GitPanel::new(
-        sources,
-        Some(reviews),
-        Arc::new(ui::wake),
-    ))
+    let panel = git_ui::GitPanel::new(sources, Some(reviews), Arc::new(ui::wake));
+    Box::new(match pull_requests {
+        Some(prs) => panel.with_pull_requests(prs.clone()),
+        None => panel,
+    })
 }
 
 /// The window's view of the project; `runner` (when services run) counts each workspace's running services.
@@ -124,6 +127,7 @@ fn project_info(
     project: &pom_core::Project,
     runner: Option<&pom_services::ServiceRunner>,
     tickets: Option<&workspaces_ui::TicketStatuses>,
+    pull_requests: Option<&pull_request_ui::PullRequests>,
 ) -> workspace::ProjectInfo {
     let running_holders = runner
         .map(|runner| runner.running_holders())
@@ -180,6 +184,11 @@ fn project_info(
                     .and_then(|tickets| tickets.status(&workspace.branch))
                     .unwrap_or_default()
             })
+            .collect(),
+        prs: project
+            .workspaces
+            .iter()
+            .map(|workspace| pull_requests.and_then(|prs| prs.summary(&workspace.branch)))
             .collect(),
     }
 }
@@ -386,6 +395,7 @@ struct MainWindow {
     ops: workspaces_ui::OpQueue,
     /// The project's Jira ticket status per workspace.
     tickets: Option<workspaces_ui::TicketStatuses>,
+    pull_requests: Option<pull_request_ui::PullRequests>,
     /// Refresh-main, auto-push and the port reaper, when this process holds the session's primary lock.
     background: Option<workspaces_ui::BackgroundSync>,
 }
@@ -747,6 +757,7 @@ impl App {
                 services: None,
                 ops: workspaces_ui::OpQueue::new(Arc::new(ui::wake)),
                 tickets: None,
+                pull_requests: None,
                 background: None,
             },
         );
@@ -772,6 +783,9 @@ impl App {
         let tickets = project.as_ref().map(|project| {
             workspaces_ui::TicketStatuses::new(state.clone(), &project.session, Arc::new(ui::wake))
         });
+        let pull_requests = project.as_ref().map(|project| {
+            pull_request_ui::PullRequests::new(state.clone(), &project.session, Arc::new(ui::wake))
+        });
         let background = services
             .as_ref()
             .zip(self.mains.get(&id))
@@ -787,6 +801,7 @@ impl App {
         if let Some(main) = self.mains.get_mut(&id) {
             main.background = background;
             main.tickets = tickets;
+            main.pull_requests = pull_requests;
             main.project = project;
             main.watcher = watcher;
             main.parked.clear();
@@ -806,7 +821,14 @@ impl App {
             .services
             .as_ref()
             .map(|services| services.runner.as_ref());
-        let info = project.map(|project| project_info(project, runner, main.tickets.as_ref()));
+        let info = project.map(|project| {
+            project_info(
+                project,
+                runner,
+                main.tickets.as_ref(),
+                main.pull_requests.as_ref(),
+            )
+        });
         let problem = project.and_then(config_problem);
         let config_path = project
             .map(|project| project.config_path.clone())
@@ -821,7 +843,7 @@ impl App {
             side_panels.push(services.database_panel(project));
         }
         if let Some(project) = project {
-            side_panels.push(git_panel(project));
+            side_panels.push(git_panel(project, main.pull_requests.as_ref()));
         }
         let terminal_root = workspace_root.unwrap_or_else(home_dir);
         let workspace_key = project.map_or_else(
@@ -891,7 +913,12 @@ impl App {
             .services
             .as_ref()
             .map(|services| services.runner.as_ref());
-        let info = project_info(project, runner, main.tickets.as_ref());
+        let info = project_info(
+            project,
+            runner,
+            main.tickets.as_ref(),
+            main.pull_requests.as_ref(),
+        );
         let problem = config_problem(project);
         let config_path = project.config_path.clone();
         let title = format!("{} - {} - Pomelo", project.session, project.active_branch());
@@ -948,7 +975,12 @@ impl App {
                 .map(|services| services.runner.as_ref());
             updates.push((
                 *id,
-                project_info(project, runner, main.tickets.as_ref()),
+                project_info(
+                    project,
+                    runner,
+                    main.tickets.as_ref(),
+                    main.pull_requests.as_ref(),
+                ),
                 config_problem(project),
                 project.config_path.clone(),
             ));

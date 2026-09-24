@@ -110,6 +110,9 @@ pub enum IconKind {
     Dash,
     ChevronUp,
     ExpandUp,
+    PullRequest,
+    Merged,
+    Clock,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

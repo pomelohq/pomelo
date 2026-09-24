@@ -199,6 +199,90 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if std::env::var("PRTAB").is_ok() {
+        use workspace::Item;
+        let (width, height) = (720.0_f32, 520.0_f32);
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-pr-{}", std::process::id()));
+        let target = pom_forge::PrTarget {
+            repo: "web".into(),
+            owner: "acme".into(),
+            name: "web".into(),
+            head: "feat-login".into(),
+        };
+        let check = |name: &str, workflow: &str, result: &str| pom_forge::Check {
+            name: name.into(),
+            workflow_name: workflow.into(),
+            details_url: "https://example.com".into(),
+            result: result.into(),
+            ..pom_forge::Check::default()
+        };
+        let mut pr = pom_forge::PullRequest {
+            number: 42,
+            title: "Add the login page with remember-me and rate limiting".into(),
+            state: "OPEN".into(),
+            head_ref_name: "feat-login".into(),
+            base_ref_name: "main".into(),
+            author: Some(pom_forge::Actor { login: "dev".into(), avatar_url: String::new() }),
+            additions: 184,
+            deletions: 23,
+            body: "Adds the login form and session handling.\n\n- Remember me for 30 days\n- Five attempts per minute per IP".into(),
+            labels: vec![
+                pom_forge::Label { name: "feature".into(), color: "a2eeef".into() },
+                pom_forge::Label { name: "needs-review".into(), color: "fbca04".into() },
+            ],
+            status_check_rollup: vec![
+                check("test", "CI", "pass"),
+                check("lint", "CI", "fail"),
+                check("deploy-preview", "", "pending"),
+            ],
+            reviewers: vec![
+                pom_forge::Reviewer { name: "ann".into(), state: "pending".into() },
+                pom_forge::Reviewer { name: "bea".into(), state: "changes".into() },
+                pom_forge::Reviewer { name: "cy".into(), state: "approved".into() },
+            ],
+            ..pom_forge::PullRequest::default()
+        };
+        pr.checks = "fail".into();
+        let mut item = pull_request_ui::PrItem::new(
+            pom_paths::StateDir::new(dir.join("state")),
+            "myproject".into(),
+            std::sync::Arc::new(|| {}),
+            target,
+            None,
+        );
+        item.show(Some(pr));
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        item.paint_body(body, true);
+        if std::env::var("CHECKS").is_ok() {
+            item.pointer_down(110.0, 119.0, 1, terminal::Modifiers::default());
+        }
+        let painted = item
+            .paint_body(body, true)
+            .ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if dir.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&dir) {
+                eprintln!("remove {}: {error}", dir.display());
+            }
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     // With GITPANEL=<repo dir>, render the Git panel for that repository (against `main`).
     if let Ok(repo) = std::env::var("GITPANEL") {
         use workspace::SidePanelView;
@@ -287,6 +371,17 @@ fn main() -> anyhow::Result<()> {
             labels: vec![String::new(), "Login page".into(), String::new()],
             running: vec![0, 2, 0],
             tickets: vec![String::new(), String::new(), "In Progress".into()],
+            prs: vec![
+                None,
+                Some(workspace::PrSummary {
+                    count: 2,
+                    severity: workspace::PrSeverity::Warn,
+                }),
+                Some(workspace::PrSummary {
+                    count: 1,
+                    severity: workspace::PrSeverity::Danger,
+                }),
+            ],
         });
         let current = project.as_ref().map(|_| 0);
         let mut app = ui::Application::new();

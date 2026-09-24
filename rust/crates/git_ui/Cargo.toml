@@ -11,9 +11,12 @@ path = "src/git_ui.rs"
 [dependencies]
 files_ui = { path = "../files_ui" }
 git = { path = "../git" }
+pull_request_ui = { path = "../pull_request_ui" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }
 serde_json.workspace = true
 
 [dev-dependencies]
+pom_forge = { path = "../pom_forge" }
+pom_paths = { path = "../pom_paths" }
 tempfile = "3"

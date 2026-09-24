@@ -82,14 +82,26 @@ impl PrCache {
         client: &Client,
         targets: &[PrTarget],
     ) -> Result<bool, crate::ForgeError> {
+        let due = self.due(targets);
+        if due.is_empty() {
+            return Ok(false);
+        }
+        let (found, failure) = fetch_heads(client, &due);
+        self.absorb(found, failure)
+    }
+
+    pub fn due(&self, targets: &[PrTarget]) -> Vec<PrTarget> {
         if self.retry_at.is_some_and(|at| Instant::now() < at) {
-            return Ok(false);
+            return Vec::new();
         }
-        let stale = self.stale(targets);
-        if stale.is_empty() {
-            return Ok(false);
-        }
-        let (found, failure) = fetch_heads(client, &stale);
+        self.stale(targets)
+    }
+
+    pub fn absorb(
+        &mut self,
+        found: HashMap<String, Option<PullRequest>>,
+        failure: Option<crate::ForgeError>,
+    ) -> Result<bool, crate::ForgeError> {
         let changed = self.record(found);
         if changed {
             self.save();
@@ -101,6 +113,14 @@ impl PrCache {
             }
             None => Ok(changed),
         }
+    }
+
+    pub fn remember(&mut self, prs: Vec<(PrTarget, PullRequest)>) {
+        self.record(
+            prs.into_iter()
+                .map(|(target, pr)| (target.key(), Some(pr)))
+                .collect(),
+        );
     }
 
     fn record(&mut self, found: HashMap<String, Option<PullRequest>>) -> bool {
