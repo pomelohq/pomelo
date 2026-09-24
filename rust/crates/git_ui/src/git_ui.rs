@@ -2,7 +2,7 @@
 //! default branch (committed or not), with a status icon, the path and line counts. Reading git runs on a
 //! background thread; the panel refreshes while it is shown.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,6 +31,7 @@ pub struct RepoSource {
 enum Control {
     Row = 0,
     Refresh = 1,
+    Review = 2,
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +43,7 @@ enum Row {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MenuAction {
+    ToggleReviewed,
     OpenDiff,
     Open,
     CopyPath,
@@ -58,7 +60,26 @@ struct OpenMenu {
 #[derive(Default)]
 struct Scan {
     repos: Vec<RepoChanges>,
+    /// `repo/path` -> fingerprint of the file as it is now, to tell whether a review still holds.
+    fingerprints: HashMap<String, String>,
     loaded: bool,
+}
+
+/// FNV-1a over the file's bytes: stable across runs, which a review mark must be.
+fn fingerprint(path: &std::path::Path) -> String {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+            });
+            format!("{hash:016x}")
+        }
+        Err(_) => "deleted".to_string(),
+    }
+}
+
+fn review_key(repo: &str, path: &str) -> String {
+    format!("{repo}/{path}")
 }
 
 /// Reads every repo and publishes the result; wakes the UI only when something changed.
@@ -76,9 +97,23 @@ impl Scanner {
             .iter()
             .map(|source| git::branch_changes(&source.root, &source.default_branch))
             .collect();
+        let fingerprints: HashMap<String, String> = self
+            .sources
+            .iter()
+            .zip(&repos)
+            .flat_map(|(source, changes)| {
+                changes.files.iter().map(|file| {
+                    (
+                        review_key(&source.name, &file.path),
+                        fingerprint(&changes.root.join(&file.path)),
+                    )
+                })
+            })
+            .collect();
         let changed = self.scan.lock().is_ok_and(|mut scan| {
-            let changed = !scan.loaded || scan.repos != repos;
+            let changed = !scan.loaded || scan.repos != repos || scan.fingerprints != fingerprints;
             scan.repos = repos;
+            scan.fingerprints = fingerprints;
             scan.loaded = true;
             changed
         });
@@ -104,6 +139,9 @@ pub struct GitPanel {
     scroll: f32,
     viewport_h: f32,
     menu: Option<OpenMenu>,
+    /// Where review marks are kept, and the marks: `repo/path` -> fingerprint when marked.
+    reviews_file: Option<PathBuf>,
+    reviewed: HashMap<String, String>,
     /// A discard waiting for confirmation: prompt tag, repo, file.
     confirm: Option<(u64, usize, usize)>,
     next_tag: u64,
@@ -111,8 +149,20 @@ pub struct GitPanel {
 }
 
 impl GitPanel {
-    pub fn new(sources: Vec<RepoSource>, waker: Arc<dyn Fn() + Send + Sync>) -> GitPanel {
+    /// `reviews_file` keeps which files were marked reviewed; `None` keeps marks only while open.
+    pub fn new(
+        sources: Vec<RepoSource>,
+        reviews_file: Option<PathBuf>,
+        waker: Arc<dyn Fn() + Send + Sync>,
+    ) -> GitPanel {
+        let reviewed = reviews_file
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
         GitPanel {
+            reviews_file,
+            reviewed,
             sources: Arc::new(sources),
             scan: Arc::new(Mutex::new(Scan::default())),
             scanning: Arc::new(AtomicBool::new(false)),
@@ -238,6 +288,7 @@ impl GitPanel {
         let control = match offset % ROW_STRIDE {
             0 => Control::Row,
             1 => Control::Refresh,
+            2 => Control::Review,
             _ => return None,
         };
         Some(((offset / ROW_STRIDE) as usize, control))
@@ -250,7 +301,7 @@ impl GitPanel {
     fn hovered_row(&self) -> Option<usize> {
         self.hover
             .and_then(|id| self.decode(id))
-            .filter(|(_, control)| *control == Control::Row)
+            .filter(|(_, control)| *control != Control::Refresh)
             .map(|(row, _)| row)
     }
 
@@ -329,10 +380,13 @@ impl GitPanel {
                 else {
                     return div().into();
                 };
+                let reviewed = self.is_reviewed(*repo, &change.path);
+                let toggle = self.id(index, Control::Review);
                 body.child(div().w_px(12.0))
                     .child(status_icon(change.status))
-                    .child(path_label(change))
+                    .child(path_label(change, reviewed))
                     .child(diff_stat(change))
+                    .child(review_box(toggle, reviewed, self.hover == Some(toggle)))
                     .into()
             }
         }
@@ -374,6 +428,58 @@ impl GitPanel {
         });
     }
 
+    /// Marked reviewed, and not changed since.
+    fn is_reviewed(&self, repo: usize, path: &str) -> bool {
+        let Some(source) = self.sources.get(repo) else {
+            return false;
+        };
+        let key = review_key(&source.name, path);
+        let current = self
+            .scan
+            .lock()
+            .ok()
+            .and_then(|scan| scan.fingerprints.get(&key).cloned());
+        current.is_some() && self.reviewed.get(&key) == current.as_ref()
+    }
+
+    fn toggle_reviewed(&mut self, repo: usize, file: usize) {
+        let (Some(source), Some((_, change))) = (self.sources.get(repo), self.file(repo, file))
+        else {
+            return;
+        };
+        let key = review_key(&source.name, &change.path);
+        if self.is_reviewed(repo, &change.path) {
+            self.reviewed.remove(&key);
+        } else {
+            let current = self
+                .scan
+                .lock()
+                .ok()
+                .and_then(|scan| scan.fingerprints.get(&key).cloned());
+            if let Some(current) = current {
+                self.reviewed.insert(key, current);
+            }
+        }
+        self.save_reviews();
+    }
+
+    fn save_reviews(&self) {
+        let Some(path) = self.reviews_file.as_ref() else {
+            return;
+        };
+        let written = serde_json::to_string_pretty(&self.reviewed)
+            .map_err(std::io::Error::other)
+            .and_then(|text| {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(path, text)
+            });
+        if let Err(error) = written {
+            eprintln!("git panel: save reviews: {error}");
+        }
+    }
+
     fn toggle_repo(&mut self, repo: usize) {
         if !self.collapsed.remove(&repo) {
             self.collapsed.insert(repo);
@@ -389,6 +495,7 @@ impl GitPanel {
             return;
         };
         match action {
+            MenuAction::ToggleReviewed => self.toggle_reviewed(repo, file),
             MenuAction::OpenDiff => self.open_diff(repo, file),
             MenuAction::Open => self.requests.push(PanelRequest::OpenFile(path)),
             MenuAction::CopyPath => self
@@ -429,7 +536,35 @@ fn status_icon(status: ChangeStatus) -> Node {
 }
 
 /// The file name, then its folder muted and cut from the front when the row is narrow.
-fn path_label(change: &FileChange) -> Node {
+/// The "reviewed" checkbox at the end of a file row.
+fn review_box(id: u64, checked: bool, hot: bool) -> Node {
+    let mut square = div()
+        .w_px(14.0)
+        .h_px(14.0)
+        .rounded(3.0)
+        .items_center()
+        .justify_center()
+        .on_click(id);
+    if checked {
+        square = square.bg(theme().text_accent).child(
+            icon(IconKind::Check)
+                .size(10.0)
+                .color(theme().editor_background),
+        );
+    } else {
+        square = square.border(
+            1.0,
+            if hot {
+                theme().border_focused
+            } else {
+                theme().border
+            },
+        );
+    }
+    square.into()
+}
+
+fn path_label(change: &FileChange, reviewed: bool) -> Node {
     let (folder, name) = match change.path.rsplit_once('/') {
         Some((folder, name)) => (Some(folder.to_string()), name.to_string()),
         None => (None, change.path.clone()),
@@ -437,6 +572,8 @@ fn path_label(change: &FileChange) -> Node {
     let deleted = change.status == ChangeStatus::Deleted;
     let name_color = if deleted {
         theme().text_disabled
+    } else if reviewed {
+        theme().text_muted
     } else {
         theme().text
     };
@@ -504,6 +641,17 @@ impl SidePanelView for GitPanel {
         let refresh_id = self.refresh_id();
         let hot = self.hover == Some(refresh_id);
         let total: usize = repos.iter().map(|repo| repo.files.len()).sum();
+        let reviewed: usize = repos
+            .iter()
+            .enumerate()
+            .map(|(index, changes)| {
+                changes
+                    .files
+                    .iter()
+                    .filter(|file| self.is_reviewed(index, &file.path))
+                    .count()
+            })
+            .sum();
         let header = div()
             .row()
             .h_px(HEADER_H)
@@ -513,10 +661,10 @@ impl SidePanelView for GitPanel {
             .child(label("Git").size(12.0).color(theme().text_muted))
             .child(
                 div().row().flex(1.0).items_center().child(
-                    label(if total == 1 {
-                        "1 changed file".to_string()
-                    } else {
-                        format!("{total} changed files")
+                    label(match (total, reviewed) {
+                        (1, 0) => "1 changed file".to_string(),
+                        (total, 0) => format!("{total} changed files"),
+                        (total, reviewed) => format!("{reviewed} of {total} reviewed"),
                     })
                     .size(11.0)
                     .color(theme().text_placeholder)
@@ -563,11 +711,14 @@ impl SidePanelView for GitPanel {
             self.refresh();
             return;
         }
-        let Some((index, _)) = self.decode(id) else {
+        let Some((index, control)) = self.decode(id) else {
             return;
         };
         match self.rows.get(index).cloned() {
             Some(Row::Repo { index: repo }) => self.toggle_repo(repo),
+            Some(Row::File { repo, file }) if control == Control::Review => {
+                self.toggle_reviewed(repo, file)
+            }
             Some(Row::File { repo, file }) => self.open_diff(repo, file),
             _ => {}
         }
@@ -620,6 +771,12 @@ impl SidePanelView for GitPanel {
             push("Open Diff", MenuAction::OpenDiff, false);
             push("Open File", MenuAction::Open, false);
         }
+        let reviewed_label = if self.is_reviewed(repo, &change.path) {
+            "Mark as Not Reviewed"
+        } else {
+            "Mark as Reviewed"
+        };
+        push(reviewed_label, MenuAction::ToggleReviewed, true);
         push("Copy Path", MenuAction::CopyPath, true);
         push("Copy Relative Path", MenuAction::CopyRelativePath, false);
         if change.uncommitted {

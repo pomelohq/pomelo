@@ -106,7 +106,16 @@ fn git_panel(project: &pom_core::Project) -> Box<dyn workspace::SidePanelView> {
                 .collect()
         })
         .unwrap_or_default();
-    Box::new(git_ui::GitPanel::new(sources, Arc::new(ui::wake)))
+    let reviews = pom_paths::StateDir::from_env().path(format!(
+        "reviews/{}-{}.json",
+        pom_env::branch_safe(&project.session),
+        pom_env::branch_safe(project.active_branch())
+    ));
+    Box::new(git_ui::GitPanel::new(
+        sources,
+        Some(reviews),
+        Arc::new(ui::wake),
+    ))
 }
 
 fn project_info(project: &pom_core::Project) -> workspace::ProjectInfo {

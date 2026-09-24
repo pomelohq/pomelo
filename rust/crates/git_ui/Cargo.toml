@@ -12,6 +12,7 @@ path = "src/git_ui.rs"
 git = { path = "../git" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
