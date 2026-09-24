@@ -252,6 +252,20 @@ impl PaneGroupView {
         self.group.leaf_at_mut(&path)
     }
 
+    pub fn reveal_item(&mut self, id: &str) -> bool {
+        for path in self.pane_order.clone() {
+            let Some(pane) = self.group.leaf_at_mut(&path) else {
+                continue;
+            };
+            if let Some(index) = pane.index_of_id(id) {
+                pane.activate_user(index);
+                self.active = path;
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn active_item_mut(&mut self) -> Option<&mut dyn Item> {
         self.active_pane_mut()?.active_item_mut()
     }

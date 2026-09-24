@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use pom_config::{Config, Dir, Service};
 use pom_env::{EnvSources, SlotAllocation, BIND_IP};
+use pom_layout::WorkspaceState;
 use pom_paths::StateDir;
 use pom_ports::{PortManager, PortState, Probe, SystemProbe};
 use pom_ptyhost::{SocketDir, SpawnRequest};
@@ -20,6 +21,7 @@ use crate::tool_path::tool_path;
 
 /// A repo named like this (or empty) addresses a workspace-level service.
 const WORKSPACE_REPO: &str = "_ws";
+const LOCAL_PROFILE: &str = "local";
 /// Start returns once the holder accepts clients, so its console can be opened right away.
 const HOLDER_START_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -33,7 +35,7 @@ pub struct ServiceTarget {
 }
 
 impl ServiceTarget {
-    fn is_workspace_level(&self) -> bool {
+    pub fn is_workspace_level(&self) -> bool {
         self.repo.is_empty() || self.repo == WORKSPACE_REPO
     }
 }
@@ -217,6 +219,46 @@ impl ServiceRunner {
             .and_then(|modes| modes.get(&format!("{repo}~{service_name}")).cloned())
             .filter(|mode| !mode.is_empty())
             .unwrap_or_else(|| service.mode.clone())
+    }
+
+    pub fn env_profile(&self, config: &Config, target: &ServiceTarget) -> String {
+        let Some(dir) = config.repos.get(&target.repo) else {
+            return String::new();
+        };
+        let state = WorkspaceState::load(&pom_layout::workspace_folder(
+            &self.project_root,
+            &target.branch,
+        ));
+        let profile =
+            state.service_env(&format!("{}/{}", alias(&target.repo, dir), target.service));
+        if profile.is_empty() {
+            LOCAL_PROFILE.to_string()
+        } else {
+            profile.to_string()
+        }
+    }
+
+    pub fn set_env_profile(
+        &self,
+        config: &Config,
+        target: &ServiceTarget,
+        profile: &str,
+    ) -> Result<(), ServiceError> {
+        let dir = config
+            .repos
+            .get(&target.repo)
+            .ok_or_else(|| ServiceError::UnknownRepo(target.repo.clone()))?;
+        let folder = pom_layout::workspace_folder(&self.project_root, &target.branch);
+        let mut state = WorkspaceState::load(&folder);
+        let key = format!("{}/{}", alias(&target.repo, dir), target.service);
+        if profile.is_empty() || profile == LOCAL_PROFILE {
+            state.service_envs.shift_remove(&key);
+        } else {
+            state.service_envs.insert(key, profile.to_string());
+        }
+        std::fs::create_dir_all(&folder)?;
+        state.save(&folder)?;
+        Ok(())
     }
 
     /// The port leased to a repo service with a port, once it has one.

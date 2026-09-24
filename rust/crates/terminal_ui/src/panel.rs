@@ -47,6 +47,7 @@ impl HolderScope {
             dir: self.dir.clone(),
             name,
             binary: self.binary.clone(),
+            attach_only: false,
         }
     }
 

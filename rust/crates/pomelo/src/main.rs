@@ -295,6 +295,53 @@ struct MainWindow {
     watcher: Option<pom_core::ConfigWatcher>,
     /// The project's other workspaces, keyed by folder, kept alive while this one has the window.
     parked: std::collections::HashMap<std::path::PathBuf, workspace::ParkedWorkspace>,
+    services: Option<ProjectServices>,
+}
+
+struct ProjectServices {
+    runner: Arc<pom_services::ServiceRunner>,
+    config: services_ui::SharedConfig,
+}
+
+impl ProjectServices {
+    fn new(project: &pom_core::Project, state: &pom_paths::StateDir) -> Option<ProjectServices> {
+        let binary = std::env::current_exe()
+            .map_err(|error| eprintln!("services cannot start without the app binary: {error}"))
+            .ok()?;
+        let runner = pom_services::ServiceRunner::new(pom_services::RunnerOptions {
+            project_root: project.root.clone(),
+            session: project.session.clone(),
+            state: state.clone(),
+            holders: pom_ptyhost::SocketDir::from_env(),
+            binary,
+        });
+        Some(ProjectServices {
+            runner: Arc::new(runner),
+            config: Arc::new(std::sync::RwLock::new(project.config.clone().map(Arc::new))),
+        })
+    }
+
+    fn update_config(&self, project: &pom_core::Project) {
+        if let Ok(mut config) = self.config.write() {
+            *config = project.config.clone().map(Arc::new);
+        }
+    }
+
+    fn panel(&self, project: &pom_core::Project) -> Box<dyn workspace::SidePanelView> {
+        let is_main = project
+            .active_workspace()
+            .is_none_or(|workspace| workspace.is_main);
+        Box::new(services_ui::ServicesPanel::new(
+            services_ui::ServicesContext {
+                runner: self.runner.clone(),
+                config: self.config.clone(),
+                branch: project.active_branch().to_string(),
+                is_main,
+                waker: Arc::new(ui::wake),
+            },
+            project.active_root(),
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -378,6 +425,7 @@ impl App {
                 project: None,
                 watcher: None,
                 parked: std::collections::HashMap::new(),
+                services: None,
             },
         );
         id
@@ -396,10 +444,14 @@ impl App {
                 .map_err(|error| eprintln!("config watch failed: {error}"))
                 .ok()
         });
+        let services = project
+            .as_ref()
+            .and_then(|project| ProjectServices::new(project, &state));
         if let Some(main) = self.mains.get_mut(&id) {
             main.project = project;
             main.watcher = watcher;
             main.parked.clear();
+            main.services = services;
         }
         self.install_project_views(id);
         self.refresh_sessions();
@@ -420,6 +472,10 @@ impl App {
         let files: Option<Box<dyn workspace::FunctionView>> = workspace_root.clone().map(|root| {
             Box::new(files_ui::FilesView::new(root)) as Box<dyn workspace::FunctionView>
         });
+        let side_panels: Vec<Box<dyn workspace::SidePanelView>> = match (&main.services, project) {
+            (Some(services), Some(project)) => vec![services.panel(project)],
+            _ => Vec::new(),
+        };
         let terminal_root = workspace_root.unwrap_or_else(home_dir);
         let workspace_key = project.map_or_else(
             || "home".to_string(),
@@ -441,6 +497,7 @@ impl App {
                 files,
                 Some(terminal_view(terminal_root, &workspace_key)),
             );
+            view.set_side_panels(side_panels);
             view.set_config_problem(problem, &config_path);
         });
         if let Some(main) = self.mains.get_mut(&id) {
@@ -523,6 +580,9 @@ impl App {
             let root_before = project.active_root();
             if !project.reload(&state) {
                 continue;
+            }
+            if let Some(services) = &main.services {
+                services.update_config(project);
             }
             main.dirty = true;
             // The active workspace was removed (or main moved into its folder): follow it.

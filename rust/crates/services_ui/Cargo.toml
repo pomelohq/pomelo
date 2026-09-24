@@ -1,0 +1,22 @@
+[package]
+name = "services_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Services panel: a workspace's services with live status, start/stop controls and their consoles."
+
+[lib]
+path = "src/services_ui.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+pom_services = { path = "../pom_services" }
+terminal = { path = "../terminal" }
+terminal_ui = { path = "../terminal_ui" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }
+
+[dev-dependencies]
+pom_paths = { path = "../pom_paths" }
+tempfile = "3"

@@ -43,6 +43,12 @@ pub struct TerminalItem {
     pressed_link: Option<HyperlinkMatch>,
     hovered_target: Option<TerminalOpenTarget>,
     open_request: Option<TerminalOpenTarget>,
+    console: Option<Console>,
+}
+
+struct Console {
+    item_id: String,
+    title: String,
 }
 
 /// What a link points at: URLs as they are; paths only when they name an existing file, tried as written and
@@ -121,6 +127,48 @@ impl TerminalItem {
         Ok(item)
     }
 
+    pub fn service_console(
+        id: u64,
+        root: PathBuf,
+        item_id: String,
+        title: String,
+        holder: terminal::HolderOptions,
+        waker: Waker,
+    ) -> anyhow::Result<Self> {
+        let options = TerminalOptions {
+            working_directory: Some(root.clone()),
+            holder: Some(terminal::HolderOptions {
+                attach_only: true,
+                ..holder
+            }),
+            ..TerminalOptions::default()
+        };
+        let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
+        item.console = Some(Console { item_id, title });
+        Ok(item)
+    }
+
+    pub fn service_log(
+        id: u64,
+        root: PathBuf,
+        item_id: String,
+        title: String,
+        log: &Path,
+        waker: Waker,
+    ) -> anyhow::Result<Self> {
+        let options = TerminalOptions {
+            shell: Some((
+                "/usr/bin/tail".to_string(),
+                vec!["-n".into(), "+2".into(), log.to_string_lossy().into_owned()],
+            )),
+            working_directory: Some(root.clone()),
+            ..TerminalOptions::default()
+        };
+        let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
+        item.console = Some(Console { item_id, title });
+        Ok(item)
+    }
+
     pub fn with_terminal(id: u64, root: PathBuf, terminal: Terminal) -> Self {
         Self {
             id,
@@ -133,6 +181,7 @@ impl TerminalItem {
             pressed_link: None,
             hovered_target: None,
             open_request: None,
+            console: None,
         }
     }
 
@@ -426,6 +475,9 @@ pub(crate) fn saved_holder(item: &workspace::persistence::SerializedItem) -> Opt
 
 impl Item for TerminalItem {
     fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
+        if self.console.is_some() {
+            return None;
+        }
         let cwd = self
             .terminal
             .process_info()
@@ -438,15 +490,23 @@ impl Item for TerminalItem {
     }
 
     fn closed(&mut self) {
-        self.terminal.terminate();
+        if self.console.is_none() {
+            self.terminal.terminate();
+        }
     }
 
     fn id(&self) -> Option<String> {
-        Some(format!("terminal:{}", self.id))
+        Some(match &self.console {
+            Some(console) => console.item_id.clone(),
+            None => format!("terminal:{}", self.id),
+        })
     }
 
     fn title(&self) -> String {
-        self.terminal.tab_title(true)
+        match &self.console {
+            Some(console) => console.title.clone(),
+            None => self.terminal.tab_title(true),
+        }
     }
 
     fn tab_icon(&self) -> Option<IconKind> {
@@ -537,7 +597,7 @@ impl Item for TerminalItem {
         ItemTick {
             changed: result.changed || result.title_changed,
             clipboard_store: result.clipboard_store,
-            close: result.close,
+            close: result.close && self.console.is_none(),
         }
     }
 

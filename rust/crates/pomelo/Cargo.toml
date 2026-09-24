@@ -22,6 +22,8 @@ pom_core = { path = "../pom_core" }
 pom_paths = { path = "../pom_paths" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_env = { path = "../pom_env" }
+pom_services = { path = "../pom_services" }
+services_ui = { path = "../services_ui" }
 winit.workspace = true
 anyhow.workspace = true
 

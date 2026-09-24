@@ -69,9 +69,25 @@ pub enum SessionRequest {
 pub struct ParkedWorkspace {
     files: Option<Box<dyn crate::FunctionView>>,
     terminal: Option<Box<dyn crate::TerminalPanelView>>,
+    side_panels: Vec<Box<dyn crate::SidePanelView>>,
     active_panels: [Option<Shown>; 3],
     right_collapsed: bool,
     bottom_collapsed: bool,
+}
+
+fn clipped_hits(painted: &Painted, clip: Rect) -> Vec<(Rect, u64)> {
+    painted
+        .hits
+        .iter()
+        .filter_map(|(r, id)| {
+            let x0 = r.x.max(clip.x);
+            let y0 = r.y.max(clip.y);
+            let x1 = (r.x + r.w).min(clip.x + clip.w);
+            let y1 = (r.y + r.h).min(clip.y + clip.h);
+            (x1 > x0 && y1 > y0)
+                .then(|| (Rect::new(x0, y0, x1 - x0, y1 - y0, Rgba::TRANSPARENT), *id))
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,6 +239,7 @@ impl WorkspaceView {
         self.layout.project = project;
         self.layout.files_view = files_view;
         self.layout.terminal_view = terminal_view;
+        self.layout.side_panels.clear();
         self.layout.session_menu = false;
         self.panes_restored = false;
         self.saved_panes = None;
@@ -236,6 +253,18 @@ impl WorkspaceView {
         self.shown_problem = None;
     }
 
+    fn function_panel_painted(&mut self, side: DockPosition, region: Rect) -> Option<Painted> {
+        let Some(Shown::Func(kind)) = self.layout.shown_on(side) else {
+            return None;
+        };
+        let scale = ui::ui_text_scale();
+        let node = match self.layout.side_panel_on(side) {
+            Some(panel) => panel.render(region.w / scale, region.h / scale),
+            None => function_dock_body(kind),
+        };
+        Some(ui::render(&node, region))
+    }
+
     /// Take this workspace's live views and dock visibility out of the window, to bring back later with
     /// `resume` exactly as they were (open tabs, running terminals, which docks showed what).
     pub fn park(&mut self) -> ParkedWorkspace {
@@ -243,6 +272,7 @@ impl WorkspaceView {
         ParkedWorkspace {
             files: self.layout.files_view.take(),
             terminal: self.layout.terminal_view.take(),
+            side_panels: std::mem::take(&mut self.layout.side_panels),
             active_panels: self.layout.active_panels,
             right_collapsed: self.layout.right.collapsed,
             bottom_collapsed: self.layout.bottom.collapsed,
@@ -252,11 +282,16 @@ impl WorkspaceView {
     /// Put back a parked workspace: its views are live, so nothing is restored from disk.
     pub fn resume(&mut self, project: crate::ProjectInfo, parked: ParkedWorkspace) {
         self.set_project(Some(project), parked.files, parked.terminal);
+        self.layout.side_panels = parked.side_panels;
         self.layout.active_panels = parked.active_panels;
         self.layout.right.collapsed = parked.right_collapsed;
         self.layout.bottom.collapsed = parked.bottom_collapsed;
         self.panes_restored = true;
         self.saved_panes = self.panes_state().map(|(_, json)| json);
+    }
+
+    pub fn set_side_panels(&mut self, panels: Vec<Box<dyn crate::SidePanelView>>) {
+        self.layout.side_panels = panels;
     }
 
     pub fn update_project(&mut self, project: crate::ProjectInfo) {
@@ -416,6 +451,7 @@ impl WorkspaceView {
         let (w, h) = (window.width, window.height);
         self.viewport = (w, h);
         self.restore_saved_panes();
+        self.apply_panel_requests();
         // Comparing panes with what is saved serializes every tab, so it runs only after input (or while a
         // write is pending), never on frames that nothing but a timer asked for.
         if self.panes_input || self.panes_check_owed || self.panes_write_at.is_some() {
@@ -444,12 +480,16 @@ impl WorkspaceView {
         let mut scrollbar_overlay: Option<Painted> = None;
         let cr = center_region;
         let clamp = 4000.0; // slack so horizontally-scrolled rows still lay out fully
-        if let Some(files_side) = self.layout.files_side() {
+        let files_side = self.layout.files_side();
+        let editor_in_center = self.layout.files_view.is_some()
+            && (files_side.is_some()
+                || self.layout.shown_on(DockPosition::Left) != Some(Shown::Terminal));
+        if editor_in_center {
             {
                 let tree_region = match files_side {
-                    DockPosition::Left => self.layout.tree_region(w, h),
-                    DockPosition::Right => self.layout.right_region(w, h),
-                    DockPosition::Bottom => self.layout.bottom_region(w, h),
+                    Some(DockPosition::Right) => self.layout.right_region(w, h),
+                    Some(DockPosition::Bottom) => self.layout.bottom_region(w, h),
+                    _ => self.layout.tree_region(w, h),
                 };
                 if let Some(files) = self.layout.files_view.as_mut() {
                     let panel = self.layout.terminal_view.as_mut().map(|view| view.panes());
@@ -462,12 +502,17 @@ impl WorkspaceView {
                         Some(zoom) if zoom.group == InputGroup::Center => zoom.inner,
                         _ => cr,
                     };
-                    (v.render_tree(), v.editor_layout(editor_area))
+                    let tree = files_side.and_then(|_| v.render_tree());
+                    (tree, v.editor_layout(editor_area))
                 };
                 let (scroll, ch) = {
                     let v = self.layout.files_view.as_ref().unwrap();
                     (v.scroll_offset(), v.content_height())
                 };
+                blit(ui::render(
+                    &ui::div().bg(ui::theme().editor_background).into(),
+                    cr,
+                ));
                 if let Some(sr) = tp {
                     blit(ui::render(
                         &ui::div().bg(ui::theme().panel_background).into(),
@@ -478,10 +523,6 @@ impl WorkspaceView {
                             tree_region.h,
                             Rgba::TRANSPARENT,
                         ),
-                    ));
-                    blit(ui::render(
-                        &ui::div().bg(ui::theme().editor_background).into(),
-                        cr,
                     ));
                     let tree_area = Rect::new(
                         tree_region.x - sr.scroll_x,
@@ -497,59 +538,12 @@ impl WorkspaceView {
                         tree_region.h,
                         Rgba::TRANSPARENT,
                     );
-                    let mut push_clipped =
-                        |node: &ui::Node, area: Rect, clip: Rect, hits: &mut Vec<(Rect, u64)>| {
-                            let p = ui::render(node, area);
-                            for (r, id) in p.hits.iter().copied() {
-                                let x0 = r.x.max(clip.x);
-                                let y0 = r.y.max(clip.y);
-                                let x1 = (r.x + r.w).min(clip.x + clip.w);
-                                let y1 = (r.y + r.h).min(clip.y + clip.h);
-                                if x1 > x0 && y1 > y0 {
-                                    hits.push((
-                                        Rect::new(x0, y0, x1 - x0, y1 - y0, Rgba::TRANSPARENT),
-                                        id,
-                                    ));
-                                }
-                            }
-                            center_overlays.push(Overlay {
-                                painted: p,
-                                clip: Some(clip),
-                            });
-                        };
-                    push_clipped(&sr.tree, tree_area, tree_region, &mut panel_hits);
-                    push_clipped(&sr.sticky, sticky_area, tree_region, &mut panel_hits);
-                    match self.zoom {
-                        Some(zoom) if zoom.group == InputGroup::Center => push_pane_group(
-                            &mut editor,
-                            zoom.inner,
-                            &mut zoom_overlays,
-                            &mut zoom_hits,
-                        ),
-                        _ => {
-                            push_pane_group(&mut editor, cr, &mut center_overlays, &mut panel_hits)
-                        }
-                    }
-                    if let Some(hl) = self
-                        .layout
-                        .files_view
-                        .as_ref()
-                        .and_then(|v| v.tab_drag_overlay())
-                    {
-                        let mut prev = Painted::default();
-                        prev.rects.push(Rect {
-                            x: hl.x,
-                            y: hl.y,
-                            w: hl.w,
-                            h: hl.h,
-                            color: ui::theme().text_accent.alpha(0.22),
-                            radius: 0.0,
-                            border: 0.0,
-                            border_color: Rgba::TRANSPARENT,
-                        });
+                    for (node, area) in [(&sr.tree, tree_area), (&sr.sticky, sticky_area)] {
+                        let p = ui::render(node, area);
+                        panel_hits.extend(clipped_hits(&p, tree_region));
                         center_overlays.push(Overlay {
-                            painted: prev,
-                            clip: Some(cr),
+                            painted: p,
+                            clip: Some(tree_region),
                         });
                     }
                     let mut bar = Painted::default();
@@ -586,6 +580,53 @@ impl WorkspaceView {
                     if !bar.rects.is_empty() {
                         scrollbar_overlay = Some(bar);
                     }
+                } else if self.layout.left_column_active() {
+                    let region = self.layout.tree_region(w, h);
+                    blit(ui::render(
+                        &ui::div().bg(ui::theme().panel_background).into(),
+                        Rect::new(
+                            region.x,
+                            region.y,
+                            (region.w - 1.0).max(0.0),
+                            region.h,
+                            Rgba::TRANSPARENT,
+                        ),
+                    ));
+                    if let Some(p) = self.function_panel_painted(DockPosition::Left, region) {
+                        panel_hits.extend(clipped_hits(&p, region));
+                        center_overlays.push(Overlay {
+                            painted: p,
+                            clip: Some(region),
+                        });
+                    }
+                }
+                match self.zoom {
+                    Some(zoom) if zoom.group == InputGroup::Center => {
+                        push_pane_group(&mut editor, zoom.inner, &mut zoom_overlays, &mut zoom_hits)
+                    }
+                    _ => push_pane_group(&mut editor, cr, &mut center_overlays, &mut panel_hits),
+                }
+                if let Some(hl) = self
+                    .layout
+                    .files_view
+                    .as_ref()
+                    .and_then(|v| v.tab_drag_overlay())
+                {
+                    let mut prev = Painted::default();
+                    prev.rects.push(Rect {
+                        x: hl.x,
+                        y: hl.y,
+                        w: hl.w,
+                        h: hl.h,
+                        color: ui::theme().text_accent.alpha(0.22),
+                        radius: 0.0,
+                        border: 0.0,
+                        border_color: Rgba::TRANSPARENT,
+                    });
+                    center_overlays.push(Overlay {
+                        painted: prev,
+                        clip: Some(cr),
+                    });
                 }
             }
         } else if self.layout.project.is_none() {
@@ -708,7 +749,9 @@ impl WorkspaceView {
                     self.terminal_painted(region, true, &mut center_overlays, &mut panel_hits)
                 }
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
-                Some(Shown::Func(k)) => ui::render(&function_dock_body(k), region),
+                Some(Shown::Func(_)) => self
+                    .function_panel_painted(DockPosition::Right, region)
+                    .unwrap_or_default(),
                 // Agent (the right dock's default panel) and the empty case both render the OutlinePanel.
                 Some(Shown::Agent) | None => {
                     self.layout.right.render_body(region, &workspaces, current)
@@ -725,7 +768,9 @@ impl WorkspaceView {
                     self.terminal_painted(region, true, &mut center_overlays, &mut panel_hits)
                 }
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
-                Some(Shown::Func(k)) => ui::render(&function_dock_body(k), region),
+                Some(Shown::Func(_)) => self
+                    .function_panel_painted(DockPosition::Bottom, region)
+                    .unwrap_or_default(),
                 _ => ui::render(&ui::div().bg(ui::theme().panel_background).into(), region),
             };
             panel_hits.extend(p.hits.iter().copied());
@@ -1265,7 +1310,7 @@ impl WorkspaceView {
         };
         let entry = |id: u64, label: &'static str, sep: bool, disabled: bool| MenuItem {
             id,
-            label,
+            label: label.into(),
             checked: false,
             sep,
             disabled,
@@ -1424,23 +1469,32 @@ impl WorkspaceView {
         if target == crate::TAB_MENU_TARGET {
             return self.tab_menu_items();
         }
+        if let Some(kind) = Self::side_menu_kind(target) {
+            return self
+                .layout
+                .side_panels
+                .iter()
+                .find(|panel| panel.kind() == kind)
+                .map(|panel| panel.menu_items())
+                .unwrap_or_default();
+        }
         let hide = MenuItem {
             id: MENU_HIDE,
-            label: "Hide Button",
+            label: "Hide Button".into(),
             checked: false,
             sep: true,
             disabled: false,
         };
         let item = |id: u64, label: &'static str, sep: bool| MenuItem {
             id,
-            label,
+            label: label.into(),
             checked: false,
             sep,
             disabled: false,
         };
         let disabled = |id: u64, label: &'static str, sep: bool, disabled: bool| MenuItem {
             id,
-            label,
+            label: label.into(),
             checked: false,
             sep,
             disabled,
@@ -1523,14 +1577,14 @@ impl WorkspaceView {
             vec![
                 MenuItem {
                     id: MENU_DOCK_LEFT,
-                    label: "Dock Left",
+                    label: "Dock Left".into(),
                     checked: left,
                     sep: false,
                     disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
-                    label: "Dock Right",
+                    label: "Dock Right".into(),
                     checked: !left,
                     sep: false,
                     disabled: false,
@@ -1541,14 +1595,14 @@ impl WorkspaceView {
             vec![
                 MenuItem {
                     id: MENU_DOCK_LEFT,
-                    label: "Dock Left",
+                    label: "Dock Left".into(),
                     checked: left,
                     sep: false,
                     disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
-                    label: "Dock Right",
+                    label: "Dock Right".into(),
                     checked: !left,
                     sep: false,
                     disabled: false,
@@ -1560,21 +1614,21 @@ impl WorkspaceView {
             vec![
                 MenuItem {
                     id: MENU_DOCK_LEFT,
-                    label: "Dock Left",
+                    label: "Dock Left".into(),
                     checked: side == DockPosition::Left,
                     sep: false,
                     disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
-                    label: "Dock Right",
+                    label: "Dock Right".into(),
                     checked: side == DockPosition::Right,
                     sep: false,
                     disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_BOTTOM,
-                    label: "Dock Bottom",
+                    label: "Dock Bottom".into(),
                     checked: side == DockPosition::Bottom,
                     sep: false,
                     disabled: false,
@@ -1591,14 +1645,14 @@ impl WorkspaceView {
             vec![
                 MenuItem {
                     id: MENU_DOCK_LEFT,
-                    label: "Dock Left",
+                    label: "Dock Left".into(),
                     checked: side == DockPosition::Left,
                     sep: false,
                     disabled: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
-                    label: "Dock Right",
+                    label: "Dock Right".into(),
                     checked: side == DockPosition::Right,
                     sep: false,
                     disabled: false,
@@ -1635,6 +1689,53 @@ impl WorkspaceView {
         }
     }
 
+    fn side_menu_kind(target: u64) -> Option<PaneKind> {
+        let index = target.checked_sub(crate::SIDE_PANEL_MENU_TARGET)?;
+        (index < 10).then(|| PaneKind::from_index(index as usize))?
+    }
+
+    fn apply_panel_requests(&mut self) {
+        let requests: Vec<crate::PanelRequest> = self
+            .layout
+            .side_panels
+            .iter_mut()
+            .flat_map(|panel| panel.take_requests())
+            .collect();
+        for request in requests {
+            match request {
+                crate::PanelRequest::OpenItem(item) => {
+                    if let Some(files) = self.layout.files_view.as_mut() {
+                        files.add_center_item(item);
+                        self.set_terminal_focus(false);
+                        self.panes_input = true;
+                    }
+                }
+                crate::PanelRequest::Reveal { id, open } => {
+                    let Some(files) = self.layout.files_view.as_mut() else {
+                        continue;
+                    };
+                    let revealed = files
+                        .pane_group_mut()
+                        .is_some_and(|group| group.reveal_item(&id));
+                    if !revealed {
+                        if let Some(item) = open() {
+                            files.add_center_item(item);
+                        }
+                    }
+                    self.set_terminal_focus(false);
+                    self.panes_input = true;
+                }
+                crate::PanelRequest::OpenUrl(url) => {
+                    if let Err(error) = std::process::Command::new("open").arg(&url).spawn() {
+                        self.show_toast(format!("Failed to open {url}: {error}"), None);
+                    }
+                }
+                crate::PanelRequest::Copy(text) => Self::clip_set(&text),
+                crate::PanelRequest::Toast(message) => self.show_toast(message, None),
+            }
+        }
+    }
+
     fn clip_set(text: &str) {
         if let Ok(mut c) = arboard::Clipboard::new() {
             let _ = c.set_text(text.to_string());
@@ -1651,6 +1752,13 @@ impl WorkspaceView {
     fn apply_menu(&mut self, target: u64, item: u64) {
         if target == crate::TAB_MENU_TARGET {
             self.apply_tab_menu(item);
+            return;
+        }
+        if let Some(kind) = Self::side_menu_kind(target) {
+            if let Some(panel) = self.layout.side_panel_mut(kind) {
+                panel.menu_action(item);
+            }
+            self.apply_panel_requests();
             return;
         }
         if target == TREE_MENU_TARGET {
@@ -1855,6 +1963,19 @@ impl WorkspaceView {
     /// Right-click: open the context menu for a status-bar button; elsewhere closes any menu. Returns true if
     /// something changed (repaint).
     pub fn right_click(&mut self, x: f32, y: f32) -> bool {
+        if let Some(id) = self.hit(x, y).filter(|id| crate::is_side_panel_id(*id)) {
+            let kind = crate::side_panel_kind(id);
+            let opened = kind
+                .and_then(|kind| self.layout.side_panel_mut(kind))
+                .is_some_and(|panel| panel.open_menu(id));
+            if let (true, Some(kind)) = (opened, kind) {
+                self.menu = Some((x, y, y, crate::SIDE_PANEL_MENU_TARGET + kind.index() as u64));
+                self.menu_path = None;
+                self.submenu = None;
+                self.menu_editor_anchor = None;
+                return true;
+            }
+        }
         if let Some(tab) = self.hit(x, y).and_then(|id| self.tab_under(id)) {
             self.menu = Some((x, y, y, crate::TAB_MENU_TARGET));
             self.menu_tab = Some(tab);
@@ -2193,6 +2314,9 @@ impl WorkspaceView {
                 }
                 if let Some(v) = self.layout.files_view.as_mut() {
                     changed |= v.set_hover(hovered);
+                }
+                for panel in self.layout.side_panels.iter_mut() {
+                    changed |= panel.set_hover(hovered);
                 }
                 changed
             }
@@ -3080,6 +3204,27 @@ impl WorkspaceView {
                         || view.editor_scroll(x, y, dx, dy)
                 });
             }
+            for side in [
+                DockPosition::Left,
+                DockPosition::Right,
+                DockPosition::Bottom,
+            ] {
+                let region = match side {
+                    DockPosition::Left if self.layout.left_column_active() => {
+                        self.layout.tree_region(w, h)
+                    }
+                    DockPosition::Left => continue,
+                    DockPosition::Right => self.layout.right_region(w, h),
+                    DockPosition::Bottom => self.layout.bottom_region(w, h),
+                };
+                let over = x >= region.x
+                    && x < region.x + region.w
+                    && y >= region.y
+                    && y < region.y + region.h;
+                if let (true, Some(panel)) = (over, self.layout.side_panel_on(side)) {
+                    return panel.scroll(dy);
+                }
+            }
             if let Some(side) = self.layout.files_side() {
                 let region = match side {
                     DockPosition::Left => self.layout.tree_region(w, h),
@@ -3178,6 +3323,13 @@ impl WorkspaceView {
                 view.click(id);
             }
             self.ask_about_pending_close();
+            return;
+        }
+        if let Some(kind) = crate::side_panel_kind(id) {
+            if let Some(panel) = self.layout.side_panel_mut(kind) {
+                panel.click(id);
+            }
+            self.apply_panel_requests();
             return;
         }
         self.set_terminal_focus(false);

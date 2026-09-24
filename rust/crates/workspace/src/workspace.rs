@@ -15,8 +15,10 @@ mod welcome;
 mod workspace_view;
 pub use key_binding::render_keystroke;
 pub use panel::{
-    function_bar, function_content, function_dock_body, terminal_content, terminal_dock_body,
-    DockPosition, OutlinePanel, PaneKind, Panel, ProjectPanel, TerminalPanel,
+    function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
+    side_panel_kind, terminal_content, terminal_dock_body, DockPosition, OutlinePanel, PaneKind,
+    Panel, PanelRequest, ProjectPanel, SidePanelView, TerminalPanel, SIDE_PANEL_BASE,
+    SIDE_PANEL_SPAN,
 };
 pub use welcome::{
     is_welcome_id, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,
@@ -193,6 +195,7 @@ pub const TOAST_CLOSE: u64 = 10;
 pub const NOTIFICATION_PRIMARY: u64 = 620;
 pub const NOTIFICATION_CLOSE: u64 = 621;
 /// A row of the WORKSPACES panel: id = base + index into `ProjectInfo::workspaces`.
+pub const SIDE_PANEL_MENU_TARGET: u64 = 1500;
 pub const WORKSPACE_ROW_BASE: u64 = 2000;
 pub const WORKSPACE_ROW_END: u64 = 3000;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -371,6 +374,7 @@ pub struct Layout {
     pub session_scroll: f32,
     pub files_view: Option<Box<dyn FunctionView>>,
     pub terminal_view: Option<Box<dyn TerminalPanelView>>,
+    pub side_panels: Vec<Box<dyn SidePanelView>>,
     pub files_tree_w: f32,
 }
 
@@ -1156,6 +1160,7 @@ impl Default for Layout {
             session_scroll: 0.0,
             files_view: None,
             terminal_view: None,
+            side_panels: Vec::new(),
             files_tree_w: FILES_TREE_W,
         }
     }
@@ -1264,8 +1269,28 @@ impl Layout {
         self.files_side() == Some(DockPosition::Left)
     }
 
+    pub fn left_column_active(&self) -> bool {
+        self.files_view.is_some()
+            && matches!(self.shown_on(DockPosition::Left), Some(Shown::Func(_)))
+    }
+
+    pub fn side_panel_mut(&mut self, kind: PaneKind) -> Option<&mut Box<dyn SidePanelView>> {
+        self.side_panels
+            .iter_mut()
+            .find(|panel| panel.kind() == kind)
+    }
+
+    pub fn side_panel_on(&mut self, side: DockPosition) -> Option<&mut Box<dyn SidePanelView>> {
+        match self.shown_on(side) {
+            Some(Shown::Func(kind)) if kind != PaneKind::Files && self.dock_open(side) => {
+                self.side_panel_mut(kind)
+            }
+            _ => None,
+        }
+    }
+
     fn tree_w(&self) -> f32 {
-        if self.files_tree_active() {
+        if self.left_column_active() {
             self.files_tree_w.clamp(FILES_TREE_MIN, FILES_TREE_MAX)
         } else {
             0.0
@@ -1351,7 +1376,7 @@ impl Layout {
     }
 
     pub fn on_tree_divider(&self, x: f32, y: f32, _w: f32) -> bool {
-        if !self.files_tree_active() {
+        if !self.left_column_active() {
             return false;
         }
         let edge = self.editor_l() + self.files_tree_w.clamp(FILES_TREE_MIN, FILES_TREE_MAX);
@@ -2154,9 +2179,10 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
 }
 
 /// One row of a context menu: click `id`, a `label`, a `checked` mark, and a `sep`arator line above it.
+#[derive(Clone, Debug)]
 pub struct MenuItem {
     pub id: u64,
-    pub label: &'static str,
+    pub label: std::borrow::Cow<'static, str>,
     pub checked: bool,
     pub sep: bool,
     pub disabled: bool,
@@ -2180,7 +2206,7 @@ pub fn context_menu(
     let wght = ui::ui_font_weight();
     let mut content_w = 0.0_f32;
     for it in items {
-        let label_w = ui::measure_text_width(it.label, 13.0, false, wght);
+        let label_w = ui::measure_text_width(&it.label, 13.0, false, wght);
         let right = if is_submenu(it.id) {
             14.0
         } else {
@@ -2256,7 +2282,7 @@ pub fn context_menu(
         };
         row = row
             .child(mark)
-            .child(label(item.label).size(13.0).color(label_color));
+            .child(label(item.label.to_string()).size(13.0).color(label_color));
         if is_submenu(item.id) {
             row = row.child(div().flex(1.0)).child(
                 ui::icon(ui::IconKind::ChevronRight)
