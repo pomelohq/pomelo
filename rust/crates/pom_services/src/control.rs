@@ -22,6 +22,7 @@ use crate::tool_path::tool_path;
 /// A repo named like this (or empty) addresses a workspace-level service.
 const WORKSPACE_REPO: &str = "_ws";
 const LOCAL_PROFILE: &str = "local";
+const RELOCATE_ATTEMPTS: usize = 3;
 /// A just-started Postgres takes a few seconds before it accepts connections.
 const DATABASE_WAIT: Duration = Duration::from_secs(30);
 /// Start returns once the holder accepts clients, so its console can be opened right away.
@@ -418,7 +419,11 @@ impl ServiceRunner {
     /// the old one.
     fn preflight_port(&self, key: &str) -> Result<u16, ServiceError> {
         let mut port = self.lease_port(key)?;
-        if !self.ports.bindable(port) {
+        // A fresh port can be taken by another process before we look again, so try a few.
+        for _ in 0..RELOCATE_ATTEMPTS {
+            if self.ports.bindable(port) {
+                break;
+            }
             self.ports.release(key);
             port = self.lease_port(key)?;
         }

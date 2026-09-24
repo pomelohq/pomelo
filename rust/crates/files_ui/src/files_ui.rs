@@ -259,6 +259,8 @@ struct FileItem {
     /// Buffer lines (first, last) previewed by a modal.
     highlighted_rows: Option<(usize, usize)>,
     git: git_diff::GitDiff,
+    /// A branch diff: compared with the file where the branch started, every change expanded.
+    branch_diff: bool,
     /// Changes shown expanded, as char ranges carried through edits.
     expanded: Vec<Range<usize>>,
     /// The committed text expanded changes show their removed lines from.
@@ -325,6 +327,9 @@ enum CompletionTrigger {
     ShowWords,
 }
 
+/// Tab ids of branch diffs, so a file's diff and its plain tab can both be open.
+const DIFF_ID_PREFIX: &str = "diff:";
+
 /// The committed version of the file, highlighted like the file, for expanded changes' removed lines.
 struct BaseText {
     bases: std::sync::Arc<git::DiffBases>,
@@ -333,6 +338,21 @@ struct BaseText {
 }
 
 impl FileItem {
+    /// The file compared with `base` (its text where the branch started; `None` when the branch added
+    /// it), showing every change with its removed lines. It stays editable like the plain tab.
+    fn branch_diff(root: PathBuf, path: &str, text: Option<String>, base: Option<String>) -> Self {
+        let mut item = FileItem::new(root, path, text);
+        item.git = git_diff::GitDiff::with_bases(
+            item.root.join(path),
+            git::DiffBases {
+                head: base.clone(),
+                index: base,
+            },
+        );
+        item.branch_diff = true;
+        item
+    }
+
     fn retarget(&mut self, path: &str) {
         self.path = path.to_string();
         self.name = path.rsplit('/').next().unwrap_or(path).to_string();
@@ -392,6 +412,7 @@ impl FileItem {
             active_search_highlight: None,
             highlighted_rows: None,
             git,
+            branch_diff: false,
             expanded: Vec::new(),
             base: None,
             has_virtual_rows: false,
@@ -2579,6 +2600,9 @@ impl Item for FileItem {
     }
 
     fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
+        if self.branch_diff {
+            return None;
+        }
         self.saved_state()
     }
 
@@ -2614,11 +2638,19 @@ impl Item for FileItem {
     }
 
     fn id(&self) -> Option<String> {
-        Some(self.path.clone())
+        Some(if self.branch_diff {
+            format!("{DIFF_ID_PREFIX}{}", self.path)
+        } else {
+            self.path.clone()
+        })
     }
 
     fn title(&self) -> String {
-        self.name.clone()
+        if self.branch_diff {
+            format!("{} (diff)", self.name)
+        } else {
+            self.name.clone()
+        }
     }
 
     fn icon(&self) -> Option<MaterialIcon> {
@@ -2754,7 +2786,10 @@ impl Item for FileItem {
     fn gutter(&mut self, fold_base: u64) -> Option<Node> {
         self.ensure_visible();
         if let Some(b) = self.buffer.as_ref() {
-            if self.git.poll(&b.rope, b.version()) && !self.expanded.is_empty() {
+            let changed = self.git.poll(&b.rope, b.version());
+            if changed && self.branch_diff {
+                self.expand_all_hunks();
+            } else if changed && !self.expanded.is_empty() {
                 self.rows = None;
             }
         }
@@ -5708,6 +5743,31 @@ impl FunctionView for FilesView {
         Some(self.root.join(id))
     }
 
+    fn open_diff(&mut self, path: &Path, base: Option<String>) {
+        let path = path.to_path_buf();
+        self.track_nav(|view| {
+            let (root, relative) = match path.strip_prefix(&view.root) {
+                Ok(relative) => (view.root.clone(), relative.to_string_lossy().into_owned()),
+                Err(_) => (
+                    PathBuf::from("/"),
+                    path.to_string_lossy().trim_start_matches('/').to_string(),
+                ),
+            };
+            let Some(pane) = view.panes.active_pane_mut() else {
+                return;
+            };
+            let id = format!("{DIFF_ID_PREFIX}{relative}");
+            if let Some(index) = pane.index_of_id(&id) {
+                pane.activate_user(index);
+                return;
+            }
+            let text = files::read(&root, &relative)
+                .ok()
+                .and_then(|contents| contents.text);
+            pane.add_item(Box::new(FileItem::branch_diff(root, &relative, text, base)));
+        });
+    }
+
     fn open_file_at(&mut self, path: &Path, row: Option<u32>, column: Option<u32>) {
         let path = path.to_path_buf();
         self.track_nav(|view| {
@@ -6622,6 +6682,45 @@ mod hunk_action_tests {
 
     fn caret_line(item: &FileItem) -> usize {
         item.buffer.as_ref().unwrap().line_col().0
+    }
+
+    #[test]
+    fn a_branch_diff_shows_every_change_against_the_start_of_the_branch() {
+        let dir = std::env::temp_dir().join(format!("pomelo-branch-diff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "a\nB\nc\nd\n").unwrap();
+        let mut item = FileItem::branch_diff(
+            dir.clone(),
+            "a.txt",
+            Some("a\nB\nc\nd\n".into()),
+            Some("a\nb\nc\n".into()),
+        );
+        item.set_body_height(10.0 * EDIT_LINE_H);
+        assert_eq!(item.id().as_deref(), Some("diff:a.txt"));
+        assert_eq!(item.title(), "a.txt (diff)");
+        assert!(
+            item.serialize().is_none(),
+            "a diff is not reopened as a plain file"
+        );
+        let settle_expanded = |item: &mut FileItem, rows: usize| {
+            for _ in 0..3000 {
+                item.gutter(0);
+                item.ensure_visible();
+                if item.disp_count() == rows {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            panic!("expected {rows} rows, have {}", item.disp_count());
+        };
+        // a, the removed "b", B, c, d and the empty last line: every change opens without asking.
+        settle_expanded(&mut item, 6);
+        assert_eq!(item.row(1).and_then(|r| r.deleted), Some(1));
+
+        item.buffer.as_mut().unwrap().place_cursor(0);
+        item.input_text("x\n");
+        settle_expanded(&mut item, 7);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

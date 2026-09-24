@@ -75,7 +75,13 @@ fn lists_the_branch_changes_and_discards_after_confirming() {
     panel.click(row(1));
     assert!(matches!(
         panel.take_requests().as_slice(),
-        [PanelRequest::OpenFile(path)] if path.ends_with("app.rs")
+        [PanelRequest::OpenDiff { path, base: Some(base) }]
+            if path.ends_with("app.rs") && base == "one\n"
+    ));
+    panel.click(row(2));
+    assert!(matches!(
+        panel.take_requests().as_slice(),
+        [PanelRequest::OpenDiff { path, base: None }] if path.ends_with("new.rs")
     ));
 
     assert!(panel.open_menu(row(1)));

@@ -1762,6 +1762,13 @@ impl WorkspaceView {
                     self.set_terminal_focus(false);
                     self.panes_input = true;
                 }
+                crate::PanelRequest::OpenDiff { path, base } => {
+                    if let Some(files) = self.layout.files_view.as_mut() {
+                        files.open_diff(&path, base);
+                        self.set_terminal_focus(false);
+                        self.panes_input = true;
+                    }
+                }
                 crate::PanelRequest::OpenFile(path) => {
                     if let Some(files) = self.layout.files_view.as_mut() {
                         files.open_file_at(&path, None, None);

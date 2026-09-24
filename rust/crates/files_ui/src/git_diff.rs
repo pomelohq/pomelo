@@ -26,6 +26,8 @@ pub struct GitDiff {
     blame_version: Option<u64>,
     edited_at: Option<(u64, Instant)>,
     blaming: Option<Receiver<(u64, Option<Vec<BlameEntry>>)>>,
+    /// The bases were given (a branch diff), not read from HEAD and the index, so they never reload.
+    fixed: bool,
 }
 
 impl GitDiff {
@@ -38,8 +40,21 @@ impl GitDiff {
         diff
     }
 
+    /// Compares against `bases` for good instead of HEAD and the index.
+    pub fn with_bases(path: PathBuf, bases: DiffBases) -> Self {
+        Self {
+            path: Some(path),
+            bases: Some(Arc::new(bases)),
+            fixed: true,
+            ..Self::default()
+        }
+    }
+
     /// Re-read HEAD and the index, e.g. after a save may have been followed by staging.
     pub fn reload_bases(&mut self, path: PathBuf) {
+        if self.fixed {
+            return;
+        }
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
             // The receiver is gone only if the file was closed; nothing to report then.

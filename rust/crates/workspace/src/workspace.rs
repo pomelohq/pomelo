@@ -983,6 +983,8 @@ pub trait FunctionView: ItemInput + 'static {
     fn active_file_path(&self) -> Option<std::path::PathBuf> {
         None
     }
+    /// Open an absolute path as a diff against `base` (every change expanded), beside its plain tab.
+    fn open_diff(&mut self, _path: &std::path::Path, _base: Option<String>) {}
     /// Open an absolute path in the editor, placing the caret at a 1-based row/column when given.
     fn open_file_at(&mut self, _path: &std::path::Path, _row: Option<u32>, _column: Option<u32>) {}
     /// A wheel or trackpad scroll over the open modal; returns whether it moved.

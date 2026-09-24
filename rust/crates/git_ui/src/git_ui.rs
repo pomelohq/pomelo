@@ -42,6 +42,7 @@ enum Row {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MenuAction {
+    OpenDiff,
     Open,
     CopyPath,
     CopyRelativePath,
@@ -343,6 +344,36 @@ impl GitPanel {
         Some((repos.get(repo)?.root.join(&change.path), change))
     }
 
+    /// The file as a diff against where the branch started (HEAD when only uncommitted work counts).
+    fn open_diff(&mut self, repo: usize, file: usize) {
+        let repos = self.repos();
+        let Some(changes) = repos.get(repo) else {
+            return;
+        };
+        let Some(change) = changes.files.get(file) else {
+            return;
+        };
+        if change.status == ChangeStatus::Deleted {
+            self.requests.push(PanelRequest::Toast(format!(
+                "{} was deleted on this branch",
+                change.path
+            )));
+            return;
+        }
+        let base = match change.status {
+            ChangeStatus::Added => None,
+            _ => {
+                let revision = changes.fork_point.as_deref().unwrap_or("HEAD");
+                let earlier = change.old_path.as_deref().unwrap_or(&change.path);
+                git::file_at(&changes.root, revision, earlier)
+            }
+        };
+        self.requests.push(PanelRequest::OpenDiff {
+            path: changes.root.join(&change.path),
+            base,
+        });
+    }
+
     fn toggle_repo(&mut self, repo: usize) {
         if !self.collapsed.remove(&repo) {
             self.collapsed.insert(repo);
@@ -358,6 +389,7 @@ impl GitPanel {
             return;
         };
         match action {
+            MenuAction::OpenDiff => self.open_diff(repo, file),
             MenuAction::Open => self.requests.push(PanelRequest::OpenFile(path)),
             MenuAction::CopyPath => self
                 .requests
@@ -536,13 +568,7 @@ impl SidePanelView for GitPanel {
         };
         match self.rows.get(index).cloned() {
             Some(Row::Repo { index: repo }) => self.toggle_repo(repo),
-            Some(Row::File { repo, file }) => {
-                if let Some((path, change)) = self.file(repo, file) {
-                    if change.status != ChangeStatus::Deleted {
-                        self.requests.push(PanelRequest::OpenFile(path));
-                    }
-                }
-            }
+            Some(Row::File { repo, file }) => self.open_diff(repo, file),
             _ => {}
         }
     }
@@ -591,6 +617,7 @@ impl SidePanelView for GitPanel {
             ));
         };
         if change.status != ChangeStatus::Deleted {
+            push("Open Diff", MenuAction::OpenDiff, false);
             push("Open File", MenuAction::Open, false);
         }
         push("Copy Path", MenuAction::CopyPath, true);
