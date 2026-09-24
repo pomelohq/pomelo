@@ -199,6 +199,34 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Ok(query) = std::env::var("SEARCH") {
+        let root = std::env::current_dir()?;
+        let mut item =
+            files_ui::project_search_preview(root, &query, std::env::var("FILTERS").is_ok());
+        let (width, height) = (900.0_f32, 560.0_f32);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = item
+            .paint_body(body, true)
+            .ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(query) = std::env::var("FINDER") {
         let root = std::env::current_dir()?;
         let paths = files::project_files(&root, false);
