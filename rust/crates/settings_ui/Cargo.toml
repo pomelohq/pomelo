@@ -9,5 +9,11 @@ description = "The settings screen: renders settings::Settings into ui primitive
 path = "src/settings_ui.rs"
 
 [dependencies]
+pom_jira = { path = "../pom_jira" }
+pom_paths = { path = "../pom_paths" }
 ui = { path = "../ui" }
 settings = { path = "../settings" }
+
+[dev-dependencies]
+pom_secrets = { path = "../pom_secrets" }
+tempfile = "3"

@@ -5,9 +5,19 @@
 //! (theme, UI font, text scale/weight) are applied to the shared `ui` globals here and flagged in
 //! `SideEffects` for the shell to re-apply to each window's renderer and repaint.
 
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+
 use crate as settings_ui;
+use pom_paths::StateDir;
 use settings::Settings;
+use settings_ui::{ConnectionStatus, JiraPage, TokenSource};
 use ui::{Context, Frame, Overlay, Painted, RawView, Rect, Window};
+
+const JIRA_FIELDS: [u64; 3] = [
+    settings_ui::CTRL_JIRA_SITE,
+    settings_ui::CTRL_JIRA_EMAIL,
+    settings_ui::CTRL_JIRA_TOKEN,
+];
 
 /// Cross-window work the shell must do after an input the view handled: re-apply the UI font to every window's
 /// text renderer, and/or repaint the other windows because a shared global (theme/scale/weight) changed.
@@ -48,6 +58,10 @@ pub struct SettingsView {
     /// (scroll/key, reached via `entity.update`) can size popovers and clamp scroll without a `Window`.
     viewport: (f32, f32),
     pending: SideEffects,
+    /// The state folder and session whose Jira settings the Integrations page edits.
+    jira_session: Option<(StateDir, String)>,
+    jira: JiraPage,
+    jira_test: Option<Receiver<Result<String, String>>>,
 }
 
 impl SettingsView {
@@ -78,6 +92,129 @@ impl SettingsView {
             hits: Vec::new(),
             viewport: (0.0, 0.0),
             pending: SideEffects::default(),
+            jira_session: None,
+            jira: JiraPage::default(),
+            jira_test: None,
+        }
+    }
+
+    /// Keeps a value the app changed (the ticket picker's board) so this window's next save does not undo it.
+    pub fn remember_jira_board(&mut self, board: i64) {
+        self.settings.jira_board = board;
+    }
+
+    /// The project session the Integrations page edits (none while no project is open).
+    pub fn set_jira_session(&mut self, session: Option<(StateDir, String)>) {
+        if self.jira_session.as_ref().map(|(_, name)| name)
+            == session.as_ref().map(|(_, name)| name)
+        {
+            return;
+        }
+        self.jira_session = session;
+        self.jira_test = None;
+        self.reload_jira(ConnectionStatus::Untested);
+    }
+
+    fn reload_jira(&mut self, status: ConnectionStatus) {
+        let Some((state, session)) = &self.jira_session else {
+            self.jira = JiraPage::default();
+            return;
+        };
+        let stored = pom_jira::JiraSettings::load(state, session);
+        let token = match pom_jira::resolve_token(state, session, &stored, &|name| {
+            std::env::var(name).ok()
+        }) {
+            Some((_, pom_jira::TokenOrigin::Secret)) => TokenSource::Secret,
+            Some((_, pom_jira::TokenOrigin::Environment)) => TokenSource::Environment,
+            None => TokenSource::Missing,
+        };
+        self.jira = JiraPage {
+            session: session.clone(),
+            site: stored.site,
+            email: stored.email,
+            token,
+            status,
+        };
+    }
+
+    /// Saves a typed Jira field: site and email into the session's integrations file, the token into its secrets.
+    fn commit_jira(&mut self, id: u64, text: &str) {
+        let Some((state, session)) = self.jira_session.clone() else {
+            return;
+        };
+        let text = text.trim();
+        let saved = if id == settings_ui::CTRL_JIRA_TOKEN {
+            if text.is_empty() {
+                return;
+            }
+            pom_jira::save_token(&state, &session, text)
+        } else {
+            let mut stored = pom_jira::JiraSettings::load(&state, &session);
+            if id == settings_ui::CTRL_JIRA_SITE {
+                stored.site = text.to_string();
+            } else {
+                stored.email = text.to_string();
+            }
+            stored
+                .save(&state, &session)
+                .map_err(|error| error.to_string())
+        };
+        match saved {
+            Ok(()) => self.reload_jira(ConnectionStatus::Untested),
+            Err(error) => self.reload_jira(ConnectionStatus::Failed(error)),
+        }
+    }
+
+    fn test_jira(&mut self) {
+        let Some((state, session)) = self.jira_session.clone() else {
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let answer = match pom_jira::resolve(&state, &session) {
+                Some(client) => client
+                    .myself()
+                    .map(|(name, email)| format!("{name} ({email})"))
+                    .map_err(|error| error.to_string()),
+                None => Err("set the site, email and token first".to_string()),
+            };
+            if sender.send(answer).is_err() {
+                eprintln!("settings: the Jira check finished after the window closed");
+            }
+        });
+        self.jira_test = Some(receiver);
+        self.jira.status = ConnectionStatus::Testing;
+    }
+
+    /// Picks up a finished connection check; returns whether the page changed.
+    pub fn tick(&mut self) -> bool {
+        let Some(receiver) = &self.jira_test else {
+            return false;
+        };
+        let status = match receiver.try_recv() {
+            Ok(Ok(who)) => ConnectionStatus::SignedIn(who),
+            Ok(Err(error)) => ConnectionStatus::Failed(error),
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => ConnectionStatus::Failed("the check stopped".into()),
+        };
+        self.jira_test = None;
+        self.jira.status = status;
+        true
+    }
+
+    pub fn busy(&self) -> bool {
+        self.jira_test.is_some()
+    }
+
+    /// Pastes into the field being edited (one line; newlines dropped).
+    pub fn key_paste(&mut self, text: &str) -> bool {
+        let line: String = text.chars().filter(|c| !c.is_control()).collect();
+        match self.editing.as_mut() {
+            Some((id, buf)) if JIRA_FIELDS.contains(id) && !line.is_empty() => {
+                buf.push_str(&line);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -109,6 +246,10 @@ impl SettingsView {
         let Some((id, buf)) = self.editing.take() else {
             return;
         };
+        if JIRA_FIELDS.contains(&id) {
+            self.commit_jira(id, &buf);
+            return;
+        }
         let Ok(v) = buf.trim().parse::<f32>() else {
             return;
         };
@@ -143,6 +284,7 @@ impl SettingsView {
         let (page, total_h) = settings_ui::page(
             self.selected,
             &self.settings,
+            &self.jira,
             self.editing.as_ref().map(|(id, buf)| (*id, buf.as_str())),
             &self.search_query,
             w,
@@ -368,10 +510,17 @@ impl SettingsView {
             self.popover_scroll = 0;
             self.scroll_accum = 0.0;
             true
-        } else if let Some((_, buf)) = self.editing.as_mut() {
+        } else if let Some((id, buf)) = self.editing.as_mut() {
+            let free_text = JIRA_FIELDS.contains(id);
             let add: String = text
                 .chars()
-                .filter(|c| c.is_ascii_digit() || *c == '.')
+                .filter(|c| {
+                    if free_text {
+                        !c.is_control()
+                    } else {
+                        c.is_ascii_digit() || *c == '.'
+                    }
+                })
                 .collect();
             if add.is_empty() {
                 return false;
@@ -520,6 +669,28 @@ impl SettingsView {
                 let max = (self.page_total_h - clip_h).max(0.0);
                 self.page_scroll = off.clamp(0.0, max);
             }
+        } else if JIRA_FIELDS.contains(&id) {
+            self.commit_edit();
+            let seed = match id {
+                settings_ui::CTRL_JIRA_SITE => self.jira.site.clone(),
+                settings_ui::CTRL_JIRA_EMAIL => self.jira.email.clone(),
+                _ => String::new(),
+            };
+            self.editing = Some((id, seed));
+            self.close_popover();
+        } else if id == settings_ui::CTRL_JIRA_RESET_TOKEN {
+            self.commit_edit();
+            if let Some((state, session)) = self.jira_session.clone() {
+                if let Err(error) = pom_jira::save_token(&state, &session, "") {
+                    eprintln!("settings: clear the Jira token: {error}");
+                }
+            }
+            self.reload_jira(ConnectionStatus::Untested);
+        } else if id == settings_ui::CTRL_JIRA_TEST {
+            self.commit_edit();
+            if self.jira_test.is_none() {
+                self.test_jira();
+            }
         } else if id == settings_ui::CTRL_FONT_SIZE_EDIT || id == settings_ui::CTRL_FONT_WEIGHT_EDIT
         {
             self.commit_edit();
@@ -603,6 +774,38 @@ mod tests {
             |_| SettingsView::new(Settings::default()),
         );
         (app, h)
+    }
+
+    #[test]
+    fn jira_fields_save_to_the_session_and_the_token_to_its_secrets() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = StateDir::new(temp.path());
+        let mut view = SettingsView::new(Settings::default());
+        view.set_jira_session(Some((state.clone(), "demo".into())));
+        let no_env = std::env::var_os(pom_jira::DEFAULT_TOKEN_ENV).is_none();
+        if no_env {
+            assert_eq!(view.jira.token, TokenSource::Missing);
+        }
+
+        view.click(settings_ui::CTRL_JIRA_SITE);
+        view.key_text("acme.atlassian.net");
+        view.key_enter();
+        view.editing = Some((settings_ui::CTRL_JIRA_TOKEN, String::new()));
+        assert!(view.key_paste("tok\n"));
+        view.key_enter();
+
+        let saved = pom_jira::JiraSettings::load(&state, "demo");
+        assert_eq!(saved.site, "acme.atlassian.net");
+        assert_eq!(view.jira.token, TokenSource::Secret);
+        let secret = pom_secrets::SecretStore::new(state.clone(), "demo")
+            .get(pom_jira::TOKEN_SECRET)
+            .expect("secret");
+        assert_eq!(secret.as_deref(), Some("tok"));
+
+        view.click(settings_ui::CTRL_JIRA_RESET_TOKEN);
+        if no_env {
+            assert_eq!(view.jira.token, TokenSource::Missing);
+        }
     }
 
     #[test]

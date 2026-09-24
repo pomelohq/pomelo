@@ -101,6 +101,7 @@ fn main() -> anyhow::Result<()> {
             active: "feat-login".into(),
             labels: vec![String::new(), "Login page".into(), String::new()],
             running: vec![0, 2, 0],
+            tickets: vec![String::new(), String::new(), "In Progress".into()],
         });
         let current = project.as_ref().map(|_| 0);
         let mut app = ui::Application::new();
@@ -153,14 +154,56 @@ fn main() -> anyhow::Result<()> {
                 slug: seed.to_string(),
             })
         });
-        if mode == "wscreate" {
+        if mode == "wscreate" || mode == "wsticket" {
             let mut modal = workspaces_ui::CreateWorkspaceModal::new(
                 vec!["api".into(), "web".into(), "mobile".into()],
                 vec!["main".into(), "feat-login".into()],
                 namer.clone(),
             );
-            workspace::WindowModal::text(&mut modal, "Fix checkout page");
-            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 101);
+            if mode == "wsticket" {
+                let issue =
+                    |key: &str, summary: &str, status: &str, mine: bool| pom_jira::SprintIssue {
+                        key: key.into(),
+                        summary: summary.into(),
+                        status: status.into(),
+                        mine,
+                        ..pom_jira::SprintIssue::default()
+                    };
+                let issues = vec![
+                    issue(
+                        "PROJ-101",
+                        "Payments page crashes on submit",
+                        "In Progress",
+                        true,
+                    ),
+                    issue("PROJ-104", "Add CSV export to reports", "To Do", false),
+                    issue(
+                        "PROJ-97",
+                        "Login redirect loses the query string",
+                        "To Do",
+                        false,
+                    ),
+                ];
+                modal = modal.with_tickets(workspaces_ui::TicketSource {
+                    boards: std::sync::Arc::new(|| {
+                        Ok(vec![pom_jira::Board {
+                            id: 1,
+                            name: "Team board".into(),
+                        }])
+                    }),
+                    sprint: std::sync::Arc::new(move |_| Ok(issues.clone())),
+                    board: None,
+                    only_mine: false,
+                });
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while workspace::WindowModal::busy(&modal) && std::time::Instant::now() < deadline {
+                    workspace::WindowModal::tick(&mut modal);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            } else {
+                workspace::WindowModal::text(&mut modal, "Fix checkout page");
+                workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 101);
+            }
             entity.update(app.app_mut(), |view, _| {
                 view.open_window_modal(Box::new(modal))
             });
@@ -346,6 +389,18 @@ fn main() -> anyhow::Result<()> {
     }
     r.set_ui_font(&settings.ui_font);
     let expanded = vec![true; settings_ui::CATEGORY_COUNT];
+    // JIRA=1: the Integrations page as a configured project sees it.
+    let jira = if std::env::var("JIRA").is_ok() {
+        settings_ui::JiraPage {
+            session: "myproject".into(),
+            site: "https://acme.atlassian.net".into(),
+            email: "you@example.com".into(),
+            token: settings_ui::TokenSource::Secret,
+            status: settings_ui::ConnectionStatus::SignedIn("Sam (you@example.com)".into()),
+        }
+    } else {
+        settings_ui::JiraPage::default()
+    };
     let fs_edit = std::env::var("FSEDIT").ok();
     let editing = fs_edit
         .as_deref()
@@ -355,7 +410,8 @@ fn main() -> anyhow::Result<()> {
     // With SCROLL=<px>, exercise the scissor-clipped scrolling page path.
     if let Ok(scroll) = std::env::var("SCROLL").unwrap_or_default().parse::<f32>() {
         let clip = settings_ui::content_region(lw, lh);
-        let (page, total_h) = settings_ui::page(category, &settings, None, &search, lw, lh, scroll);
+        let (page, total_h) =
+            settings_ui::page(category, &settings, &jira, None, &search, lw, lh, scroll);
         let mut chrome =
             settings_ui::chrome(category, None, Some(0), &expanded, lw, lh, &search, false);
         if let Some(bar) = settings_ui::content_scrollbar(clip, total_h, scroll) {
@@ -382,6 +438,7 @@ fn main() -> anyhow::Result<()> {
         None,
         &expanded,
         &settings,
+        &jira,
         lw,
         lh,
         editing,

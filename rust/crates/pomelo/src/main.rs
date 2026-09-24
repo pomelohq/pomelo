@@ -123,6 +123,7 @@ fn git_panel(project: &pom_core::Project) -> Box<dyn workspace::SidePanelView> {
 fn project_info(
     project: &pom_core::Project,
     runner: Option<&pom_services::ServiceRunner>,
+    tickets: Option<&workspaces_ui::TicketStatuses>,
 ) -> workspace::ProjectInfo {
     let running_holders = runner
         .map(|runner| runner.running_holders())
@@ -171,6 +172,15 @@ fn project_info(
             .map(|workspace| pom_layout::WorkspaceState::load(&workspace.path).display_name)
             .collect(),
         running,
+        tickets: project
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                tickets
+                    .and_then(|tickets| tickets.status(&workspace.branch))
+                    .unwrap_or_default()
+            })
+            .collect(),
     }
 }
 
@@ -374,6 +384,8 @@ struct MainWindow {
     services: Option<ProjectServices>,
     /// Workspace creations and deletions started from this window.
     ops: workspaces_ui::OpQueue,
+    /// The project's Jira ticket status per workspace.
+    tickets: Option<workspaces_ui::TicketStatuses>,
 }
 
 struct ProjectServices {
@@ -450,6 +462,8 @@ struct App {
     ctrl_down: bool,
     agents: AgentTracker,
     next_agent_item: u64,
+    /// The main window last focused: Settings edits its project's Jira settings.
+    focused_main: Option<WindowId>,
 }
 
 /// What each workspace's coding agent last reported, and the watcher that says when it changes.
@@ -717,6 +731,7 @@ impl App {
                 parked: std::collections::HashMap::new(),
                 services: None,
                 ops: workspaces_ui::OpQueue::new(Arc::new(ui::wake)),
+                tickets: None,
             },
         );
         id
@@ -738,7 +753,11 @@ impl App {
         let services = project
             .as_ref()
             .and_then(|project| ProjectServices::new(project, &state));
+        let tickets = project.as_ref().map(|project| {
+            workspaces_ui::TicketStatuses::new(state.clone(), &project.session, Arc::new(ui::wake))
+        });
         if let Some(main) = self.mains.get_mut(&id) {
+            main.tickets = tickets;
             main.project = project;
             main.watcher = watcher;
             main.parked.clear();
@@ -758,7 +777,7 @@ impl App {
             .services
             .as_ref()
             .map(|services| services.runner.as_ref());
-        let info = project.map(|project| project_info(project, runner));
+        let info = project.map(|project| project_info(project, runner, main.tickets.as_ref()));
         let problem = project.and_then(config_problem);
         let config_path = project
             .map(|project| project.config_path.clone())
@@ -842,7 +861,7 @@ impl App {
             .services
             .as_ref()
             .map(|services| services.runner.as_ref());
-        let info = project_info(project, runner);
+        let info = project_info(project, runner, main.tickets.as_ref());
         let problem = config_problem(project);
         let config_path = project.config_path.clone();
         let title = format!("{} - {} - Pomelo", project.session, project.active_branch());
@@ -899,7 +918,7 @@ impl App {
                 .map(|services| services.runner.as_ref());
             updates.push((
                 *id,
-                project_info(project, runner),
+                project_info(project, runner, main.tickets.as_ref()),
                 config_problem(project),
                 project.config_path.clone(),
             ));
@@ -1095,6 +1114,12 @@ impl App {
         // driven by a `ui::Application`; the binary only pumps draw/input into it.
         let mut app = ui::Application::new();
         let settings = self.settings.clone();
+        let jira_session = self
+            .focused_main
+            .and_then(|id| self.mains.get(&id))
+            .or_else(|| self.mains.values().find(|main| main.project.is_some()))
+            .and_then(|main| main.project.as_ref())
+            .map(|project| (pom_paths::StateDir::from_env(), project.session.clone()));
         let (handle, entity) = app.open_raw_window::<settings_ui::SettingsView>(
             ui::WindowOptions {
                 title: "Settings".into(),
@@ -1105,6 +1130,7 @@ impl App {
             move |_| {
                 let mut view = settings_ui::SettingsView::new(settings);
                 view.set_fonts(fonts);
+                view.set_jira_session(jira_session);
                 view
             },
         );
@@ -1327,6 +1353,9 @@ impl ApplicationHandler for App {
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {
             self.poll_workspaces(id);
+        }
+        if self.with_settings_view(|view, _| view.tick()) == Some(true) {
+            self.draw_settings();
         }
         // Coalesce per-window redraws (scroll/hover bursts) into one per iteration.
         let now = Instant::now();
@@ -1925,7 +1954,16 @@ impl ApplicationHandler for App {
                         return;
                     }
                     self.reset_caret();
+                    let paste = self.super_down
+                        && matches!(&event.logical_key, Key::Character(c) if c.as_str() == "v");
                     let changed = match &event.logical_key {
+                        _ if paste => {
+                            let text = arboard::Clipboard::new()
+                                .ok()
+                                .and_then(|mut clipboard| clipboard.get_text().ok());
+                            text.and_then(|text| self.with_settings_view(|v, _| v.key_paste(&text)))
+                        }
+                        _ if self.super_down => Some(false),
                         Key::Named(NamedKey::Escape) => {
                             self.with_settings_view(|v, _| v.key_escape())
                         }
@@ -2069,6 +2107,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Focused(true) => {
+                self.focused_main = Some(id);
                 self.with_workspace_view(id, |v, _| v.refresh_disk_state());
                 self.reset_caret();
                 if let Some(m) = self.mains.get_mut(&id) {

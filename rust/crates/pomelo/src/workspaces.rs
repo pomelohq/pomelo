@@ -61,7 +61,16 @@ impl App {
             .iter()
             .map(|workspace| workspace.branch.clone())
             .collect();
-        let modal = CreateWorkspaceModal::new(repos, existing, namer());
+        let mut modal = CreateWorkspaceModal::new(repos, existing, namer());
+        let board = (self.settings.jira_board != 0).then_some(self.settings.jira_board);
+        if let Some(source) = workspaces_ui::TicketSource::for_session(
+            &pom_paths::StateDir::from_env(),
+            &project.session,
+            board,
+            self.settings.jira_only_mine,
+        ) {
+            modal = modal.with_tickets(source);
+        }
         self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
     }
 
@@ -138,7 +147,7 @@ impl App {
             Some(project) => (
                 project.active_branch() == target.branch,
                 project.workspaces.iter().position(|w| w.is_main),
-                project_info(project, None).label(index).to_string(),
+                project_info(project, None, None).label(index).to_string(),
             ),
             None => return,
         };
@@ -172,6 +181,23 @@ impl App {
             } else if let Some(rename) = value.downcast_ref::<RenameWorkspace>() {
                 self.rename_workspace(id, rename);
             }
+        }
+        let tickets_changed = match self.mains.get_mut(&id) {
+            Some(main) => {
+                let branches: Vec<String> = main
+                    .project
+                    .iter()
+                    .flat_map(|project| project.workspaces.iter().map(|w| w.branch.clone()))
+                    .collect();
+                main.tickets.as_mut().is_some_and(|tickets| {
+                    tickets.refresh_if_due(&branches);
+                    tickets.take_changed()
+                })
+            }
+            None => false,
+        };
+        if tickets_changed {
+            self.refresh_project_info(id);
         }
         let Some(main) = self.mains.get(&id) else {
             return;
@@ -219,6 +245,16 @@ impl App {
     }
 
     fn queue_create(&mut self, id: WindowId, create: &CreateWorkspace) {
+        if let Some(board) = create
+            .board
+            .filter(|board| *board != self.settings.jira_board)
+        {
+            self.settings.jira_board = board;
+            self.with_settings_view(|view, _| view.remember_jira_board(board));
+            if let Err(error) = self.settings.save() {
+                eprintln!("could not save settings: {error}");
+            }
+        }
         let Some(context) = self.op_context(id) else {
             return;
         };
@@ -299,7 +335,7 @@ impl App {
                 .services
                 .as_ref()
                 .map(|services| services.runner.as_ref());
-            Some(project_info(project, runner))
+            Some(project_info(project, runner, main.tickets.as_ref()))
         });
         if let Some(info) = info {
             self.with_workspace_view(id, |view, _| view.update_project(info));

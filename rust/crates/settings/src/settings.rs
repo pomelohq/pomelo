@@ -37,6 +37,10 @@ pub struct Settings {
     pub show_session_name: bool,
     /// The AI CLI the Agent button opens in a workspace; `claude` also gets pom's MCP server and prompt.
     pub agent_command: String,
+    /// The new-workspace ticket picker lists only Jira tickets assigned to you.
+    pub jira_only_mine: bool,
+    /// The Jira board the ticket picker opened on last (0: none yet).
+    pub jira_board: i64,
 }
 
 impl Default for Settings {
@@ -67,6 +71,8 @@ impl Default for Settings {
             show_branch: true,
             show_session_name: true,
             agent_command: "claude".into(),
+            jira_only_mine: false,
+            jira_board: 0,
         }
     }
 }

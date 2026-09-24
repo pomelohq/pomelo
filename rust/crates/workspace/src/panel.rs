@@ -303,6 +303,8 @@ pub struct WorkspaceRow {
     pub index: usize,
     pub label: String,
     pub agent: Option<AgentDot>,
+    /// The workspace's Jira ticket status, when it has one.
+    pub ticket: String,
 }
 
 /// What the WORKSPACES panel shows: the workspaces, which one is current, and creations/deletions in flight.
@@ -392,11 +394,22 @@ impl Panel for ProjectPanel {
                     Rgba::TRANSPARENT
                 })
                 .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(dot))
-                .child(label(row.label.clone()).truncate().color(if current {
-                    theme().text
-                } else {
-                    theme().text_muted
-                }));
+                .child(div().row().flex(1.0).items_center().child(
+                    label(row.label.clone()).truncate().color(if current {
+                        theme().text
+                    } else {
+                        theme().text_muted
+                    }),
+                ));
+            let line = if row.ticket.is_empty() {
+                line
+            } else {
+                line.child(
+                    label(row.ticket.clone())
+                        .size(11.0)
+                        .color(theme().text_muted),
+                )
+            };
             col = col.child(line);
         }
         col.into()
@@ -616,6 +629,7 @@ mod tests {
             index,
             label: label.into(),
             agent,
+            ticket: String::new(),
         }
     }
 

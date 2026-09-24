@@ -3,11 +3,14 @@
 
 mod forms;
 mod ops;
+mod ticket_picker;
+mod tickets;
 
 use std::sync::Arc;
 
 pub use forms::{CreateWorkspace, CreateWorkspaceModal, RenameWorkspace, RenameWorkspaceModal};
 pub use ops::{apply_event, Finished, OpContext, OpKind, OpQueue};
+pub use tickets::{TicketSource, TicketStatuses};
 
 /// Asks for a display name and branch slug from a seed slug and a description (Claude in the app).
 pub type Namer = Arc<dyn Fn(&str, &str) -> Result<pom_agent::NameSuggestion, String> + Send + Sync>;

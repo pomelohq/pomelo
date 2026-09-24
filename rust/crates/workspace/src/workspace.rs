@@ -182,6 +182,8 @@ pub struct ProjectInfo {
     pub labels: Vec<String>,
     /// Running services by workspace (same order as `workspaces`).
     pub running: Vec<usize>,
+    /// Jira ticket status by workspace (same order; empty when none).
+    pub tickets: Vec<String>,
 }
 
 impl ProjectInfo {
