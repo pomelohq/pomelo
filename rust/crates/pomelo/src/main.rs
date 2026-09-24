@@ -556,7 +556,6 @@ struct App {
     settings_dirty: bool,
     settings_cursor: (f64, f64),
     super_down: bool,
-    prompt_answers: PromptAnswers,
     shift_down: bool,
     alt_down: bool,
     ctrl_down: bool,
@@ -852,7 +851,7 @@ impl App {
         let item_number = self.next_agent_item;
         self.next_agent_item += 1;
         self.with_workspace_view(id, |view, _| {
-            view.open_terminal_item(&item_id, || {
+            view.open_agent_item(&item_id, || {
                 let options = terminal::HolderOptions {
                     dir: pom_ptyhost::SocketDir::from_env(),
                     name: launch.holder.clone(),
@@ -1165,7 +1164,11 @@ impl App {
             view.set_project(
                 info,
                 files,
-                Some(terminal_view(terminal_root, &workspace_key)),
+                Some(terminal_view(terminal_root.clone(), &workspace_key)),
+                Some(Box::new(terminal_ui::TerminalPanel::agent_dock(
+                    terminal_root,
+                    Arc::new(ui::wake),
+                ))),
             );
             view.set_side_panels(side_panels);
             view.set_config_problem(problem, &config_path);
@@ -1708,12 +1711,7 @@ impl App {
         let Some(app) = self.main_app.as_mut() else {
             return;
         };
-        let (effects, prompt) =
-            entity.update(app.app_mut(), |v, _| (v.take_effects(), v.take_prompt()));
-        if let (Some(prompt), Some(main)) = (prompt, self.mains.get(&id)) {
-            #[cfg(target_os = "macos")]
-            show_prompt(&main.window, id, &prompt, self.prompt_answers.clone());
-        }
+        let effects = entity.update(app.app_mut(), |v, _| v.take_effects());
         if effects.persist {
             let view = entity.read(app.app());
             read_dock_settings(&mut self.settings, view.layout());
@@ -1746,20 +1744,6 @@ impl App {
         self.handle_workspace_requests(id);
         if let Some(m) = self.mains.get_mut(&id) {
             m.dirty = true;
-        }
-    }
-
-    fn deliver_prompt_answers(&mut self) {
-        let answers: Vec<(WindowId, u64, usize)> = match self.prompt_answers.lock() {
-            Ok(mut answers) => answers.drain(..).collect(),
-            Err(_) => return,
-        };
-        for (id, token, answer) in answers {
-            self.with_workspace_view(id, |v, _| v.prompt_answered(token, answer));
-            self.handle_workspace_requests(id);
-            if let Some(m) = self.mains.get_mut(&id) {
-                m.dirty = true;
-            }
         }
     }
 
@@ -1803,7 +1787,6 @@ impl ApplicationHandler for App {
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
-        self.deliver_prompt_answers();
         self.reload_changed_projects();
         self.refresh_agents();
         self.open_clicked_notification();
@@ -2688,59 +2671,6 @@ fn pin_layer_top_left(window: &Window) {
         let gravity = NSString::from_str("topLeft");
         let _: () = msg_send![layer, setContentsGravity: &*gravity];
     }
-}
-
-type PromptAnswers = std::sync::Arc<std::sync::Mutex<Vec<(WindowId, u64, usize)>>>;
-
-#[cfg(target_os = "macos")]
-fn show_prompt(
-    window: &Window,
-    window_id: WindowId,
-    prompt: &workspace::Prompt,
-    answers: PromptAnswers,
-) {
-    use block2::RcBlock;
-    use objc2_app_kit::{NSAlert, NSAlertStyle, NSView};
-    use objc2_foundation::MainThreadMarker;
-    use objc2_foundation::NSString;
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    let Ok(handle) = window.window_handle() else {
-        return;
-    };
-    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
-        return;
-    };
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let view: &NSView = unsafe { &*(h.ns_view.as_ptr() as *const NSView) };
-    let Some(ns_window) = view.window() else {
-        return;
-    };
-    let alert = unsafe { NSAlert::new(mtm) };
-    unsafe {
-        alert.setAlertStyle(NSAlertStyle::Informational);
-        alert.setMessageText(&NSString::from_str(&prompt.message));
-        if let Some(detail) = prompt.detail.as_deref() {
-            alert.setInformativeText(&NSString::from_str(detail));
-        }
-        for (index, label) in prompt.buttons.iter().enumerate() {
-            let button = alert.addButtonWithTitle(&NSString::from_str(label));
-            button.setTag(index as isize);
-            if label == "Cancel" {
-                button.setKeyEquivalent(&NSString::from_str("\u{1b}"));
-            }
-        }
-    }
-    let token = prompt.token;
-    let block = RcBlock::new(move |answer: isize| {
-        if let Ok(mut answers) = answers.lock() {
-            answers.push((window_id, token, answer.max(0) as usize));
-        }
-        ui::wake();
-    });
-    unsafe { alert.beginSheetModalForWindow_completionHandler(&ns_window, Some(&block)) };
 }
 
 #[cfg(target_os = "macos")]

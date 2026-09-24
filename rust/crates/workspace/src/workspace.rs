@@ -84,6 +84,12 @@ pub const TERMINAL_VIEW_BASE: u64 = 1_000_000_000;
 pub fn is_terminal_id(id: u64) -> bool {
     (TERMINAL_VIEW_BASE..TERMINAL_VIEW_BASE + pane_group_view::ID_SPAN).contains(&id)
 }
+/// Click ids owned by the agent dock's pane group, right after the terminal panel's.
+pub const AGENT_VIEW_BASE: u64 = TERMINAL_VIEW_BASE + pane_group_view::ID_SPAN;
+
+pub fn is_agent_id(id: u64) -> bool {
+    (AGENT_VIEW_BASE..AGENT_VIEW_BASE + pane_group_view::ID_SPAN).contains(&id)
+}
 pub const FILES_TREE_W: f32 = 260.0; // default width of the Files tree dock (left of the center editor)
 pub const FILES_TREE_MIN: f32 = 160.0;
 pub const FILES_TREE_MAX: f32 = 560.0;
@@ -485,6 +491,8 @@ pub struct Layout {
     pub session_scroll: f32,
     pub files_view: Option<Box<dyn FunctionView>>,
     pub terminal_view: Option<Box<dyn TerminalPanelView>>,
+    /// Agent sessions, shown in the agent dock rather than among the terminals.
+    pub agent_view: Option<Box<dyn TerminalPanelView>>,
     pub side_panels: Vec<Box<dyn SidePanelView>>,
     /// Branch -> what its coding agent last reported.
     pub agent_states: std::collections::HashMap<String, AgentDot>,
@@ -1357,6 +1365,7 @@ impl Default for Layout {
             session_scroll: 0.0,
             files_view: None,
             terminal_view: None,
+            agent_view: None,
             side_panels: Vec::new(),
             agent_states: std::collections::HashMap::new(),
             files_tree_w: FILES_TREE_W,
@@ -1439,6 +1448,16 @@ impl Layout {
     }
 
     /// Whether the terminal is currently the visible panel of its (open) side.
+    /// The agent dock shows its agent sessions (not the empty placeholder).
+    pub fn agent_visible(&self) -> bool {
+        self.dock_open(DockPosition::Right)
+            && self.shown_on(DockPosition::Right) == Some(Shown::Agent)
+            && self
+                .agent_view
+                .as_ref()
+                .is_some_and(|view| !view.is_empty())
+    }
+
     pub fn terminal_visible(&self) -> bool {
         self.dock_open(self.terminal_side)
             && self.shown_on(self.terminal_side) == Some(Shown::Terminal)

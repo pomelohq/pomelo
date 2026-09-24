@@ -13,7 +13,7 @@ use workspace::pane_group_view::{
 use workspace::persistence::{SerializedItem, SerializedMember};
 use workspace::{
     DividerAxis, EditorLayout, Item, TerminalOpenTarget, TerminalPanelView, TerminalSyncOutcome,
-    TERMINAL_VIEW_BASE,
+    AGENT_VIEW_BASE, TERMINAL_VIEW_BASE,
 };
 
 use crate::item::{Host, TerminalItem};
@@ -95,6 +95,24 @@ pub struct TerminalPanel {
 
 impl TerminalPanel {
     pub fn new(root: PathBuf, waker: Waker) -> Self {
+        Self::with_panes(root, waker, Self::panel_panes())
+    }
+
+    /// The agent dock's panel: one pane of agent sessions, which are opened for it rather than from it.
+    pub fn agent_dock(root: PathBuf, waker: Waker) -> Self {
+        let mut panes = PaneGroupView::new(PaneGroupConfig {
+            id_base: AGENT_VIEW_BASE,
+            show_nav: false,
+            buttons: Vec::new(),
+            max_panes: 1,
+            split_filter: None,
+            zoom_whole_group: true,
+        });
+        panes.set_focused(false);
+        Self::with_panes(root, waker, panes)
+    }
+
+    fn panel_panes() -> PaneGroupView {
         let mut panes = PaneGroupView::new(PaneGroupConfig {
             id_base: TERMINAL_VIEW_BASE,
             show_nav: false,
@@ -121,6 +139,10 @@ impl TerminalPanel {
             zoom_whole_group: true,
         });
         panes.set_focused(false);
+        panes
+    }
+
+    fn with_panes(root: PathBuf, waker: Waker, panes: PaneGroupView) -> Self {
         Self {
             root,
             waker,
@@ -911,5 +933,77 @@ mod tests {
         let count = back.panes.pane_at(&[]).map(|pane| pane.open.len());
         assert_eq!(count, Some(2));
         assert!(!back.is_empty());
+    }
+
+    #[test]
+    fn agents_open_in_their_dock_and_leave_the_terminals_alone() {
+        let mut app = ui::Application::new();
+        let (handle, view) = app.open_raw_window(
+            ui::WindowOptions {
+                width: 1200.0,
+                height: 800.0,
+                scale: 2.0,
+                ..Default::default()
+            },
+            |_| {
+                let mut view = workspace::WorkspaceView::new(workspace::Layout::default());
+                view.set_project(
+                    Some(workspace::ProjectInfo {
+                        name: "demo".into(),
+                        ..Default::default()
+                    }),
+                    None,
+                    Some(Box::new(panel())),
+                    Some(Box::new(TerminalPanel::agent_dock(
+                        std::env::temp_dir(),
+                        std::sync::Arc::new(|| {}),
+                    ))),
+                );
+                view
+            },
+        );
+        view.update(app.app_mut(), |view, _| {
+            view.open_agent_item("agent:demo", || {
+                let terminal = Terminal::spawn(
+                    TerminalOptions {
+                        shell: Some(("/bin/sh".into(), vec!["-c".into(), "sleep 5".into()])),
+                        ..TerminalOptions::default()
+                    },
+                    std::sync::Arc::new(|| {}),
+                )
+                .ok()?;
+                Some(Box::new(TerminalItem::with_terminal(
+                    7,
+                    std::env::temp_dir(),
+                    terminal,
+                )) as Box<dyn Item>)
+            })
+        });
+        let frame = app.draw(handle).expect("frame");
+        assert!(
+            view.read(app.app()).terminal_focused(),
+            "keys go raw to the agent session"
+        );
+        let agent_hits: Vec<ui::Rect> = std::iter::once(&frame.base)
+            .chain(frame.overlays.iter().map(|overlay| &overlay.painted))
+            .flat_map(|painted| painted.hits.iter())
+            .filter(|(_, id)| workspace::is_agent_id(*id))
+            .map(|(rect, _)| *rect)
+            .collect();
+        assert!(!agent_hits.is_empty(), "agent tab laid out");
+        assert!(
+            agent_hits.iter().all(|rect| rect.x >= 600.0),
+            "the agent sits in the right dock, not under the terminals"
+        );
+
+        let again = view.update(app.app_mut(), |view, _| {
+            let mut built = false;
+            view.open_agent_item("terminal:7", || {
+                built = true;
+                None
+            });
+            built
+        });
+        assert!(!again, "an open session is focused, not opened twice");
     }
 }

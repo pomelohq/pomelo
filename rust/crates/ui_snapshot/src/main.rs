@@ -638,6 +638,19 @@ fn main() -> anyhow::Result<()> {
                 view.open_window_modal(Box::new(modal))
             });
         }
+        if mode == "prompt" {
+            entity.update(app.app_mut(), |view, _| {
+                view.ask(workspace::Prompt {
+                    token: 1,
+                    message: "Stop all shared services?".into(),
+                    detail: Some(
+                        "Shared services are used by all workspaces; 12 services in other workspaces are still running."
+                            .into(),
+                    ),
+                    buttons: vec!["Stop".into(), "Cancel".into()],
+                })
+            });
+        }
         if mode == "wsrename" {
             let modal = workspaces_ui::RenameWorkspaceModal::new("feat-login", "Login page", namer);
             entity.update(app.app_mut(), |view, _| {
