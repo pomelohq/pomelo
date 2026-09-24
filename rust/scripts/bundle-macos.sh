@@ -8,14 +8,14 @@ cd "$(dirname "$0")/.."
 FLAVOR="${1:-dev}"
 case "$FLAVOR" in
   dev)
-    cargo build -p pomelo
+    cargo build -p pomelo -p pom_cli
     BIN="target/debug/pomelo"
     APP_NAME="PomeloDev"
     DISPLAY_NAME="Pomelo Dev"
     BUNDLE_ID="app.pomelo.dev"
     ;;
   prod)
-    cargo build -p pomelo --release
+    cargo build -p pomelo -p pom_cli --release
     BIN="target/release/pomelo"
     APP_NAME="Pomelo"
     DISPLAY_NAME="Pomelo"
@@ -33,6 +33,7 @@ APP="target/${APP_NAME}.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/pomelo"
+cp "$(dirname "$BIN")/pom" "$APP/Contents/MacOS/pom"
 cp crates/pomelo/assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
