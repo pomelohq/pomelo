@@ -194,17 +194,25 @@ impl ServiceRunner {
             eprintln!("services: shared services: {error}");
             return;
         }
+        let names = crate::shared::database_names(config, branch);
+        if let Err(error) = self.create_databases_when_ready(config, &names) {
+            eprintln!("services: {error}");
+        }
+    }
+
+    /// Creates the databases, waiting out a Postgres that was only just started.
+    pub fn create_databases_when_ready(
+        &self,
+        config: &Config,
+        names: &[String],
+    ) -> Result<(), ServiceError> {
         let deadline = std::time::Instant::now() + DATABASE_WAIT;
         loop {
-            match self.ensure_databases(config, branch) {
-                Ok(()) => return,
+            match self.create_databases(config, names) {
                 Err(error) if still_starting(&error) && std::time::Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(500));
                 }
-                Err(error) => {
-                    eprintln!("services: {error}");
-                    return;
-                }
+                result => return result,
             }
         }
     }
@@ -243,6 +251,16 @@ impl ServiceRunner {
         self.ports.release_workspace(&ws_key);
         self.acquire_workspace_ports(config, &ws_key);
         self.workspace_env(config, branch).write_env_files()?;
+        Ok(())
+    }
+
+    /// Gives back a deleted workspace's shared-service slots and port leases.
+    pub fn release_workspace(&self, config: &Config, branch: &str) -> std::io::Result<()> {
+        let ws_key = pom_env::port_ws_key(branch);
+        for name in config.shared_services.keys() {
+            self.slots.release(name, &ws_key)?;
+        }
+        self.ports.release_workspace(&ws_key);
         Ok(())
     }
 
@@ -443,7 +461,7 @@ impl ServiceRunner {
 
     /// Every service with a port gets its lease up front, so cross-service refs resolve to real ports
     /// even for services not started yet.
-    fn acquire_workspace_ports(&self, config: &Config, ws_key: &str) {
+    pub fn acquire_workspace_ports(&self, config: &Config, ws_key: &str) {
         for (repo, dir) in &config.repos {
             for (name, service) in &dir.services {
                 if service.has_port() {
@@ -460,7 +478,8 @@ impl ServiceRunner {
         }
     }
 
-    fn allocate_slots(&self, config: &Config, ws_key: &str) -> std::io::Result<()> {
+    /// Slots of every capacity-limited shared service the config uses, for the workspace `ws_key`.
+    pub fn allocate_slots(&self, config: &Config, ws_key: &str) -> std::io::Result<()> {
         let mut wanted: Vec<String> = Vec::new();
         for dir in config.repos.values() {
             wanted.extend(dir.shared_refs.iter().map(|shared| shared.name.clone()));
