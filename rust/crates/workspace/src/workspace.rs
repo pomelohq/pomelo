@@ -184,6 +184,33 @@ pub struct ProjectInfo {
     pub running: Vec<usize>,
     /// Jira ticket status by workspace (same order; empty when none).
     pub tickets: Vec<String>,
+    pub prs: Vec<Option<PrSummary>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrSeverity {
+    Ok,
+    Warn,
+    Merged,
+    Danger,
+}
+
+impl PrSeverity {
+    pub fn color(self) -> ui::Rgba {
+        let colors = ui::theme();
+        match self {
+            PrSeverity::Ok => colors.success,
+            PrSeverity::Warn => colors.warning,
+            PrSeverity::Merged => colors.terminal_ansi[5],
+            PrSeverity::Danger => colors.error,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrSummary {
+    pub count: usize,
+    pub severity: PrSeverity,
 }
 
 impl ProjectInfo {
@@ -263,6 +290,8 @@ pub const NOTIFICATION_CLOSE: u64 = 621;
 pub const SIDE_PANEL_MENU_TARGET: u64 = 1500;
 pub const WORKSPACE_ROW_BASE: u64 = 2000;
 pub const WORKSPACE_ROW_END: u64 = 3000;
+pub const WORKSPACE_PR_BASE: u64 = 4000;
+pub const WORKSPACE_PR_END: u64 = 5000;
 /// The WORKSPACES header's new-workspace button.
 pub const WORKSPACE_NEW: u64 = 14;
 /// A workspace operation card: base + position * stride + part.

@@ -330,6 +330,7 @@ pub struct WorkspaceRow {
     pub agent: Option<AgentDot>,
     /// The workspace's Jira ticket status, when it has one.
     pub ticket: String,
+    pub pr: Option<crate::PrSummary>,
 }
 
 /// What the WORKSPACES panel shows: the workspaces, which one is current, and creations/deletions in flight.
@@ -435,10 +436,30 @@ impl Panel for ProjectPanel {
                         .color(theme().text_muted),
                 )
             };
+            let line = match row.pr {
+                Some(pr) => line.child(pr_pill(row.index, pr)),
+                None => line,
+            };
             col = col.child(line);
         }
         col.into()
     }
+}
+
+fn pr_pill(index: usize, pr: crate::PrSummary) -> Node {
+    let color = pr.severity.color();
+    div()
+        .row()
+        .h_px(18.0)
+        .px(5.0)
+        .gap(3.0)
+        .items_center()
+        .rounded(9.0)
+        .bg(Rgba::new(color.r, color.g, color.b, 0.16))
+        .on_click(crate::WORKSPACE_PR_BASE + index as u64)
+        .child(icon(IconKind::PullRequest).size(11.0).color(color))
+        .child(label(pr.count.to_string()).size(11.0).color(color))
+        .into()
 }
 
 /// A creation or deletion in flight: its title, the stage it is on and a progress bar; expanded, every stage.
@@ -655,6 +676,7 @@ mod tests {
             label: label.into(),
             agent,
             ticket: String::new(),
+            pr: None,
         }
     }
 
@@ -724,6 +746,27 @@ mod tests {
             .hits
             .iter()
             .any(|(_, id)| *id == crate::WORKSPACE_ROW_BASE + 1));
+    }
+
+    #[test]
+    fn a_workspace_with_prs_shows_a_pill_that_opens_its_git_panel() {
+        let mut p = ProjectPanel::default();
+        let mut with_prs = row(1, "web", None);
+        with_prs.pr = Some(crate::PrSummary {
+            count: 3,
+            severity: crate::PrSeverity::Danger,
+        });
+        let rows = [row(0, "api", None), with_prs];
+        p.sync(&list(&rows, &[]));
+        let painted = ui::render(
+            &p.render(),
+            ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),
+        );
+        let text: Vec<String> = painted.texts.iter().map(|t| t.text.clone()).collect();
+        assert!(text.contains(&"3".to_string()), "{text:?}");
+        let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
+        assert!(ids.contains(&(crate::WORKSPACE_PR_BASE + 1)));
+        assert!(!ids.contains(&crate::WORKSPACE_PR_BASE));
     }
 
     #[test]

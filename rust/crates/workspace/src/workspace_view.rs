@@ -189,6 +189,7 @@ pub struct WorkspaceView {
     terminal_focused: bool,
     pointer: (f32, f32),
     press: (f32, f32),
+    show_after_switch: Option<PaneKind>,
     toast_then: Option<(PaneKind, crate::PanelRequest)>,
     /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
     terminal_click: Option<(Instant, f32, f32, u32)>,
@@ -257,6 +258,7 @@ impl WorkspaceView {
             terminal_focused: false,
             pointer: (0.0, 0.0),
             press: (0.0, 0.0),
+            show_after_switch: None,
             toast_then: None,
             terminal_click: None,
             toast: None,
@@ -325,10 +327,31 @@ impl WorkspaceView {
         self.layout.bottom.collapsed = parked.bottom_collapsed;
         self.panes_restored = true;
         self.saved_panes = self.panes_state().map(|(_, json)| json);
+        if let Some(kind) = self.show_after_switch.take() {
+            self.show_function(kind);
+        }
     }
 
     pub fn set_side_panels(&mut self, panels: Vec<Box<dyn crate::SidePanelView>>) {
         self.layout.side_panels = panels;
+        if let Some(kind) = self.show_after_switch.take() {
+            self.show_function(kind);
+        }
+    }
+
+    fn show_function(&mut self, kind: PaneKind) {
+        let Some(index) = PaneKind::ALL.iter().position(|each| *each == kind) else {
+            return;
+        };
+        let side = self
+            .layout
+            .func_side
+            .get(index)
+            .copied()
+            .unwrap_or(DockPosition::Left);
+        self.layout.active_panels[side.index()] = Some(Shown::Func(kind));
+        self.toggle_side(side, false);
+        self.pending.persist = true;
     }
 
     /// Show a form over the window (replacing any open one).
@@ -785,6 +808,7 @@ impl WorkspaceView {
                 label: project.label(index).to_string(),
                 agent: self.layout.agent_states.get(branch).copied(),
                 ticket: project.tickets.get(index).cloned().unwrap_or_default(),
+                pr: project.prs.get(index).copied().flatten(),
             })
             .collect();
         let current = self
@@ -3931,6 +3955,20 @@ impl WorkspaceView {
                     let op_id = op.id;
                     self.toggle_workspace_op(op_id);
                 }
+            }
+        } else if (crate::WORKSPACE_PR_BASE..crate::WORKSPACE_PR_END).contains(&id) {
+            let index = (id - crate::WORKSPACE_PR_BASE) as usize;
+            let switch = self.layout.project.as_ref().is_some_and(|project| {
+                project
+                    .workspaces
+                    .get(index)
+                    .is_some_and(|branch| *branch != project.active)
+            });
+            if switch {
+                self.pending.activate_workspace = Some(index);
+                self.show_after_switch = Some(PaneKind::Git);
+            } else {
+                self.show_function(PaneKind::Git);
             }
         } else if (crate::WORKSPACE_ROW_BASE..crate::WORKSPACE_ROW_END).contains(&id) {
             let index = (id - crate::WORKSPACE_ROW_BASE) as usize;

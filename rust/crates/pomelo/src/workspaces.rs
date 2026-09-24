@@ -173,7 +173,9 @@ impl App {
             Some(project) => (
                 project.active_branch() == target.branch,
                 project.workspaces.iter().position(|w| w.is_main),
-                project_info(project, None, None).label(index).to_string(),
+                project_info(project, None, None, None)
+                    .label(index)
+                    .to_string(),
             ),
             None => return,
         };
@@ -215,10 +217,28 @@ impl App {
                     .iter()
                     .flat_map(|project| project.workspaces.iter().map(|w| w.branch.clone()))
                     .collect();
-                main.tickets.as_mut().is_some_and(|tickets| {
+                let tickets_changed = main.tickets.as_mut().is_some_and(|tickets| {
                     tickets.refresh_if_due(&branches);
                     tickets.take_changed()
-                })
+                });
+                let prs_changed = main.pull_requests.as_ref().is_some_and(|prs| {
+                    let workspaces = main
+                        .project
+                        .iter()
+                        .flat_map(|project| project.workspaces.iter())
+                        .map(|workspace| pull_request_ui::WorkspaceRepos {
+                            branch: workspace.branch.clone(),
+                            repos: workspace
+                                .repos
+                                .iter()
+                                .map(|repo| (repo.name.clone(), repo.path.clone()))
+                                .collect(),
+                        })
+                        .collect();
+                    prs.refresh_if_due(workspaces);
+                    prs.take_changed()
+                });
+                tickets_changed || prs_changed
             }
             None => false,
         };
@@ -361,7 +381,12 @@ impl App {
                 .services
                 .as_ref()
                 .map(|services| services.runner.as_ref());
-            Some(project_info(project, runner, main.tickets.as_ref()))
+            Some(project_info(
+                project,
+                runner,
+                main.tickets.as_ref(),
+                main.pull_requests.as_ref(),
+            ))
         });
         if let Some(info) = info {
             self.with_workspace_view(id, |view, _| view.update_project(info));

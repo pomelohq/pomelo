@@ -324,3 +324,57 @@ fn a_failed_push_offers_its_log() {
                 && matches!(**then, PanelRequest::OpenItem(_))
     ));
 }
+
+#[test]
+fn the_repo_row_opens_its_pull_request() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = temp.path().join("web");
+    std::fs::create_dir_all(&root).expect("repo");
+    run(&root, &["init", "-q", "-b", "main"]);
+    run(&root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("app.rs"), "one\n").expect("write");
+    run(&root, &["add", "."]);
+    run(&root, &["commit", "-q", "-m", "base"]);
+    let prs = pull_request_ui::PullRequests::new(
+        pom_paths::StateDir::new(temp.path().join("state")),
+        "myproject",
+        Arc::new(|| {}),
+    );
+    let target = pom_forge::PrTarget {
+        repo: "web".into(),
+        owner: "acme".into(),
+        name: "web".into(),
+        head: "main".into(),
+    };
+    prs.show(
+        "main",
+        vec![(
+            root.clone(),
+            target,
+            pom_forge::PullRequest {
+                number: 42,
+                state: "OPEN".into(),
+                ..pom_forge::PullRequest::default()
+            },
+        )],
+    );
+    let mut panel = GitPanel::new(
+        vec![RepoSource {
+            name: "web".into(),
+            root,
+            default_branch: "main".into(),
+        }],
+        None,
+        Arc::new(|| {}),
+    )
+    .with_pull_requests(prs);
+    panel.render(320.0, 400.0);
+    panel.wait_for_scan();
+    let shown = texts(&mut panel);
+    assert!(shown.contains("web|main|#42"), "{shown}");
+    panel.click(row(0) + 2);
+    assert!(matches!(
+        panel.take_requests().as_slice(),
+        [PanelRequest::Reveal { id, .. }] if id == "pr:web:main"
+    ));
+}
