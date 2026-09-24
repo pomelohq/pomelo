@@ -2,20 +2,33 @@
 //! default branch (committed or not), with a status icon, the path and line counts. Reading git runs on a
 //! background thread; the panel refreshes while it is shown.
 
+mod commit_area;
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use commit_area::{CommitArea, RemoteRequest};
+use git::working_copy::{self, HeadState, Staging, StatusEntry, Upstream};
 use git::{ChangeStatus, FileChange, RepoChanges};
 use ui::{div, icon, label, theme, IconKind, Node, Rgba};
-use workspace::{MenuItem, PaneKind, PanelRequest, SidePanelView};
+use workspace::{EditKey, MenuItem, PaneKind, PanelRequest, SidePanelView};
 
 const ROW_H: f32 = 28.0;
 const HEADER_H: f32 = 28.0;
 const ROW_STRIDE: u64 = 4;
 const MENU_BASE: u64 = 9_000_000;
+const FOOTER: u64 = MENU_BASE + 1_000;
+const COMMIT_EDITOR: u64 = FOOTER + 1;
+const COMMIT: u64 = FOOTER + 2;
+const COMMIT_MENU: u64 = FOOTER + 3;
+const REMOTE: u64 = FOOTER + 4;
+const REMOTE_MENU: u64 = FOOTER + 5;
+const SWITCH_REPO: u64 = FOOTER + 6;
+const STAGE_ALL: u64 = FOOTER + 7;
+const ALL_REMOTES: &str = "All";
 /// While shown, the panel re-reads git this often (agents keep changing files).
 const REFRESH_EVERY: Duration = Duration::from_secs(4);
 
@@ -32,6 +45,7 @@ enum Control {
     Row = 0,
     Refresh = 1,
     Review = 2,
+    Stage = 3,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +63,16 @@ enum MenuAction {
     CopyPath,
     CopyRelativePath,
     Discard,
+    Amend,
+    Signoff,
+    SkipHooks,
+    Fetch,
+    FetchFrom,
+    Pull,
+    PullRebase,
+    Push,
+    PushTo,
+    ForcePush,
 }
 
 struct OpenMenu {
@@ -60,6 +84,8 @@ struct OpenMenu {
 #[derive(Default)]
 struct Scan {
     repos: Vec<RepoChanges>,
+    status: Vec<Vec<StatusEntry>>,
+    heads: Vec<HeadState>,
     /// `repo/path` -> fingerprint of the file as it is now, to tell whether a review still holds.
     fingerprints: HashMap<String, String>,
     loaded: bool,
@@ -110,10 +136,26 @@ impl Scanner {
                 })
             })
             .collect();
+        let status: Vec<Vec<StatusEntry>> = self
+            .sources
+            .iter()
+            .map(|source| working_copy::status(&source.root).unwrap_or_default())
+            .collect();
+        let heads: Vec<HeadState> = self
+            .sources
+            .iter()
+            .map(|source| working_copy::head_state(&source.root))
+            .collect();
         let changed = self.scan.lock().is_ok_and(|mut scan| {
-            let changed = !scan.loaded || scan.repos != repos || scan.fingerprints != fingerprints;
+            let changed = !scan.loaded
+                || scan.repos != repos
+                || scan.fingerprints != fingerprints
+                || scan.status != status
+                || scan.heads != heads;
             scan.repos = repos;
             scan.fingerprints = fingerprints;
+            scan.status = status;
+            scan.heads = heads;
             scan.loaded = true;
             changed
         });
@@ -146,6 +188,9 @@ pub struct GitPanel {
     confirm: Option<(u64, usize, usize)>,
     next_tag: u64,
     requests: Vec<PanelRequest>,
+    commit: CommitArea,
+    active_repo: usize,
+    remote_prompt: Option<(u64, Vec<String>, RemoteRequest)>,
 }
 
 impl GitPanel {
@@ -169,7 +214,6 @@ impl GitPanel {
             started: false,
             drawn_at: Arc::new(Mutex::new(None)),
             stop: Arc::new(AtomicBool::new(false)),
-            waker,
             base: workspace::side_panel_base(PaneKind::Git),
             rows: Vec::new(),
             collapsed: HashSet::new(),
@@ -180,6 +224,10 @@ impl GitPanel {
             confirm: None,
             next_tag: 1,
             requests: Vec::new(),
+            commit: CommitArea::new(waker.clone()),
+            active_repo: 0,
+            remote_prompt: None,
+            waker,
         }
     }
 
@@ -230,6 +278,10 @@ impl GitPanel {
         if let Err(error) = spawned {
             eprintln!("git panel: poller: {error}");
         }
+    }
+
+    pub fn operation_running(&self) -> bool {
+        self.commit.busy()
     }
 
     /// Blocks until the running re-read finishes (tests).
@@ -289,7 +341,7 @@ impl GitPanel {
             0 => Control::Row,
             1 => Control::Refresh,
             2 => Control::Review,
-            _ => return None,
+            _ => Control::Stage,
         };
         Some(((offset / ROW_STRIDE) as usize, control))
     }
@@ -382,7 +434,14 @@ impl GitPanel {
                 };
                 let reviewed = self.is_reviewed(*repo, &change.path);
                 let toggle = self.id(index, Control::Review);
-                body.child(div().w_px(12.0))
+                let stage = self.id(index, Control::Stage);
+                let leading: Node = match self.staging_for(*repo, change) {
+                    Some(staging) => {
+                        commit_area::stage_checkbox(stage, staging, self.hover == Some(stage))
+                    }
+                    None => div().w_px(20.0).into(),
+                };
+                body.child(leading)
                     .child(status_icon(change.status))
                     .child(path_label(change, reviewed))
                     .child(diff_stat(change))
@@ -487,10 +546,404 @@ impl GitPanel {
     }
 
     fn content_height(&self) -> f32 {
-        HEADER_H + self.rows.len() as f32 * ROW_H + 8.0
+        self.rows.len() as f32 * ROW_H + 8.0
+    }
+
+    fn status_of(&self, repo: usize) -> Vec<StatusEntry> {
+        self.scan
+            .lock()
+            .ok()
+            .and_then(|scan| scan.status.get(repo).cloned())
+            .unwrap_or_default()
+    }
+
+    fn head_of(&self, repo: usize) -> Option<HeadState> {
+        self.scan
+            .lock()
+            .ok()
+            .and_then(|scan| scan.heads.get(repo).cloned())
+    }
+
+    fn staging_for(&self, repo: usize, change: &FileChange) -> Option<Staging> {
+        self.scan.lock().ok().and_then(|scan| {
+            scan.status
+                .get(repo)?
+                .iter()
+                .find(|entry| entry.path == change.path)
+                .map(StatusEntry::staging)
+        })
+    }
+
+    fn report(&mut self, result: Result<(), working_copy::CommandError>) {
+        if let Err(error) = result {
+            self.requests.push(PanelRequest::Toast(error.message));
+        }
+        self.refresh();
+    }
+
+    fn toggle_stage(&mut self, repo: usize, file: usize) {
+        let (Some(source), Some((_, change))) =
+            (self.sources.get(repo).cloned(), self.file(repo, file))
+        else {
+            return;
+        };
+        self.active_repo = repo;
+        let mut paths = vec![change.path.clone()];
+        paths.extend(change.old_path.clone());
+        let result = match self.staging_for(repo, &change) {
+            Some(Staging::Staged) => working_copy::unstage(&source.root, &paths),
+            _ => working_copy::stage(&source.root, &paths),
+        };
+        self.report(result);
+    }
+
+    fn stages_all(status: &[StatusEntry]) -> bool {
+        status.is_empty()
+            || status
+                .iter()
+                .any(|entry| entry.staging() != Staging::Staged)
+    }
+
+    fn stage_all(&mut self) {
+        let Some(source) = self.sources.get(self.active_repo).cloned() else {
+            return;
+        };
+        let status = self.status_of(self.active_repo);
+        let result = if Self::stages_all(&status) {
+            let paths: Vec<String> = status
+                .iter()
+                .filter(|entry| entry.staging() != Staging::Staged)
+                .map(|entry| entry.path.clone())
+                .collect();
+            working_copy::stage(&source.root, &paths)
+        } else {
+            let paths: Vec<String> = status.iter().map(|entry| entry.path.clone()).collect();
+            working_copy::unstage(&source.root, &paths)
+        };
+        self.report(result);
+    }
+
+    fn commit_now(&mut self) {
+        let Some(source) = self.sources.get(self.active_repo).cloned() else {
+            return;
+        };
+        let status = self.status_of(self.active_repo);
+        if let Some(request) = self.commit.commit(source.root, &status) {
+            self.requests.push(request);
+        }
+    }
+
+    fn remote(&mut self, request: RemoteRequest) {
+        if self.commit.busy() {
+            return;
+        }
+        let repo = self.active_repo;
+        let (Some(source), Some(head)) = (self.sources.get(repo).cloned(), self.head_of(repo))
+        else {
+            return;
+        };
+        let choices = match &request {
+            RemoteRequest::Fetch(_) => {
+                self.commit
+                    .run_remote(source.root, head, request, String::new());
+                return;
+            }
+            RemoteRequest::PushTo { remote, .. } => vec![remote.clone()],
+            RemoteRequest::Pull { .. } | RemoteRequest::Push { .. } => {
+                let Some(branch) = head.branch.clone() else {
+                    self.requests
+                        .push(PanelRequest::Toast("No branch is checked out".into()));
+                    return;
+                };
+                match head.upstream_ref.clone() {
+                    Some((remote, _)) if head.upstream != Upstream::Gone => vec![remote],
+                    _ => working_copy::push_remotes(&source.root, &branch),
+                }
+            }
+        };
+        match choices.as_slice() {
+            [] => self.requests.push(PanelRequest::Toast(
+                "No remote available to push to. Add a remote to be able to publish changes."
+                    .into(),
+            )),
+            [remote] => {
+                let remote = remote.clone();
+                self.commit.run_remote(source.root, head, request, remote);
+            }
+            _ => self.pick_remote("Pick which remote to push to", choices, request),
+        }
+    }
+
+    fn pick_remote(&mut self, message: &str, choices: Vec<String>, request: RemoteRequest) {
+        let tag = self.next_tag;
+        self.next_tag += 1;
+        let mut buttons = choices.clone();
+        buttons.push("Cancel".into());
+        self.remote_prompt = Some((tag, choices, request));
+        self.requests.push(PanelRequest::Prompt {
+            tag,
+            message: message.to_string(),
+            detail: None,
+            buttons,
+        });
+    }
+
+    fn remote_choices(&self) -> Vec<String> {
+        self.sources
+            .get(self.active_repo)
+            .map(|source| working_copy::remotes(&source.root))
+            .unwrap_or_default()
+    }
+
+    fn primary_remote_action(&mut self) {
+        let Some(head) = self.head_of(self.active_repo) else {
+            return;
+        };
+        let request = match head.upstream {
+            Upstream::Tracked {
+                ahead: 0,
+                behind: 0,
+            } => RemoteRequest::Fetch(None),
+            Upstream::Tracked { behind: 0, .. } | Upstream::None | Upstream::Gone => {
+                RemoteRequest::Push { force: false }
+            }
+            Upstream::Tracked { .. } => RemoteRequest::Pull { rebase: false },
+        };
+        self.remote(request);
+    }
+
+    fn open_footer_menu(&mut self, entries: Vec<(&'static str, MenuAction, bool, bool)>) {
+        let items = entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, (text, action, checked, sep))| {
+                (
+                    MenuItem {
+                        id: self.base + MENU_BASE + index as u64,
+                        label: text.into(),
+                        checked,
+                        sep,
+                        disabled: false,
+                    },
+                    action,
+                )
+            })
+            .collect();
+        self.menu = Some(OpenMenu {
+            repo: self.active_repo,
+            file: 0,
+            items,
+        });
+        self.requests.push(PanelRequest::OpenMenu);
+    }
+
+    fn footer_hot(&self, offset: u64) -> Option<u64> {
+        self.hover
+            .filter(|id| *id == self.base + offset)
+            .map(|id| id - self.base)
+    }
+
+    fn render_footer(&mut self, width: f32) -> Node {
+        let colors = theme();
+        let repo = self.active_repo.min(self.sources.len().saturating_sub(1));
+        self.active_repo = repo;
+        let head = self.head_of(repo);
+        let status = self.status_of(repo);
+        let several = self.sources.len() > 1;
+        let hot = |offset: u64| self.footer_hot(offset);
+        let mut left = div().row().flex(1.0).gap(2.0).items_center().child(
+            icon(IconKind::Branch).size(14.0).color(if several {
+                colors.icon_muted
+            } else {
+                colors.text_disabled
+            }),
+        );
+        if several {
+            let name = self
+                .sources
+                .get(repo)
+                .map_or_else(String::new, |source| source.name.clone());
+            left = left
+                .child(
+                    div()
+                        .row()
+                        .h_px(20.0)
+                        .px(4.0)
+                        .items_center()
+                        .rounded(4.0)
+                        .on_click(self.base + SWITCH_REPO)
+                        .bg(if hot(SWITCH_REPO).is_some() {
+                            colors.ghost_element_hover
+                        } else {
+                            Rgba::TRANSPARENT
+                        })
+                        .child(label(name).size(12.0).color(colors.text)),
+                )
+                .child(label("/").size(12.0).color(Rgba::new(
+                    colors.text_muted.r,
+                    colors.text_muted.g,
+                    colors.text_muted.b,
+                    colors.text_muted.a * 0.4,
+                )));
+        }
+        let branch = head
+            .as_ref()
+            .and_then(|head| head.branch.clone().or_else(|| head.short_sha.clone()))
+            .unwrap_or_else(|| " (no branch)".into());
+        left = left.child(
+            div()
+                .row()
+                .flex(1.0)
+                .px(4.0)
+                .items_center()
+                .child(label(branch).size(12.0).color(colors.text).truncate()),
+        );
+        let mut repo_row = div()
+            .row()
+            .h_px(commit_area::repo_row_height())
+            .px(8.0)
+            .gap(4.0)
+            .items_center()
+            .child(left);
+        if let Some((text, kind, ahead, behind)) =
+            head.as_ref().and_then(commit_area::remote_button_state)
+        {
+            let mut leading: Vec<Node> = Vec::new();
+            if self.commit.remote_running().is_some() {
+                leading.push(
+                    icon(IconKind::RotateCw)
+                        .size(12.0)
+                        .color(colors.icon_muted)
+                        .into(),
+                );
+            } else if let Some(kind) = kind {
+                leading.push(icon(kind).size(12.0).color(colors.icon_muted).into());
+            } else {
+                for (count, arrow) in [(behind, IconKind::ArrowDown), (ahead, IconKind::ArrowUp)] {
+                    if count > 0 {
+                        leading.push(icon(arrow).size(10.0).color(colors.icon_muted).into());
+                        leading.push(
+                            label(count.to_string())
+                                .size(10.0)
+                                .color(colors.text)
+                                .into(),
+                        );
+                    }
+                }
+            }
+            repo_row = repo_row.child(commit_area::split_button(
+                self.base + REMOTE,
+                self.base + REMOTE_MENU,
+                leading,
+                text,
+                !self.commit.busy(),
+                false,
+                self.hover,
+            ));
+        }
+        let placeholder = commit_area::suggested_message(&status)
+            .unwrap_or_else(|| "Enter commit message".into());
+        let editor = self
+            .commit
+            .render_editor(width, &placeholder, self.base + COMMIT_EDITOR);
+        let has_head = head.as_ref().is_some_and(|head| head.short_sha.is_some());
+        let plan = self.commit.plan(&status, has_head);
+        let commit_row = div()
+            .row()
+            .h_px(commit_area::commit_row_height())
+            .px(6.0)
+            .items_center()
+            .bg(colors.editor_background)
+            .child(div().row().flex(1.0))
+            .child(commit_area::split_button(
+                self.base + COMMIT,
+                self.base + COMMIT_MENU,
+                Vec::new(),
+                plan.title,
+                plan.enabled,
+                false,
+                self.hover,
+            ));
+        div()
+            .col()
+            .w_px(width)
+            .h_px(self.commit.height())
+            .child(repo_row)
+            .child(div().h_px(1.0).bg(colors.border))
+            .child(editor)
+            .child(div().h_px(1.0).bg(colors.border))
+            .child(commit_row)
+            .into()
     }
 
     fn apply_menu(&mut self, repo: usize, file: usize, action: MenuAction) {
+        let footer_request = match action {
+            MenuAction::Amend => {
+                if let Some(source) = self.sources.get(self.active_repo) {
+                    let root = source.root.clone();
+                    self.commit.toggle_amend(&root);
+                }
+                return;
+            }
+            MenuAction::Signoff => {
+                self.commit.signoff = !self.commit.signoff;
+                return;
+            }
+            MenuAction::SkipHooks => {
+                self.commit.skip_hooks = !self.commit.skip_hooks;
+                return;
+            }
+            MenuAction::Fetch => Some(RemoteRequest::Fetch(None)),
+            MenuAction::Pull => Some(RemoteRequest::Pull { rebase: false }),
+            MenuAction::PullRebase => Some(RemoteRequest::Pull { rebase: true }),
+            MenuAction::Push => Some(RemoteRequest::Push { force: false }),
+            MenuAction::ForcePush => Some(RemoteRequest::Push { force: true }),
+            MenuAction::FetchFrom => {
+                let mut remotes = self.remote_choices();
+                match remotes.len() {
+                    0 => self
+                        .requests
+                        .push(PanelRequest::Toast("No remotes to fetch from".into())),
+                    1 => self.remote(RemoteRequest::Fetch(remotes.pop())),
+                    _ => {
+                        remotes.push(ALL_REMOTES.into());
+                        self.pick_remote(
+                            "Fetch from which remote?",
+                            remotes,
+                            RemoteRequest::Fetch(None),
+                        );
+                    }
+                }
+                return;
+            }
+            MenuAction::PushTo => {
+                let remotes = self.remote_choices();
+                match remotes.as_slice() {
+                    [] => self.requests.push(PanelRequest::Toast(
+                        "No remote available to push to. Add a remote to be able to publish changes."
+                            .into(),
+                    )),
+                    [remote] => self.remote(RemoteRequest::PushTo {
+                        force: false,
+                        remote: remote.clone(),
+                    }),
+                    _ => self.pick_remote(
+                        "Pick which remote to push to",
+                        remotes,
+                        RemoteRequest::PushTo {
+                            force: false,
+                            remote: String::new(),
+                        },
+                    ),
+                }
+                return;
+            }
+            _ => None,
+        };
+        if let Some(request) = footer_request {
+            self.remote(request);
+            return;
+        }
         let Some((path, change)) = self.file(repo, file) else {
             return;
         };
@@ -502,6 +955,16 @@ impl GitPanel {
                 .requests
                 .push(PanelRequest::Copy(path.to_string_lossy().into_owned())),
             MenuAction::CopyRelativePath => self.requests.push(PanelRequest::Copy(change.path)),
+            MenuAction::Amend
+            | MenuAction::Signoff
+            | MenuAction::SkipHooks
+            | MenuAction::Fetch
+            | MenuAction::FetchFrom
+            | MenuAction::Pull
+            | MenuAction::PullRebase
+            | MenuAction::Push
+            | MenuAction::PushTo
+            | MenuAction::ForcePush => {}
             MenuAction::Discard => {
                 let tag = self.next_tag;
                 self.next_tag += 1;
@@ -633,7 +1096,13 @@ impl SidePanelView for GitPanel {
             self.refresh();
             self.spawn_poller();
         }
-        self.viewport_h = height;
+        if let Some(outcome) = self.commit.poll() {
+            self.requests.extend(commit_area::outcome_requests(outcome));
+            self.refresh();
+        }
+        let footer_h = self.commit.height();
+        let list_h = (height - HEADER_H - footer_h).max(0.0);
+        self.viewport_h = list_h;
         let repos = self.repos();
         self.rebuild_rows(&repos);
         let max_scroll = (self.content_height() - height).max(0.0);
@@ -652,6 +1121,13 @@ impl SidePanelView for GitPanel {
                     .count()
             })
             .sum();
+        let status = self.status_of(self.active_repo);
+        let stage_all_label = if Self::stages_all(&status) {
+            "Stage All"
+        } else {
+            "Unstage All"
+        };
+        let stage_all_hot = self.footer_hot(STAGE_ALL).is_some();
         let header = div()
             .row()
             .h_px(HEADER_H)
@@ -673,6 +1149,21 @@ impl SidePanelView for GitPanel {
             )
             .child(
                 div()
+                    .row()
+                    .h_px(18.0)
+                    .px(6.0)
+                    .rounded(4.0)
+                    .items_center()
+                    .on_click(self.base + STAGE_ALL)
+                    .bg(if stage_all_hot {
+                        theme().element_hover
+                    } else {
+                        Rgba::TRANSPARENT
+                    })
+                    .child(label(stage_all_label).size(12.0).color(theme().text)),
+            )
+            .child(
+                div()
                     .w_px(18.0)
                     .h_px(18.0)
                     .rounded(4.0)
@@ -691,41 +1182,141 @@ impl SidePanelView for GitPanel {
                     ),
             );
         let first = (self.scroll / ROW_H).floor() as usize;
-        let visible = (height / ROW_H).ceil() as usize + 2;
-        let offset = first as f32 * ROW_H - self.scroll;
-        let mut list = div().col().child(div().h_px(offset.max(0.0)));
+        let visible = (list_h / ROW_H).floor() as usize;
+        let mut list = div().col().h_px(list_h);
         for (index, row) in self.rows.iter().enumerate().skip(first).take(visible) {
             list = list.child(self.render_row(index, row, &repos));
         }
+        let footer = self.render_footer(width);
         div()
             .col()
             .w_px(width)
             .h_px(height)
             .child(header)
             .child(list)
+            .child(footer)
             .into()
     }
 
     fn click(&mut self, id: u64) {
+        self.commit.focused = false;
         if id == self.refresh_id() {
             self.refresh();
             return;
+        }
+        match id.checked_sub(self.base) {
+            Some(COMMIT_EDITOR) => {
+                self.commit.focused = true;
+                return;
+            }
+            Some(COMMIT) => return self.commit_now(),
+            Some(COMMIT_MENU) => {
+                let has_head = self
+                    .head_of(self.active_repo)
+                    .is_some_and(|head| head.short_sha.is_some());
+                let mut entries = Vec::new();
+                if has_head {
+                    entries.push(("Amend", MenuAction::Amend, self.commit.amend, false));
+                }
+                entries.push(("Signoff", MenuAction::Signoff, self.commit.signoff, false));
+                entries.push((
+                    "Skip Hooks",
+                    MenuAction::SkipHooks,
+                    self.commit.skip_hooks,
+                    false,
+                ));
+                return self.open_footer_menu(entries);
+            }
+            Some(REMOTE) => return self.primary_remote_action(),
+            Some(REMOTE_MENU) => {
+                return self.open_footer_menu(vec![
+                    ("Fetch", MenuAction::Fetch, false, false),
+                    ("Fetch From", MenuAction::FetchFrom, false, false),
+                    ("Pull", MenuAction::Pull, false, false),
+                    ("Pull (Rebase)", MenuAction::PullRebase, false, false),
+                    ("Push", MenuAction::Push, false, true),
+                    ("Push To", MenuAction::PushTo, false, false),
+                    ("Force Push", MenuAction::ForcePush, false, false),
+                ])
+            }
+            Some(SWITCH_REPO) => {
+                self.active_repo = (self.active_repo + 1) % self.sources.len().max(1);
+                return;
+            }
+            Some(STAGE_ALL) => return self.stage_all(),
+            _ => {}
         }
         let Some((index, control)) = self.decode(id) else {
             return;
         };
         match self.rows.get(index).cloned() {
-            Some(Row::Repo { index: repo }) => self.toggle_repo(repo),
+            Some(Row::Repo { index: repo }) => {
+                self.active_repo = repo;
+                self.toggle_repo(repo)
+            }
             Some(Row::File { repo, file }) if control == Control::Review => {
                 self.toggle_reviewed(repo, file)
             }
-            Some(Row::File { repo, file }) => self.open_diff(repo, file),
+            Some(Row::File { repo, file }) if control == Control::Stage => {
+                self.toggle_stage(repo, file)
+            }
+            Some(Row::File { repo, file }) => {
+                self.active_repo = repo;
+                self.open_diff(repo, file)
+            }
             _ => {}
         }
     }
 
+    fn click_at(&mut self, id: u64, x: f32, y: f32) {
+        self.click(id);
+        if id == self.base + COMMIT_EDITOR {
+            self.commit.editor.click(x - 8.0, y - 8.0);
+        }
+    }
+
+    fn text_focused(&self) -> bool {
+        self.commit.focused
+    }
+
+    fn text(&mut self, text: &str) -> bool {
+        let typed: String = text
+            .chars()
+            .filter(|c| *c == '\n' || !c.is_control())
+            .collect();
+        if typed.is_empty() {
+            return false;
+        }
+        self.commit.editor.insert(&typed);
+        true
+    }
+
+    fn key(&mut self, key: EditKey, shift: bool) -> bool {
+        match key {
+            EditKey::ReplaceAll if shift && !self.commit.amend => {
+                if let Some(source) = self.sources.get(self.active_repo) {
+                    let root = source.root.clone();
+                    self.commit.toggle_amend(&root);
+                }
+            }
+            EditKey::ReplaceAll => self.commit_now(),
+            EditKey::Escape => self.commit.focused = false,
+            _ => return self.commit.editor.key(key, shift),
+        }
+        true
+    }
+
+    fn blur(&mut self) {
+        self.commit.focused = false;
+    }
+
     fn set_hover(&mut self, id: Option<u64>) -> bool {
-        let id = id.filter(|id| self.decode(*id).is_some() || *id == self.refresh_id());
+        let footer = |id: u64| {
+            id.checked_sub(self.base)
+                .is_some_and(|offset| (FOOTER..FOOTER + 100).contains(&offset))
+        };
+        let id =
+            id.filter(|id| self.decode(*id).is_some() || *id == self.refresh_id() || footer(*id));
         if self.hover == id {
             return false;
         }
@@ -812,6 +1403,30 @@ impl SidePanelView for GitPanel {
     }
 
     fn prompt_answered(&mut self, tag: u64, answer: usize) {
+        if let Some((asked, choices, request)) = self.remote_prompt.take() {
+            if asked == tag {
+                let Some(chosen) = choices.get(answer).cloned() else {
+                    return;
+                };
+                let request = match request {
+                    RemoteRequest::Fetch(_) if chosen == ALL_REMOTES => RemoteRequest::Fetch(None),
+                    RemoteRequest::Fetch(_) => RemoteRequest::Fetch(Some(chosen.clone())),
+                    RemoteRequest::PushTo { force, .. } => RemoteRequest::PushTo {
+                        force,
+                        remote: chosen.clone(),
+                    },
+                    other => other,
+                };
+                let repo = self.active_repo;
+                if let (Some(source), Some(head)) =
+                    (self.sources.get(repo).cloned(), self.head_of(repo))
+                {
+                    self.commit.run_remote(source.root, head, request, chosen);
+                }
+                return;
+            }
+            self.remote_prompt = Some((asked, choices, request));
+        }
         let Some((asked, repo, file)) = self.confirm.take() else {
             return;
         };

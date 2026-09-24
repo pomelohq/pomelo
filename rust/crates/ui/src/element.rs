@@ -107,6 +107,9 @@ pub enum IconKind {
     Table,
     Eye,
     Key,
+    Dash,
+    ChevronUp,
+    ExpandUp,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

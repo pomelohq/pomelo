@@ -202,7 +202,7 @@ fn main() -> anyhow::Result<()> {
     // With GITPANEL=<repo dir>, render the Git panel for that repository (against `main`).
     if let Ok(repo) = std::env::var("GITPANEL") {
         use workspace::SidePanelView;
-        let (width, height) = (360.0_f32, 420.0_f32);
+        let (width, height) = (360.0_f32, 560.0_f32);
         let mut panel = git_ui::GitPanel::new(
             vec![git_ui::RepoSource {
                 name: std::path::Path::new(&repo)
@@ -226,13 +226,12 @@ fn main() -> anyhow::Result<()> {
         }
         let node = panel.render(width, height);
         let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
-        ui::set_ui_text_scale(2.0);
         let painted = ui::render(
             &ui::div()
                 .bg(ui::theme().panel_background)
                 .child(node)
                 .into(),
-            ui::Rect::new(0.0, 0.0, width * 2.0, height * 2.0, ui::Rgba::TRANSPARENT),
+            ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT),
         );
         let layers: Vec<ui::Layer> = vec![(
             painted.rects.as_slice(),

@@ -176,3 +176,151 @@ fn review_marks_hold_until_the_file_changes_and_survive_reopening() {
         "an edit after the review clears the mark"
     );
 }
+
+const FOOTER: u64 = 9_001_000;
+
+fn footer(offset: u64) -> u64 {
+    workspace::side_panel_base(PaneKind::Git) + FOOTER + offset
+}
+
+fn git_out(root: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .expect("git");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn settle(panel: &mut GitPanel) -> Vec<PanelRequest> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut requests = Vec::new();
+    loop {
+        panel.render(320.0, 400.0);
+        requests.extend(panel.take_requests());
+        if !panel.operation_running() || std::time::Instant::now() > deadline {
+            panel.wait_for_scan();
+            return requests;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn stages_commits_and_publishes_from_the_panel() {
+    let temp = tempfile::tempdir().expect("temp");
+    let remote = temp.path().join("remote.git");
+    run(
+        temp.path(),
+        &["init", "-q", "--bare", "-b", "main", "remote.git"],
+    );
+    let root = temp.path().join("api");
+    std::fs::create_dir_all(&root).expect("repo");
+    run(&root, &["init", "-q", "-b", "main"]);
+    run(&root, &["config", "commit.gpgsign", "false"]);
+    run(&root, &["config", "user.name", "t"]);
+    run(&root, &["config", "user.email", "t@example.com"]);
+    std::fs::write(root.join("app.rs"), "one\n").expect("write");
+    run(&root, &["add", "."]);
+    run(&root, &["commit", "-q", "-m", "base"]);
+    run(
+        &root,
+        &["remote", "add", "origin", &remote.to_string_lossy()],
+    );
+    run(&root, &["push", "-q", "-u", "origin", "main"]);
+    run(&root, &["checkout", "-q", "-b", "feat"]);
+    std::fs::write(root.join("app.rs"), "one\ntwo\n").expect("write");
+    std::fs::write(root.join("notes.md"), "draft\n").expect("write");
+
+    let mut panel = GitPanel::new(
+        vec![RepoSource {
+            name: "api".into(),
+            root: root.clone(),
+            default_branch: "main".into(),
+        }],
+        None,
+        Arc::new(|| {}),
+    );
+    panel.render(320.0, 400.0);
+    panel.wait_for_scan();
+    let shown = texts(&mut panel);
+    assert!(shown.contains("Stage All"), "{shown}");
+    assert!(shown.contains("Publish"), "{shown}");
+    assert!(shown.contains("Commit Tracked"), "{shown}");
+    assert!(
+        shown.contains("Update app.rs"),
+        "the single tracked change is suggested: {shown}"
+    );
+
+    panel.click(row(2) + 3);
+    panel.wait_for_scan();
+    assert_eq!(
+        git_out(&root, &["diff", "--cached", "--name-only"]),
+        "notes.md"
+    );
+    let shown = texts(&mut panel);
+    assert!(shown.ends_with("Create notes.md|Commit"), "{shown}");
+
+    panel.click_at(footer(1), 20.0, 12.0);
+    assert!(panel.text_focused());
+    panel.text("Add notes\n\nWhy they help");
+    panel.key(workspace::EditKey::ReplaceAll, false);
+    let requests = settle(&mut panel);
+    assert!(requests.is_empty(), "a commit that works says nothing");
+    assert_eq!(git_out(&root, &["log", "-1", "--format=%s"]), "Add notes");
+    assert_eq!(git_out(&root, &["status", "--porcelain"]), "M app.rs");
+
+    panel.click(footer(4));
+    let requests = settle(&mut panel);
+    assert!(
+        matches!(
+            requests.as_slice(),
+            [PanelRequest::ToastAction { message, action, .. }]
+                if message == "Pushed feat to origin" && action == "View Log"
+        ),
+        "{:?}",
+        requests.len()
+    );
+    assert_eq!(
+        git_out(&root, &["rev-parse", "--abbrev-ref", "feat@{upstream}"]),
+        "origin/feat"
+    );
+    let shown = texts(&mut panel);
+    assert!(shown.contains("Fetch"), "tracked and even: {shown}");
+}
+
+#[test]
+fn a_failed_push_offers_its_log() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = temp.path().join("api");
+    std::fs::create_dir_all(&root).expect("repo");
+    run(&root, &["init", "-q", "-b", "main"]);
+    run(&root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("app.rs"), "one\n").expect("write");
+    run(&root, &["add", "."]);
+    run(&root, &["commit", "-q", "-m", "base"]);
+    run(
+        &root,
+        &["remote", "add", "origin", "/nonexistent/remote.git"],
+    );
+    let mut panel = GitPanel::new(
+        vec![RepoSource {
+            name: "api".into(),
+            root,
+            default_branch: "main".into(),
+        }],
+        None,
+        Arc::new(|| {}),
+    );
+    panel.render(320.0, 400.0);
+    panel.wait_for_scan();
+    panel.click(footer(4));
+    let requests = settle(&mut panel);
+    assert!(matches!(
+        requests.as_slice(),
+        [PanelRequest::ToastAction { message, action, then }]
+            if message == "git push failed"
+                && action == "View Log"
+                && matches!(**then, PanelRequest::OpenItem(_))
+    ));
+}

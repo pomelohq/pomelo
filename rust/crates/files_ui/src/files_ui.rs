@@ -306,6 +306,7 @@ struct FileItem {
     link: Option<definition::LinkState>,
     active_diagnostic: Option<diagnostic_nav::ActiveDiagnostic>,
     scratch: Option<(String, String)>,
+    read_only: bool,
     footer: Option<Footer>,
 }
 
@@ -357,6 +358,42 @@ impl FileItem {
         }
         footer.focused && footer.view.key(key, shift)
     }
+}
+
+fn reads_only(key: EditKey) -> bool {
+    matches!(
+        key,
+        EditKey::Left
+            | EditKey::Right
+            | EditKey::Up
+            | EditKey::Down
+            | EditKey::Home
+            | EditKey::End
+            | EditKey::WordLeft
+            | EditKey::WordRight
+            | EditKey::SubwordLeft
+            | EditKey::SubwordRight
+            | EditKey::LineStart
+            | EditKey::LineEnd
+            | EditKey::DocumentStart
+            | EditKey::DocumentEnd
+            | EditKey::PageUp
+            | EditKey::PageDown
+            | EditKey::SelectAll
+            | EditKey::DeploySearch
+            | EditKey::SelectNextMatch
+            | EditKey::SelectPreviousMatch
+            | EditKey::Escape
+    )
+}
+
+pub fn text_tab(id: String, title: String, text: &str) -> Box<dyn Item> {
+    let mut item = FileItem::new(std::env::temp_dir(), "output.log", Some(text.to_string()));
+    item.saved_mtime = None;
+    item.git = git_diff::GitDiff::default();
+    item.scratch = Some((id, title));
+    item.read_only = true;
+    Box::new(item)
 }
 
 pub fn scratch_editor(
@@ -527,6 +564,7 @@ impl FileItem {
             link: None,
             active_diagnostic: None,
             scratch: None,
+            read_only: false,
             footer: None,
         }
     }
@@ -3632,6 +3670,9 @@ impl Item for FileItem {
     }
 
     fn input_text(&mut self, text: &str) {
+        if self.read_only {
+            return;
+        }
         self.hide_hover();
         self.refresh();
         let language = editor::language::config(self.lang);
@@ -3653,6 +3694,9 @@ impl Item for FileItem {
     }
 
     fn ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) {
+        if self.read_only {
+            return;
+        }
         if let Some(b) = self.buffer.as_mut() {
             b.replace_and_mark_text(text, selected);
         }
@@ -3662,6 +3706,9 @@ impl Item for FileItem {
     }
 
     fn ime_commit(&mut self, text: &str) {
+        if self.read_only {
+            return;
+        }
         self.refresh();
         let language = editor::language::config(self.lang);
         let rope = self.rope_snapshot();
@@ -3689,6 +3736,9 @@ impl Item for FileItem {
     }
 
     fn cut(&mut self) -> Option<CopiedText> {
+        if self.read_only {
+            return self.copy();
+        }
         let copied = self.buffer.as_mut().map(|b| copied_text(b.cut()));
         self.refresh();
         self.ensure_visible();
@@ -3697,6 +3747,9 @@ impl Item for FileItem {
     }
 
     fn paste(&mut self, text: &str, slices: Option<&[ClipboardSlice]>) {
+        if self.read_only {
+            return;
+        }
         let slices: Option<Vec<ClipboardSelection>> = slices.map(|slices| {
             slices
                 .iter()
@@ -3716,6 +3769,9 @@ impl Item for FileItem {
     }
 
     fn input_key(&mut self, key: EditKey, shift: bool) {
+        if self.read_only && !reads_only(key) {
+            return;
+        }
         if self.footer_key(key, shift) {
             return;
         }

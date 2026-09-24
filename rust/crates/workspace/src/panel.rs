@@ -252,6 +252,12 @@ pub enum PanelRequest {
     OpenUrl(String),
     Copy(String),
     Toast(String),
+    ToastAction {
+        message: String,
+        action: String,
+        then: Box<PanelRequest>,
+    },
+    OpenMenu,
     /// Ask before acting; the answer comes back through `prompt_answered` with the same `tag`.
     Prompt {
         tag: u64,
@@ -265,6 +271,9 @@ pub trait SidePanelView: 'static {
     fn kind(&self) -> PaneKind;
     fn render(&mut self, width: f32, height: f32) -> Node;
     fn click(&mut self, id: u64);
+    fn click_at(&mut self, id: u64, _x: f32, _y: f32) {
+        self.click(id);
+    }
     fn set_hover(&mut self, id: Option<u64>) -> bool;
     fn scroll(&mut self, dy: f32) -> bool;
     fn open_menu(&mut self, id: u64) -> bool;
