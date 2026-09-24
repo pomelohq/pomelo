@@ -1,0 +1,15 @@
+[package]
+name = "pom_ports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Port leases for workspace services: one file per port under ports.d, shared with the previous core."
+
+[lib]
+path = "src/pom_ports.rs"
+
+[dependencies]
+pom_paths = { path = "../pom_paths" }
+
+[dev-dependencies]
+tempfile = "3"
