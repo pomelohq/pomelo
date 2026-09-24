@@ -26,6 +26,7 @@ fn main() -> anyhow::Result<()> {
                 root: repo.clone().into(),
                 default_branch: "main".into(),
             }],
+            None,
             std::sync::Arc::new(|| {}),
         );
         panel.render(width, height);

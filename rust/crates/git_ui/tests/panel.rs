@@ -61,6 +61,7 @@ fn lists_the_branch_changes_and_discards_after_confirming() {
             root: root.clone(),
             default_branch: "main".into(),
         }],
+        None,
         Arc::new(|| {}),
     );
     panel.render(320.0, 400.0);
@@ -124,4 +125,54 @@ fn lists_the_branch_changes_and_discards_after_confirming() {
     );
     panel.wait_for_scan();
     assert!(texts(&mut panel).contains("1 changed file"));
+}
+
+#[test]
+fn review_marks_hold_until_the_file_changes_and_survive_reopening() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = temp.path().join("api");
+    std::fs::create_dir_all(&root).expect("repo");
+    run(&root, &["init", "-q", "-b", "main"]);
+    run(&root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("a.rs"), "1\n").expect("write");
+    std::fs::write(root.join("b.rs"), "1\n").expect("write");
+    run(&root, &["add", "."]);
+    run(&root, &["commit", "-q", "-m", "base"]);
+    run(&root, &["checkout", "-q", "-b", "feat"]);
+    std::fs::write(root.join("a.rs"), "2\n").expect("write");
+    std::fs::write(root.join("b.rs"), "2\n").expect("write");
+    let reviews = temp.path().join("state/reviews/demo-feat.json");
+    let open = || {
+        let mut panel = GitPanel::new(
+            vec![RepoSource {
+                name: "api".into(),
+                root: root.clone(),
+                default_branch: "main".into(),
+            }],
+            Some(reviews.clone()),
+            Arc::new(|| {}),
+        );
+        panel.render(320.0, 400.0);
+        panel.wait_for_scan();
+        panel.render(320.0, 400.0);
+        panel
+    };
+    let mut panel = open();
+    // Rows: 0 repo, 1 a.rs, 2 b.rs; control 2 is the reviewed box.
+    panel.click(row(1) + 2);
+    assert!(texts(&mut panel).contains("1 of 2 reviewed"));
+    drop(panel);
+
+    let mut panel = open();
+    assert!(
+        texts(&mut panel).contains("1 of 2 reviewed"),
+        "marks are kept"
+    );
+    std::fs::write(root.join("a.rs"), "3\n").expect("write");
+    panel.refresh();
+    panel.wait_for_scan();
+    assert!(
+        texts(&mut panel).contains("2 changed files"),
+        "an edit after the review clears the mark"
+    );
 }
