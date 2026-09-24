@@ -273,6 +273,22 @@ pub trait SidePanelView: 'static {
     fn take_requests(&mut self) -> Vec<PanelRequest>;
     /// The button (index into the prompt's buttons) picked for the prompt asked with `tag`.
     fn prompt_answered(&mut self, _tag: u64, _answer: usize) {}
+    fn text_focused(&self) -> bool {
+        false
+    }
+    fn text(&mut self, _text: &str) -> bool {
+        false
+    }
+    fn key(&mut self, _key: crate::EditKey, _shift: bool) -> bool {
+        false
+    }
+    fn blur(&mut self) {}
+    fn restore_item(
+        &mut self,
+        _item: &crate::persistence::SerializedItem,
+    ) -> Option<Box<dyn crate::Item>> {
+        None
+    }
 }
 
 /// What a workspace's coding agent is doing, as the dot on its row shows it.

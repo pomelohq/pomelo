@@ -1,21 +1,26 @@
-//! The Database panel: the workspace's databases grouped by repo, each opening to its tables (schema-qualified
-//! outside `public`), views and Redis keyspaces. Tables load when a database is first opened; clicking one opens
-//! its table tab.
 
 use std::collections::{HashMap, HashSet};
 
-use pom_db::{Database, Engine, Table, TableKind};
+use pom_db::{Console, ConsoleKind, Database, Engine, Table, TableKind};
 use ui::{div, icon, label, theme, IconKind, Node, Rgba};
-use workspace::{side_panel_base, PaneKind, PanelRequest, SidePanelView};
+use workspace::persistence::SerializedItem;
+use workspace::text_field::{FieldFont, TextField};
+use workspace::{side_panel_base, EditKey, Item, MenuItem, PaneKind, PanelRequest, SidePanelView};
 
+use crate::console::{console_item, console_item_id, new_console, restore_console};
 use crate::{DatabaseContext, Pending, TableItem};
 
 const ROW_H: f32 = 22.0;
 const INDENT: f32 = 16.0;
 const HEADER_H: f32 = 30.0;
+const FILTER_H: f32 = 28.0;
 const BUTTON: f32 = 20.0;
 const ROW_STRIDE: u64 = 4;
 const REFRESH: u64 = 9_000_000;
+const NEW_CONSOLE: u64 = REFRESH + 1;
+const FILTER: u64 = REFRESH + 2;
+const DELETE_CONSOLE: u64 = REFRESH + 3;
+const DELETE_PROMPT: u64 = 1;
 
 enum Tables {
     Loading(Pending<Vec<Table>>),
@@ -25,6 +30,10 @@ enum Tables {
 
 #[derive(Clone)]
 enum Row {
+    Consoles {
+        collapsed: bool,
+    },
+    Console(Console),
     Repo {
         repo: String,
         collapsed: bool,
@@ -55,6 +64,11 @@ pub struct DatabasePanel {
     viewport_h: f32,
     hover: Option<u64>,
     requests: Vec<PanelRequest>,
+    consoles: Vec<Console>,
+    consoles_collapsed: bool,
+    filter: TextField,
+    filter_focused: bool,
+    menu_console: Option<String>,
 }
 
 impl DatabasePanel {
@@ -71,7 +85,17 @@ impl DatabasePanel {
             viewport_h: 0.0,
             hover: None,
             requests: Vec::new(),
+            consoles: Vec::new(),
+            consoles_collapsed: false,
+            filter: {
+                let mut field = TextField::default();
+                field.set_font_size(12.0);
+                field
+            },
+            filter_focused: false,
+            menu_console: None,
         };
+        panel.load_consoles();
         if let Some(first) = panel.databases.first().map(|db| db.name.clone()) {
             panel.toggle_database(&first);
         }
@@ -89,6 +113,57 @@ impl DatabasePanel {
     fn decode(id: u64) -> Option<usize> {
         let offset = id.checked_sub(Self::base())?;
         (offset < REFRESH).then_some((offset / ROW_STRIDE) as usize)
+    }
+
+    fn load_consoles(&mut self) {
+        self.consoles = self
+            .context
+            .consoles()
+            .into_iter()
+            .filter(|console| console.kind == ConsoleKind::Query)
+            .collect();
+    }
+
+    fn open_console(&mut self, console: Console) {
+        let context = self.context.clone();
+        self.requests.push(PanelRequest::Reveal {
+            id: console_item_id(&console),
+            open: Box::new(move || Some(console_item(context, console))),
+        });
+    }
+
+    fn create_console(&mut self) {
+        let Some(database) = self
+            .databases
+            .iter()
+            .find(|database| database.engine == Engine::Postgres)
+            .or(self.databases.first())
+        else {
+            return;
+        };
+        let mut saved = self.context.consoles();
+        let console = new_console(&saved, database);
+        saved.push(console.clone());
+        self.context.save_consoles(&saved);
+        self.load_consoles();
+        self.open_console(console);
+    }
+
+    fn delete_console(&mut self, id: &str) {
+        let mut saved = self.context.consoles();
+        saved.retain(|console| console.id != id);
+        self.context.save_consoles(&saved);
+        self.load_consoles();
+    }
+
+    fn filter_matches(&self, text: &str) -> bool {
+        let filter = self.filter.text();
+        filter.is_empty() || text.to_lowercase().contains(&filter.trim().to_lowercase())
+    }
+
+    pub fn set_filter(&mut self, filter: &str) {
+        self.filter.set_text(filter);
+        self.filter.move_to_end();
     }
 
     fn database(&self, name: &str) -> Option<&Database> {
@@ -123,6 +198,7 @@ impl DatabasePanel {
     }
 
     fn refresh(&mut self) {
+        self.load_consoles();
         self.databases = self.context.databases();
         self.tables.clear();
         let open: Vec<String> = self.open.iter().cloned().collect();
@@ -145,6 +221,20 @@ impl DatabasePanel {
 
     fn rebuild_rows(&mut self) {
         let mut rows = Vec::new();
+        let consoles: Vec<Console> = self
+            .consoles
+            .iter()
+            .filter(|console| self.filter_matches(&console.title))
+            .cloned()
+            .collect();
+        if !consoles.is_empty() {
+            rows.push(Row::Consoles {
+                collapsed: self.consoles_collapsed,
+            });
+            if !self.consoles_collapsed {
+                rows.extend(consoles.into_iter().map(Row::Console));
+            }
+        }
         let mut repos: Vec<&str> = Vec::new();
         for database in &self.databases {
             if !repos.contains(&database.repo.as_str()) {
@@ -180,10 +270,23 @@ impl DatabasePanel {
                         error: false,
                     }),
                     Some(Tables::Loaded(tables)) => {
-                        rows.extend(tables.iter().map(|table| Row::Table {
-                            index,
-                            table: table.clone(),
-                        }))
+                        let before = rows.len();
+                        rows.extend(
+                            tables
+                                .iter()
+                                .filter(|table| self.filter_matches(&table.qualified()))
+                                .map(|table| Row::Table {
+                                    index,
+                                    table: table.clone(),
+                                }),
+                        );
+                        if rows.len() == before {
+                            rows.push(Row::Note {
+                                depth: 2,
+                                text: "No matches".into(),
+                                error: false,
+                            });
+                        }
                     }
                     Some(Tables::Failed(error)) => rows.push(Row::Note {
                         depth: 2,
@@ -245,6 +348,33 @@ impl DatabasePanel {
                 .child(label(text).color(color).truncate())
         };
         match row {
+            Row::Consoles { collapsed } => line
+                .child(self.slot(
+                    if *collapsed {
+                        IconKind::ChevronRight
+                    } else {
+                        IconKind::ChevronDown
+                    },
+                    colors.icon_muted,
+                ))
+                .child(name("Consoles".into(), colors.text))
+                .child(
+                    label(self.consoles.len().to_string())
+                        .size(11.0)
+                        .color(colors.text_placeholder),
+                )
+                .into(),
+            Row::Console(console) => {
+                let database = self.database(&console.database).map_or_else(
+                    || console.database.clone(),
+                    |database| database.label.clone(),
+                );
+                line.child(self.guide())
+                    .child(self.slot(IconKind::File, colors.icon_muted))
+                    .child(name(console.title.clone(), colors.text_muted))
+                    .child(label(database).size(11.0).color(colors.text_placeholder))
+                    .into()
+            }
             Row::Repo { repo, collapsed } => {
                 let engine = self
                     .databases
@@ -325,7 +455,57 @@ impl DatabasePanel {
     }
 
     fn content_height(&self) -> f32 {
-        HEADER_H + self.rows.len() as f32 * ROW_H
+        HEADER_H + FILTER_H + self.rows.len() as f32 * ROW_H
+    }
+
+    fn header_button(&self, offset: u64, kind: IconKind) -> Node {
+        let colors = theme();
+        let id = Self::base() + offset;
+        let hot = self.hover == Some(id);
+        div()
+            .w_px(BUTTON)
+            .h_px(BUTTON)
+            .rounded(4.0)
+            .items_center()
+            .justify_center()
+            .on_click(id)
+            .bg(if hot {
+                colors.element_hover
+            } else {
+                Rgba::TRANSPARENT
+            })
+            .child(
+                icon(kind)
+                    .size(12.0)
+                    .color(if hot { colors.icon } else { colors.icon_muted }),
+            )
+            .into()
+    }
+
+    fn filter_box(&self) -> Node {
+        let colors = theme();
+        div()
+            .row()
+            .h_px(FILTER_H)
+            .px(10.0)
+            .gap(6.0)
+            .items_center()
+            .on_click(Self::base() + FILTER)
+            .child(icon(IconKind::Search).size(12.0).color(colors.icon_muted))
+            .child(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .items_center()
+                    .child(self.filter.render(
+                        "Filter tables",
+                        self.filter_focused,
+                        colors.text,
+                        FILTER_H - 8.0,
+                        FieldFont::Ui,
+                    )),
+            )
+            .into()
     }
 }
 
@@ -341,8 +521,6 @@ impl SidePanelView for DatabasePanel {
         let max_scroll = (self.content_height() - height).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         let colors = theme();
-        let refresh_id = Self::base() + REFRESH;
-        let refresh_hot = self.hover == Some(refresh_id);
         let header = div()
             .row()
             .h_px(HEADER_H)
@@ -358,25 +536,8 @@ impl SidePanelView for DatabasePanel {
                         .truncate(),
                 ),
             )
-            .child(
-                div()
-                    .w_px(BUTTON)
-                    .h_px(BUTTON)
-                    .rounded(4.0)
-                    .items_center()
-                    .justify_center()
-                    .on_click(refresh_id)
-                    .bg(if refresh_hot {
-                        colors.element_hover
-                    } else {
-                        Rgba::TRANSPARENT
-                    })
-                    .child(icon(IconKind::RotateCw).size(12.0).color(if refresh_hot {
-                        colors.icon
-                    } else {
-                        colors.icon_muted
-                    })),
-            );
+            .child(self.header_button(NEW_CONSOLE, IconKind::Plus))
+            .child(self.header_button(REFRESH, IconKind::RotateCw));
         let mut list = div().col().px(4.0);
         if self.rows.is_empty() {
             list = list.child(
@@ -397,19 +558,26 @@ impl SidePanelView for DatabasePanel {
             .w_px(width)
             .h_px(height)
             .child(header)
+            .child(self.filter_box())
+            .child(div().h_px(1.0).bg(colors.border_variant))
             .child(list)
             .into()
     }
 
     fn click(&mut self, id: u64) {
-        if id == Self::base() + REFRESH {
-            self.refresh();
-            return;
+        self.filter_focused = id == Self::base() + FILTER;
+        match id.checked_sub(Self::base()) {
+            Some(REFRESH) => return self.refresh(),
+            Some(NEW_CONSOLE) => return self.create_console(),
+            Some(FILTER) => return,
+            _ => {}
         }
         let Some(row) = Self::decode(id).and_then(|index| self.rows.get(index).cloned()) else {
             return;
         };
         match row {
+            Row::Consoles { .. } => self.consoles_collapsed = !self.consoles_collapsed,
+            Row::Console(console) => self.open_console(console),
             Row::Repo { repo, .. } => {
                 if !self.collapsed_repos.remove(&repo) {
                     self.collapsed_repos.insert(repo);
@@ -447,17 +615,189 @@ impl SidePanelView for DatabasePanel {
         moved
     }
 
-    fn open_menu(&mut self, _id: u64) -> bool {
-        false
+    fn open_menu(&mut self, id: u64) -> bool {
+        let row = Self::decode(id).and_then(|index| self.rows.get(index));
+        self.menu_console = match row {
+            Some(Row::Console(console)) => Some(console.id.clone()),
+            _ => None,
+        };
+        self.menu_console.is_some()
     }
 
-    fn menu_items(&self) -> Vec<workspace::MenuItem> {
-        Vec::new()
+    fn menu_items(&self) -> Vec<MenuItem> {
+        if self.menu_console.is_none() {
+            return Vec::new();
+        }
+        vec![MenuItem {
+            id: Self::base() + DELETE_CONSOLE,
+            label: "Delete Console".into(),
+            checked: false,
+            sep: false,
+            disabled: false,
+        }]
     }
 
-    fn menu_action(&mut self, _item: u64) {}
+    fn menu_action(&mut self, item: u64) {
+        if item != Self::base() + DELETE_CONSOLE {
+            self.menu_console = None;
+            return;
+        }
+        let Some(title) = self
+            .menu_console
+            .as_ref()
+            .and_then(|id| self.consoles.iter().find(|console| console.id == *id))
+            .map(|console| console.title.clone())
+        else {
+            return;
+        };
+        self.requests.push(PanelRequest::Prompt {
+            tag: DELETE_PROMPT,
+            message: format!("Delete the console \"{title}\"?"),
+            detail: Some("Its SQL is removed and cannot be recovered.".into()),
+            buttons: vec!["Delete".into(), "Cancel".into()],
+        });
+    }
+
+    fn prompt_answered(&mut self, tag: u64, answer: usize) {
+        let Some(id) = self.menu_console.take() else {
+            return;
+        };
+        if tag == DELETE_PROMPT && answer == 0 {
+            self.delete_console(&id);
+        }
+    }
+
+    fn text_focused(&self) -> bool {
+        self.filter_focused
+    }
+
+    fn text(&mut self, text: &str) -> bool {
+        let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+        if typed.is_empty() {
+            return false;
+        }
+        self.filter.insert(&typed);
+        self.scroll = 0.0;
+        true
+    }
+
+    fn key(&mut self, key: EditKey, shift: bool) -> bool {
+        match key {
+            EditKey::Escape if self.filter.text().is_empty() => self.filter_focused = false,
+            EditKey::Escape => self.filter.set_text(""),
+            EditKey::Enter => self.filter_focused = false,
+            _ => {
+                self.scroll = 0.0;
+                return self.filter.key(key, shift);
+            }
+        }
+        true
+    }
+
+    fn blur(&mut self) {
+        self.filter_focused = false;
+    }
+
+    fn restore_item(&mut self, item: &SerializedItem) -> Option<Box<dyn Item>> {
+        restore_console(&self.context, item)
+    }
 
     fn take_requests(&mut self) -> Vec<PanelRequest> {
         std::mem::take(&mut self.requests)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row_id(panel: &mut DatabasePanel, wanted: impl Fn(&Row) -> bool) -> u64 {
+        panel.render(320.0, 600.0);
+        match panel.rows.iter().position(wanted) {
+            Some(index) => DatabasePanel::id(index),
+            None => panic!("row not shown"),
+        }
+    }
+
+    #[test]
+    fn new_console_is_saved_listed_and_opened() {
+        let context = crate::tests::context();
+        let mut panel = DatabasePanel::new(context.context.clone());
+        panel.click(DatabasePanel::base() + NEW_CONSOLE);
+        let saved = context.context.consoles();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].title, "query 1");
+        assert!(matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::Reveal { id, .. }] if *id == console_item_id(&saved[0])
+        ));
+        let console = row_id(&mut panel, |row| matches!(row, Row::Console(_)));
+        panel.click(console);
+        assert_eq!(panel.take_requests().len(), 1);
+    }
+
+    #[test]
+    fn a_console_is_deleted_only_after_confirming() {
+        let context = crate::tests::context();
+        let mut panel = DatabasePanel::new(context.context.clone());
+        panel.click(DatabasePanel::base() + NEW_CONSOLE);
+        panel.take_requests();
+        let console = row_id(&mut panel, |row| matches!(row, Row::Console(_)));
+        assert!(panel.open_menu(console));
+        let delete = panel.menu_items()[0].id;
+        panel.menu_action(delete);
+        assert!(matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::Prompt {
+                tag: DELETE_PROMPT,
+                ..
+            }]
+        ));
+        panel.prompt_answered(DELETE_PROMPT, 1);
+        assert_eq!(context.context.consoles().len(), 1);
+        assert!(panel.open_menu(console));
+        panel.menu_action(delete);
+        panel.prompt_answered(DELETE_PROMPT, 0);
+        assert!(context.context.consoles().is_empty());
+        panel.render(320.0, 600.0);
+        assert!(!panel
+            .rows
+            .iter()
+            .any(|row| matches!(row, Row::Consoles { .. })));
+    }
+
+    #[test]
+    fn the_filter_narrows_tables_and_takes_typing_while_focused() {
+        let context = crate::tests::context();
+        let mut panel = DatabasePanel::new(context.context.clone());
+        let table = |name: &str| Table {
+            schema: "public".into(),
+            name: name.into(),
+            kind: TableKind::Table,
+            count: None,
+        };
+        let name = context.context.databases()[0].name.clone();
+        panel.show_tables(&name, vec![table("users"), table("orders")]);
+        panel.click(DatabasePanel::base() + FILTER);
+        assert!(panel.text_focused());
+        assert!(panel.text("ORD"));
+        panel.render(320.0, 600.0);
+        let tables: Vec<String> = panel
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Table { table, .. } => Some(table.name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tables, ["orders"]);
+        assert!(panel.key(EditKey::Escape, false));
+        assert!(panel.filter.text().is_empty());
+        assert!(panel.text_focused());
+        panel.key(EditKey::Escape, false);
+        assert!(!panel.text_focused());
+        panel.click(DatabasePanel::base() + FILTER);
+        panel.blur();
+        assert!(!panel.text_focused());
     }
 }

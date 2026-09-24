@@ -100,6 +100,7 @@ fn a_table_tab_pages_sorts_and_filters() {
     let config_for_context = config.clone();
     let context = DatabaseContext {
         runner: runner.clone(),
+        state: pom_paths::StateDir::new(temp.path().join("state")),
         config: Arc::new(move || Some(config_for_context.clone())),
         branch: "feat".into(),
         waker: Arc::new(|| {}),

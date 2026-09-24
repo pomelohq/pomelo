@@ -1,6 +1,5 @@
-//! The Database tool window: the active workspace's databases as a tree, and table tabs that page through a
-//! table's rows in a grid. Everything talks to the databases on background threads.
 
+mod console;
 mod grid;
 mod panel;
 mod table_item;
@@ -10,23 +9,35 @@ use std::sync::Arc;
 
 use pom_config::Config;
 use pom_db::{Connector, Database};
+use pom_paths::StateDir;
 use pom_services::ServiceRunner;
 
+pub use console::{new_console, ConsoleFooter};
 pub use grid::{Grid, GridEvent, Region};
 pub use panel::DatabasePanel;
 pub use table_item::TableItem;
 
 /// What the Database views need: the project's runner (ports, slots), its current config, the workspace's
-/// branch, and a way to wake the window when background work lands.
 #[derive(Clone)]
 pub struct DatabaseContext {
     pub runner: Arc<ServiceRunner>,
+    pub state: StateDir,
     pub config: Arc<dyn Fn() -> Option<Arc<Config>> + Send + Sync>,
     pub branch: String,
     pub waker: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl DatabaseContext {
+    pub fn consoles(&self) -> Vec<pom_db::Console> {
+        pom_db::load_consoles(&self.state, self.runner.session())
+    }
+
+    pub fn save_consoles(&self, consoles: &[pom_db::Console]) {
+        if let Err(error) = pom_db::save_consoles(&self.state, self.runner.session(), consoles) {
+            eprintln!("database: save consoles: {error}");
+        }
+    }
+
     pub fn databases(&self) -> Vec<Database> {
         (self.config)()
             .map(|config| pom_db::list_databases(&config, &self.branch))
@@ -84,5 +95,54 @@ impl<T> Pending<T> {
         };
         self.0 = None;
         Some(answer)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::sync::Arc;
+
+    use super::DatabaseContext;
+
+    pub(crate) struct TestContext {
+        pub context: DatabaseContext,
+        _dir: tempfile::TempDir,
+    }
+
+    pub(crate) fn context() -> TestContext {
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => panic!("temp dir: {error}"),
+        };
+        let pom = dir.path().join("pom.yml");
+        let yaml = "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\nrepos:\n  api:\n    databases:\n      main: \"api_{{branch.safe}}\"\n";
+        if let Err(error) = std::fs::write(&pom, yaml) {
+            panic!("write pom.yml: {error}");
+        }
+        let config = match pom_config::Config::load(&pom) {
+            Ok(config) => Arc::new(config),
+            Err(error) => panic!("load pom.yml: {error}"),
+        };
+        let state = pom_paths::StateDir::new(dir.path().join("state"));
+        let runner = Arc::new(pom_services::ServiceRunner::new(
+            pom_services::RunnerOptions {
+                project_root: dir.path().to_path_buf(),
+                session: "myproject".into(),
+                state: state.clone(),
+                holders: pom_ptyhost::SocketDir::new(dir.path().join("s")),
+                binary: "/nonexistent".into(),
+                docker: "/nonexistent".into(),
+            },
+        ));
+        TestContext {
+            context: DatabaseContext {
+                runner,
+                state,
+                config: Arc::new(move || Some(config.clone())),
+                branch: "feat".into(),
+                waker: Arc::new(|| {}),
+            },
+            _dir: dir,
+        }
     }
 }

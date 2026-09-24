@@ -728,6 +728,59 @@ pub trait Item: 'static {
     fn paint_companion(&mut self, _area: ui::Rect) -> Option<ui::Painted> {
         None
     }
+    fn footer_height(&mut self, _body_h: f32) -> f32 {
+        0.0
+    }
+    fn paint_footer(&mut self, _area: ui::Rect) -> Option<ui::Painted> {
+        None
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunRequest {
+    pub text: String,
+    pub selection: Option<String>,
+    pub caret: usize,
+    pub all: bool,
+}
+
+pub trait ItemFooter: 'static {
+    fn height(&mut self, body_h: f32) -> f32;
+    fn paint(&mut self, area: ui::Rect) -> Option<ui::Painted>;
+    fn pointer_down(&mut self, x: f32, y: f32, click_count: u32) -> bool;
+    fn pointer_drag(&mut self, _x: f32, _y: f32) -> bool {
+        false
+    }
+    fn pointer_up(&mut self) {}
+    fn pointer_move(&mut self, _x: f32, _y: f32) -> bool {
+        false
+    }
+    fn scroll(&mut self, _delta_x: f32, _delta_y: f32, _shift: bool) -> bool {
+        false
+    }
+    fn key(&mut self, _key: EditKey, _shift: bool) -> bool {
+        false
+    }
+    fn copy(&self) -> Option<String> {
+        None
+    }
+    fn run(&mut self, request: RunRequest);
+    fn take_run(&mut self) -> Option<bool> {
+        None
+    }
+    fn serialize(&self) -> Option<persistence::SerializedItem> {
+        None
+    }
+    fn text_changed(&mut self, _text: &str) {}
+    fn tick(&mut self) -> bool {
+        false
+    }
+    fn busy(&self) -> bool {
+        false
+    }
+    fn title(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -838,6 +891,7 @@ pub struct PanePlacement {
     pub painted: Option<(ui::Painted, ui::Rect)>,
     /// A text body's companion view (the old side of a split diff), drawn over the body's left.
     pub companion: Option<(ui::Painted, ui::Rect)>,
+    pub footer: Option<(ui::Painted, ui::Rect)>,
     pub body: Option<PaneBody>,
     pub back: Vec<ui::Rect>,
     pub back_tris: Vec<ui::Tri>,
@@ -1173,7 +1227,11 @@ pub trait FunctionView: ItemInput + 'static {
         None
     }
 
-    fn restore_panes(&mut self, _saved: &persistence::SerializedMember) -> bool {
+    fn restore_panes(
+        &mut self,
+        _saved: &persistence::SerializedMember,
+        _fallback: &mut dyn FnMut(&persistence::SerializedItem) -> Option<Box<dyn Item>>,
+    ) -> bool {
         false
     }
 

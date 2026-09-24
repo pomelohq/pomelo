@@ -464,7 +464,10 @@ impl WorkspaceView {
         };
         if let Some(saved) = crate::persistence::load_workspace(&root) {
             if let (Some(center), Some(files)) = (&saved.center, self.layout.files_view.as_mut()) {
-                files.restore_panes(center);
+                let panels = &mut self.layout.side_panels;
+                files.restore_panes(center, &mut |item| {
+                    panels.iter_mut().find_map(|panel| panel.restore_item(item))
+                });
             }
             if let (Some(panel), Some(view)) = (&saved.panel, self.layout.terminal_view.as_mut()) {
                 if view.restore_panes(panel) && saved.panel_zoomed {
@@ -2618,6 +2621,12 @@ impl WorkspaceView {
 
     /// Left-button press: route a header/menu click, close the menu, toggle a dock, or begin a divider drag.
     pub fn mouse_down(&mut self, x: f32, y: f32) {
+        let pressed_panel = self.hit(x, y).and_then(crate::side_panel_kind);
+        for panel in self.layout.side_panels.iter_mut() {
+            if pressed_panel != Some(panel.kind()) {
+                panel.blur();
+            }
+        }
         if let Some(rect) = self.modal_rect.take() {
             let inside = x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
             if !inside {
@@ -2822,6 +2831,10 @@ impl WorkspaceView {
         if let Some(modal) = self.window_modal.as_mut() {
             return modal.paste(&text);
         }
+        if let Some(panel) = self.panel_with_text() {
+            let line: String = text.chars().filter(|c| !c.is_control()).collect();
+            return panel.text(&line);
+        }
         let slices = crate::slices_for(&text);
         let group = self.text_group();
         self.input(group)
@@ -2846,6 +2859,9 @@ impl WorkspaceView {
         if let Some(modal) = self.window_modal.as_mut() {
             return modal.text(text);
         }
+        if let Some(panel) = self.panel_with_text() {
+            return panel.text(text);
+        }
         self.input(self.focused_group())
             .map(|v| v.editor_ime_commit(text))
             .unwrap_or(false)
@@ -2855,10 +2871,39 @@ impl WorkspaceView {
         if let Some(modal) = self.window_modal.as_mut() {
             return modal.text(text);
         }
+        if let Some(panel) = self.panel_with_text() {
+            return panel.text(text);
+        }
         let group = self.text_group();
         self.input(group)
             .map(|v| v.editor_text(text))
             .unwrap_or(false)
+    }
+
+    fn panel_text_kind(&self) -> Option<crate::PaneKind> {
+        if self.window_modal.is_some() {
+            return None;
+        }
+        [
+            DockPosition::Left,
+            DockPosition::Right,
+            DockPosition::Bottom,
+        ]
+        .into_iter()
+        .find_map(|side| match self.layout.shown_on(side) {
+            Some(Shown::Func(kind)) if self.layout.dock_open(side) => self
+                .layout
+                .side_panels
+                .iter()
+                .find(|panel| panel.kind() == kind && panel.text_focused())
+                .map(|panel| panel.kind()),
+            _ => None,
+        })
+    }
+
+    fn panel_with_text(&mut self) -> Option<&mut Box<dyn crate::SidePanelView>> {
+        let kind = self.panel_text_kind()?;
+        self.layout.side_panel_mut(kind)
     }
 
     /// Where typed text goes: an open modal of the editor area takes it even while the panel has focus.
@@ -2880,6 +2925,11 @@ impl WorkspaceView {
             let changed = modal.key(key, shift);
             self.settle_window_modal();
             return changed || self.window_modal.is_none();
+        }
+        if let Some(panel) = self.panel_with_text() {
+            let changed = panel.key(key, shift);
+            self.apply_panel_requests();
+            return changed;
         }
         let claimed = self
             .layout
@@ -2917,7 +2967,7 @@ impl WorkspaceView {
     }
 
     pub fn editor_focused(&self) -> bool {
-        if self.window_modal.is_some() {
+        if self.window_modal.is_some() || self.panel_text_kind().is_some() {
             return true;
         }
         self.input_ref(self.focused_group())
@@ -3174,7 +3224,7 @@ impl WorkspaceView {
 
     /// Whether key presses go raw to a terminal: the focused group's active item takes raw keystrokes.
     pub fn terminal_focused(&self) -> bool {
-        if self.window_modal.is_some() {
+        if self.window_modal.is_some() || self.panel_text_kind().is_some() {
             return false;
         }
         self.input_ref(self.focused_group())
@@ -4011,6 +4061,12 @@ fn push_pane_group(
                 clip: Some(b.rect),
             });
             if let Some((painted, clip)) = pane.companion.take() {
+                overlays.push(Overlay {
+                    painted,
+                    clip: Some(clip),
+                });
+            }
+            if let Some((painted, clip)) = pane.footer.take() {
                 overlays.push(Overlay {
                     painted,
                     clip: Some(clip),

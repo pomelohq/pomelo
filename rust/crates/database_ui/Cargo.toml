@@ -9,10 +9,12 @@ description = "The Database tool window: a workspace's databases as a tree, and 
 path = "src/database_ui.rs"
 
 [dependencies]
+files_ui = { path = "../files_ui" }
 pom_config = { path = "../pom_config" }
 pom_db = { path = "../pom_db" }
 pom_paths = { path = "../pom_paths" }
 pom_services = { path = "../pom_services" }
+serde_json.workspace = true
 terminal = { path = "../terminal" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }

@@ -425,6 +425,7 @@ impl ProjectServices {
         Box::new(database_ui::DatabasePanel::new(
             database_ui::DatabaseContext {
                 runner: self.runner.clone(),
+                state: pom_paths::StateDir::from_env(),
                 config: Arc::new(move || config.read().ok().and_then(|config| config.clone())),
                 branch: project.active_branch().to_string(),
                 waker: Arc::new(ui::wake),

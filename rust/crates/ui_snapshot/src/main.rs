@@ -13,7 +13,6 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(settings_ui::APPEARANCE);
 
-    // DATABASE=panel|table: the Database panel with sample tables, or a table tab with a sample page.
     if let Ok(which) = std::env::var("DATABASE") {
         use workspace::{Item, SidePanelView};
         let dir = std::env::temp_dir().join(format!("pom-snapshot-db-{}", std::process::id()));
@@ -35,6 +34,7 @@ fn main() -> anyhow::Result<()> {
         ));
         let context = database_ui::DatabaseContext {
             runner,
+            state: pom_paths::StateDir::new(dir.join("state")),
             config: std::sync::Arc::new(move || Some(config.clone())),
             branch: "feat-login".into(),
             waker: std::sync::Arc::new(|| {}),
@@ -49,12 +49,46 @@ fn main() -> anyhow::Result<()> {
         };
         let (width, height) = if which == "panel" {
             (320.0_f32, 420.0_f32)
+        } else if which == "console" {
+            (900.0_f32, 280.0_f32)
         } else {
             (900.0_f32, 460.0_f32)
         };
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
-        let painted = if which == "panel" {
+        let databases = pom_db::list_databases(
+            &pom_config::Config::load(&dir.join("pom.yml"))?,
+            "feat-login",
+        );
+        let first = databases
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no database"))?;
+        let mut consoles = vec![database_ui::new_console(&[], first)];
+        consoles.push(database_ui::new_console(&consoles, first));
+        consoles[1].id.push('b');
+        context.save_consoles(&consoles);
+        let painted = if which == "console" {
+            use workspace::ItemFooter;
+            let mut footer = database_ui::ConsoleFooter::new(context, consoles[0].clone());
+            footer.show_result(Ok(pom_db::QueryResult {
+                columns: ["id", "email", "role"].map(str::to_string).to_vec(),
+                rows: (1..=12)
+                    .map(|row| {
+                        vec![
+                            Some(row.to_string()),
+                            Some(format!("user{row}@example.com")),
+                            Some(if row % 3 == 0 { "admin" } else { "member" }.to_string()),
+                        ]
+                    })
+                    .collect(),
+                ..pom_db::QueryResult::default()
+            }));
+            footer.height(height);
+            footer
+                .paint(body)
+                .ok_or_else(|| anyhow::anyhow!("no footer"))?
+        } else if which == "panel" {
             let mut panel = database_ui::DatabasePanel::new(context);
+            panel.set_filter("e");
             std::thread::sleep(std::time::Duration::from_millis(300));
             panel.show_tables(
                 "myproject_api_feat-login",

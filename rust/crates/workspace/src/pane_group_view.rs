@@ -1935,6 +1935,7 @@ fn layout_body(
         node: ui::div().into(),
         painted: None,
         companion: None,
+        footer: None,
         body: None,
         back: Vec::new(),
         back_tris: Vec::new(),
@@ -1972,6 +1973,30 @@ fn layout_body(
         ),
         None => body_rect,
     };
+    let footer_h = item
+        .footer_height(body_rect.h)
+        .clamp(0.0, (body_rect.h - 1.0).max(0.0));
+    let (body_rect, footer) = if footer_h > 0.0 {
+        let text_h = (body_rect.h - footer_h - 1.0).max(0.0);
+        (
+            Rect::new(
+                body_rect.x,
+                body_rect.y,
+                body_rect.w,
+                text_h,
+                Rgba::TRANSPARENT,
+            ),
+            Some(Rect::new(
+                body_rect.x,
+                body_rect.y + text_h + 1.0,
+                body_rect.w,
+                footer_h,
+                Rgba::TRANSPARENT,
+            )),
+        )
+    } else {
+        (body_rect, None)
+    };
     item.set_body_height(body_rect.h);
     item.set_body_width(body_rect.w);
     placement.back = item.back_rects(body_rect);
@@ -1996,6 +2021,28 @@ fn layout_body(
             ));
             let clip = Rect::new(area.x, area.y, area.w + 1.0, area.h, Rgba::TRANSPARENT);
             placement.companion = Some((painted, clip));
+        }
+    }
+    if let Some(area) = footer {
+        if let Some(mut painted) = item.paint_footer(area) {
+            painted.rects.insert(
+                0,
+                Rect::new(
+                    area.x,
+                    area.y - 1.0,
+                    area.w,
+                    1.0,
+                    ui::theme().border_variant,
+                ),
+            );
+            let clip = Rect::new(
+                area.x,
+                area.y - 1.0,
+                area.w,
+                area.h + 1.0,
+                Rgba::TRANSPARENT,
+            );
+            placement.footer = Some((painted, clip));
         }
     }
     // Text starts right of the fixed gutter and clips to that region, so scrolled glyphs never paint over the
