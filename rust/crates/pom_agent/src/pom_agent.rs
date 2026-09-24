@@ -10,7 +10,8 @@ pub use hooks::{
     AgentState, AgentStatus,
 };
 pub use launch::{
-    claude_launch, resolve_claude, session_id, system_prompt, AgentLaunch, LaunchContext,
+    claude_launch, claude_task_launch, resolve_claude, session_id, system_prompt, AgentLaunch,
+    LaunchContext,
 };
 pub use naming::{claude_available, naming_prompt, parse_suggestion, suggest_name, NameSuggestion};
 pub use watch::AgentWatcher;

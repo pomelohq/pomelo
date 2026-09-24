@@ -34,6 +34,7 @@ commands:
   ws rename <branch> [name]   set or clear the workspace's display name
   ws list            workspaces, their repos and running services
   prepare-main [--no-seed]    reset main's databases, migrate and seed (new workspaces copy them)
+  doctor             what keeps the project from running, and how to fix it
   version
 
 The workspace is the one the current directory is in, else the main one; -w picks another.
@@ -50,6 +51,7 @@ enum Command {
     Ports,
     Url(String),
     Workspace(WorkspaceCommand),
+    Doctor,
     Version,
     Help,
 }
@@ -76,6 +78,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Version => writeln!(out, "pom {}", env!("CARGO_PKG_VERSION"))
                 .map_err(|error| error.to_string()),
             Command::Ports => ports(&StateDir::from_env(), out),
+            Command::Doctor => doctor(invocation.config.as_deref(), cwd, out),
             ref command => Session::open(&invocation, cwd)
                 .and_then(|session| session.execute(command, out, err)),
         };
@@ -147,6 +150,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "url" => Command::Url(one("a service")?),
         "ws" | "workspace" => Command::Workspace(workspaces::parse(rest, false)?),
         "prepare-main" => Command::Workspace(workspaces::parse(rest, true)?),
+        "doctor" => none().map(|_| Command::Doctor)?,
         "version" => Command::Version,
         "help" => Command::Help,
         other => return Err(format!("unknown command {other}")),
@@ -156,6 +160,58 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         config,
         command,
     })
+}
+
+fn doctor(explicit: Option<&Path>, cwd: &Path, out: &mut dyn Write) -> Result<(), String> {
+    let config_path = find_config(explicit, cwd).unwrap_or_else(|_| cwd.join("pom.yml"));
+    let config = Config::load(&config_path).ok();
+    let root = config_path.parent().unwrap_or(cwd);
+    let names = config
+        .as_ref()
+        .map(|config| {
+            pom_secrets::SecretStore::new(StateDir::from_env(), &config.session)
+                .names()
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let path = pom_services::tool_path();
+    let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
+    let docker_running = || pom_doctor::docker_answers(path);
+    let findings = pom_doctor::diagnose(
+        config.as_ref(),
+        &config_path,
+        root,
+        &names,
+        &pom_doctor::Machine {
+            has_tool: &has_tool,
+            docker_running: &docker_running,
+        },
+    );
+    let write = |out: &mut dyn Write, line: String| {
+        writeln!(out, "{line}").map_err(|error| error.to_string())
+    };
+    for finding in &findings {
+        let mark = match finding.severity {
+            pom_doctor::Severity::Error => "error",
+            pom_doctor::Severity::Warn => "warn ",
+            pom_doctor::Severity::Ok => "ok   ",
+        };
+        write(out, format!("{mark}  {}", finding.title))?;
+        if !finding.detail.is_empty() {
+            write(out, format!("       {}", finding.detail))?;
+        }
+        if !finding.fix.is_empty() {
+            write(out, format!("       fix: {}", finding.fix))?;
+        }
+    }
+    let errors = findings
+        .iter()
+        .filter(|finding| finding.severity == pom_doctor::Severity::Error)
+        .count();
+    if errors > 0 {
+        return Err(format!("{errors} blocking problem(s)"));
+    }
+    Ok(())
 }
 
 /// The project `cwd` is in (its `pom.yml` is here or in a parent), or the explicit one.
@@ -237,7 +293,7 @@ impl Session {
             Command::Attach(service) => self.attach(service),
             Command::Url(service) => self.url(service, out),
             Command::Workspace(command) => self.workspace(command, out),
-            Command::Ports | Command::Version | Command::Help => Ok(()),
+            Command::Ports | Command::Doctor | Command::Version | Command::Help => Ok(()),
         }
     }
 

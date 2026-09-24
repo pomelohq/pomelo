@@ -7,14 +7,6 @@ use pom_config::yaml_node::{self, Node};
 use pom_config::Config;
 use serde::Serialize;
 
-const REMOVED_TOP_KEYS: [&str; 5] = [
-    "schema_version",
-    "plugins",
-    "combinations",
-    "proxy",
-    "webhook",
-];
-
 #[derive(Serialize)]
 pub struct ConfigFile {
     pub name: String,
@@ -102,7 +94,9 @@ pub fn validate_text(yaml: &str) -> Result<(), String> {
         .and_then(|_| load_and_validate(&path));
     remove_dir(&temp);
     result?;
-    let removed = document.map(|root| removed_keys(&root)).unwrap_or_default();
+    let removed = document
+        .map(|root| pom_config::maintain::removed_keys(&root))
+        .unwrap_or_default();
     if !removed.is_empty() {
         return Err(format!(
             "removed/unsupported keys - delete them (or run config_normalize): {}",
@@ -125,7 +119,12 @@ pub fn write_root(config_path: &Path, yaml: &str) -> Result<(), String> {
 
 /// Writes one file after checking the whole config as it would be with the edit. An edit is still
 /// accepted while the config was already broken elsewhere, so a fix can land one file at a time.
-pub fn write_file(config_path: &Path, path: &Path, yaml: &str) -> Result<String, String> {
+pub fn write_file(
+    config_path: &Path,
+    path: &Path,
+    yaml: &str,
+    dry: bool,
+) -> Result<String, String> {
     if !allowed(config_path, path) {
         return Err("unknown config file".into());
     }
@@ -136,6 +135,9 @@ pub fn write_file(config_path: &Path, path: &Path, yaml: &str) -> Result<String,
             return Err(edit_error);
         }
         note = format!("Saved (config still has errors elsewhere - keep fixing): {edit_error}");
+    }
+    if dry {
+        return Ok(note.replacen("Saved", "Would save", 1));
     }
     std::fs::write(path, yaml).map_err(|error| error.to_string())?;
     Ok(note)
@@ -170,42 +172,6 @@ fn load_and_validate(path: &Path) -> Result<(), String> {
     Config::load(path)
         .map_err(|error| error.message)?
         .validate()
-}
-
-/// Keys the config format dropped, anywhere they may still appear.
-fn removed_keys(root: &Node) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    let mut add = |key: &str| {
-        if !found.iter().any(|known| known == key) {
-            found.push(key.to_string());
-        }
-    };
-    for key in REMOVED_TOP_KEYS {
-        if root.get(key).is_some() {
-            add(key);
-        }
-    }
-    for (_, repo) in root
-        .get("repos")
-        .and_then(Node::entries)
-        .unwrap_or_default()
-    {
-        for key in ["plugins", "exposes"] {
-            if repo.get(key).is_some() {
-                add(key);
-            }
-        }
-        for (_, service) in repo
-            .get("services")
-            .and_then(Node::entries)
-            .unwrap_or_default()
-        {
-            if service.get("exposes").is_some() {
-                add("exposes");
-            }
-        }
-    }
-    found
 }
 
 fn tempdir() -> Result<PathBuf, String> {
@@ -267,7 +233,7 @@ mod tests {
         );
 
         let broken = "repos:\n  api:\n    profiles: [staging]\n    services:\n      web: rails s\n";
-        assert!(write_file(&root, &fragment, broken).is_err());
+        assert!(write_file(&root, &fragment, broken, false).is_err());
         assert!(
             read(&root, &fragment).expect("read").contains("rails s"),
             "nothing written"
@@ -275,7 +241,7 @@ mod tests {
 
         let fixed = "repos:\n  api:\n    services:\n      web: rails server\n";
         assert_eq!(
-            write_file(&root, &fragment, fixed),
+            write_file(&root, &fragment, fixed, false),
             Ok("Saved.".to_string())
         );
         assert_eq!(read(&root, &fragment).expect("read"), fixed);

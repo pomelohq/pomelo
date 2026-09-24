@@ -193,6 +193,42 @@ fn project_info(
     }
 }
 
+fn setup_summary(findings: &[pom_doctor::Finding]) -> Option<String> {
+    let shown: Vec<&pom_doctor::Finding> = findings
+        .iter()
+        .filter(|finding| finding.severity != pom_doctor::Severity::Ok)
+        .filter(|finding| !matches!(finding.id.as_str(), "config.validate" | "config.load"))
+        .collect();
+    if shown.is_empty() {
+        return None;
+    }
+    let errors = shown
+        .iter()
+        .filter(|finding| finding.severity == pom_doctor::Severity::Error)
+        .count();
+    let warnings = shown.len() - errors;
+    let mut counts = Vec::new();
+    match errors {
+        0 => {}
+        1 => counts.push("1 error".to_string()),
+        errors => counts.push(format!("{errors} errors")),
+    }
+    match warnings {
+        0 => {}
+        1 => counts.push("1 warning".to_string()),
+        warnings => counts.push(format!("{warnings} warnings")),
+    }
+    let mut titles: Vec<&str> = shown
+        .iter()
+        .take(3)
+        .map(|finding| finding.title.as_str())
+        .collect();
+    if shown.len() > 3 {
+        titles.push("...");
+    }
+    Some(format!("{}: {}", counts.join(", "), titles.join("; ")))
+}
+
 fn config_problem(project: &pom_core::Project) -> Option<(String, Option<u32>)> {
     project
         .error
@@ -396,6 +432,8 @@ struct MainWindow {
     /// The project's Jira ticket status per workspace.
     tickets: Option<workspaces_ui::TicketStatuses>,
     pull_requests: Option<pull_request_ui::PullRequests>,
+    doctor: Option<std::sync::mpsc::Receiver<Vec<pom_doctor::Finding>>>,
+    doctor_findings: Vec<pom_doctor::Finding>,
     /// Refresh-main, auto-push and the port reaper, when this process holds the session's primary lock.
     background: Option<workspaces_ui::BackgroundSync>,
 }
@@ -643,6 +681,110 @@ impl App {
                 title: name,
             }
         };
+        self.open_agent_item(id, launch);
+    }
+
+    fn open_fixer(&mut self, id: WindowId) {
+        let Some(main) = self.mains.get(&id) else {
+            return;
+        };
+        let Some(project) = main.project.as_ref() else {
+            return;
+        };
+        let (Ok(binary), Some(home)) = (std::env::current_exe(), std::env::var_os("HOME")) else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home);
+        let state = pom_paths::StateDir::from_env();
+        let cwd = project.active_root();
+        let branch = project.active_branch().to_string();
+        let is_main = project
+            .active_workspace()
+            .is_none_or(|workspace| workspace.is_main);
+        let prompt = pom_doctor::fix_prompt(&main.doctor_findings);
+        let mut launch = pom_agent::claude_task_launch(
+            &pom_agent::LaunchContext {
+                state: &state,
+                home: &home,
+                binary: &binary,
+                tool_path: pom_services::tool_path(),
+                session: &project.session,
+                branch: &branch,
+                is_main,
+                cwd: &cwd,
+            },
+            "fixer",
+            &prompt,
+        );
+        launch.holder = format!("{}-{}", launch.holder, self.next_agent_item);
+        self.open_agent_item(id, launch);
+    }
+
+    fn start_doctor(&mut self, id: WindowId) {
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        let Some(project) = main.project.as_ref() else {
+            main.doctor = None;
+            return;
+        };
+        let config = project.config.clone();
+        let config_path = project.config_path.clone();
+        let root = project.root.clone();
+        let session = project.session.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("pom-doctor".into())
+            .spawn(move || {
+                let names =
+                    pom_secrets::SecretStore::new(pom_paths::StateDir::from_env(), &session)
+                        .names()
+                        .unwrap_or_default();
+                let path = pom_services::tool_path();
+                let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
+                let docker_running = || pom_doctor::docker_answers(path);
+                let findings = pom_doctor::diagnose(
+                    config.as_ref(),
+                    &config_path,
+                    &root,
+                    &names,
+                    &pom_doctor::Machine {
+                        has_tool: &has_tool,
+                        docker_running: &docker_running,
+                    },
+                );
+                if sender.send(findings).is_ok() {
+                    ui::wake();
+                }
+            });
+        match spawned {
+            Ok(_) => main.doctor = Some(receiver),
+            Err(error) => eprintln!("doctor: {error}"),
+        }
+    }
+
+    pub(crate) fn poll_doctor(&mut self, id: WindowId) {
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        let Some(findings) = main
+            .doctor
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+        else {
+            return;
+        };
+        main.doctor = None;
+        main.doctor_findings = findings;
+        let summary = setup_summary(&main.doctor_findings);
+        main.dirty = true;
+        self.with_workspace_view(id, |view, _| view.set_setup_problems(summary));
+    }
+
+    fn open_agent_item(&mut self, id: WindowId, launch: pom_agent::AgentLaunch) {
+        let Ok(binary) = std::env::current_exe() else {
+            return;
+        };
         let item_id = format!("agent:{}", launch.holder);
         let item_number = self.next_agent_item;
         self.next_agent_item += 1;
@@ -758,6 +900,8 @@ impl App {
                 ops: workspaces_ui::OpQueue::new(Arc::new(ui::wake)),
                 tickets: None,
                 pull_requests: None,
+                doctor: None,
+                doctor_findings: Vec::new(),
                 background: None,
             },
         );
@@ -873,6 +1017,7 @@ impl App {
             main.window.set_title(&title);
             main.dirty = true;
         }
+        self.start_doctor(id);
     }
 
     fn activate_workspace(&mut self, id: WindowId, index: usize) {
@@ -990,6 +1135,7 @@ impl App {
                 view.update_project(info);
                 view.set_config_problem(problem, &config_path);
             });
+            self.start_doctor(id);
         }
         for id in rerooted {
             self.install_project_views(id);
@@ -1347,6 +1493,9 @@ impl App {
         }
         if effects.open_agent {
             self.open_agent(id);
+        }
+        if effects.fix_setup {
+            self.open_fixer(id);
         }
         self.handle_workspace_requests(id);
         if let Some(m) = self.mains.get_mut(&id) {

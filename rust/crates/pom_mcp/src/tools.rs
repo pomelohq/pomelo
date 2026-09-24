@@ -922,6 +922,69 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
         Box::new(move |args| config_files::read(&ws.config_path, Path::new(&text(args, "path")))),
     ));
 
+    let ws = workspace.clone();
+    tools.push(tool(
+        "config_doctor",
+        "Diagnose whether this project is runnable: returns structured findings (invalid config, missing docker/tools, missing repos, unset {{secret}}). Use this to drive a fix loop - after each config edit, call config_doctor again until it reports no errors.",
+        None,
+        true,
+        Box::new(move |_| {
+            let config = pom_config::Config::load(&ws.config_path).ok();
+            let names = pom_secrets::SecretStore::new(ws.state.clone(), ws.runner.session())
+                .names()
+                .unwrap_or_default();
+            let path = pom_services::tool_path();
+            let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
+            let docker_running = || pom_doctor::docker_answers(path);
+            let root = ws.config_path.parent().unwrap_or(Path::new("."));
+            let findings = pom_doctor::diagnose(
+                config.as_ref(),
+                &ws.config_path,
+                root,
+                &names,
+                &pom_doctor::Machine {
+                    has_tool: &has_tool,
+                    docker_running: &docker_running,
+                },
+            );
+            pretty(&pom_doctor::report(&findings))
+        }),
+    ));
+
+    let ws = workspace.clone();
+    tools.push(tool(
+        "config_normalize",
+        "Deterministically clean the config: strip REMOVED schema keys (schema_version/plugins/combinations/proxy/webhook/exposes), migrate legacy colon tokens to dot form, and tidy into pom.d fragments. Run this as the FINAL step of Adapt/onboarding - it does the mechanical cleanup so you don't have to.",
+        None,
+        false,
+        Box::new(move |_| {
+            let removed = pom_config::maintain::normalize(&ws.config_path)?;
+            pretty(&json!({ "ok": true, "removed": removed }))
+        }),
+    ));
+
+    let ws = workspace.clone();
+    tools.push(tool(
+        "config_split",
+        "Organize an inline pom.yml into pom.d/** fragments: one file per repo (pom.d/repos/NN-<name>.yml) plus environments/presets/shared_services each in their own file. Idempotent (re-running cleans stale repo fragments). Run this LAST, after the config is authored and validates clean, to keep the config tidy.",
+        Some(json!({
+            "type": "object",
+            "properties": { "dry": { "type": "boolean", "description": "Report the files without writing." } },
+        })),
+        false,
+        Box::new(move |args| {
+            let dry = args.get("dry").and_then(Value::as_bool).unwrap_or(false);
+            let result = pom_config::maintain::split(&ws.config_path, dry)?;
+            pretty(&json!({
+                "ok": true,
+                "dry": dry,
+                "root": result.root,
+                "fragments": result.fragments,
+                "backup": result.backup,
+            }))
+        }),
+    ));
+
     let ws = workspace;
     tools.push(tool(
         "config_file_set",
@@ -931,17 +994,23 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
             "properties": {
                 "path": { "type": "string" },
                 "yaml": { "type": "string" },
+                "dry": { "type": "boolean", "description": "Validate against the merged config without writing." },
             },
             "required": ["path", "yaml"],
         })),
         false,
         Box::new(move |args| {
-            config_files::write_file(
+            let dry = args.get("dry").and_then(Value::as_bool).unwrap_or(false);
+            let note = config_files::write_file(
                 &ws.config_path,
                 Path::new(&text(args, "path")),
                 &text(args, "yaml"),
+                dry,
             )
             .map_err(|error| format!("rejected: {error}"))?;
+            if dry {
+                return Ok(format!("Dry run, nothing written. {note}"));
+            }
             Ok("File written, validated against the merged config, and reloaded.".into())
         }),
     ));

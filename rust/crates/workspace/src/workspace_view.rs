@@ -60,6 +60,7 @@ pub struct WorkspaceEffects {
     pub activate_workspace: Option<usize>,
     /// Open (or focus) the workspace's coding agent.
     pub open_agent: bool,
+    pub fix_setup: bool,
 }
 
 /// What the WORKSPACES panel asked for: the new-workspace form, an action on a row (an index into
@@ -109,7 +110,13 @@ struct Notification {
     title: String,
     message: String,
     primary: Option<String>,
-    target: Option<(std::path::PathBuf, Option<u32>)>,
+    action: Option<NotificationAction>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NotificationAction {
+    OpenFile(std::path::PathBuf, Option<u32>),
+    FixSetup,
 }
 
 /// A zoomed group drawn over the workspace: its frame (with the border on `sides`) and the content inside it.
@@ -214,6 +221,7 @@ pub struct WorkspaceView {
     toast: Option<Toast>,
     notification: Option<Notification>,
     shown_problem: Option<String>,
+    dismissed_setup: Option<String>,
     pending: WorkspaceEffects,
 }
 
@@ -264,6 +272,7 @@ impl WorkspaceView {
             toast: None,
             notification: None,
             shown_problem: None,
+            dismissed_setup: None,
             pending: WorkspaceEffects::default(),
         }
     }
@@ -433,8 +442,9 @@ impl WorkspaceView {
         config_path: &std::path::Path,
     ) {
         let Some((message, line)) = problem else {
-            self.shown_problem = None;
-            self.notification = None;
+            if self.shown_problem.take().is_some() {
+                self.notification = None;
+            }
             return;
         };
         if self.shown_problem.as_deref() == Some(message.as_str()) {
@@ -445,8 +455,43 @@ impl WorkspaceView {
             title: "Invalid pom.yml".into(),
             message,
             primary: Some("Open pom.yml".into()),
-            target: Some((config_path.to_path_buf(), line)),
+            action: Some(NotificationAction::OpenFile(
+                config_path.to_path_buf(),
+                line,
+            )),
         });
+    }
+
+    pub fn set_setup_problems(&mut self, summary: Option<String>) {
+        if self.shown_problem.is_some() {
+            return;
+        }
+        let showing = self.notification.as_ref().is_some_and(|notification| {
+            matches!(notification.action, Some(NotificationAction::FixSetup))
+        });
+        match summary {
+            Some(message) => {
+                if showing
+                    && self
+                        .notification
+                        .as_ref()
+                        .is_some_and(|notification| notification.message == message)
+                {
+                    return;
+                }
+                if self.dismissed_setup.as_deref() == Some(message.as_str()) {
+                    return;
+                }
+                self.notification = Some(Notification {
+                    title: "Project setup needs attention".into(),
+                    message,
+                    primary: Some("Fix with Claude".into()),
+                    action: Some(NotificationAction::FixSetup),
+                });
+            }
+            None if showing => self.notification = None,
+            None => {}
+        }
     }
 
     pub fn notification_text(&self) -> Option<(&str, &str)> {
@@ -4002,16 +4047,24 @@ impl WorkspaceView {
                 self.pending.activate_workspace = Some(index);
             }
         } else if id == crate::NOTIFICATION_CLOSE {
-            self.notification = None;
-        } else if id == crate::NOTIFICATION_PRIMARY {
-            if let Some(Notification {
-                target: Some((path, line)),
-                ..
-            }) = self.notification.take()
-            {
-                if let Some(files) = self.layout.files_view.as_mut() {
-                    files.open_file_at(&path, line, line.map(|_| 1));
+            if let Some(closed) = self.notification.take() {
+                if matches!(closed.action, Some(NotificationAction::FixSetup)) {
+                    self.dismissed_setup = Some(closed.message);
                 }
+            }
+        } else if id == crate::NOTIFICATION_PRIMARY {
+            match self
+                .notification
+                .take()
+                .and_then(|notification| notification.action)
+            {
+                Some(NotificationAction::OpenFile(path, line)) => {
+                    if let Some(files) = self.layout.files_view.as_mut() {
+                        files.open_file_at(&path, line, line.map(|_| 1));
+                    }
+                }
+                Some(NotificationAction::FixSetup) => self.pending.fix_setup = true,
+                None => {}
             }
         }
     }
@@ -4384,6 +4437,46 @@ fn session_index(id: u64, base: u64) -> Option<usize> {
 mod tests {
     use super::*;
     use ui::Application;
+
+    #[test]
+    fn setup_problems_offer_a_fix_and_stay_closed_once_dismissed() {
+        let mut view = WorkspaceView::new(Layout::default());
+        view.set_setup_problems(Some("1 error: Docker not running".into()));
+        assert_eq!(
+            view.notification_text(),
+            Some((
+                "Project setup needs attention",
+                "1 error: Docker not running"
+            ))
+        );
+        view.header_click(crate::NOTIFICATION_PRIMARY);
+        assert!(view.take_effects().fix_setup);
+        assert!(view.notification_text().is_none());
+
+        view.set_setup_problems(Some("1 error: Docker not running".into()));
+        view.header_click(crate::NOTIFICATION_CLOSE);
+        view.set_setup_problems(Some("1 error: Docker not running".into()));
+        assert!(view.notification_text().is_none(), "closed stays closed");
+        view.set_setup_problems(Some(
+            "2 errors: Docker not running; Repo not found: api".into(),
+        ));
+        assert!(
+            view.notification_text().is_some(),
+            "new findings show again"
+        );
+        view.set_setup_problems(None);
+        assert!(view.notification_text().is_none());
+
+        view.set_config_problem(
+            Some(("bad key".into(), Some(3))),
+            std::path::Path::new("/p/pom.yml"),
+        );
+        view.set_setup_problems(Some("1 warning: Secret not set: X".into()));
+        assert_eq!(
+            view.notification_text().map(|(title, _)| title),
+            Some("Invalid pom.yml")
+        );
+    }
 
     #[test]
     fn modal_shadow_reaches_above_the_box_and_fades() {
