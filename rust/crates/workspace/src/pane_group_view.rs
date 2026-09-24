@@ -1931,6 +1931,7 @@ fn layout_body(
         rect,
         node: ui::div().into(),
         painted: None,
+        companion: None,
         body: None,
         back: Vec::new(),
         back_tris: Vec::new(),
@@ -1945,6 +1946,29 @@ fn layout_body(
         return (Some((painted, body_rect)), placement);
     }
     item.set_focused(is_focused);
+    let companion_w = item
+        .companion_width(body_rect.w)
+        .clamp(0.0, (body_rect.w - 1.0).max(0.0));
+    let companion = (companion_w > 0.0).then(|| {
+        Rect::new(
+            body_rect.x,
+            body_rect.y,
+            companion_w,
+            body_rect.h,
+            Rgba::TRANSPARENT,
+        )
+    });
+    // The companion and a 1px divider take the left of the body; the text lays out in the rest.
+    let body_rect = match companion {
+        Some(area) => Rect::new(
+            area.x + area.w + 1.0,
+            body_rect.y,
+            (body_rect.w - area.w - 1.0).max(0.0),
+            body_rect.h,
+            Rgba::TRANSPARENT,
+        ),
+        None => body_rect,
+    };
     item.set_body_height(body_rect.h);
     item.set_body_width(body_rect.w);
     placement.back = item.back_rects(body_rect);
@@ -1958,6 +1982,19 @@ fn layout_body(
     let gutter = item.gutter(fold_base);
     let background = item.body_background();
     let node = item.render();
+    if let Some(area) = companion {
+        if let Some(mut painted) = item.paint_companion(area) {
+            painted.rects.push(Rect::new(
+                area.x + area.w,
+                area.y,
+                1.0,
+                area.h,
+                ui::theme().border_variant,
+            ));
+            let clip = Rect::new(area.x, area.y, area.w + 1.0, area.h, Rgba::TRANSPARENT);
+            placement.companion = Some((painted, clip));
+        }
+    }
     // Text starts right of the fixed gutter and clips to that region, so scrolled glyphs never paint over the
     // line numbers.
     let text_left = (body_rect.x + gutter_w).min(body_rect.x + body_rect.w);

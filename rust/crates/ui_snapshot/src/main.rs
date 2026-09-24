@@ -68,7 +68,13 @@ fn main() -> anyhow::Result<()> {
 
     let scale = 2.0_f32;
     let (lw, lh) = match std::env::var("MAINVIEW") {
-        Ok(_) => (1200.0_f32, 780.0_f32),
+        Ok(_) => (
+            std::env::var("SNAPW")
+                .ok()
+                .and_then(|width| width.parse().ok())
+                .unwrap_or(1200.0_f32),
+            780.0_f32,
+        ),
         Err(_) => (920.0_f32, 760.0_f32),
     }; // logical
     let mut r = ui::UiRenderer::new_headless((lw * scale) as u32, (lh * scale) as u32, scale)?;
@@ -104,8 +110,23 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             },
             move |_| {
+                // With DIFFFILE=<file> (and DIFFBASE=<file with its old text>), show that file's diff.
+                let files_view = std::env::var("DIFFFILE").ok().map(|file| {
+                    let path = std::path::PathBuf::from(&file);
+                    let root = path
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                        .unwrap_or_default();
+                    let mut files = files_ui::FilesView::new(root);
+                    let base = std::env::var("DIFFBASE")
+                        .ok()
+                        .and_then(|base| std::fs::read_to_string(base).ok());
+                    workspace::FunctionView::open_diff(&mut files, &path, base);
+                    Box::new(files) as Box<dyn workspace::FunctionView>
+                });
                 let mut view = workspace::WorkspaceView::new(workspace::Layout {
                     project,
+                    files_view,
                     ..Default::default()
                 });
                 view.set_sessions(sessions, current);
@@ -122,6 +143,11 @@ fn main() -> anyhow::Result<()> {
                     std::path::Path::new("/projects/myproject/pom.yml"),
                 )
             });
+        }
+        // Background work (the diff's hunks) settles over a few frames.
+        for _ in 0..40 {
+            app.draw(handle).expect("frame");
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
         let frame = app.draw(handle).expect("frame");
         let mut layers: Vec<ui::Layer> = vec![(

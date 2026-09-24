@@ -185,13 +185,26 @@ struct DisplayRow {
     /// A committed line an expanded change removed, shown above `line` and never holding the caret.
     deleted: Option<usize>,
     block: Option<usize>,
+    /// A blank row keeping a split diff's two sides level where the old side has more lines.
+    spacer: bool,
 }
 
 impl DisplayRow {
     fn is_virtual(&self) -> bool {
-        self.deleted.is_some() || self.block.is_some()
+        self.deleted.is_some() || self.block.is_some() || self.spacer
     }
 }
+
+/// What a split diff's old side shows on one display row: a line of the old text (or nothing), and
+/// whether that line is part of a change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SplitLeft {
+    base: Option<usize>,
+    changed: bool,
+}
+
+/// Below this many columns a diff shows one column even when two are asked for.
+const SPLIT_MIN_COLUMNS: f32 = 100.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LineCommand {
@@ -261,6 +274,11 @@ struct FileItem {
     git: git_diff::GitDiff,
     /// A branch diff: compared with the file where the branch started, every change expanded.
     branch_diff: bool,
+    /// The diff shows two columns when it is wide enough; `split_active` is whether it does now.
+    split: bool,
+    split_active: bool,
+    /// Per display row, what the old side shows (split diffs only).
+    split_left: Vec<SplitLeft>,
     /// Changes shown expanded, as char ranges carried through edits.
     expanded: Vec<Range<usize>>,
     /// The committed text expanded changes show their removed lines from.
@@ -413,6 +431,9 @@ impl FileItem {
             highlighted_rows: None,
             git,
             branch_diff: false,
+            split: true,
+            split_active: false,
+            split_left: Vec::new(),
             expanded: Vec::new(),
             base: None,
             has_virtual_rows: false,
@@ -747,6 +768,7 @@ impl FileItem {
                     indent: 0,
                     deleted: Some(base_line),
                     block: None,
+                    spacer: false,
                 });
             }
         };
@@ -786,6 +808,7 @@ impl FileItem {
                     indent,
                     deleted: None,
                     block: None,
+                    spacer: false,
                 });
                 max_row_cols = max_row_cols.max(indent + boundary.index - start);
                 start = boundary.index;
@@ -798,6 +821,7 @@ impl FileItem {
                 indent,
                 deleted: None,
                 block: None,
+                spacer: false,
             });
             if let Some(diagnostic_nav::BlockPlacement::Rows { line: at, count }) = &block {
                 if *at == line {
@@ -809,6 +833,7 @@ impl FileItem {
                             indent: 0,
                             deleted: None,
                             block: Some(index),
+                            spacer: false,
                         });
                     }
                     block_rows = true;
@@ -826,10 +851,212 @@ impl FileItem {
                 push_deleted(&mut rows, line_count.saturating_sub(1), base_rows);
             }
         }
-        self.has_virtual_rows = !deletions.is_empty() || block_rows;
+        let (rows, line_rows) = if self.split_active {
+            self.split_rows(rows, line_count)
+        } else {
+            self.split_left.clear();
+            (rows, line_rows)
+        };
+        self.has_virtual_rows =
+            !deletions.is_empty() || block_rows || rows.iter().any(|row| row.spacer);
         self.rows = Some(rows);
         self.line_rows = line_rows;
         self.max_row_cols = max_row_cols;
+    }
+
+    /// The old text is needed on the left of a split diff even when no change is expanded.
+    fn base_needed_for_split(&mut self) {
+        if self.split_active {
+            self.sync_base_text();
+        }
+    }
+
+    /// The old side of a split diff: its line numbers and text on the same rows as the new side, removed
+    /// lines tinted, blanks where the new side added lines.
+    fn paint_old_side(&mut self, area: Rect) -> ui::Painted {
+        self.sync_base_text();
+        self.ensure_visible();
+        let colors = syntax_theme();
+        let ui_colors = theme();
+        let dcount = self.disp_count();
+        let first = self.first_line().min(dcount);
+        let visible = (self.body_h / EDIT_LINE_H).ceil() as usize + 2;
+        let last = (first + visible).min(dcount);
+        let base_lines = self
+            .base
+            .as_ref()
+            .map_or(1, |base| base.buffer.rope.len_lines());
+        let gutter = gutter_width(base_lines);
+        let offset = first as f32 * EDIT_LINE_H - self.scroll_y;
+        let mut numbers = div().col().w_px(gutter);
+        let mut text = div().col().flex(1.0).pl(char_advance());
+        let mut bands = Vec::new();
+        let light = ui_colors.appearance == ui::Appearance::Light;
+        let fill = if light { 0.16 } else { 0.12 };
+        for row_index in first..last {
+            let side = self.split_left.get(row_index).copied().unwrap_or_default();
+            let y = area.y + row_index as f32 * EDIT_LINE_H - self.scroll_y;
+            if side.changed && side.base.is_some() {
+                bands.push(Rect::new(
+                    area.x,
+                    y,
+                    area.w,
+                    EDIT_LINE_H,
+                    ui_colors.version_control_deleted.alpha(fill),
+                ));
+            }
+            let Some(base_line) = side.base else {
+                numbers = numbers.child(div().h_px(EDIT_LINE_H));
+                text = text.child(div().h_px(EDIT_LINE_H));
+                continue;
+            };
+            numbers = numbers.child(
+                div()
+                    .row()
+                    .h_px(EDIT_LINE_H)
+                    .items_center()
+                    .justify_end()
+                    .pr(char_advance())
+                    .child(
+                        label((base_line + 1).to_string())
+                            .size(EDIT_FONT)
+                            .mono()
+                            .color(ui_colors.editor_line_number),
+                    ),
+            );
+            let mut row = div().row().h_px(EDIT_LINE_H).items_center();
+            let segments = self.base_line_segments(base_line, &colors);
+            if segments.is_empty() {
+                row = row.child(label(" ").size(EDIT_FONT).mono());
+            }
+            for (segment, color) in segments {
+                row = row.child(label(segment).size(EDIT_FONT).mono().color(color));
+            }
+            text = text.child(row);
+        }
+        let node: Node = div()
+            .col()
+            .child(div().h_px(offset.max(0.0)))
+            .child(div().row().child(numbers).child(text))
+            .into();
+        let mut painted = ui::Painted::default();
+        painted.rects.push(Rect::new(
+            area.x,
+            area.y,
+            area.w,
+            area.h,
+            ui_colors.editor_background,
+        ));
+        painted.rects.extend(bands);
+        let top = Rect::new(
+            area.x,
+            area.y + offset.min(0.0),
+            area.w + 4000.0,
+            area.h + EDIT_LINE_H * 2.0,
+            Rgba::TRANSPARENT,
+        );
+        let rendered = ui::render(&node, top);
+        painted.rects.extend(rendered.rects);
+        painted.texts.extend(rendered.texts);
+        painted.icons.extend(rendered.icons);
+        painted
+    }
+
+    /// Levels a split diff: after each change whose old side is longer, blank rows fill the new side,
+    /// and every row records the old line shown beside it. Returns the rows and each line's first row.
+    fn split_rows(
+        &mut self,
+        rows: Vec<DisplayRow>,
+        line_count: usize,
+    ) -> (Vec<DisplayRow>, Vec<usize>) {
+        let mut hunks: Vec<git::DiffHunk> = self.git.hunks().to_vec();
+        hunks.sort_by_key(|hunk| hunk.rows.start);
+        let mut out = Vec::with_capacity(rows.len());
+        let mut left = Vec::with_capacity(rows.len());
+        let mut delta: isize = 0;
+        let mut next_hunk = 0usize;
+        let spacer = |line: usize| DisplayRow {
+            line,
+            start: 0,
+            end: 0,
+            indent: 0,
+            deleted: None,
+            block: None,
+            spacer: true,
+        };
+        // A change's extra old lines go right after its new lines (at its start when it only removed).
+        let flush = |until_line: usize,
+                     out: &mut Vec<DisplayRow>,
+                     left: &mut Vec<SplitLeft>,
+                     delta: &mut isize,
+                     next_hunk: &mut usize| {
+            while let Some(hunk) = hunks.get(*next_hunk) {
+                if hunk.rows.end > until_line {
+                    break;
+                }
+                let (added, removed) = (hunk.rows.len(), hunk.base_rows.len());
+                let anchor = hunk
+                    .rows
+                    .end
+                    .saturating_sub(1)
+                    .min(line_count.saturating_sub(1));
+                for extra in added..removed {
+                    out.push(spacer(anchor));
+                    left.push(SplitLeft {
+                        base: Some(hunk.base_rows.start + extra),
+                        changed: true,
+                    });
+                }
+                *delta += removed as isize - added as isize;
+                *next_hunk += 1;
+            }
+        };
+        for row in rows {
+            let first_of_line = !row.is_virtual() && row.start == 0;
+            if first_of_line {
+                flush(row.line, &mut out, &mut left, &mut delta, &mut next_hunk);
+            }
+            let side = if row.is_virtual() || row.start > 0 {
+                SplitLeft::default()
+            } else if let Some(hunk) = hunks
+                .get(next_hunk)
+                .filter(|hunk| hunk.rows.contains(&row.line))
+            {
+                let index = row.line - hunk.rows.start;
+                SplitLeft {
+                    base: (index < hunk.base_rows.len()).then(|| hunk.base_rows.start + index),
+                    changed: true,
+                }
+            } else {
+                SplitLeft {
+                    base: usize::try_from(row.line as isize + delta).ok(),
+                    changed: false,
+                }
+            };
+            out.push(row);
+            left.push(side);
+        }
+        flush(usize::MAX, &mut out, &mut left, &mut delta, &mut next_hunk);
+        let mut line_rows = vec![usize::MAX; line_count];
+        for (index, row) in out.iter().enumerate() {
+            if !row.is_virtual() && row.start == 0 {
+                if let Some(slot) = line_rows.get_mut(row.line) {
+                    if *slot == usize::MAX {
+                        *slot = index;
+                    }
+                }
+            }
+        }
+        let mut last = 0;
+        for slot in line_rows.iter_mut() {
+            if *slot == usize::MAX {
+                *slot = last;
+            } else {
+                last = *slot;
+            }
+        }
+        self.split_left = left;
+        (out, line_rows)
     }
 
     fn ensure_visible(&mut self) {
@@ -2115,7 +2342,7 @@ impl FileItem {
 
     /// For each expanded change that removed lines: the line it starts at and the committed lines it removed.
     fn expanded_deletions(&self) -> Vec<(usize, Range<usize>)> {
-        if self.expanded.is_empty() || self.base.is_none() {
+        if self.expanded.is_empty() || self.base.is_none() || self.split_active {
             return Vec::new();
         }
         self.git
@@ -2135,7 +2362,7 @@ impl FileItem {
 
     /// Keep the committed text (and its highlighting) current while any change is expanded.
     fn sync_base_text(&mut self) {
-        if self.expanded.is_empty() {
+        if self.expanded.is_empty() && !self.split_active {
             return;
         }
         let Some(bases) = self.git.bases() else {
@@ -2269,7 +2496,7 @@ impl FileItem {
             .filter(|hunk| self.is_expanded(hunk))
         {
             let text_top = display_row(hunk.rows.start);
-            let removed = if self.base.is_some() {
+            let removed = if self.base.is_some() && !self.split_active {
                 hunk.base_rows.len()
             } else {
                 0
@@ -2280,9 +2507,15 @@ impl FileItem {
                 colors.version_control_deleted,
                 hunk.staged,
             );
+            // Split, the blank rows levelling a longer old side follow the change and stay untinted.
+            let text_bottom = if self.split_active && !hunk.rows.is_empty() {
+                self.last_row_of_line(hunk.rows.end - 1) + 1
+            } else {
+                display_row(hunk.rows.end)
+            };
             band(
                 text_top,
-                display_row(hunk.rows.end),
+                text_bottom,
                 colors.version_control_added,
                 hunk.staged,
             );
@@ -2312,7 +2545,7 @@ impl FileItem {
                 git::HunkKind::Modified => colors.version_control_modified,
                 git::HunkKind::Deleted => colors.version_control_deleted,
             };
-            let removed = if self.is_expanded(hunk) && self.base.is_some() {
+            let removed = if self.is_expanded(hunk) && self.base.is_some() && !self.split_active {
                 hunk.base_rows.len()
             } else {
                 0
@@ -2595,6 +2828,27 @@ impl Searchable for FileItem {
 }
 
 impl Item for FileItem {
+    fn companion_width(&mut self, body_w: f32) -> f32 {
+        let wide = self.branch_diff
+            && self.split
+            && self.buffer.is_some()
+            && body_w >= SPLIT_MIN_COLUMNS * char_advance();
+        if wide != self.split_active {
+            self.split_active = wide;
+            self.rows = None;
+            self.base_needed_for_split();
+        }
+        if wide {
+            (body_w / 2.0).floor()
+        } else {
+            0.0
+        }
+    }
+
+    fn paint_companion(&mut self, area: Rect) -> Option<ui::Painted> {
+        self.split_active.then(|| self.paint_old_side(area))
+    }
+
     fn abs_path(&self) -> Option<PathBuf> {
         Some(self.root.join(&self.path))
     }
@@ -2607,6 +2861,10 @@ impl Item for FileItem {
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -2696,6 +2954,10 @@ impl Item for FileItem {
             let Some(row) = self.row(row_index) else {
                 break;
             };
+            if row.spacer {
+                body = body.child(div().h_px(EDIT_LINE_H));
+                continue;
+            }
             if let Some(index) = row.block {
                 body = body.child(
                     self.block_row(index)
@@ -3347,6 +3609,15 @@ impl Item for FileItem {
         match key {
             EditKey::ToggleSelectedDiffHunks => return self.toggle_selected_hunks(),
             EditKey::ExpandAllDiffHunks => return self.expand_all_hunks(),
+            EditKey::ToggleSplitDiff => {
+                if self.branch_diff {
+                    self.split = !self.split;
+                    self.split_active = self.split && self.split_active;
+                    self.rows = None;
+                    self.after_expansion_change();
+                }
+                return;
+            }
             EditKey::GoToHunk | EditKey::GoToPreviousHunk => {
                 return self.go_to_hunk(key == EditKey::GoToHunk)
             }
@@ -4994,6 +5265,15 @@ impl ItemInput for FilesView {
 
     fn editor_menu_anchor_at(&self, x: f32, y: f32) -> Option<(Vec<usize>, usize)> {
         self.panes.editor_menu_anchor_at(x, y)
+    }
+
+    fn editor_split_diff(&self) -> Option<bool> {
+        let file = self
+            .panes
+            .active_item()?
+            .as_any()?
+            .downcast_ref::<FileItem>()?;
+        file.branch_diff.then_some(file.split)
     }
 
     fn editor_menu_y(&self, path: &[usize], line: usize) -> Option<f32> {
@@ -6721,6 +7001,110 @@ mod hunk_action_tests {
         item.input_text("x\n");
         settle_expanded(&mut item, 7);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A branch diff of `text` against `base`, laid out wide enough for two columns once its hunks are in.
+    fn split_diff(text: &str, base: &str) -> FileItem {
+        let mut item = FileItem::branch_diff(
+            std::env::temp_dir(),
+            "split-test.txt",
+            Some(text.into()),
+            Some(base.into()),
+        );
+        item.set_body_height(40.0 * EDIT_LINE_H);
+        let wide = 400.0 * char_advance();
+        for _ in 0..3000 {
+            let companion = item.companion_width(wide);
+            item.set_body_width(wide - companion);
+            item.gutter(0);
+            item.ensure_visible();
+            if item.split_active && !item.git.hunks().is_empty() && !item.git.is_busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        item.rows = None;
+        item.ensure_visible();
+        item
+    }
+
+    /// Each display row as (new line or "-" for a blank, old line or "-").
+    fn split_layout(item: &FileItem) -> Vec<(String, String)> {
+        let rows = item.rows.as_ref().expect("rows");
+        rows.iter()
+            .zip(&item.split_left)
+            .map(|(row, left)| {
+                let new = if row.spacer {
+                    "-".to_string()
+                } else {
+                    row.line.to_string()
+                };
+                let old = left.base.map_or("-".to_string(), |line| line.to_string());
+                (new, old)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_split_diff_keeps_both_sides_level() {
+        // Old b and c became one X; f and g were added; e was removed.
+        let item = split_diff("a\nX\nd\nf\ng\n", "a\nb\nc\nd\ne\n");
+        let pair = |new: &str, old: &str| (new.to_string(), old.to_string());
+        assert_eq!(
+            split_layout(&item),
+            [
+                pair("0", "0"),
+                pair("1", "1"),
+                pair("-", "2"),
+                pair("2", "3"),
+                pair("3", "4"),
+                pair("4", "-"),
+                pair("5", "5"),
+            ]
+        );
+        assert!(item.split_left[2].changed && !item.split_left[0].changed);
+        let painted = {
+            let mut item = item;
+            item.paint_old_side(Rect::new(0.0, 0.0, 300.0, 400.0, Rgba::TRANSPARENT))
+        };
+        let texts: Vec<&str> = painted
+            .texts
+            .iter()
+            .map(|text| text.text.as_str())
+            .collect();
+        assert!(
+            texts.contains(&"b") && texts.contains(&"c") && texts.contains(&"e"),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_narrow_or_unsplit_diff_shows_one_column_with_removed_lines_inline() {
+        let mut item = split_diff("a\nX\nc\n", "a\nb\nc\n");
+        assert!(item.split_active);
+        assert_eq!(
+            item.companion_width(40.0 * char_advance()),
+            0.0,
+            "too narrow for two"
+        );
+        assert!(!item.split_active);
+        item.ensure_visible();
+        assert_eq!(
+            item.row(1).and_then(|row| row.deleted),
+            Some(1),
+            "back to inline"
+        );
+
+        let wide = 400.0 * char_advance();
+        assert!(item.companion_width(wide) > 0.0);
+        item.input_key(EditKey::ToggleSplitDiff, false);
+        assert_eq!(
+            item.companion_width(wide),
+            0.0,
+            "the user asked for one column"
+        );
+        item.input_key(EditKey::ToggleSplitDiff, false);
+        assert!(item.companion_width(wide) > 0.0);
     }
 
     #[test]
