@@ -18,11 +18,13 @@ files_ui = { path = "../files_ui" }
 terminal = { path = "../terminal" }
 terminal_ui = { path = "../terminal_ui" }
 auto_update = { path = "../auto_update" }
+pom_core = { path = "../pom_core" }
+pom_paths = { path = "../pom_paths" }
 winit.workspace = true
 anyhow.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
-objc2-app-kit = { version = "0.2", features = ["NSWindow", "NSView", "NSButton", "NSResponder", "NSControl", "NSAlert", "NSApplication", "block2"] }
+objc2-app-kit = { version = "0.2", features = ["NSWindow", "NSView", "NSButton", "NSResponder", "NSControl", "NSAlert", "NSApplication", "NSOpenPanel", "NSSavePanel", "NSPanel", "block2"] }
 block2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString"] }
+objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString", "NSURL"] }

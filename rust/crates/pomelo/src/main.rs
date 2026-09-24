@@ -50,37 +50,60 @@ fn apply_dock_settings(s: &Settings, layout: &mut Layout) {
     }
 }
 
-fn files_root() -> std::path::PathBuf {
-    use std::path::{Path, PathBuf};
-    if let Some(p) = std::env::var_os("POMELO_FILES_ROOT") {
-        return PathBuf::from(p);
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        if cwd != Path::new("/") {
-            return cwd;
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.as_path();
-        while let Some(parent) = dir.parent() {
-            if parent.join("Cargo.toml").is_file() {
-                return parent.to_path_buf();
-            }
-            dir = parent;
-        }
-    }
+fn home_dir() -> std::path::PathBuf {
     std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/"))
 }
 
-fn install_features(layout: &mut Layout) {
-    let root = files_root();
-    layout.files_view = Some(Box::new(files_ui::FilesView::new(root.clone())));
-    layout.terminal_view = Some(Box::new(terminal_ui::TerminalPanel::new(
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
+fn terminal_view(root: std::path::PathBuf) -> Box<dyn workspace::TerminalPanelView> {
+    Box::new(terminal_ui::TerminalPanel::new(
         root,
         std::sync::Arc::new(ui::wake),
-    )));
+    ))
+}
+
+fn project_info(project: &pom_core::Project) -> workspace::ProjectInfo {
+    workspace::ProjectInfo {
+        name: project.session.clone(),
+        branch: project.branch().to_string(),
+        config_path: project.config_path.clone(),
+        workspaces: project
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.branch.clone())
+            .collect(),
+    }
+}
+
+fn config_problem(project: &pom_core::Project) -> Option<(String, Option<u32>)> {
+    project
+        .error
+        .as_ref()
+        .map(|problem| (problem.message.clone(), problem.line))
+}
+
+fn session_rows(
+    entries: &[pom_core::SessionEntry],
+    current: Option<&str>,
+) -> (Vec<workspace::Session>, Option<usize>) {
+    let rows: Vec<workspace::Session> = entries
+        .iter()
+        .map(|entry| workspace::Session {
+            name: entry.name.clone(),
+            path: entry.path.clone(),
+            running: false,
+            missing: entry.missing,
+        })
+        .collect();
+    let index = current.and_then(|name| rows.iter().position(|row| row.name == name));
+    (rows, index)
 }
 
 /// Which pane group focus the key arrives in: the terminal claims ctrl-alt-arrows and cmd-d for splitting and
@@ -251,6 +274,8 @@ struct MainWindow {
     entity: ui::Entity<workspace::WorkspaceView>,
     cursor: (f64, f64),
     dirty: bool,
+    project: Option<pom_core::Project>,
+    watcher: Option<pom_core::ConfigWatcher>,
 }
 
 #[derive(Default)]
@@ -330,9 +355,157 @@ impl App {
                 entity,
                 cursor: (0.0, 0.0),
                 dirty: false,
+                project: None,
+                watcher: None,
             },
         );
         id
+    }
+
+    fn open_project_in(&mut self, id: WindowId, config: Option<std::path::PathBuf>) {
+        let state = pom_paths::StateDir::from_env();
+        let project = config.map(|config| pom_core::Project::open(&config, &state));
+        if let Some(project) = &project {
+            if let Err(error) = project.record_open(&state, now_seconds()) {
+                eprintln!("failed to record the opened project: {error}");
+            }
+        }
+        let watcher = project.as_ref().and_then(|project| {
+            pom_core::ConfigWatcher::new(&project.root, Arc::new(ui::wake))
+                .map_err(|error| eprintln!("config watch failed: {error}"))
+                .ok()
+        });
+        let info = project.as_ref().map(project_info);
+        let problem = project.as_ref().and_then(config_problem);
+        let config_path = project
+            .as_ref()
+            .map(|project| project.config_path.clone())
+            .unwrap_or_default();
+        let files: Option<Box<dyn workspace::FunctionView>> = project.as_ref().map(|project| {
+            Box::new(files_ui::FilesView::new(project.root.clone()))
+                as Box<dyn workspace::FunctionView>
+        });
+        let terminal_root = project
+            .as_ref()
+            .map_or_else(home_dir, |project| project.root.clone());
+        let title = project.as_ref().map_or_else(
+            || "Pomelo".to_string(),
+            |project| format!("{} - Pomelo", project.session),
+        );
+        self.with_workspace_view(id, |view, _| {
+            view.set_project(info, files, Some(terminal_view(terminal_root)));
+            view.set_config_problem(problem, &config_path);
+        });
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.window.set_title(&title);
+            main.project = project;
+            main.watcher = watcher;
+            main.dirty = true;
+        }
+        self.refresh_sessions();
+    }
+
+    fn refresh_sessions(&mut self) {
+        let entries = pom_core::session_entries(&pom_paths::StateDir::from_env());
+        let windows: Vec<(WindowId, Option<String>)> = self
+            .mains
+            .iter()
+            .map(|(id, main)| (*id, main.project.as_ref().map(|p| p.session.clone())))
+            .collect();
+        for (id, current) in windows {
+            let (rows, index) = session_rows(&entries, current.as_deref());
+            self.with_workspace_view(id, |view, _| view.set_sessions(rows, index));
+            if let Some(main) = self.mains.get_mut(&id) {
+                main.dirty = true;
+            }
+        }
+    }
+
+    fn reload_changed_projects(&mut self) {
+        let state = pom_paths::StateDir::from_env();
+        let mut updates = Vec::new();
+        for (id, main) in self.mains.iter_mut() {
+            let changed = main.watcher.as_ref().is_some_and(|w| w.take_changed());
+            let Some(project) = main.project.as_mut().filter(|_| changed) else {
+                continue;
+            };
+            if project.reload(&state) {
+                updates.push((
+                    *id,
+                    project_info(project),
+                    config_problem(project),
+                    project.config_path.clone(),
+                ));
+                main.dirty = true;
+            }
+        }
+        for (id, info, problem, config_path) in updates {
+            self.with_workspace_view(id, |view, _| {
+                view.update_project(info);
+                view.set_config_problem(problem, &config_path);
+            });
+        }
+    }
+
+    fn session_path(&self, id: WindowId, index: usize) -> Option<(String, std::path::PathBuf)> {
+        let app = self.main_app.as_ref()?;
+        let main = self.mains.get(&id)?;
+        let view = main.entity.read(app.app());
+        let session = view.layout().sessions.get(index)?;
+        Some((session.name.clone(), session.path.clone()))
+    }
+
+    fn handle_session_request(&mut self, id: WindowId, request: workspace::SessionRequest) {
+        match request {
+            workspace::SessionRequest::Switch(index) => {
+                if let Some((_, path)) = self.session_path(id, index) {
+                    self.open_folder_in(id, &path);
+                }
+            }
+            workspace::SessionRequest::Forget(index) => {
+                if let Some((name, _)) = self.session_path(id, index) {
+                    let state = pom_paths::StateDir::from_env();
+                    if let Err(error) = pom_core::forget_session(&state, &name) {
+                        self.with_workspace_view(id, |view, _| {
+                            view.show_toast(format!("Failed to remove {name}: {error}"), None)
+                        });
+                    }
+                    self.refresh_sessions();
+                }
+            }
+            workspace::SessionRequest::Reveal(index) => {
+                if let Some((_, path)) = self.session_path(id, index) {
+                    if let Err(error) = std::process::Command::new("open").arg(&path).spawn() {
+                        self.with_workspace_view(id, |view, _| {
+                            view.show_toast(
+                                format!("Failed to open {}: {error}", path.display()),
+                                None,
+                            )
+                        });
+                    }
+                }
+            }
+            workspace::SessionRequest::ChooseFolder =>
+            {
+                #[cfg(target_os = "macos")]
+                if let Some(folder) = choose_folder() {
+                    self.open_folder_in(id, &folder);
+                }
+            }
+        }
+    }
+
+    fn open_folder_in(&mut self, id: WindowId, folder: &std::path::Path) {
+        match pom_core::config_in(folder) {
+            Some(config) => self.open_project_in(id, Some(config)),
+            None => {
+                let message = format!("No pom.yml in {}", folder.display());
+                self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+                if let Some(main) = self.mains.get_mut(&id) {
+                    main.dirty = true;
+                }
+            }
+        }
     }
 
     fn draw_main(&mut self, id: WindowId) {
@@ -590,15 +763,19 @@ impl App {
             drop(view);
             let _ = self.settings.save();
         }
-        if let Some(session) = effects.open_new_window {
-            // Real multi-window: clone the current dock layout and open another OS window for the session.
-            let mut layout = Layout::default();
-            apply_dock_settings(&self.settings, &mut layout);
-            install_features(&mut layout);
-            if session < layout.sessions.len() {
-                layout.current_session = session;
+        if let Some(index) = effects.open_new_window {
+            if let Some((_, path)) = self.session_path(id, index) {
+                let mut layout = Layout::default();
+                apply_dock_settings(&self.settings, &mut layout);
+                let new_id = self.new_main_window(event_loop, layout);
+                self.open_folder_in(new_id, &path);
             }
-            self.new_main_window(event_loop, layout);
+        }
+        if let Some(request) = effects.session {
+            self.handle_session_request(id, request);
+        }
+        if effects.open_settings {
+            self.toggle_settings(event_loop);
         }
         if let Some(m) = self.mains.get_mut(&id) {
             m.dirty = true;
@@ -658,6 +835,7 @@ impl ApplicationHandler for App {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
         self.deliver_prompt_answers();
+        self.reload_changed_projects();
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {
             self.draw_main(id);
@@ -768,8 +946,11 @@ impl ApplicationHandler for App {
 
         let mut layout = Layout::default();
         apply_dock_settings(&self.settings, &mut layout);
-        install_features(&mut layout);
-        self.new_main_window(event_loop, layout);
+        let id = self.new_main_window(event_loop, layout);
+        let explicit = std::env::var_os("POM_CONFIG").map(std::path::PathBuf::from);
+        let config =
+            pom_core::startup_config(&pom_paths::StateDir::from_env(), explicit.as_deref());
+        self.open_project_in(id, config);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -811,6 +992,15 @@ impl ApplicationHandler for App {
                     && self.settings_window.as_ref().map(|w| w.id()) == Some(id);
                 if toggle {
                     self.toggle_settings(event_loop);
+                    return;
+                }
+                let open_folder = matches!(&ke.logical_key, Key::Character(c) if c.as_str() == "o")
+                    && self.super_down
+                    && !self.shift_down
+                    && !self.alt_down
+                    && !self.ctrl_down;
+                if open_folder && self.mains.contains_key(&id) {
+                    self.handle_session_request(id, workspace::SessionRequest::ChooseFolder);
                     return;
                 }
                 if esc_on_settings {
@@ -1498,6 +1688,28 @@ fn show_prompt(
         ui::wake();
     });
     unsafe { alert.beginSheetModalForWindow_completionHandler(&ns_window, Some(&block)) };
+}
+
+#[cfg(target_os = "macos")]
+fn choose_folder() -> Option<std::path::PathBuf> {
+    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::{MainThreadMarker, NSString};
+    let mtm = MainThreadMarker::new()?;
+    let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    unsafe {
+        panel.setCanChooseFiles(false);
+        panel.setCanChooseDirectories(true);
+        panel.setAllowsMultipleSelection(false);
+        panel.setPrompt(Some(&NSString::from_str("Open")));
+        panel.setMessage(Some(&NSString::from_str(
+            "Choose a project folder with a pom.yml",
+        )));
+    }
+    if unsafe { panel.runModal() } != NSModalResponseOK {
+        return None;
+    }
+    let path = unsafe { panel.URL()?.path()? };
+    Some(std::path::PathBuf::from(path.to_string()))
 }
 
 // Center the macOS traffic lights in our taller top bar: resize the titlebar container

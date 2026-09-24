@@ -14,8 +14,84 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(settings_ui::APPEARANCE);
 
     let scale = 2.0_f32;
-    let (lw, lh) = (920.0_f32, 760.0_f32); // logical
+    let (lw, lh) = match std::env::var("MAINVIEW") {
+        Ok(_) => (1200.0_f32, 780.0_f32),
+        Err(_) => (920.0_f32, 760.0_f32),
+    }; // logical
     let mut r = ui::UiRenderer::new_headless((lw * scale) as u32, (lh * scale) as u32, scale)?;
+
+    if let Ok(mode) = std::env::var("MAINVIEW") {
+        let sessions: Vec<workspace::Session> = ["myproject", "api", "web", "old"]
+            .iter()
+            .map(|name| workspace::Session {
+                name: name.to_string(),
+                path: format!("/projects/{name}").into(),
+                running: false,
+                missing: *name == "old",
+            })
+            .collect();
+        let project = (mode != "welcome").then(|| workspace::ProjectInfo {
+            name: "myproject".into(),
+            branch: "main".into(),
+            config_path: "/projects/myproject/pom.yml".into(),
+            workspaces: vec!["main".into(), "feat-login".into()],
+        });
+        let current = project.as_ref().map(|_| 0);
+        let mut app = ui::Application::new();
+        let (handle, entity) = app.open_raw_window(
+            ui::WindowOptions {
+                width: lw,
+                height: lh,
+                scale,
+                ..Default::default()
+            },
+            move |_| {
+                let mut view = workspace::WorkspaceView::new(workspace::Layout {
+                    project,
+                    ..Default::default()
+                });
+                view.set_sessions(sessions, current);
+                view
+            },
+        );
+        if mode == "problem" {
+            entity.update(app.app_mut(), |view, _| {
+                view.set_config_problem(
+                    Some((
+                        "/projects/myproject/pom.yml: unmarshal errors:\n  line 4: cannot unmarshal !!str `npm i` into []string".into(),
+                        Some(4),
+                    )),
+                    std::path::Path::new("/projects/myproject/pom.yml"),
+                )
+            });
+        }
+        let frame = app.draw(handle).expect("frame");
+        let mut layers: Vec<ui::Layer> = vec![(
+            frame.base.rects.as_slice(),
+            frame.base.tris.as_slice(),
+            frame.base.texts.as_slice(),
+            frame.base.icons.as_slice(),
+            None,
+        )];
+        for overlay in &frame.overlays {
+            layers.push((
+                overlay.painted.rects.as_slice(),
+                overlay.painted.tris.as_slice(),
+                overlay.painted.texts.as_slice(),
+                overlay.painted.icons.as_slice(),
+                overlay.clip.map(|c| (c.x, c.y, c.w, c.h)),
+            ));
+        }
+        r.render_frame(ui::theme().background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
 
     // With MAINMENU=1, render the main window with the header session switcher menu open.
     if std::env::var("MAINMENU").is_ok() {
