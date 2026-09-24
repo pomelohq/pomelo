@@ -1232,6 +1232,11 @@ impl App {
                 .is_some_and(pom_proxy::DevProxy::webhook_running),
             proxy_port: ports.proxy,
             webhook_port: ports.webhook,
+            served_elsewhere: !self
+                .dev_proxy
+                .as_ref()
+                .is_some_and(pom_proxy::DevProxy::proxy_running)
+                && pom_proxy::listening(ports.proxy),
             requests: self
                 .dev_proxy
                 .as_ref()

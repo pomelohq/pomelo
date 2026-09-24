@@ -1622,6 +1622,8 @@ pub struct NetworkPage {
     pub webhook_running: bool,
     pub proxy_port: u16,
     pub webhook_port: u16,
+    /// The app could not bind, but `pom proxy` in a terminal answers on the port.
+    pub served_elsewhere: bool,
     /// Newest first.
     pub requests: Vec<RequestRow>,
 }
@@ -1951,13 +1953,18 @@ fn notifications_page(s: &Settings) -> Page {
 }
 
 fn network_page(network: &NetworkPage) -> Page {
+    let status_description = if network.served_elsewhere && !network.proxy_running {
+        "Served by `pom proxy` in a terminal; its requests are not listed here."
+    } else {
+        "Serves every workspace's services behind one port."
+    };
     let mut items = vec![
         PageItem::Header("Reverse Proxy"),
         PageItem::Row(SettingRow {
             title: "Status".into(),
-            description: "Serves every workspace's services behind one port.".into(),
+            description: status_description.into(),
             control: Control::Status {
-                running: network.proxy_running,
+                running: network.proxy_running || network.served_elsewhere,
             },
             reset: None,
         }),
@@ -1994,7 +2001,7 @@ fn network_page(network: &NetworkPage) -> Page {
             title: "Status".into(),
             description: "Hands each incoming webhook to every workspace running the service.".into(),
             control: Control::Status {
-                running: network.webhook_running,
+                running: network.webhook_running || network.served_elsewhere,
             },
             reset: None,
         }),
@@ -2011,7 +2018,7 @@ fn network_page(network: &NetworkPage) -> Page {
             reset: None,
         }),
     ];
-    if !network.proxy_running || !network.webhook_running {
+    if !network.served_elsewhere && (!network.proxy_running || !network.webhook_running) {
         items.push(PageItem::Row(SettingRow {
             title: "Servers".into(),
             description: "A port was taken, likely by another Pomelo. Free it, then start again."
@@ -2852,6 +2859,7 @@ mod tests {
                     status: 200,
                     ms: 7,
                 }],
+                ..NetworkPage::default()
             },
             ..PageState::default()
         };
@@ -2878,6 +2886,33 @@ mod tests {
             assert!(p.texts.iter().any(|t| t.text == expected), "{expected}");
         }
         assert!(p.hits.iter().any(|(_, id)| *id == CTRL_START_SERVERS));
+    }
+
+    #[test]
+    fn a_terminal_proxy_counts_as_running_and_needs_no_restart_button() {
+        let state = PageState {
+            network: NetworkPage {
+                served_elsewhere: true,
+                proxy_port: 8767,
+                webhook_port: 8766,
+                ..NetworkPage::default()
+            },
+            ..PageState::default()
+        };
+        let p = panel(
+            NETWORK,
+            None,
+            &[false; CATEGORY_COUNT],
+            &Settings::default(),
+            &state,
+            1400.0,
+            2400.0,
+            None,
+            "",
+            false,
+        );
+        assert!(!p.texts.iter().any(|t| t.text == "Stopped"));
+        assert!(!p.hits.iter().any(|(_, id)| *id == CTRL_START_SERVERS));
     }
 
     #[test]

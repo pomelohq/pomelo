@@ -882,6 +882,7 @@ fn main() -> anyhow::Result<()> {
             webhook_running: live,
             proxy_port: 8767,
             webhook_port: 8766,
+            served_elsewhere: false,
             requests: if live {
                 vec![
                     settings_ui::RequestRow {

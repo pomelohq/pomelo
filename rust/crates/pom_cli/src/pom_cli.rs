@@ -1,6 +1,7 @@
 //! `pom`: a workspace's services from a terminal. It drives the same holders, leases and compose project as
 //! the app, so a service started here shows up in the app's Services panel and the other way round.
 
+mod proxy;
 mod workspaces;
 
 use std::io::Write;
@@ -23,7 +24,9 @@ commands:
   logs <service>     recent output of a service
   attach <service>   attach this terminal to a running service (detach: close the terminal)
   ports              every leased port
-  url <service>      where a service with a port listens
+  url <service>      where a service with a port listens, directly and through the dev proxy
+  proxy              serve the dev proxy and webhook relay for every project (`pom start` runs
+                     one in the background when neither the app nor another proxy does)
   mcp [--branch b]   MCP server on stdio for a coding agent working in this workspace
 
   ws create <branch> [--repos a,b] [--env name] [--no-seed] [--from-stage n]
@@ -50,6 +53,7 @@ enum Command {
     Attach(String),
     Ports,
     Url(String),
+    Proxy,
     Workspace(WorkspaceCommand),
     Doctor,
     Version,
@@ -79,6 +83,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
                 .map_err(|error| error.to_string()),
             Command::Ports => ports(&StateDir::from_env(), out),
             Command::Doctor => doctor(invocation.config.as_deref(), cwd, out),
+            Command::Proxy => proxy::serve(&StateDir::from_env(), out),
             ref command => Session::open(&invocation, cwd)
                 .and_then(|session| session.execute(command, out, err)),
         };
@@ -148,6 +153,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "attach" => Command::Attach(one("a service")?),
         "ports" => none().map(|_| Command::Ports)?,
         "url" => Command::Url(one("a service")?),
+        "proxy" => none().map(|_| Command::Proxy)?,
         "ws" | "workspace" => Command::Workspace(workspaces::parse(rest, false)?),
         "prepare-main" => Command::Workspace(workspaces::parse(rest, true)?),
         "doctor" => none().map(|_| Command::Doctor)?,
@@ -293,7 +299,11 @@ impl Session {
             Command::Attach(service) => self.attach(service),
             Command::Url(service) => self.url(service, out),
             Command::Workspace(command) => self.workspace(command, out),
-            Command::Ports | Command::Doctor | Command::Version | Command::Help => Ok(()),
+            Command::Ports
+            | Command::Proxy
+            | Command::Doctor
+            | Command::Version
+            | Command::Help => Ok(()),
         }
     }
 
@@ -348,6 +358,9 @@ impl Session {
                     say(err, &format!("could not start {repo}/{service}: {error}"))?;
                 }
             }
+        }
+        if let Err(error) = proxy::ensure_running(out) {
+            say(err, &format!("dev proxy: {error}"))?;
         }
         if failed > 0 {
             return Err(format!("{failed} service(s) did not start"));
@@ -489,10 +502,18 @@ impl Session {
         if !has_port {
             return Err(format!("{entry} has no port"));
         }
-        match self.runner.url(&self.config, &target) {
-            Some(url) => say(out, &url),
-            None => Err(format!("{entry} has no port yet; start it first")),
-        }
+        let direct = self
+            .runner
+            .url(&self.config, &target)
+            .ok_or_else(|| format!("{entry} has no port yet; start it first"))?;
+        let proxied = proxy::service_url(&self.config, &self.branch, &target.repo, &target.service);
+        let status = if pom_proxy::listening(pom_proxy::Ports::from_env().proxy) {
+            ""
+        } else {
+            "  (proxy not running: start the app or `pom proxy`)"
+        };
+        say(out, &format!("direct  {direct}"))?;
+        say(out, &format!("proxy   {proxied}{status}"))
     }
 }
 

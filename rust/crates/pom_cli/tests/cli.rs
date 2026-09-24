@@ -46,6 +46,8 @@ repos:
             .args(args)
             .current_dir(cwd)
             .env("XDG_STATE_HOME", self.temp.path().join("state"))
+            .env("POM_NO_PROXY", "1")
+            .env("POM_WEB_PORT", "1")
             .env("POM_PTY_SOCK_DIR", self.temp.path().join("s"))
             .env("ZDOTDIR", self.temp.path().join("zdot"))
             .output()
@@ -97,7 +99,15 @@ fn start_status_logs_url_and_stop_in_the_workspace_of_the_current_directory() {
     assert!(main_status.contains("web  stopped"), "{main_status}");
 
     let url = text(&fixture.pom(&feat, &["url", "api/web"]));
-    assert_eq!(url.trim(), format!("http://127.0.0.1:{port}"));
+    let mut lines = url.lines();
+    assert_eq!(
+        lines.next(),
+        Some(format!("direct  http://127.0.0.1:{port}").as_str())
+    );
+    assert_eq!(
+        lines.next(),
+        Some("proxy   http://web.api.feat.localhost:3  (proxy not running: start the app or `pom proxy`)")
+    );
 
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
