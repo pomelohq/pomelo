@@ -840,6 +840,13 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
         }
         Node::Label(l) => {
             let (lw, lh) = l.intrinsic();
+            // A cut label without room even for its ellipsis shows nothing rather than spill over a neighbor.
+            if l.truncate
+                && lw > area.w + 0.5
+                && area.w + 0.5 < crate::measure_text_width("...", l.size, l.mono, l.weight)
+            {
+                return;
+            }
             let text = if l.truncate_start && lw > area.w + 0.5 {
                 truncate_start_to_width(&l.text, area.w, l.size, l.mono, l.weight)
             } else if l.truncate && lw > area.w + 0.5 {
@@ -974,17 +981,20 @@ fn layout_children(
         }
     }
 
-    // Truncating labels give back what the row overflows by, in order, before anything spills.
+    // Truncating labels give back what the row overflows by, in order, before anything spills; labels cut
+    // from the front (a path's folders) give first so the name after or before them keeps its room.
     let mut overflow = mains.iter().sum::<f32>() + total_gap - inner_main;
     if overflow > 0.0 && d.axis == Axis::Row {
-        for (i, c) in d.children.iter().enumerate() {
-            if overflow <= 0.0 {
-                break;
-            }
-            if matches!(c, Node::Label(l) if l.truncate) {
-                let give = overflow.min(mains[i]);
-                mains[i] -= give;
-                overflow -= give;
+        for from_start in [true, false] {
+            for (i, c) in d.children.iter().enumerate() {
+                if overflow <= 0.0 {
+                    break;
+                }
+                if matches!(c, Node::Label(l) if l.truncate && l.truncate_start == from_start) {
+                    let give = overflow.min(mains[i]);
+                    mains[i] -= give;
+                    overflow -= give;
+                }
             }
         }
     }
@@ -1126,8 +1136,27 @@ mod tests {
         let p = render(&short, Rect::new(0.0, 0.0, 160.0, 28.0, Rgba::TRANSPARENT));
         assert_eq!(p.texts[0].text, "main");
 
+        let narrow = render(&tree, Rect::new(0.0, 0.0, 28.0, 28.0, Rgba::TRANSPARENT));
+        assert_eq!(narrow.texts[0].text, "...");
         let tiny = render(&tree, Rect::new(0.0, 0.0, 16.0, 28.0, Rgba::TRANSPARENT));
-        assert_eq!(tiny.texts[0].text, "...");
+        assert!(tiny.texts.is_empty(), "no room even for the ellipsis");
+    }
+
+    #[test]
+    fn a_path_prefix_gives_way_before_the_name() {
+        let tree: Node = div()
+            .row()
+            .child(label("controller.rs").truncate())
+            .child(label("apps/api/src/modules/phone").truncate_start())
+            .into();
+        let name_w =
+            crate::measure_text_width("controller.rs", 13.0, false, crate::ui_font_weight());
+        let p = render(
+            &tree,
+            Rect::new(0.0, 0.0, name_w + 40.0, 28.0, Rgba::TRANSPARENT),
+        );
+        assert_eq!(p.texts[0].text, "controller.rs", "the name keeps its room");
+        assert!(p.texts[1].text.starts_with("..."), "{}", p.texts[1].text);
     }
 
     #[test]

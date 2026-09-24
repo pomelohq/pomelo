@@ -4,7 +4,7 @@
 
 mod commit_area;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,6 +28,11 @@ const REMOTE: u64 = FOOTER + 4;
 const REMOTE_MENU: u64 = FOOTER + 5;
 const SWITCH_REPO: u64 = FOOTER + 6;
 const STAGE_ALL: u64 = FOOTER + 7;
+const SELECTOR_QUERY: u64 = FOOTER + 8;
+/// A repository in the selector: id = base + index into its filtered list.
+const SELECTOR_ITEM: u64 = FOOTER + 20;
+const SELECTOR_MAX: usize = 60;
+const SELECTOR_ROWS: usize = 10;
 const ALL_REMOTES: &str = "All";
 /// While shown, the panel re-reads git this often (agents keep changing files).
 const REFRESH_EVERY: Duration = Duration::from_secs(4);
@@ -50,9 +55,28 @@ enum Control {
 
 #[derive(Clone, Debug)]
 enum Row {
-    Repo { index: usize },
-    File { repo: usize, file: usize },
+    Repo {
+        index: usize,
+    },
+    File {
+        repo: usize,
+        file: usize,
+    },
     Message(String),
+    /// The workspace's pull requests, one row per repo that has one.
+    PullRequests {
+        count: usize,
+    },
+    PullRequest {
+        repo: usize,
+    },
+}
+
+/// The repository picker opened from the footer: the typed filter and the highlighted match.
+#[derive(Default)]
+struct RepoSelector {
+    query: String,
+    highlight: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -176,7 +200,6 @@ pub struct GitPanel {
     waker: Arc<dyn Fn() + Send + Sync>,
     base: u64,
     rows: Vec<Row>,
-    collapsed: HashSet<usize>,
     hover: Option<u64>,
     scroll: f32,
     viewport_h: f32,
@@ -192,6 +215,8 @@ pub struct GitPanel {
     active_repo: usize,
     remote_prompt: Option<(u64, Vec<String>, RemoteRequest)>,
     pull_requests: Option<pull_request_ui::PullRequests>,
+    prs_collapsed: bool,
+    selector: Option<RepoSelector>,
 }
 
 impl GitPanel {
@@ -217,7 +242,6 @@ impl GitPanel {
             stop: Arc::new(AtomicBool::new(false)),
             base: workspace::side_panel_base(PaneKind::Git),
             rows: Vec::new(),
-            collapsed: HashSet::new(),
             hover: None,
             scroll: 0.0,
             viewport_h: 0.0,
@@ -229,6 +253,8 @@ impl GitPanel {
             active_repo: 0,
             remote_prompt: None,
             pull_requests: None,
+            prs_collapsed: false,
+            selector: None,
             waker,
         }
     }
@@ -316,11 +342,21 @@ impl GitPanel {
         } else if self.sources.is_empty() {
             rows.push(Row::Message("No repositories in this workspace".into()));
         }
+        let with_prs = self.repos_with_pull_requests();
+        if !with_prs.is_empty() {
+            rows.push(Row::PullRequests {
+                count: with_prs.len(),
+            });
+            if !self.prs_collapsed {
+                rows.extend(with_prs.into_iter().map(|repo| Row::PullRequest { repo }));
+            }
+        }
+        let active = self.active_repo.min(repos.len().saturating_sub(1));
         for (index, repo) in repos.iter().enumerate() {
-            rows.push(Row::Repo { index });
-            if self.collapsed.contains(&index) {
+            if index != active {
                 continue;
             }
+            rows.push(Row::Repo { index });
             if let Some(error) = &repo.error {
                 rows.push(Row::Message(
                     error.lines().next().unwrap_or_default().to_string(),
@@ -333,6 +369,159 @@ impl GitPanel {
             }
         }
         self.rows = rows;
+    }
+
+    /// Repos (by index) whose checked-out branch has a pull request.
+    fn repos_with_pull_requests(&self) -> Vec<usize> {
+        let Some(prs) = self.pull_requests.as_ref() else {
+            return Vec::new();
+        };
+        (0..self.sources.len())
+            .filter(|repo| {
+                self.sources
+                    .get(*repo)
+                    .and_then(|source| prs.for_checkout(&source.root))
+                    .is_some_and(|(_, pr)| pr.is_some())
+            })
+            .collect()
+    }
+
+    /// The selector's matches: repo indices sorted by name, filtered by the typed text.
+    fn selector_matches(&self) -> Vec<usize> {
+        let query = self
+            .selector
+            .as_ref()
+            .map(|selector| selector.query.to_lowercase())
+            .unwrap_or_default();
+        let mut matches: Vec<usize> = (0..self.sources.len())
+            .filter(|index| self.sources[*index].name.to_lowercase().contains(&query))
+            .collect();
+        matches.sort_by_key(|index| self.sources[*index].name.to_lowercase());
+        matches.truncate(SELECTOR_MAX);
+        matches
+    }
+
+    fn open_selector(&mut self) {
+        if self.selector.take().is_some() {
+            return;
+        }
+        self.selector = Some(RepoSelector::default());
+        let highlight = self
+            .selector_matches()
+            .iter()
+            .position(|repo| *repo == self.active_repo)
+            .unwrap_or(0);
+        if let Some(selector) = self.selector.as_mut() {
+            selector.highlight = highlight;
+        }
+        self.commit.focused = false;
+    }
+
+    fn choose_repo(&mut self, repo: usize) {
+        if repo < self.sources.len() {
+            self.active_repo = repo;
+            self.scroll = 0.0;
+        }
+        self.selector = None;
+    }
+
+    /// The picker over the footer, after the reference's repository selector: each repo with a check on the
+    /// active one and its change status at the end, the filter below.
+    fn render_selector(&self, width: f32) -> Option<Node> {
+        let selector = self.selector.as_ref()?;
+        let colors = theme();
+        let matches = self.selector_matches();
+        let first = selector
+            .highlight
+            .saturating_sub(SELECTOR_ROWS.saturating_sub(1));
+        let mut list = div().col().p(4.0).gap(1.0);
+        if matches.is_empty() {
+            list = list.child(
+                div()
+                    .row()
+                    .h_px(26.0)
+                    .px(8.0)
+                    .items_center()
+                    .child(label("No matches").size(12.0).color(colors.text_muted)),
+            );
+        }
+        for (position, repo) in matches.iter().enumerate().skip(first).take(SELECTOR_ROWS) {
+            let Some(source) = self.sources.get(*repo) else {
+                continue;
+            };
+            let id = self.base + SELECTOR_ITEM + position as u64;
+            let highlighted = position == selector.highlight || self.hover == Some(id);
+            let mut name = div().row().flex(1.0).gap(4.0).items_center().child(
+                label(source.name.clone())
+                    .size(13.0)
+                    .color(colors.text)
+                    .truncate(),
+            );
+            if *repo == self.active_repo {
+                name = name.child(icon(IconKind::Check).size(12.0).color(colors.text_accent));
+            }
+            let mut row = div()
+                .row()
+                .h_px(26.0)
+                .px(8.0)
+                .gap(6.0)
+                .items_center()
+                .rounded(4.0)
+                .on_click(id)
+                .child(name);
+            if let Some(status) = worst_status(&self.status_of(*repo)) {
+                row = row.child(status_icon(status));
+            }
+            if highlighted {
+                row = row.bg(colors.element_selected);
+            }
+            list = list.child(row);
+        }
+        let query: Node = if selector.query.is_empty() {
+            label("Select a repository...")
+                .size(13.0)
+                .color(colors.text_placeholder)
+                .into()
+        } else {
+            label(selector.query.clone())
+                .size(13.0)
+                .color(colors.text)
+                .into()
+        };
+        Some(
+            div()
+                .col()
+                .w_px(width)
+                .px(6.0)
+                .pb(4.0)
+                .child(
+                    div()
+                        .col()
+                        .rounded(6.0)
+                        .bg(colors.elevated_surface_background)
+                        .border(1.0, colors.border_variant)
+                        .child(list)
+                        .child(div().h_px(1.0).bg(colors.border_variant))
+                        .child(
+                            div()
+                                .row()
+                                .h_px(32.0)
+                                .px(10.0)
+                                .items_center()
+                                .on_click(self.base + SELECTOR_QUERY)
+                                .child(query),
+                        ),
+                )
+                .into(),
+        )
+    }
+
+    fn selector_height(&self) -> f32 {
+        if self.selector.is_none() {
+            return 0.0;
+        }
+        let rows = self.selector_matches().len().clamp(1, SELECTOR_ROWS) as f32;
+        8.0 + rows * 27.0 + 1.0 + 32.0 + 2.0 + 4.0
     }
 
     fn id(&self, row: usize, control: Control) -> u64 {
@@ -390,6 +579,52 @@ impl GitPanel {
                         .truncate(),
                 )
                 .into(),
+            Row::PullRequests { count } => {
+                let chevron = if self.prs_collapsed {
+                    IconKind::ChevronRight
+                } else {
+                    IconKind::ChevronDown
+                };
+                body.child(icon(chevron).size(12.0).color(theme().icon_muted))
+                    .child(
+                        div()
+                            .row()
+                            .flex(1.0)
+                            .child(label("Pull Requests").size(12.0).color(theme().text_muted)),
+                    )
+                    .child(
+                        label(count.to_string())
+                            .size(12.0)
+                            .color(theme().text_muted),
+                    )
+                    .into()
+            }
+            Row::PullRequest { repo } => {
+                let Some((source, pr)) = self.sources.get(*repo).and_then(|source| {
+                    let (_, pr) = self.pull_requests.as_ref()?.for_checkout(&source.root)?;
+                    Some((source, pr?))
+                }) else {
+                    return div().into();
+                };
+                let color = pr_color(&pr);
+                body.child(icon(IconKind::PullRequest).size(13.0).color(color))
+                    .child(label(format!("#{}", pr.number)).size(12.0).color(color))
+                    .child(
+                        div().row().flex(1.0).child(
+                            label(pr.title.clone())
+                                .size(12.0)
+                                .color(theme().text)
+                                .truncate(),
+                        ),
+                    )
+                    .child(
+                        label(source.name.clone())
+                            .size(11.0)
+                            .color(theme().text_muted)
+                            .truncate(),
+                    )
+                    .into()
+            }
             Row::Repo { index: repo } => {
                 let Some(changes) = repos.get(*repo) else {
                     return div().into();
@@ -398,11 +633,6 @@ impl GitPanel {
                     .sources
                     .get(*repo)
                     .map_or_else(String::new, |source| source.name.clone());
-                let chevron = if self.collapsed.contains(repo) {
-                    IconKind::ChevronRight
-                } else {
-                    IconKind::ChevronDown
-                };
                 let mut position = Vec::new();
                 if changes.ahead > 0 {
                     position.push(format!("{} ahead", changes.ahead));
@@ -426,8 +656,7 @@ impl GitPanel {
                 if let Some(badge) = badge {
                     title = title.child(badge);
                 }
-                body.child(icon(chevron).size(12.0).color(theme().icon_muted))
-                    .child(title)
+                body.child(title)
                     .child(
                         label(position.join(", "))
                             .size(12.0)
@@ -471,19 +700,7 @@ impl GitPanel {
         let id = self.id(row, Control::Review);
         let hot = self.hover == Some(id);
         let (text, color) = match &pr {
-            Some(pr) => {
-                let color = match (pr.state.as_str(), pr.is_draft) {
-                    ("MERGED", _) => workspace::PrSeverity::Merged.color(),
-                    ("CLOSED", _) => colors.error,
-                    (_, true) => colors.text_muted,
-                    _ if pr.conflict || pr.checks == "fail" || pr.review == "changes" => {
-                        colors.error
-                    }
-                    _ if pr.checks == "pending" || pr.review == "review" => colors.warning,
-                    _ => colors.success,
-                };
-                (format!("#{}", pr.number), color)
-            }
+            Some(pr) => (format!("#{}", pr.number), pr_color(pr)),
             None => ("Create Pull Request".to_string(), colors.text_accent),
         };
         Some(
@@ -616,12 +833,6 @@ impl GitPanel {
             });
         if let Err(error) = written {
             eprintln!("git panel: save reviews: {error}");
-        }
-    }
-
-    fn toggle_repo(&mut self, repo: usize) {
-        if !self.collapsed.remove(&repo) {
-            self.collapsed.insert(repo);
         }
     }
 
@@ -1066,6 +1277,36 @@ impl GitPanel {
     }
 }
 
+fn pr_color(pr: &pom_forge::PullRequest) -> Rgba {
+    let colors = theme();
+    match (pr.state.as_str(), pr.is_draft) {
+        ("MERGED", _) => workspace::PrSeverity::Merged.color(),
+        ("CLOSED", _) => colors.error,
+        (_, true) => colors.text_muted,
+        _ if pr.conflict || pr.checks == "fail" || pr.review == "changes" => colors.error,
+        _ if pr.checks == "pending" || pr.review == "review" => colors.warning,
+        _ => colors.success,
+    }
+}
+
+/// What a repo's uncommitted changes add up to, for its status icon: a conflict, else a deletion, else a
+/// modification, else an addition.
+fn worst_status(status: &[StatusEntry]) -> Option<ChangeStatus> {
+    if status.is_empty() {
+        return None;
+    }
+    let any = |test: &dyn Fn(&StatusEntry) -> bool| status.iter().any(test);
+    Some(if any(&|entry| entry.conflicted) {
+        ChangeStatus::Conflicted
+    } else if any(&|entry| entry.index == 'D' || entry.worktree == 'D') {
+        ChangeStatus::Deleted
+    } else if any(&|entry| !entry.untracked && (entry.index == 'M' || entry.worktree == 'M')) {
+        ChangeStatus::Modified
+    } else {
+        ChangeStatus::Added
+    })
+}
+
 fn status_icon(status: ChangeStatus) -> Node {
     let (kind, color) = match status {
         ChangeStatus::Conflicted => (IconKind::Warning, theme().warning),
@@ -1128,10 +1369,16 @@ fn path_label(change: &FileChange, reviewed: bool) -> Node {
     let mut row = div()
         .row()
         .flex(1.0)
+        .gap(6.0)
         .items_center()
-        .child(label(format!("{name} ")).color(name_color));
+        .child(label(name).color(name_color).truncate());
     if let Some(folder) = folder {
-        row = row.child(label(folder).color(folder_color).truncate_start());
+        row = row.child(
+            label(folder)
+                .size(12.0)
+                .color(folder_color)
+                .truncate_start(),
+        );
     }
     row.into()
 }
@@ -1143,6 +1390,7 @@ fn diff_stat(change: &FileChange) -> Node {
     div()
         .row()
         .gap(4.0)
+        .items_center()
         .child(
             label(format!("+{added}"))
                 .size(12.0)
@@ -1181,7 +1429,8 @@ impl SidePanelView for GitPanel {
             self.refresh();
         }
         let footer_h = self.commit.height();
-        let list_h = (height - HEADER_H - footer_h).max(0.0);
+        let selector_h = self.selector_height();
+        let list_h = (height - HEADER_H - footer_h - selector_h).max(0.0);
         self.viewport_h = list_h;
         let repos = self.repos();
         self.rebuild_rows(&repos);
@@ -1268,14 +1517,16 @@ impl SidePanelView for GitPanel {
             list = list.child(self.render_row(index, row, &repos));
         }
         let footer = self.render_footer(width);
-        div()
+        let mut panel = div()
             .col()
             .w_px(width)
             .h_px(height)
             .child(header)
-            .child(list)
-            .child(footer)
-            .into()
+            .child(list);
+        if let Some(selector) = self.render_selector(width) {
+            panel = panel.child(selector);
+        }
+        panel.child(footer).into()
     }
 
     fn click(&mut self, id: u64) {
@@ -1319,8 +1570,15 @@ impl SidePanelView for GitPanel {
                     ("Force Push", MenuAction::ForcePush, false, false),
                 ])
             }
-            Some(SWITCH_REPO) => {
-                self.active_repo = (self.active_repo + 1) % self.sources.len().max(1);
+            Some(SWITCH_REPO) => return self.open_selector(),
+            Some(SELECTOR_QUERY) => return,
+            Some(offset)
+                if (SELECTOR_ITEM..SELECTOR_ITEM + SELECTOR_MAX as u64).contains(&offset) =>
+            {
+                let position = (offset - SELECTOR_ITEM) as usize;
+                if let Some(repo) = self.selector_matches().get(position).copied() {
+                    self.choose_repo(repo);
+                }
                 return;
             }
             Some(STAGE_ALL) => return self.stage_all(),
@@ -1334,10 +1592,9 @@ impl SidePanelView for GitPanel {
                 self.active_repo = repo;
                 self.open_pull_request(repo)
             }
-            Some(Row::Repo { index: repo }) => {
-                self.active_repo = repo;
-                self.toggle_repo(repo)
-            }
+            Some(Row::Repo { .. }) => {}
+            Some(Row::PullRequests { .. }) => self.prs_collapsed = !self.prs_collapsed,
+            Some(Row::PullRequest { repo }) => self.open_pull_request(repo),
             Some(Row::File { repo, file }) if control == Control::Review => {
                 self.toggle_reviewed(repo, file)
             }
@@ -1360,10 +1617,19 @@ impl SidePanelView for GitPanel {
     }
 
     fn text_focused(&self) -> bool {
-        self.commit.focused
+        self.commit.focused || self.selector.is_some()
     }
 
     fn text(&mut self, text: &str) -> bool {
+        if let Some(selector) = self.selector.as_mut() {
+            let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+            if typed.is_empty() {
+                return false;
+            }
+            selector.query.push_str(&typed);
+            selector.highlight = 0;
+            return true;
+        }
         let typed: String = text
             .chars()
             .filter(|c| *c == '\n' || !c.is_control())
@@ -1376,6 +1642,31 @@ impl SidePanelView for GitPanel {
     }
 
     fn key(&mut self, key: EditKey, shift: bool) -> bool {
+        if self.selector.is_some() {
+            let count = self.selector_matches().len();
+            let Some(selector) = self.selector.as_mut() else {
+                return false;
+            };
+            match key {
+                EditKey::Escape => self.selector = None,
+                EditKey::Up => selector.highlight = selector.highlight.saturating_sub(1),
+                EditKey::Down => {
+                    selector.highlight = (selector.highlight + 1).min(count.saturating_sub(1))
+                }
+                EditKey::Backspace => {
+                    selector.query.pop();
+                    selector.highlight = 0;
+                }
+                EditKey::Enter => {
+                    let highlight = selector.highlight;
+                    if let Some(repo) = self.selector_matches().get(highlight).copied() {
+                        self.choose_repo(repo);
+                    }
+                }
+                _ => return false,
+            }
+            return true;
+        }
         match key {
             EditKey::ReplaceAll if shift && !self.commit.amend => {
                 if let Some(source) = self.sources.get(self.active_repo) {
@@ -1392,6 +1683,7 @@ impl SidePanelView for GitPanel {
 
     fn blur(&mut self) {
         self.commit.focused = false;
+        self.selector = None;
     }
 
     fn set_hover(&mut self, id: Option<u64>) -> bool {
