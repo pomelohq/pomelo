@@ -1,0 +1,18 @@
+repos:
+  api:
+    shortcuts:
+      - { cmd: npm test, desc: tests }
+    commands:
+      zeta: z
+      install: npm ci
+      generate: npm run gen
+      migrate: npm run migrate
+      test: npm test
+      alpha: a
+      build: b
+  explicit:
+    setup: [explicit setup]
+    migrate: [explicit migrate]
+    commands:
+      install: npm ci
+      migrate: npm run migrate

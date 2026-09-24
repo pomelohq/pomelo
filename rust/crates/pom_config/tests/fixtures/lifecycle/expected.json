@@ -1,0 +1,51 @@
+{
+  "default_branch": "main",
+  "prepare_main": [
+    "reset",
+    "migrate",
+    "seed"
+  ],
+  "repos": [
+    {
+      "commands": {
+        "test": "rspec"
+      },
+      "copy": [
+        "a"
+      ],
+      "effective_setup": [
+        "bundle install"
+      ],
+      "effective_shortcuts": [
+        {
+          "cmd": "rails c",
+          "desc": "Console"
+        },
+        {
+          "cmd": "rspec",
+          "desc": "Test",
+          "key": "test"
+        }
+      ],
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "has_worktree_config": true,
+      "name": "api",
+      "pre_delete": [
+        "b"
+      ],
+      "pre_start": "source .env",
+      "seed": [
+        "rake seed"
+      ],
+      "setup": [
+        "bundle install"
+      ]
+    }
+  ],
+  "session": "pomelo",
+  "valid": true
+}

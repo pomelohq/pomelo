@@ -1,0 +1,14 @@
+repos:
+  api:
+    setup: [old]
+    pre_start: old start
+    lifecycle:
+      setup: [bundle install]
+      seed: [rake seed]
+      pre_start: source .env
+      copy: [a]
+      pre_delete: [b]
+      commands:
+        test: rspec
+      shortcuts:
+        - { cmd: rails c, desc: Console }

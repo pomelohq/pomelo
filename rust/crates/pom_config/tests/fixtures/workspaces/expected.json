@@ -1,0 +1,52 @@
+{
+  "default_branch": "main",
+  "prepare_main": [
+    "reset",
+    "migrate",
+    "seed"
+  ],
+  "repos": [
+    {
+      "alias": "be",
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "name": "api",
+      "services": [
+        {
+          "cmd": "go run .",
+          "name": "server"
+        },
+        {
+          "cmd": "go run ./w",
+          "name": "worker"
+        }
+      ]
+    },
+    {
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "name": "web",
+      "services": [
+        {
+          "cmd": "vite",
+          "name": "dev"
+        }
+      ]
+    }
+  ],
+  "session": "auto",
+  "valid": true,
+  "workspaces": {
+    "auto": [
+      "be/server",
+      "be/worker",
+      "dev"
+    ]
+  }
+}

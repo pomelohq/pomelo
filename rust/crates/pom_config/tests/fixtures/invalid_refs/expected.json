@@ -1,0 +1,48 @@
+{
+  "default_branch": "main",
+  "prepare_main": [
+    "reset",
+    "migrate",
+    "seed"
+  ],
+  "repos": [
+    {
+      "env": {
+        "A": "{{db:main}}"
+      },
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "has_worktree_config": true,
+      "name": "r",
+      "own_env": {
+        "A": "{{db:main}}"
+      },
+      "profiles": [
+        "local",
+        "ghost"
+      ],
+      "services": [
+        {
+          "cmd": "x",
+          "env": {
+            "B": "{{conn:postgres | upper}}",
+            "C": "{{shared.postgres.url}}"
+          },
+          "name": "s",
+          "profiles": [
+            "phantom"
+          ]
+        }
+      ]
+    }
+  ],
+  "session": "pomelo",
+  "workspaces": {
+    "pomelo": [
+      "s"
+    ]
+  }
+}

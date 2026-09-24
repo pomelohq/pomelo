@@ -1,0 +1,95 @@
+{
+  "default_branch": "main",
+  "prepare_main": [
+    "reset",
+    "migrate",
+    "seed"
+  ],
+  "repos": [
+    {
+      "alias": "api",
+      "commands": {
+        "lint": "golangci-lint run",
+        "test": "go test"
+      },
+      "effective_setup": [
+        "new"
+      ],
+      "effective_shortcuts": [
+        {
+          "cmd": "go test",
+          "desc": "Test",
+          "key": "test"
+        },
+        {
+          "cmd": "golangci-lint run",
+          "desc": "Lint",
+          "key": "lint"
+        }
+      ],
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "has_worktree_config": true,
+      "name": "api",
+      "services": [
+        {
+          "cmd": "go run .",
+          "name": "s"
+        }
+      ],
+      "setup": [
+        "new"
+      ]
+    },
+    {
+      "alias": "web",
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "name": "web",
+      "services": [
+        {
+          "cmd": "vite",
+          "name": "dev"
+        }
+      ]
+    }
+  ],
+  "session": "demo",
+  "shared_services": {
+    "postgres": {
+      "command": "postgres -c shared_preload_libraries=pg_stat_statements",
+      "db_password": "postgres",
+      "db_user": "postgres",
+      "environment": {
+        "POSTGRES_DB": "postgres",
+        "POSTGRES_PASSWORD": "postgres",
+        "POSTGRES_USER": "postgres"
+      },
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 3,
+        "timeout": "3s"
+      },
+      "image": "postgres:15",
+      "ports": [
+        "5432"
+      ],
+      "volumes": [
+        "shared_postgres:/var/lib/postgresql/data"
+      ]
+    }
+  },
+  "valid": true,
+  "workspaces": {
+    "demo": [
+      "api/s",
+      "web/dev"
+    ]
+  }
+}

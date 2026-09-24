@@ -1,0 +1,107 @@
+{
+  "default_branch": "main",
+  "prepare_main": [
+    "reset",
+    "migrate",
+    "seed"
+  ],
+  "repos": [
+    {
+      "commands": {
+        "custom": "do-it",
+        "install": "npm ci"
+      },
+      "copy": [
+        ".npmrc"
+      ],
+      "effective_migrate": [
+        "npm run migrate"
+      ],
+      "effective_setup": [
+        "npm ci"
+      ],
+      "effective_shortcuts": [
+        {
+          "cmd": "npm run lint",
+          "desc": "Lint"
+        },
+        {
+          "cmd": "npm ci",
+          "desc": "Install dependencies",
+          "key": "install"
+        },
+        {
+          "cmd": "do-it",
+          "desc": "Custom",
+          "key": "custom"
+        }
+      ],
+      "env": {
+        "DATABASE_URL": "postgres://y",
+        "REDIS_URL": "redis://x",
+        "SHARED": "own"
+      },
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "has_worktree_config": true,
+      "migrate": [
+        "npm run migrate"
+      ],
+      "name": "ai",
+      "own_env": {
+        "SHARED": "own"
+      },
+      "pre_start": "source .env.local",
+      "presets": [
+        "nest"
+      ],
+      "seed_from_main": true,
+      "services": [
+        {
+          "cmd": "node main",
+          "has_port": true,
+          "name": "api"
+        },
+        {
+          "cmd": "node worker",
+          "name": "worker"
+        }
+      ]
+    },
+    {
+      "effective_setup": [
+        "a"
+      ],
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "has_worktree_config": true,
+      "name": "looped",
+      "presets": [
+        "loop_a"
+      ],
+      "setup": [
+        "a"
+      ]
+    }
+  ],
+  "session": "t",
+  "valid": true,
+  "workspace_services": [
+    {
+      "cmd": "mkdocs serve",
+      "name": "docs"
+    }
+  ],
+  "workspaces": {
+    "t": [
+      "api",
+      "worker"
+    ]
+  }
+}
