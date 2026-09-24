@@ -21,6 +21,7 @@ members = [
     "crates/settings_ui",
     "crates/ui_snapshot",
     "crates/pom_config",
+    "crates/pom_env",
 ]
 
 [workspace.package]
