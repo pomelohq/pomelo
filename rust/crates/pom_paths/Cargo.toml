@@ -1,0 +1,12 @@
+[package]
+name = "pom_paths"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Locations of Pomelo's machine state and session folders."
+
+[lib]
+path = "src/pom_paths.rs"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,17 @@
+[package]
+name = "pom_secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Per-session encrypted secret store (AES-256-GCM), on-disk compatible with the previous core."
+
+[lib]
+path = "src/pom_secrets.rs"
+
+[dependencies]
+pom_paths = { path = "../pom_paths" }
+aes-gcm = "0.10"
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

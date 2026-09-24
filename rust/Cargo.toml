@@ -22,6 +22,11 @@ members = [
     "crates/ui_snapshot",
     "crates/pom_config",
     "crates/pom_env",
+    "crates/pom_paths",
+    "crates/pom_sessions",
+    "crates/pom_lock",
+    "crates/pom_secrets",
+    "crates/pom_layout",
 ]
 
 [workspace.package]
