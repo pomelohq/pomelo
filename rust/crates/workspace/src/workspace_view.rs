@@ -85,6 +85,7 @@ pub enum SessionRequest {
 pub struct ParkedWorkspace {
     files: Option<Box<dyn crate::FunctionView>>,
     terminal: Option<Box<dyn crate::TerminalPanelView>>,
+    agent: Option<Box<dyn crate::TerminalPanelView>>,
     side_panels: Vec<Box<dyn crate::SidePanelView>>,
     active_panels: [Option<Shown>; 3],
     right_collapsed: bool,
@@ -135,6 +136,7 @@ struct Zoom {
 enum InputGroup {
     Center,
     Panel,
+    Agent,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -195,6 +197,9 @@ pub struct WorkspaceView {
     close_prompt: Option<(u64, InputGroup, crate::pane_group_view::CloseRequest)>,
     next_prompt_token: u64,
     terminal_focused: bool,
+    agent_focused: bool,
+    /// The confirmation on screen and its highlighted button; it takes all input until answered.
+    prompt_shown: Option<(crate::Prompt, usize)>,
     pointer: (f32, f32),
     press: (f32, f32),
     show_after_switch: Option<PaneKind>,
@@ -265,6 +270,8 @@ impl WorkspaceView {
             close_prompt: None,
             next_prompt_token: CLOSE_PROMPT_TOKENS,
             terminal_focused: false,
+            agent_focused: false,
+            prompt_shown: None,
             pointer: (0.0, 0.0),
             press: (0.0, 0.0),
             show_after_switch: None,
@@ -283,11 +290,13 @@ impl WorkspaceView {
         project: Option<crate::ProjectInfo>,
         files_view: Option<Box<dyn crate::FunctionView>>,
         terminal_view: Option<Box<dyn crate::TerminalPanelView>>,
+        agent_view: Option<Box<dyn crate::TerminalPanelView>>,
     ) {
         self.persist_panes(true);
         self.layout.project = project;
         self.layout.files_view = files_view;
         self.layout.terminal_view = terminal_view;
+        self.layout.agent_view = agent_view;
         self.layout.side_panels.clear();
         self.layout.session_menu = false;
         self.panes_restored = false;
@@ -296,6 +305,7 @@ impl WorkspaceView {
         self.panes_check_owed = false;
         self.panes_input = true;
         self.terminal_focused = false;
+        self.agent_focused = false;
         self.zoom = None;
         self.menu = None;
         self.notification = None;
@@ -321,6 +331,7 @@ impl WorkspaceView {
         ParkedWorkspace {
             files: self.layout.files_view.take(),
             terminal: self.layout.terminal_view.take(),
+            agent: self.layout.agent_view.take(),
             side_panels: std::mem::take(&mut self.layout.side_panels),
             active_panels: self.layout.active_panels,
             right_collapsed: self.layout.right.collapsed,
@@ -330,7 +341,7 @@ impl WorkspaceView {
 
     /// Put back a parked workspace: its views are live, so nothing is restored from disk.
     pub fn resume(&mut self, project: crate::ProjectInfo, parked: ParkedWorkspace) {
-        self.set_project(Some(project), parked.files, parked.terminal);
+        self.set_project(Some(project), parked.files, parked.terminal, parked.agent);
         self.layout.side_panels = parked.side_panels;
         self.layout.active_panels = parked.active_panels;
         self.layout.right.collapsed = parked.right_collapsed;
@@ -523,6 +534,11 @@ impl WorkspaceView {
             || self
                 .layout
                 .terminal_view
+                .as_ref()
+                .is_some_and(|view| view.panes_ref().is_busy())
+            || self
+                .layout
+                .agent_view
                 .as_ref()
                 .is_some_and(|view| view.panes_ref().is_busy())
     }
@@ -958,7 +974,10 @@ impl WorkspaceView {
                 Some(Shown::Func(_)) => self
                     .function_panel_painted(DockPosition::Right, region)
                     .unwrap_or_default(),
-                // Agent (the right dock's default panel) and the empty case both render the OutlinePanel.
+                Some(Shown::Agent) if self.layout.agent_visible() => {
+                    self.agent_painted(region, &mut center_overlays, &mut panel_hits)
+                }
+                // With no agent session open (and when nothing is docked) the dock shows the OutlinePanel.
                 Some(Shown::Agent) | None => self.layout.right.render_body(region, &list),
             };
             panel_hits.extend(p.hits.iter().copied());
@@ -1419,12 +1438,61 @@ impl WorkspaceView {
             }
         }
 
+        if self.prompt_shown.is_none() {
+            self.prompt_shown = self.pending_prompt.take().map(|prompt| (prompt, 0));
+        }
+        if let Some((prompt, active)) = &self.prompt_shown {
+            let painted = prompt_dialog(prompt, *active, w, h);
+            header_hits.extend(painted.hits.iter().copied());
+            overlays.push(Overlay {
+                painted,
+                clip: None,
+            });
+        }
+
         self.header_hits = header_hits.clone();
         Frame {
             base,
             overlays,
             hits: header_hits,
         }
+    }
+
+    fn answer_prompt(&mut self, index: usize) {
+        if let Some((prompt, _)) = self.prompt_shown.take() {
+            self.prompt_answered(prompt.token, index);
+        }
+    }
+
+    /// Keys while a confirmation is up, after the reference's prompt: Enter takes the highlighted button,
+    /// Escape the one named Cancel, arrows and Tab move the highlight.
+    fn prompt_key(&mut self, key: EditKey, shift: bool) -> bool {
+        let Some((prompt, active)) = self.prompt_shown.as_mut() else {
+            return false;
+        };
+        let count = prompt.buttons.len().max(1);
+        match key {
+            EditKey::Enter => {
+                let index = *active;
+                self.answer_prompt(index);
+            }
+            EditKey::Escape => {
+                if let Some(cancel) = prompt.buttons.iter().position(|button| button == "Cancel") {
+                    self.answer_prompt(cancel);
+                }
+            }
+            EditKey::Down | EditKey::Right => *active = (*active + 1) % count,
+            EditKey::Up | EditKey::Left => *active = (*active + count - 1) % count,
+            EditKey::Tab | EditKey::Backtab => {
+                *active = if shift || key == EditKey::Backtab {
+                    (*active + count - 1) % count
+                } else {
+                    (*active + 1) % count
+                };
+            }
+            _ => {}
+        }
+        true
     }
 
     fn hit(&self, x: f32, y: f32) -> Option<u64> {
@@ -1470,7 +1538,9 @@ impl WorkspaceView {
     }
 
     fn center_divider_cursor(&self, id: u64) -> Option<ResizeCursor> {
-        let axis = if crate::is_terminal_id(id) {
+        let axis = if crate::is_agent_id(id) {
+            self.layout.agent_view.as_ref()?.divider_axis(id)?
+        } else if crate::is_terminal_id(id) {
             self.layout.terminal_view.as_ref()?.divider_axis(id)?
         } else {
             self.layout.files_view.as_ref()?.divider_axis(id)?
@@ -1484,6 +1554,11 @@ impl WorkspaceView {
     /// Whether a status-bar button id can be right-clicked for a context menu.
     /// The tab a click id names in either pane group: its group, pane id and index.
     fn tab_under(&self, id: u64) -> Option<(InputGroup, u64, usize)> {
+        if crate::is_agent_id(id) {
+            let panes = self.layout.agent_view.as_ref()?.panes_ref();
+            let (pane, index) = panes.tab_at_id(id)?;
+            return Some((InputGroup::Agent, pane, index));
+        }
         if crate::is_terminal_id(id) {
             let panes = self.layout.terminal_view.as_ref()?.panes_ref();
             let (pane, index) = panes.tab_at_id(id)?;
@@ -1498,6 +1573,7 @@ impl WorkspaceView {
         match group {
             InputGroup::Center => self.layout.files_view.as_ref()?.pane_group(),
             InputGroup::Panel => Some(self.layout.terminal_view.as_ref()?.panes_ref()),
+            InputGroup::Agent => Some(self.layout.agent_view.as_ref()?.panes_ref()),
         }
     }
 
@@ -1508,6 +1584,7 @@ impl WorkspaceView {
         match group {
             InputGroup::Center => self.layout.files_view.as_mut()?.pane_group_mut(),
             InputGroup::Panel => Some(self.layout.terminal_view.as_mut()?.panes()),
+            InputGroup::Agent => Some(self.layout.agent_view.as_mut()?.panes()),
         }
     }
 
@@ -2423,19 +2500,16 @@ impl WorkspaceView {
         }
         let cr = self.layout.center_region(vw, vh);
         let in_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
-        let group = self.zoom_group_at(x, y).or_else(|| {
-            if self.panel_body_at(x, y) {
-                Some(InputGroup::Panel)
-            } else {
-                in_center.then_some(InputGroup::Center)
-            }
-        });
+        let group = self
+            .zoom_group_at(x, y)
+            .or_else(|| self.dock_body_group_at(x, y))
+            .or_else(|| in_center.then_some(InputGroup::Center));
         let pressed = group.filter(|group| {
             self.input(*group)
                 .is_some_and(|input| input.editor_right_press(x, y))
         });
         if let Some(group) = pressed {
-            self.set_terminal_focus(group == InputGroup::Panel);
+            self.focus_group(group);
             self.menu_group = group;
             self.menu = Some((x, y, y, EDITOR_MENU_TARGET));
             self.menu_path = None;
@@ -2459,6 +2533,11 @@ impl WorkspaceView {
         let mut repaint = self
             .layout
             .terminal_view
+            .as_mut()
+            .is_some_and(|view| view.set_hover(hit));
+        repaint |= self
+            .layout
+            .agent_view
             .as_mut()
             .is_some_and(|view| view.set_hover(hit));
         if let Drag::ItemPointer(group) = self.dragging {
@@ -2725,6 +2804,16 @@ impl WorkspaceView {
     /// Left-button press: route a header/menu click, close the menu, toggle a dock, or begin a divider drag.
     pub fn mouse_down(&mut self, x: f32, y: f32) {
         self.press = (x, y);
+        if self.prompt_shown.is_some() {
+            if let Some(index) = self
+                .hit(x, y)
+                .and_then(|id| id.checked_sub(PROMPT_BUTTON_BASE))
+                .filter(|index| *index < PROMPT_BUTTON_SPAN)
+            {
+                self.answer_prompt(index as usize);
+            }
+            return;
+        }
         let pressed_panel = self.hit(x, y).and_then(crate::side_panel_kind);
         for panel in self.layout.side_panels.iter_mut() {
             if pressed_panel != Some(panel.kind()) {
@@ -2830,6 +2919,14 @@ impl WorkspaceView {
             {
                 self.set_terminal_focus(true);
                 self.pending_tab = Some((id, x, y));
+            } else if self
+                .layout
+                .agent_view
+                .as_ref()
+                .is_some_and(|v| v.is_tab(id))
+            {
+                self.focus_group(InputGroup::Agent);
+                self.pending_tab = Some((id, x, y));
             } else {
                 self.header_click(id);
             }
@@ -2839,12 +2936,14 @@ impl WorkspaceView {
             let in_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
             let group = if in_zoom.is_some() {
                 in_zoom
-            } else if self.panel_body_at(x, y) {
-                Some(InputGroup::Panel)
             } else {
-                in_center.then_some(InputGroup::Center)
+                self.dock_body_group_at(x, y)
+                    .or_else(|| in_center.then_some(InputGroup::Center))
             };
-            self.set_terminal_focus(group == Some(InputGroup::Panel));
+            match group {
+                Some(group) => self.focus_group(group),
+                None => self.set_terminal_focus(false),
+            }
             let mut consumed = false;
             if let Some(group) = group {
                 let count = self.click_count(x, y);
@@ -2971,6 +3070,9 @@ impl WorkspaceView {
     }
 
     pub fn editor_text(&mut self, text: &str) -> bool {
+        if self.prompt_shown.is_some() {
+            return false;
+        }
         if let Some(modal) = self.window_modal.as_mut() {
             return modal.text(text);
         }
@@ -3024,6 +3126,9 @@ impl WorkspaceView {
     }
 
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
+        if self.prompt_shown.is_some() {
+            return self.prompt_key(key, shift);
+        }
         if let Some(modal) = self.window_modal.as_mut() {
             let changed = modal.key(key, shift);
             self.settle_window_modal();
@@ -3090,7 +3195,10 @@ impl WorkspaceView {
     }
 
     pub fn editor_focused(&self) -> bool {
-        if self.window_modal.is_some() || self.panel_text_kind().is_some() {
+        if self.prompt_shown.is_some()
+            || self.window_modal.is_some()
+            || self.panel_text_kind().is_some()
+        {
             return true;
         }
         self.input_ref(self.focused_group())
@@ -3119,6 +3227,11 @@ impl WorkspaceView {
                     .terminal_view
                     .as_mut()
                     .and_then(|view| view.take_open_request()),
+                InputGroup::Agent => self
+                    .layout
+                    .agent_view
+                    .as_mut()
+                    .and_then(|view| view.take_open_request()),
             };
             if let Some(request) = request {
                 self.open_terminal_target(request);
@@ -3130,7 +3243,7 @@ impl WorkspaceView {
         } else if self.dragging != Drag::None {
             self.pending.persist = true;
         } else if let Some((id, _, _)) = self.pending_tab.take() {
-            if crate::is_terminal_id(id) {
+            if crate::is_terminal_id(id) || crate::is_agent_id(id) {
                 self.header_click(id);
             } else if let Some(v) = self.layout.files_view.as_mut() {
                 v.on_click(id);
@@ -3170,6 +3283,23 @@ impl WorkspaceView {
         }
     }
 
+    fn agent_painted(
+        &mut self,
+        region: Rect,
+        overlays: &mut Vec<Overlay>,
+        hits: &mut Vec<(Rect, u64)>,
+    ) -> Painted {
+        let focused = self.agent_focused;
+        match self.layout.agent_view.as_mut() {
+            Some(view) => {
+                let (backdrop, mut panes) = view.render(region, focused);
+                push_pane_group(&mut panes, region, overlays, hits);
+                backdrop
+            }
+            None => Painted::default(),
+        }
+    }
+
     /// Bring every shell's output in before drawing; closes the panel once its last shell exits.
     fn sync_terminals(&mut self) {
         let items = self
@@ -3179,6 +3309,15 @@ impl WorkspaceView {
             .map(|v| v.tick_items(&Self::clip_get));
         if let Some(text) = items.and_then(|tick| tick.clipboard_store) {
             Self::clip_set(&text);
+        }
+        if let Some(agent) = self.layout.agent_view.as_mut() {
+            let outcome = agent.sync(&Self::clip_get);
+            if let Some(text) = outcome.clipboard_store {
+                Self::clip_set(&text);
+            }
+            if outcome.closed_all {
+                self.set_agent_focus(false);
+            }
         }
         let Some(view) = self.layout.terminal_view.as_mut() else {
             return;
@@ -3225,6 +3364,7 @@ impl WorkspaceView {
                         .as_ref()
                         .is_some_and(|view| view.panes_ref().zoom_shown())
             }
+            InputGroup::Agent => false,
         };
         if !shown {
             return None;
@@ -3234,7 +3374,7 @@ impl WorkspaceView {
         let side = self.layout.terminal_side;
         let (top, right, bottom, left) = match group {
             InputGroup::Center => (true, true, true, true),
-            InputGroup::Panel => (
+            InputGroup::Panel | InputGroup::Agent => (
                 side == DockPosition::Bottom,
                 side == DockPosition::Left,
                 false,
@@ -3292,6 +3432,11 @@ impl WorkspaceView {
                 .terminal_view
                 .as_mut()
                 .map(|view| view.panes() as &mut dyn crate::ItemInput),
+            InputGroup::Agent => self
+                .layout
+                .agent_view
+                .as_mut()
+                .map(|view| view.panes() as &mut dyn crate::ItemInput),
         }
     }
 
@@ -3307,12 +3452,19 @@ impl WorkspaceView {
                 .terminal_view
                 .as_ref()
                 .map(|view| view.panes_ref() as &dyn crate::ItemInput),
+            InputGroup::Agent => self
+                .layout
+                .agent_view
+                .as_ref()
+                .map(|view| view.panes_ref() as &dyn crate::ItemInput),
         }
     }
 
     /// The group whose items take keyboard input: the terminal panel's while it has focus, else the editor's.
     fn focused_group(&self) -> InputGroup {
-        if self.panel_has_focus() {
+        if self.agent_focused && self.layout.agent_visible() {
+            InputGroup::Agent
+        } else if self.panel_has_focus() {
             InputGroup::Panel
         } else {
             InputGroup::Center
@@ -3332,10 +3484,16 @@ impl WorkspaceView {
         if self.layout.terminal_visible() {
             groups.push(InputGroup::Panel);
         }
+        if self.layout.agent_visible() {
+            groups.push(InputGroup::Agent);
+        }
         groups
     }
 
     fn set_terminal_focus(&mut self, focused: bool) {
+        if focused {
+            self.set_agent_focus(false);
+        }
         if self.terminal_focused == focused {
             return;
         }
@@ -3345,9 +3503,52 @@ impl WorkspaceView {
         }
     }
 
+    fn set_agent_focus(&mut self, focused: bool) {
+        if self.agent_focused == focused {
+            return;
+        }
+        self.agent_focused = focused;
+        if let Some(view) = self.layout.agent_view.as_mut() {
+            view.focus_changed(focused);
+        }
+    }
+
+    /// Keyboard focus to `group`'s items.
+    fn focus_group(&mut self, group: InputGroup) {
+        match group {
+            InputGroup::Center => {
+                self.set_terminal_focus(false);
+                self.set_agent_focus(false);
+            }
+            InputGroup::Panel => self.set_terminal_focus(true),
+            InputGroup::Agent => {
+                self.set_terminal_focus(false);
+                self.set_agent_focus(true);
+            }
+        }
+    }
+
+    /// Over the body of a pane in a visible dock group (the terminal panel or the agent dock).
+    fn dock_body_group_at(&self, x: f32, y: f32) -> Option<InputGroup> {
+        if self.panel_body_at(x, y) {
+            return Some(InputGroup::Panel);
+        }
+        let over_agent = self.layout.agent_visible()
+            && self.layout.agent_view.as_ref().is_some_and(|view| {
+                view.panes_ref()
+                    .body_point(x, y)
+                    .and_then(|(path, _, _)| view.panes_ref().pane_at(&path))
+                    .is_some_and(|pane| !pane.open.is_empty())
+            });
+        over_agent.then_some(InputGroup::Agent)
+    }
+
     /// Whether key presses go raw to a terminal: the focused group's active item takes raw keystrokes.
     pub fn terminal_focused(&self) -> bool {
-        if self.window_modal.is_some() || self.panel_text_kind().is_some() {
+        if self.prompt_shown.is_some()
+            || self.window_modal.is_some()
+            || self.panel_text_kind().is_some()
+        {
             return false;
         }
         self.input_ref(self.focused_group())
@@ -3384,6 +3585,13 @@ impl WorkspaceView {
             DockPosition::Right => SplitDirection::Right,
             DockPosition::Bottom => SplitDirection::Down,
         };
+        if self.focused_group() == InputGroup::Agent {
+            return self
+                .layout
+                .agent_view
+                .as_mut()
+                .is_some_and(|panel| panel.pane_command(command));
+        }
         if self.panel_has_focus() {
             let handled = self
                 .layout
@@ -3487,13 +3695,18 @@ impl WorkspaceView {
         {
             return Some(true);
         }
-        if !self.panel_body_at(x, y) {
-            return None;
+        match self.dock_body_group_at(x, y)? {
+            InputGroup::Agent => self
+                .layout
+                .agent_view
+                .as_ref()
+                .map(|view| view.link_hovered()),
+            _ => self
+                .layout
+                .terminal_view
+                .as_ref()
+                .map(|view| view.link_hovered()),
         }
-        self.layout
-            .terminal_view
-            .as_ref()
-            .map(|view| view.link_hovered())
     }
 
     /// Make the file tree the visible panel of its dock.
@@ -3544,6 +3757,29 @@ impl WorkspaceView {
         self.panes_input = true;
     }
 
+    /// Focus the agent session whose item has `id`, or add the one `make` builds; shows it in the agent dock.
+    pub fn open_agent_item(
+        &mut self,
+        id: &str,
+        make: impl FnOnce() -> Option<Box<dyn crate::Item>>,
+    ) {
+        let Some(view) = self.layout.agent_view.as_mut() else {
+            return;
+        };
+        if !view.panes().reveal_item(id) {
+            let Some(item) = make() else {
+                return;
+            };
+            view.accept_foreign_item(item);
+        }
+        self.layout.agent_hidden = false;
+        self.layout.active_panels[DockPosition::Right.index()] = Some(Shown::Agent);
+        self.layout.right.collapsed = false;
+        self.focus_group(InputGroup::Agent);
+        self.panes_input = true;
+        self.pending.persist = true;
+    }
+
     /// The terminal toggle: focus the terminal (showing it first), or hide it when it already has focus.
     pub fn toggle_terminal(&mut self) {
         if self.terminal_focused() {
@@ -3563,6 +3799,11 @@ impl WorkspaceView {
             view.open(directory);
         }
         self.set_terminal_focus(true);
+    }
+
+    /// Puts a confirmation up; its answer comes back through `prompt_answered`.
+    pub fn ask(&mut self, prompt: crate::Prompt) {
+        self.pending_prompt = Some(prompt);
     }
 
     pub fn take_prompt(&mut self) -> Option<crate::Prompt> {
@@ -3627,7 +3868,7 @@ impl WorkspaceView {
     /// Ask whether to save the dirty tabs a close left pending, after the reference: one file names it, several
     /// list their names. Tabs also open in the other pane group close without asking.
     fn ask_about_pending_close(&mut self) {
-        for group in [InputGroup::Center, InputGroup::Panel] {
+        for group in [InputGroup::Center, InputGroup::Panel, InputGroup::Agent] {
             let Some(mut request) = self
                 .group_view_mut(group)
                 .and_then(|panes| panes.take_close_request())
@@ -3636,7 +3877,7 @@ impl WorkspaceView {
             };
             let other = match group {
                 InputGroup::Center => InputGroup::Panel,
-                InputGroup::Panel => InputGroup::Center,
+                InputGroup::Panel | InputGroup::Agent => InputGroup::Center,
             };
             if let Some(panes) = self.group_view(other) {
                 request.dirty.retain(|dirty| !panes.has_item(&dirty.id));
@@ -3758,9 +3999,12 @@ impl WorkspaceView {
                     || input.editor_scroll(x, y, dx, dy)
             });
         }
-        if !self.layout.session_menu && self.panel_body_at(x, y) {
+        if let Some(group) = self
+            .dock_body_group_at(x, y)
+            .filter(|_| !self.layout.session_menu)
+        {
             let modifiers = terminal_modifiers();
-            return self.input(InputGroup::Panel).is_some_and(|input| {
+            return self.input(group).is_some_and(|input| {
                 input.item_pointer_scroll(x, y, (dx, dy), modifiers)
                     || input.editor_scroll(x, y, dx, dy)
             });
@@ -3902,6 +4146,14 @@ impl WorkspaceView {
             self.ask_about_pending_close();
             return;
         }
+        if crate::is_agent_id(id) {
+            self.focus_group(InputGroup::Agent);
+            if let Some(view) = self.layout.agent_view.as_mut() {
+                view.click(id);
+            }
+            self.ask_about_pending_close();
+            return;
+        }
         if let Some(kind) = crate::side_panel_kind(id) {
             let (x, y) = self.press;
             let scale = ui::ui_text_scale();
@@ -3955,7 +4207,13 @@ impl WorkspaceView {
             self.toggle_side(side, was_visible);
             self.pending.persist = true;
         } else if id == AGENT_TOGGLE {
-            self.pending.open_agent = true;
+            if self.layout.agent_visible() && self.agent_focused {
+                self.layout.right.collapsed = true;
+                self.set_agent_focus(false);
+                self.pending.persist = true;
+            } else {
+                self.pending.open_agent = true;
+            }
         } else if id == RIGHT_TOGGLE {
             self.layout.right.collapsed = !self.layout.right.collapsed;
             self.pending.persist = true;
@@ -4077,6 +4335,90 @@ impl RawView for WorkspaceView {
     fn render_frame(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Frame {
         self.build(window)
     }
+}
+
+const PROMPT_BUTTON_BASE: u64 = 999_000_000;
+const PROMPT_BUTTON_SPAN: u64 = 16;
+const PROMPT_BACKDROP: u64 = PROMPT_BUTTON_BASE + PROMPT_BUTTON_SPAN;
+/// The reference prompt's `w_80`.
+const PROMPT_W: f32 = 320.0;
+
+/// A confirmation over a dimmed window, after the reference's in-app prompt: message, muted detail, and one
+/// full-width button per answer with the highlighted one tinted.
+fn prompt_dialog(prompt: &crate::Prompt, active: usize, w: f32, h: f32) -> Painted {
+    let colors = ui::theme();
+    let scale = ui::ui_text_scale();
+    let text_w = PROMPT_W - 32.0;
+    let mut buttons = ui::div().col().gap(4.0);
+    for (index, text) in prompt.buttons.iter().enumerate() {
+        let style = if index == active {
+            ui::ButtonStyle::TintedAccent
+        } else {
+            ui::ButtonStyle::Outlined
+        };
+        buttons = buttons.child(
+            ui::button_sized(
+                PROMPT_BUTTON_BASE + index as u64,
+                text.clone(),
+                style,
+                ui::ButtonSize::Medium,
+            )
+            .justify_center(),
+        );
+    }
+    let mut dialog = ui::div()
+        .col()
+        .w_px(PROMPT_W)
+        .p(16.0)
+        .gap(16.0)
+        .rounded(8.0)
+        .bg(colors.elevated_surface_background)
+        .border(1.0, colors.border_variant)
+        .child(
+            ui::label(prompt.message.clone())
+                .color(colors.text)
+                .wrap(text_w),
+        );
+    if let Some(detail) = prompt.detail.as_ref().filter(|detail| !detail.is_empty()) {
+        dialog = dialog.child(
+            ui::label(detail.clone())
+                .label_size(ui::LabelSize::Small)
+                .color(colors.text_muted)
+                .wrap(text_w),
+        );
+    }
+    let dialog: ui::Node = dialog.child(buttons).into();
+    let measured = ui::render(
+        &ui::div().col().child(dialog.clone()).into(),
+        Rect::new(0.0, 0.0, PROMPT_W * scale, h, Rgba::TRANSPARENT),
+    );
+    let dialog_h = measured.rects.iter().map(|r| r.y + r.h).fold(0.0, f32::max);
+    let dialog_w = PROMPT_W * scale;
+    let rect = Rect::new(
+        ((w - dialog_w) / 2.0).max(8.0),
+        ((h - dialog_h) / 2.0).max(8.0),
+        dialog_w,
+        dialog_h,
+        Rgba::TRANSPARENT,
+    );
+    let mut painted = Painted::default();
+    painted
+        .rects
+        .push(Rect::new(0.0, 0.0, w, h, Rgba::new(0.0, 0.0, 0.0, 0.2)));
+    painted.hits.push((
+        Rect::new(0.0, 0.0, w, h, Rgba::TRANSPARENT),
+        PROMPT_BACKDROP,
+    ));
+    painted
+        .rects
+        .extend(elevation_shadow(rect, crate::Elevation::Modal));
+    let p = ui::render(&ui::div().col().child(dialog).into(), rect);
+    painted.rects.extend(p.rects);
+    painted.tris.extend(p.tris);
+    painted.texts.extend(p.texts);
+    painted.icons.extend(p.icons);
+    painted.hits.extend(p.hits);
+    painted
 }
 
 /// Layered shadows under a floating surface: (y offset, alpha, blur) per elevation. The renderer has no blur,
@@ -4621,7 +4963,7 @@ mod tests {
             v.park()
         });
         e.update(app.app_mut(), |v, _| {
-            v.set_project(Some(sample_project()), None, None);
+            v.set_project(Some(sample_project()), None, None, None);
             v.layout.bottom.collapsed = false;
             v.layout.right.collapsed = true;
         });
@@ -4742,6 +5084,50 @@ mod tests {
             Some(SessionRequest::Reveal(1))
         );
         assert_eq!(switch(SESSION_OPEN), Some(SessionRequest::ChooseFolder));
+    }
+
+    #[test]
+    fn confirmations_show_in_the_window_and_take_keys_and_clicks() {
+        let (mut app, h, e) = open();
+        e.update(app.app_mut(), |v, _| {
+            v.header_click(SESSION_DELETE_BASE + 2)
+        });
+        let text = frame_text(&app.draw(h).expect("frame"));
+        assert!(text.contains("Remove"), "{text}");
+        assert!(text.contains("Cancel"), "{text}");
+        let (focused, cancelled) = e.update(app.app_mut(), |v, _| {
+            let focused = v.editor_focused() && !v.terminal_focused();
+            v.editor_key(EditKey::Escape, false);
+            (focused, v.take_effects().session)
+        });
+        assert!(focused, "the prompt takes the keyboard");
+        assert_eq!(cancelled, None, "Escape picks Cancel");
+        assert!(!frame_text(&app.draw(h).expect("frame")).contains("Remove"));
+
+        e.update(app.app_mut(), |v, _| {
+            v.header_click(SESSION_DELETE_BASE + 2)
+        });
+        app.draw(h);
+        let remove = app
+            .window(h)
+            .and_then(|w| w.center_of(PROMPT_BUTTON_BASE))
+            .expect("first button laid out");
+        let confirmed = e.update(app.app_mut(), |v, _| {
+            v.mouse_down(remove.0, remove.1);
+            v.take_effects().session
+        });
+        assert_eq!(confirmed, Some(SessionRequest::Forget(2)));
+
+        e.update(app.app_mut(), |v, _| {
+            v.header_click(SESSION_DELETE_BASE + 2)
+        });
+        app.draw(h);
+        let moved = e.update(app.app_mut(), |v, _| {
+            v.editor_key(EditKey::Down, false);
+            v.editor_key(EditKey::Enter, false);
+            v.take_effects().session
+        });
+        assert_eq!(moved, None, "Down moves the highlight to Cancel");
     }
 
     #[test]
