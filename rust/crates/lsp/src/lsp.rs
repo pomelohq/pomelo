@@ -350,6 +350,16 @@ fn parse_incoming(body: &[u8]) -> Option<Incoming> {
     }
 }
 
+/// Whether a message must reach the UI thread now: replies someone waits on, requests the server blocks on,
+/// and diagnostics shown on screen. Progress and log chatter (a busy server sends hundreds a second while
+/// indexing) waits for the next frame instead of forcing one.
+fn needs_ui(message: &Incoming) -> bool {
+    match message {
+        Incoming::Notification { method, .. } => method == "textDocument/publishDiagnostics",
+        Incoming::Response { .. } | Incoming::Request { .. } => true,
+    }
+}
+
 fn read_messages(stdout: impl Read, sender: Sender<Incoming>, waker: Waker) {
     let mut reader = BufReader::new(stdout);
     while let Some(body) = read_message(&mut reader) {
@@ -357,10 +367,13 @@ fn read_messages(stdout: impl Read, sender: Sender<Incoming>, waker: Waker) {
             eprintln!("lsp: unreadable message {}", String::from_utf8_lossy(&body));
             continue;
         };
+        let wakes = needs_ui(&message);
         if sender.send(message).is_err() {
             return;
         }
-        waker();
+        if wakes {
+            waker();
+        }
     }
     // Dropping the sender tells the owner the server is gone; wake it to notice.
     drop(sender);
@@ -370,6 +383,26 @@ fn read_messages(stdout: impl Read, sender: Sender<Incoming>, waker: Waker) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_messages_the_ui_acts_on_wake_it() {
+        let notification = |method: &str| Incoming::Notification {
+            method: method.into(),
+            params: Value::Null,
+        };
+        assert!(needs_ui(&notification("textDocument/publishDiagnostics")));
+        assert!(!needs_ui(&notification("$/progress")));
+        assert!(!needs_ui(&notification("window/logMessage")));
+        assert!(needs_ui(&Incoming::Response {
+            id: 1,
+            result: Ok(Value::Null),
+        }));
+        assert!(needs_ui(&Incoming::Request {
+            id: Value::from(1),
+            method: "workspace/configuration".into(),
+            params: Value::Null,
+        }));
+    }
 
     #[test]
     fn reads_framed_messages_and_classifies_them() {

@@ -13,6 +13,7 @@ pom_config = { path = "../pom_config" }
 pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
 pom_sessions = { path = "../pom_sessions" }
+serde_json.workspace = true
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 [dev-dependencies]

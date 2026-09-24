@@ -337,7 +337,7 @@ mod tests {
         let root = temp_root("area");
         std::fs::write(root.join("main.rs"), SOURCE).unwrap();
         std::fs::write(root.join("lib.rs"), "pub fn lib() {}\n").unwrap();
-        let mut view = crate::FilesView::new(root.clone());
+        let mut view = crate::FilesView::scanned(root.clone());
         view.open_file("main.rs");
         view.open_file("lib.rs");
         let item = view.panes.clone_active_of(&[]);
@@ -346,7 +346,7 @@ mod tests {
         let Some(saved) = view.save_panes() else {
             panic!("the editor area should save its panes");
         };
-        let mut back = crate::FilesView::new(root.clone());
+        let mut back = crate::FilesView::scanned(root.clone());
         assert!(back.restore_panes(&saved));
         assert_eq!(back.panes.group.leaf_count(), 2);
         assert_eq!(back.panes.active, vec![1]);

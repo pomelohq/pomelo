@@ -24,7 +24,9 @@ pub use welcome::{
 };
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
-pub use workspace_view::{ResizeCursor, SessionRequest, WorkspaceEffects, WorkspaceView};
+pub use workspace_view::{
+    ParkedWorkspace, ResizeCursor, SessionRequest, WorkspaceEffects, WorkspaceView,
+};
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the
 /// first line's indentation.
@@ -168,7 +170,10 @@ pub struct ProjectInfo {
     pub name: String,
     pub branch: String,
     pub config_path: std::path::PathBuf,
+    /// Workspace branches on disk, the main one first.
     pub workspaces: Vec<String>,
+    /// The workspace this window works in (its files, terminal, branch).
+    pub active: String,
 }
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
@@ -187,6 +192,9 @@ pub const TOAST_ACTION: u64 = 9;
 pub const TOAST_CLOSE: u64 = 10;
 pub const NOTIFICATION_PRIMARY: u64 = 620;
 pub const NOTIFICATION_CLOSE: u64 = 621;
+/// A row of the WORKSPACES panel: id = base + index into `ProjectInfo::workspaces`.
+pub const WORKSPACE_ROW_BASE: u64 = 2000;
+pub const WORKSPACE_ROW_END: u64 = 3000;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,
@@ -1381,7 +1389,7 @@ impl Layout {
 
         let mut top = div().items_center().justify_center().bg(top_bar_c());
         if let Some(project) = self.project.as_ref().filter(|_| ui::chrome().branch) {
-            top = top.child(label(project.branch.clone()).size(14.0).color(text_dim_c()));
+            top = top.child(label(project.active.clone()).size(14.0).color(text_dim_c()));
         }
         band(
             top.into(),

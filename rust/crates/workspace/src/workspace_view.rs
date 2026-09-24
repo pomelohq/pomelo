@@ -53,6 +53,8 @@ pub struct WorkspaceEffects {
     pub open_new_window: Option<usize>,
     pub session: Option<SessionRequest>,
     pub open_settings: bool,
+    /// Work in this workspace (an index into `ProjectInfo::workspaces`) in this window.
+    pub activate_workspace: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +63,15 @@ pub enum SessionRequest {
     Forget(usize),
     Reveal(usize),
     ChooseFolder,
+}
+
+/// A workspace's views and dock visibility while another workspace has the window.
+pub struct ParkedWorkspace {
+    files: Option<Box<dyn crate::FunctionView>>,
+    terminal: Option<Box<dyn crate::TerminalPanelView>>,
+    active_panels: [Option<Shown>; 3],
+    right_collapsed: bool,
+    bottom_collapsed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,6 +136,8 @@ pub struct WorkspaceView {
     /// When the panes were last compared with what is saved; a frame inside the throttle leaves a check owed.
     panes_checked_at: Option<Instant>,
     panes_check_owed: bool,
+    /// Input arrived since the panes were last compared with what is saved.
+    panes_input: bool,
     /// The zoom showing this frame, for drawing and routing input.
     zoom: Option<Zoom>,
     pending_prompt: Option<crate::Prompt>,
@@ -185,6 +198,7 @@ impl WorkspaceView {
             panes_write_at: None,
             panes_checked_at: None,
             panes_check_owed: false,
+            panes_input: true,
             zoom: None,
             pending_prompt: None,
             close_prompt: None,
@@ -214,11 +228,35 @@ impl WorkspaceView {
         self.saved_panes = None;
         self.panes_write_at = None;
         self.panes_check_owed = false;
+        self.panes_input = true;
         self.terminal_focused = false;
         self.zoom = None;
         self.menu = None;
         self.notification = None;
         self.shown_problem = None;
+    }
+
+    /// Take this workspace's live views and dock visibility out of the window, to bring back later with
+    /// `resume` exactly as they were (open tabs, running terminals, which docks showed what).
+    pub fn park(&mut self) -> ParkedWorkspace {
+        self.persist_panes(true);
+        ParkedWorkspace {
+            files: self.layout.files_view.take(),
+            terminal: self.layout.terminal_view.take(),
+            active_panels: self.layout.active_panels,
+            right_collapsed: self.layout.right.collapsed,
+            bottom_collapsed: self.layout.bottom.collapsed,
+        }
+    }
+
+    /// Put back a parked workspace: its views are live, so nothing is restored from disk.
+    pub fn resume(&mut self, project: crate::ProjectInfo, parked: ParkedWorkspace) {
+        self.set_project(Some(project), parked.files, parked.terminal);
+        self.layout.active_panels = parked.active_panels;
+        self.layout.right.collapsed = parked.right_collapsed;
+        self.layout.bottom.collapsed = parked.bottom_collapsed;
+        self.panes_restored = true;
+        self.saved_panes = self.panes_state().map(|(_, json)| json);
     }
 
     pub fn update_project(&mut self, project: crate::ProjectInfo) {
@@ -341,6 +379,7 @@ impl WorkspaceView {
         }
         self.panes_checked_at = Some(now);
         self.panes_check_owed = false;
+        self.panes_input = false;
         let Some((root, json)) = self.panes_state() else {
             return;
         };
@@ -363,7 +402,9 @@ impl WorkspaceView {
         &self.layout
     }
 
+    /// Called by the shell after every input it routes here, which is also when the panes may have changed.
     pub fn take_effects(&mut self) -> WorkspaceEffects {
+        self.panes_input = true;
         std::mem::take(&mut self.pending)
     }
 
@@ -375,7 +416,11 @@ impl WorkspaceView {
         let (w, h) = (window.width, window.height);
         self.viewport = (w, h);
         self.restore_saved_panes();
-        self.persist_panes(false);
+        // Comparing panes with what is saved serializes every tab, so it runs only after input (or while a
+        // write is pending), never on frames that nothing but a timer asked for.
+        if self.panes_input || self.panes_check_owed || self.panes_write_at.is_some() {
+            self.persist_panes(false);
+        }
         self.sync_terminals();
         self.zoom = self.shown_zoom(w, h);
         let mut zoom_overlays: Vec<Overlay> = Vec::new();
@@ -573,7 +618,12 @@ impl WorkspaceView {
             .flat_map(|project| project.workspaces.iter())
             .map(|branch| (branch.clone(), false))
             .collect();
-        let current = 0;
+        let current = self
+            .layout
+            .project
+            .as_ref()
+            .and_then(|project| project.workspaces.iter().position(|b| *b == project.active))
+            .unwrap_or(0);
         if !self.layout.left.collapsed {
             let region = self.layout.left_region(w, h);
             let p = self.layout.left.render_body(region, &workspaces, current);
@@ -3022,15 +3072,13 @@ impl WorkspaceView {
             let (w, h) = self.viewport;
             let cr = self.layout.center_region(w, h);
             let over_center = x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h;
+            // Scrolling goes only to what is under the pointer: an editor at its end doesn't hand the rest of
+            // the gesture to the file tree.
             if over_center {
-                if let Some(view) = self.layout.files_view.as_mut() {
-                    if view.item_pointer_scroll(x, y, dy, terminal_modifiers()) {
-                        return true;
-                    }
-                    if view.editor_scroll(x, y, dx, dy) {
-                        return true;
-                    }
-                }
+                return self.layout.files_view.as_mut().is_some_and(|view| {
+                    view.item_pointer_scroll(x, y, dy, terminal_modifiers())
+                        || view.editor_scroll(x, y, dx, dy)
+                });
             }
             if let Some(side) = self.layout.files_side() {
                 let region = match side {
@@ -3038,7 +3086,11 @@ impl WorkspaceView {
                     DockPosition::Right => self.layout.right_region(w, h),
                     DockPosition::Bottom => self.layout.bottom_region(w, h),
                 };
-                if let Some(view) = self.layout.files_view.as_mut() {
+                let over_tree = x >= region.x
+                    && x < region.x + region.w
+                    && y >= region.y
+                    && y < region.y + region.h;
+                if let (true, Some(view)) = (over_tree, self.layout.files_view.as_mut()) {
                     return view.on_scroll(dx, dy, region.w, region.h);
                 }
             }
@@ -3217,6 +3269,17 @@ impl WorkspaceView {
             let index = (id - crate::WELCOME_RECENT_BASE) as usize;
             if self.layout.sessions.get(index).is_some_and(|s| !s.missing) {
                 self.pending.session = Some(SessionRequest::Switch(index));
+            }
+        } else if (crate::WORKSPACE_ROW_BASE..crate::WORKSPACE_ROW_END).contains(&id) {
+            let index = (id - crate::WORKSPACE_ROW_BASE) as usize;
+            let switch = self.layout.project.as_ref().is_some_and(|project| {
+                project
+                    .workspaces
+                    .get(index)
+                    .is_some_and(|branch| *branch != project.active)
+            });
+            if switch {
+                self.pending.activate_workspace = Some(index);
             }
         } else if id == crate::NOTIFICATION_CLOSE {
             self.notification = None;
@@ -3625,6 +3688,7 @@ mod tests {
             branch: "trunk".into(),
             config_path: std::path::PathBuf::from("/projects/alpha/pom.yml"),
             workspaces: vec!["trunk".into(), "feat-login".into()],
+            active: "feat-login".into(),
         }
     }
 
@@ -3697,6 +3761,71 @@ mod tests {
         let effects = e.update(app.app_mut(), |v, _| v.take_effects());
         assert_eq!(effects.open_new_window, Some(1));
         assert!(!e.read(app.app()).menu_open(), "menu closed after action");
+    }
+
+    #[test]
+    fn an_idle_window_stops_redrawing() {
+        let (mut app, h, e) = open();
+        app.draw(h);
+        std::thread::sleep(Duration::from_millis(50));
+        app.draw(h);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut frames = 0;
+        while e.read(app.app()).ticking() && Instant::now() < deadline {
+            app.draw(h);
+            frames += 1;
+            std::thread::sleep(Duration::from_millis(33));
+        }
+        assert!(
+            !e.read(app.app()).ticking(),
+            "still redrawing after {frames} idle frames"
+        );
+    }
+
+    #[test]
+    fn a_parked_workspace_comes_back_with_its_docks() {
+        let (mut app, h, e) = open();
+        app.draw(h);
+        let parked = e.update(app.app_mut(), |v, _| {
+            v.layout.bottom.collapsed = true;
+            v.layout.right.collapsed = false;
+            v.park()
+        });
+        e.update(app.app_mut(), |v, _| {
+            v.set_project(Some(sample_project()), None, None);
+            v.layout.bottom.collapsed = false;
+            v.layout.right.collapsed = true;
+        });
+        e.update(app.app_mut(), |v, _| v.resume(sample_project(), parked));
+        let view = e.read(app.app());
+        assert!(
+            view.layout.bottom.collapsed,
+            "bottom dock stays as that workspace left it"
+        );
+        assert!(!view.layout.right.collapsed);
+        assert!(
+            view.panes_restored,
+            "live views are not restored again from disk"
+        );
+    }
+
+    #[test]
+    fn clicking_a_workspace_row_asks_to_activate_it() {
+        let (mut app, h, e) = open();
+        app.draw(h);
+        let row = app
+            .window(h)
+            .and_then(|w| w.center_of(crate::WORKSPACE_ROW_BASE))
+            .expect("trunk row laid out");
+        e.update(app.app_mut(), |v, _| v.mouse_down(row.0, row.1));
+        let effects = e.update(app.app_mut(), |v, _| v.take_effects());
+        assert_eq!(effects.activate_workspace, Some(0));
+
+        let active = e.update(app.app_mut(), |v, _| {
+            v.header_click(crate::WORKSPACE_ROW_BASE + 1);
+            v.take_effects().activate_workspace
+        });
+        assert_eq!(active, None, "the active workspace is already open");
     }
 
     #[test]

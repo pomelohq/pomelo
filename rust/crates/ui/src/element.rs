@@ -298,6 +298,8 @@ pub struct Label {
     pub weight: u16,
     /// Wrap width in design px (0 = single line).
     pub wrap: f32,
+    /// Shrink when its row overflows and cut the text with a trailing "...".
+    pub truncate: bool,
 }
 
 pub fn div() -> Div {
@@ -329,6 +331,7 @@ pub fn label(text: impl Into<String>) -> Label {
         mono: false,
         weight: crate::ui_font_weight(),
         wrap: 0.0,
+        truncate: false,
     }
 }
 
@@ -351,6 +354,10 @@ impl Label {
     }
     pub fn medium(self) -> Self {
         self.weight(500)
+    }
+    pub fn truncate(mut self) -> Self {
+        self.truncate = true;
+        self
     }
     /// Wrap to `w` design px across multiple lines instead of a single line.
     pub fn wrap(mut self, w: f32) -> Self {
@@ -798,13 +805,18 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
             });
         }
         Node::Label(l) => {
-            let (_, lh) = l.intrinsic();
+            let (lw, lh) = l.intrinsic();
+            let text = if l.truncate && lw > area.w + 0.5 {
+                truncate_to_width(&l.text, area.w, l.size, l.mono, l.weight)
+            } else {
+                l.text.clone()
+            };
             out.texts.push(Text {
                 x: area.x,
                 y: area.y + (area.h - lh).max(0.0) / 2.0,
                 size: l.size,
                 color: l.color,
-                text: l.text.clone(),
+                text,
                 mono: l.mono,
                 weight: l.weight,
                 wrap: l.wrap,
@@ -926,6 +938,20 @@ fn layout_children(
         }
     }
 
+    // Truncating labels give back what the row overflows by, in order, before anything spills.
+    let mut overflow = mains.iter().sum::<f32>() + total_gap - inner_main;
+    if overflow > 0.0 && d.axis == Axis::Row {
+        for (i, c) in d.children.iter().enumerate() {
+            if overflow <= 0.0 {
+                break;
+            }
+            if matches!(c, Node::Label(l) if l.truncate) {
+                let give = overflow.min(mains[i]);
+                mains[i] -= give;
+                overflow -= give;
+            }
+        }
+    }
     let content_main: f32 = mains.iter().sum::<f32>() + total_gap;
     let (mut cursor, extra_gap) = match d.justify {
         Justify::Start => (0.0, 0.0),
@@ -983,6 +1009,27 @@ fn layout_children(
     }
 }
 
+const TRUNCATION_MARK: &str = "...";
+
+/// The longest prefix of `text` that fits `width` with the mark appended (the mark alone if nothing fits).
+fn truncate_to_width(text: &str, width: f32, size: f32, mono: bool, weight: u16) -> String {
+    let measure = |candidate: &str| crate::measure_text_width(candidate, size, mono, weight);
+    let boundaries: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
+    // Binary search on char boundaries: text widths only grow as characters are added.
+    let (mut low, mut high) = (0usize, boundaries.len());
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        let end = boundaries.get(middle).copied().unwrap_or(text.len());
+        if measure(&format!("{}{TRUNCATION_MARK}", text[..end].trim_end())) <= width {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    let end = boundaries.get(low).copied().unwrap_or(text.len());
+    format!("{}{TRUNCATION_MARK}", text[..end].trim_end())
+}
+
 fn align_off(container: f32, item: f32, center: bool) -> f32 {
     if center {
         (container - item).max(0.0) / 2.0
@@ -1005,6 +1052,29 @@ impl Painted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncating_label_shrinks_to_fit_its_row() {
+        let long = "crm-1079-tech-spike-inbound-call-routing-architecture-handoff";
+        let tree: Node = div()
+            .row()
+            .gap(8.0)
+            .child(div().w_px(6.0).h_px(6.0))
+            .child(label(long).truncate())
+            .into();
+        let p = render(&tree, Rect::new(0.0, 0.0, 160.0, 28.0, Rgba::TRANSPARENT));
+        let text = &p.texts[0].text;
+        assert!(text.ends_with("...") && text.len() < long.len(), "{text}");
+        let width = crate::measure_text_width(text, 13.0, false, crate::ui_font_weight());
+        assert!(width <= 160.0 - 6.0 - 8.0 + 0.5, "{width}");
+
+        let short: Node = div().row().child(label("main").truncate()).into();
+        let p = render(&short, Rect::new(0.0, 0.0, 160.0, 28.0, Rgba::TRANSPARENT));
+        assert_eq!(p.texts[0].text, "main");
+
+        let tiny = render(&tree, Rect::new(0.0, 0.0, 16.0, 28.0, Rgba::TRANSPARENT));
+        assert_eq!(tiny.texts[0].text, "...");
+    }
 
     #[test]
     fn row_grows_child_into_remaining_space() {
