@@ -72,6 +72,7 @@ pub fn delete(
         from_stage: request.from_stage,
         state: context.state,
         sink,
+        resumable: true,
     };
     run.execute(|index, scope| {
         if request.branch.trim().is_empty() || request.branch == default_branch {

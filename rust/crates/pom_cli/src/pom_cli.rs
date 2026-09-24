@@ -1,6 +1,8 @@
 //! `pom`: a workspace's services from a terminal. It drives the same holders, leases and compose project as
 //! the app, so a service started here shows up in the app's Services panel and the other way round.
 
+mod workspaces;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +11,7 @@ use pom_core::Project;
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use pom_services::{RunnerOptions, ServiceRunner, ServiceTarget};
+use workspaces::WorkspaceCommand;
 
 const USAGE: &str = "usage: pom [-w <workspace>] [-c <pom.yml>] <command> [args]
 
@@ -22,6 +25,15 @@ commands:
   ports              every leased port
   url <service>      where a service with a port listens
   mcp [--branch b]   MCP server on stdio for a coding agent working in this workspace
+
+  ws create <branch> [--repos a,b] [--env name] [--no-seed] [--from-stage n]
+                     new workspace: worktrees, databases, env files, setup and seed
+  ws delete <branch> [--from-stage n]
+                     stop it and remove its worktrees, databases and folder; the local
+                     branch goes too only when it is pushed or merged
+  ws rename <branch> [name]   set or clear the workspace's display name
+  ws list            workspaces, their repos and running services
+  prepare-main [--no-seed]    reset main's databases, migrate and seed (new workspaces copy them)
   version
 
 The workspace is the one the current directory is in, else the main one; -w picks another.
@@ -37,6 +49,7 @@ enum Command {
     Attach(String),
     Ports,
     Url(String),
+    Workspace(WorkspaceCommand),
     Version,
     Help,
 }
@@ -87,6 +100,12 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
     let mut words: Vec<&str> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
+        // Workspace commands have flags of their own.
+        let help = matches!(arg.as_str(), "-h" | "--help");
+        if !help && matches!(words.first(), Some(&("ws" | "workspace" | "prepare-main"))) {
+            words.push(arg);
+            continue;
+        }
         match arg.as_str() {
             "-w" | "--workspace" => {
                 workspace = Some(iter.next().ok_or("-w needs a workspace")?.clone());
@@ -126,6 +145,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "attach" => Command::Attach(one("a service")?),
         "ports" => none().map(|_| Command::Ports)?,
         "url" => Command::Url(one("a service")?),
+        "ws" | "workspace" => Command::Workspace(workspaces::parse(rest, false)?),
+        "prepare-main" => Command::Workspace(workspaces::parse(rest, true)?),
         "version" => Command::Version,
         "help" => Command::Help,
         other => return Err(format!("unknown command {other}")),
@@ -151,6 +172,8 @@ fn find_config(explicit: Option<&Path>, cwd: &Path) -> Result<PathBuf, String> {
 }
 
 struct Session {
+    project: Project,
+    state: StateDir,
     config: Config,
     runner: ServiceRunner,
     branch: String,
@@ -172,12 +195,14 @@ impl Session {
         let runner = ServiceRunner::new(RunnerOptions {
             project_root: project.root.clone(),
             session: config.session.clone(),
-            state,
+            state: state.clone(),
             holders: SocketDir::from_env(),
             binary,
             docker: "docker".into(),
         });
         Ok(Session {
+            project,
+            state,
             config,
             runner,
             branch,
@@ -211,6 +236,7 @@ impl Session {
             Command::Logs(service) => self.logs(service, out),
             Command::Attach(service) => self.attach(service),
             Command::Url(service) => self.url(service, out),
+            Command::Workspace(command) => self.workspace(command, out),
             Command::Ports | Command::Version | Command::Help => Ok(()),
         }
     }
