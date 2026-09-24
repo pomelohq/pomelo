@@ -21,6 +21,7 @@ commands:
   attach <service>   attach this terminal to a running service (detach: close the terminal)
   ports              every leased port
   url <service>      where a service with a port listens
+  mcp [--branch b]   MCP server on stdio for a coding agent working in this workspace
   version
 
 The workspace is the one the current directory is in, else the main one; -w picks another.

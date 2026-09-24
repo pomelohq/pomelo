@@ -72,6 +72,19 @@ impl WorkspaceEnv<'_> {
         self.resolve(&merged, env_name, &self.db_names(dir))
     }
 
+    /// The repo-level env (no service overlay), for commands run in the repo's worktree.
+    pub fn repo_env(&self, repo: &str) -> Vec<(String, String)> {
+        let Some(dir) = self.config.repos.get(repo) else {
+            return Vec::new();
+        };
+        let state = WorkspaceState::load(&self.folder());
+        let env_name = state
+            .service_envs
+            .get(alias(repo, dir))
+            .map_or("", String::as_str);
+        self.resolve(&dir.env, env_name, &self.db_names(dir))
+    }
+
     /// Rewrites every repo's env files in the workspace. A workspace without a folder has nothing to
     /// write into and is skipped.
     pub fn write_env_files(&self) -> std::io::Result<()> {
