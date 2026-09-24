@@ -896,6 +896,12 @@ impl WorkspaceView {
                 label: project.label(index).to_string(),
                 agent: self.layout.agent_states.get(branch).copied(),
                 ticket: project.tickets.get(index).cloned().unwrap_or_default(),
+                ticket_category: project
+                    .ticket_categories
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_default(),
+                running: project.running.get(index).copied().unwrap_or(0),
                 pr: project.prs.get(index).copied().flatten(),
             })
             .collect();

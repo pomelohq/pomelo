@@ -83,6 +83,16 @@ impl TicketStatuses {
             .filter(|status| !status.is_empty())
     }
 
+    /// The Jira category of the branch's ticket status: `new`, `indeterminate` or `done`.
+    pub fn category(&self, branch: &str) -> Option<String> {
+        let key = pom_jira::key_for_branch(branch)?;
+        let cache = self.cache.lock().ok()?;
+        cache
+            .issue(&key)
+            .map(|issue| issue.category.clone())
+            .filter(|category| !category.is_empty())
+    }
+
     /// Whether statuses changed since the last call.
     pub fn take_changed(&self) -> bool {
         self.changed.swap(false, Ordering::SeqCst)

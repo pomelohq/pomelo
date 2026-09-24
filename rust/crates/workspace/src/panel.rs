@@ -330,6 +330,10 @@ pub struct WorkspaceRow {
     pub agent: Option<AgentDot>,
     /// The workspace's Jira ticket status, when it has one.
     pub ticket: String,
+    /// That status's Jira category: `new`, `indeterminate` or `done`.
+    pub ticket_category: String,
+    /// How many of its services run.
+    pub running: usize,
     pub pr: Option<crate::PrSummary>,
 }
 
@@ -410,46 +414,81 @@ impl Panel for ProjectPanel {
             col = col.child(op_row(op, position, expanded));
         }
         for row in &self.rows {
-            let current = row.index == self.current;
-            let dot = row.agent.map_or(theme().icon_muted, AgentDot::color);
-            let line = div()
-                .row()
-                .h_px(28.0)
-                .px(4.0)
-                .gap(8.0)
-                .items_center()
-                .rounded(4.0)
-                .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64)
-                .bg(if current {
-                    theme().element_selected
-                } else {
-                    Rgba::TRANSPARENT
-                })
-                .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(dot))
-                .child(div().row().flex(1.0).items_center().child(
-                    label(row.label.clone()).truncate().color(if current {
-                        theme().text
-                    } else {
-                        theme().text_muted
-                    }),
-                ));
-            let line = if row.ticket.is_empty() {
-                line
-            } else {
-                line.child(
-                    label(row.ticket.clone())
-                        .size(11.0)
-                        .color(theme().text_muted),
-                )
-            };
-            let line = match row.pr {
-                Some(pr) => line.child(pr_pill(row.index, pr)),
-                None => line,
-            };
-            col = col.child(line);
+            col = col.child(workspace_row(row, row.index == self.current));
         }
         col.into()
     }
+}
+
+/// One workspace: its agent (when one runs), name and pull requests, and below, when there is any, the
+/// ticket status colored by its category and how many services run.
+fn workspace_row(row: &WorkspaceRow, current: bool) -> Node {
+    let colors = theme();
+    let marker: Node = match row.agent {
+        Some(agent) => div()
+            .w_px(6.0)
+            .h_px(6.0)
+            .rounded(3.0)
+            .bg(agent.color())
+            .into(),
+        None => div().w_px(6.0).h_px(6.0).into(),
+    };
+    let mut first = div()
+        .row()
+        .h_px(20.0)
+        .gap(8.0)
+        .items_center()
+        .child(marker)
+        .child(div().row().flex(1.0).items_center().child(
+            label(row.label.clone()).truncate().color(if current {
+                colors.text
+            } else {
+                colors.text_muted
+            }),
+        ));
+    if let Some(pr) = row.pr {
+        first = first.child(pr_pill(row.index, pr));
+    }
+    let mut details = div().row().h_px(16.0).gap(10.0).items_center().pl(14.0);
+    let mut has_details = false;
+    if !row.ticket.is_empty() {
+        let color = match row.ticket_category.as_str() {
+            "done" => colors.success,
+            "indeterminate" => colors.text_accent,
+            _ => colors.text_muted,
+        };
+        details = details.child(label(row.ticket.clone()).size(11.0).color(color).truncate());
+        has_details = true;
+    }
+    if row.running > 0 {
+        details = details.child(
+            div()
+                .row()
+                .gap(4.0)
+                .items_center()
+                .child(div().w_px(5.0).h_px(5.0).rounded(2.5).bg(colors.success))
+                .child(
+                    label(format!("{} running", row.running))
+                        .size(11.0)
+                        .color(colors.text_muted),
+                ),
+        );
+        has_details = true;
+    }
+    let mut item = div()
+        .col()
+        .px(6.0)
+        .py(4.0)
+        .rounded(4.0)
+        .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64)
+        .child(first);
+    if has_details {
+        item = item.child(details);
+    }
+    if current {
+        item = item.bg(colors.element_selected);
+    }
+    item.into()
 }
 
 fn pr_pill(index: usize, pr: crate::PrSummary) -> Node {
@@ -717,6 +756,8 @@ mod tests {
             label: label.into(),
             agent,
             ticket: String::new(),
+            ticket_category: String::new(),
+            running: 0,
             pr: None,
         }
     }

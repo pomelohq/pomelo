@@ -190,6 +190,8 @@ pub struct ProjectInfo {
     pub running: Vec<usize>,
     /// Jira ticket status by workspace (same order; empty when none).
     pub tickets: Vec<String>,
+    /// Each ticket status's Jira category (`new`, `indeterminate`, `done`; same order).
+    pub ticket_categories: Vec<String>,
     pub prs: Vec<Option<PrSummary>>,
 }
 
