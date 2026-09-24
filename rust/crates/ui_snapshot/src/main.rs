@@ -697,6 +697,7 @@ fn main() -> anyhow::Result<()> {
                     detail: "worktree: web".into(),
                     error: String::new(),
                     retryable: true,
+                    quiet: false,
                 },
                 WorkspaceOp {
                     id: 2,
@@ -707,6 +708,7 @@ fn main() -> anyhow::Result<()> {
                     detail: String::new(),
                     error: "shared services: docker: No such file or directory".into(),
                     retryable: true,
+                    quiet: false,
                 },
             ];
             entity.update(app.app_mut(), |view, _| {

@@ -165,6 +165,18 @@ impl ServiceRunner {
             .collect()
     }
 
+    /// Whether a repo service (not a shared or workspace-level one) of `branch` is running.
+    pub fn repo_service_running(&self, branch: &str) -> bool {
+        let prefix = format!(
+            "svc-{}-{}-",
+            pom_env::branch_safe(&self.session),
+            pom_env::branch_safe(branch)
+        );
+        self.running_holders()
+            .iter()
+            .any(|name| name.starts_with(&prefix))
+    }
+
     pub fn is_running(&self, target: &ServiceTarget) -> bool {
         self.holders.holder_alive(&self.holder_name(target))
     }
@@ -665,5 +677,30 @@ mod tests {
         dir.pre_start.clear();
         let command = service_command(Path::new("/w"), &dir, &service, None, "prod");
         assert_eq!(command, "cd '/w/apps/web' && pnpm start");
+    }
+
+    #[test]
+    fn only_repo_services_of_the_branch_light_the_badge() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let holders = SocketDir::new(temp.path().join("holders"));
+        std::fs::create_dir_all(temp.path().join("holders")).ok();
+        let alive = std::process::id();
+        for name in ["svc-demo-feat_x-web-dev", "ws-demo-solo-claude-raw"] {
+            std::fs::write(holders.pidfile(name), format!("{alive}\n{name}\n")).ok();
+        }
+        let runner = ServiceRunner::new(RunnerOptions {
+            project_root: temp.path().to_path_buf(),
+            session: "demo".into(),
+            state: pom_paths::StateDir::new(temp.path().join("state")),
+            holders,
+            binary: PathBuf::from("/bin/false"),
+            docker: PathBuf::from("docker"),
+        });
+        assert!(runner.repo_service_running("feat/x"));
+        assert!(
+            !runner.repo_service_running("solo"),
+            "workspace-level holders don't count"
+        );
+        assert!(!runner.repo_service_running("main"));
     }
 }

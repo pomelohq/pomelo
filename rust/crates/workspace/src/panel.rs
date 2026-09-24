@@ -400,6 +400,12 @@ impl Panel for ProjectPanel {
             );
         let mut col = div().col().px(10.0).py(10.0).gap(2.0).child(header);
         for (position, op) in self.ops.iter().enumerate() {
+            if op.quiet {
+                if let Some(line) = quiet_op_line(op) {
+                    col = col.child(line);
+                }
+                continue;
+            }
             let expanded = self.expanded.contains(&op.id);
             col = col.child(op_row(op, position, expanded));
         }
@@ -464,6 +470,41 @@ fn pr_pill(index: usize, pr: crate::PrSummary) -> Node {
 
 /// A creation or deletion in flight: its title, the stage it is on and a progress bar; expanded, every stage.
 /// A failed one shows its error with Retry (when it can resume) and a dismiss button.
+/// Background upkeep in flight as a single muted line: what it is and the step it is on.
+fn quiet_op_line(op: &crate::WorkspaceOp) -> Option<Node> {
+    use crate::{OpStatus, StageState};
+    if !matches!(op.status, OpStatus::Queued | OpStatus::Running) {
+        return None;
+    }
+    let colors = theme();
+    let step = op
+        .stages
+        .iter()
+        .find(|(_, state)| *state == StageState::Running)
+        .map(|(name, _)| name.clone())
+        .filter(|name| !name.is_empty());
+    let text = match step {
+        Some(step) => format!("{} - {step}", op.title),
+        None => op.title.clone(),
+    };
+    Some(
+        div()
+            .row()
+            .items_center()
+            .gap(6.0)
+            .h_px(20.0)
+            .px(4.0)
+            .child(icon(IconKind::RotateCw).size(11.0).color(colors.icon_muted))
+            .child(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .child(label(text).size(11.0).color(colors.text_muted).truncate()),
+            )
+            .into(),
+    )
+}
+
 fn op_row(op: &crate::WorkspaceOp, position: usize, expanded: bool) -> Node {
     use crate::{OpStatus, StageState};
     let colors = theme();
@@ -690,6 +731,46 @@ mod tests {
     }
 
     #[test]
+    fn background_upkeep_is_one_quiet_line_and_hides_when_it_ends() {
+        let mut op = crate::WorkspaceOp {
+            id: 3,
+            branch: String::new(),
+            title: "Updating main".into(),
+            status: crate::OpStatus::Running,
+            stages: vec![("api".into(), crate::StageState::Running)],
+            detail: String::new(),
+            error: String::new(),
+            retryable: true,
+            quiet: true,
+        };
+        let text_of = |op: &crate::WorkspaceOp| {
+            let mut p = ProjectPanel::default();
+            p.sync(&list(&[], std::slice::from_ref(op)));
+            let painted = ui::render(
+                &p.render(),
+                ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),
+            );
+            let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
+            let text: Vec<String> = painted.texts.iter().map(|t| t.text.clone()).collect();
+            (text, ids)
+        };
+        let (text, ids) = text_of(&op);
+        assert!(text.iter().any(|t| t == "Updating main - api"), "{text:?}");
+        assert!(
+            !ids.iter().any(|id| *id >= crate::WORKSPACE_OP_BASE
+                && *id < crate::WORKSPACE_OP_BASE + crate::WORKSPACE_OP_STRIDE),
+            "no card controls"
+        );
+        op.status = crate::OpStatus::Failed;
+        op.error = "migrate failed".into();
+        let (text, _) = text_of(&op);
+        assert!(
+            !text.iter().any(|t| t.contains("Updating main")),
+            "a failure goes to a toast"
+        );
+    }
+
+    #[test]
     fn a_failed_creation_offers_retry_and_dismiss() {
         let op = crate::WorkspaceOp {
             id: 7,
@@ -703,6 +784,7 @@ mod tests {
             detail: String::new(),
             error: "web: git worktree add failed".into(),
             retryable: true,
+            quiet: false,
         };
         let mut p = ProjectPanel::default();
         p.sync(&list(&[], std::slice::from_ref(&op)));
