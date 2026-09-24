@@ -20,6 +20,7 @@ terminal_ui = { path = "../terminal_ui" }
 auto_update = { path = "../auto_update" }
 pom_core = { path = "../pom_core" }
 pom_paths = { path = "../pom_paths" }
+pom_proxy = { path = "../pom_proxy" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_env = { path = "../pom_env" }
 pom_services = { path = "../pom_services" }

@@ -35,6 +35,7 @@ members = [
     "crates/pom_core",
     "crates/pom_ptyhost",
     "crates/pom_ports",
+    "crates/pom_proxy",
     "crates/pom_services",
     "crates/services_ui",
     "crates/pom_cli",
