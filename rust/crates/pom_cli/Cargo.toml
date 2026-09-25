@@ -29,7 +29,7 @@ pom_env = { path = "../pom_env" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_services = { path = "../pom_services" }
 pom_workspace = { path = "../pom_workspace" }
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile = "3"

@@ -4,11 +4,27 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use pom_paths::StateDir;
+use pom_services::ServiceTarget;
 
-use crate::say;
+use crate::args::Args;
+use crate::{say, Session};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConfigCommand {
+    Path,
+    Split {
+        dry: bool,
+    },
+    Normalize {
+        dry: bool,
+    },
+    Explain {
+        target: Option<String>,
+        branch: Option<String>,
+        env: String,
+        json: bool,
+        show_secrets: bool,
+    },
     Export {
         secrets: bool,
         output: Option<PathBuf>,
@@ -20,54 +36,68 @@ pub(crate) enum ConfigCommand {
     },
 }
 
+impl ConfigCommand {
+    /// Explaining resolves ports and databases, so it needs the whole workspace session.
+    pub(crate) fn needs_session(&self) -> bool {
+        matches!(self, ConfigCommand::Explain { .. })
+    }
+}
+
 pub(crate) fn parse(words: &[&str]) -> Result<ConfigCommand, String> {
     let (verb, rest) = words
         .split_first()
-        .ok_or("config needs a subcommand (export, import)")?;
-    let mut positional: Vec<&str> = Vec::new();
-    let mut flags: Vec<&str> = Vec::new();
-    let mut output = None;
-    let mut iter = rest.iter();
-    while let Some(word) = iter.next() {
-        match *word {
-            "-o" | "--output" => {
-                output = Some(PathBuf::from(*iter.next().ok_or("-o needs a path")?));
-            }
-            flag if flag.starts_with("--") => flags.push(flag),
-            word => positional.push(word),
-        }
-    }
-    let allow = |known: &[&str]| match flags.iter().find(|flag| !known.contains(flag)) {
-        Some(flag) => Err(format!("unknown flag {flag}")),
-        None => Ok(()),
-    };
-    let has = |flag: &str| flags.contains(&flag);
+        .ok_or("config needs a subcommand (path, split, normalize, explain, export, import)")?;
+    let args = Args::parse(rest, &["-o", "--output", "--branch", "--env"])?;
+    let none = |args: &Args| args.at_most(0, &format!("config {verb}"));
     match *verb {
+        "path" => {
+            args.allow(&[])?;
+            none(&args)?;
+            Ok(ConfigCommand::Path)
+        }
+        "split" | "normalize" => {
+            args.allow(&["--dry-run"])?;
+            none(&args)?;
+            let dry = args.has("--dry-run");
+            Ok(if *verb == "split" {
+                ConfigCommand::Split { dry }
+            } else {
+                ConfigCommand::Normalize { dry }
+            })
+        }
+        "explain" => {
+            args.allow(&["-o", "--output", "--branch", "--env", "--show-secrets"])?;
+            args.at_most(1, "config explain")?;
+            Ok(ConfigCommand::Explain {
+                target: args.positional.first().cloned(),
+                branch: args.value(&["--branch"]),
+                env: args.value(&["--env"]).unwrap_or_default(),
+                json: args.json()?,
+                show_secrets: args.has("--show-secrets"),
+            })
+        }
         "export" => {
-            allow(&["--secrets"])?;
-            if !positional.is_empty() {
+            args.allow(&["--secrets", "-o", "--output"])?;
+            if !args.positional.is_empty() {
                 return Err("config export takes no arguments (use -o <file>)".into());
             }
             Ok(ConfigCommand::Export {
-                secrets: has("--secrets"),
-                output,
+                secrets: args.has("--secrets"),
+                output: args.value(&["-o", "--output"]).map(PathBuf::from),
             })
         }
         "import" => {
-            allow(&["--config-only", "--secrets-only"])?;
-            if output.is_some() {
-                return Err("config import takes no -o".into());
-            }
-            let [file] = positional.as_slice() else {
+            args.allow(&["--config-only", "--secrets-only"])?;
+            let [file] = args.positional.as_slice() else {
                 return Err("config import needs one file".into());
             };
-            if has("--config-only") && has("--secrets-only") {
+            if args.has("--config-only") && args.has("--secrets-only") {
                 return Err("--config-only and --secrets-only exclude each other".into());
             }
             Ok(ConfigCommand::Import {
                 file: PathBuf::from(file),
-                config: !has("--secrets-only"),
-                secrets: !has("--config-only"),
+                config: !args.has("--secrets-only"),
+                secrets: !args.has("--config-only"),
             })
         }
         other => Err(format!("unknown config subcommand {other}")),
@@ -80,6 +110,45 @@ pub(crate) fn execute(
     out: &mut dyn Write,
 ) -> Result<(), String> {
     let state = StateDir::from_env();
+    match command {
+        ConfigCommand::Path => return say(out, &config_path.display().to_string()),
+        ConfigCommand::Split { dry } => {
+            let result = pom_config::maintain::split(config_path, *dry)?;
+            let verb = if *dry { "would write" } else { "wrote" };
+            say(out, &format!("root    {}", result.root.display()))?;
+            for fragment in &result.fragments {
+                say(out, &format!("{verb}   {}", fragment.display()))?;
+            }
+            return if *dry {
+                say(out, "dry run: nothing written")
+            } else {
+                say(out, &format!("backup  {}", result.backup.display()))
+            };
+        }
+        ConfigCommand::Normalize { dry: true } => {
+            let removed = pom_config::maintain::removed_keys_in(config_path);
+            if removed.is_empty() {
+                say(
+                    out,
+                    "no removed keys; normalize would only migrate tokens and split",
+                )?;
+            } else {
+                say(out, &format!("would remove: {}", removed.join(", ")))?;
+            }
+            return say(out, "dry run: nothing written");
+        }
+        ConfigCommand::Normalize { dry: false } => {
+            let removed = pom_config::maintain::normalize(config_path)?;
+            if removed.is_empty() {
+                return say(out, "normalized (no removed keys found)");
+            }
+            return say(out, &format!("normalized; removed {}", removed.join(", ")));
+        }
+        ConfigCommand::Explain { .. } => {
+            return Err("config explain needs a project session".into());
+        }
+        _ => {}
+    }
     let session = session_of(config_path)?;
     match command {
         ConfigCommand::Export { secrets, output } => {
@@ -146,7 +215,234 @@ pub(crate) fn execute(
             }
             Ok(())
         }
+        _ => Ok(()),
     }
+}
+
+impl Session {
+    pub(crate) fn config_command(
+        &self,
+        command: &ConfigCommand,
+        out: &mut dyn Write,
+    ) -> Result<(), String> {
+        let ConfigCommand::Explain {
+            target,
+            branch,
+            env,
+            json,
+            show_secrets,
+        } = command
+        else {
+            return execute(command, &self.project.config_path, out);
+        };
+        let branch = branch.clone().unwrap_or_else(|| self.branch.clone());
+        let environment = if env.is_empty() { "local" } else { env };
+        self.config.validate_environment(env)?;
+        let workspace_env = self.runner.workspace_env(&self.config, &branch);
+        if let Some((repo, service)) = target.as_deref().and_then(|target| target.split_once('/')) {
+            let (repo, service) = self
+                .config
+                .find_service_entry(&format!("{repo}/{service}"))?;
+            let explained = workspace_env
+                .explain_service(&repo, &service, env)
+                .ok_or_else(|| format!("no service {repo}/{service}"))?;
+            let port = self.runner.port(
+                &self.config,
+                &ServiceTarget {
+                    branch: branch.clone(),
+                    is_main: branch == self.config.global_default_branch(),
+                    repo: repo.clone(),
+                    service: service.clone(),
+                },
+            );
+            let shown = |line: &pom_services::EnvLine| {
+                if line.secret && !show_secrets {
+                    "********".to_string()
+                } else {
+                    line.value.clone()
+                }
+            };
+            if *json {
+                let value = serde_json::json!({
+                    "repo": explained.repo,
+                    "alias": explained.alias,
+                    "service": explained.service,
+                    "cmd": explained.cmd,
+                    "port": port,
+                    "databases": explained.databases,
+                    "env": explained.env.iter().map(|line| serde_json::json!({
+                        "key": line.key, "value": shown(line), "source": line.source,
+                    })).collect::<Vec<_>>(),
+                });
+                return say(out, &pretty(&value)?);
+            }
+            say(
+                out,
+                &format!(
+                    "{}/{}  (alias {})\n",
+                    explained.repo, explained.service, explained.alias
+                ),
+            )?;
+            say(out, &format!("  cmd   {}", explained.cmd))?;
+            say(
+                out,
+                &format!(
+                    "  port  {}",
+                    port.map_or_else(
+                        || "- (none leased on this branch yet)".to_string(),
+                        |port| port.to_string()
+                    )
+                ),
+            )?;
+            if !explained.databases.is_empty() {
+                say(out, "\nDATABASES")?;
+                let rows: Vec<Vec<String>> = explained
+                    .databases
+                    .iter()
+                    .map(|(name, real)| vec![format!("{{{{db.{name}}}}}"), real.clone()])
+                    .collect();
+                table(out, "  ", &rows)?;
+            }
+            if !explained.env.is_empty() {
+                say(out, "\nENV  (resolved, with where each value comes from)")?;
+                let rows: Vec<Vec<String>> = explained
+                    .env
+                    .iter()
+                    .map(|line| vec![line.key.clone(), dash(&shown(line)), line.source.clone()])
+                    .collect();
+                table(out, "  ", &rows)?;
+            }
+            return Ok(());
+        }
+        let shared: Vec<(String, String, u16, String)> = self
+            .config
+            .shared_services
+            .iter()
+            .map(|(name, def)| {
+                let host = if def.host.is_empty() {
+                    "localhost".to_string()
+                } else {
+                    def.host.clone()
+                };
+                let creds = if def.db_user.is_empty() {
+                    "-".to_string()
+                } else {
+                    format!("{}:{}", def.db_user, def.db_password)
+                };
+                (
+                    name.clone(),
+                    host,
+                    self.runner.shared_host_port(name),
+                    creds,
+                )
+            })
+            .collect();
+        let databases: Vec<(String, Vec<(String, String)>)> = self
+            .config
+            .repos
+            .iter()
+            .filter(|(name, dir)| {
+                !dir.databases.is_empty()
+                    && target
+                        .as_deref()
+                        .is_none_or(|target| target == name.as_str() || target == dir.alias)
+            })
+            .map(|(name, dir)| {
+                (
+                    name.clone(),
+                    workspace_env.db_names(dir).into_iter().collect(),
+                )
+            })
+            .collect();
+        if *json {
+            let value = serde_json::json!({
+                "config": self.project.config_path,
+                "branch": branch,
+                "env": environment,
+                "shared": shared.iter().map(|(name, host, port, creds)| serde_json::json!({
+                    "name": name, "host": host, "port": port, "creds": creds,
+                })).collect::<Vec<_>>(),
+                "databases": databases.iter().map(|(repo, names)| serde_json::json!({
+                    "repo": repo,
+                    "names": names.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
+                })).collect::<Vec<_>>(),
+            });
+            return say(out, &pretty(&value)?);
+        }
+        say(
+            out,
+            &format!("Config  {}", self.project.config_path.display()),
+        )?;
+        say(out, &format!("Branch  {branch}   Env {environment}"))?;
+        if !shared.is_empty() {
+            say(
+                out,
+                "\nSHARED SERVICES  {{shared.NAME.host}} {{shared.NAME.port}} {{shared.NAME.url}}",
+            )?;
+            let mut rows = vec![vec![
+                "NAME".to_string(),
+                "HOST:PORT".to_string(),
+                "CREDS".to_string(),
+            ]];
+            rows.extend(shared.iter().map(|(name, host, port, creds)| {
+                vec![name.clone(), format!("{host}:{port}"), creds.clone()]
+            }));
+            table(out, "  ", &rows)?;
+        }
+        if !databases.is_empty() {
+            say(
+                out,
+                "\nDATABASES  {{db.NAME}}, per branch and prefixed with the session",
+            )?;
+            for (repo, names) in &databases {
+                say(out, &format!("  {repo}"))?;
+                let rows: Vec<Vec<String>> = names
+                    .iter()
+                    .map(|(name, real)| vec![format!("{{{{db.{name}}}}}"), real.clone()])
+                    .collect();
+                table(out, "    ", &rows)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn pretty(value: &serde_json::Value) -> Result<String, String> {
+    serde_json::to_string_pretty(value).map_err(|error| error.to_string())
+}
+
+pub(crate) fn dash(text: &str) -> String {
+    if text.is_empty() {
+        "-".to_string()
+    } else {
+        text.to_string()
+    }
+}
+
+/// Rows padded into columns two spaces apart; the last column is not padded.
+pub(crate) fn table(out: &mut dyn Write, indent: &str, rows: &[Vec<String>]) -> Result<(), String> {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..columns)
+        .map(|column| {
+            rows.iter()
+                .filter_map(|row| row.get(column))
+                .map(|cell| cell.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    for row in rows {
+        let mut line = indent.to_string();
+        for (column, cell) in row.iter().enumerate() {
+            if column + 1 == row.len() {
+                line.push_str(cell);
+            } else {
+                line.push_str(&format!("{cell:width$}  ", width = widths[column]));
+            }
+        }
+        say(out, line.trim_end())?;
+    }
+    Ok(())
 }
 
 /// The session name straight off the file, so a config that fails validation can still be replaced.

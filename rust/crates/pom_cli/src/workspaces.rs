@@ -309,7 +309,7 @@ fn retry_hint(error: &PipelineError, command: &str) -> String {
 }
 
 /// Runs a pipeline on its own thread and prints its events here as they come.
-fn stream<T: Send>(
+pub(crate) fn stream<T: Send>(
     out: &mut dyn Write,
     work: impl FnOnce(EventSink<'_>) -> T + Send,
 ) -> Result<T, String> {

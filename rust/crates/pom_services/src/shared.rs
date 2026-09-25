@@ -272,6 +272,23 @@ impl ServiceRunner {
         }
     }
 
+    /// Every user database in the shared Postgres.
+    pub fn list_databases(&self, config: &Config) -> Result<Vec<String>, ServiceError> {
+        let postgres = self.postgres(config);
+        let sql =
+            "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'";
+        let output = self.docker(&postgres.psql_args(POSTGRES, &["-tAc", sql]))?;
+        if !output.status.success() {
+            return Err(docker_failure(&output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
     pub fn database_exists(&self, config: &Config, name: &str) -> bool {
         let postgres = self.postgres(config);
         let query = format!(
@@ -502,9 +519,18 @@ fn output_text(output: &Output) -> String {
 
 /// Database names of a workspace: shared-service refs as named, and `databases:` session-prefixed.
 pub fn database_names(config: &Config, branch: &str) -> Vec<String> {
+    database_names_where(config, branch, |_| true)
+}
+
+/// `database_names` limited to the repos `keep` accepts (the ones checked out in the workspace).
+pub fn database_names_where(
+    config: &Config,
+    branch: &str,
+    keep: impl Fn(&str) -> bool,
+) -> Vec<String> {
     let mut names = Vec::new();
-    for dir in config.repos.values() {
-        if !dir.has_worktree_config() {
+    for (repo, dir) in &config.repos {
+        if !dir.has_worktree_config() || !keep(repo) {
             continue;
         }
         for shared in &dir.shared_refs {
