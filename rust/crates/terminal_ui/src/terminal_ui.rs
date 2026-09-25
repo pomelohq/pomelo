@@ -25,6 +25,21 @@ pub fn font_size() -> f32 {
     FONT_HUNDREDTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }
 
+static AGENT_FONT_HUNDREDTHS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(1500);
+
+/// The text size of coding-agent tabs, set apart from shells: agents are read like documents.
+pub fn agent_font_size() -> f32 {
+    AGENT_FONT_HUNDREDTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
+pub fn set_agent_font_size(size: f32) {
+    AGENT_FONT_HUNDREDTHS.store(
+        (size.clamp(6.0, 72.0) * 100.0).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 /// The terminal settings: text size, the shell new terminals run (empty: the login shell) and how many
 /// lines of history they keep.
 pub fn set_terminal_defaults(size: f32, shell: &str, scrollback: usize) {
@@ -60,6 +75,7 @@ const BOLD_WEIGHT: u16 = 700;
 pub struct GridMetrics {
     pub cell_width: f32,
     pub line_height: f32,
+    pub font_size: f32,
 }
 
 impl GridMetrics {
@@ -68,6 +84,7 @@ impl GridMetrics {
         Self {
             cell_width: ui::measure_text_width("m", font_size, true, 400) / scale,
             line_height: font_size * line_height,
+            font_size,
         }
     }
 
@@ -341,8 +358,8 @@ impl GridPainter {
             {
                 foreground = theme.link_text_hover;
                 let x = cell.column as f32 * metrics.cell_width;
-                let y =
-                    row as f32 * metrics.line_height + (metrics.line_height + font_size()) / 2.0;
+                let y = row as f32 * metrics.line_height
+                    + (metrics.line_height + metrics.font_size) / 2.0;
                 match overlays.last_mut() {
                     Some(last)
                         if last.y == y && (last.x + last.w - x).abs() < 0.01 && last.h == 1.0 =>
@@ -423,7 +440,7 @@ impl GridPainter {
                         line.child(div().w_px((run.column - column) as f32 * metrics.cell_width));
                 }
                 let mut text = label(run.text)
-                    .size(font_size())
+                    .size(metrics.font_size)
                     .mono()
                     .color(run.style.foreground);
                 if run.style.bold {
@@ -555,6 +572,7 @@ mod tests {
         let metrics = GridMetrics {
             cell_width: 10.0,
             line_height: 20.0,
+            font_size: 15.0,
         };
         let options = GridOptions {
             focused: true,
@@ -585,6 +603,7 @@ mod tests {
         let metrics = GridMetrics {
             cell_width: 10.0,
             line_height: 20.0,
+            font_size: 15.0,
         };
         let theme = ui::one_dark();
         let focused = GridOptions {

@@ -1248,6 +1248,12 @@ impl App {
             &self.settings.terminal_shell,
             self.settings.terminal_scrollback as usize,
         );
+        let agent_font_changed =
+            (terminal_ui::agent_font_size() - self.settings.agent_font_size).abs() > f32::EPSILON;
+        terminal_ui::set_agent_font_size(self.settings.agent_font_size);
+        if agent_font_changed {
+            self.mark_all_mains_dirty();
+        }
         if font_changed {
             let windows: Vec<WindowId> = self.mains.keys().copied().collect();
             for id in windows {

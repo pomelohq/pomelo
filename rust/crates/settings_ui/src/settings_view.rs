@@ -25,9 +25,10 @@ fn is_free_text(id: u64) -> bool {
         || id == settings_ui::CTRL_TERM_SHELL
 }
 
-const NUMBER_FIELDS: [u64; 3] = [
+const NUMBER_FIELDS: [u64; 4] = [
     settings_ui::CTRL_BUFFER_FONT_EDIT,
     settings_ui::CTRL_TERM_FONT_EDIT,
+    settings_ui::CTRL_AGENT_FONT_EDIT,
     settings_ui::CTRL_SCROLLBACK_EDIT,
 ];
 
@@ -398,6 +399,10 @@ impl SettingsView {
                 settings_ui::CTRL_TERM_FONT_EDIT => {
                     let next = value.clamp(settings_ui::FONT_SIZE_MIN, settings_ui::FONT_SIZE_MAX);
                     std::mem::replace(&mut self.settings.terminal_font_size, next) != next
+                }
+                settings_ui::CTRL_AGENT_FONT_EDIT => {
+                    let next = value.clamp(settings_ui::FONT_SIZE_MIN, settings_ui::FONT_SIZE_MAX);
+                    std::mem::replace(&mut self.settings.agent_font_size, next) != next
                 }
                 _ => {
                     let next = (value as u32)
@@ -871,6 +876,9 @@ impl SettingsView {
                 }
                 settings_ui::CTRL_TERM_FONT_EDIT => {
                     format!("{:.0}", self.settings.terminal_font_size)
+                }
+                settings_ui::CTRL_AGENT_FONT_EDIT => {
+                    format!("{:.0}", self.settings.agent_font_size)
                 }
                 _ => self.settings.terminal_scrollback.to_string(),
             };

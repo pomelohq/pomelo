@@ -91,6 +91,8 @@ pub struct TerminalPanel {
     spawn_error: Option<String>,
     /// The user closed the last terminal; reported on the next sync so the panel closes like when shells exit.
     closed_last: bool,
+    /// The agent dock: its tabs, restored ones too, use the agent text size.
+    agent: bool,
 }
 
 impl TerminalPanel {
@@ -109,7 +111,9 @@ impl TerminalPanel {
             zoom_whole_group: true,
         });
         panes.set_focused(false);
-        Self::with_panes(root, waker, panes)
+        let mut panel = Self::with_panes(root, waker, panes);
+        panel.agent = true;
+        panel
     }
 
     fn panel_panes() -> PaneGroupView {
@@ -153,6 +157,7 @@ impl TerminalPanel {
             focus_holder: None,
             spawn_error: None,
             closed_last: false,
+            agent: false,
         }
     }
 
@@ -274,6 +279,7 @@ impl TerminalPanelView for TerminalPanel {
     fn restore_panes(&mut self, saved: &SerializedMember) -> bool {
         let (root, waker, holders) = (&self.root, &self.waker, &self.holders);
         let (next_item_id, spawn_error) = (&mut self.next_item_id, &mut self.spawn_error);
+        let agent = self.agent;
         let mut kept: Vec<String> = Vec::new();
         let mut make_item = |item: &SerializedItem| -> Option<Box<dyn Item>> {
             let cwd = crate::item::saved_cwd(item)?;
@@ -285,8 +291,12 @@ impl TerminalPanelView for TerminalPanel {
                 kept.push(name.clone());
                 scope.options(name)
             });
-            spawn_terminal(root, waker, next_item_id, spawn_error, cwd, holder)
-                .map(|terminal| Box::new(terminal) as Box<dyn Item>)
+            spawn_terminal(root, waker, next_item_id, spawn_error, cwd, holder).map(
+                |mut terminal| {
+                    terminal.set_agent(agent);
+                    Box::new(terminal) as Box<dyn Item>
+                },
+            )
         };
         let restored = self.panes.restore(saved, &mut make_item);
         self.reap_unclaimed(&kept);

@@ -215,6 +215,9 @@ pub const CTRL_EXTERNAL_EDITOR: u64 = 268;
 pub const CTRL_TERM_FONT_DEC: u64 = 269;
 pub const CTRL_TERM_FONT_INC: u64 = 270;
 pub const CTRL_TERM_FONT_EDIT: u64 = 271;
+pub const CTRL_AGENT_FONT_DEC: u64 = 284;
+pub const CTRL_AGENT_FONT_INC: u64 = 285;
+pub const CTRL_AGENT_FONT_EDIT: u64 = 286;
 pub const CTRL_TERM_SHELL: u64 = 272;
 pub const CTRL_SCROLLBACK_DEC: u64 = 273;
 pub const CTRL_SCROLLBACK_INC: u64 = 274;
@@ -448,6 +451,7 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_DIFF_VIEW => s.split_diff == d.split_diff,
         CTRL_EXTERNAL_EDITOR => s.external_editor == d.external_editor,
         CTRL_TERM_FONT_EDIT => s.terminal_font_size == d.terminal_font_size,
+        CTRL_AGENT_FONT_EDIT => s.agent_font_size == d.agent_font_size,
         CTRL_TERM_SHELL => s.terminal_shell == d.terminal_shell,
         CTRL_SCROLLBACK_EDIT => s.terminal_scrollback == d.terminal_scrollback,
         CTRL_NOTIFY => s.notify_claude == d.notify_claude,
@@ -485,6 +489,7 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_DIFF_VIEW => s.split_diff = d.split_diff,
         CTRL_EXTERNAL_EDITOR => s.external_editor = d.external_editor,
         CTRL_TERM_FONT_EDIT => s.terminal_font_size = d.terminal_font_size,
+        CTRL_AGENT_FONT_EDIT => s.agent_font_size = d.agent_font_size,
         CTRL_TERM_SHELL => s.terminal_shell = d.terminal_shell,
         CTRL_SCROLLBACK_EDIT => s.terminal_scrollback = d.terminal_scrollback,
         CTRL_NOTIFY => s.notify_claude = d.notify_claude,
@@ -568,6 +573,12 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         ),
         CTRL_TERM_FONT_INC => {
             set_clamped(&mut s.terminal_font_size, 1.0, FONT_SIZE_MIN, FONT_SIZE_MAX)
+        }
+        CTRL_AGENT_FONT_DEC => {
+            set_clamped(&mut s.agent_font_size, -1.0, FONT_SIZE_MIN, FONT_SIZE_MAX)
+        }
+        CTRL_AGENT_FONT_INC => {
+            set_clamped(&mut s.agent_font_size, 1.0, FONT_SIZE_MIN, FONT_SIZE_MAX)
         }
         CTRL_SCROLLBACK_DEC | CTRL_SCROLLBACK_INC => {
             let step: i64 = if id == CTRL_SCROLLBACK_INC {
@@ -1824,7 +1835,7 @@ fn terminal_page(s: &Settings) -> Page {
             PageItem::Header("Font"),
             PageItem::Row(SettingRow {
                 title: "Font Size".into(),
-                description: "Text size of terminals and agents.".into(),
+                description: "Text size of terminals (the agent has its own, under Agent).".into(),
                 control: Control::Stepper {
                     dec: CTRL_TERM_FONT_DEC,
                     inc: CTRL_TERM_FONT_INC,
@@ -1922,6 +1933,17 @@ fn agent_page(s: &Settings, agent: &AgentPage) -> Page {
                     masked: false,
                 },
                 reset: reset_if_changed(CTRL_AGENT_COMMAND, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Font Size".into(),
+                description: "Text size of the agent's tabs, apart from terminals.".into(),
+                control: Control::Stepper {
+                    dec: CTRL_AGENT_FONT_DEC,
+                    inc: CTRL_AGENT_FONT_INC,
+                    edit: CTRL_AGENT_FONT_EDIT,
+                    value: format!("{:.0}", s.agent_font_size),
+                },
+                reset: reset_if_changed(CTRL_AGENT_FONT_EDIT, s),
             }),
             PageItem::Header("Claude Code"),
             PageItem::Row(SettingRow {

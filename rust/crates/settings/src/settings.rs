@@ -61,6 +61,8 @@ pub struct Settings {
     /// The app "Open in External Editor" uses; empty picks the first one installed.
     pub external_editor: String,
     pub terminal_font_size: f32,
+    /// Text size of the coding agent's tabs, apart from shells.
+    pub agent_font_size: f32,
     /// The shell new terminals run (with its arguments); empty runs the login shell.
     pub terminal_shell: String,
     pub terminal_scrollback: u32,
@@ -109,6 +111,7 @@ impl Default for Settings {
             split_diff: true,
             external_editor: String::new(),
             terminal_font_size: 15.0,
+            agent_font_size: 15.0,
             terminal_shell: String::new(),
             terminal_scrollback: 10_000,
         }

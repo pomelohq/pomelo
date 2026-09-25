@@ -44,6 +44,8 @@ pub struct TerminalItem {
     hovered_target: Option<TerminalOpenTarget>,
     open_request: Option<TerminalOpenTarget>,
     console: Option<Console>,
+    /// A coding agent's tab, drawn at the agent text size.
+    agent: bool,
 }
 
 struct Console {
@@ -188,7 +190,12 @@ impl TerminalItem {
             title,
             keep_after_exit: false,
         });
+        item.agent = true;
         Ok(item)
+    }
+
+    pub(crate) fn set_agent(&mut self, agent: bool) {
+        self.agent = agent;
     }
 
     pub fn service_log(
@@ -248,6 +255,7 @@ impl TerminalItem {
             hovered_target: None,
             open_request: None,
             console: None,
+            agent: false,
         }
     }
 
@@ -268,7 +276,12 @@ impl TerminalItem {
     pub fn paint(&mut self, body: Rect, focused: bool) -> Painted {
         self.body = body;
         let scale = ui::ui_text_scale();
-        let metrics = GridMetrics::measure(font_size(), LINE_HEIGHT);
+        let size = if self.agent {
+            crate::agent_font_size()
+        } else {
+            font_size()
+        };
+        let metrics = GridMetrics::measure(size, LINE_HEIGHT);
         let body_h = (body.h / scale).max(metrics.line_height);
         self.terminal
             .set_size(metrics.bounds(body.w / scale, body_h));
