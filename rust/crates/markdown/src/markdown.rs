@@ -548,6 +548,41 @@ impl Markdown {
     }
 }
 
+/// A markdown text parsed once and laid out again only when the width changes, for views that show whole
+/// documents (a pull request or ticket body, a comment).
+#[derive(Clone, Debug)]
+pub struct MarkdownBody {
+    markdown: Markdown,
+    layout: Option<(u32, MarkdownLayout)>,
+}
+
+impl MarkdownBody {
+    pub fn new(source: &str) -> MarkdownBody {
+        MarkdownBody {
+            markdown: Markdown::parse(source),
+            layout: None,
+        }
+    }
+
+    /// Every line at `width` in `style`, links clickable as `link_base + their index`.
+    pub fn render(&mut self, width: f32, style: MarkdownStyle, link_base: u64) -> Node {
+        let key = width.to_bits();
+        if self.layout.as_ref().is_none_or(|(at, _)| *at != key) {
+            self.layout = Some((key, self.markdown.layout(width, style)));
+        }
+        match &self.layout {
+            Some((_, layout)) => {
+                layout.render_links(0, layout.line_count(), width, Some(link_base))
+            }
+            None => div().into(),
+        }
+    }
+
+    pub fn link(&self, index: usize) -> Option<&str> {
+        self.markdown.links().get(index).map(String::as_str)
+    }
+}
+
 /// Plain text escaped so markdown reads it back unchanged: punctuation backslashed, leading indentation kept
 /// as non-breaking spaces (a tab as four), and each line break made a paragraph break.
 pub fn escape(text: &str) -> String {

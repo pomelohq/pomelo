@@ -13,7 +13,7 @@ use serde_json::Value;
 pub use cache::PrCache;
 pub use pull_request::{
     fetch_detail, fetch_heads, severity, Actor, Check, Label, PrTarget, PullRequest, ReviewRequest,
-    Reviewer, Severity,
+    ReviewThread, Reviewer, Severity, ThreadComment, TimelineItem, TimelineKind,
 };
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
