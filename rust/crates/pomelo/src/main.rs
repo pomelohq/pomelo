@@ -1335,8 +1335,14 @@ impl App {
             .map(|project| project.config_path.clone())
             .unwrap_or_default();
         let workspace_root = project.map(pom_core::Project::active_root);
+        let is_main = project.is_some_and(|project| {
+            project
+                .active_workspace()
+                .is_none_or(|workspace| workspace.is_main)
+        });
         let files: Option<Box<dyn workspace::FunctionView>> = workspace_root.clone().map(|root| {
-            Box::new(files_ui::FilesView::new(root)) as Box<dyn workspace::FunctionView>
+            Box::new(files_ui::FilesView::new(root).read_only(is_main))
+                as Box<dyn workspace::FunctionView>
         });
         let mut side_panels: Vec<Box<dyn workspace::SidePanelView>> = Vec::new();
         if let (Some(services), Some(project)) = (&main.services, project) {

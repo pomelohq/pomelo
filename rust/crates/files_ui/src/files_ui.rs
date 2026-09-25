@@ -2029,6 +2029,9 @@ impl FileItem {
         let newest = b.newest();
         let (line, column) = b.line_col_of(newest.head());
         let mut text = format!("{}:{}", line + 1, column + 1);
+        if self.read_only && self.scratch.is_none() {
+            text = format!("Read only  {text}");
+        }
         let (mut lines, mut characters) = (0usize, 0usize);
         for s in b.selections() {
             characters += s.end - s.start;
@@ -3514,6 +3517,9 @@ impl Item for FileItem {
         if self.scratch.is_some() {
             return Ok(());
         }
+        if self.read_only {
+            return Err("main is read-only: make changes in a branch workspace".into());
+        }
         let Some(b) = self.buffer.as_mut() else {
             return Ok(());
         };
@@ -4770,6 +4776,8 @@ struct Row {
 
 pub struct FilesView {
     root: PathBuf,
+    /// Files open here can be read but not edited (the main workspace: work happens in branch workspaces).
+    read_only: bool,
     tree: Vec<FileNode>,
     /// The tree walk still running off the UI thread; the tree fills in as it reports.
     scan: Option<files::BackgroundScan>,
@@ -4829,6 +4837,11 @@ pub(crate) use workspace::syntax_theme;
 impl FilesView {
     /// Opens at once with an empty tree; the tree fills in from a background walk so a large workspace
     /// never stalls the window.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
     pub fn new(root: PathBuf) -> Self {
         let scan = files::BackgroundScan::start(root.clone(), std::sync::Arc::new(ui::wake));
         let watcher = files::TreeWatcher::new(&root, std::sync::Arc::new(ui::wake))
@@ -4912,6 +4925,7 @@ impl FilesView {
                 zoom_whole_group: false,
             }),
             hover: None,
+            read_only: false,
             pending_moves: Vec::new(),
             other_dirty: Vec::new(),
             go_to_line: None,
@@ -6816,6 +6830,16 @@ impl FunctionView for FilesView {
         outcome.changed |= self.apply_disk_changes();
         outcome.changed |= self.serve_project_search();
         self.sync_markdown_previews();
+        if self.read_only {
+            self.panes.for_each_item_mut(&mut |item| {
+                if let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                {
+                    file.read_only = true;
+                }
+            });
+        }
         self.note_recent();
         let mut closed: Vec<(u64, String)> = Vec::new();
         self.panes.group.for_each_pane_mut(&mut |pane| {
@@ -8584,6 +8608,28 @@ mod markdown_preview_tests {
             );
         });
         count
+    }
+
+    #[test]
+    fn a_read_only_view_opens_files_that_do_not_take_edits() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().to_path_buf();
+        std::fs::write(root.join("app.rs"), "fn main() {}\n").expect("write");
+        let mut view = FilesView::new(root.clone()).read_only(true);
+        view.open_file("app.rs");
+        view.tick_items(&|| None);
+        view.editor_text("oops");
+        view.tick_items(&|| None);
+        let text = view
+            .panes
+            .active_item()
+            .and_then(|item| item.as_any())
+            .and_then(|any| any.downcast_ref::<FileItem>())
+            .and_then(|file| file.buffer.as_ref().map(|b| b.rope.to_string()));
+        assert_eq!(text.as_deref(), Some("fn main() {}\n"));
+        assert!(view
+            .cursor_position()
+            .is_some_and(|status| status.starts_with("Read only")));
     }
 
     #[test]
