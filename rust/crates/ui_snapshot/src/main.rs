@@ -328,6 +328,74 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if std::env::var("TICKETTAB").is_ok() {
+        use workspace::Item;
+        let (width, height) = (720.0_f32, 620.0_f32);
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-ticket-{}", std::process::id()));
+        let mut item = jira_ui::TicketItem::new(
+            pom_paths::StateDir::new(dir.join("state")),
+            "myproject".into(),
+            "PROJ-101".into(),
+            std::sync::Arc::new(|| {}),
+        );
+        item.show(
+            pom_jira::IssueDetail {
+                key: "PROJ-101".into(),
+                summary: "Flag escalated conversations in the inbox".into(),
+                status: "In Progress".into(),
+                url: "https://example.atlassian.net/browse/PROJ-101".into(),
+                description: "## Background\n\nNothing marks a message where the sender **asks for a person**. See https://example.com/spec.\n\n## Acceptance criteria\n\n- [x] Detect a direct ask\n- [ ] Show a banner in the conversation\n- [ ] Email the team".into(),
+                comments: vec![
+                    pom_jira::Comment {
+                        id: "1".into(),
+                        author: "Ann".into(),
+                        avatar: String::new(),
+                        created: "2026-09-17T03:53:12.000+0700".into(),
+                        body: "Should this cover *email* too?".into(),
+                    },
+                    pom_jira::Comment {
+                        id: "2".into(),
+                        author: "Bea".into(),
+                        avatar: String::new(),
+                        created: "2026-09-18T10:05:00.000+0700".into(),
+                        body: "Yes, every channel. Use `inbox_flag`.".into(),
+                    },
+                ],
+                web_links: vec![pom_jira::WebLink {
+                    title: "Design doc".into(),
+                    url: "https://example.com/design".into(),
+                    icon: String::new(),
+                }],
+            },
+            "indeterminate",
+        );
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = item
+            .paint_body(body, true)
+            .ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if dir.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&dir) {
+                eprintln!("remove {}: {error}", dir.display());
+            }
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
     if std::env::var("PRTAB").is_ok() {
         use workspace::Item;
         let (width, height) = (720.0_f32, 520.0_f32);

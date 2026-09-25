@@ -1780,6 +1780,16 @@ impl App {
             Action::OpenInExternalEditor => self.open_in_external_editor(id),
             Action::ExportConfig => self.open_export_config(id),
             Action::ImportConfig => self.open_import_config(id),
+            Action::OpenTicket => {
+                let branch = self
+                    .mains
+                    .get(&id)
+                    .and_then(|main| main.project.as_ref())
+                    .map(|project| project.active_branch().to_string());
+                if let Some(branch) = branch {
+                    self.open_ticket(id, &branch);
+                }
+            }
             Action::OpenProject => {
                 self.handle_session_request(id, workspace::SessionRequest::ChooseFolder)
             }
