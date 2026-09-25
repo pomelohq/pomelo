@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::yaml_node::{self, Node};
+use crate::yaml_node::{self, Node, NodeKind};
 use crate::{fragment_files, FRAGMENT_DIR};
 
 pub const REMOVED_TOP_KEYS: [&str; 5] = [
@@ -308,8 +308,184 @@ pub fn split(config_path: &Path, dry: bool) -> Result<SplitResult, String> {
     Ok(result)
 }
 
+/// Sets and removes keys of a repo's `env:` in whichever config file declares the repo, returning that file.
+/// Only the env block is rewritten (its comments go); the result must still load or the file is restored.
+pub fn edit_repo_env(
+    config_path: &Path,
+    repo: &str,
+    set: &[(String, String)],
+    unset: &[String],
+) -> Result<PathBuf, String> {
+    for (key, _) in set {
+        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!("{key:?} is not an env var name"));
+        }
+    }
+    let (file, text, root) = config_files(config_path)
+        .into_iter()
+        .find_map(|file| {
+            let text = std::fs::read_to_string(&file).ok()?;
+            let root = yaml_node::parse(&text).ok()??;
+            root.get("repos")?.get(repo)?;
+            Some((file, text, root))
+        })
+        .ok_or_else(|| format!("repo {repo:?} is not in any config file"))?;
+    let (repo_key, repo_node) = root
+        .get("repos")
+        .and_then(Node::entries)
+        .unwrap_or_default()
+        .iter()
+        .find(|(key, _)| key.text() == repo)
+        .ok_or_else(|| format!("repo {repo:?} is not in {}", file.display()))?;
+    if !repo_node.is_mapping() && !repo_node.is_null() {
+        return Err(format!("repo {repo:?} is not a mapping"));
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let repo_line = repo_key.line.saturating_sub(1);
+    let existing = repo_node
+        .entries()
+        .unwrap_or_default()
+        .iter()
+        .find(|(key, _)| key.text() == "env");
+    let child_indent = repo_node
+        .entries()
+        .and_then(|entries| entries.first())
+        .and_then(|(key, _)| lines.get(key.line.saturating_sub(1)))
+        .map_or_else(
+            || indent(lines.get(repo_line).unwrap_or(&"")) + 2,
+            |line| indent(line),
+        );
+    let mut env = existing
+        .map(|(_, value)| value.clone())
+        .filter(Node::is_mapping)
+        .unwrap_or_else(Node::empty_mapping);
+    apply_env_edits(&mut env, set, unset);
+    let pad = " ".repeat(child_indent);
+    let mut block = vec![match &env.kind {
+        NodeKind::Mapping(entries) if entries.is_empty() => format!("{pad}env: {{}}"),
+        _ => format!("{pad}env:"),
+    }];
+    if env.entries().is_some_and(|entries| !entries.is_empty()) {
+        block.extend(yaml_node::to_yaml(&env).lines().map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{pad}  {line}")
+            }
+        }));
+    }
+    let (start, end) = match existing {
+        Some((key, _)) => {
+            let range = entry_lines(&lines, key.line.saturating_sub(1));
+            (range.start, range.end)
+        }
+        None => {
+            let end = entry_lines(&lines, repo_line).end;
+            (end, end)
+        }
+    };
+    let mut out: Vec<String> = lines[..start].iter().map(|line| line.to_string()).collect();
+    out.extend(block);
+    out.extend(lines[end..].iter().map(|line| line.to_string()));
+    let mut next = out.join("\n");
+    next.push('\n');
+    std::fs::write(&file, &next).map_err(|error| format!("write {}: {error}", file.display()))?;
+    if let Err(error) = crate::Config::load(config_path) {
+        if let Err(restore) = std::fs::write(&file, &text) {
+            return Err(format!(
+                "{error}; restoring {} failed: {restore}",
+                file.display()
+            ));
+        }
+        return Err(format!("the edit would break the config: {error}"));
+    }
+    Ok(file)
+}
+
+fn apply_env_edits(env: &mut Node, set: &[(String, String)], unset: &[String]) {
+    let NodeKind::Mapping(entries) = &mut env.kind else {
+        return;
+    };
+    // Env keyed by file name (`.env: {...}`) keeps shared values under `*`.
+    let file_keyed = entries.iter().any(|(_, value)| value.is_mapping());
+    let base = if file_keyed {
+        let at = match entries.iter().position(|(key, _)| key.text() == "*") {
+            Some(at) => at,
+            None => {
+                entries.insert(0, (Node::scalar("*"), Node::empty_mapping()));
+                0
+            }
+        };
+        match &mut entries[at].1.kind {
+            NodeKind::Mapping(base) => base,
+            _ => return,
+        }
+    } else {
+        entries
+    };
+    base.retain(|(key, _)| !unset.iter().any(|name| name == key.text()));
+    for (name, value) in set {
+        let value = Node::scalar(value.clone());
+        match base.iter_mut().find(|(key, _)| key.text() == name) {
+            Some(entry) => entry.1 = value,
+            None => base.push((
+                Node {
+                    kind: NodeKind::Scalar {
+                        value: name.clone(),
+                        plain: true,
+                    },
+                    line: 0,
+                },
+                value,
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repo_env_edits_touch_only_the_env_block_of_the_file_with_the_repo() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = dir.path().join("pom.yml");
+        std::fs::write(&root, "session: shop\n# keep me\n").expect("pom.yml");
+        std::fs::create_dir_all(dir.path().join("pom.d/repos")).expect("pom.d");
+        let fragment = dir.path().join("pom.d/repos/01-api.yml");
+        std::fs::write(
+            &fragment,
+            "repos:\n  api:\n    alias: be # the backend\n    env:\n      A: \"1\"\n      B: two\n    services:\n      web:\n        cmd: run\n  web:\n    services: {}\n",
+        )
+        .expect("fragment");
+        let edited = edit_repo_env(
+            &root,
+            "api",
+            &[("C".into(), "x y".into()), ("A".into(), "9".into())],
+            &["B".into()],
+        )
+        .expect("edit");
+        assert_eq!(edited, fragment);
+        let text = std::fs::read_to_string(&fragment).expect("read");
+        assert!(text.contains("alias: be # the backend"), "{text}");
+        assert!(
+            text.contains("    env:\n      A: \"9\"\n      C: \"x y\"\n    services:"),
+            "{text}"
+        );
+        let config = crate::Config::load(&root).expect("load");
+        assert_eq!(
+            config.repos["api"].env.get("C").map(String::as_str),
+            Some("x y")
+        );
+        assert!(!config.repos["api"].env.contains_key("B"));
+
+        edit_repo_env(&root, "web", &[("PORT_HINT".into(), "1".into())], &[]).expect("new env");
+        let config = crate::Config::load(&root).expect("load");
+        assert_eq!(
+            config.repos["web"].env.get("PORT_HINT").map(String::as_str),
+            Some("1")
+        );
+        assert!(edit_repo_env(&root, "nope", &[], &[]).is_err());
+        assert!(edit_repo_env(&root, "api", &[("bad key".into(), "1".into())], &[]).is_err());
+    }
     use super::*;
 
     const CONFIG: &str = "session: demo\n# repos below\nrepos:\n  api:\n    plugins: [x]\n    services:\n      web:\n        cmd: rails s\n        exposes: 3000\n\n  web:\n    services:\n      dev: npm run dev\nshared_services:\n  postgres:\n    type: postgres\nwebhook:\n  port: 1\nproxy: {}\n";

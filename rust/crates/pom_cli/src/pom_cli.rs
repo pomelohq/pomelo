@@ -1,24 +1,37 @@
 //! `pom`: a workspace's services from a terminal. It drives the same holders, leases and compose project as
 //! the app, so a service started here shows up in the app's Services panel and the other way round.
 
+mod args;
+mod completion;
 mod config;
+mod db;
+mod env;
+mod lifecycle;
+mod machine;
+mod onboard;
 mod proxy;
+mod run;
 mod workspaces;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use config::ConfigCommand;
+use db::DbCommand;
+use env::EnvCommand;
+use lifecycle::LifecycleCommand;
+use onboard::OnboardCommand;
 use pom_config::{Config, DepGraph};
 use pom_core::Project;
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use pom_services::{RunnerOptions, ServiceRunner, ServiceTarget};
+use run::RunCommand;
 use workspaces::WorkspaceCommand;
 
 const USAGE: &str = "usage: pom [-w <workspace>] [-c <pom.yml>] <command> [args]
 
-commands:
+services
   start <target>     start a service, a repo's services, or a `workspaces:` group
   stop [target]      stop them; with no target, every service of the workspace
   restart <target>   stop, then start
@@ -29,8 +42,16 @@ commands:
   url <service>      where a service with a port listens, directly and through the dev proxy
   proxy              serve the dev proxy and webhook relay for every project (`pom start` runs
                      one in the background when neither the app nor another proxy does)
-  mcp [--branch b]   MCP server on stdio for a coding agent working in this workspace
+  run <name|\"cmd\"> [repo]
+                     a command from the config (or any shell command) in the repo's worktree,
+                     with the workspace's env
+  commands           the commands the config defines, per repo
+  refresh            stop every running service of the project (frees their ports)
+  release [--disk] [--worktrees] [--yes]
+                     stop services and remove the shared containers; --disk also drops their
+                     volumes (database data), --worktrees deletes the branch workspaces
 
+workspaces
   ws create <branch> [--repos a,b] [--env name] [--no-seed] [--from-stage n]
                      new workspace: worktrees, databases, env files, setup and seed
   ws delete <branch> [--from-stage n]
@@ -38,14 +59,43 @@ commands:
                      branch goes too only when it is pushed or merged
   ws rename <branch> [name]   set or clear the workspace's display name
   ws list            workspaces, their repos and running services
+  get workspaces [-o json]    each workspace's readiness and phase
+  describe workspace <branch> [-o json]
+                     its services, ports and repos missing from it
+  apply [branch] [--yes]      check out repos the config added but a workspace lacks
   prepare-main [--no-seed]    reset main's databases, migrate and seed (new workspaces copy them)
-  doctor             what keeps the project from running, and how to fix it
+  db create|drop|reset [branch]
+                     the workspace's databases in the shared Postgres
+  db clean [--dry-run] [--yes]
+                     drop this project's databases no workspace uses
+
+config
+  config path        the config file in use
+  config explain [repo | repo/service] [--branch b] [--env name] [-o json]
+                     what the config resolves to and where each value comes from
+  config split [--dry-run]    move repos and shared blocks into pom.d
+  config normalize [--dry-run]
+                     drop removed keys, migrate old tokens, split
   config export [--secrets] [-o file]
                      the merged config as YAML; --secrets seals the session's secrets with it
                      into a bundle (password read from stdin)
   config import <file> [--config-only|--secrets-only]
                      replace pom.yml with a YAML file or bundle (old one kept as pom.yml.bak)
                      and store the bundle's secrets
+  env ls <repo[/service]> [--branch b] [--env name] [--show-secrets]
+  env get <repo[/service]> <KEY>
+  env set <repo> KEY=VALUE...
+  env unset <repo> KEY...
+  doctor             what keeps the project from running, and how to fix it
+
+projects and machine
+  init [name] [--claude]      a new project from the git repo you are in
+  onboard [session] [--new name --repo path... [--branch b]]
+                     Claude writes a runnable pom.yml with you, in this terminal
+  ps [--watch]       CPU and memory of every holder Pomelo started
+  disk               disk used by the registered projects
+  mcp [--branch b]   MCP server on stdio for a coding agent working in this workspace
+  completion bash|zsh|fish
   version
 
 The workspace is the one the current directory is in, else the main one; -w picks another.
@@ -64,6 +114,15 @@ enum Command {
     Proxy,
     Workspace(WorkspaceCommand),
     Config(ConfigCommand),
+    Env(EnvCommand),
+    Db(DbCommand),
+    Run(RunCommand),
+    Commands,
+    Lifecycle(LifecycleCommand),
+    Onboard(OnboardCommand),
+    Ps { watch: bool },
+    Disk,
+    Completion(String),
     Doctor,
     Version,
     Help,
@@ -93,8 +152,18 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Ports => ports(&StateDir::from_env(), out),
             Command::Doctor => doctor(invocation.config.as_deref(), cwd, out),
             Command::Proxy => proxy::serve(&StateDir::from_env(), out),
-            Command::Config(ref command) => find_config(invocation.config.as_deref(), cwd)
-                .and_then(|path| config::execute(command, &path, out)),
+            Command::Config(ref command) if !command.needs_session() => {
+                find_config(invocation.config.as_deref(), cwd)
+                    .and_then(|path| config::execute(command, &path, out))
+            }
+            Command::Env(ref command) if !command.needs_session() => {
+                find_config(invocation.config.as_deref(), cwd)
+                    .and_then(|path| env::edit(command, &path, out))
+            }
+            Command::Onboard(ref command) => onboard::execute(command, cwd, out),
+            Command::Ps { watch } => machine::ps(watch, out),
+            Command::Disk => machine::disk(&StateDir::from_env(), out),
+            Command::Completion(ref shell) => completion::print(shell, out),
             ref command => Session::open(&invocation, cwd)
                 .and_then(|session| session.execute(command, out, err)),
         };
@@ -124,7 +193,22 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         if !help
             && matches!(
                 words.first(),
-                Some(&("ws" | "workspace" | "prepare-main" | "config"))
+                Some(
+                    &("ws"
+                        | "workspace"
+                        | "prepare-main"
+                        | "config"
+                        | "env"
+                        | "db"
+                        | "run"
+                        | "get"
+                        | "describe"
+                        | "apply"
+                        | "release"
+                        | "ps"
+                        | "init"
+                        | "onboard")
+                )
             )
         {
             words.push(arg);
@@ -173,6 +257,21 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "ws" | "workspace" => Command::Workspace(workspaces::parse(rest, false)?),
         "prepare-main" => Command::Workspace(workspaces::parse(rest, true)?),
         "config" => Command::Config(config::parse(rest)?),
+        "env" => Command::Env(env::parse(rest)?),
+        "db" => Command::Db(db::parse(rest)?),
+        "run" => Command::Run(run::parse(rest)?),
+        "commands" | "shortcuts" => none().map(|_| Command::Commands)?,
+        "refresh" | "release" | "get" | "describe" | "apply" => {
+            Command::Lifecycle(lifecycle::parse(name, rest)?)
+        }
+        "init" | "onboard" => Command::Onboard(onboard::parse(name, rest)?),
+        "ps" => match rest {
+            [] => Command::Ps { watch: false },
+            ["-w" | "--watch"] => Command::Ps { watch: true },
+            _ => return Err("usage: pom ps [--watch]".into()),
+        },
+        "disk" => none().map(|_| Command::Disk)?,
+        "completion" => Command::Completion(one("a shell (bash, zsh or fish)")?),
         "doctor" => none().map(|_| Command::Doctor)?,
         "version" => Command::Version,
         "help" => Command::Help,
@@ -316,9 +415,18 @@ impl Session {
             Command::Attach(service) => self.attach(service),
             Command::Url(service) => self.url(service, out),
             Command::Workspace(command) => self.workspace(command, out),
+            Command::Config(command) => self.config_command(command, out),
+            Command::Env(command) => self.env_command(command, out),
+            Command::Db(command) => self.db_command(command, out),
+            Command::Run(request) => self.run_command(request),
+            Command::Commands => self.list_commands(out),
+            Command::Lifecycle(command) => self.lifecycle_command(command, out),
             Command::Ports
             | Command::Proxy
-            | Command::Config(_)
+            | Command::Onboard(_)
+            | Command::Ps { .. }
+            | Command::Disk
+            | Command::Completion(_)
             | Command::Doctor
             | Command::Version
             | Command::Help => Ok(()),
