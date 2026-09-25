@@ -165,7 +165,10 @@ enum Drag {
 struct RowDrag {
     from: usize,
     press: (f32, f32),
+    /// The pressed row's rect, so the ghost keeps the grab point under the pointer.
+    source: Rect,
     to: Option<usize>,
+    pointer: (f32, f32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1128,6 +1131,25 @@ impl WorkspaceView {
             .as_ref()
             .and_then(|project| project.workspaces.iter().position(|b| *b == project.active))
             .unwrap_or(0);
+        let row_ghost = self
+            .row_drag
+            .filter(|_| self.dragging == Drag::WorkspaceRow)
+            .and_then(|drag| {
+                let row = workspaces.iter().find(|row| row.index == drag.from)?;
+                let width = if self.layout.left.collapsed {
+                    200.0 * ui::ui_text_scale()
+                } else {
+                    drag.source.w
+                };
+                let area = Rect::new(
+                    drag.source.x + drag.pointer.0 - drag.press.0,
+                    drag.source.y + drag.pointer.1 - drag.press.1,
+                    width,
+                    drag.source.h,
+                    Rgba::TRANSPARENT,
+                );
+                Some(ui::render(&crate::panel::workspace_row_ghost(row), area))
+            });
         let workspace_ops = self.workspace_ops.clone();
         let expanded_ops = self.expanded_ops.clone();
         let list = crate::panel::WorkspaceList {
@@ -1426,6 +1448,11 @@ impl WorkspaceView {
                     .and_then(|v| v.tab_drag_ghost()),
                 _ => None,
             };
+            if let Some(ghost) = row_ghost {
+                drag.rects.extend(ghost.rects);
+                drag.texts.extend(ghost.texts);
+                drag.icons.extend(ghost.icons);
+            }
             // Drawn after both groups so the ghost stays on top while crossing between them.
             if let (Some((gx, gy)), Some((node, gw, gh))) = (self.tab_ghost_at, ghost) {
                 let area = Rect::new(gx - 14.0, gy - gh / 2.0, gw, gh, Rgba::TRANSPARENT);
@@ -3266,15 +3293,30 @@ impl WorkspaceView {
                 self.focus_group(InputGroup::Agent);
                 self.pending_tab = Some((id, x, y));
             } else {
+                let source = self
+                    .header_hits
+                    .iter()
+                    .rev()
+                    .find(|(rect, hit)| {
+                        *hit == id
+                            && x >= rect.x
+                            && x < rect.x + rect.w
+                            && y >= rect.y
+                            && y < rect.y + rect.h
+                    })
+                    .map(|(rect, _)| *rect);
                 self.row_drag = id
                     .checked_sub(crate::WORKSPACE_ROW_BASE)
                     .filter(|_| id < crate::WORKSPACE_ROW_END)
                     .map(|index| index as usize)
                     .filter(|index| *index > 0)
-                    .map(|from| RowDrag {
+                    .zip(source)
+                    .map(|(from, source)| RowDrag {
                         from,
                         press: (x, y),
+                        source,
                         to: None,
+                        pointer: (x, y),
                     });
                 self.header_click(id);
             }
@@ -3690,10 +3732,10 @@ impl WorkspaceView {
             .map(|(_, id)| (id - crate::WORKSPACE_ROW_BASE) as usize)
             .next_back()
             .filter(|index| *index > 0 && *index != drag.from);
-        let changed = to != drag.to;
         drag.to = to;
+        drag.pointer = (x, y);
         self.row_drag = Some(drag);
-        changed
+        true
     }
 
     /// The terminal panel in `region`: a backdrop to blit, with its panes pushed onto `overlays`. In its dock
