@@ -2,6 +2,7 @@
 //! the background while the WORKSPACES panel shows their progress.
 
 mod background;
+mod bundle;
 mod forms;
 mod new_project;
 mod ops;
@@ -11,6 +12,7 @@ mod tickets;
 use std::sync::Arc;
 
 pub use background::{BackgroundContext, BackgroundSync, REFRESH_TITLE};
+pub use bundle::{ExportConfig, ExportConfigModal, FileChooser, ImportConfig, ImportConfigModal};
 pub use forms::{CreateWorkspace, CreateWorkspaceModal, RenameWorkspace, RenameWorkspaceModal};
 pub use new_project::{FolderChooser, NewProject, NewProjectModal};
 pub use ops::{apply_event, apply_repo_state, Finished, OpContext, OpKind, OpQueue};

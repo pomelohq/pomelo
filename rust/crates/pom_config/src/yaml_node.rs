@@ -114,6 +114,130 @@ impl Node {
     }
 }
 
+/// Block-style YAML for `node` that parses back to the same tree (comments and original layout are gone).
+pub fn to_yaml(node: &Node) -> String {
+    let mut text = match &node.kind {
+        NodeKind::Mapping(entries) if entries.is_empty() => "{}".to_string(),
+        NodeKind::Sequence(items) if items.is_empty() => "[]".to_string(),
+        _ => block_lines(node).join("\n"),
+    };
+    text.push('\n');
+    text
+}
+
+enum Written {
+    Inline(String),
+    Literal(Vec<String>),
+    Nested(Vec<String>),
+}
+
+fn written(node: &Node) -> Written {
+    match &node.kind {
+        NodeKind::Scalar { value, plain } => scalar_written(value, *plain),
+        NodeKind::Mapping(entries) if entries.is_empty() => Written::Inline("{}".into()),
+        NodeKind::Sequence(items) if items.is_empty() => Written::Inline("[]".into()),
+        _ => Written::Nested(block_lines(node)),
+    }
+}
+
+fn block_lines(node: &Node) -> Vec<String> {
+    let mut lines = Vec::new();
+    match &node.kind {
+        NodeKind::Mapping(entries) => {
+            for (key, value) in entries {
+                let key = match written(key) {
+                    Written::Inline(text) => text,
+                    _ => quoted(key.text()),
+                };
+                match written(value) {
+                    Written::Inline(text) if text.is_empty() => lines.push(format!("{key}:")),
+                    Written::Inline(text) => lines.push(format!("{key}: {text}")),
+                    Written::Literal(block) => {
+                        lines.push(format!("{key}: {}", block[0]));
+                        lines.extend(block[1..].iter().map(|line| indented(line)));
+                    }
+                    Written::Nested(block) => {
+                        lines.push(format!("{key}:"));
+                        lines.extend(block.iter().map(|line| indented(line)));
+                    }
+                }
+            }
+        }
+        NodeKind::Sequence(items) => {
+            for item in items {
+                match written(item) {
+                    Written::Inline(text) if text.is_empty() => lines.push("-".into()),
+                    Written::Inline(text) => lines.push(format!("- {text}")),
+                    Written::Literal(block) | Written::Nested(block) => {
+                        lines.push(format!("- {}", block[0]));
+                        lines.extend(block[1..].iter().map(|line| indented(line)));
+                    }
+                }
+            }
+        }
+        NodeKind::Scalar { value, plain } => match scalar_written(value, *plain) {
+            Written::Inline(text) => lines.push(text),
+            Written::Literal(block) | Written::Nested(block) => lines.extend(block),
+        },
+    }
+    lines
+}
+
+fn indented(line: &str) -> String {
+    if line.is_empty() {
+        String::new()
+    } else {
+        format!("  {line}")
+    }
+}
+
+fn scalar_written(value: &str, plain: bool) -> Written {
+    // A plain scalar was written bare in the source, so writing it bare again reads the same.
+    if plain && !value.contains('\n') {
+        return Written::Inline(value.to_string());
+    }
+    let literal_safe = value.contains('\n')
+        && !value.starts_with([' ', '\t', '\n'])
+        && value
+            .chars()
+            .all(|c| c == '\n' || c == '\t' || !c.is_control());
+    if !literal_safe {
+        return Written::Inline(quoted(value));
+    }
+    let body = value.trim_end_matches('\n');
+    let trailing = value.len() - body.len();
+    let header = match trailing {
+        0 => "|-",
+        1 => "|",
+        _ => "|+",
+    };
+    let mut block = vec![header.to_string()];
+    block.extend(body.split('\n').map(str::to_string));
+    block.extend(std::iter::repeat_n(
+        String::new(),
+        trailing.saturating_sub(1),
+    ));
+    Written::Literal(block)
+}
+
+fn quoted(value: &str) -> String {
+    let mut text = String::with_capacity(value.len() + 2);
+    text.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => text.push_str("\\\""),
+            '\\' => text.push_str("\\\\"),
+            '\n' => text.push_str("\\n"),
+            '\t' => text.push_str("\\t"),
+            '\r' => text.push_str("\\r"),
+            c if c.is_control() => text.push_str(&format!("\\u{:04x}", c as u32)),
+            c => text.push(c),
+        }
+    }
+    text.push('"');
+    text
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct YamlError {
     pub message: String,
@@ -287,6 +411,48 @@ fn expand_merge_keys(entries: Vec<(Node, Node)>) -> Result<Vec<(Node, Node)>, Ya
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn written_yaml_reads_back_as_the_same_tree() {
+        let source = "session: shop
+empty:
+nothing: {}
+none: []
+quoted: \"true\"
+tricky: \"a: b # c\"
+repos:
+  api:
+    alias: be
+    services:
+      server:
+        cmd: |
+          bundle exec rails s
+          echo done
+        tail: |-
+          no newline
+        keep: |+
+          two
+
+        env:
+          - A=1
+          - name: x
+            value: \"y\\tz\"
+          - - nested
+            - list
+";
+        let original = doc(source);
+        let written = to_yaml(&original);
+        assert_eq!(
+            doc(&written).without_lines(),
+            original.without_lines(),
+            "{written}"
+        );
+        assert!(
+            written.contains("cmd: |\n          bundle exec rails s\n"),
+            "{written}"
+        );
+        assert_eq!(to_yaml(&Node::empty_mapping()), "{}\n");
+    }
 
     fn doc(source: &str) -> Node {
         match parse(source) {

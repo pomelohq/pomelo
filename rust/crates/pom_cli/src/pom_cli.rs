@@ -1,12 +1,14 @@
 //! `pom`: a workspace's services from a terminal. It drives the same holders, leases and compose project as
 //! the app, so a service started here shows up in the app's Services panel and the other way round.
 
+mod config;
 mod proxy;
 mod workspaces;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use config::ConfigCommand;
 use pom_config::{Config, DepGraph};
 use pom_core::Project;
 use pom_paths::StateDir;
@@ -38,6 +40,12 @@ commands:
   ws list            workspaces, their repos and running services
   prepare-main [--no-seed]    reset main's databases, migrate and seed (new workspaces copy them)
   doctor             what keeps the project from running, and how to fix it
+  config export [--secrets] [-o file]
+                     the merged config as YAML; --secrets seals the session's secrets with it
+                     into a bundle (password read from stdin)
+  config import <file> [--config-only|--secrets-only]
+                     replace pom.yml with a YAML file or bundle (old one kept as pom.yml.bak)
+                     and store the bundle's secrets
   version
 
 The workspace is the one the current directory is in, else the main one; -w picks another.
@@ -55,6 +63,7 @@ enum Command {
     Url(String),
     Proxy,
     Workspace(WorkspaceCommand),
+    Config(ConfigCommand),
     Doctor,
     Version,
     Help,
@@ -84,6 +93,8 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Ports => ports(&StateDir::from_env(), out),
             Command::Doctor => doctor(invocation.config.as_deref(), cwd, out),
             Command::Proxy => proxy::serve(&StateDir::from_env(), out),
+            Command::Config(ref command) => find_config(invocation.config.as_deref(), cwd)
+                .and_then(|path| config::execute(command, &path, out)),
             ref command => Session::open(&invocation, cwd)
                 .and_then(|session| session.execute(command, out, err)),
         };
@@ -110,7 +121,12 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
     while let Some(arg) = iter.next() {
         // Workspace commands have flags of their own.
         let help = matches!(arg.as_str(), "-h" | "--help");
-        if !help && matches!(words.first(), Some(&("ws" | "workspace" | "prepare-main"))) {
+        if !help
+            && matches!(
+                words.first(),
+                Some(&("ws" | "workspace" | "prepare-main" | "config"))
+            )
+        {
             words.push(arg);
             continue;
         }
@@ -156,6 +172,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "proxy" => none().map(|_| Command::Proxy)?,
         "ws" | "workspace" => Command::Workspace(workspaces::parse(rest, false)?),
         "prepare-main" => Command::Workspace(workspaces::parse(rest, true)?),
+        "config" => Command::Config(config::parse(rest)?),
         "doctor" => none().map(|_| Command::Doctor)?,
         "version" => Command::Version,
         "help" => Command::Help,
@@ -301,6 +318,7 @@ impl Session {
             Command::Workspace(command) => self.workspace(command, out),
             Command::Ports
             | Command::Proxy
+            | Command::Config(_)
             | Command::Doctor
             | Command::Version
             | Command::Help => Ok(()),

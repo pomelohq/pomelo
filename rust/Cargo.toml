@@ -26,6 +26,7 @@ members = [
     "crates/pom_sessions",
     "crates/pom_lock",
     "crates/pom_secrets",
+    "crates/pom_bundle",
     "crates/pom_forge",
     "crates/pom_doctor",
     "crates/pom_detect",
@@ -108,3 +109,7 @@ vte = { opt-level = 3 }
 imara-diff = { opt-level = 3 }
 nucleo-matcher = { opt-level = 3 }
 serde_json = { opt-level = 3 }
+scrypt = { opt-level = 3 }
+salsa20 = { opt-level = 3 }
+pbkdf2 = { opt-level = 3 }
+sha2 = { opt-level = 3 }

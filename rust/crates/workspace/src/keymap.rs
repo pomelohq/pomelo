@@ -27,10 +27,12 @@ pub enum Action {
     CloseActiveItem,
     CloseAllItems,
     OpenInExternalEditor,
+    ExportConfig,
+    ImportConfig,
 }
 
 impl Action {
-    pub const ALL: [Action; 24] = [
+    pub const ALL: [Action; 26] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -55,6 +57,8 @@ impl Action {
         Action::CloseActiveItem,
         Action::CloseAllItems,
         Action::OpenInExternalEditor,
+        Action::ExportConfig,
+        Action::ImportConfig,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -84,6 +88,8 @@ impl Action {
             Action::CloseActiveItem => "pane::CloseActiveItem",
             Action::CloseAllItems => "pane::CloseAllItems",
             Action::OpenInExternalEditor => "workspace::OpenInExternalEditor",
+            Action::ExportConfig => "workspace::ExportConfig",
+            Action::ImportConfig => "workspace::ImportConfig",
         }
     }
 
@@ -114,6 +120,8 @@ impl Action {
             Action::CloseActiveItem => "Close Tab",
             Action::CloseAllItems => "Close All Tabs",
             Action::OpenInExternalEditor => "Open in External Editor",
+            Action::ExportConfig => "Export Config",
+            Action::ImportConfig => "Import Config",
         }
     }
 

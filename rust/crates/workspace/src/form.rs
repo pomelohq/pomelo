@@ -192,6 +192,7 @@ pub struct InputField {
     pub label: &'static str,
     pub placeholder: &'static str,
     pub font: FieldFont,
+    pub masked: bool,
 }
 
 impl InputField {
@@ -201,7 +202,14 @@ impl InputField {
             label,
             placeholder,
             font: FieldFont::Ui,
+            masked: false,
         }
+    }
+
+    /// Draws `*` per character, for passwords.
+    pub fn masked(mut self) -> InputField {
+        self.masked = true;
+        self
     }
 
     pub fn mono(mut self) -> InputField {
@@ -264,14 +272,33 @@ impl InputField {
             .bg(colors.editor_background)
             .border(1.0, border)
             .on_click(click_id)
-            .child(self.field.render(
-                self.placeholder,
-                focused,
-                colors.text,
-                INPUT_HEIGHT,
-                self.font,
-            ))
+            .child(match self.dots() {
+                Some(dots) => dots.render(
+                    self.placeholder,
+                    focused,
+                    colors.text,
+                    INPUT_HEIGHT,
+                    self.font,
+                ),
+                None => self.field.render(
+                    self.placeholder,
+                    focused,
+                    colors.text,
+                    INPUT_HEIGHT,
+                    self.font,
+                ),
+            })
             .into()
+    }
+
+    fn dots(&self) -> Option<TextField> {
+        if !self.masked || self.field.text().is_empty() {
+            return None;
+        }
+        let mut dots = TextField::default();
+        dots.set_text(&"*".repeat(self.field.text().chars().count()));
+        dots.move_to_end();
+        Some(dots)
     }
 }
 

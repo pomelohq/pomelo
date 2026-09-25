@@ -44,6 +44,8 @@ pub struct SideEffects {
     pub toggle_login_item: bool,
     pub check_updates: bool,
     pub edit_keymap: bool,
+    pub export_config: bool,
+    pub import_config: bool,
 }
 
 /// Innermost hit id under `(x, y)` (regions pushed outer-first, inner-last), like `ui::Window::hit_at`.
@@ -854,6 +856,12 @@ impl SettingsView {
         } else if id == settings_ui::CTRL_EDIT_KEYMAP {
             self.commit_edit();
             self.pending.edit_keymap = true;
+        } else if id == settings_ui::CTRL_EXPORT_CONFIG {
+            self.commit_edit();
+            self.pending.export_config = true;
+        } else if id == settings_ui::CTRL_IMPORT_CONFIG {
+            self.commit_edit();
+            self.pending.import_config = true;
         } else if id == settings_ui::CTRL_REINSTALL_AGENTS {
             self.commit_edit();
             self.pending.reinstall_agents = true;
@@ -1134,7 +1142,10 @@ mod tests {
         view.click(settings_ui::CTRL_START_AT_LOGIN);
         view.click(settings_ui::CTRL_CHECK_UPDATES);
         view.click(settings_ui::CTRL_EDIT_KEYMAP);
+        view.click(settings_ui::CTRL_EXPORT_CONFIG);
+        view.click(settings_ui::CTRL_IMPORT_CONFIG);
         let effects = view.take_side_effects();
+        assert!(effects.export_config && effects.import_config);
         assert!(effects.toggle_login_item && effects.check_updates && effects.edit_keymap);
         view.click(settings_ui::CTRL_TERM_SHELL);
         assert!(view.key_text("/bin/bash -l"));

@@ -38,6 +38,7 @@ pull_request_ui = { path = "../pull_request_ui" }
 pom_doctor = { path = "../pom_doctor" }
 environment_ui = { path = "../environment_ui" }
 pom_secrets = { path = "../pom_secrets" }
+pom_bundle = { path = "../pom_bundle" }
 winit.workspace = true
 anyhow.workspace = true
 

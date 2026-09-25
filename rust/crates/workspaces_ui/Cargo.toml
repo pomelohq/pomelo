@@ -10,6 +10,7 @@ path = "src/workspaces_ui.rs"
 
 [dependencies]
 pom_agent = { path = "../pom_agent" }
+pom_bundle = { path = "../pom_bundle" }
 pom_config = { path = "../pom_config" }
 pom_jira = { path = "../pom_jira" }
 pom_lock = { path = "../pom_lock" }

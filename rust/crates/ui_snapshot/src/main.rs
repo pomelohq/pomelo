@@ -655,6 +655,27 @@ fn main() -> anyhow::Result<()> {
                 view.open_window_modal(Box::new(modal))
             });
         }
+        if mode == "exportconfig" {
+            let mut modal = workspaces_ui::ExportConfigModal::new(3);
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 4);
+            workspace::WindowModal::text(&mut modal, "secret");
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        if mode == "importconfig" {
+            let file = std::env::temp_dir().join("pom-snapshot-import.yml");
+            let yaml = "session: myproject\ndefault_branch: main\nrepos:\n  api:\n    alias: be\n    services:\n      server:\n        type: backend\n        cmd: bundle exec rails s -p $PORT\n        env:\n          DATABASE_URL: \"{{db.main.url}}\"\n          API_KEY: \"{{secret.API_KEY}}\"\n  web:\n    services:\n      app:\n        cmd: pnpm dev --port $PORT\n        env:\n          API_URL: \"{{be.server.url}}\"\n";
+            if let Err(error) = std::fs::write(&file, yaml) {
+                eprintln!("snapshot: {error}");
+            }
+            let mut modal =
+                workspaces_ui::ImportConfigModal::new(Box::new(move || Some(file.clone())));
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 6);
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
         if mode == "prompt" {
             entity.update(app.app_mut(), |view, _| {
                 view.ask(workspace::Prompt {
