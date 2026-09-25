@@ -1057,11 +1057,13 @@ fn layout_children(
     for (i, c) in d.children.iter().enumerate() {
         let main = mains[i];
         // Cross axis: a div with an explicit cross length uses it (centered when items_center, else start);
-        // otherwise divs stretch to fill, and labels keep their content height aligned start/center.
+        // otherwise divs stretch to fill, and labels keep their content height aligned start/center. A row
+        // that centers its items keeps a container at its content height and centers it too, as flexbox's
+        // align-items: center does; stretching it would leave its own content stuck to the top.
         let (cross, cross_off) = match child_cross_len(c, d.axis) {
             Len::Px(v) => (v, align_off(inner_cross, v, d.items_center)),
             Len::Auto => {
-                if is_leaf(c) {
+                if is_leaf(c) || (d.items_center && d.axis == Axis::Row) {
                     let (iw, ih) = intrinsic(c);
                     let ic = if d.axis == Axis::Row { ih } else { iw };
                     (ic, align_off(inner_cross, ic, d.items_center))
