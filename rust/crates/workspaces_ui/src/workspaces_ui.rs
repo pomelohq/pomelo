@@ -19,7 +19,9 @@ pub use bundle::{ExportConfig, ExportConfigModal, FileChooser, ImportConfig, Imp
 pub use forms::{CreateWorkspace, CreateWorkspaceModal, RenameWorkspace, RenameWorkspaceModal};
 pub use new_project::{FolderChooser, NewProject, NewProjectModal};
 pub use ops::{apply_event, apply_repo_state, Finished, OpContext, OpKind, OpQueue};
-pub use repo_edit::{RemoveRepo, RemoveRepoModal, RenameAlias, RenameAliasModal};
+pub use repo_edit::{
+    PickReposModal, PickedRepos, RemoveRepo, RemoveRepoModal, RenameAlias, RenameAliasModal,
+};
 pub use tickets::{TicketSource, TicketStatuses};
 
 /// Asks for a display name and branch slug from a seed slug and a description (Claude in the app).

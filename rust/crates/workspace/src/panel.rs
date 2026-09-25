@@ -363,7 +363,7 @@ pub struct WorkspaceRow {
     /// How many of its services run.
     pub running: usize,
     pub pr: Option<crate::PrSummary>,
-    /// Repos of the config this workspace lacks.
+    /// Repos of the config main has no clone of (only main has any).
     pub missing: Vec<String>,
 }
 
@@ -627,9 +627,12 @@ fn workspace_row(row: &WorkspaceRow, current: bool) -> Node {
     let mut has_details = false;
     if !row.missing.is_empty() {
         details = details.child(
-            label(format!("missing {}", row.missing.join(", ")))
-                .size(11.0)
-                .color(colors.warning),
+            div().row().flex(1.0).items_center().child(
+                label(format!("not cloned: {}", row.missing.join(", ")))
+                    .size(11.0)
+                    .color(colors.warning)
+                    .truncate(),
+            ),
         );
         has_details = true;
     }

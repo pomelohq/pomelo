@@ -128,6 +128,8 @@ pub struct Dock {
     pub position: DockPosition,
     pub width: f32,
     pub collapsed: bool,
+    /// While its divider is dragged: the width following the pointer, down to the rail's.
+    pub live: Option<f32>,
     pub panel: Box<dyn Panel>,
 }
 
@@ -138,7 +140,9 @@ impl Dock {
     fn effective(&self) -> f32 {
         match self.position {
             DockPosition::Left => {
-                if self.collapsed {
+                if let Some(live) = self.live {
+                    live
+                } else if self.collapsed {
                     RAIL_W
                 } else {
                     self.width.clamp(DOCK_MIN, DOCK_MAX)
@@ -163,8 +167,12 @@ impl Dock {
 
     /// Render the dock's panel body into `region`, after syncing it with the current session data.
     pub fn render_body(&mut self, region: Rect, list: &crate::panel::WorkspaceList<'_>) -> Painted {
+        render(&self.body(list), region)
+    }
+
+    pub fn body(&mut self, list: &crate::panel::WorkspaceList<'_>) -> ui::Node {
         self.panel.sync(list);
-        render(&self.panel.render(), region)
+        self.panel.render()
     }
 }
 
@@ -194,7 +202,7 @@ pub struct ProjectInfo {
     /// Each ticket status's Jira category (`new`, `indeterminate`, `done`; same order).
     pub ticket_categories: Vec<String>,
     pub prs: Vec<Option<PrSummary>>,
-    /// Repos of the config each workspace lacks (same order).
+    /// Repos of the config main has no clone of (other workspaces pick their repos on purpose: empty).
     pub missing: Vec<Vec<String>>,
 }
 
@@ -282,8 +290,10 @@ pub enum RowAction {
     UpdateMain,
     PrepareMain,
     OpenTicket,
-    /// Check out (or, in main, clone) the repos the config has that this workspace lacks.
+    /// Clone into main the repos the config names but main lacks.
     AddMissingRepos,
+    /// Pick more of the config's repos to check out in this workspace.
+    AddRepos,
 }
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
@@ -332,6 +342,7 @@ pub const MENU_WS_UPDATE_MAIN: u64 = 943;
 pub const MENU_WS_PREPARE_MAIN: u64 = 944;
 pub const MENU_WS_OPEN_TICKET: u64 = 945;
 pub const MENU_WS_ADD_MISSING: u64 = 946;
+pub const MENU_WS_ADD_REPOS: u64 = 947;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,
@@ -1392,18 +1403,21 @@ impl Default for Layout {
                 position: DockPosition::Left,
                 width: 260.0,
                 collapsed: false,
+                live: None,
                 panel: Box::new(ProjectPanel::default()),
             },
             right: Dock {
                 position: DockPosition::Right,
                 width: 300.0,
                 collapsed: true,
+                live: None,
                 panel: Box::new(OutlinePanel),
             },
             bottom: Dock {
                 position: DockPosition::Bottom,
                 width: 220.0, // height for the bottom dock
                 collapsed: false,
+                live: None,
                 panel: Box::new(TerminalPanel),
             },
             sessions: Vec::new(),
@@ -1600,11 +1614,23 @@ impl Layout {
     /// Drag the sidebar divider; width from the sidebar's outer edge (left: `x`, right: `w - x`).
     pub fn set_left_divider(&mut self, x: f32, w: f32) {
         let sw = if self.sidebar_left() { x } else { w - x };
-        if sw < DOCK_MIN - 20.0 {
-            self.left.collapsed = true;
-        } else {
-            self.left.collapsed = false;
-            self.left.width = sw.clamp(DOCK_MIN, DOCK_MAX);
+        // The edge follows the pointer the whole way; below the list's minimum it shows as the rail.
+        let live = sw.clamp(RAIL_W, DOCK_MAX);
+        self.left.live = Some(live);
+        self.left.collapsed = live < DOCK_MIN;
+        if !self.left.collapsed {
+            self.left.width = live;
+        }
+    }
+
+    /// Ends a divider drag: a width between the rail and the list's minimum settles on whichever is nearer.
+    pub fn finish_left_drag(&mut self) {
+        let Some(live) = self.left.live.take() else {
+            return;
+        };
+        self.left.collapsed = live < (RAIL_W + DOCK_MIN) / 2.0;
+        if !self.left.collapsed {
+            self.left.width = live.max(DOCK_MIN);
         }
     }
 

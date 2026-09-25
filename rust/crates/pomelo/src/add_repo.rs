@@ -128,7 +128,6 @@ impl App {
         };
         self.with_workspace_view(window, |view, _| view.show_toast(message, None));
         self.refresh_project_now(window);
-        self.add_missing_everywhere(window);
     }
 
     /// The Project page's repository rows for the main window Settings works on.
@@ -266,52 +265,42 @@ impl App {
         self.with_workspace_view(id, |view, _| view.show_toast(message, None));
     }
 
-    /// Brings every workspace in line with the config: main first (it is where worktrees come from).
-    pub(crate) fn apply_config(&mut self, id: WindowId) {
+    /// Clones into main the repos the config names but main lacks; other workspaces keep the repos they chose.
+    pub(crate) fn clone_missing_repos(&mut self, id: WindowId) {
         let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
             return;
         };
         let main_workspace = project
             .workspaces
             .iter()
-            .find(|workspace| workspace.is_main)
+            .find(|workspace| workspace.is_main && !project.missing_repos(workspace).is_empty())
             .cloned();
-        let drifted = project
-            .workspaces
-            .iter()
-            .any(|workspace| !project.missing_repos(workspace).is_empty());
-        if !drifted {
-            self.with_workspace_view(id, |view, _| {
-                view.show_toast("Every workspace matches the config", None)
-            });
-            return;
-        }
         match main_workspace {
-            Some(main) if !project.missing_repos(&main).is_empty() => {
-                self.add_missing_repos(id, &main)
+            Some(main) => self.add_missing_repos(id, &main),
+            None => {
+                self.with_workspace_view(id, |view, _| {
+                    view.show_toast("Main has every repo of the config", None)
+                });
             }
-            _ => self.add_missing_everywhere(id),
         }
     }
 
-    /// Every workspace but main gets a worktree of the repos it lacks.
-    fn add_missing_everywhere(&mut self, id: WindowId) {
+    /// Lets the user pick more of the config's repos for a workspace, which started with the ones it needed.
+    pub(crate) fn pick_repos(&mut self, id: WindowId, target: &pom_layout::Workspace) {
         let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
             return;
         };
-        let wanted: Vec<(String, Vec<String>)> = project
-            .workspaces
-            .iter()
-            .filter(|workspace| !workspace.is_main)
-            .map(|workspace| (workspace.branch.clone(), project.missing_repos(workspace)))
-            .filter(|(_, missing)| !missing.is_empty())
-            .collect();
-        for (branch, missing) in wanted {
-            self.queue_add_repos(id, &branch, missing);
+        let available = project.missing_repos(target);
+        if available.is_empty() {
+            let message = format!("{} already has every repo of the config", target.branch);
+            self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+            return;
         }
+        let modal = workspaces_ui::PickReposModal::new(&target.branch, available);
+        self.focus_main_with_modal(id, Box::new(modal));
     }
 
-    fn queue_add_repos(&mut self, id: WindowId, branch: &str, repos: Vec<String>) {
+    pub(crate) fn queue_add_repos(&mut self, id: WindowId, branch: &str, repos: Vec<String>) {
         let Some(context) = self.op_context(id) else {
             return;
         };
