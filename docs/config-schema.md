@@ -85,7 +85,7 @@ rejects them.
 ## Removed (not "config to run the project")
 
 - **App config** — `ui`, `code_agents` (→ app Settings, not a shared artifact).
-- **Features / integrations** — `jira`, `archive`, `sync`, `plugins`.
+- **Features / integrations** — `jira`, `archive`, `plugins` (`sync` stays: it schedules Keep Main Fresh).
 - **Orchestration** — `combinations`, `workspaces`.
 - **System-managed routing** — `proxy`, `webhook` (Pomelo auto-routes
   `/_pom_dev/<repo>/<svc>` + `<svc>.<repo>.<branch>.localhost`, webhooks at

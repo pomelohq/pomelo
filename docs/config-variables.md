@@ -14,7 +14,7 @@ alias fails loudly).
 | Token | Resolves to |
 |---|---|
 | `{{shared.<name>.url}}` | Shared service connection `user:pass@host:port` |
-| `{{shared.<name>.host}}` | Host — always `localhost` on the host machine |
+| `{{shared.<name>.host}}` | Host — always `127.0.0.1` (explicit IPv4: `localhost` may resolve to `::1`, which Docker's publish misses) |
 | `{{shared.<name>.port}}` | Allocated port for the shared service |
 | `{{shared.<name>.user}}` / `.pass` | Credentials from `shared_services.<name>` |
 | `{{shared.<name>.slot}}` | Capacity slot index (e.g. Redis DB number) |
@@ -37,8 +37,8 @@ Declare a repo's databases so `{{db.<name>}}` has something to resolve:
 repos:
   api:
     databases:
-      main: {}      # → session-prefixed, branch-resolved name
-      test: {}
+      main: "{{branch.safe}}"        # name template; the session prefix is added
+      test: "{{branch.safe}}_test"
 ```
 
 ## Env wiring examples

@@ -16,7 +16,7 @@ cat > target/latest.json <<JSON
   "version": "${VERSION}",
   "arch": "aarch64",
   "asset": "$(basename "$TARBALL")",
-  "min_os": "12.0"
+  "min_os": "14.0"
 }
 JSON
 

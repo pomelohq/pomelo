@@ -2669,7 +2669,7 @@ pub fn status_tooltip(id: u64) -> Option<String> {
     if id == BOTTOM_TOGGLE {
         Some("Terminal  ⌘J".into())
     } else if id == RIGHT_TOGGLE {
-        Some("Agent  ⌘I".into())
+        Some("Agent  ⌘?".into())
     } else if id == CURSOR_POSITION {
         Some("Go to Line/Column  ^G".into())
     } else if id == DIAGNOSTIC_MESSAGE {
