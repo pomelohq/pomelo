@@ -344,6 +344,7 @@ impl AgentDot {
 pub struct WorkspaceRow {
     pub index: usize,
     pub label: String,
+    pub branch: String,
     pub agent: Option<AgentDot>,
     /// The workspace's Jira ticket status, when it has one.
     pub ticket: String,
@@ -435,6 +436,98 @@ impl Panel for ProjectPanel {
         }
         col.into()
     }
+}
+
+/// What a rail cell calls a workspace: the ticket number a branch starts with (`proj-101-login` is `101`),
+/// else the start of the first word of its name.
+pub fn rail_label(row: &WorkspaceRow) -> String {
+    let branch = row.branch.as_str();
+    let letters = branch.chars().take_while(char::is_ascii_alphabetic).count();
+    let digits: String = branch
+        .get(letters + 1..)
+        .unwrap_or("")
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if letters > 0 && branch.as_bytes().get(letters) == Some(&b'-') && !digits.is_empty() {
+        return digits;
+    }
+    let name = if row.label.is_empty() {
+        branch
+    } else {
+        &row.label
+    };
+    let word = name
+        .split(|c: char| c.is_whitespace() || matches!(c, '-' | '_' | '/'))
+        .find(|word| !word.is_empty())
+        .unwrap_or(name);
+    word.chars().take(5).collect()
+}
+
+/// The WORKSPACES panel folded to a rail: a new-workspace button, then one cell per workspace with its short
+/// label and, under it, its agent and running-services dots. Cells click like the rows they stand for.
+pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
+    let colors = theme();
+    let cell_w = (width - 8.0).max(24.0);
+    let mut column = div()
+        .col()
+        .w_px(width)
+        .py(8.0)
+        .gap(4.0)
+        .items_center()
+        .child(
+            div()
+                .row()
+                .items_center()
+                .justify_center()
+                .w_px(cell_w)
+                .h_px(26.0)
+                .rounded(4.0)
+                .on_click(crate::WORKSPACE_NEW)
+                .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
+        );
+    for row in list.rows {
+        let current = row.index == list.current;
+        let mut dots = div()
+            .row()
+            .h_px(6.0)
+            .gap(3.0)
+            .items_center()
+            .justify_center();
+        if let Some(agent) = row.agent {
+            dots = dots.child(div().w_px(5.0).h_px(5.0).rounded(2.5).bg(agent.color()));
+        }
+        if row.running > 0 {
+            dots = dots.child(div().w_px(5.0).h_px(5.0).rounded(2.5).bg(colors.success));
+        }
+        let mut cell = div()
+            .col()
+            .items_center()
+            .justify_center()
+            .gap(2.0)
+            .w_px(cell_w)
+            .h_px(34.0)
+            .rounded(4.0)
+            .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64)
+            .child(
+                div().row().justify_center().w_px(cell_w).child(
+                    label(rail_label(row))
+                        .size(11.0)
+                        .color(if current {
+                            colors.text
+                        } else {
+                            colors.text_muted
+                        })
+                        .truncate(),
+                ),
+            )
+            .child(dots);
+        if current {
+            cell = cell.bg(colors.element_selected);
+        }
+        column = column.child(cell);
+    }
+    column.into()
 }
 
 /// One workspace: its agent (when one runs), name and pull requests, and below, when there is any, the
@@ -777,6 +870,7 @@ mod tests {
         WorkspaceRow {
             index,
             label: label.into(),
+            branch: label.into(),
             agent,
             ticket: String::new(),
             ticket_category: String::new(),
@@ -913,6 +1007,32 @@ mod tests {
         let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
         assert!(ids.contains(&(crate::WORKSPACE_PR_BASE + 1)));
         assert!(!ids.contains(&crate::WORKSPACE_PR_BASE));
+    }
+
+    #[test]
+    fn the_rail_names_workspaces_by_ticket_number_and_clicks_like_rows() {
+        let mut ticket = row(1, "Login page", Some(AgentDot::Thinking));
+        ticket.branch = "proj-101-login".into();
+        ticket.running = 2;
+        let mut plain = row(2, "", None);
+        plain.branch = "experiment".into();
+        assert_eq!(rail_label(&ticket), "101");
+        assert_eq!(rail_label(&plain), "exper");
+        assert_eq!(rail_label(&row(0, "main", None)), "main");
+        let rows = [row(0, "main", None), ticket, plain];
+        let painted = ui::render(
+            &workspace_rail(&list(&rows, &[]), crate::RAIL_W),
+            ui::Rect::new(0.0, 0.0, crate::RAIL_W, 600.0, ui::Rgba::TRANSPARENT),
+        );
+        let texts: Vec<String> = painted.texts.iter().map(|t| t.text.clone()).collect();
+        assert!(texts.contains(&"101".to_string()), "{texts:?}");
+        let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
+        assert!(ids.contains(&crate::WORKSPACE_NEW));
+        assert!(ids.contains(&(crate::WORKSPACE_ROW_BASE + 2)));
+        assert!(painted
+            .rects
+            .iter()
+            .all(|rect| rect.x + rect.w <= crate::RAIL_W + 0.5));
     }
 
     #[test]
