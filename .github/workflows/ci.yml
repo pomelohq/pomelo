@@ -7,7 +7,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, rust]
   workflow_dispatch:
 
 permissions:
@@ -24,6 +24,7 @@ jobs:
     outputs:
       go: ${{ steps.f.outputs.go }}
       app: ${{ steps.f.outputs.app }}
+      rust: ${{ steps.f.outputs.rust }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -44,6 +45,9 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/app-build.yml'
               - '.github/actions/setup-xcode/**'
+            rust:
+              - 'rust/**'
+              - '.github/workflows/ci.yml'
 
   go:
     name: Go build + vet + test
@@ -60,6 +64,25 @@ jobs:
       - run: go vet ./...
       - name: Test (-short skips subprocess integration tests, headless CI can't PTY)
         run: go test -short ./...
+
+  # The Rust rewrite's gate, the same `make check` run locally: fmt, clippy -D warnings, tests.
+  rust:
+    name: Rust fmt + clippy + test
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: make check
 
   # Reuse the single build definition (app-build.yml) instead of duplicating it.
   # publish=false = compile the app + run Swift tests, sharing the same DerivedData
@@ -88,13 +111,13 @@ jobs:
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, go, app, lint]
+    needs: [changes, go, app, lint, rust]
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "changes=${{ needs.changes.result }} go=${{ needs.go.result }} app=${{ needs.app.result }} lint=${{ needs.lint.result }}"
+          echo "changes=${{ needs.changes.result }} go=${{ needs.go.result }} app=${{ needs.app.result }} lint=${{ needs.lint.result }} rust=${{ needs.rust.result }}"
           test "${{ needs.changes.result }}" = "success" || exit 1
-          for r in "${{ needs.go.result }}" "${{ needs.app.result }}" "${{ needs.lint.result }}"; do
+          for r in "${{ needs.go.result }}" "${{ needs.app.result }}" "${{ needs.lint.result }}" "${{ needs.rust.result }}"; do
             case "$r" in success|skipped) ;; *) echo "dependency failed: $r"; exit 1 ;; esac
           done
           echo "CI gate passed"

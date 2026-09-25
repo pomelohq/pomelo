@@ -41,11 +41,12 @@ Our crates must be warning-clean; vendored deps are cap-lint-allowed so their wa
 
 - `make run` builds + launches **PomeloDev.app** (kills the previous dev instance first). Dev and prod are
   distinct bundles that coexist: `PomeloDev.app` (`app.pomelo.dev`) and `Pomelo.app` (`app.pomelo`).
-- Unsigned for now; signing/notarization hooks are marked `TODO(sign)` in `scripts/bundle-macos.sh` and
-  `.github/workflows/rust-release.yml`.
+- Local builds are unsigned. `scripts/bundle-macos.sh` signs (hardened runtime) when `SIGN_ID` is set and
+  `scripts/make-dmg.sh` notarizes + staples when `NOTARY_PROFILE` is set; the release workflow sets both.
 - Release: `make patch|minor|major` bumps the workspace version, commits, tags `rust-v<x>` (kept distinct from
-  the Go/Swift app's `v*` tags). Pushing that tag triggers the release workflow (build -> DMG + update tarball
-  -> GitHub Release). CI gate runs on every push/PR under `rust/**`.
+  the Go/Swift app's `v*` tags). Pushing that tag triggers `.github/workflows/rust-release.yml` (build -> sign
+  -> notarized DMG + update tarball -> GitHub Release). The Rust job in `.github/workflows/ci.yml` runs
+  `make check` on every push/PR touching `rust/**` and is part of the required `CI Gate`.
 
 ## Vendored deps
 
