@@ -6,8 +6,8 @@ use std::ops::Range;
 
 use ui::{div, theme, Node, Rgba};
 
-use crate::markdown_view::{Markdown, MarkdownLayout, MarkdownStyle};
 use crate::{char_advance, edit_line_h, DiagnosticEntry, FileItem};
+use markdown::{Markdown, MarkdownLayout, MarkdownStyle};
 
 const BLOCK_MAX_CHARACTERS: f32 = 120.0;
 const BLOCK_PADDING_LEFT: f32 = 6.0;
@@ -31,6 +31,7 @@ fn block_style() -> MarkdownStyle {
         paragraph_spacing: 0.0,
         code_block_margin: 0.0,
         heading_margin_top: 0.0,
+        ..crate::hover::hover_style()
     }
 }
 
