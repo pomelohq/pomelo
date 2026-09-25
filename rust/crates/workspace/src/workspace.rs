@@ -610,6 +610,9 @@ pub trait Item: 'static {
     fn cursor_status(&self) -> Option<String> {
         None
     }
+    fn language_name(&self) -> Option<&'static str> {
+        None
+    }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
@@ -1135,6 +1138,7 @@ pub trait ItemInput {
     fn editor_save(&mut self) -> Option<Result<(), String>>;
     fn editor_focused(&self) -> bool;
     fn cursor_position(&self) -> Option<String>;
+    fn active_language(&self) -> Option<&'static str>;
     /// Popovers at the caret (completions) and under the pointer (hover), placed for a window of `viewport`.
     fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)>;
     /// A wheel or trackpad scroll over popover `index`.
@@ -2456,11 +2460,16 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                 }
                 row = row.child(button);
             }
-            if ch.language {
+            let language = layout
+                .files_view
+                .as_ref()
+                .and_then(|v| v.active_language())
+                .filter(|_| ch.language);
+            if let Some(language) = language {
                 if shows_position {
                     row = row.child(vsep());
                 }
-                row = row.child(label("Rust").size(12.0).color(dim));
+                row = row.child(label(language).size(12.0).color(dim));
             }
             if let Some(g) = dock_group(DockPosition::Bottom) {
                 row = row.child(vsep()).child(g);

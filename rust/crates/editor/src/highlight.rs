@@ -54,7 +54,6 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// Columns per indent level: 2 for the languages written that way by convention, 4 otherwise.
     pub fn tab_size(self) -> usize {
         match self {
             Lang::TypeScript
@@ -63,8 +62,66 @@ impl Lang {
             | Lang::Json
             | Lang::Yaml
             | Lang::Markdown
-            | Lang::Dart => 2,
+            | Lang::Dart
+            | Lang::Ruby
+            | Lang::Elixir
+            | Lang::Gleam => 2,
             _ => 4,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Lang::Rust => "Rust",
+            Lang::TypeScript => "TypeScript",
+            Lang::Tsx => "TSX",
+            Lang::JavaScript => "JavaScript",
+            Lang::Go => "Go",
+            Lang::Python => "Python",
+            Lang::Json => "JSON",
+            Lang::C => "C",
+            Lang::Cpp => "C++",
+            Lang::Bash => "Shell Script",
+            Lang::Css => "CSS",
+            Lang::Html => "HTML",
+            Lang::Ruby => "Ruby",
+            Lang::Java => "Java",
+            Lang::Toml => "TOML",
+            Lang::Yaml => "YAML",
+            Lang::Lua => "Lua",
+            Lang::CSharp => "C#",
+            Lang::Markdown => "Markdown",
+            Lang::Php => "PHP",
+            Lang::Scala => "Scala",
+            Lang::Elixir => "Elixir",
+            Lang::Haskell => "Haskell",
+            Lang::Ocaml => "OCaml",
+            Lang::Scss => "SCSS",
+            Lang::Nix => "Nix",
+            Lang::Swift => "Swift",
+            Lang::Make => "Makefile",
+            Lang::Xml => "XML",
+            Lang::Zig => "Zig",
+            Lang::Dart => "Dart",
+            Lang::Sql => "SQL",
+            Lang::Kotlin => "Kotlin",
+            Lang::Svelte => "Svelte",
+            Lang::Dockerfile => "Dockerfile",
+            Lang::GraphQl => "GraphQL",
+            Lang::Hcl => "HCL",
+            Lang::Proto => "Proto",
+            Lang::Diff => "Diff",
+            Lang::GitCommit => "Git Commit",
+            Lang::Ini => "INI",
+            Lang::Erlang => "Erlang",
+            Lang::Gleam => "Gleam",
+            Lang::R => "R",
+            Lang::Elm => "Elm",
+            Lang::Prisma => "Prisma",
+            Lang::MarkdownInline => "Markdown-Inline",
+            Lang::Regex => "Regex",
+            Lang::JsDoc => "JSDoc",
+            Lang::PlainText => "Plain Text",
         }
     }
 
