@@ -4782,6 +4782,8 @@ pub struct FilesView {
     root: PathBuf,
     /// Files open here can be read but not edited (the main workspace: work happens in branch workspaces).
     read_only: bool,
+    /// Paths still editable in a read-only view: the project's config lives outside any branch.
+    writable: Vec<PathBuf>,
     tree: Vec<FileNode>,
     /// The tree walk still running off the UI thread; the tree fills in as it reports.
     scan: Option<files::BackgroundScan>,
@@ -4843,6 +4845,11 @@ impl FilesView {
     /// never stalls the window.
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
+        self
+    }
+
+    pub fn writable(mut self, paths: Vec<PathBuf>) -> Self {
+        self.writable = paths;
         self
     }
 
@@ -4930,6 +4937,7 @@ impl FilesView {
             }),
             hover: None,
             read_only: false,
+            writable: Vec::new(),
             pending_moves: Vec::new(),
             other_dirty: Vec::new(),
             go_to_line: None,
@@ -6839,12 +6847,14 @@ impl FunctionView for FilesView {
         outcome.changed |= self.serve_project_search();
         self.sync_markdown_previews();
         if self.read_only {
+            let writable = &self.writable;
             self.panes.for_each_item_mut(&mut |item| {
                 if let Some(file) = item
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<FileItem>())
                 {
-                    file.read_only = true;
+                    let path = file.root.join(&file.path);
+                    file.read_only = !writable.iter().any(|allowed| path.starts_with(allowed));
                 }
             });
         }
@@ -8646,6 +8656,32 @@ mod markdown_preview_tests {
             .and_then(|file| file.buffer.as_ref().map(|b| b.rope.to_string()));
         assert_eq!(text.as_deref(), Some("fn main() {}\n"));
         assert!(view
+            .cursor_position()
+            .is_some_and(|status| status.starts_with("Read only")));
+    }
+
+    #[test]
+    fn a_read_only_view_still_edits_the_project_config() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().to_path_buf();
+        let main = project.join("workspace--main");
+        std::fs::create_dir_all(&main).expect("main dir");
+        std::fs::write(project.join("pom.yml"), "session: demo\n").expect("write");
+        let mut view = FilesView::new(main)
+            .read_only(true)
+            .writable(vec![project.join("pom.yml"), project.join("pom.d")]);
+        view.open_file_at(&project.join("pom.yml"), None, None);
+        view.tick_items(&|| None);
+        view.editor_text("# ");
+        view.tick_items(&|| None);
+        let text = view
+            .panes
+            .active_item()
+            .and_then(|item| item.as_any())
+            .and_then(|any| any.downcast_ref::<FileItem>())
+            .and_then(|file| file.buffer.as_ref().map(|b| b.rope.to_string()));
+        assert_eq!(text.as_deref(), Some("# session: demo\n"));
+        assert!(!view
             .cursor_position()
             .is_some_and(|status| status.starts_with("Read only")));
     }

@@ -111,6 +111,8 @@ fn clipped_hits(painted: &Painted, clip: Rect) -> Vec<(Rect, u64)> {
         .collect()
 }
 
+const SETUP_TITLE: &str = "Project setup needs attention";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Notification {
     title: String,
@@ -249,6 +251,8 @@ pub struct WorkspaceView {
     toast: Option<Toast>,
     notification: Option<Notification>,
     shown_problem: Option<String>,
+    /// The coding agent is installed: setup problems offer "Fix with Claude", else point at pom.yml.
+    ai_available: bool,
     dismissed_setup: Option<String>,
     pending: WorkspaceEffects,
 }
@@ -306,6 +310,7 @@ impl WorkspaceView {
             toast: None,
             notification: None,
             shown_problem: None,
+            ai_available: true,
             dismissed_setup: None,
             pending: WorkspaceEffects::default(),
         }
@@ -641,13 +646,35 @@ impl WorkspaceView {
         });
     }
 
+    pub fn set_ai_available(&mut self, available: bool) {
+        self.ai_available = available;
+    }
+
+    /// A notification whose button opens `path` (at `line`), e.g. the drafted config of a new project.
+    pub fn notify_with_file(
+        &mut self,
+        title: &str,
+        message: String,
+        button: &str,
+        path: std::path::PathBuf,
+        line: Option<u32>,
+    ) {
+        self.notification = Some(Notification {
+            title: title.into(),
+            message,
+            primary: Some(button.into()),
+            action: Some(NotificationAction::OpenFile(path, line)),
+        });
+    }
+
     pub fn set_setup_problems(&mut self, summary: Option<String>) {
         if self.shown_problem.is_some() {
             return;
         }
-        let showing = self.notification.as_ref().is_some_and(|notification| {
-            matches!(notification.action, Some(NotificationAction::FixSetup))
-        });
+        let showing = self
+            .notification
+            .as_ref()
+            .is_some_and(|notification| notification.title == SETUP_TITLE);
         match summary {
             Some(message) => {
                 if showing
@@ -661,11 +688,20 @@ impl WorkspaceView {
                 if self.dismissed_setup.as_deref() == Some(message.as_str()) {
                     return;
                 }
+                let config_path = self
+                    .layout
+                    .project
+                    .as_ref()
+                    .map(|project| project.config_path.clone());
+                let (primary, action) = match config_path.filter(|_| !self.ai_available) {
+                    Some(path) => ("Open pom.yml", NotificationAction::OpenFile(path, None)),
+                    None => ("Fix with Claude", NotificationAction::FixSetup),
+                };
                 self.notification = Some(Notification {
-                    title: "Project setup needs attention".into(),
+                    title: SETUP_TITLE.into(),
                     message,
-                    primary: Some("Fix with Claude".into()),
-                    action: Some(NotificationAction::FixSetup),
+                    primary: Some(primary.into()),
+                    action: Some(action),
                 });
             }
             None if showing => self.notification = None,
@@ -4737,6 +4773,9 @@ impl WorkspaceView {
         } else if id == SESSION_OPEN {
             self.close_session_menu();
             self.pending.session = Some(SessionRequest::ChooseFolder);
+        } else if id == crate::SESSION_EDIT_CONFIG {
+            self.close_session_menu();
+            self.pending.action = Some(crate::keymap::Action::OpenProjectConfig);
         } else if let Some(index) = session_index(id, SESSION_REVEAL_BASE) {
             self.close_session_menu();
             if index < self.layout.sessions.len() {
@@ -4829,7 +4868,7 @@ impl WorkspaceView {
             }
         } else if id == crate::NOTIFICATION_CLOSE {
             if let Some(closed) = self.notification.take() {
-                if matches!(closed.action, Some(NotificationAction::FixSetup)) {
+                if closed.title == SETUP_TITLE {
                     self.dismissed_setup = Some(closed.message);
                 }
             }
@@ -5468,6 +5507,20 @@ mod tests {
         assert_eq!(
             requests.reorder, None,
             "main neither moves nor is displaced"
+        );
+    }
+
+    #[test]
+    fn the_session_menu_edits_the_project_config() {
+        let (mut app, h, e) = open();
+        app.draw(h);
+        let effects = e.update(app.app_mut(), |v, _| {
+            v.header_click(crate::SESSION_EDIT_CONFIG);
+            v.take_effects()
+        });
+        assert_eq!(
+            effects.action,
+            Some(crate::keymap::Action::OpenProjectConfig)
         );
     }
 

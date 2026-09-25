@@ -12,6 +12,7 @@ use crate::{say, Session};
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConfigCommand {
     Path,
+    Edit,
     Split {
         dry: bool,
     },
@@ -44,9 +45,9 @@ impl ConfigCommand {
 }
 
 pub(crate) fn parse(words: &[&str]) -> Result<ConfigCommand, String> {
-    let (verb, rest) = words
-        .split_first()
-        .ok_or("config needs a subcommand (path, split, normalize, explain, export, import)")?;
+    let (verb, rest) = words.split_first().ok_or(
+        "config needs a subcommand (path, edit, split, normalize, explain, export, import)",
+    )?;
     let args = Args::parse(rest, &["-o", "--output", "--branch", "--env"])?;
     let none = |args: &Args| args.at_most(0, &format!("config {verb}"));
     match *verb {
@@ -54,6 +55,11 @@ pub(crate) fn parse(words: &[&str]) -> Result<ConfigCommand, String> {
             args.allow(&[])?;
             none(&args)?;
             Ok(ConfigCommand::Path)
+        }
+        "edit" => {
+            args.allow(&[])?;
+            none(&args)?;
+            Ok(ConfigCommand::Edit)
         }
         "split" | "normalize" => {
             args.allow(&["--dry-run"])?;
@@ -112,6 +118,7 @@ pub(crate) fn execute(
     let state = StateDir::from_env();
     match command {
         ConfigCommand::Path => return say(out, &config_path.display().to_string()),
+        ConfigCommand::Edit => return edit(config_path, out),
         ConfigCommand::Split { dry } => {
             let result = pom_config::maintain::split(config_path, *dry)?;
             let verb = if *dry { "would write" } else { "wrote" };
@@ -484,6 +491,37 @@ fn set_echo(on: bool) {
     if let Err(error) = result {
         eprintln!("stty: {error}");
     }
+}
+
+/// Opens the config in `$VISUAL` / `$EDITOR` (else the default text editor), then says whether it still loads.
+fn edit(config_path: &Path, out: &mut dyn Write) -> Result<(), String> {
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .or_else(|| std::env::var("EDITOR").ok())
+        .filter(|editor| !editor.trim().is_empty());
+    let status = match editor {
+        Some(editor) => {
+            let mut words = editor.split_whitespace();
+            let program = words.next().unwrap_or("vi");
+            std::process::Command::new(program)
+                .args(words)
+                .arg(config_path)
+                .status()
+                .map_err(|error| format!("start {program}: {error}"))?
+        }
+        // `open -W` waits for the editor window so the check below sees the saved file.
+        None => std::process::Command::new("open")
+            .args(["-W", "-t"])
+            .arg(config_path)
+            .status()
+            .map_err(|error| format!("start open: {error}"))?,
+    };
+    if !status.success() {
+        return Err(format!("the editor exited with {status}"));
+    }
+    let config = pom_config::Config::load(config_path).map_err(|error| error.message)?;
+    config.validate()?;
+    say(out, &format!("{} is valid", config_path.display()))
 }
 
 #[cfg(test)]

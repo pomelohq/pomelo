@@ -41,6 +41,8 @@ pub struct Settings {
     pub jira_only_mine: bool,
     /// The Jira board the ticket picker opened on last (0: none yet).
     pub jira_board: i64,
+    /// New projects are finished by the coding agent (else the user reviews the drafted pom.yml).
+    pub onboard_with_ai: bool,
     pub notify_claude: bool,
     /// Also alert for the workspace on screen in the focused window.
     pub notify_when_focused: bool,
@@ -94,6 +96,7 @@ impl Default for Settings {
             agent_command: "claude".into(),
             jira_only_mine: false,
             jira_board: 0,
+            onboard_with_ai: true,
             notify_claude: true,
             notify_when_focused: false,
             sound_working: String::new(),

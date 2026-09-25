@@ -46,6 +46,7 @@ pub struct SideEffects {
     pub edit_keymap: bool,
     pub export_config: bool,
     pub import_config: bool,
+    pub edit_project_config: bool,
 }
 
 /// Innermost hit id under `(x, y)` (regions pushed outer-first, inner-last), like `ui::Window::hit_at`.
@@ -197,6 +198,10 @@ impl SettingsView {
     /// Keeps a value the app changed (the ticket picker's board) so this window's next save does not undo it.
     pub fn remember_jira_board(&mut self, board: i64) {
         self.settings.jira_board = board;
+    }
+
+    pub fn remember_onboard_with_ai(&mut self, use_ai: bool) {
+        self.settings.onboard_with_ai = use_ai;
     }
 
     /// The project session the Integrations page edits (none while no project is open).
@@ -862,6 +867,9 @@ impl SettingsView {
         } else if id == settings_ui::CTRL_IMPORT_CONFIG {
             self.commit_edit();
             self.pending.import_config = true;
+        } else if id == settings_ui::CTRL_EDIT_PROJECT_CONFIG {
+            self.commit_edit();
+            self.pending.edit_project_config = true;
         } else if id == settings_ui::CTRL_REINSTALL_AGENTS {
             self.commit_edit();
             self.pending.reinstall_agents = true;

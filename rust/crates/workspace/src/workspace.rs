@@ -17,8 +17,8 @@ mod welcome;
 mod workspace_view;
 pub use form::{
     checkbox, is_window_modal_id, modal_button, modal_footer, modal_frame, modal_header,
-    modal_section, outlined_button, progress_bar, status_line, InputField, ModalResult,
-    WindowModal, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
+    modal_section, outlined_button, progress_bar, status_line, toggle_button_group, InputField,
+    ModalResult, WindowModal, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
 };
 pub use key_binding::render_keystroke;
 pub use panel::{
@@ -310,6 +310,8 @@ pub const WORKSPACE_TICKET_END: u64 = 6000;
 pub const WORKSPACE_NEW: u64 = 14;
 /// The status bar's button for the active workspace's Jira ticket.
 pub const STATUS_TICKET: u64 = 15;
+/// The session menu's "Edit pom.yml" row.
+pub const SESSION_EDIT_CONFIG: u64 = 16;
 /// A workspace operation card: base + position * stride + part.
 pub const WORKSPACE_OP_BASE: u64 = 3000;
 pub const WORKSPACE_OP_END: u64 = 4000;
@@ -1992,7 +1994,8 @@ impl Layout {
         let pad = MENU_PAD * scale;
         let search_h = MENU_SEARCH_H * scale;
         let div_h = MENU_DIV_H * scale;
-        let footer_h = MENU_ACTION_H * scale;
+        let footer_rows = if self.project.is_some() { 2.0 } else { 1.0 };
+        let footer_h = (MENU_ACTION_H * footer_rows + 2.0 * (footer_rows - 1.0)) * scale;
         let (content_h, region_h) = self.session_list_metrics(query);
         let max_scroll = (content_h - region_h).max(0.0);
         let scroll = self.session_scroll.clamp(0.0, max_scroll);
@@ -2072,16 +2075,24 @@ impl Layout {
                 Rgba::TRANSPARENT,
             ),
         );
-        let footer: Node = div()
-            .col()
-            .gap(2.0)
-            .child(action_row(
-                folder_icon().into(),
-                "Open a session...",
-                SESSION_OPEN,
+        let mut footer = div().col().gap(2.0).child(action_row(
+            folder_icon().into(),
+            "Open a session...",
+            SESSION_OPEN,
+            hovered,
+        ));
+        if self.project.is_some() {
+            footer = footer.child(action_row(
+                ui::icon(ui::IconKind::File)
+                    .size(14.0)
+                    .color(theme().icon_muted)
+                    .into(),
+                "Edit pom.yml",
+                SESSION_EDIT_CONFIG,
                 hovered,
-            ))
-            .into();
+            ));
+        }
+        let footer: Node = footer.into();
         push_into(
             &mut fixed,
             &footer,

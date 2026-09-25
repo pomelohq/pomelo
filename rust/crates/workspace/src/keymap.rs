@@ -32,10 +32,12 @@ pub enum Action {
     MarkdownPreview,
     MarkdownPreviewToTheSide,
     OpenTicket,
+    OpenProjectConfig,
+    SetUpProjectWithAi,
 }
 
 impl Action {
-    pub const ALL: [Action; 29] = [
+    pub const ALL: [Action; 31] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -65,6 +67,8 @@ impl Action {
         Action::MarkdownPreview,
         Action::MarkdownPreviewToTheSide,
         Action::OpenTicket,
+        Action::OpenProjectConfig,
+        Action::SetUpProjectWithAi,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -99,6 +103,8 @@ impl Action {
             Action::MarkdownPreview => "markdown::OpenPreview",
             Action::MarkdownPreviewToTheSide => "markdown::OpenPreviewToTheSide",
             Action::OpenTicket => "workspace::OpenTicket",
+            Action::OpenProjectConfig => "pomelo::OpenProjectConfig",
+            Action::SetUpProjectWithAi => "pomelo::SetUpProjectWithAi",
         }
     }
 
@@ -134,6 +140,8 @@ impl Action {
             Action::MarkdownPreview => "Markdown Preview",
             Action::MarkdownPreviewToTheSide => "Markdown Preview to the Side",
             Action::OpenTicket => "Open Jira Ticket",
+            Action::OpenProjectConfig => "Open Project Config",
+            Action::SetUpProjectWithAi => "Set Up Project with AI",
         }
     }
 
