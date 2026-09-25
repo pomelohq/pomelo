@@ -615,10 +615,14 @@ struct App {
 #[derive(Default)]
 struct AgentTracker {
     watcher: Option<pom_agent::AgentWatcher>,
-    states: std::collections::HashMap<String, pom_agent::AgentState>,
+    /// Keyed by (session, branch): two projects can have a workspace on the same branch.
+    states: std::collections::HashMap<(String, String), pom_agent::AgentState>,
+    read_at: Option<Instant>,
     /// The first read only learns the current states; notifications start with the next change.
     primed: bool,
 }
+
+const AGENT_RECHECK: Duration = Duration::from_secs(5);
 
 fn agent_dot(state: pom_agent::AgentState) -> workspace::AgentDot {
     match state {
@@ -637,26 +641,44 @@ impl App {
         if self.agents.watcher.is_none() {
             match pom_agent::AgentWatcher::new(&pom_paths::StateDir::from_env(), Arc::new(ui::wake))
             {
-                Ok(watcher) => self.agents.watcher = Some(watcher),
+                Ok(watcher) => {
+                    self.agents.watcher = Some(watcher);
+                    // An agent that exits writes nothing, and a stale working state only decays with time.
+                    std::thread::spawn(|| loop {
+                        std::thread::sleep(AGENT_RECHECK);
+                        ui::wake();
+                    });
+                }
                 Err(error) => {
                     eprintln!("agent states will not update: {error}");
                     return;
                 }
             }
         }
-        if !self
+        let changed = self
             .agents
             .watcher
             .as_ref()
-            .is_some_and(pom_agent::AgentWatcher::take_changed)
-        {
+            .is_some_and(pom_agent::AgentWatcher::take_changed);
+        let due = self
+            .agents
+            .read_at
+            .is_none_or(|at| at.elapsed() >= AGENT_RECHECK);
+        if !changed && !due {
             return;
         }
-        let fresh: std::collections::HashMap<String, pom_agent::AgentState> =
+        self.agents.read_at = Some(Instant::now());
+        let reported: std::collections::HashMap<String, pom_agent::AgentState> =
             pom_agent::read_states(&pom_paths::StateDir::from_env())
                 .into_iter()
                 .map(|status| (status.branch, status.state))
                 .collect();
+        let holders: Vec<String> = pom_ptyhost::SocketDir::from_env()
+            .holders()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        let mut fresh = std::collections::HashMap::new();
         let mut notices = Vec::new();
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {
@@ -671,11 +693,20 @@ impl App {
             let session = project.session.clone();
             let mut dots = std::collections::HashMap::new();
             for workspace in &project.workspaces {
-                let Some(state) = fresh.get(&workspace.branch).copied() else {
+                let running = holders
+                    .iter()
+                    .any(|name| pom_agent::is_agent_holder(name, &session, &workspace.branch));
+                if !running {
                     continue;
-                };
+                }
+                let state = reported
+                    .get(&workspace.branch)
+                    .copied()
+                    .unwrap_or(pom_agent::AgentState::Idle);
+                let key = (session.clone(), workspace.branch.clone());
                 dots.insert(workspace.branch.clone(), agent_dot(state));
-                let before = self.agents.states.get(&workspace.branch).copied();
+                let before = self.agents.states.get(&key).copied();
+                fresh.insert(key, state);
                 if !self.agents.primed || before == Some(state) {
                     continue;
                 }

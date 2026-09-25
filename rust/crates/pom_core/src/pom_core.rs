@@ -16,6 +16,8 @@ pub use watch::ConfigWatcher;
 const LAST_PROJECT_FILE: &str = "last_project";
 /// Project root -> the workspace branch last active in it.
 const ACTIVE_WORKSPACES_FILE: &str = "active_workspaces.json";
+/// Project root -> its workspace branches in the order the user dragged them into.
+const WORKSPACE_ORDER_FILE: &str = "workspace_order.json";
 
 /// A project opened from its `pom.yml`. A config that fails to load or validate still opens: the
 /// workspace stays usable and the error is shown until the file is fixed.
@@ -125,12 +127,44 @@ impl Project {
             }
         }
         self.workspaces = pom_layout::scan(&self.root, self.branch(), None);
+        let order = read_workspace_orders(state)
+            .remove(self.root.to_string_lossy().as_ref())
+            .unwrap_or_default();
+        apply_order(&mut self.workspaces, &order);
         (
             self.error.clone(),
             self.session.clone(),
             self.branch().to_string(),
         ) != before
             || self.workspace_names() != before_workspaces
+    }
+
+    /// Moves the workspace at `from` so it lands at `to` and remembers the order; main stays first.
+    pub fn move_workspace(
+        &mut self,
+        from: usize,
+        to: usize,
+        state: &StateDir,
+    ) -> std::io::Result<bool> {
+        let pinned = self.workspaces.iter().take_while(|ws| ws.is_main).count();
+        let to = to.clamp(pinned, self.workspaces.len().saturating_sub(1));
+        if from < pinned || from >= self.workspaces.len() || from == to {
+            return Ok(false);
+        }
+        let moved = self.workspaces.remove(from);
+        self.workspaces.insert(to, moved);
+        let mut orders = read_workspace_orders(state);
+        orders.insert(
+            self.root.to_string_lossy().into_owned(),
+            self.workspaces
+                .iter()
+                .filter(|ws| !ws.is_main)
+                .map(|ws| ws.branch.clone())
+                .collect(),
+        );
+        let text = serde_json::to_string_pretty(&orders).map_err(std::io::Error::other)?;
+        write_atomic(&state.path(WORKSPACE_ORDER_FILE), text.as_bytes(), 0o644)?;
+        Ok(true)
     }
 
     pub fn branch(&self) -> &str {
@@ -160,6 +194,27 @@ fn read_active_workspaces(state: &StateDir) -> BTreeMap<String, String> {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
+}
+
+fn read_workspace_orders(state: &StateDir) -> BTreeMap<String, Vec<String>> {
+    std::fs::read_to_string(state.path(WORKSPACE_ORDER_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Main first, then the remembered order; workspaces it doesn't know yet go last in scan order.
+fn apply_order(workspaces: &mut [Workspace], order: &[String]) {
+    let rank = |ws: &Workspace| {
+        if ws.is_main {
+            return (0, 0);
+        }
+        order
+            .iter()
+            .position(|branch| *branch == ws.branch)
+            .map_or((2, 0), |position| (1, position))
+    };
+    workspaces.sort_by_key(rank);
 }
 
 fn remembered_workspace(state: &StateDir, root: &Path) -> Option<String> {
@@ -295,6 +350,36 @@ mod tests {
             .map(|w| w.branch.as_str())
             .collect();
         assert_eq!(branches, ["trunk", "feat-x"]);
+    }
+
+    #[test]
+    fn a_dragged_workspace_order_is_remembered_and_main_stays_first() {
+        let fixture = Fixture::new();
+        let config = fixture.project("acme", "session: acme\ndefault_branch: trunk\n");
+        let root = config.parent().map(Path::to_path_buf).unwrap_or_default();
+        for folder in ["trunk", "a", "b", "c"] {
+            std::fs::create_dir_all(root.join(format!("workspace--{folder}/api/.git")))
+                .expect("worktree");
+        }
+        let branches = |project: &Project| -> Vec<String> {
+            project
+                .workspaces
+                .iter()
+                .map(|w| w.branch.clone())
+                .collect()
+        };
+        let mut project = Project::open(&config, &fixture.state);
+        assert_eq!(branches(&project), ["trunk", "a", "b", "c"]);
+        assert!(project.move_workspace(3, 1, &fixture.state).expect("move"));
+        assert!(!project
+            .move_workspace(1, 0, &fixture.state)
+            .expect("onto main"));
+        assert!(!project.move_workspace(0, 2, &fixture.state).expect("main"));
+        assert_eq!(branches(&project), ["trunk", "c", "a", "b"]);
+
+        std::fs::create_dir_all(root.join("workspace--0-new/api/.git")).expect("new worktree");
+        let reopened = Project::open(&config, &fixture.state);
+        assert_eq!(branches(&reopened), ["trunk", "c", "a", "b", "0-new"]);
     }
 
     #[test]

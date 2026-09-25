@@ -35,6 +35,9 @@ impl App {
         if let Some((index, action)) = requests.row {
             self.workspace_row_action(id, index, action);
         }
+        if let Some((from, to)) = requests.reorder {
+            self.reorder_workspace(id, from, to);
+        }
         if let Some((op, action)) = requests.op {
             if let Some(main) = self.mains.get(&id) {
                 match action {
@@ -46,6 +49,31 @@ impl App {
         if let Some(main) = self.mains.get_mut(&id) {
             main.dirty = true;
         }
+    }
+
+    fn reorder_workspace(&mut self, id: WindowId, from: usize, to: usize) {
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        let Some(project) = main.project.as_mut() else {
+            return;
+        };
+        match project.move_workspace(from, to, &pom_paths::StateDir::from_env()) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => eprintln!("workspace order not saved: {error}"),
+        }
+        let runner = main
+            .services
+            .as_ref()
+            .map(|services| services.runner.as_ref());
+        let info = crate::project_info(
+            project,
+            runner,
+            main.tickets.as_ref(),
+            main.pull_requests.as_ref(),
+        );
+        self.with_workspace_view(id, |view, _| view.update_project(info));
     }
 
     pub(crate) fn open_create_workspace(&mut self, id: WindowId) {

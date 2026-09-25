@@ -175,6 +175,27 @@ pub fn claude_launch(context: &LaunchContext<'_>) -> AgentLaunch {
     }
 }
 
+/// Whether holder `name` runs a coding agent for `branch` of `session`: the workspace agent, a numbered
+/// extra one, or a task agent (fixer, onboarder).
+pub fn is_agent_holder(name: &str, session: &str, branch: &str) -> bool {
+    let prefix = format!(
+        "ws-{}-{}-",
+        session.replace('/', "_"),
+        branch.replace('/', "_")
+    );
+    let Some(role) = name.strip_prefix(&prefix) else {
+        return false;
+    };
+    [CLAUDE_HOLDER, "fixer", "onboarder"].iter().any(|agent| {
+        role.strip_prefix(agent).is_some_and(|rest| {
+            rest.is_empty()
+                || rest.strip_prefix('-').is_some_and(|number| {
+                    !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+                })
+        })
+    })
+}
+
 pub fn claude_task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str) -> AgentLaunch {
     task_launch(context, role, prompt, &system_prompt())
 }
@@ -237,6 +258,18 @@ mod tests {
         };
         let launch = claude_task_launch(&context, "fixer", "Make it run: it's broken");
         assert_eq!(launch.holder, "ws-demo-feat_x-fixer");
+        assert!(is_agent_holder(&launch.holder, "demo", "feat/x"));
+        assert!(is_agent_holder(
+            "ws-demo-feat_x-claude-raw-3",
+            "demo",
+            "feat/x"
+        ));
+        assert!(!is_agent_holder("ws-demo-feat_x-worker", "demo", "feat/x"));
+        assert!(!is_agent_holder(
+            "ws-demo-feat_x-claude-raw",
+            "other",
+            "feat/x"
+        ));
         let script = launch.argv.last().cloned().unwrap_or_default();
         assert!(script.contains("--session-id"));
         assert!(!script.contains("--resume"));
