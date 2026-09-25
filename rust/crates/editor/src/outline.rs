@@ -25,6 +25,7 @@ fn outline_patterns(lang: Lang) -> Option<&'static str> {
         Lang::Json => include_str!("../queries/json/outline.scm"),
         Lang::Css => include_str!("../queries/css/outline.scm"),
         Lang::Bash => include_str!("../queries/bash/outline.scm"),
+        Lang::Ruby => include_str!("../queries/ruby/outline.scm"),
         _ => return None,
     })
 }
@@ -208,6 +209,7 @@ mod tests {
             Lang::Cpp,
             Lang::Java,
             Lang::Markdown,
+            Lang::Ruby,
             Lang::Yaml,
             Lang::Json,
             Lang::Css,
@@ -232,6 +234,34 @@ mod tests {
                 (0, "impl Display for Point".to_string()),
                 (1, "fn fmt".to_string()),
                 (0, "async fn run".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ruby_outline_has_definitions_and_spec_blocks() {
+        assert_eq!(
+            outline(
+                Lang::Ruby,
+                "module Billing\n  class Invoice\n    LIMIT = 3\n    def total\n    end\n    def self.build\n    end\n  end\nend\n"
+            ),
+            vec![
+                (0, "module Billing".to_string()),
+                (1, "class Invoice".to_string()),
+                (2, "LIMIT".to_string()),
+                (2, "def total".to_string()),
+                (2, "def self.build".to_string()),
+            ]
+        );
+        assert_eq!(
+            outline(
+                Lang::Ruby,
+                "RSpec.describe Invoice do\n  let(:user) { 1 }\n  context \"when empty\" do\n    it \"is zero\" do\n    end\n  end\nend\n"
+            ),
+            vec![
+                (0, "describe Invoice".to_string()),
+                (1, "context \"when empty\"".to_string()),
+                (2, "it \"is zero\"".to_string()),
             ]
         );
     }
