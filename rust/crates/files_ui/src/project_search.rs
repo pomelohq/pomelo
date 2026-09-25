@@ -768,6 +768,7 @@ impl ProjectSearch {
         div()
             .row()
             .flex(1.0)
+            .items_center()
             .justify_center()
             .pt(48.0)
             .child(column)

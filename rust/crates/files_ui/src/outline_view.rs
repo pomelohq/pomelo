@@ -416,6 +416,7 @@ impl OutlineView {
                     div()
                         .row()
                         .flex(1.0)
+                        .items_center()
                         .child(results)
                         .child(div().w_px(1.0).bg(colors.border_variant))
                         .child(render_preview(preview)),
@@ -450,7 +451,7 @@ impl OutlineView {
         let mut list = if self.entries.is_empty() {
             div().col().py(8.0).child(
                 div().row().px(4.0).child(
-                    div().row().flex(1.0).px(6.0).py(4.0).child(
+                    div().row().flex(1.0).items_center().px(6.0).py(4.0).child(
                         label("No matches")
                             .label_size(ui::LabelSize::Default)
                             .color(colors.text_muted),

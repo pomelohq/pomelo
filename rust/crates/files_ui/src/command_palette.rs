@@ -814,7 +814,7 @@ impl CommandPalette {
                 .py(8.0)
                 .child(
                     div().row().px(4.0).child(
-                        div().row().flex(1.0).px(6.0).py(4.0).child(
+                        div().row().flex(1.0).items_center().px(6.0).py(4.0).child(
                             label("No matches")
                                 .label_size(LabelSize::Default)
                                 .color(colors.text_muted),

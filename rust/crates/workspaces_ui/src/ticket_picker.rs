@@ -183,7 +183,7 @@ impl TicketPicker {
                     .color(colors.text),
             )
             .child(
-                div().row().flex(1.0).child(
+                div().row().flex(1.0).items_center().child(
                     label("optional; pick from the sprint or type a key")
                         .label_size(LabelSize::Small)
                         .color(colors.text_muted)

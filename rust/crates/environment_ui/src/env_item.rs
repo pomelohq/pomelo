@@ -284,7 +284,7 @@ impl EnvItem {
                 ),
             )
             .child(
-                div().row().flex(1.0).child(
+                div().row().flex(1.0).items_center().child(
                     label(shown)
                         .size(11.5)
                         .mono()
