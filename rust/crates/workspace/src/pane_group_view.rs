@@ -43,6 +43,8 @@ pub enum PaneButtonAction {
     Split(SplitDirection),
     NewItem,
     ToggleZoom,
+    /// Only shown while the pane's active item is previewable.
+    Preview,
 }
 
 #[derive(Clone, Copy)]
@@ -502,6 +504,12 @@ impl PaneGroupView {
 
     fn tab_bar(&self, p: usize) -> TabBarConfig {
         let base = self.config.id_base + BUTTON + p as u64 * BUTTON_STRIDE;
+        let previewable = self
+            .pane_order
+            .get(p)
+            .and_then(|path| self.group.leaf_at(path))
+            .and_then(Pane::active_item)
+            .is_some_and(|item| item.previewable());
         TabBarConfig {
             show_nav: self.config.show_nav,
             buttons: self
@@ -509,6 +517,7 @@ impl PaneGroupView {
                 .buttons
                 .iter()
                 .enumerate()
+                .filter(|(_, button)| button.action != PaneButtonAction::Preview || previewable)
                 .map(|(index, button)| TabBarButton {
                     icon: match button.action {
                         PaneButtonAction::ToggleZoom if self.zoomed.is_some() => IconKind::Minimize,

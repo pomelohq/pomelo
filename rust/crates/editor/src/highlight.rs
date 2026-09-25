@@ -54,6 +54,20 @@ pub enum Lang {
 }
 
 impl Lang {
+    /// Columns per indent level: 2 for the languages written that way by convention, 4 otherwise.
+    pub fn tab_size(self) -> usize {
+        match self {
+            Lang::TypeScript
+            | Lang::Tsx
+            | Lang::JavaScript
+            | Lang::Json
+            | Lang::Yaml
+            | Lang::Markdown
+            | Lang::Dart => 2,
+            _ => 4,
+        }
+    }
+
     pub fn from_ext(ext: &str) -> Lang {
         match ext.to_ascii_lowercase().as_str() {
             "rs" => Lang::Rust,
