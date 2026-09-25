@@ -1185,7 +1185,21 @@ impl WorkspaceView {
                     0.0,
                     Rgba::TRANSPARENT,
                 );
-                Some(tooltip(anchor, &row.label, w))
+                let mut text = row.label.clone();
+                if let Some(agent) = row.agent {
+                    text.push_str(&format!(" - Agent: {}", agent.label()));
+                }
+                if row.running > 0 {
+                    text.push_str(&format!(" - {} running", row.running));
+                }
+                if let Some(pr) = row.pr {
+                    let noun = if pr.count == 1 { "PR" } else { "PRs" };
+                    text.push_str(&format!(" - {} {noun}", pr.count));
+                }
+                if !row.ticket.is_empty() {
+                    text.push_str(&format!(" - {}", row.ticket));
+                }
+                Some(tooltip(anchor, &text, w))
             });
             let drop = self.row_drop_painted(&p.hits);
             panel_hits.extend(p.hits.iter().copied());
