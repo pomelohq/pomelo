@@ -1165,46 +1165,19 @@ impl WorkspaceView {
                 );
                 Some(tooltip(anchor, &row.label, w))
             });
+            let drop = self.row_drop_painted(&p.hits);
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
+            if let Some(drop) = drop {
+                blit(drop);
+            }
         } else {
             let region = self.layout.left_region(w, h);
             let p = self.layout.left.render_body(region, &list);
-            let target = self
-                .row_drag
-                .filter(|_| self.dragging == Drag::WorkspaceRow)
-                .and_then(|drag| {
-                    let to = drag.to?;
-                    let (rect, _) = p
-                        .hits
-                        .iter()
-                        .find(|(_, id)| *id == crate::WORKSPACE_ROW_BASE + to as u64)?;
-                    Some((drag.from, to, *rect))
-                });
+            let drop = self.row_drop_painted(&p.hits);
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
-            if let Some((from, to, rect)) = target {
-                // Like a tab drop: the target is tinted, with a bar on the side the row lands.
-                let mut drop = Painted::default();
-                drop.rects.push(Rect::new(
-                    rect.x,
-                    rect.y,
-                    rect.w,
-                    rect.h,
-                    ui::theme().text_accent.alpha(0.22),
-                ));
-                let bar_y = if to < from {
-                    rect.y
-                } else {
-                    rect.y + rect.h - 2.0
-                };
-                drop.rects.push(Rect::new(
-                    rect.x,
-                    bar_y,
-                    rect.w,
-                    2.0,
-                    ui::theme().border_focused,
-                ));
+            if let Some(drop) = drop {
                 blit(drop);
             }
         }
@@ -3665,6 +3638,38 @@ impl WorkspaceView {
         self.row_drag = None;
         self.tab_ghost_at = None;
         self.dragging = Drag::None;
+    }
+
+    /// Like a tab drop: the target row (or rail cell) is tinted, with a bar on the side the dragged one lands.
+    fn row_drop_painted(&self, hits: &[(Rect, u64)]) -> Option<Painted> {
+        let drag = self
+            .row_drag
+            .filter(|_| self.dragging == Drag::WorkspaceRow)?;
+        let to = drag.to?;
+        let (rect, _) = hits
+            .iter()
+            .find(|(_, id)| *id == crate::WORKSPACE_ROW_BASE + to as u64)?;
+        let mut drop = Painted::default();
+        drop.rects.push(Rect::new(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            ui::theme().text_accent.alpha(0.22),
+        ));
+        let bar_y = if to < drag.from {
+            rect.y
+        } else {
+            rect.y + rect.h - 2.0
+        };
+        drop.rects.push(Rect::new(
+            rect.x,
+            bar_y,
+            rect.w,
+            2.0,
+            ui::theme().border_focused,
+        ));
+        Some(drop)
     }
 
     /// The row under the pointer becomes the drop target; main (the first row) never moves.
