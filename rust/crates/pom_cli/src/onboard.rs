@@ -1,5 +1,5 @@
-//! `pom init` and `pom onboard`: a new project from repos, and Claude turning its seed config into a runnable
-//! one, interactively in this terminal.
+//! `pom init` and `pom onboard`: a new project from repos, then either Claude turning its seed config into a
+//! runnable one interactively in this terminal, or a review list for doing it by hand.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -20,21 +20,22 @@ pub(crate) enum OnboardCommand {
         new: Option<String>,
         repos: Vec<String>,
         branch: String,
+        no_ai: bool,
     },
 }
 
 pub(crate) fn parse(name: &str, words: &[&str]) -> Result<OnboardCommand, String> {
     if name == "init" {
         let args = Args::parse(words, &[])?;
-        args.allow(&["--claude"])?;
+        args.allow(&["--ai", "--claude"])?;
         args.at_most(1, "init")?;
         return Ok(OnboardCommand::Init {
             name: args.positional.first().cloned(),
-            claude: args.has("--claude"),
+            claude: args.has("--ai") || args.has("--claude"),
         });
     }
     let args = Args::parse(words, &["--new", "--repo", "--branch"])?;
-    args.allow(&["--new", "--repo", "--branch"])?;
+    args.allow(&["--new", "--repo", "--branch", "--no-ai"])?;
     args.at_most(1, "onboard")?;
     let new = args.value(&["--new"]);
     let repos = args.values("--repo");
@@ -49,6 +50,7 @@ pub(crate) fn parse(name: &str, words: &[&str]) -> Result<OnboardCommand, String
         new,
         repos,
         branch: args.value(&["--branch"]).unwrap_or_else(|| "main".into()),
+        no_ai: args.has("--no-ai"),
     })
 }
 
@@ -78,16 +80,14 @@ pub(crate) fn execute(
             if *claude {
                 return onboard_interactively(&state, &project.join("pom.yml"), out);
             }
-            say(
-                out,
-                &format!("\ncd {} and run `pom status`", project.display()),
-            )
+            review_by_hand(&project.join("pom.yml"), cwd, out)
         }
         OnboardCommand::Onboard {
             session,
             new,
             repos,
             branch,
+            no_ai,
         } => {
             let config_path = match (new, session) {
                 (Some(name), _) => {
@@ -117,9 +117,29 @@ pub(crate) fn execute(
                     .find_map(pom_core::config_in)
                     .ok_or("no pom.yml here or in any parent directory")?,
             };
+            if *no_ai {
+                return review_by_hand(&config_path, cwd, out);
+            }
             onboard_interactively(&state, &config_path, out)
         }
     }
+}
+
+/// The manual path: what was drafted, what still needs attention, and how to go on.
+fn review_by_hand(config_path: &Path, cwd: &Path, out: &mut dyn Write) -> Result<(), String> {
+    say(out, &format!("\nreview {}:", config_path.display()))?;
+    // A drafted config usually still has gaps; list them without failing the command.
+    if let Err(problems) = crate::doctor(Some(config_path), cwd, out) {
+        say(out, &format!("{problems}: fix them in pom.yml"))?;
+    }
+    let project = config_path.parent().unwrap_or(cwd);
+    say(
+        out,
+        &format!(
+            "\nedit it with `pom config edit`, then cd {} and run `pom start`",
+            project.display()
+        ),
+    )
 }
 
 fn scaffold(
@@ -221,8 +241,13 @@ mod tests {
                 new: Some("shop".into()),
                 repos: vec!["../api".into(), "../web".into()],
                 branch: "main".into(),
+                no_ai: false,
             })
         );
+        assert!(matches!(
+            parse("onboard", &["shop", "--no-ai"]),
+            Ok(OnboardCommand::Onboard { no_ai: true, .. })
+        ));
         assert!(parse("onboard", &["--new", "shop"]).is_err());
         assert!(parse("onboard", &["--repo", "x"]).is_err());
         assert_eq!(
@@ -232,5 +257,9 @@ mod tests {
                 claude: true
             })
         );
+        assert!(matches!(
+            parse("init", &["--ai"]),
+            Ok(OnboardCommand::Init { claude: true, .. })
+        ));
     }
 }

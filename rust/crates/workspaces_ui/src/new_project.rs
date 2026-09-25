@@ -4,7 +4,8 @@ use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{
     modal_button, modal_footer, modal_frame, modal_header, modal_section, outlined_button,
-    status_line, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
+    status_line, toggle_button_group, EditKey, InputField, ModalResult, WindowModal,
+    WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 544.0;
@@ -18,6 +19,8 @@ const URL_FIELD: u64 = WINDOW_MODAL_BASE + 4;
 const ADD_FOLDER: u64 = WINDOW_MODAL_BASE + 6;
 const CANCEL: u64 = WINDOW_MODAL_BASE + 7;
 const CONFIRM: u64 = WINDOW_MODAL_BASE + 8;
+const SETUP_AI: u64 = WINDOW_MODAL_BASE + 9;
+const SETUP_MANUAL: u64 = WINDOW_MODAL_BASE + 10;
 const ALIAS_BASE: u64 = WINDOW_MODAL_BASE + 200;
 const REMOVE_BASE: u64 = WINDOW_MODAL_BASE + 300;
 const ROW_LIMIT: u64 = 100;
@@ -28,6 +31,8 @@ pub struct NewProject {
     pub name: String,
     pub default_branch: String,
     pub repos: Vec<(String, String)>,
+    /// Hand the drafted `pom.yml` to the coding agent to finish; otherwise the user reviews it.
+    pub use_ai: bool,
 }
 
 /// Opens the system folder picker; returns the folders chosen.
@@ -54,6 +59,8 @@ pub struct NewProjectModal {
     focus: Focus,
     sessions_root: PathBuf,
     choose_folders: FolderChooser,
+    ai_available: bool,
+    use_ai: bool,
     result: Option<ModalResult>,
 }
 
@@ -71,8 +78,21 @@ impl NewProjectModal {
             focus: Focus::Name,
             sessions_root,
             choose_folders,
+            ai_available: false,
+            use_ai: false,
             result: None,
         }
+    }
+
+    /// Whether the agent CLI is installed, and whether the user last chose to set up with it.
+    pub fn with_ai(mut self, available: bool, preferred: bool) -> NewProjectModal {
+        self.ai_available = available;
+        self.use_ai = available && preferred;
+        self
+    }
+
+    pub fn use_ai(&self) -> bool {
+        self.use_ai
     }
 
     fn name_text(&self) -> String {
@@ -162,6 +182,7 @@ impl NewProjectModal {
                 .iter()
                 .map(|repo| (repo.source.clone(), repo.alias.text().trim().to_string()))
                 .collect(),
+            use_ai: self.use_ai,
         })));
     }
 
@@ -253,6 +274,44 @@ impl NewProjectModal {
             .into()
     }
 
+    fn setup_section(&self) -> Node {
+        let colors = theme();
+        let choices = [
+            (SETUP_AI, Some(IconKind::Sparkle), "Set up with AI"),
+            (SETUP_MANUAL, Some(IconKind::File), "Set up manually"),
+        ];
+        let hint = if !self.ai_available {
+            status_line(
+                IconKind::Warning,
+                colors.warning,
+                "Install Claude Code to set up with AI",
+            )
+        } else if self.use_ai {
+            status_line(
+                IconKind::Sparkle,
+                colors.icon_muted,
+                "Claude opens in a terminal to finish pom.yml; you approve each step",
+            )
+        } else {
+            status_line(
+                IconKind::File,
+                colors.icon_muted,
+                "pom.yml is drafted from what is detected; you review and edit it",
+            )
+        };
+        div()
+            .col()
+            .gap(6.0)
+            .child(
+                label("Setup")
+                    .label_size(LabelSize::Small)
+                    .color(colors.text),
+            )
+            .child(toggle_button_group(&choices, usize::from(!self.use_ai)))
+            .child(hint)
+            .into()
+    }
+
     fn repos_section(&self) -> Node {
         let colors = theme();
         let mut list = div().col().gap(4.0);
@@ -324,11 +383,7 @@ impl WindowModal for NewProjectModal {
                 branch_error.as_deref(),
             ))
             .child(self.repos_section())
-            .child(status_line(
-                IconKind::Sparkle,
-                theme().icon_muted,
-                "Claude then opens in a terminal to write a runnable pom.yml",
-            ));
+            .child(self.setup_section());
         let buttons = div()
             .row()
             .items_center()
@@ -354,6 +409,8 @@ impl WindowModal for NewProjectModal {
             BRANCH_FIELD => self.focus = Focus::Branch,
             URL_FIELD => self.focus = Focus::Url,
             ADD_FOLDER => self.add_folders(),
+            SETUP_AI => self.use_ai = self.ai_available,
+            SETUP_MANUAL => self.use_ai = false,
             CONFIRM => self.submit(),
             id if (ALIAS_BASE..ALIAS_BASE + ROW_LIMIT).contains(&id) => {
                 let index = (id - ALIAS_BASE) as usize;
@@ -455,7 +512,28 @@ mod tests {
                     ("/src/api".into(), String::new()),
                     ("git@github.com:acme/web.git".into(), "fe".into()),
                 ],
+                use_ai: false,
             })
+        );
+    }
+
+    #[test]
+    fn setup_with_ai_is_offered_only_when_the_agent_is_installed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut form = modal(temp.path(), Vec::new()).with_ai(false, true);
+        assert!(!form.use_ai());
+        form.click(SETUP_AI);
+        assert!(!form.use_ai(), "no agent installed, stays manual");
+
+        let mut form = modal(temp.path(), vec![PathBuf::from("/src/api")]).with_ai(true, true);
+        assert!(form.use_ai());
+        form.click(SETUP_MANUAL);
+        form.click(ADD_FOLDER);
+        form.text("demo");
+        form.key(EditKey::Enter, false);
+        assert_eq!(
+            submitted(&mut form).map(|project| project.use_ai),
+            Some(false)
         );
     }
 

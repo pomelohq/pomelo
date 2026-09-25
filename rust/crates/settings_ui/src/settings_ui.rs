@@ -219,6 +219,7 @@ pub const CTRL_SCROLLBACK_EDIT: u64 = 275;
 pub const CTRL_EDIT_KEYMAP: u64 = 276;
 pub const CTRL_EXPORT_CONFIG: u64 = 277;
 pub const CTRL_IMPORT_CONFIG: u64 = 278;
+pub const CTRL_EDIT_PROJECT_CONFIG: u64 = 279;
 pub const SCROLLBACK_MIN: u32 = 1_000;
 pub const SCROLLBACK_MAX: u32 = 100_000;
 
@@ -2174,6 +2175,17 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                     inc: CTRL_REFRESH_INC,
                     edit: CTRL_REFRESH_EDIT,
                     value: jira.refresh_minutes.to_string(),
+                },
+                reset: None,
+            }),
+            PageItem::Header("Project Config"),
+            PageItem::Row(SettingRow {
+                title: "pom.yml".into(),
+                description: "Services, databases and env of this project. Saved changes reload at once, even from main.".into(),
+                control: Control::Button {
+                    id: CTRL_EDIT_PROJECT_CONFIG,
+                    label: "Edit pom.yml",
+                    enabled: true,
                 },
                 reset: None,
             }),

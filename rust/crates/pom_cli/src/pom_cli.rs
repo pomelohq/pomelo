@@ -71,6 +71,7 @@ workspaces
 
 config
   config path        the config file in use
+  config edit        open it in $EDITOR, then check it still loads
   config explain [repo | repo/service] [--branch b] [--env name] [-o json]
                      what the config resolves to and where each value comes from
   config split [--dry-run]    move repos and shared blocks into pom.d
@@ -89,8 +90,8 @@ config
   doctor             what keeps the project from running, and how to fix it
 
 projects and machine
-  init [name] [--claude]      a new project from the git repo you are in
-  onboard [session] [--new name --repo path... [--branch b]]
+  init [name] [--ai]          a new project from the git repo you are in (--ai: Claude finishes pom.yml)
+  onboard [session] [--new name --repo path... [--branch b]] [--no-ai]
                      Claude writes a runnable pom.yml with you, in this terminal
   ps [--watch]       CPU and memory of every holder Pomelo started
   disk               disk used by the registered projects
@@ -284,7 +285,11 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
     })
 }
 
-fn doctor(explicit: Option<&Path>, cwd: &Path, out: &mut dyn Write) -> Result<(), String> {
+pub(crate) fn doctor(
+    explicit: Option<&Path>,
+    cwd: &Path,
+    out: &mut dyn Write,
+) -> Result<(), String> {
     let config_path = find_config(explicit, cwd).unwrap_or_else(|_| cwd.join("pom.yml"));
     let config = Config::load(&config_path).ok();
     let root = config_path.parent().unwrap_or(cwd);

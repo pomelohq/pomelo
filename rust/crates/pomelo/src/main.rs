@@ -567,6 +567,7 @@ impl ProjectServices {
 struct Scaffolding {
     window: WindowId,
     name: String,
+    use_ai: bool,
     receiver: std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>,
 }
 
@@ -623,6 +624,14 @@ struct AgentTracker {
 }
 
 const AGENT_RECHECK: Duration = Duration::from_secs(5);
+
+/// Claude Code is installed where the agent launcher looks for it.
+fn claude_installed() -> bool {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    pom_agent::claude_available(&pom_agent::resolve_claude(&home, pom_services::tool_path()))
+}
 
 fn agent_dot(state: pom_agent::AgentState) -> workspace::AgentDot {
     match state {
@@ -739,6 +748,53 @@ impl App {
         }
         self.agents.states = fresh;
         self.agents.primed = true;
+    }
+
+    /// The manual path after a new project: show its services and say what was drafted and what to do next.
+    fn review_drafted_config(&mut self, id: WindowId) {
+        let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
+            return;
+        };
+        let (repos, services) = project.config.as_ref().map_or((0, 0), |config| {
+            let services: usize = config.repos.values().map(|repo| repo.services.len()).sum();
+            (config.repos.len(), services)
+        });
+        let plural = |count: usize, noun: &str| {
+            if count == 1 {
+                format!("1 {noun}")
+            } else {
+                format!("{count} {noun}s")
+            }
+        };
+        let message = format!(
+            "Drafted from what was detected ({}, {}). Review it, then start services.",
+            plural(repos, "repo"),
+            plural(services, "service")
+        );
+        let path = project.config_path.clone();
+        self.with_workspace_view(id, |view, _| {
+            view.run_action(workspace::keymap::Action::FocusServices);
+            view.notify_with_file(
+                "pom.yml is ready to review",
+                message,
+                "Open pom.yml",
+                path,
+                None,
+            );
+        });
+    }
+
+    /// Opens the project's `pom.yml` for editing in the active pane; it stays editable even from main.
+    pub(crate) fn open_project_config(&mut self, id: WindowId) {
+        let Some(path) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .map(|project| project.config_path.clone())
+        else {
+            return;
+        };
+        self.with_workspace_view(id, |view, _| view.open_file(&path));
     }
 
     /// Opens the workspace's coding agent in the terminal panel, or focuses its tab. The agent runs in
@@ -1372,8 +1428,15 @@ impl App {
                 .is_none_or(|workspace| workspace.is_main)
         });
         let files: Option<Box<dyn workspace::FunctionView>> = workspace_root.clone().map(|root| {
-            Box::new(files_ui::FilesView::new(root).read_only(is_main))
-                as Box<dyn workspace::FunctionView>
+            let project_dir = config_path.parent().map(std::path::Path::to_path_buf);
+            let writable = project_dir
+                .map(|dir| vec![config_path.clone(), dir.join("pom.d")])
+                .unwrap_or_default();
+            Box::new(
+                files_ui::FilesView::new(root)
+                    .read_only(is_main)
+                    .writable(writable),
+            ) as Box<dyn workspace::FunctionView>
         });
         let mut side_panels: Vec<Box<dyn workspace::SidePanelView>> = Vec::new();
         if let (Some(services), Some(project)) = (&main.services, project) {
@@ -1409,6 +1472,7 @@ impl App {
                 ))),
             );
             view.set_side_panels(side_panels);
+            view.set_ai_available(claude_installed());
             view.set_config_problem(problem, &config_path);
         });
         if let Some(main) = self.mains.get_mut(&id) {
@@ -1493,17 +1557,23 @@ impl App {
         let state = pom_paths::StateDir::from_env();
         let mut updates = Vec::new();
         let mut rerooted = Vec::new();
+        let mut reloaded = Vec::new();
         for (id, main) in self.mains.iter_mut() {
             let changed = main.watcher.as_ref().is_some_and(|w| w.take_changed());
             let Some(project) = main.project.as_mut().filter(|_| changed) else {
                 continue;
             };
             let root_before = project.active_root();
-            if !project.reload(&state) {
-                continue;
-            }
+            let shown_changed = project.reload(&state);
+            // Env or service edits change nothing the list shows, but services must still run the new config.
             if let Some(services) = &main.services {
                 services.update_config(project);
+            }
+            if project.error.is_none() {
+                reloaded.push(*id);
+            }
+            if !shown_changed {
+                continue;
             }
             main.dirty = true;
             // The active workspace was removed (or main moved into its folder): follow it.
@@ -1537,6 +1607,9 @@ impl App {
         }
         for id in rerooted {
             self.install_project_views(id);
+        }
+        for id in reloaded {
+            self.with_workspace_view(id, |view, _| view.show_toast("pom.yml reloaded", None));
         }
     }
 
@@ -1587,7 +1660,8 @@ impl App {
                 let modal = workspaces_ui::NewProjectModal::new(
                     pom_paths::sessions_root(),
                     Box::new(|| choose_folders(true)),
-                );
+                )
+                .with_ai(claude_installed(), self.settings.onboard_with_ai);
                 self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
             }
         }
@@ -1626,8 +1700,17 @@ impl App {
         self.scaffolding = Some(Scaffolding {
             window: id,
             name: project.name.clone(),
+            use_ai: project.use_ai,
             receiver,
         });
+        if self.settings.onboard_with_ai != project.use_ai {
+            self.settings.onboard_with_ai = project.use_ai;
+            let use_ai = project.use_ai;
+            self.with_settings_view(|view, _| view.remember_onboard_with_ai(use_ai));
+            if let Err(error) = self.settings.save() {
+                eprintln!("could not save settings: {error}");
+            }
+        }
     }
 
     fn poll_scaffold(&mut self) {
@@ -1639,14 +1722,26 @@ impl App {
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("stopped unexpectedly".into()),
         };
-        let Some(Scaffolding { window, name, .. }) = self.scaffolding.take() else {
+        let Some(Scaffolding {
+            window,
+            name,
+            use_ai,
+            ..
+        }) = self.scaffolding.take()
+        else {
             return;
         };
         match result {
             Ok(session_dir) => {
                 self.refresh_sessions();
                 self.open_folder_in(window, &session_dir);
-                self.open_onboarder(window);
+                // Either way the drafted config is in front: the agent's edits show up in it as it works.
+                self.open_project_config(window);
+                if use_ai {
+                    self.open_onboarder(window);
+                } else {
+                    self.review_drafted_config(window);
+                }
             }
             Err(error) => {
                 let message = format!("Failed to create {name}: {error}");
@@ -1815,6 +1910,17 @@ impl App {
                 self.settings_dirty = true;
             }
             Action::OpenInExternalEditor => self.open_in_external_editor(id),
+            Action::OpenProjectConfig => self.open_project_config(id),
+            Action::SetUpProjectWithAi => {
+                if claude_installed() {
+                    self.open_project_config(id);
+                    self.open_onboarder(id);
+                } else {
+                    self.with_workspace_view(id, |view, _| {
+                        view.show_toast("Install Claude Code to set up with AI", None)
+                    });
+                }
+            }
             Action::ExportConfig => self.open_export_config(id),
             Action::ImportConfig => self.open_import_config(id),
             Action::OpenTicket => {
@@ -1995,6 +2101,14 @@ impl App {
         }
         if effects.edit_keymap {
             self.edit_keymap();
+        }
+        if effects.edit_project_config {
+            if let Some(id) = self.bundle_window() {
+                self.open_project_config(id);
+                if let Some(main) = self.mains.get(&id) {
+                    main.window.focus_window();
+                }
+            }
         }
         if effects.export_config || effects.import_config {
             if let Some(id) = self.bundle_window() {

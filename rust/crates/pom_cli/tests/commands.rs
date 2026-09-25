@@ -68,6 +68,8 @@ repos:
             .env("POM_WEB_PORT", "1")
             .env("POM_PTY_SOCK_DIR", self.temp.path().join("s"))
             .env("ZDOTDIR", self.temp.path().join("zdot"))
+            // `config edit` must never open a real editor window from a test.
+            .env("VISUAL", "true")
             .output()
             .expect("pom")
     }
@@ -119,6 +121,9 @@ fn config_path_and_explain() {
     let json = fixture.ok(&root, &["config", "explain", "-o", "json"]);
     let value: serde_json::Value = serde_json::from_str(&json).expect("json");
     assert_eq!(value["branch"], "main");
+
+    let edited = fixture.ok(&root, &["config", "edit"]);
+    assert!(edited.contains("is valid"), "{edited}");
 }
 
 #[test]

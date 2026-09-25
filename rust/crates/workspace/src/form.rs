@@ -354,6 +354,52 @@ pub fn progress_bar(value: f32) -> Node {
 }
 
 /// A small muted status line: a leading icon and truncated text.
+/// A row of mutually exclusive choices, one outlined box split by hairlines; the chosen one is tinted accent.
+/// `choices` are (click id, leading icon, label).
+pub fn toggle_button_group(choices: &[(u64, Option<IconKind>, &str)], selected: usize) -> Node {
+    let colors = theme();
+    let hairline = colors.border.alpha(0.6);
+    let mut group = div().row().rounded(6.0).border(1.0, hairline);
+    for (index, (id, leading, text)) in choices.iter().enumerate() {
+        if index > 0 {
+            group = group.child(div().w_px(1.0).h_px(28.0).bg(hairline));
+        }
+        let chosen = index == selected;
+        let tint = if chosen {
+            colors.text_accent
+        } else {
+            colors.text
+        };
+        let mut cell = div()
+            .row()
+            .flex(1.0)
+            .h_px(28.0)
+            .px(8.0)
+            .gap(6.0)
+            .items_center()
+            .justify_center()
+            .on_click(*id);
+        if chosen {
+            cell = cell.bg(colors.info_background);
+        }
+        if let Some(kind) = leading {
+            cell = cell.child(icon(*kind).size(12.0).color(if chosen {
+                colors.text_accent
+            } else {
+                colors.icon_muted
+            }));
+        }
+        group = group.child(
+            cell.child(
+                label(text.to_string())
+                    .label_size(LabelSize::Small)
+                    .color(tint),
+            ),
+        );
+    }
+    group.into()
+}
+
 pub fn status_line(kind: IconKind, color: Rgba, text: &str) -> Node {
     div()
         .row()
