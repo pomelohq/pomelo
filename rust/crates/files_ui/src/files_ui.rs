@@ -5997,10 +5997,17 @@ impl ItemInput for FilesView {
     }
 
     fn editor_ime_preedit(&mut self, text: &str, selected: Option<Range<usize>>) -> bool {
+        // A popup takes only committed text; composing must not leak into the editor underneath.
+        if !self.accepts_pane_keys() {
+            return false;
+        }
         self.panes.editor_ime_preedit(text, selected)
     }
 
     fn editor_ime_commit(&mut self, text: &str) -> bool {
+        if self.track_nav(|view| view.modal_text(text)) {
+            return true;
+        }
         self.panes.editor_ime_commit(text)
     }
 
@@ -7618,6 +7625,17 @@ mod command_palette_tests {
         view.editor_text("go to line");
         view.editor_key(EditKey::Enter, false);
         assert!(view.go_to_line.is_some());
+    }
+
+    #[test]
+    fn text_from_an_input_method_goes_to_the_open_palette() {
+        let mut view = view_with("hello world\n");
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        assert!(!view.editor_ime_preedit("u", None));
+        view.editor_ime_commit("convert to upper case");
+        view.editor_key(EditKey::Enter, false);
+        assert!(view.palette.is_none());
+        assert_eq!(text(&mut view), "HELLO world\n");
     }
 
     fn modal_text(view: &mut FilesView) -> String {

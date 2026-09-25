@@ -3492,7 +3492,8 @@ impl WorkspaceView {
         if self.window_modal.is_some() {
             return false;
         }
-        self.input(self.focused_group())
+        let group = self.text_group();
+        self.input(group)
             .map(|v| v.editor_ime_preedit(text, selected))
             .unwrap_or(false)
     }
@@ -3501,10 +3502,13 @@ impl WorkspaceView {
         if let Some(modal) = self.window_modal.as_mut() {
             return modal.text(text);
         }
-        if let Some(panel) = self.panel_with_text() {
-            return panel.text(text);
+        if !self.editor_modal_open() {
+            if let Some(panel) = self.panel_with_text() {
+                return panel.text(text);
+            }
         }
-        self.input(self.focused_group())
+        let group = self.text_group();
+        self.input(group)
             .map(|v| v.editor_ime_commit(text))
             .unwrap_or(false)
     }
@@ -3516,8 +3520,10 @@ impl WorkspaceView {
         if let Some(modal) = self.window_modal.as_mut() {
             return modal.text(text);
         }
-        if let Some(panel) = self.panel_with_text() {
-            return panel.text(text);
+        if !self.editor_modal_open() {
+            if let Some(panel) = self.panel_with_text() {
+                return panel.text(text);
+            }
         }
         let group = self.text_group();
         self.input(group)
@@ -3551,14 +3557,17 @@ impl WorkspaceView {
         self.layout.side_panel_mut(kind)
     }
 
-    /// Where typed text goes: an open modal of the editor area takes it even while the panel has focus.
-    fn text_group(&self) -> InputGroup {
-        let modal = self
-            .layout
+    /// The editor area shows a palette, finder or other popup that must get the keyboard over any panel.
+    fn editor_modal_open(&self) -> bool {
+        self.layout
             .files_view
             .as_ref()
-            .is_some_and(|view| !view.accepts_pane_keys());
-        if modal {
+            .is_some_and(|view| !view.accepts_pane_keys())
+    }
+
+    /// Where typed text goes: an open modal of the editor area takes it even while the panel has focus.
+    fn text_group(&self) -> InputGroup {
+        if self.editor_modal_open() {
             InputGroup::Center
         } else {
             self.focused_group()
@@ -3573,6 +3582,9 @@ impl WorkspaceView {
             let commands = self.palette_commands();
             self.set_terminal_focus(false);
             self.set_agent_focus(false);
+            for panel in self.layout.side_panels.iter_mut() {
+                panel.blur();
+            }
             return self.layout.files_view.as_mut().is_some_and(|files| {
                 files.set_extra_commands(commands);
                 files.editor_key(key, shift)
@@ -3583,10 +3595,12 @@ impl WorkspaceView {
             self.settle_window_modal();
             return changed || self.window_modal.is_none();
         }
-        if let Some(panel) = self.panel_with_text() {
-            let changed = panel.key(key, shift);
-            self.apply_panel_requests();
-            return changed;
+        if !self.editor_modal_open() {
+            if let Some(panel) = self.panel_with_text() {
+                let changed = panel.key(key, shift);
+                self.apply_panel_requests();
+                return changed;
+            }
         }
         let claimed = self
             .layout
