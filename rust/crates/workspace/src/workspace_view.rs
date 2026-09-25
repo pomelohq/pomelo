@@ -4594,6 +4594,16 @@ impl WorkspaceView {
             }
         } else if id == crate::WORKSPACE_NEW {
             self.workspace_requests.new_workspace = true;
+        } else if id == crate::STATUS_TICKET {
+            let active = self.layout.project.as_ref().and_then(|project| {
+                project
+                    .workspaces
+                    .iter()
+                    .position(|branch| *branch == project.active)
+            });
+            if let Some(index) = active {
+                self.workspace_requests.row = Some((index, crate::RowAction::OpenTicket));
+            }
         } else if (crate::WORKSPACE_OP_BASE..crate::WORKSPACE_OP_END).contains(&id) {
             let offset = id - crate::WORKSPACE_OP_BASE;
             let position = (offset / crate::WORKSPACE_OP_STRIDE) as usize;
@@ -5526,6 +5536,23 @@ mod tests {
         e.update(app.app_mut(), |v, _| v.mouse_move(cell.0, cell.1));
         let text = frame_text(&app.draw(h).expect("frame"));
         assert!(text.contains("feat-login"), "hover names it: {text}");
+    }
+
+    #[test]
+    fn the_status_bar_opens_the_active_workspaces_ticket() {
+        let mut project = sample_project();
+        project.tickets = vec![String::new(), "In Progress".into()];
+        let (mut app, h, e) = open_with(Some(project));
+        app.draw(h);
+        let button = app
+            .window(h)
+            .and_then(|w| w.center_of(crate::STATUS_TICKET))
+            .expect("the ticket button is in the status bar");
+        let request = e.update(app.app_mut(), |v, _| {
+            v.mouse_down(button.0, button.1);
+            v.take_workspace_requests().row
+        });
+        assert_eq!(request, Some((1, crate::RowAction::OpenTicket)));
     }
 
     #[test]

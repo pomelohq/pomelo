@@ -590,6 +590,7 @@ impl GitPanel {
                         div()
                             .row()
                             .flex(1.0)
+                            .items_center()
                             .child(label("Pull Requests").size(12.0).color(theme().text_muted)),
                     )
                     .child(
@@ -608,9 +609,15 @@ impl GitPanel {
                 };
                 let color = pr_color(&pr);
                 body.child(icon(IconKind::PullRequest).size(13.0).color(color))
-                    .child(label(format!("#{}", pr.number)).size(12.0).color(color))
                     .child(
-                        div().row().flex(1.0).child(
+                        div()
+                            .row()
+                            .items_center()
+                            .w_px(self.pr_number_width())
+                            .child(label(format!("#{}", pr.number)).size(12.0).color(color)),
+                    )
+                    .child(
+                        div().row().flex(1.0).items_center().child(
                             label(pr.title.clone())
                                 .size(12.0)
                                 .color(theme().text)
@@ -651,7 +658,7 @@ impl GitPanel {
                         label(changes.branch.clone())
                             .size(12.0)
                             .color(theme().text_muted)
-                            .truncate(),
+                            .truncate_start(),
                     );
                 if let Some(badge) = badge {
                     title = title.child(badge);
@@ -688,6 +695,26 @@ impl GitPanel {
                     .into()
             }
         }
+    }
+
+    /// Wide enough for the longest `#number` listed, so the titles after it start in one column.
+    fn pr_number_width(&self) -> f32 {
+        let Some(prs) = self.pull_requests.as_ref() else {
+            return 0.0;
+        };
+        self.sources
+            .iter()
+            .filter_map(|source| prs.for_checkout(&source.root)?.1)
+            .map(|pr| {
+                ui::measure_text_width(
+                    &format!("#{}", pr.number),
+                    12.0,
+                    false,
+                    ui::ui_font_weight(),
+                ) / ui::ui_text_scale()
+            })
+            .fold(0.0, f32::max)
+            .ceil()
     }
 
     fn pr_badge(&self, row: usize, repo: usize) -> Option<Node> {

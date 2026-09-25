@@ -14,6 +14,8 @@ use workspace::{Item, ItemTick};
 const PAD: f32 = 16.0;
 const OPEN_IN_JIRA: u64 = 1;
 const RELOAD: u64 = 2;
+const COPY_LINK: u64 = 3;
+const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1500);
 const WEB_LINK_BASE: u64 = 100;
 const DESCRIPTION_LINK_BASE: u64 = 1_000_000;
 const COMMENT_LINK_BASE: u64 = 2_000_000;
@@ -69,6 +71,9 @@ pub struct TicketItem {
     content_h: f32,
     body_h: f32,
     hits: Vec<(Rect, u64)>,
+    /// A link to hand the clipboard on the next tick, and when the last one was copied.
+    copy: Option<String>,
+    copied_at: Option<std::time::Instant>,
 }
 
 impl TicketItem {
@@ -94,6 +99,8 @@ impl TicketItem {
             content_h: 0.0,
             body_h: 0.0,
             hits: Vec::new(),
+            copy: None,
+            copied_at: None,
         };
         if let Some(detail) = cached {
             item.set_detail(detail);
@@ -215,6 +222,12 @@ impl TicketItem {
             .as_ref()
             .is_some_and(|detail| !detail.url.is_empty())
         {
+            let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
+            top = top.child(button(
+                COPY_LINK,
+                IconKind::Copy,
+                if copied { "Copied" } else { "Copy Link" },
+            ));
             top = top.child(button(OPEN_IN_JIRA, IconKind::ArrowUpRight, "Open in Jira"));
         }
         top = top.child(button(
@@ -355,6 +368,10 @@ impl TicketItem {
         };
         let url = match id {
             OPEN_IN_JIRA => Some(detail.url.clone()),
+            COPY_LINK => {
+                self.copy = Some(detail.url.clone()).filter(|url| !url.is_empty());
+                None
+            }
             RELOAD => {
                 self.load();
                 None
@@ -477,9 +494,26 @@ impl Item for TicketItem {
     }
 
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
+        if let Some(url) = self.copy.take() {
+            self.copied_at = Some(std::time::Instant::now());
+            return ItemTick {
+                changed: true,
+                clipboard_store: Some(url),
+                ..ItemTick::default()
+            };
+        }
+        let label_expired = self.copied_at.is_some_and(|at| at.elapsed() >= COPIED_FOR);
+        if label_expired {
+            self.copied_at = None;
+        }
         let answer = match self.loading.as_ref().map(Receiver::try_recv) {
             Some(Ok(answer)) => answer,
-            Some(Err(TryRecvError::Empty)) | None => return ItemTick::default(),
+            Some(Err(TryRecvError::Empty)) | None => {
+                return ItemTick {
+                    changed: label_expired,
+                    ..ItemTick::default()
+                }
+            }
             Some(Err(TryRecvError::Disconnected)) => Err("the ticket lookup stopped".into()),
         };
         self.loading = None;
@@ -497,7 +531,7 @@ impl Item for TicketItem {
     }
 
     fn is_busy(&self) -> bool {
-        self.loading.is_some()
+        self.loading.is_some() || self.copied_at.is_some()
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -569,6 +603,17 @@ mod tests {
         assert!(ids.contains(&OPEN_IN_JIRA));
         assert!(ids.contains(&WEB_LINK_BASE));
         assert!(ids.contains(&DESCRIPTION_LINK_BASE));
+        let (copy, _) = painted
+            .hits
+            .iter()
+            .find(|(_, id)| *id == COPY_LINK)
+            .expect("copy button");
+        item.pointer_down(copy.x + 1.0, copy.y + 1.0, 1, Modifiers::default());
+        let tick = item.tick(&|| None);
+        assert_eq!(
+            tick.clipboard_store.as_deref(),
+            Some("https://example.atlassian.net/browse/PROJ-101")
+        );
     }
 
     #[test]

@@ -438,19 +438,25 @@ impl Panel for ProjectPanel {
     }
 }
 
-/// What a rail cell calls a workspace: the ticket number a branch starts with (`proj-101-login` is `101`),
-/// else the start of the first word of its name.
-pub fn rail_label(row: &WorkspaceRow) -> String {
+/// What a rail cell calls a workspace, as two short lines. A workspace with a Jira ticket shows its project
+/// key over its number (`CRM` / `1299`); any other shows the start of its name over the last part of its
+/// branch (`inv` / `5fwg` for `investigate-0917-5fwg`); main is just `main`.
+pub fn rail_label(row: &WorkspaceRow) -> (String, String) {
     let branch = row.branch.as_str();
-    let letters = branch.chars().take_while(char::is_ascii_alphabetic).count();
-    let digits: String = branch
-        .get(letters + 1..)
-        .unwrap_or("")
-        .chars()
-        .take_while(char::is_ascii_digit)
+    let parts: Vec<&str> = branch
+        .split(|c: char| matches!(c, '-' | '_' | '/') || c.is_whitespace())
+        .filter(|part| !part.is_empty())
         .collect();
-    if letters > 0 && branch.as_bytes().get(letters) == Some(&b'-') && !digits.is_empty() {
-        return digits;
+    let ticket_number = parts
+        .get(1)
+        .filter(|part| part.chars().all(|c| c.is_ascii_digit()));
+    if let (false, Some(project), Some(number)) =
+        (row.ticket.is_empty(), parts.first(), ticket_number)
+    {
+        return (
+            project.to_uppercase().chars().take(4).collect(),
+            number.to_string(),
+        );
     }
     let name = if row.label.is_empty() {
         branch
@@ -461,7 +467,13 @@ pub fn rail_label(row: &WorkspaceRow) -> String {
         .split(|c: char| c.is_whitespace() || matches!(c, '-' | '_' | '/'))
         .find(|word| !word.is_empty())
         .unwrap_or(name);
-    word.chars().take(5).collect()
+    match parts.as_slice() {
+        [] | [_] => (word.chars().take(5).collect(), String::new()),
+        [.., last] => (
+            word.chars().take(3).collect(),
+            last.chars().take(5).collect(),
+        ),
+    }
 }
 
 /// The WORKSPACES panel folded to a rail: a new-workspace button, then one cell per workspace with its short
@@ -488,6 +500,17 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
         );
     for row in list.rows {
         let current = row.index == list.current;
+        let (top, bottom) = rail_label(row);
+        let ticket_color = match row.ticket_category.as_str() {
+            "done" => colors.success,
+            "indeterminate" => colors.text_accent,
+            _ => colors.text_muted,
+        };
+        let text_color = if current {
+            colors.text
+        } else {
+            colors.text_muted
+        };
         let mut dots = div()
             .row()
             .h_px(6.0)
@@ -500,28 +523,45 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
         if row.running > 0 {
             dots = dots.child(div().w_px(5.0).h_px(5.0).rounded(2.5).bg(colors.success));
         }
+        if let Some(pr) = row.pr {
+            dots = dots.child(
+                div()
+                    .w_px(5.0)
+                    .h_px(5.0)
+                    .rounded(2.5)
+                    .bg(pr.severity.color()),
+            );
+        }
+        let line = |text: String, size: f32, color: Rgba| {
+            div()
+                .row()
+                .justify_center()
+                .w_px(cell_w)
+                .child(label(text).size(size).color(color).truncate())
+        };
         let mut cell = div()
             .col()
             .items_center()
             .justify_center()
-            .gap(2.0)
+            .gap(1.0)
             .w_px(cell_w)
-            .h_px(34.0)
+            .h_px(if bottom.is_empty() { 30.0 } else { 42.0 })
             .rounded(4.0)
-            .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64)
-            .child(
-                div().row().justify_center().w_px(cell_w).child(
-                    label(rail_label(row))
-                        .size(11.0)
-                        .color(if current {
-                            colors.text
-                        } else {
-                            colors.text_muted
-                        })
-                        .truncate(),
-                ),
-            )
-            .child(dots);
+            .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64);
+        if bottom.is_empty() {
+            cell = cell.child(line(top, 11.0, text_color));
+        } else if row.ticket.is_empty() {
+            cell = cell
+                .child(line(top, 9.0, colors.text_placeholder))
+                .child(line(bottom, 11.0, text_color));
+        } else {
+            cell = cell.child(line(top, 9.0, colors.text_muted)).child(line(
+                bottom,
+                12.0,
+                ticket_color,
+            ));
+        }
+        cell = cell.child(dots);
         if current {
             cell = cell.bg(colors.element_selected);
         }
@@ -654,6 +694,7 @@ fn quiet_op_line(op: &crate::WorkspaceOp) -> Option<Node> {
                 div()
                     .row()
                     .flex(1.0)
+                    .items_center()
                     .child(label(text).size(11.0).color(colors.text_muted).truncate()),
             )
             .into(),
@@ -686,7 +727,7 @@ fn op_row(op: &crate::WorkspaceOp, position: usize, expanded: bool) -> Node {
         .gap(6.0)
         .child(icon(status_icon).size(12.0).color(status_color))
         .child(
-            div().row().flex(1.0).child(
+            div().row().flex(1.0).items_center().child(
                 label(op.title.clone())
                     .size(13.0)
                     .color(colors.text)
@@ -1013,12 +1054,19 @@ mod tests {
     fn the_rail_names_workspaces_by_ticket_number_and_clicks_like_rows() {
         let mut ticket = row(1, "Login page", Some(AgentDot::Thinking));
         ticket.branch = "proj-101-login".into();
+        ticket.ticket = "In Progress".into();
         ticket.running = 2;
         let mut plain = row(2, "", None);
-        plain.branch = "experiment".into();
-        assert_eq!(rail_label(&ticket), "101");
-        assert_eq!(rail_label(&plain), "exper");
-        assert_eq!(rail_label(&row(0, "main", None)), "main");
+        plain.branch = "investigate-0917-5fwg".into();
+        let mut untracked = row(3, "", None);
+        untracked.branch = "proj-102-no-status".into();
+        assert_eq!(rail_label(&ticket), ("PROJ".into(), "101".into()));
+        assert_eq!(rail_label(&plain), ("inv".into(), "5fwg".into()));
+        assert_eq!(rail_label(&untracked), ("pro".into(), "statu".into()));
+        assert_eq!(
+            rail_label(&row(0, "main", None)),
+            ("main".into(), String::new())
+        );
         let rows = [row(0, "main", None), ticket, plain];
         let painted = ui::render(
             &workspace_rail(&list(&rows, &[]), crate::RAIL_W),
@@ -1026,6 +1074,7 @@ mod tests {
         );
         let texts: Vec<String> = painted.texts.iter().map(|t| t.text.clone()).collect();
         assert!(texts.contains(&"101".to_string()), "{texts:?}");
+        assert!(texts.contains(&"5fwg".to_string()), "{texts:?}");
         let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
         assert!(ids.contains(&crate::WORKSPACE_NEW));
         assert!(ids.contains(&(crate::WORKSPACE_ROW_BASE + 2)));

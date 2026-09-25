@@ -13,6 +13,8 @@ const REFRESH: u64 = 2;
 const OVERVIEW_TAB: u64 = 3;
 const CHECKS_TAB: u64 = 4;
 const CHECK_BASE: u64 = 100;
+const COPY_LINK: u64 = 5;
+const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1500);
 const LINK_BASE: u64 = 1_000_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,6 +43,9 @@ pub struct PrItem {
     /// The body parsed once, and laid out again only when the width changes.
     description: Option<(String, markdown::Markdown)>,
     description_layout: Option<(u32, markdown::MarkdownLayout)>,
+    /// A link to hand the clipboard on the next tick, and when the last one was copied.
+    copy: Option<String>,
+    copied_at: Option<std::time::Instant>,
 }
 
 impl PrItem {
@@ -66,6 +71,8 @@ impl PrItem {
             hits: Vec::new(),
             description: None,
             description_layout: None,
+            copy: None,
+            copied_at: None,
         };
         item.load();
         item
@@ -173,6 +180,12 @@ impl PrItem {
         }
         top = top.child(div().row().flex(1.0));
         if self.pr.is_some() {
+            let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
+            top = top.child(button(
+                COPY_LINK,
+                IconKind::Copy,
+                if copied { "Copied" } else { "Copy Link" },
+            ));
             top = top.child(button(
                 OPEN_ON_GITHUB,
                 IconKind::ArrowUpRight,
@@ -429,6 +442,13 @@ impl PrItem {
                 }
             }
             REFRESH => self.load(),
+            COPY_LINK => {
+                self.copy = self
+                    .pr
+                    .as_ref()
+                    .map(|pr| pr.url.clone())
+                    .filter(|url| !url.is_empty());
+            }
             id if id >= LINK_BASE => {
                 let url = self
                     .description
@@ -557,11 +577,23 @@ impl Item for PrItem {
     }
 
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
+        if let Some(url) = self.copy.take() {
+            self.copied_at = Some(std::time::Instant::now());
+            return ItemTick {
+                changed: true,
+                clipboard_store: Some(url),
+                ..ItemTick::default()
+            };
+        }
+        let label_expired = self.copied_at.is_some_and(|at| at.elapsed() >= COPIED_FOR);
+        if label_expired {
+            self.copied_at = None;
+        }
         let answer = match self.loading.as_ref().map(Receiver::try_recv) {
             Some(Ok(answer)) => answer,
             Some(Err(TryRecvError::Empty)) | None => {
                 return ItemTick {
-                    changed: false,
+                    changed: label_expired,
                     ..ItemTick::default()
                 }
             }
@@ -582,7 +614,7 @@ impl Item for PrItem {
     }
 
     fn is_busy(&self) -> bool {
-        self.loading.is_some()
+        self.loading.is_some() || self.copied_at.is_some()
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -613,6 +645,7 @@ mod tests {
             number: 7,
             title: "Login".into(),
             state: "OPEN".into(),
+            url: "https://github.com/acme/web/pull/7".into(),
             body: "### Related ticket\r\n[PROJ-101](https://example.com/PROJ-101)\r\n\r\nSome **bold** text".into(),
             ..PullRequest::default()
         }));
@@ -628,5 +661,15 @@ mod tests {
         assert!(texts.contains(&"bold"), "{texts:?}");
         assert!(!texts.iter().any(|text| text.contains("###")), "{texts:?}");
         assert!(painted.hits.iter().any(|(_, id)| *id == LINK_BASE));
+        let (copy, _) = painted
+            .hits
+            .iter()
+            .find(|(_, id)| *id == COPY_LINK)
+            .expect("copy button");
+        item.pointer_down(copy.x + 1.0, copy.y + 1.0, 1, Modifiers::default());
+        assert_eq!(
+            item.tick(&|| None).clipboard_store.as_deref(),
+            Some("https://github.com/acme/web/pull/7")
+        );
     }
 }

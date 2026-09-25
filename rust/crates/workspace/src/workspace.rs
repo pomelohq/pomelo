@@ -308,6 +308,8 @@ pub const WORKSPACE_TICKET_BASE: u64 = 5000;
 pub const WORKSPACE_TICKET_END: u64 = 6000;
 /// The WORKSPACES header's new-workspace button.
 pub const WORKSPACE_NEW: u64 = 14;
+/// The status bar's button for the active workspace's Jira ticket.
+pub const STATUS_TICKET: u64 = 15;
 /// A workspace operation card: base + position * stride + part.
 pub const WORKSPACE_OP_BASE: u64 = 3000;
 pub const WORKSPACE_OP_END: u64 = 4000;
@@ -2305,6 +2307,14 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
     let dock_group = |side: DockPosition| -> Option<Node> {
         let mut row = div().row().gap(4.0).items_center();
         let mut has = false;
+        let active_ticket = layout.project.as_ref().is_some_and(|project| {
+            project
+                .workspaces
+                .iter()
+                .position(|branch| *branch == project.active)
+                .and_then(|index| project.tickets.get(index))
+                .is_some_and(|ticket| !ticket.is_empty())
+        });
         for (i, kind) in PaneKind::ALL.iter().enumerate() {
             if layout.func_hidden.get(i).copied().unwrap_or(false) {
                 continue;
@@ -2324,6 +2334,10 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                 layout.func_active(i),
                 *kind == PaneKind::Services && layout.services_running,
             ));
+            has = true;
+        }
+        if active_ticket && side == DockPosition::Left {
+            row = row.child(toggle(ui::IconKind::Ticket, STATUS_TICKET, false));
             has = true;
         }
         if !layout.terminal_hidden && layout.terminal_side == side {
@@ -2604,6 +2618,8 @@ pub fn status_tooltip(id: u64) -> Option<String> {
         Some("Go to Line/Column  ^G".into())
     } else if id == DIAGNOSTIC_MESSAGE {
         Some("Next Diagnostic  F8".into())
+    } else if id == STATUS_TICKET {
+        Some("Jira Ticket".into())
     } else if (FUNC_BASE..FUNC_BASE + PaneKind::ALL.len() as u64).contains(&id) {
         Some(PaneKind::ALL[(id - FUNC_BASE) as usize].title().to_string())
     } else {

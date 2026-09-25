@@ -267,7 +267,7 @@ impl CreateWorkspaceModal {
             let mut line = div().row().gap(12.0);
             for (offset, (repo, picked)) in repos.iter().enumerate() {
                 let index = pair * 2 + offset;
-                line = line.child(div().row().flex(1.0).child(checkbox(
+                line = line.child(div().row().flex(1.0).items_center().child(checkbox(
                     REPO_BASE + index as u64,
                     *picked,
                     repo,
