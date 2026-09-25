@@ -204,7 +204,13 @@ fn project_info(
         missing: project
             .workspaces
             .iter()
-            .map(|workspace| project.missing_repos(workspace))
+            .map(|workspace| {
+                if workspace.is_main {
+                    project.missing_repos(workspace)
+                } else {
+                    Vec::new()
+                }
+            })
             .collect(),
     }
 }
@@ -2012,7 +2018,7 @@ impl App {
             Action::OpenInExternalEditor => self.open_in_external_editor(id),
             Action::OpenProjectConfig => self.open_project_config(id),
             Action::AddRepository => self.open_add_repo(id),
-            Action::ApplyConfig => self.apply_config(id),
+            Action::CloneMissingRepos => self.clone_missing_repos(id),
             Action::SetUpProjectWithAi => {
                 if claude_installed() {
                     self.open_project_config(id);
@@ -2215,7 +2221,7 @@ impl App {
                 self.open_add_repo(id);
             }
             if effects.apply_config {
-                self.apply_config(id);
+                self.clone_missing_repos(id);
             }
             if effects.split_config || effects.normalize_config {
                 self.tidy_config(id, effects.normalize_config);

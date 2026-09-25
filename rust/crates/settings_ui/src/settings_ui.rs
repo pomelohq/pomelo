@@ -2301,11 +2301,11 @@ fn project_config_items() -> Vec<PageItem> {
                 reset: None,
             }),
             PageItem::Row(SettingRow {
-                title: "Apply to All Workspaces".into(),
-                description: "Check out every repo the config has in the workspaces that lack it (clone into main first).".into(),
+                title: "Clone Missing Repos".into(),
+                description: "Clone into main the repos the config names but main does not have yet (a teammate added them, or the config came from a bundle).".into(),
                 control: Control::Button {
                     id: CTRL_APPLY_CONFIG,
-                    label: "Apply",
+                    label: "Clone...",
                     enabled: true,
                 },
                 reset: None,

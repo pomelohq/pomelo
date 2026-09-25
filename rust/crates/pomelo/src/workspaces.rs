@@ -130,6 +130,7 @@ impl App {
             ),
             workspace::RowAction::OpenTicket => self.open_ticket(id, &target.branch),
             workspace::RowAction::AddMissingRepos => self.add_missing_repos(id, &target),
+            workspace::RowAction::AddRepos => self.pick_repos(id, &target),
         }
     }
 
@@ -307,6 +308,8 @@ impl App {
                 self.rename_alias(id, rename);
             } else if let Some(remove) = value.downcast_ref::<workspaces_ui::RemoveRepo>() {
                 self.remove_repo(id, &remove.repo);
+            } else if let Some(picked) = value.downcast_ref::<workspaces_ui::PickedRepos>() {
+                self.queue_add_repos(id, &picked.branch, picked.repos.clone());
             } else if let Some(export) = value.downcast_ref::<workspaces_ui::ExportConfig>() {
                 self.export_config(id, export);
             } else if let Some(import) = value.downcast_ref::<workspaces_ui::ImportConfig>() {

@@ -254,6 +254,9 @@ pub struct WorkspaceView {
     toast: Option<Toast>,
     notification: Option<Notification>,
     shown_problem: Option<String>,
+    /// How far the WORKSPACES list (or rail) is scrolled, and how far it can go.
+    workspace_scroll: f32,
+    workspace_scroll_max: f32,
     /// The config files the open "Open Project Config" list picks from.
     config_files: Vec<std::path::PathBuf>,
     /// The coding agent is installed: setup problems offer "Fix with Claude", else point at pom.yml.
@@ -315,6 +318,8 @@ impl WorkspaceView {
             toast: None,
             notification: None,
             shown_problem: None,
+            workspace_scroll: 0.0,
+            workspace_scroll_max: 0.0,
             config_files: Vec::new(),
             ai_available: true,
             dismissed_setup: None,
@@ -1262,63 +1267,81 @@ impl WorkspaceView {
             expanded: &expanded_ops,
         };
         let mut rail_tip = None;
-        if self.layout.left.collapsed {
+        {
             let region = self.layout.left_region(w, h);
-            let rail = Rect::new(
+            // The list scrolls under the fixed footer strip: laid out from its scroll offset, then clipped.
+            let visible = Rect::new(
                 region.x,
                 region.y,
                 region.w,
                 (region.h - crate::STATUS_BAR_H).max(0.0),
                 Rgba::TRANSPARENT,
             );
-            let p = ui::render(
-                &crate::panel::workspace_rail(&list, region.w / ui::ui_text_scale()),
-                rail,
-            );
-            rail_tip = self.session_menu_hover.and_then(|hovered| {
-                let index = hovered.checked_sub(crate::WORKSPACE_ROW_BASE)? as usize;
-                let row = workspaces.iter().find(|row| row.index == index)?;
-                let (cell, _) = p.hits.iter().find(|(_, id)| *id == hovered)?;
-                let scale = ui::ui_text_scale();
-                // Beside the cell, centred on it, rather than under it where the next cells are.
-                let anchor = Rect::new(
-                    cell.x + cell.w + 6.0 * scale,
-                    cell.y + cell.h / 2.0 - 17.0 * scale,
-                    0.0,
-                    0.0,
+            let node = if self.layout.left.collapsed {
+                crate::panel::workspace_rail(&list, region.w / ui::ui_text_scale())
+            } else {
+                self.layout.left.body(&list)
+            };
+            let top = visible.y - self.workspace_scroll;
+            let mut p = ui::render(
+                &node,
+                Rect::new(
+                    visible.x,
+                    top,
+                    visible.w,
+                    visible.h + self.workspace_scroll,
                     Rgba::TRANSPARENT,
-                );
-                let mut text = row.label.clone();
-                if let Some(agent) = row.agent {
-                    text.push_str(&format!(" - Agent: {}", agent.label()));
-                }
-                if row.running > 0 {
-                    text.push_str(&format!(" - {} running", row.running));
-                }
-                if let Some(pr) = row.pr {
-                    let noun = if pr.count == 1 { "PR" } else { "PRs" };
-                    text.push_str(&format!(" - {} {noun}", pr.count));
-                }
-                if !row.ticket.is_empty() {
-                    text.push_str(&format!(" - {}", row.ticket));
-                }
-                Some(tooltip(anchor, &text, w))
+                ),
+            );
+            let bottom = p
+                .hits
+                .iter()
+                .map(|(rect, _)| rect.y + rect.h)
+                .chain(p.rects.iter().map(|rect| rect.y + rect.h))
+                .fold(top, f32::max);
+            self.workspace_scroll_max = (bottom - top + 8.0 - visible.h).max(0.0);
+            if self.workspace_scroll > self.workspace_scroll_max {
+                self.workspace_scroll = self.workspace_scroll_max;
+            }
+            if self.layout.left.collapsed {
+                rail_tip = self.session_menu_hover.and_then(|hovered| {
+                    let index = hovered.checked_sub(crate::WORKSPACE_ROW_BASE)? as usize;
+                    let row = workspaces.iter().find(|row| row.index == index)?;
+                    let (cell, _) = p.hits.iter().find(|(_, id)| *id == hovered)?;
+                    let scale = ui::ui_text_scale();
+                    // Beside the cell, centred on it, rather than under it where the next cells are.
+                    let anchor = Rect::new(
+                        cell.x + cell.w + 6.0 * scale,
+                        cell.y + cell.h / 2.0 - 17.0 * scale,
+                        0.0,
+                        0.0,
+                        Rgba::TRANSPARENT,
+                    );
+                    let mut text = row.label.clone();
+                    if let Some(agent) = row.agent {
+                        text.push_str(&format!(" - Agent: {}", agent.label()));
+                    }
+                    if row.running > 0 {
+                        text.push_str(&format!(" - {} running", row.running));
+                    }
+                    if let Some(pr) = row.pr {
+                        let noun = if pr.count == 1 { "PR" } else { "PRs" };
+                        text.push_str(&format!(" - {} {noun}", pr.count));
+                    }
+                    if !row.ticket.is_empty() {
+                        text.push_str(&format!(" - {}", row.ticket));
+                    }
+                    Some(tooltip(anchor, &text, w))
+                });
+            }
+            if let Some(drop) = self.row_drop_painted(&p.hits) {
+                p.rects.extend(drop.rects);
+            }
+            panel_hits.extend(clipped_hits(&p, visible));
+            center_overlays.push(Overlay {
+                painted: p,
+                clip: Some(visible),
             });
-            let drop = self.row_drop_painted(&p.hits);
-            panel_hits.extend(p.hits.iter().copied());
-            blit(p);
-            if let Some(drop) = drop {
-                blit(drop);
-            }
-        } else {
-            let region = self.layout.left_region(w, h);
-            let p = self.layout.left.render_body(region, &list);
-            let drop = self.row_drop_painted(&p.hits);
-            panel_hits.extend(p.hits.iter().copied());
-            blit(p);
-            if let Some(drop) = drop {
-                blit(drop);
-            }
         }
         // not in the main status bar (which never covers this special sidebar) and not in the header. Always
         // shown (even in the collapsed rail), accented while the sidebar is open.
@@ -2208,17 +2231,20 @@ impl WorkspaceView {
             items.push(item(crate::MENU_WS_STOP, "Stop All Services", false));
         }
         let is_main = project.workspaces.get(index) == Some(&project.branch);
-        if project
-            .missing
-            .get(index)
-            .is_some_and(|missing| !missing.is_empty())
+        if is_main
+            && project
+                .missing
+                .get(index)
+                .is_some_and(|missing| !missing.is_empty())
         {
-            let label = if is_main {
-                "Clone Missing Repos..."
-            } else {
-                "Add Missing Repos"
-            };
-            items.push(item(crate::MENU_WS_ADD_MISSING, label, false));
+            items.push(item(
+                crate::MENU_WS_ADD_MISSING,
+                "Clone Missing Repos...",
+                false,
+            ));
+        }
+        if !is_main {
+            items.push(item(crate::MENU_WS_ADD_REPOS, "Add Repos...", false));
         }
         if is_main {
             items.push(item(
@@ -2249,6 +2275,9 @@ impl WorkspaceView {
             }
             crate::MENU_WS_ADD_MISSING => {
                 self.workspace_requests.row = Some((index, crate::RowAction::AddMissingRepos));
+            }
+            crate::MENU_WS_ADD_REPOS => {
+                self.workspace_requests.row = Some((index, crate::RowAction::AddRepos));
             }
             crate::MENU_WS_DELETE => self.ask_to_delete_workspace(index),
             crate::MENU_WS_UPDATE_MAIN => {
@@ -3815,6 +3844,9 @@ impl WorkspaceView {
         } else if self.dragging == Drag::TerminalTab {
             self.finish_panel_tab_drag();
         } else if self.dragging != Drag::None {
+            if self.dragging == Drag::Left {
+                self.layout.finish_left_drag();
+            }
             self.pending.persist = true;
         } else if let Some((id, _, _)) = self.pending_tab.take() {
             if crate::is_terminal_id(id) || crate::is_agent_id(id) {
@@ -4629,6 +4661,19 @@ impl WorkspaceView {
                 input.item_pointer_scroll(x, y, (dx, dy), modifiers)
                     || input.editor_scroll(x, y, dx, dy)
             });
+        }
+        let sidebar = self.layout.left_region(self.viewport.0, self.viewport.1);
+        let over_sidebar = x >= sidebar.x
+            && x < sidebar.x + sidebar.w
+            && y >= sidebar.y
+            && y < sidebar.y + sidebar.h - crate::STATUS_BAR_H;
+        if over_sidebar && !self.layout.session_menu {
+            let next = (self.workspace_scroll - dy).clamp(0.0, self.workspace_scroll_max);
+            if (next - self.workspace_scroll).abs() <= 0.01 {
+                return false;
+            }
+            self.workspace_scroll = next;
+            return true;
         }
         if let Some(group) = self
             .dock_body_group_at(x, y)
@@ -5607,6 +5652,32 @@ mod tests {
         assert_eq!(
             requests.reorder, None,
             "main neither moves nor is displaced"
+        );
+    }
+
+    #[test]
+    fn a_long_workspace_list_scrolls_under_the_footer() {
+        let mut project = sample_project();
+        project.workspaces = (0..60).map(|index| format!("feat-{index}")).collect();
+        project.workspaces.insert(0, "trunk".into());
+        let (mut app, h, e) = open_with(Some(project));
+        app.draw(h);
+        let last = crate::WORKSPACE_ROW_BASE + 60;
+        assert!(
+            app.window(h).and_then(|w| w.center_of(last)).is_none(),
+            "clipped below"
+        );
+        let first = app
+            .window(h)
+            .and_then(|w| w.center_of(crate::WORKSPACE_ROW_BASE))
+            .expect("first row");
+        e.update(app.app_mut(), |v, _| {
+            v.scroll(first.0, first.1, 0.0, -100_000.0)
+        });
+        app.draw(h);
+        assert!(
+            app.window(h).and_then(|w| w.center_of(last)).is_some(),
+            "scrolled into view"
         );
     }
 

@@ -35,7 +35,7 @@ pub enum Action {
     OpenProjectConfig,
     SetUpProjectWithAi,
     AddRepository,
-    ApplyConfig,
+    CloneMissingRepos,
 }
 
 impl Action {
@@ -72,7 +72,7 @@ impl Action {
         Action::OpenProjectConfig,
         Action::SetUpProjectWithAi,
         Action::AddRepository,
-        Action::ApplyConfig,
+        Action::CloneMissingRepos,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -110,7 +110,7 @@ impl Action {
             Action::OpenProjectConfig => "pomelo::OpenProjectConfig",
             Action::SetUpProjectWithAi => "pomelo::SetUpProjectWithAi",
             Action::AddRepository => "pomelo::AddRepository",
-            Action::ApplyConfig => "pomelo::ApplyConfig",
+            Action::CloneMissingRepos => "pomelo::CloneMissingRepos",
         }
     }
 
@@ -149,7 +149,7 @@ impl Action {
             Action::OpenProjectConfig => "Open Project Config",
             Action::SetUpProjectWithAi => "Set Up Project with AI",
             Action::AddRepository => "Add Repository",
-            Action::ApplyConfig => "Apply Config to All Workspaces",
+            Action::CloneMissingRepos => "Clone Missing Repos into Main",
         }
     }
 
