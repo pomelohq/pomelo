@@ -1,0 +1,4 @@
+# Tests and `cargo run` never touch the user's real config or machine state: both point into target/.
+# The bundled app, launched outside cargo, uses the real locations.
+[env]
+POMELO_CONFIG_DIR = { value = "target/test-config", relative = true }

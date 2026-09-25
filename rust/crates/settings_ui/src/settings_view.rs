@@ -801,8 +801,7 @@ impl SettingsView {
         if id == settings_ui::CTRL_OPEN_JSON {
             self.commit_edit();
             self.close_popover();
-            if let Some(home) = std::env::var_os("HOME") {
-                let path = std::path::Path::new(&home).join(".config/pomelo/settings.json");
+            if let Some(path) = settings::Settings::path() {
                 let _ = std::process::Command::new("open").arg(path).spawn();
             }
             return;

@@ -169,8 +169,7 @@ impl Settings {
     }
 
     pub fn path() -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join(".config/pomelo/settings.json"))
+        Some(pom_paths::config_dir()?.join("settings.json"))
     }
 
     /// Load from disk, or defaults if the file is missing or unreadable.

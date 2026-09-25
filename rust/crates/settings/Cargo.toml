@@ -9,5 +9,6 @@ description = "User settings: typed config loaded from and saved to ~/.config/po
 path = "src/settings.rs"
 
 [dependencies]
+pom_paths = { path = "../pom_paths" }
 serde.workspace = true
 serde_json.workspace = true

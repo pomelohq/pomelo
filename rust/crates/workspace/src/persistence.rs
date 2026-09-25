@@ -52,7 +52,7 @@ pub struct SerializedWorkspace {
 
 /// Where a project's panes are saved: one file per project root under the config directory.
 pub fn workspace_state_path(root: &std::path::Path) -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
+    let dir = pom_paths::config_dir()?;
     let name = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -61,11 +61,7 @@ pub fn workspace_state_path(root: &std::path::Path) -> Option<std::path::PathBuf
         "{name}-{:016x}.json",
         stable_hash(root.as_os_str().as_encoded_bytes())
     );
-    Some(
-        std::path::PathBuf::from(home)
-            .join(".config/pomelo/workspaces")
-            .join(file),
-    )
+    Some(dir.join("workspaces").join(file))
 }
 
 /// FNV-1a, so the file name for a root stays the same across builds (the std hasher makes no such promise).
