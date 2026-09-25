@@ -81,6 +81,19 @@ pub fn merged_document(path: &Path) -> Result<Node, LoadError> {
     Ok(root)
 }
 
+/// The config as one YAML text: the root file itself when there are no fragments, else the merged tree.
+pub fn merged_yaml(path: &Path) -> Result<String, LoadError> {
+    let config_dir = path.parent().unwrap_or(Path::new("."));
+    let has_fragments = fragment_files(config_dir).is_ok_and(|files| !files.is_empty());
+    if !has_fragments {
+        return std::fs::read_to_string(path).map_err(|e| LoadError {
+            path: path.to_path_buf(),
+            message: format!("read failed: {e}"),
+        });
+    }
+    Ok(yaml_node::to_yaml(&merged_document(path)?))
+}
+
 fn read_document(path: &Path) -> Result<Option<Node>, LoadError> {
     let source = std::fs::read_to_string(path).map_err(|e| LoadError {
         path: path.to_path_buf(),

@@ -5,6 +5,7 @@
 //! layout/dock system in `workspace`, self-update in `auto_update`.
 
 #[cfg(target_os = "macos")]
+mod config_bundle;
 mod notifications;
 mod workspaces;
 
@@ -1777,6 +1778,8 @@ impl App {
                 self.settings_dirty = true;
             }
             Action::OpenInExternalEditor => self.open_in_external_editor(id),
+            Action::ExportConfig => self.open_export_config(id),
+            Action::ImportConfig => self.open_import_config(id),
             Action::OpenProject => {
                 self.handle_session_request(id, workspace::SessionRequest::ChooseFolder)
             }
@@ -1945,6 +1948,15 @@ impl App {
         }
         if effects.edit_keymap {
             self.edit_keymap();
+        }
+        if effects.export_config || effects.import_config {
+            if let Some(id) = self.bundle_window() {
+                if effects.export_config {
+                    self.open_export_config(id);
+                } else {
+                    self.open_import_config(id);
+                }
+            }
         }
         if effects.reapply_font {
             self.apply_ui_font();

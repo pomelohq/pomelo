@@ -1,0 +1,21 @@
+[package]
+name = "pom_bundle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Config bundles: a project's merged config, optionally with its secrets sealed under a password."
+
+[lib]
+path = "src/pom_bundle.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_paths = { path = "../pom_paths" }
+pom_secrets = { path = "../pom_secrets" }
+aes-gcm = "0.10"
+scrypt = { version = "0.11", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

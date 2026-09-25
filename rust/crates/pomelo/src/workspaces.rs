@@ -237,6 +237,10 @@ impl App {
                 self.rename_workspace(id, rename);
             } else if let Some(project) = value.downcast_ref::<workspaces_ui::NewProject>() {
                 self.start_scaffold(id, project);
+            } else if let Some(export) = value.downcast_ref::<workspaces_ui::ExportConfig>() {
+                self.export_config(id, export);
+            } else if let Some(import) = value.downcast_ref::<workspaces_ui::ImportConfig>() {
+                self.import_config(id, import);
             }
         }
         let tickets_changed = match self.mains.get_mut(&id) {

@@ -560,6 +560,8 @@ mod tests {
     use workspace::{ItemInput, TerminalKeyOutcome};
 
     fn panel() -> TerminalPanel {
+        // The default login shell goes through `login`, which outlives the test and keeps its pty.
+        crate::set_terminal_defaults(15.0, "/bin/sh", 0);
         TerminalPanel::new(std::env::temp_dir(), std::sync::Arc::new(|| {}))
     }
 

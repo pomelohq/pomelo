@@ -217,6 +217,8 @@ pub const CTRL_SCROLLBACK_DEC: u64 = 273;
 pub const CTRL_SCROLLBACK_INC: u64 = 274;
 pub const CTRL_SCROLLBACK_EDIT: u64 = 275;
 pub const CTRL_EDIT_KEYMAP: u64 = 276;
+pub const CTRL_EXPORT_CONFIG: u64 = 277;
+pub const CTRL_IMPORT_CONFIG: u64 = 278;
 pub const SCROLLBACK_MIN: u32 = 1_000;
 pub const SCROLLBACK_MAX: u32 = 100_000;
 
@@ -2172,6 +2174,27 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                     inc: CTRL_REFRESH_INC,
                     edit: CTRL_REFRESH_EDIT,
                     value: jira.refresh_minutes.to_string(),
+                },
+                reset: None,
+            }),
+            PageItem::Header("Config Bundle"),
+            PageItem::Row(SettingRow {
+                title: "Export".into(),
+                description: "Save this project's merged config as YAML, or with its secrets sealed under a password, to hand to a teammate.".into(),
+                control: Control::Button {
+                    id: CTRL_EXPORT_CONFIG,
+                    label: "Export...",
+                    enabled: true,
+                },
+                reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Import".into(),
+                description: "Replace this project's config with a YAML file or bundle, or let Claude merge it into yours.".into(),
+                control: Control::Button {
+                    id: CTRL_IMPORT_CONFIG,
+                    label: "Import...",
+                    enabled: true,
                 },
                 reset: None,
             }),
