@@ -631,21 +631,6 @@ fn workspace_row(row: &WorkspaceRow, current: bool) -> Node {
         details = details.child(label(agent.label()).size(11.0).color(color));
         has_details = true;
     }
-    if !row.ticket.is_empty() {
-        let color = match row.ticket_category.as_str() {
-            "done" => colors.success,
-            "indeterminate" => colors.text_accent,
-            _ => colors.text_muted,
-        };
-        details = details.child(
-            div()
-                .row()
-                .items_center()
-                .on_click(crate::WORKSPACE_TICKET_BASE + row.index as u64)
-                .child(label(row.ticket.clone()).size(11.0).color(color).truncate()),
-        );
-        has_details = true;
-    }
     if row.running > 0 {
         details = details.child(
             div()
@@ -658,6 +643,22 @@ fn workspace_row(row: &WorkspaceRow, current: bool) -> Node {
                         .size(11.0)
                         .color(colors.text_muted),
                 ),
+        );
+        has_details = true;
+    }
+    if !row.ticket.is_empty() {
+        let color = match row.ticket_category.as_str() {
+            "done" => colors.success,
+            "indeterminate" => colors.text_accent,
+            _ => colors.text_muted,
+        };
+        details = details.child(
+            div()
+                .row()
+                .flex(1.0)
+                .items_center()
+                .on_click(crate::WORKSPACE_TICKET_BASE + row.index as u64)
+                .child(label(row.ticket.clone()).size(11.0).color(color).truncate()),
         );
         has_details = true;
     }

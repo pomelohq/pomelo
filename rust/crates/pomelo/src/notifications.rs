@@ -91,7 +91,16 @@ pub fn start() {
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let delegate: Retained<Delegate> = msg_send_id![Delegate::alloc(), init];
         center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        let done = block2::RcBlock::new(|_granted: objc2::runtime::Bool, _error: *mut NSError| {});
+        let done = block2::RcBlock::new(|granted: objc2::runtime::Bool, error: *mut NSError| {
+            if let Some(error) = error.as_ref() {
+                eprintln!(
+                    "notifications not allowed: {}",
+                    error.localizedDescription()
+                );
+            } else if !granted.as_bool() {
+                eprintln!("notifications are turned off for Pomelo in System Settings");
+            }
+        });
         center.requestAuthorizationWithOptions_completionHandler(
             UNAuthorizationOptions(
                 UNAuthorizationOptions::UNAuthorizationOptionAlert.0
@@ -159,9 +168,17 @@ fn deliver(title: &str, body: &str, branch: &str, sound: bool) {
             &content,
             None,
         );
+        let done = block2::RcBlock::new(|error: *mut NSError| {
+            if let Some(error) = error.as_ref() {
+                eprintln!(
+                    "notification not delivered: {}",
+                    error.localizedDescription()
+                );
+            }
+        });
         center
             .center
-            .addNotificationRequest_withCompletionHandler(&request, None);
+            .addNotificationRequest_withCompletionHandler(&request, Some(&done));
     }
 }
 
