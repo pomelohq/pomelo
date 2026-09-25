@@ -291,8 +291,7 @@ impl Keymap {
     }
 
     pub fn user_file() -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join(".config/pomelo/keymap.json"))
+        Some(pom_paths::config_dir()?.join("keymap.json"))
     }
 
     /// The defaults with the user's keymap file applied; problems in it are returned, not fatal.

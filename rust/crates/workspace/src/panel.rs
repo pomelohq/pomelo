@@ -880,12 +880,11 @@ fn op_row(op: &crate::WorkspaceOp, position: usize, expanded: bool) -> Node {
     card.into()
 }
 
-/// The right dock's outline placeholder: a header plus a muted "nothing here yet" line. A stand-in until a real
-/// outline/symbols panel lands; it exercises the right dock through the same `Panel`/element-tree path.
+/// What the agent dock shows while no agent session runs in the workspace: a way to start one.
 #[derive(Default)]
-pub struct OutlinePanel;
+pub struct AgentEmptyPanel;
 
-impl Panel for OutlinePanel {
+impl Panel for AgentEmptyPanel {
     fn position(&self) -> DockPosition {
         DockPosition::Right
     }
@@ -895,7 +894,7 @@ impl Panel for OutlinePanel {
     }
 
     fn title(&self) -> &str {
-        "OUTLINE"
+        "AGENT"
     }
 
     fn render(&mut self) -> Node {
@@ -903,9 +902,19 @@ impl Panel for OutlinePanel {
             .col()
             .px(10.0)
             .py(10.0)
-            .gap(6.0)
+            .gap(8.0)
             .child(panel_header(self.title()))
-            .child(label("No symbols").size(13.0).color(theme().text_muted))
+            .child(
+                label("No agent running in this workspace.")
+                    .size(13.0)
+                    .color(theme().text_muted),
+            )
+            .child(div().row().child(crate::outlined_button(
+                crate::AGENT_TOGGLE,
+                Some(IconKind::Sparkle),
+                "Start Agent",
+                true,
+            )))
             .into()
     }
 }

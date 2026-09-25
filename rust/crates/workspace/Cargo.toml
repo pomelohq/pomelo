@@ -9,6 +9,7 @@ description = "Workspace layout: top bar, docks (workspace-list panel), pane/tab
 path = "src/workspace.rs"
 
 [dependencies]
+pom_paths = { path = "../pom_paths" }
 ui = { path = "../ui" }
 terminal = { path = "../terminal" }
 editor = { package = "pomelo-editor", path = "../editor" }

@@ -1429,7 +1429,7 @@ impl WorkspaceView {
                 Some(Shown::Agent) if self.layout.agent_visible() => {
                     self.agent_painted(region, &mut center_overlays, &mut panel_hits)
                 }
-                // With no agent session open (and when nothing is docked) the dock shows the OutlinePanel.
+                // With no agent session open (and when nothing is docked) the dock shows the AgentEmptyPanel.
                 Some(Shown::Agent) | None => self.layout.right.render_body(region, &list),
             };
             panel_hits.extend(p.hits.iter().copied());

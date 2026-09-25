@@ -9,6 +9,7 @@ description = "Files feature view: renders the file tree + selected file (syntax
 path = "src/files_ui.rs"
 
 [dependencies]
+pom_paths = { path = "../pom_paths" }
 ui = { path = "../ui" }
 markdown = { path = "../markdown" }
 workspace = { path = "../workspace" }

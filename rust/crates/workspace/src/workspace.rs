@@ -23,7 +23,7 @@ pub use form::{
 pub use key_binding::render_keystroke;
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
-    side_panel_kind, terminal_content, terminal_dock_body, AgentDot, DockPosition, OutlinePanel,
+    side_panel_kind, terminal_content, terminal_dock_body, AgentDot, AgentEmptyPanel, DockPosition,
     PaletteEntry, PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView, TerminalPanel,
     WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
@@ -1411,7 +1411,7 @@ impl Default for Layout {
                 width: 300.0,
                 collapsed: true,
                 live: None,
-                panel: Box::new(OutlinePanel),
+                panel: Box::new(AgentEmptyPanel),
             },
             bottom: Dock {
                 position: DockPosition::Bottom,

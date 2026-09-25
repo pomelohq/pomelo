@@ -33,6 +33,15 @@ impl StateDir {
     }
 }
 
+/// Where the user's app config lives (`$POMELO_CONFIG_DIR`, else `~/.config/pomelo`): settings, keymap,
+/// snippets, saved layouts. Tests point the variable at a scratch folder so they never touch the real one.
+pub fn config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("POMELO_CONFIG_DIR").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    Some(home_dir()?.join(".config").join("pomelo"))
+}
+
 /// Where new sessions' project folders are created (`$POM_SESSIONS_ROOT`, else `~/pom`).
 pub fn sessions_root() -> PathBuf {
     if let Some(root) = std::env::var_os("POM_SESSIONS_ROOT").filter(|v| !v.is_empty()) {

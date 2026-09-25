@@ -12,8 +12,7 @@ use editor::snippet::{parse_snippet_file, snippet_scope, SnippetDefinition, GLOB
 const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 
 pub fn default_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".config/pomelo/snippets"))
+    Some(pom_paths::config_dir()?.join("snippets"))
 }
 
 #[derive(Default)]
