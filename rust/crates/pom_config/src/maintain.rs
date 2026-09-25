@@ -551,3 +551,250 @@ mod tests {
         Ok(())
     }
 }
+
+/// The config file that declares `repo`, its text, and the line (0-based) of the repo's key.
+fn repo_file(config_path: &Path, repo: &str) -> Result<(PathBuf, String, usize), String> {
+    config_files(config_path)
+        .into_iter()
+        .find_map(|file| {
+            let text = std::fs::read_to_string(&file).ok()?;
+            let root = yaml_node::parse(&text).ok()??;
+            let line = root
+                .get("repos")?
+                .entries()?
+                .iter()
+                .find(|(key, _)| key.text() == repo)
+                .map(|(key, _)| key.line.saturating_sub(1))?;
+            Some((file, text, line))
+        })
+        .ok_or_else(|| format!("repo {repo:?} is not in any config file"))
+}
+
+/// Writes every `(file, text)`, then takes them all back if the config no longer loads and validates.
+fn write_checked(config_path: &Path, edits: &[(PathBuf, String, String)]) -> Result<(), String> {
+    for (file, _, next) in edits {
+        std::fs::write(file, next).map_err(|error| format!("write {}: {error}", file.display()))?;
+    }
+    let problem = crate::Config::load(config_path)
+        .map_err(|error| error.message)
+        .and_then(|config| config.validate())
+        .err();
+    let Some(problem) = problem else {
+        return Ok(());
+    };
+    for (file, before, _) in edits {
+        if let Err(error) = std::fs::write(file, before) {
+            return Err(format!(
+                "{problem}; restoring {} failed: {error}",
+                file.display()
+            ));
+        }
+    }
+    Err(format!("the edit would break the config: {problem}"))
+}
+
+/// Gives `repo` a new alias and rewrites every `{{<old>.` reference to it across the config files. Returns the
+/// files that changed.
+pub fn rename_alias(config_path: &Path, repo: &str, alias: &str) -> Result<Vec<PathBuf>, String> {
+    let alias = alias.trim();
+    if alias.is_empty()
+        || !alias
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!("{alias:?} is not a valid alias"));
+    }
+    let config = crate::Config::load(config_path).map_err(|error| error.message)?;
+    let dir = config
+        .repos
+        .get(repo)
+        .ok_or_else(|| format!("repo {repo:?} is not in the config"))?;
+    let old = if dir.alias.is_empty() {
+        repo.to_string()
+    } else {
+        dir.alias.clone()
+    };
+    if old == alias {
+        return Ok(Vec::new());
+    }
+    if config
+        .repos
+        .iter()
+        .any(|(name, other)| name != repo && (name == alias || other.alias == alias))
+    {
+        return Err(format!("{alias} is already used by another repo"));
+    }
+    let (file, text, repo_line) = repo_file(config_path, repo)?;
+    let lines: Vec<&str> = text.lines().collect();
+    let block = entry_lines(&lines, repo_line);
+    let key_indent = indent(lines[repo_line]);
+    let child_indent = lines[block.start + 1..block.end]
+        .iter()
+        .find(|line| !line.trim().is_empty())
+        .map_or(key_indent + 2, |line| indent(line));
+    let alias_line = (block.start + 1..block.end).find(|&index| {
+        indent(lines[index]) == child_indent && lines[index].trim_start().starts_with("alias:")
+    });
+    let mut out: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
+    let pad = " ".repeat(child_indent);
+    match alias_line {
+        Some(index) => {
+            let range = entry_lines(&lines, index);
+            out.splice(range, [format!("{pad}alias: {alias}")]);
+        }
+        None => {
+            let key = lines[repo_line].trim_end();
+            // `api: {}` becomes a mapping with the alias; `api:` gets the alias as its first entry.
+            let head = key
+                .strip_suffix("{}")
+                .map_or(key, str::trim_end)
+                .to_string();
+            out.splice(
+                repo_line..=repo_line,
+                [head, format!("{pad}alias: {alias}")],
+            );
+        }
+    }
+    let mut renamed = out.join("\n");
+    renamed.push('\n');
+    let from = format!("{{{{{old}.");
+    let to = format!("{{{{{alias}.");
+    let mut edits = Vec::new();
+    for path in config_files(config_path) {
+        let before = if path == file {
+            text.clone()
+        } else {
+            std::fs::read_to_string(&path).map_err(|error| error.to_string())?
+        };
+        let base = if path == file {
+            renamed.clone()
+        } else {
+            before.clone()
+        };
+        let next = base.replace(&from, &to);
+        if next != before {
+            edits.push((path, before, next));
+        }
+    }
+    write_checked(config_path, &edits)?;
+    Ok(edits.into_iter().map(|(path, _, _)| path).collect())
+}
+
+/// Takes `repo` out of the config: its entry goes, and a `pom.d` fragment left with nothing else is deleted.
+/// Refused (nothing written) when the rest of the config still refers to it. Returns the file edited.
+pub fn remove_repo(config_path: &Path, repo: &str) -> Result<PathBuf, String> {
+    let (file, text, repo_line) = repo_file(config_path, repo)?;
+    let lines: Vec<&str> = text.lines().collect();
+    let next = remove_ranges(&lines, vec![entry_lines(&lines, repo_line)]);
+    let alias = crate::Config::load(config_path)
+        .ok()
+        .and_then(|config| config.repos.get(repo).map(|dir| dir.alias.clone()))
+        .filter(|alias| !alias.is_empty())
+        .unwrap_or_else(|| repo.to_string());
+    let needles = [format!("{{{{{alias}."), format!("{{{{{repo}.")];
+    let dir = config_path.parent().unwrap_or(Path::new("."));
+    let referring: Vec<String> = config_files(config_path)
+        .iter()
+        .filter_map(|path| {
+            let body = if *path == file {
+                next.clone()
+            } else {
+                std::fs::read_to_string(path).ok()?
+            };
+            needles
+                .iter()
+                .any(|needle| body.contains(needle.as_str()))
+                .then(|| path.strip_prefix(dir).unwrap_or(path).display().to_string())
+        })
+        .collect();
+    if !referring.is_empty() {
+        return Err(format!(
+            "{repo} is still referred to in {}; change those first",
+            referring.join(", ")
+        ));
+    }
+    let emptied = file != config_path
+        && yaml_node::parse(&next).ok().flatten().is_none_or(|root| {
+            root.entries()
+                .unwrap_or_default()
+                .iter()
+                .all(|(key, value)| {
+                    key.text() == "repos"
+                        && value.entries().is_none_or(|entries| entries.is_empty())
+                })
+        });
+    if emptied {
+        std::fs::remove_file(&file)
+            .map_err(|error| format!("remove {}: {error}", file.display()))?;
+        if let Err(problem) = crate::Config::load(config_path)
+            .map_err(|error| error.message)
+            .and_then(|config| config.validate())
+        {
+            if let Err(error) = std::fs::write(&file, &text) {
+                return Err(format!(
+                    "{problem}; restoring {} failed: {error}",
+                    file.display()
+                ));
+            }
+            return Err(format!("the edit would break the config: {problem}"));
+        }
+        return Ok(file);
+    }
+    write_checked(config_path, &[(file.clone(), text, next)])?;
+    Ok(file)
+}
+
+#[cfg(test)]
+mod repo_edit_tests {
+    use super::*;
+
+    fn project(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().expect("temp");
+        for (name, text) in files {
+            let path = temp.path().join(name);
+            std::fs::create_dir_all(path.parent().expect("dir")).expect("mkdir");
+            std::fs::write(&path, text).expect("write");
+        }
+        let config = temp.path().join("pom.yml");
+        (temp, config)
+    }
+
+    #[test]
+    fn renaming_an_alias_rewrites_references_in_every_file() {
+        let (temp, config) = project(&[
+            ("pom.yml", "session: demo\n"),
+            ("pom.d/repos/01-api.yml", "repos:\n  api:\n    alias: be\n    services:\n      web:\n        cmd: rails s\n        port: true\n"),
+            ("pom.d/repos/02-web.yml", "repos:\n  web:\n    env:\n      API_URL: \"{{be.web.url}}\"\n"),
+        ]);
+        let changed = rename_alias(&config, "api", "backend").expect("rename");
+        assert_eq!(changed.len(), 2);
+        let api = std::fs::read_to_string(temp.path().join("pom.d/repos/01-api.yml")).expect("api");
+        assert!(api.contains("    alias: backend\n"), "{api}");
+        let web = std::fs::read_to_string(temp.path().join("pom.d/repos/02-web.yml")).expect("web");
+        assert!(web.contains("{{backend.web.url}}"), "{web}");
+        assert!(
+            rename_alias(&config, "api", "web").is_err(),
+            "taken by another repo"
+        );
+    }
+
+    #[test]
+    fn removing_a_repo_deletes_its_own_fragment_and_refuses_while_referenced() {
+        let (temp, config) = project(&[
+            ("pom.yml", "session: demo\n"),
+            ("pom.d/repos/01-api.yml", "repos:\n  api:\n    services:\n      web:\n        cmd: rails s\n        port: true\n"),
+            ("pom.d/repos/02-web.yml", "repos:\n  web:\n    env:\n      API_URL: \"{{api.web.url}}\"\n"),
+            ("pom.d/repos/03-jobs.yml", "repos:\n  jobs:\n    services:\n      worker:\n        cmd: sidekiq\n"),
+        ]);
+        assert!(
+            remove_repo(&config, "api").is_err(),
+            "web still points at api"
+        );
+        assert!(temp.path().join("pom.d/repos/01-api.yml").exists());
+        let removed = remove_repo(&config, "jobs").expect("remove");
+        assert_eq!(removed, temp.path().join("pom.d/repos/03-jobs.yml"));
+        assert!(!removed.exists());
+        let config_now = crate::Config::load(&config).expect("loads");
+        assert!(!config_now.repos.contains_key("jobs"));
+    }
+}

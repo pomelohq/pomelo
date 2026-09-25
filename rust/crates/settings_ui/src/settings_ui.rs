@@ -108,8 +108,9 @@ const KEYMAP_SECTIONS: [&str; 1] = ["Bindings"];
 const AGENT_SECTIONS: [&str; 2] = ["Command", "Claude Code"];
 const NOTIFICATIONS_SECTIONS: [&str; 2] = ["Delivery", "Alert Sounds"];
 const NETWORK_SECTIONS: [&str; 3] = ["Reverse Proxy", "Webhook Fan-out", "Recent Requests"];
+const PROJECT_SECTIONS: [&str; 3] = ["Repositories", "Config", "Config Bundle"];
 
-const CATEGORIES: [(&str, &[&str]); 10] = [
+const CATEGORIES: [(&str, &[&str]); 11] = [
     ("General", &GENERAL_SECTIONS),
     ("Appearance", &APPEARANCE_SECTIONS),
     ("Window & Layout", &WINDOW_LAYOUT_SECTIONS),
@@ -120,6 +121,7 @@ const CATEGORIES: [(&str, &[&str]); 10] = [
     ("Notifications", &NOTIFICATIONS_SECTIONS),
     ("Network", &NETWORK_SECTIONS),
     ("Integrations", &INTEGRATIONS_SECTIONS),
+    ("Project", &PROJECT_SECTIONS),
 ];
 
 pub const GENERAL: usize = 0;
@@ -131,6 +133,7 @@ pub const AGENT: usize = 6;
 pub const NOTIFICATIONS: usize = 7;
 pub const NETWORK: usize = 8;
 pub const INTEGRATIONS: usize = 9;
+pub const PROJECT: usize = 10;
 
 /// Index of the Appearance category (the only page with real content for now).
 pub const APPEARANCE: usize = 1;
@@ -220,6 +223,14 @@ pub const CTRL_EDIT_KEYMAP: u64 = 276;
 pub const CTRL_EXPORT_CONFIG: u64 = 277;
 pub const CTRL_IMPORT_CONFIG: u64 = 278;
 pub const CTRL_EDIT_PROJECT_CONFIG: u64 = 279;
+pub const CTRL_ADD_REPO: u64 = 280;
+pub const CTRL_APPLY_CONFIG: u64 = 281;
+pub const CTRL_SPLIT_CONFIG: u64 = 282;
+pub const CTRL_NORMALIZE_CONFIG: u64 = 283;
+/// Per repository row of the Project page: id = base + row index.
+pub const CTRL_REPO_RENAME_BASE: u64 = 20_000;
+pub const CTRL_REPO_REMOVE_BASE: u64 = 21_000;
+pub const CTRL_REPO_LIMIT: u64 = 1_000;
 pub const SCROLLBACK_MIN: u32 = 1_000;
 pub const SCROLLBACK_MAX: u32 = 100_000;
 
@@ -992,6 +1003,22 @@ pub fn page(
         render_page(&notifications_page(s), search, editing, w)
     } else if selected == NETWORK {
         render_page(&network_page(&state.network), search, editing, w)
+    } else if selected == PROJECT && !state.project.session.is_empty() {
+        render_page(&project_page(&state.project), search, editing, w)
+    } else if selected == PROJECT {
+        div()
+            .col()
+            .gap(16.0)
+            .child(
+                label("Project")
+                    .label_size(LabelSize::Large)
+                    .color(title_c()),
+            )
+            .child(
+                label("Open a project first: its repositories and config are edited here.")
+                    .color(dim_c()),
+            )
+            .into()
     } else if selected == INTEGRATIONS && !jira.session.is_empty() {
         render_page(&integrations_page(s, jira), search, editing, w)
     } else if selected == INTEGRATIONS {
@@ -1197,6 +1224,7 @@ fn page_for(cat: usize) -> Option<Page> {
         KEYMAP => Some(keymap_page(&KeymapPage::default())),
         NOTIFICATIONS => Some(notifications_page(&Settings::default())),
         NETWORK => Some(network_page(&NetworkPage::default())),
+        PROJECT => Some(project_page(&ProjectPage::default())),
         _ => None,
     }
 }
@@ -1338,6 +1366,8 @@ enum Control {
         label: &'static str,
         enabled: bool,
     },
+    /// Several actions on one row, left to right.
+    Buttons(Vec<(u64, &'static str)>),
     /// A server's Running/Stopped chip.
     Status {
         running: bool,
@@ -1581,6 +1611,25 @@ pub enum ConnectionStatus {
 /// The per-project settings of the session the settings window was opened from (empty `session`: no project
 /// open): Jira, and keeping main fresh.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepoSummary {
+    pub name: String,
+    pub alias: String,
+    pub services: usize,
+    /// Main has its clone.
+    pub cloned: bool,
+    /// Workspaces besides main that have it, of how many.
+    pub present: usize,
+    pub workspaces: usize,
+}
+
+/// The open project's repositories, for the Project page (no session: no project open).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProjectPage {
+    pub session: String,
+    pub repos: Vec<RepoSummary>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IntegrationsPage {
     pub session: String,
     pub keep_main_fresh: bool,
@@ -1651,6 +1700,7 @@ pub struct KeymapPage {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PageState {
     pub jira: IntegrationsPage,
+    pub project: ProjectPage,
     pub agent: AgentPage,
     pub network: NetworkPage,
     pub general: GeneralPage,
@@ -2178,13 +2228,104 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                 },
                 reset: None,
             }),
-            PageItem::Header("Project Config"),
+        ],
+    }
+}
+
+fn project_page(project: &ProjectPage) -> Page {
+    let mut items = vec![
+        PageItem::Header("Repositories"),
+        PageItem::Row(SettingRow {
+            title: "Add Repository".into(),
+            description: "Clone a git URL or folder into main, detect its services and check it out in the workspaces you pick.".into(),
+            control: Control::Button {
+                id: CTRL_ADD_REPO,
+                label: "Add...",
+                enabled: true,
+            },
+            reset: None,
+        }),
+    ];
+    for (index, repo) in project
+        .repos
+        .iter()
+        .enumerate()
+        .take(CTRL_REPO_LIMIT as usize)
+    {
+        let title = if repo.alias.is_empty() || repo.alias == repo.name {
+            repo.name.clone()
+        } else {
+            format!("{} (alias {})", repo.name, repo.alias)
+        };
+        let services = match repo.services {
+            1 => "1 service".to_string(),
+            count => format!("{count} services"),
+        };
+        let presence = if !repo.cloned {
+            "not cloned into main".to_string()
+        } else if repo.workspaces == 0 {
+            "in main".to_string()
+        } else {
+            format!(
+                "in {} of {} workspaces besides main",
+                repo.present, repo.workspaces
+            )
+        };
+        items.push(PageItem::Row(SettingRow {
+            title: title.into(),
+            description: format!("{services} - {presence}").into(),
+            control: Control::Buttons(vec![
+                (CTRL_REPO_RENAME_BASE + index as u64, "Rename Alias..."),
+                (CTRL_REPO_REMOVE_BASE + index as u64, "Remove..."),
+            ]),
+            reset: None,
+        }));
+    }
+    Page {
+        title: "Project",
+        items: items.into_iter().chain(project_config_items()).collect(),
+    }
+}
+
+fn project_config_items() -> Vec<PageItem> {
+    vec![
+            PageItem::Header("Config"),
             PageItem::Row(SettingRow {
-                title: "pom.yml".into(),
-                description: "Services, databases and env of this project. Saved changes reload at once, even from main.".into(),
+                title: "Config Files".into(),
+                description: "pom.yml and its pom.d fragments. Each save is checked first and reloads at once, even from main.".into(),
                 control: Control::Button {
                     id: CTRL_EDIT_PROJECT_CONFIG,
-                    label: "Edit pom.yml",
+                    label: "Edit...",
+                    enabled: true,
+                },
+                reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Apply to All Workspaces".into(),
+                description: "Check out every repo the config has in the workspaces that lack it (clone into main first).".into(),
+                control: Control::Button {
+                    id: CTRL_APPLY_CONFIG,
+                    label: "Apply",
+                    enabled: true,
+                },
+                reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Split into pom.d".into(),
+                description: "One file per repo plus shared services and environments; the old file is kept as a backup.".into(),
+                control: Control::Button {
+                    id: CTRL_SPLIT_CONFIG,
+                    label: "Split",
+                    enabled: true,
+                },
+                reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Normalize".into(),
+                description: "Drop removed keys, rewrite old colon tokens to dot notation, then split.".into(),
+                control: Control::Button {
+                    id: CTRL_NORMALIZE_CONFIG,
+                    label: "Normalize",
                     enabled: true,
                 },
                 reset: None,
@@ -2210,8 +2351,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                 },
                 reset: None,
             }),
-        ],
-    }
+    ]
 }
 
 fn row_matches(row: &SettingRow, q: &str) -> bool {
@@ -2321,6 +2461,12 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
                         enabled,
                     } => configured_card(label, *button, button_label, *enabled),
                     Control::Button { id, label, enabled } => action_button(*id, label, *enabled),
+                    Control::Buttons(buttons) => buttons
+                        .iter()
+                        .fold(div().row().gap(6.0).items_center(), |row, (id, label)| {
+                            row.child(action_button(*id, label, true))
+                        })
+                        .into(),
                     Control::Status { running } => status_chip(*running),
                     Control::Value { text } => value_text(text),
                 };

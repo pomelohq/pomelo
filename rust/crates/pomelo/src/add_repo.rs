@@ -131,6 +131,141 @@ impl App {
         self.add_missing_everywhere(window);
     }
 
+    /// The Project page's repository rows for the main window Settings works on.
+    pub(crate) fn project_page(&self) -> settings_ui::ProjectPage {
+        let Some(project) = self
+            .bundle_window()
+            .and_then(|id| self.mains.get(&id))
+            .and_then(|main| main.project.as_ref())
+        else {
+            return settings_ui::ProjectPage::default();
+        };
+        let Some(config) = project.config.as_ref() else {
+            return settings_ui::ProjectPage {
+                session: project.session.clone(),
+                repos: Vec::new(),
+            };
+        };
+        let others: Vec<&pom_layout::Workspace> = project
+            .workspaces
+            .iter()
+            .filter(|workspace| !workspace.is_main)
+            .collect();
+        let main = pom_layout::workspace_root(&project.root, project.branch(), true);
+        let repos = config
+            .repos
+            .iter()
+            .map(|(name, dir)| settings_ui::RepoSummary {
+                name: name.clone(),
+                alias: dir.alias.clone(),
+                services: dir.services.len(),
+                cloned: main.join(name).is_dir(),
+                present: others
+                    .iter()
+                    .filter(|workspace| workspace.path.join(name).is_dir())
+                    .count(),
+                workspaces: others.len(),
+            })
+            .collect();
+        settings_ui::ProjectPage {
+            session: project.session.clone(),
+            repos,
+        }
+    }
+
+    pub(crate) fn open_rename_alias(&mut self, id: WindowId, repo: &str) {
+        let current = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .and_then(|project| project.config.as_ref())
+            .and_then(|config| config.repos.get(repo))
+            .map(|dir| {
+                if dir.alias.is_empty() {
+                    repo.to_string()
+                } else {
+                    dir.alias.clone()
+                }
+            })
+            .unwrap_or_else(|| repo.to_string());
+        let modal = workspaces_ui::RenameAliasModal::new(repo, &current);
+        self.focus_main_with_modal(id, Box::new(modal));
+    }
+
+    pub(crate) fn rename_alias(&mut self, id: WindowId, rename: &workspaces_ui::RenameAlias) {
+        let Some(config_path) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .map(|project| project.config_path.clone())
+        else {
+            return;
+        };
+        let message =
+            match pom_config::maintain::rename_alias(&config_path, &rename.repo, &rename.alias) {
+                Ok(files) => format!(
+                    "{} is now {} ({} file{} changed)",
+                    rename.repo,
+                    rename.alias,
+                    files.len(),
+                    if files.len() == 1 { "" } else { "s" }
+                ),
+                Err(error) => format!("Alias not changed: {error}"),
+            };
+        self.refresh_project_now(id);
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+    }
+
+    pub(crate) fn remove_repo(&mut self, id: WindowId, repo: &str) {
+        let Some(project) = self.mains.get(&id).and_then(|main| main.project.clone()) else {
+            return;
+        };
+        let message = match pom_core::remove_repo(&project, repo) {
+            Ok(removed) => {
+                let mut parts = vec![format!("Removed {repo}")];
+                if !removed.kept_worktrees.is_empty() {
+                    parts.push(format!(
+                        "kept its worktree with changes in {}",
+                        removed.kept_worktrees.join(", ")
+                    ));
+                }
+                if let Some(clone) = removed.main_clone {
+                    parts.push(format!("main's clone stays at {}", clone.display()));
+                }
+                parts.join("; ")
+            }
+            Err(error) => format!("Could not remove {repo}: {error}"),
+        };
+        self.refresh_project_now(id);
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+    }
+
+    /// Splits the config into `pom.d`, or normalizes it (which also splits).
+    pub(crate) fn tidy_config(&mut self, id: WindowId, normalize: bool) {
+        let Some(config_path) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .map(|project| project.config_path.clone())
+        else {
+            return;
+        };
+        let message = if normalize {
+            match pom_config::maintain::normalize(&config_path) {
+                Ok(changes) if changes.is_empty() => "The config is already normal".to_string(),
+                Ok(changes) => format!("Normalized: {}", changes.join("; ")),
+                Err(error) => format!("Could not normalize: {error}"),
+            }
+        } else {
+            match pom_config::maintain::split(&config_path, false) {
+                Ok(result) => format!("Split into {} files under pom.d", result.fragments.len()),
+                Err(error) => format!("Could not split: {error}"),
+            }
+        };
+        self.refresh_project_now(id);
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+    }
+
     /// Brings every workspace in line with the config: main first (it is where worktrees come from).
     pub(crate) fn apply_config(&mut self, id: WindowId) {
         let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
