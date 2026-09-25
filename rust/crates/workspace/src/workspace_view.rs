@@ -1225,6 +1225,7 @@ impl WorkspaceView {
                     .unwrap_or_default(),
                 running: project.running.get(index).copied().unwrap_or(0),
                 pr: project.prs.get(index).copied().flatten(),
+                missing: project.missing.get(index).cloned().unwrap_or_default(),
             })
             .collect();
         let current = self
@@ -2207,6 +2208,18 @@ impl WorkspaceView {
             items.push(item(crate::MENU_WS_STOP, "Stop All Services", false));
         }
         let is_main = project.workspaces.get(index) == Some(&project.branch);
+        if project
+            .missing
+            .get(index)
+            .is_some_and(|missing| !missing.is_empty())
+        {
+            let label = if is_main {
+                "Clone Missing Repos..."
+            } else {
+                "Add Missing Repos"
+            };
+            items.push(item(crate::MENU_WS_ADD_MISSING, label, false));
+        }
         if is_main {
             items.push(item(
                 crate::MENU_WS_UPDATE_MAIN,
@@ -2233,6 +2246,9 @@ impl WorkspaceView {
             }
             crate::MENU_WS_OPEN_TICKET => {
                 self.workspace_requests.row = Some((index, crate::RowAction::OpenTicket));
+            }
+            crate::MENU_WS_ADD_MISSING => {
+                self.workspace_requests.row = Some((index, crate::RowAction::AddMissingRepos));
             }
             crate::MENU_WS_DELETE => self.ask_to_delete_workspace(index),
             crate::MENU_WS_UPDATE_MAIN => {

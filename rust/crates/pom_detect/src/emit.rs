@@ -71,75 +71,10 @@ pub fn emit(session: &str, repos: &[RepoDetection]) -> String {
         out.push_str("repos:\n");
     }
     for repo in sorted {
-        out.push_str(&format!("  {}:\n", scalar(&repo.name)));
-        let alias = if repo.alias.is_empty() {
-            &repo.name
-        } else {
-            &repo.alias
-        };
-        out.push_str(&format!("    alias: {}\n", scalar(alias)));
-        let mut used: Vec<String> = Vec::new();
-        let mut setup: Vec<String> = Vec::new();
-        let mut services: BTreeMap<String, (String, String, bool)> = BTreeMap::new();
-        for app in &repo.apps {
-            for step in std::iter::once(&app.install).chain(app.setup.iter()) {
-                if !step.is_empty() && !setup.contains(step) {
-                    setup.push(step.clone());
-                }
-            }
-            for run in &app.run {
-                let name = service_name(app, run, &used);
-                used.push(name.clone());
-                services.insert(
-                    name,
-                    (
-                        run.cmd.clone(),
-                        app.dir.clone(),
-                        run.kind == "server" && app.port > 0,
-                    ),
-                );
-            }
-        }
-        if !services.is_empty() {
-            out.push_str("    services:\n");
-            for (name, (cmd, dir, port)) in &services {
-                out.push_str(&format!(
-                    "      {}:\n        cmd: {}\n",
-                    scalar(name),
-                    scalar(cmd)
-                ));
-                if !dir.is_empty() {
-                    out.push_str(&format!("        dir: {}\n", scalar(dir)));
-                }
-                if *port {
-                    out.push_str("        port: true\n");
-                }
-            }
-        }
-        if !setup.is_empty() {
-            out.push_str("    setup:\n");
-            for step in &setup {
-                out.push_str(&format!("      - {}\n", scalar(step)));
-            }
-        }
-        let mut shared: Vec<String> = repo
-            .shared
-            .iter()
-            .filter(|service| {
-                service.kind == ServiceKind::Shared
-                    && !service.kind_name.is_empty()
-                    && service.kind_name != "custom"
-            })
-            .map(|service| service.kind_name.clone())
-            .collect();
-        shared.sort();
-        shared.dedup();
-        if !shared.is_empty() {
-            out.push_str("    shared_services:\n");
-            for kind in &shared {
-                out.push_str(&format!("      - {}\n", scalar(kind)));
-                shared_types.insert(kind.clone(), ());
-            }
+        let (block, shared) = emit_repo(repo);
+        out.push_str(&block);
+        for kind in shared {
+            shared_types.insert(kind, ());
         }
     }
     if !shared_types.is_empty() {
@@ -153,4 +88,79 @@ pub fn emit(session: &str, repos: &[RepoDetection]) -> String {
         }
     }
     out
+}
+
+/// One repo's entry under `repos:` (indented two spaces), and the shared service kinds it uses.
+pub fn emit_repo(repo: &RepoDetection) -> (String, Vec<String>) {
+    let mut out = String::new();
+    out.push_str(&format!("  {}:\n", scalar(&repo.name)));
+    let alias = if repo.alias.is_empty() {
+        &repo.name
+    } else {
+        &repo.alias
+    };
+    out.push_str(&format!("    alias: {}\n", scalar(alias)));
+    let mut used: Vec<String> = Vec::new();
+    let mut setup: Vec<String> = Vec::new();
+    let mut services: BTreeMap<String, (String, String, bool)> = BTreeMap::new();
+    for app in &repo.apps {
+        for step in std::iter::once(&app.install).chain(app.setup.iter()) {
+            if !step.is_empty() && !setup.contains(step) {
+                setup.push(step.clone());
+            }
+        }
+        for run in &app.run {
+            let name = service_name(app, run, &used);
+            used.push(name.clone());
+            services.insert(
+                name,
+                (
+                    run.cmd.clone(),
+                    app.dir.clone(),
+                    run.kind == "server" && app.port > 0,
+                ),
+            );
+        }
+    }
+    if !services.is_empty() {
+        out.push_str("    services:\n");
+        for (name, (cmd, dir, port)) in &services {
+            out.push_str(&format!(
+                "      {}:\n        cmd: {}\n",
+                scalar(name),
+                scalar(cmd)
+            ));
+            if !dir.is_empty() {
+                out.push_str(&format!("        dir: {}\n", scalar(dir)));
+            }
+            if *port {
+                out.push_str("        port: true\n");
+            }
+        }
+    }
+    if !setup.is_empty() {
+        out.push_str("    setup:\n");
+        for step in &setup {
+            out.push_str(&format!("      - {}\n", scalar(step)));
+        }
+    }
+    let mut shared: Vec<String> = repo
+        .shared
+        .iter()
+        .filter(|service| {
+            service.kind == ServiceKind::Shared
+                && !service.kind_name.is_empty()
+                && service.kind_name != "custom"
+        })
+        .map(|service| service.kind_name.clone())
+        .collect();
+    shared.sort();
+    shared.dedup();
+    if !shared.is_empty() {
+        out.push_str("    shared_services:\n");
+        for kind in &shared {
+            out.push_str(&format!("      - {}\n", scalar(kind)));
+        }
+    }
+    (out, shared)
 }

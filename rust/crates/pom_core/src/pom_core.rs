@@ -1,3 +1,4 @@
+mod add_repo;
 mod scaffold;
 mod watch;
 
@@ -9,6 +10,7 @@ use pom_layout::Workspace;
 use pom_paths::{write_atomic, StateDir};
 use pom_sessions::{Projects, Sessions};
 
+pub use add_repo::{add_repo, clone_into_main, guess_remote, repo_name, AddRepoRequest, AddedRepo};
 pub use scaffold::{scaffold_session, RepoSpec, ScaffoldRequest};
 pub use watch::ConfigWatcher;
 
@@ -165,6 +167,24 @@ impl Project {
         let text = serde_json::to_string_pretty(&orders).map_err(std::io::Error::other)?;
         write_atomic(&state.path(WORKSPACE_ORDER_FILE), text.as_bytes(), 0o644)?;
         Ok(true)
+    }
+
+    /// Repos the config has that `workspace` lacks: main needs a clone of every one, other workspaces a
+    /// worktree of those that set one up.
+    pub fn missing_repos(&self, workspace: &Workspace) -> Vec<String> {
+        let Some(config) = self.config.as_ref() else {
+            return Vec::new();
+        };
+        if !workspace.path.is_dir() {
+            return Vec::new();
+        }
+        config
+            .repos
+            .iter()
+            .filter(|(_, dir)| workspace.is_main || dir.has_worktree_config())
+            .filter(|(repo, _)| !workspace.path.join(repo).is_dir())
+            .map(|(repo, _)| repo.clone())
+            .collect()
     }
 
     pub fn branch(&self) -> &str {

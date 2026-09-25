@@ -38,7 +38,11 @@ impl App {
         self.focus_main_with_modal(id, Box::new(modal));
     }
 
-    fn focus_main_with_modal(&mut self, id: WindowId, modal: Box<dyn workspace::WindowModal>) {
+    pub(crate) fn focus_main_with_modal(
+        &mut self,
+        id: WindowId,
+        modal: Box<dyn workspace::WindowModal>,
+    ) {
         self.with_workspace_view(id, |view, _| view.open_window_modal(modal));
         if let Some(main) = self.mains.get_mut(&id) {
             main.window.focus_window();

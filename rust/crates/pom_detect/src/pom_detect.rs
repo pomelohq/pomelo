@@ -6,7 +6,7 @@ mod rules;
 use std::path::Path;
 
 pub use compose::{parse_compose, ComposeService, ServiceKind};
-pub use emit::{emit, RepoDetection};
+pub use emit::{emit, emit_repo, RepoDetection};
 pub use monorepo::detect_repo;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

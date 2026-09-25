@@ -1,6 +1,7 @@
 //! Workspaces from the app: the create and rename forms, and the queue that runs creations and deletions in
 //! the background while the WORKSPACES panel shows their progress.
 
+mod add_repo;
 mod background;
 mod bundle;
 mod forms;
@@ -11,6 +12,7 @@ mod tickets;
 
 use std::sync::Arc;
 
+pub use add_repo::{AddRepo, AddRepoModal, CloneRepos, CloneReposModal};
 pub use background::{BackgroundContext, BackgroundSync, REFRESH_TITLE};
 pub use bundle::{ExportConfig, ExportConfigModal, FileChooser, ImportConfig, ImportConfigModal};
 pub use forms::{CreateWorkspace, CreateWorkspaceModal, RenameWorkspace, RenameWorkspaceModal};

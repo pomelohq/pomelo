@@ -29,6 +29,8 @@ pub enum OpKind {
     RefreshMain,
     /// Reset main's databases, migrate and seed.
     PrepareMain(PrepareRequest),
+    /// Check out repos the config gained into an existing workspace; its row stays while this runs.
+    AddRepos(CreateRequest),
 }
 
 /// An operation that ended, for the app to follow up (switch to a new workspace, show warnings, rescan).
@@ -146,7 +148,7 @@ impl OpQueue {
         let branch = match &kind {
             OpKind::Create { request, .. } => request.branch.clone(),
             OpKind::Delete(request) => request.branch.clone(),
-            OpKind::RefreshMain | OpKind::PrepareMain(_) => String::new(),
+            OpKind::RefreshMain | OpKind::PrepareMain(_) | OpKind::AddRepos(_) => String::new(),
         };
         let quiet = matches!(kind, OpKind::RefreshMain);
         {
@@ -198,6 +200,7 @@ impl OpQueue {
             match &mut op.kind {
                 OpKind::Create { request, .. } => request.from_stage = failed,
                 OpKind::Delete(request) => request.from_stage = failed,
+                OpKind::AddRepos(request) => request.from_stage = failed,
                 OpKind::RefreshMain | OpKind::PrepareMain(_) => {}
             }
             op.view.stages.clear();
@@ -305,6 +308,11 @@ impl OpQueue {
                 context.config.global_default_branch().to_string(),
                 false,
                 pom_workspace::prepare_main(&workspace_context, request, &sink),
+            ),
+            OpKind::AddRepos(request) => (
+                request.branch.clone(),
+                false,
+                pom_workspace::create(&workspace_context, request, &sink),
             ),
             OpKind::RefreshMain => return,
         };
