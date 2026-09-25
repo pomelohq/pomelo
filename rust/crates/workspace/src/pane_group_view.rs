@@ -1716,6 +1716,10 @@ impl ItemInput for PaneGroupView {
         self.active_item()?.cursor_status()
     }
 
+    fn active_language(&self) -> Option<&'static str> {
+        self.active_item()?.language_name()
+    }
+
     fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)> {
         self.popover_sources.clear();
         let mut popovers = Vec::new();

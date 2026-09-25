@@ -3181,6 +3181,10 @@ impl Item for FileItem {
         self.cursor_status_text()
     }
 
+    fn language_name(&self) -> Option<&'static str> {
+        Some(self.lang.name())
+    }
+
     fn id(&self) -> Option<String> {
         if let Some((id, _)) = &self.scratch {
             return Some(id.clone());
@@ -6070,6 +6074,10 @@ impl ItemInput for FilesView {
         self.panes.cursor_position()
     }
 
+    fn active_language(&self) -> Option<&'static str> {
+        self.panes.active_language()
+    }
+
     fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)> {
         let popovers = self.panes.editor_popovers(viewport);
         if self.outline.is_some()
@@ -7348,6 +7356,16 @@ mod indent_guide_tests {
             Some("fn a() {\n    b();\n}\n".into()),
         );
         assert_eq!(rust.indent_guides(0, 3), vec![(1, 1, 0)]);
+
+        let ruby = FileItem::new(
+            PathBuf::from("/nonexistent"),
+            "a_spec.rb",
+            Some("describe do\n  it do\n    x\n  end\nend\n".into()),
+        );
+        let mut guides = ruby.indent_guides(0, 5);
+        guides.sort();
+        assert_eq!(guides, vec![(1, 3, 0), (2, 2, 1)]);
+        assert_eq!(ruby.language_name(), Some("Ruby"));
     }
 }
 
