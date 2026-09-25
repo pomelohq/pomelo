@@ -13,6 +13,7 @@ const REFRESH: u64 = 2;
 const OVERVIEW_TAB: u64 = 3;
 const CHECKS_TAB: u64 = 4;
 const CHECK_BASE: u64 = 100;
+const LINK_BASE: u64 = 1_000_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -37,6 +38,9 @@ pub struct PrItem {
     content_h: f32,
     body_h: f32,
     hits: Vec<(Rect, u64)>,
+    /// The body parsed once, and laid out again only when the width changes.
+    description: Option<(String, markdown::Markdown)>,
+    description_layout: Option<(u32, markdown::MarkdownLayout)>,
 }
 
 impl PrItem {
@@ -60,6 +64,8 @@ impl PrItem {
             content_h: 0.0,
             body_h: 0.0,
             hits: Vec::new(),
+            description: None,
+            description_layout: None,
         };
         item.load();
         item
@@ -289,7 +295,33 @@ impl PrItem {
             .into()
     }
 
-    fn overview(pr: &PullRequest, width: f32) -> Node {
+    fn description(&mut self, width: f32) -> Option<Node> {
+        let body = self.pr.as_ref()?.body.trim().replace("\r\n", "\n");
+        if body.is_empty() {
+            return None;
+        }
+        if self
+            .description
+            .as_ref()
+            .is_none_or(|(source, _)| *source != body)
+        {
+            self.description = Some((body.clone(), markdown::Markdown::parse(&body)));
+            self.description_layout = None;
+        }
+        let (_, parsed) = self.description.as_ref()?;
+        let key = width.to_bits();
+        if self
+            .description_layout
+            .as_ref()
+            .is_none_or(|(at, _)| *at != key)
+        {
+            self.description_layout = Some((key, parsed.layout(width, markdown::DOCUMENT_STYLE)));
+        }
+        let (_, layout) = self.description_layout.as_ref()?;
+        Some(layout.render_links(0, layout.line_count(), width, Some(LINK_BASE)))
+    }
+
+    fn overview(pr: &PullRequest, description: Option<Node>) -> Node {
         let colors = theme();
         let mut column = div().col().gap(8.0).child(Self::section("REVIEWERS"));
         if pr.reviewers.is_empty() {
@@ -335,16 +367,13 @@ impl PrItem {
         column = column
             .child(div().h_px(8.0))
             .child(Self::section("DESCRIPTION"));
-        let body = pr.body.trim();
         column
-            .child(if body.is_empty() {
-                label("No description.").size(13.0).color(colors.text_muted)
-            } else {
-                label(body.replace("\r\n", "\n"))
+            .child(description.unwrap_or_else(|| {
+                label("No description.")
                     .size(13.0)
-                    .color(colors.text)
-                    .wrap(width)
-            })
+                    .color(colors.text_muted)
+                    .into()
+            }))
             .into()
     }
 
@@ -400,6 +429,15 @@ impl PrItem {
                 }
             }
             REFRESH => self.load(),
+            id if id >= LINK_BASE => {
+                let url = self
+                    .description
+                    .as_ref()
+                    .and_then(|(_, parsed)| parsed.links().get((id - LINK_BASE) as usize).cloned());
+                if let Some(url) = url {
+                    self.open(&url);
+                }
+            }
             OVERVIEW_TAB => self.tab = Tab::Overview,
             CHECKS_TAB => self.tab = Tab::Checks,
             id if id >= CHECK_BASE => {
@@ -462,9 +500,13 @@ impl Item for PrItem {
             .p(PAD)
             .gap(14.0)
             .child(self.header(width));
+        let description = match self.tab {
+            Tab::Overview => self.description(width),
+            Tab::Checks => None,
+        };
         if let Some(pr) = &self.pr {
             column = column.child(self.tabs(checks)).child(match self.tab {
-                Tab::Overview => Self::overview(pr, width),
+                Tab::Overview => Self::overview(pr, description),
                 Tab::Checks => Self::checks(pr),
             });
         }
@@ -545,5 +587,46 @@ impl Item for PrItem {
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_description_renders_as_markdown_with_clickable_links() {
+        let temp = tempfile::tempdir().expect("temp");
+        let mut item = PrItem::new(
+            StateDir::new(temp.path()),
+            "myproject".into(),
+            Arc::new(|| {}),
+            PrTarget {
+                repo: "web".into(),
+                owner: "acme".into(),
+                name: "web".into(),
+                head: "feat".into(),
+            },
+            None,
+        );
+        item.show(Some(PullRequest {
+            number: 7,
+            title: "Login".into(),
+            state: "OPEN".into(),
+            body: "### Related ticket\r\n[PROJ-101](https://example.com/PROJ-101)\r\n\r\nSome **bold** text".into(),
+            ..PullRequest::default()
+        }));
+        let painted = item
+            .paint_body(Rect::new(0.0, 0.0, 800.0, 2000.0, Rgba::TRANSPARENT), true)
+            .expect("painted");
+        let texts: Vec<&str> = painted
+            .texts
+            .iter()
+            .map(|text| text.text.as_str())
+            .collect();
+        assert!(texts.contains(&"Related ticket"), "{texts:?}");
+        assert!(texts.contains(&"bold"), "{texts:?}");
+        assert!(!texts.iter().any(|text| text.contains("###")), "{texts:?}");
+        assert!(painted.hits.iter().any(|(_, id)| *id == LINK_BASE));
     }
 }

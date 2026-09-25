@@ -354,7 +354,7 @@ fn main() -> anyhow::Result<()> {
             author: Some(pom_forge::Actor { login: "dev".into(), avatar_url: String::new() }),
             additions: 184,
             deletions: 23,
-            body: "Adds the login form and session handling.\n\n- Remember me for 30 days\n- Five attempts per minute per IP".into(),
+            body: "### Related ticket\n[PROJ-101](https://example.atlassian.net/browse/PROJ-101)\n\n### Description\nAdds the **login form** and `session` handling. See https://example.com/docs.\n\n- Remember me for *30 days*\n- Five attempts per minute per IP\n- [x] tests\n\n| Case | Result |\n|---|---|\n| valid | 200 |\n| locked | 423 |\n\n```rust\nfn login() -> bool { true }\n```".into(),
             labels: vec![
                 pom_forge::Label { name: "feature".into(), color: "a2eeef".into() },
                 pom_forge::Label { name: "needs-review".into(), color: "fbca04".into() },
