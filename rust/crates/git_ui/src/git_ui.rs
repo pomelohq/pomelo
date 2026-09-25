@@ -49,14 +49,14 @@ pub struct RepoSource {
 enum Control {
     Row = 0,
     Refresh = 1,
-    Review = 2,
     Stage = 3,
 }
 
 #[derive(Clone, Debug)]
 enum Row {
-    Repo {
-        index: usize,
+    /// Files not committed yet (staged or not), or files the branch committed since it left main.
+    Section {
+        uncommitted: bool,
     },
     File {
         repo: usize,
@@ -68,6 +68,10 @@ enum Row {
         count: usize,
     },
     PullRequest {
+        repo: usize,
+    },
+    /// The active repo's branch has no pull request yet.
+    CreatePullRequest {
         repo: usize,
     },
 }
@@ -216,6 +220,8 @@ pub struct GitPanel {
     remote_prompt: Option<(u64, Vec<String>, RemoteRequest)>,
     pull_requests: Option<pull_request_ui::PullRequests>,
     prs_collapsed: bool,
+    uncommitted_collapsed: bool,
+    committed_collapsed: bool,
     selector: Option<RepoSelector>,
 }
 
@@ -254,6 +260,8 @@ impl GitPanel {
             remote_prompt: None,
             pull_requests: None,
             prs_collapsed: false,
+            uncommitted_collapsed: false,
+            committed_collapsed: false,
             selector: None,
             waker,
         }
@@ -352,11 +360,10 @@ impl GitPanel {
             }
         }
         let active = self.active_repo.min(repos.len().saturating_sub(1));
-        for (index, repo) in repos.iter().enumerate() {
-            if index != active {
-                continue;
-            }
-            rows.push(Row::Repo { index });
+        if self.needs_pull_request(active) {
+            rows.push(Row::CreatePullRequest { repo: active });
+        }
+        if let Some(repo) = repos.get(active) {
             if let Some(error) = &repo.error {
                 rows.push(Row::Message(
                     error.lines().next().unwrap_or_default().to_string(),
@@ -364,11 +371,53 @@ impl GitPanel {
             } else if repo.files.is_empty() {
                 rows.push(Row::Message("No changes on this branch".into()));
             }
-            for file in 0..repo.files.len() {
-                rows.push(Row::File { repo: index, file });
+            for uncommitted in [true, false] {
+                let files: Vec<usize> = (0..repo.files.len())
+                    .filter(|file| repo.files[*file].uncommitted == uncommitted)
+                    .collect();
+                if files.is_empty() {
+                    continue;
+                }
+                rows.push(Row::Section { uncommitted });
+                let collapsed = if uncommitted {
+                    self.uncommitted_collapsed
+                } else {
+                    self.committed_collapsed
+                };
+                if !collapsed {
+                    rows.extend(
+                        files
+                            .into_iter()
+                            .map(|file| Row::File { repo: active, file }),
+                    );
+                }
             }
         }
         self.rows = rows;
+    }
+
+    /// The repo's branch is not main and has no pull request.
+    fn needs_pull_request(&self, repo: usize) -> bool {
+        let (Some(prs), Some(source)) = (self.pull_requests.as_ref(), self.sources.get(repo))
+        else {
+            return false;
+        };
+        prs.for_checkout(&source.root)
+            .is_some_and(|(target, pr)| pr.is_none() && target.head != source.default_branch)
+    }
+
+    /// How much of the active repo's uncommitted work is staged, for the section's checkbox.
+    fn uncommitted_staging(&self) -> Staging {
+        let status = self.status_of(self.active_repo);
+        let staged = status
+            .iter()
+            .filter(|entry| entry.staging() == Staging::Staged)
+            .count();
+        match staged {
+            0 => Staging::Unstaged,
+            count if count == status.len() => Staging::Staged,
+            _ => Staging::Partial,
+        }
     }
 
     /// Repos (by index) whose checked-out branch has a pull request.
@@ -536,7 +585,6 @@ impl GitPanel {
         let control = match offset % ROW_STRIDE {
             0 => Control::Row,
             1 => Control::Refresh,
-            2 => Control::Review,
             _ => Control::Stage,
         };
         Some(((offset / ROW_STRIDE) as usize, control))
@@ -632,44 +680,55 @@ impl GitPanel {
                     )
                     .into()
             }
-            Row::Repo { index: repo } => {
-                let Some(changes) = repos.get(*repo) else {
-                    return div().into();
+            Row::CreatePullRequest { .. } => {
+                let colors = theme();
+                body.child(
+                    icon(IconKind::PullRequest)
+                        .size(13.0)
+                        .color(colors.text_accent),
+                )
+                .child(
+                    div().row().flex(1.0).items_center().child(
+                        label("Create Pull Request")
+                            .size(12.0)
+                            .color(colors.text_accent)
+                            .truncate(),
+                    ),
+                )
+                .into()
+            }
+            Row::Section { uncommitted } => {
+                let collapsed = if *uncommitted {
+                    self.uncommitted_collapsed
+                } else {
+                    self.committed_collapsed
                 };
-                let name = self
-                    .sources
-                    .get(*repo)
-                    .map_or_else(String::new, |source| source.name.clone());
-                let mut position = Vec::new();
-                if changes.ahead > 0 {
-                    position.push(format!("{} ahead", changes.ahead));
+                let chevron = if collapsed {
+                    IconKind::ChevronRight
+                } else {
+                    IconKind::ChevronDown
+                };
+                let title = if *uncommitted {
+                    "Uncommitted"
+                } else {
+                    "Committed on this branch"
+                };
+                let mut header =
+                    body.child(icon(chevron).size(12.0).color(theme().icon_muted))
+                        .child(
+                            div().row().flex(1.0).items_center().child(
+                                label(title).size(12.0).color(theme().text_muted).truncate(),
+                            ),
+                        );
+                if *uncommitted {
+                    let stage = self.id(index, Control::Stage);
+                    header = header.child(commit_area::stage_checkbox(
+                        stage,
+                        self.uncommitted_staging(),
+                        self.hover == Some(stage),
+                    ));
                 }
-                if changes.behind > 0 {
-                    position.push(format!("{} behind", changes.behind));
-                }
-                let badge = self.pr_badge(index, *repo);
-                let mut title = div()
-                    .row()
-                    .flex(1.0)
-                    .gap(6.0)
-                    .items_center()
-                    .child(label(name).size(12.0).color(theme().text).truncate())
-                    .child(
-                        label(changes.branch.clone())
-                            .size(12.0)
-                            .color(theme().text_muted)
-                            .truncate_start(),
-                    );
-                if let Some(badge) = badge {
-                    title = title.child(badge);
-                }
-                body.child(title)
-                    .child(
-                        label(position.join(", "))
-                            .size(12.0)
-                            .color(theme().text_muted),
-                    )
-                    .into()
+                header.into()
             }
             Row::File { repo, file } => {
                 let Some(change) = repos
@@ -679,20 +738,21 @@ impl GitPanel {
                     return div().into();
                 };
                 let reviewed = self.is_reviewed(*repo, &change.path);
-                let toggle = self.id(index, Control::Review);
                 let stage = self.id(index, Control::Stage);
-                let leading: Node = match self.staging_for(*repo, change) {
+                let trailing: Node = match self.staging_for(*repo, change) {
                     Some(staging) => {
                         commit_area::stage_checkbox(stage, staging, self.hover == Some(stage))
                     }
                     None => div().w_px(20.0).into(),
                 };
-                body.child(leading)
+                let mut row = body
+                    .pl(26.0)
                     .child(status_icon(change.status))
-                    .child(path_label(change, reviewed))
-                    .child(diff_stat(change))
-                    .child(review_box(toggle, reviewed, self.hover == Some(toggle)))
-                    .into()
+                    .child(path_label(change, reviewed));
+                if reviewed {
+                    row = row.child(icon(IconKind::Eye).size(12.0).color(theme().icon_muted));
+                }
+                row.child(diff_stat(change)).child(trailing).into()
             }
         }
     }
@@ -715,40 +775,6 @@ impl GitPanel {
             })
             .fold(0.0, f32::max)
             .ceil()
-    }
-
-    fn pr_badge(&self, row: usize, repo: usize) -> Option<Node> {
-        let source = self.sources.get(repo)?;
-        let (target, pr) = self.pull_requests.as_ref()?.for_checkout(&source.root)?;
-        if pr.is_none() && target.head == source.default_branch {
-            return None;
-        }
-        let colors = theme();
-        let id = self.id(row, Control::Review);
-        let hot = self.hover == Some(id);
-        let (text, color) = match &pr {
-            Some(pr) => (format!("#{}", pr.number), pr_color(pr)),
-            None => ("Create Pull Request".to_string(), colors.text_accent),
-        };
-        Some(
-            div()
-                .row()
-                .h_px(18.0)
-                .px(5.0)
-                .gap(3.0)
-                .items_center()
-                .rounded(9.0)
-                .bg(Rgba::new(
-                    color.r,
-                    color.g,
-                    color.b,
-                    if hot { 0.24 } else { 0.14 },
-                ))
-                .on_click(id)
-                .child(icon(IconKind::PullRequest).size(11.0).color(color))
-                .child(label(text).size(11.0).color(color))
-                .into(),
-        )
     }
 
     fn open_pull_request(&mut self, repo: usize) {
@@ -1347,34 +1373,6 @@ fn status_icon(status: ChangeStatus) -> Node {
 }
 
 /// The file name, then its folder muted and cut from the front when the row is narrow.
-/// The "reviewed" checkbox at the end of a file row.
-fn review_box(id: u64, checked: bool, hot: bool) -> Node {
-    let mut square = div()
-        .w_px(14.0)
-        .h_px(14.0)
-        .rounded(3.0)
-        .items_center()
-        .justify_center()
-        .on_click(id);
-    if checked {
-        square = square.bg(theme().text_accent).child(
-            icon(IconKind::Check)
-                .size(10.0)
-                .color(theme().editor_background),
-        );
-    } else {
-        square = square.border(
-            1.0,
-            if hot {
-                theme().border_focused
-            } else {
-                theme().border
-            },
-        );
-    }
-    square.into()
-}
-
 fn path_label(change: &FileChange, reviewed: bool) -> Node {
     let (folder, name) = match change.path.rsplit_once('/') {
         Some((folder, name)) => (Some(folder.to_string()), name.to_string()),
@@ -1465,18 +1463,23 @@ impl SidePanelView for GitPanel {
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         let refresh_id = self.refresh_id();
         let hot = self.hover == Some(refresh_id);
-        let total: usize = repos.iter().map(|repo| repo.files.len()).sum();
-        let reviewed: usize = repos
-            .iter()
-            .enumerate()
-            .map(|(index, changes)| {
-                changes
-                    .files
-                    .iter()
-                    .filter(|file| self.is_reviewed(index, &file.path))
-                    .count()
+        let active_changes = repos.get(self.active_repo.min(repos.len().saturating_sub(1)));
+        let total = active_changes.map_or(0, |changes| changes.files.len());
+        let reviewed = active_changes.map_or(0, |changes| {
+            changes
+                .files
+                .iter()
+                .filter(|file| self.is_reviewed(self.active_repo, &file.path))
+                .count()
+        });
+        let (added, deleted) = active_changes.map_or((0, 0), |changes| {
+            changes.files.iter().fold((0, 0), |(added, deleted), file| {
+                (
+                    added + file.added.unwrap_or(0),
+                    deleted + file.deleted.unwrap_or(0),
+                )
             })
-            .sum();
+        });
         let status = self.status_of(self.active_repo);
         let stage_all_label = if Self::stages_all(&status) {
             "Stage All"
@@ -1490,18 +1493,27 @@ impl SidePanelView for GitPanel {
             .px(10.0)
             .gap(6.0)
             .items_center()
-            .child(label("Git").size(12.0).color(theme().text_muted))
+            .child(label("Changes").size(12.0).color(theme().text_muted))
             .child(
-                div().row().flex(1.0).items_center().child(
+                div().row().flex(1.0).gap(6.0).items_center().child(
                     label(match (total, reviewed) {
-                        (1, 0) => "1 changed file".to_string(),
-                        (total, 0) => format!("{total} changed files"),
-                        (total, reviewed) => format!("{reviewed} of {total} reviewed"),
+                        (total, 0) => format!("({total})"),
+                        (total, reviewed) => format!("({reviewed} of {total} reviewed)"),
                     })
                     .size(11.0)
                     .color(theme().text_placeholder)
                     .truncate(),
                 ),
+            )
+            .child(
+                label(format!("+{added}"))
+                    .size(11.0)
+                    .color(theme().version_control_added),
+            )
+            .child(
+                label(format!("-{deleted}"))
+                    .size(11.0)
+                    .color(theme().version_control_deleted),
             )
             .child(
                 div()
@@ -1615,15 +1627,18 @@ impl SidePanelView for GitPanel {
             return;
         };
         match self.rows.get(index).cloned() {
-            Some(Row::Repo { index: repo }) if control == Control::Review => {
-                self.active_repo = repo;
-                self.open_pull_request(repo)
+            Some(Row::Section { uncommitted: true }) if control == Control::Stage => {
+                self.stage_all()
             }
-            Some(Row::Repo { .. }) => {}
+            Some(Row::Section { uncommitted: true }) => {
+                self.uncommitted_collapsed = !self.uncommitted_collapsed
+            }
+            Some(Row::Section { uncommitted: false }) => {
+                self.committed_collapsed = !self.committed_collapsed
+            }
             Some(Row::PullRequests { .. }) => self.prs_collapsed = !self.prs_collapsed,
-            Some(Row::PullRequest { repo }) => self.open_pull_request(repo),
-            Some(Row::File { repo, file }) if control == Control::Review => {
-                self.toggle_reviewed(repo, file)
+            Some(Row::PullRequest { repo }) | Some(Row::CreatePullRequest { repo }) => {
+                self.open_pull_request(repo)
             }
             Some(Row::File { repo, file }) if control == Control::Stage => {
                 self.toggle_stage(repo, file)

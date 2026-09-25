@@ -67,12 +67,13 @@ fn lists_the_branch_changes_and_discards_after_confirming() {
     panel.render(320.0, 400.0);
     panel.wait_for_scan();
     let shown = texts(&mut panel);
-    assert!(shown.contains("2 changed files"), "{shown}");
-    assert!(shown.contains("api|feat"), "{shown}");
+    assert!(shown.contains("Changes|(2)"), "{shown}");
+    assert!(shown.contains("Uncommitted"), "{shown}");
+    assert!(!shown.contains("Committed on this branch"), "{shown}");
     assert!(shown.contains("app.rs|+1|-0"), "{shown}");
     assert!(shown.contains("new.rs|src/deep|+2|-0"), "{shown}");
 
-    // Rows: 0 repo, 1 app.rs, 2 src/deep/new.rs.
+    // Rows: 0 the uncommitted section, 1 app.rs, 2 src/deep/new.rs.
     panel.click(row(1));
     assert!(matches!(
         panel.take_requests().as_slice(),
@@ -124,7 +125,7 @@ fn lists_the_branch_changes_and_discards_after_confirming() {
         "one\n"
     );
     panel.wait_for_scan();
-    assert!(texts(&mut panel).contains("1 changed file"));
+    assert!(texts(&mut panel).contains("Changes|(1)"));
 }
 
 #[test]
@@ -158,21 +159,27 @@ fn review_marks_hold_until_the_file_changes_and_survive_reopening() {
         panel
     };
     let mut panel = open();
-    // Rows: 0 repo, 1 a.rs, 2 b.rs; control 2 is the reviewed box.
-    panel.click(row(1) + 2);
-    assert!(texts(&mut panel).contains("1 of 2 reviewed"));
+    // Rows: 0 the uncommitted section, 1 a.rs, 2 b.rs; marking goes through the row's menu.
+    assert!(panel.open_menu(row(1)));
+    let mark = panel
+        .menu_items()
+        .into_iter()
+        .find(|item| item.label == "Mark as Reviewed")
+        .expect("mark offered");
+    panel.menu_action(mark.id);
+    assert!(texts(&mut panel).contains("(1 of 2 reviewed)"));
     drop(panel);
 
     let mut panel = open();
     assert!(
-        texts(&mut panel).contains("1 of 2 reviewed"),
+        texts(&mut panel).contains("(1 of 2 reviewed)"),
         "marks are kept"
     );
     std::fs::write(root.join("a.rs"), "3\n").expect("write");
     panel.refresh();
     panel.wait_for_scan();
     assert!(
-        texts(&mut panel).contains("2 changed files"),
+        texts(&mut panel).contains("Changes|(2)"),
         "an edit after the review clears the mark"
     );
 }
@@ -326,7 +333,7 @@ fn a_failed_push_offers_its_log() {
 }
 
 #[test]
-fn the_repo_row_opens_its_pull_request() {
+fn a_pull_request_row_opens_it() {
     let temp = tempfile::tempdir().expect("temp");
     let root = temp.path().join("web");
     std::fs::create_dir_all(&root).expect("repo");
@@ -375,14 +382,9 @@ fn the_repo_row_opens_its_pull_request() {
         shown.contains("Pull Requests|1|#42"),
         "listed at the top: {shown}"
     );
-    assert!(shown.contains("web|main|#42"), "{shown}");
-    // Rows: 0 the pull requests header, 1 web's pull request, 2 the repo.
+    assert_eq!(shown.matches("#42").count(), 1, "listed once: {shown}");
+    // Rows: 0 the pull requests header, 1 web's pull request.
     panel.click(row(1));
-    assert!(matches!(
-        panel.take_requests().as_slice(),
-        [PanelRequest::Reveal { id, .. }] if id == "pr:web:main"
-    ));
-    panel.click(row(2) + 2);
     assert!(matches!(
         panel.take_requests().as_slice(),
         [PanelRequest::Reveal { id, .. }] if id == "pr:web:main"
@@ -445,76 +447,52 @@ fn shows_one_repo_at_a_time_and_picks_another_from_the_selector() {
 }
 
 #[test]
-fn a_long_repo_name_gives_way_to_the_badge_and_the_branch_position() {
+fn committed_and_uncommitted_files_group_and_fold_and_a_section_stages_its_files() {
     let temp = tempfile::tempdir().expect("temp");
-    let name = "a-very-long-repository-name-for-layout";
-    let root = temp.path().join(name);
+    let root = temp.path().join("api");
     std::fs::create_dir_all(&root).expect("repo");
     run(&root, &["init", "-q", "-b", "main"]);
     run(&root, &["config", "commit.gpgsign", "false"]);
-    std::fs::write(root.join("app.rs"), "one\n").expect("write");
+    std::fs::write(root.join("a.rs"), "1\n").expect("write");
+    std::fs::write(root.join("b.rs"), "1\n").expect("write");
     run(&root, &["add", "."]);
     run(&root, &["commit", "-q", "-m", "base"]);
     run(&root, &["checkout", "-q", "-b", "feat"]);
-    std::fs::write(root.join("app.rs"), "two\n").expect("write");
-    run(&root, &["commit", "-q", "-am", "change"]);
-    let prs = pull_request_ui::PullRequests::new(
-        pom_paths::StateDir::new(temp.path().join("state")),
-        "myproject",
-        Arc::new(|| {}),
-    );
-    prs.show(
-        "feat",
-        vec![(
-            root.clone(),
-            pom_forge::PrTarget {
-                repo: name.into(),
-                owner: "acme".into(),
-                name: name.into(),
-                head: "feat".into(),
-            },
-            pom_forge::PullRequest {
-                number: 4242,
-                state: "OPEN".into(),
-                ..pom_forge::PullRequest::default()
-            },
-        )],
-    );
+    std::fs::write(root.join("a.rs"), "2\n").expect("write");
+    run(&root, &["commit", "-q", "-am", "change a"]);
+    std::fs::write(root.join("b.rs"), "2\n").expect("write");
+    std::fs::write(root.join("c.rs"), "new\n").expect("write");
     let mut panel = GitPanel::new(
         vec![RepoSource {
-            name: name.into(),
-            root,
+            name: "api".into(),
+            root: root.clone(),
             default_branch: "main".into(),
         }],
         None,
         Arc::new(|| {}),
-    )
-    .with_pull_requests(prs);
-    let width = 240.0;
-    panel.render(width, 400.0);
+    );
+    panel.render(320.0, 400.0);
     panel.wait_for_scan();
-    let node = panel.render(width, 400.0);
-    let painted = ui::render(
-        &node,
-        ui::Rect::new(0.0, 0.0, width, 400.0, ui::Rgba::TRANSPARENT),
-    );
-    let find = |wanted: &dyn Fn(&str) -> bool| {
-        painted
-            .texts
-            .iter()
-            .filter(|text| wanted(&text.text))
-            .max_by(|a, b| a.y.total_cmp(&b.y))
-            .cloned()
-    };
-    let badge = find(&|text| text == "#4242").expect("badge");
-    let position = find(&|text| text.ends_with("ahead")).expect("position");
-    let shown_name = find(&|text| text.starts_with("a-very")).expect("name");
-    let badge_end =
-        badge.x + ui::measure_text_width(&badge.text, badge.size, badge.mono, badge.weight);
+    let shown = texts(&mut panel);
+    // Rows: 0 uncommitted, 1 b.rs, 2 c.rs, 3 committed on this branch, 4 a.rs.
+    let uncommitted = shown.find("Uncommitted").expect("uncommitted section");
+    let committed = shown
+        .find("Committed on this branch")
+        .expect("committed section");
+    assert!(uncommitted < shown.find("c.rs").expect("c.rs"), "{shown}");
+    assert!(committed < shown.find("a.rs").expect("a.rs"), "{shown}");
+    assert!(shown.find("c.rs") < Some(committed), "{shown}");
+
+    panel.click(row(3));
     assert!(
-        badge_end <= position.x,
-        "badge ends {badge_end}, position starts {}",
-        position.x
+        !texts(&mut panel).contains("a.rs"),
+        "the committed files fold"
     );
-    assert!(shown_name.text.ends_with("..."), "{}", shown_name.text);
+    panel.click(row(3));
+    assert!(texts(&mut panel).contains("a.rs"));
+
+    panel.click(row(0) + 3);
+    panel.wait_for_scan();
+    let staged = git_out(&root, &["diff", "--cached", "--name-only"]);
+    assert_eq!(staged, "b.rs\nc.rs", "the section's box stages all of it");
 }
