@@ -63,6 +63,9 @@ if [ -n "${SIGN_ID:-}" ]; then
   done
   codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP" >&2
   codesign --verify --strict --verbose=2 "$APP" >&2
+else
+  # Seal the bundle ad hoc so macOS knows it by its bundle id: Notification Center ignores an unsealed app.
+  codesign --force --deep --sign - "$APP" >&2
 fi
 touch "$APP"
 echo "$APP"
