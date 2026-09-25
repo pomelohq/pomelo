@@ -3682,6 +3682,7 @@ impl WorkspaceView {
         if self.prompt_shown.is_some()
             || self.window_modal.is_some()
             || self.panel_text_kind().is_some()
+            || self.editor_modal_open()
         {
             return true;
         }

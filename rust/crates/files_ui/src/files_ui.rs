@@ -6082,7 +6082,7 @@ impl ItemInput for FilesView {
     }
 
     fn editor_focused(&self) -> bool {
-        self.finder.is_some() || self.tree_edit_active() || self.panes.editor_focused()
+        !self.accepts_pane_keys() || self.panes.editor_focused()
     }
 
     fn cursor_position(&self) -> Option<String> {
@@ -7625,6 +7625,22 @@ mod command_palette_tests {
         view.editor_text("go to line");
         view.editor_key(EditKey::Enter, false);
         assert!(view.go_to_line.is_some());
+    }
+
+    #[test]
+    fn the_palette_takes_the_keyboard_with_no_file_open() {
+        let mut view = FilesView::scanned(PathBuf::from("/nonexistent"));
+        view.set_extra_commands(vec![workspace::ExtraCommand {
+            name: "pomelo: open project config".into(),
+            keys: Vec::new(),
+            id: 1,
+        }]);
+        assert!(!view.editor_focused());
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        assert!(
+            view.editor_focused(),
+            "keys must reach the palette over an empty pane"
+        );
     }
 
     #[test]
