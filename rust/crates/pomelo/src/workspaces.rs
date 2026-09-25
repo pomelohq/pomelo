@@ -100,6 +100,39 @@ impl App {
                 OpKind::PrepareMain(pom_workspace::PrepareRequest::default()),
                 "Preparing main",
             ),
+            workspace::RowAction::OpenTicket => self.open_ticket(id, &target.branch),
+        }
+    }
+
+    /// The Jira ticket the workspace's branch names, as a tab in the editor area.
+    pub(crate) fn open_ticket(&mut self, id: WindowId, branch: &str) {
+        let Some(session) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .map(|project| project.session.clone())
+        else {
+            return;
+        };
+        let Some(key) = pom_jira::key_for_branch(branch) else {
+            self.with_workspace_view(id, |view, _| {
+                view.show_toast(format!("{branch} names no Jira ticket"), None)
+            });
+            return;
+        };
+        let item_id = jira_ui::item_id(&key);
+        self.with_workspace_view(id, |view, _| {
+            view.reveal_center_item(&item_id, || {
+                Some(Box::new(jira_ui::TicketItem::new(
+                    pom_paths::StateDir::from_env(),
+                    session,
+                    key,
+                    Arc::new(ui::wake),
+                )))
+            })
+        });
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.dirty = true;
         }
     }
 

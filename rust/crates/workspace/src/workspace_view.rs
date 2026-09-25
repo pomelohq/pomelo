@@ -1995,6 +1995,13 @@ impl WorkspaceView {
         };
         let mut items = vec![item(crate::MENU_WS_RENAME, "Rename...", false)];
         if project
+            .tickets
+            .get(index)
+            .is_some_and(|ticket| !ticket.is_empty())
+        {
+            items.push(item(crate::MENU_WS_OPEN_TICKET, "Open Ticket", false));
+        }
+        if project
             .running
             .get(index)
             .is_some_and(|running| *running > 0)
@@ -2025,6 +2032,9 @@ impl WorkspaceView {
             }
             crate::MENU_WS_STOP => {
                 self.workspace_requests.row = Some((index, crate::RowAction::StopServices));
+            }
+            crate::MENU_WS_OPEN_TICKET => {
+                self.workspace_requests.row = Some((index, crate::RowAction::OpenTicket));
             }
             crate::MENU_WS_DELETE => self.ask_to_delete_workspace(index),
             crate::MENU_WS_UPDATE_MAIN => {
@@ -3432,6 +3442,27 @@ impl WorkspaceView {
         }
     }
 
+    /// Bring the item `id` forward in the editor area, or add the one `open` makes.
+    pub fn reveal_center_item(
+        &mut self,
+        id: &str,
+        open: impl FnOnce() -> Option<Box<dyn crate::Item>>,
+    ) {
+        let Some(files) = self.layout.files_view.as_mut() else {
+            return;
+        };
+        let revealed = files
+            .pane_group_mut()
+            .is_some_and(|group| group.reveal_item(id));
+        if !revealed {
+            if let Some(item) = open() {
+                files.add_center_item(item);
+            }
+        }
+        self.set_terminal_focus(false);
+        self.panes_input = true;
+    }
+
     pub fn open_file_finder(&mut self) {
         if self.window_modal.is_some() {
             return;
@@ -4563,6 +4594,9 @@ impl WorkspaceView {
             } else {
                 self.show_function(PaneKind::Git);
             }
+        } else if (crate::WORKSPACE_TICKET_BASE..crate::WORKSPACE_TICKET_END).contains(&id) {
+            let index = (id - crate::WORKSPACE_TICKET_BASE) as usize;
+            self.workspace_requests.row = Some((index, crate::RowAction::OpenTicket));
         } else if (crate::WORKSPACE_ROW_BASE..crate::WORKSPACE_ROW_END).contains(&id) {
             let index = (id - crate::WORKSPACE_ROW_BASE) as usize;
             let switch = self.layout.project.as_ref().is_some_and(|project| {
@@ -5444,6 +5478,16 @@ mod tests {
         );
         e.update(app.app_mut(), |v, _| v.set_services_running(false));
         assert_eq!(dots(&mut app), 0);
+    }
+
+    #[test]
+    fn a_ticket_status_click_asks_to_open_the_ticket() {
+        let (mut app, _h, e) = open();
+        let request = e.update(app.app_mut(), |v, _| {
+            v.header_click(crate::WORKSPACE_TICKET_BASE + 1);
+            v.take_workspace_requests().row
+        });
+        assert_eq!(request, Some((1, crate::RowAction::OpenTicket)));
     }
 
     #[test]

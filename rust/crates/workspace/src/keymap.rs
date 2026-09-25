@@ -31,10 +31,11 @@ pub enum Action {
     ImportConfig,
     MarkdownPreview,
     MarkdownPreviewToTheSide,
+    OpenTicket,
 }
 
 impl Action {
-    pub const ALL: [Action; 28] = [
+    pub const ALL: [Action; 29] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -63,6 +64,7 @@ impl Action {
         Action::ImportConfig,
         Action::MarkdownPreview,
         Action::MarkdownPreviewToTheSide,
+        Action::OpenTicket,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -96,6 +98,7 @@ impl Action {
             Action::ImportConfig => "workspace::ImportConfig",
             Action::MarkdownPreview => "markdown::OpenPreview",
             Action::MarkdownPreviewToTheSide => "markdown::OpenPreviewToTheSide",
+            Action::OpenTicket => "workspace::OpenTicket",
         }
     }
 
@@ -130,6 +133,7 @@ impl Action {
             Action::ImportConfig => "Import Config",
             Action::MarkdownPreview => "Markdown Preview",
             Action::MarkdownPreviewToTheSide => "Markdown Preview to the Side",
+            Action::OpenTicket => "Open Jira Ticket",
         }
     }
 

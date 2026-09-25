@@ -279,6 +279,7 @@ pub enum RowAction {
     Delete,
     UpdateMain,
     PrepareMain,
+    OpenTicket,
 }
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
@@ -303,6 +304,8 @@ pub const WORKSPACE_ROW_BASE: u64 = 2000;
 pub const WORKSPACE_ROW_END: u64 = 3000;
 pub const WORKSPACE_PR_BASE: u64 = 4000;
 pub const WORKSPACE_PR_END: u64 = 5000;
+pub const WORKSPACE_TICKET_BASE: u64 = 5000;
+pub const WORKSPACE_TICKET_END: u64 = 6000;
 /// The WORKSPACES header's new-workspace button.
 pub const WORKSPACE_NEW: u64 = 14;
 /// A workspace operation card: base + position * stride + part.
@@ -319,6 +322,7 @@ pub const MENU_WS_STOP: u64 = 941;
 pub const MENU_WS_DELETE: u64 = 942;
 pub const MENU_WS_UPDATE_MAIN: u64 = 943;
 pub const MENU_WS_PREPARE_MAIN: u64 = 944;
+pub const MENU_WS_OPEN_TICKET: u64 = 945;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,

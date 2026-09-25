@@ -32,6 +32,7 @@ members = [
     "crates/pom_doctor",
     "crates/pom_detect",
     "crates/pull_request_ui",
+    "crates/jira_ui",
     "crates/environment_ui",
     "crates/pom_layout",
     "crates/pom_core",

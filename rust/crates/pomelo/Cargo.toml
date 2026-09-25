@@ -32,6 +32,7 @@ database_ui = { path = "../database_ui" }
 pom_workspace = { path = "../pom_workspace" }
 pom_layout = { path = "../pom_layout" }
 pom_jira = { path = "../pom_jira" }
+jira_ui = { path = "../jira_ui" }
 arboard = "3.6.1"
 git_ui = { path = "../git_ui" }
 pull_request_ui = { path = "../pull_request_ui" }

@@ -474,7 +474,13 @@ fn workspace_row(row: &WorkspaceRow, current: bool) -> Node {
             "indeterminate" => colors.text_accent,
             _ => colors.text_muted,
         };
-        details = details.child(label(row.ticket.clone()).size(11.0).color(color).truncate());
+        details = details.child(
+            div()
+                .row()
+                .items_center()
+                .on_click(crate::WORKSPACE_TICKET_BASE + row.index as u64)
+                .child(label(row.ticket.clone()).size(11.0).color(color).truncate()),
+        );
         has_details = true;
     }
     if row.running > 0 {
@@ -907,6 +913,23 @@ mod tests {
         let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
         assert!(ids.contains(&(crate::WORKSPACE_PR_BASE + 1)));
         assert!(!ids.contains(&crate::WORKSPACE_PR_BASE));
+    }
+
+    #[test]
+    fn a_ticket_status_opens_the_ticket() {
+        let mut p = ProjectPanel::default();
+        let mut with_ticket = row(1, "web", None);
+        with_ticket.ticket = "In Progress".into();
+        with_ticket.ticket_category = "indeterminate".into();
+        let rows = [row(0, "api", None), with_ticket];
+        p.sync(&list(&rows, &[]));
+        let painted = ui::render(
+            &p.render(),
+            ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),
+        );
+        let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
+        assert!(ids.contains(&(crate::WORKSPACE_TICKET_BASE + 1)));
+        assert!(!ids.contains(&crate::WORKSPACE_TICKET_BASE));
     }
 
     #[test]
