@@ -871,6 +871,8 @@ pub enum EditKey {
     ToggleCommandPalette,
     ToggleFileFinder,
     DeployProjectSearch,
+    OpenMarkdownPreview,
+    OpenMarkdownPreviewToTheSide,
     ToggleIncludeIgnored,
     ToggleOutline,
     NewCenterTerminal,

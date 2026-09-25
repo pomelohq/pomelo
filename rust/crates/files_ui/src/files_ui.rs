@@ -38,6 +38,7 @@ mod go_to_line;
 mod hover;
 mod list_scrollbar;
 mod lsp_completion;
+mod markdown_preview;
 mod outline_view;
 mod project_search;
 mod saved_state;
@@ -247,6 +248,9 @@ enum SoftWrap {
     None,
     EditorWidth,
 }
+
+/// New text (with its buffer version) and cursor byte for a markdown preview, each only when it changed.
+type PreviewUpdate = (Option<(String, u64)>, Option<usize>);
 
 struct FileItem {
     root: PathBuf,
@@ -4952,6 +4956,120 @@ impl FilesView {
         }
     }
 
+    /// A preview of the active markdown file, in its pane or the pane to its right (split off when there is
+    /// none). An open preview of the same file is brought forward instead.
+    fn open_markdown_preview(&mut self, to_the_side: bool) -> bool {
+        let showing_preview = self
+            .panes
+            .active_item()
+            .and_then(|item| item.as_any())
+            .is_some_and(|any| any.is::<markdown_preview::MarkdownPreview>());
+        if showing_preview {
+            return true;
+        }
+        let Some((root, path, text, version)) = self
+            .panes
+            .active_item()
+            .and_then(|item| item.as_any())
+            .and_then(|any| any.downcast_ref::<FileItem>())
+            .filter(|file| markdown_preview::is_markdown(&file.path))
+            .map(|file| {
+                (
+                    file.root.clone(),
+                    file.path.clone(),
+                    file.buffer
+                        .as_ref()
+                        .map(|b| b.rope.to_string())
+                        .unwrap_or_default(),
+                    file.buffer.as_ref().map(EditorBuffer::version),
+                )
+            })
+        else {
+            return false;
+        };
+        if self.panes.reveal_item(&markdown_preview::preview_id(&path)) {
+            return true;
+        }
+        let preview = markdown_preview::MarkdownPreview::new(root, path, &text, version);
+        let item: Box<dyn Item> = Box::new(preview);
+        if !to_the_side {
+            if let Some(pane) = self.panes.active_pane_mut() {
+                pane.add_item(item);
+            }
+            return true;
+        }
+        match self.panes.pane_in_direction(SplitDirection::Right) {
+            Some(right) => {
+                if let Some(pane) = self.panes.group.leaf_at_mut(&right) {
+                    pane.add_item(item);
+                }
+                self.panes.active = right;
+            }
+            None => {
+                let path = self.panes.active.clone();
+                self.panes.split(&path, SplitDirection::Right, Some(item));
+            }
+        }
+        true
+    }
+
+    /// Hand each markdown preview its file's text when the buffer changed, and the active editor's cursor.
+    fn sync_markdown_previews(&mut self) {
+        let mut wanted: HashMap<String, Option<u64>> = HashMap::new();
+        self.panes.for_each_item_mut(&mut |item| {
+            if let Some(preview) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<markdown_preview::MarkdownPreview>())
+            {
+                wanted.insert(preview.path.clone(), preview.version);
+            }
+        });
+        if wanted.is_empty() {
+            return;
+        }
+        let active_path = self.panes.active_item().and_then(|item| item.id());
+        let mut updates: HashMap<String, PreviewUpdate> = HashMap::new();
+        self.panes.for_each_item_mut(&mut |item| {
+            let Some(file) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FileItem>())
+            else {
+                return;
+            };
+            let (Some(known), Some(buffer)) = (wanted.get(&file.path), file.buffer.as_ref()) else {
+                return;
+            };
+            if updates.contains_key(&file.path) {
+                return;
+            }
+            let text = (*known != Some(buffer.version()))
+                .then(|| (buffer.rope.to_string(), buffer.version()));
+            let cursor = (active_path.as_deref() == Some(file.path.as_str())).then(|| {
+                buffer
+                    .rope
+                    .char_to_byte(buffer.newest().head().min(buffer.rope.len_chars()))
+            });
+            updates.insert(file.path.clone(), (text, cursor));
+        });
+        self.panes.for_each_item_mut(&mut |item| {
+            let Some(preview) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<markdown_preview::MarkdownPreview>())
+            else {
+                return;
+            };
+            let Some((text, cursor)) = updates.get(&preview.path) else {
+                return;
+            };
+            if let Some((text, version)) = text {
+                preview.text_changed(text.clone(), *version);
+            }
+            if let Some(cursor) = cursor {
+                preview.cursor_moved(*cursor);
+            }
+        });
+    }
+
     /// Bring the language servers up to date with the files open in the editor area and in `other` (another
     /// pane group, such as the terminal panel), give each file its diagnostics, and open definitions that
     /// resolved. A file open in several panes is mirrored from its first pane's buffer.
@@ -5654,6 +5772,12 @@ impl FilesView {
             self.go_to_line = None;
             self.deploy_project_search();
             return true;
+        }
+        if matches!(
+            key,
+            EditKey::OpenMarkdownPreview | EditKey::OpenMarkdownPreviewToTheSide
+        ) {
+            return self.open_markdown_preview(key == EditKey::OpenMarkdownPreviewToTheSide);
         }
         if self.go_to_line.is_some() {
             self.go_to_line_key(key, shift);
@@ -6564,6 +6688,8 @@ impl FunctionView for FilesView {
                     | EditKey::ToggleCommandPalette
                     | EditKey::ToggleFileFinder
                     | EditKey::DeployProjectSearch
+                    | EditKey::OpenMarkdownPreview
+                    | EditKey::OpenMarkdownPreviewToTheSide
                     | EditKey::ToggleOutline
                     | EditKey::ToggleGoToLine
             )
@@ -6672,6 +6798,7 @@ impl FunctionView for FilesView {
         outcome.changed |= self.poll_finder_candidates();
         outcome.changed |= self.apply_disk_changes();
         outcome.changed |= self.serve_project_search();
+        self.sync_markdown_previews();
         self.note_recent();
         let mut closed: Vec<(u64, String)> = Vec::new();
         self.panes.group.for_each_pane_mut(&mut |pane| {
@@ -8402,6 +8529,79 @@ mod footer_tests {
         let runs = &recorded.borrow().runs;
         assert_eq!(runs.len(), 1);
         assert!(runs[0].all);
+    }
+}
+
+#[cfg(test)]
+mod markdown_preview_tests {
+    use super::*;
+
+    fn preview_count(view: &mut FilesView) -> usize {
+        let mut count = 0;
+        view.panes.for_each_item_mut(&mut |item| {
+            count += usize::from(
+                item.as_any()
+                    .and_then(|any| any.downcast_ref::<markdown_preview::MarkdownPreview>())
+                    .is_some(),
+            );
+        });
+        count
+    }
+
+    #[test]
+    fn the_preview_opens_beside_the_markdown_editor_and_follows_its_edits() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().to_path_buf();
+        std::fs::write(root.join("README.md"), "# Title\n\nbody\n").expect("write");
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").expect("write");
+        let mut view = FilesView::new(root.clone());
+        view.open_file("main.rs");
+        view.editor_key(EditKey::OpenMarkdownPreviewToTheSide, false);
+        assert_eq!(
+            preview_count(&mut view),
+            0,
+            "only markdown files have a preview"
+        );
+        view.open_file("README.md");
+        assert!(view.editor_key(EditKey::OpenMarkdownPreviewToTheSide, false));
+        assert_eq!(view.panes.group.leaf_count(), 2);
+        assert_eq!(
+            view.panes.active_item().and_then(|item| item.id()),
+            Some(markdown_preview::preview_id("README.md"))
+        );
+        assert!(view.editor_key(EditKey::OpenMarkdownPreviewToTheSide, false));
+        assert_eq!(preview_count(&mut view), 1, "an open preview is reused");
+
+        view.panes
+            .layout(Rect::new(0.0, 0.0, 1200.0, 800.0, ui::Rgba::TRANSPARENT));
+        view.panes
+            .pane_command(PaneCommand::ActivatePane(SplitDirection::Left));
+        assert_eq!(
+            view.panes.active_item().and_then(|item| item.id()),
+            Some("README.md".to_string())
+        );
+        view.editor_key(EditKey::DocumentEnd, false);
+        view.editor_text("more words");
+        view.tick_items(&|| None);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        view.tick_items(&|| None);
+        let mut texts = Vec::new();
+        view.panes.for_each_item_mut(&mut |item| {
+            if item
+                .as_any()
+                .and_then(|any| any.downcast_ref::<markdown_preview::MarkdownPreview>())
+                .is_some()
+            {
+                if let Some(painted) = item.paint_body(
+                    Rect::new(0.0, 0.0, 600.0, 400.0, ui::Rgba::TRANSPARENT),
+                    false,
+                ) {
+                    texts.extend(painted.texts.into_iter().map(|text| text.text));
+                }
+            }
+        });
+        assert!(texts.iter().any(|text| text == "Title"), "{texts:?}");
+        assert!(texts.iter().any(|text| text.contains("more")), "{texts:?}");
     }
 }
 

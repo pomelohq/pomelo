@@ -468,6 +468,19 @@ impl WorkspaceView {
             }
             Action::FileFinder => self.open_file_finder(),
             Action::ProjectSearch => self.deploy_project_search(),
+            Action::MarkdownPreview | Action::MarkdownPreviewToTheSide => {
+                let key = if action == Action::MarkdownPreview {
+                    EditKey::OpenMarkdownPreview
+                } else {
+                    EditKey::OpenMarkdownPreviewToTheSide
+                };
+                self.set_terminal_focus(false);
+                return self
+                    .layout
+                    .files_view
+                    .as_mut()
+                    .is_some_and(|files| files.editor_key(key, false));
+            }
             _ => return false,
         }
         true
