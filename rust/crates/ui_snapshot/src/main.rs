@@ -440,6 +440,39 @@ fn main() -> anyhow::Result<()> {
             ..pom_forge::PullRequest::default()
         };
         pr.checks = "fail".into();
+        pr.timeline = vec![
+            pom_forge::TimelineItem {
+                kind: pom_forge::TimelineKind::Review,
+                author: "bea".into(),
+                body: "The rate limit should key on the **account**, not only the IP.".into(),
+                at: "2026-09-01T09:00:00Z".into(),
+                state: "CHANGES_REQUESTED".into(),
+                threads: vec![pom_forge::ReviewThread {
+                    path: "src/auth/limit.rs".into(),
+                    line: Some(42),
+                    resolved: true,
+                    comments: vec![
+                        pom_forge::ThreadComment {
+                            author: "bea".into(),
+                            body: "This counter never resets.".into(),
+                            at: "2026-09-01T09:00:00Z".into(),
+                        },
+                        pom_forge::ThreadComment {
+                            author: "dev".into(),
+                            body: "Fixed with a sliding window, see `Window::tick`.".into(),
+                            at: "2026-09-01T12:00:00Z".into(),
+                        },
+                    ],
+                }],
+            },
+            pom_forge::TimelineItem {
+                kind: pom_forge::TimelineKind::Comment,
+                author: "ann".into(),
+                body: "QA notes are in https://example.com/qa.".into(),
+                at: "2026-09-02T10:00:00Z".into(),
+                ..pom_forge::TimelineItem::default()
+            },
+        ];
         let mut item = pull_request_ui::PrItem::new(
             pom_paths::StateDir::new(dir.join("state")),
             "myproject".into(),
@@ -452,6 +485,12 @@ fn main() -> anyhow::Result<()> {
         item.paint_body(body, true);
         if std::env::var("CHECKS").is_ok() {
             item.pointer_down(110.0, 119.0, 1, terminal::Modifiers::default());
+        }
+        if let Some(scroll) = std::env::var("SCROLL")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+        {
+            item.pointer_scroll(0.0, 0.0, -scroll, terminal::Modifiers::default());
         }
         let painted = item
             .paint_body(body, true)

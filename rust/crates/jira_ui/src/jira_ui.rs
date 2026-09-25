@@ -4,7 +4,7 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
-use markdown::{Markdown, MarkdownLayout, DOCUMENT_STYLE};
+use markdown::{MarkdownBody as Body, DOCUMENT_STYLE};
 use pom_jira::{IssueCache, IssueDetail};
 use pom_paths::StateDir;
 use terminal::Modifiers;
@@ -26,34 +26,6 @@ pub fn item_id(key: &str) -> String {
 }
 
 type Waker = Arc<dyn Fn() + Send + Sync>;
-
-/// A markdown body parsed once, laid out again only when the width changes.
-struct Body {
-    markdown: Markdown,
-    layout: Option<(u32, MarkdownLayout)>,
-}
-
-impl Body {
-    fn new(source: &str) -> Body {
-        Body {
-            markdown: Markdown::parse(source),
-            layout: None,
-        }
-    }
-
-    fn render(&mut self, width: f32, link_base: u64) -> Node {
-        let key = width.to_bits();
-        if self.layout.as_ref().is_none_or(|(at, _)| *at != key) {
-            self.layout = Some((key, self.markdown.layout(width, DOCUMENT_STYLE)));
-        }
-        match &self.layout {
-            Some((_, layout)) => {
-                layout.render_links(0, layout.line_count(), width, Some(link_base))
-            }
-            None => div().into(),
-        }
-    }
-}
 
 pub struct TicketItem {
     state: StateDir,
@@ -280,7 +252,7 @@ impl TicketItem {
             return column.into();
         };
         let description = match self.description.as_mut() {
-            Some(body) => body.render(width, DESCRIPTION_LINK_BASE),
+            Some(body) => body.render(width, DOCUMENT_STYLE, DESCRIPTION_LINK_BASE),
             None => label("No description.")
                 .size(13.0)
                 .color(colors.text_muted)
@@ -325,6 +297,7 @@ impl TicketItem {
             let body = match self.comments.get_mut(index) {
                 Some(body) => body.render(
                     width - 2.0 * 12.0,
+                    DOCUMENT_STYLE,
                     COMMENT_LINK_BASE + index as u64 * COMMENT_LINK_STRIDE,
                 ),
                 None => div().into(),
@@ -382,13 +355,11 @@ impl TicketItem {
                 let link = (offset % COMMENT_LINK_STRIDE) as usize;
                 self.comments
                     .get(comment)
-                    .and_then(|body| body.markdown.links().get(link).cloned())
+                    .and_then(|body| body.link(link).map(str::to_string))
             }
             id if id >= DESCRIPTION_LINK_BASE => self.description.as_ref().and_then(|body| {
-                body.markdown
-                    .links()
-                    .get((id - DESCRIPTION_LINK_BASE) as usize)
-                    .cloned()
+                body.link((id - DESCRIPTION_LINK_BASE) as usize)
+                    .map(str::to_string)
             }),
             id if id >= WEB_LINK_BASE => detail
                 .web_links

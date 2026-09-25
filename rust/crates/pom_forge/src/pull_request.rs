@@ -105,6 +105,49 @@ pub struct PullRequest {
     pub review: String,
     pub conflict: bool,
     pub reviewers: Vec<Reviewer>,
+    /// The conversation after the description, oldest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub timeline: Vec<TimelineItem>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThreadComment {
+    pub author: String,
+    pub body: String,
+    pub at: String,
+}
+
+/// Inline comments on one line of the diff.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReviewThread {
+    pub path: String,
+    pub line: Option<u64>,
+    pub resolved: bool,
+    pub comments: Vec<ThreadComment>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TimelineKind {
+    #[default]
+    Comment,
+    /// A submitted review, with the inline threads it started.
+    Review,
+    /// Inline threads no listed review started.
+    Inline,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimelineItem {
+    pub kind: TimelineKind,
+    pub author: String,
+    pub body: String,
+    pub at: String,
+    /// A review's APPROVED / CHANGES_REQUESTED / COMMENTED.
+    pub state: String,
+    pub threads: Vec<ReviewThread>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,7 +289,96 @@ const NODE_FIELDS: &str = "number title state url isDraft mergeable mergeStateSt
 const DETAIL_FIELDS: &str = "body
         labels(first: 20) { nodes { name color } }
         reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
+        comments(first: 50) { nodes { author { login } body createdAt } }
+        reviews(first: 50) { nodes { databaseId state body submittedAt author { login } } }
+        reviewThreads(first: 100) { nodes { isResolved path line comments(first: 50) { nodes { body createdAt author { login } pullRequestReview { databaseId } } } } }
 ";
+
+/// Reviews with the inline threads they started, threads no listed review started, and plain comments, oldest
+/// first. A review that only says it commented, with nothing written and no threads, is left out.
+fn timeline(node: &Value) -> Vec<TimelineItem> {
+    let login = |value: &Value| text(value, "/author/login");
+    let review_ids: Vec<u64> = nodes(node, "/reviews/nodes")
+        .filter_map(|review| review.pointer("/databaseId").and_then(Value::as_u64))
+        .collect();
+    let mut by_review: Vec<(u64, ReviewThread)> = Vec::new();
+    let mut standalone: Vec<ReviewThread> = Vec::new();
+    for thread in nodes(node, "/reviewThreads/nodes") {
+        let comments: Vec<ThreadComment> = nodes(thread, "/comments/nodes")
+            .map(|comment| ThreadComment {
+                author: login(comment),
+                body: text(comment, "/body"),
+                at: text(comment, "/createdAt"),
+            })
+            .collect();
+        if comments.is_empty() {
+            continue;
+        }
+        let review = thread
+            .pointer("/comments/nodes/0/pullRequestReview/databaseId")
+            .and_then(Value::as_u64);
+        let item = ReviewThread {
+            path: text(thread, "/path"),
+            line: thread.pointer("/line").and_then(Value::as_u64),
+            resolved: thread
+                .pointer("/isResolved")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            comments,
+        };
+        match review.filter(|id| review_ids.contains(id)) {
+            Some(id) => by_review.push((id, item)),
+            None => standalone.push(item),
+        }
+    }
+    let mut items: Vec<TimelineItem> = Vec::new();
+    for review in nodes(node, "/reviews/nodes") {
+        let id = review.pointer("/databaseId").and_then(Value::as_u64);
+        let threads: Vec<ReviewThread> = by_review
+            .iter()
+            .filter(|(owner, _)| Some(*owner) == id)
+            .map(|(_, thread)| thread.clone())
+            .collect();
+        let state = text(review, "/state").to_uppercase();
+        let body = text(review, "/body");
+        if body.trim().is_empty() && threads.is_empty() && state == "COMMENTED" {
+            continue;
+        }
+        items.push(TimelineItem {
+            kind: TimelineKind::Review,
+            author: login(review),
+            body,
+            at: text(review, "/submittedAt"),
+            state,
+            threads,
+        });
+    }
+    for thread in standalone {
+        items.push(TimelineItem {
+            kind: TimelineKind::Inline,
+            author: thread.comments[0].author.clone(),
+            body: String::new(),
+            at: thread.comments[0].at.clone(),
+            state: String::new(),
+            threads: vec![thread],
+        });
+    }
+    for comment in nodes(node, "/comments/nodes") {
+        let body = text(comment, "/body");
+        if body.trim().is_empty() {
+            continue;
+        }
+        items.push(TimelineItem {
+            kind: TimelineKind::Comment,
+            author: login(comment),
+            body,
+            at: text(comment, "/createdAt"),
+            ..TimelineItem::default()
+        });
+    }
+    items.sort_by(|a, b| a.at.cmp(&b.at));
+    items
+}
 
 fn text(value: &Value, pointer: &str) -> String {
     value
@@ -352,6 +484,7 @@ fn from_node(node: &Value) -> PullRequest {
                 slug: text(reviewer, "/slug"),
             })
             .collect(),
+        timeline: timeline(node),
         ..PullRequest::default()
     };
     pr.classify();
@@ -454,6 +587,54 @@ mod tests {
             ] } } } } ] },
             "reviewRequests": { "nodes": [ { "requestedReviewer": { "__typename": "User", "login": "ann" } } ] }
         })
+    }
+
+    #[test]
+    fn the_timeline_groups_threads_under_their_review_and_sorts_by_time() {
+        let node = serde_json::json!({
+            "comments": { "nodes": [
+                { "author": { "login": "ann" }, "body": "Looks close", "createdAt": "2026-09-02T10:00:00Z" },
+                { "author": { "login": "bot" }, "body": "", "createdAt": "2026-09-02T11:00:00Z" }
+            ] },
+            "reviews": { "nodes": [
+                { "databaseId": 7, "state": "CHANGES_REQUESTED", "body": "Fix the query",
+                  "submittedAt": "2026-09-01T09:00:00Z", "author": { "login": "bea" } },
+                { "databaseId": 8, "state": "COMMENTED", "body": "",
+                  "submittedAt": "2026-09-03T09:00:00Z", "author": { "login": "cy" } }
+            ] },
+            "reviewThreads": { "nodes": [
+                { "isResolved": true, "path": "src/db.rs", "line": 12, "comments": { "nodes": [
+                    { "body": "N+1 here", "createdAt": "2026-09-01T09:00:00Z", "author": { "login": "bea" },
+                      "pullRequestReview": { "databaseId": 7 } },
+                    { "body": "Fixed", "createdAt": "2026-09-01T12:00:00Z", "author": { "login": "dev" },
+                      "pullRequestReview": { "databaseId": 99 } }
+                ] } },
+                { "isResolved": false, "path": "src/ui.rs", "line": null, "comments": { "nodes": [
+                    { "body": "Rename?", "createdAt": "2026-09-04T09:00:00Z", "author": { "login": "dan" },
+                      "pullRequestReview": null }
+                ] } }
+            ] }
+        });
+        let items = timeline(&node);
+        let kinds: Vec<(TimelineKind, &str)> = items
+            .iter()
+            .map(|item| (item.kind, item.author.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (TimelineKind::Review, "bea"),
+                (TimelineKind::Comment, "ann"),
+                (TimelineKind::Inline, "dan")
+            ],
+            "an empty comment and a bare COMMENTED review drop out"
+        );
+        assert_eq!(items[0].state, "CHANGES_REQUESTED");
+        assert_eq!(items[0].threads.len(), 1);
+        assert!(items[0].threads[0].resolved);
+        assert_eq!(items[0].threads[0].line, Some(12));
+        assert_eq!(items[0].threads[0].comments[1].body, "Fixed");
+        assert_eq!(items[2].threads[0].line, None);
     }
 
     #[test]
