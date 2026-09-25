@@ -460,6 +460,8 @@ struct MainWindow {
     /// The project's other workspaces, keyed by folder, kept alive while this one has the window.
     parked: std::collections::HashMap<std::path::PathBuf, workspace::ParkedWorkspace>,
     services: Option<ProjectServices>,
+    /// Running services that still have the config from before the last reload.
+    stale: Vec<pom_services::ServiceTarget>,
     /// Workspace creations and deletions started from this window.
     ops: workspaces_ui::OpQueue,
     /// The project's Jira ticket status per workspace.
@@ -625,6 +627,43 @@ struct AgentTracker {
 
 const AGENT_RECHECK: Duration = Duration::from_secs(5);
 
+/// After a config change: rewrites every workspace's env files, then lists running services whose command or
+/// env no longer matches what they were started with.
+fn refresh_env_and_find_stale(
+    runner: &pom_services::ServiceRunner,
+    project: &pom_core::Project,
+) -> Vec<pom_services::ServiceTarget> {
+    let Some(config) = project.config.as_ref().filter(|_| project.error.is_none()) else {
+        return Vec::new();
+    };
+    let mut stale = Vec::new();
+    for workspace in &project.workspaces {
+        if let Err(error) = runner.refresh_workspace_env(config, &workspace.branch) {
+            eprintln!("env for {}: {error}", workspace.branch);
+        }
+        let targets = pom_services::ServiceRunner::service_targets(
+            config,
+            &workspace.branch,
+            workspace.is_main,
+        );
+        stale.extend(runner.stale_services(config, &targets));
+    }
+    stale
+}
+
+fn stale_name(target: &pom_services::ServiceTarget, project: &pom_core::Project) -> String {
+    let service = if target.repo.is_empty() {
+        target.service.clone()
+    } else {
+        format!("{}/{}", target.repo, target.service)
+    };
+    if target.branch == project.active_branch() {
+        service
+    } else {
+        format!("{service} ({})", target.branch)
+    }
+}
+
 /// Claude Code is installed where the agent launcher looks for it.
 fn claude_installed() -> bool {
     let home = std::env::var_os("HOME")
@@ -748,6 +787,32 @@ impl App {
         }
         self.agents.states = fresh;
         self.agents.primed = true;
+    }
+
+    /// Restarts the services that still ran the previous config, off the UI thread.
+    fn restart_stale(&mut self, id: WindowId) {
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        let stale = std::mem::take(&mut main.stale);
+        let (Some(services), Some(config)) = (
+            main.services.as_ref(),
+            main.project
+                .as_ref()
+                .and_then(|project| project.config.clone()),
+        ) else {
+            return;
+        };
+        let runner = services.runner.clone();
+        std::thread::spawn(move || {
+            for target in &stale {
+                if let Err(error) = runner.restart(&config, target) {
+                    eprintln!("restart {}/{}: {error}", target.repo, target.service);
+                }
+            }
+            ui::wake();
+        });
+        self.with_workspace_view(id, |view, _| view.set_stale_services(&[]));
     }
 
     /// The manual path after a new project: show its services and say what was drafted and what to do next.
@@ -1086,6 +1151,7 @@ impl App {
                 watcher: None,
                 parked: std::collections::HashMap::new(),
                 services: None,
+                stale: Vec::new(),
                 ops: workspaces_ui::OpQueue::new(Arc::new(ui::wake)),
                 tickets: None,
                 pull_requests: None,
@@ -1430,10 +1496,21 @@ impl App {
             let writable = project_dir
                 .map(|dir| vec![config_path.clone(), dir.join("pom.d")])
                 .unwrap_or_default();
+            let checked_config = config_path.clone();
+            let check: files_ui::SaveCheck = Arc::new(move |path, text| {
+                if !pom_config::edit::config_files(&checked_config)
+                    .iter()
+                    .any(|file| file == path)
+                {
+                    return Ok(());
+                }
+                pom_config::edit::check_file_edit(&checked_config, path, text).map(|_| ())
+            });
             Box::new(
                 files_ui::FilesView::new(root)
                     .read_only(is_main)
-                    .writable(writable),
+                    .writable(writable)
+                    .save_check(check),
             ) as Box<dyn workspace::FunctionView>
         });
         let mut side_panels: Vec<Box<dyn workspace::SidePanelView>> = Vec::new();
@@ -1556,6 +1633,7 @@ impl App {
         let mut updates = Vec::new();
         let mut rerooted = Vec::new();
         let mut reloaded = Vec::new();
+        let mut stale_notices = Vec::new();
         for (id, main) in self.mains.iter_mut() {
             let changed = main.watcher.as_ref().is_some_and(|w| w.take_changed());
             let Some(project) = main.project.as_mut().filter(|_| changed) else {
@@ -1566,6 +1644,13 @@ impl App {
             // Env or service edits change nothing the list shows, but services must still run the new config.
             if let Some(services) = &main.services {
                 services.update_config(project);
+                main.stale = refresh_env_and_find_stale(&services.runner, project);
+                let names: Vec<String> = main
+                    .stale
+                    .iter()
+                    .map(|target| stale_name(target, project))
+                    .collect();
+                stale_notices.push((*id, names));
             }
             if project.error.is_none() {
                 reloaded.push(*id);
@@ -1608,6 +1693,9 @@ impl App {
         }
         for id in reloaded {
             self.with_workspace_view(id, |view, _| view.show_toast("pom.yml reloaded", None));
+        }
+        for (id, names) in stale_notices {
+            self.with_workspace_view(id, |view, _| view.set_stale_services(&names));
         }
     }
 
@@ -2225,6 +2313,9 @@ impl App {
         }
         if effects.fix_setup {
             self.open_fixer(id);
+        }
+        if effects.restart_stale {
+            self.restart_stale(id);
         }
         if let Some(action) = effects.action {
             self.run_app_action(id, action, event_loop);

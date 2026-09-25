@@ -128,44 +128,17 @@ pub fn write_file(
     if !allowed(config_path, path) {
         return Err("unknown config file".into());
     }
-    parse(yaml)?;
-    let mut note = "Saved.".to_string();
-    if let Err(edit_error) = validate_with(config_path, path, yaml) {
-        if load_and_validate(config_path).is_ok() {
-            return Err(edit_error);
+    let note = match pom_config::edit::check_file_edit(config_path, path, yaml)? {
+        None => "Saved.".to_string(),
+        Some(problem) => {
+            format!("Saved (config still has errors elsewhere - keep fixing): {problem}")
         }
-        note = format!("Saved (config still has errors elsewhere - keep fixing): {edit_error}");
-    }
+    };
     if dry {
         return Ok(note.replacen("Saved", "Would save", 1));
     }
     std::fs::write(path, yaml).map_err(|error| error.to_string())?;
     Ok(note)
-}
-
-/// Loads a mirror of every config file with `target` replaced by `yaml`.
-fn validate_with(config_path: &Path, target: &Path, yaml: &str) -> Result<(), String> {
-    let dir = config_dir(config_path);
-    let temp = tempdir()?;
-    let result = (|| {
-        for file in list(config_path) {
-            let relative = file.path.strip_prefix(&dir).unwrap_or(&file.path);
-            let destination = temp.join(relative);
-            if let Some(parent) = destination.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-            }
-            let body = if file.path == target {
-                yaml.to_string()
-            } else {
-                std::fs::read_to_string(&file.path).map_err(|error| error.to_string())?
-            };
-            std::fs::write(&destination, body).map_err(|error| error.to_string())?;
-        }
-        let root = config_path.file_name().unwrap_or_default();
-        load_and_validate(&temp.join(root))
-    })();
-    remove_dir(&temp);
-    result
 }
 
 fn load_and_validate(path: &Path) -> Result<(), String> {

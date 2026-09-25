@@ -523,6 +523,7 @@ impl ServiceRunner {
         command: &str,
         env: Vec<(String, String)>,
     ) -> Result<(), ServiceError> {
+        let fingerprint = launch_fingerprint(cwd, command, &env);
         let mut full_env = vec![("PATH".to_string(), tool_path().to_string())];
         full_env.extend(env);
         let argv = login_shell(command);
@@ -539,8 +540,112 @@ impl ServiceRunner {
             },
         )?;
         pom_ptyhost::wait_for_holder(&self.holders, holder, HOLDER_START_TIMEOUT)?;
+        if let Err(error) = std::fs::write(self.fingerprint_path(holder), fingerprint) {
+            eprintln!("services: record how {holder} was started: {error}");
+        }
         Ok(())
     }
+
+    fn fingerprint_path(&self, holder: &str) -> PathBuf {
+        self.holders.pidfile(holder).with_extension("launch")
+    }
+
+    /// How the service would start under `config` now: its directory, command and env.
+    fn launch_plan(&self, config: &Config, target: &ServiceTarget) -> Option<LaunchPlan> {
+        if target.is_workspace_level() {
+            let service = config.workspace_services.get(&target.service)?;
+            let cwd =
+                pom_layout::workspace_root(&self.project_root, &target.branch, target.is_main);
+            return Some((cwd, service.cmd.clone(), Vec::new()));
+        }
+        let dir = config.repos.get(&target.repo)?;
+        let service = dir.services.get(&target.service)?;
+        let worktree = pom_layout::repo_worktree(
+            &self.project_root,
+            &target.repo,
+            &target.branch,
+            target.is_main,
+        );
+        let port = self
+            .lease_key(config, target)
+            .and_then(|key| self.ports.port_of(&key));
+        let mode = self.mode(&target.repo, &target.service, service);
+        let command = service_command(&worktree, dir, service, port, &mode);
+        let env = self
+            .workspace_env(config, &target.branch)
+            .service_env(&target.repo, &target.service);
+        Some((worktree, command, env))
+    }
+
+    /// Running services that were started with a different command or env than `config` now gives them.
+    /// Services started before launches were recorded are left alone.
+    pub fn stale_services(&self, config: &Config, targets: &[ServiceTarget]) -> Vec<ServiceTarget> {
+        targets
+            .iter()
+            .filter(|target| {
+                let holder = self.holder_name(target);
+                if !self.holders.holder_alive(&holder) {
+                    return false;
+                }
+                let Ok(recorded) = std::fs::read_to_string(self.fingerprint_path(&holder)) else {
+                    return false;
+                };
+                let now = self
+                    .launch_plan(config, target)
+                    .map(|(cwd, command, env)| launch_fingerprint(&cwd, &command, &env));
+                now.is_some_and(|now| now != recorded)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Every service the config declares in the workspace of `branch`.
+    pub fn service_targets(config: &Config, branch: &str, is_main: bool) -> Vec<ServiceTarget> {
+        let target = |repo: &str, service: &str| ServiceTarget {
+            branch: branch.to_string(),
+            is_main,
+            repo: repo.to_string(),
+            service: service.to_string(),
+        };
+        let mut targets: Vec<ServiceTarget> = config
+            .repos
+            .iter()
+            .flat_map(|(repo, dir)| {
+                dir.services
+                    .keys()
+                    .map(move |service| target(repo, service))
+            })
+            .collect();
+        targets.extend(
+            config
+                .workspace_services
+                .keys()
+                .map(|service| target("", service)),
+        );
+        targets
+    }
+
+    /// Rewrites the workspace's env files for `config`, leasing ports and slots new services need.
+    pub fn refresh_workspace_env(&self, config: &Config, branch: &str) -> Result<(), ServiceError> {
+        let ws_key = pom_env::port_ws_key(branch);
+        self.allocate_slots(config, &ws_key)?;
+        self.acquire_workspace_ports(config, &ws_key);
+        self.workspace_env(config, branch).write_env_files()?;
+        Ok(())
+    }
+}
+
+/// Where, with what command and env a service starts.
+type LaunchPlan = (PathBuf, String, Vec<(String, String)>);
+
+/// A digest of how a service was launched; it only needs to tell two launches apart.
+fn launch_fingerprint(cwd: &Path, command: &str, env: &[(String, String)]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    cwd.hash(&mut hasher);
+    command.hash(&mut hasher);
+    env.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 impl EnvSources for ServiceRunner {
