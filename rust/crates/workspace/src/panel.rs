@@ -665,6 +665,17 @@ fn workspace_row(row: &WorkspaceRow, current: bool) -> Node {
     item.into()
 }
 
+/// The row lifted off the list while it is dragged: the same row on an elevated card.
+pub fn workspace_row_ghost(row: &WorkspaceRow) -> Node {
+    div()
+        .col()
+        .rounded(6.0)
+        .bg(theme().elevated_surface_background)
+        .border(1.0, theme().border)
+        .child(workspace_row(row, true))
+        .into()
+}
+
 fn pr_pill(index: usize, pr: crate::PrSummary) -> Node {
     let color = pr.severity.color();
     div()
