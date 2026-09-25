@@ -1,18 +1,12 @@
 name: Release
 
-# Push a version tag (v*) -> build, sign, notarize, and publish the DMG +
-# Sparkle appcast to this repo's GitHub Release. All build logic lives in the
-# reusable app-build.yml; this just calls it with publish=true. Requires these
-# repository secrets:
-#   MACOS_CERT_P12          base64 of the Developer ID Application .p12
-#   MACOS_CERT_PASSWORD     password for that .p12
-#   MACOS_SIGN_IDENTITY     e.g. "Developer ID Application: Your Name (TEAMID)"
-#   KEYCHAIN_PASSWORD       any string (temp keychain password)
-#   NOTARY_APPLE_ID         Apple ID email used for notarization
-#   NOTARY_APP_PASSWORD     app-specific password for that Apple ID
-#   NOTARY_TEAM_ID          Apple Developer Team ID
-#   SPARKLE_ED_PRIVATE_KEY  Sparkle EdDSA private key (the sign_update key)
-
+# Push a version tag (v*, from `make patch|minor|major` on main) -> build Pomelo.app, sign it with the
+# Developer ID, notarize the DMG, sign the downloads with the Sparkle EdDSA key, and publish the GitHub Release:
+#   Pomelo-<v>.dmg                 install / what older apps' Sparkle feed installs
+#   Pomelo-<v>.app.tar.gz (+ .sig) what the in-app updater downloads and verifies
+#   appcast.xml                    the Sparkle feed apps from before the rewrite poll
+# Secrets: MACOS_CERT_P12, MACOS_CERT_PASSWORD, MACOS_SIGN_IDENTITY, KEYCHAIN_PASSWORD, NOTARY_APPLE_ID,
+# NOTARY_APP_PASSWORD, NOTARY_TEAM_ID, SPARKLE_ED_PRIVATE_KEY; DOCS_DISPATCH_TOKEN is optional.
 on:
   push:
     tags: ['v*']
@@ -25,17 +19,118 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  SPARKLE_VERSION: 2.6.4
+
 jobs:
   release:
-    uses: ./.github/workflows/app-build.yml
-    with:
-      publish: true
-    secrets: inherit
+    runs-on: macos-15 # Apple Silicon
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the toolchain rust/rust-toolchain.toml pins.
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
 
-  # The docs site mirrors this repo's CHANGELOG at build time, but only rebuilds on
-  # its own pushes — kick its deploy so the Changelog page reflects this release.
-  # Needs a DOCS_DISPATCH_TOKEN secret (fine-grained PAT, Actions: write on
-  # pomelohq/pomelo-docs); skips quietly if it isn't set.
+      - name: Import Developer ID certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Store notarization credentials
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+        run: |
+          xcrun notarytool store-credentials pomelo-notary \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --password "$NOTARY_APP_PASSWORD" \
+            --team-id "$NOTARY_TEAM_ID"
+
+      - name: Sparkle signing tool and key
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz" \
+            | tar -xJ -C "$RUNNER_TEMP/sparkle"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_ed_key"
+          echo "SIGN_UPDATE=$RUNNER_TEMP/sparkle/bin/sign_update" >> "$GITHUB_ENV"
+          echo "SPARKLE_ED_KEY_FILE=$RUNNER_TEMP/sparkle_ed_key" >> "$GITHUB_ENV"
+
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SECTION=$(awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" {g=1; next}
+            g && /^## \[/ {exit}
+            g {print}' ../CHANGELOG.md)
+          AUTO=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" --jq .body 2>/dev/null || true)
+          # The curated CHANGELOG section leads; the generated PR list follows. Generated notes alone otherwise.
+          if [ -n "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
+            { printf '%s\n' "$SECTION"; [ -n "$AUTO" ] && printf '\n---\n\n%s\n' "$AUTO"; } > "$RUNNER_TEMP/notes.md"
+            FEED="$SECTION"
+          else
+            printf '%s\n' "${AUTO:-Pomelo $GITHUB_REF_NAME}" > "$RUNNER_TEMP/notes.md"
+            FEED="$AUTO"
+          fi
+          {
+            echo "RELEASE_NOTES<<__POMEOF__"
+            printf '%s\n' "$FEED"
+            echo "__POMEOF__"
+          } >> "$GITHUB_ENV"
+
+      - name: Build, sign and notarize the DMG
+        env:
+          SIGN_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_PROFILE: pomelo-notary
+        run: scripts/make-dmg.sh
+
+      - name: Update tarball, signatures and feed
+        run: |
+          scripts/make-appcast.sh
+          scripts/sign-release.sh
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd target
+          FILES="Pomelo-$VERSION.dmg Pomelo-$VERSION.app.tar.gz Pomelo-$VERSION.app.tar.gz.sig latest.json appcast.xml"
+          shasum -a 256 $FILES > checksums.txt
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md" $FILES checksums.txt \
+          || gh release upload "v$VERSION" --repo "$GITHUB_REPOSITORY" --clobber $FILES checksums.txt
+
+      - name: Clean up keychain and key
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/sparkle_ed_key"
+
+  # The docs site mirrors this repo's CHANGELOG at build time but only rebuilds on its own pushes: kick its
+  # deploy so the Changelog page shows this release. Skips quietly without DOCS_DISPATCH_TOKEN.
   refresh-docs:
     needs: release
     runs-on: ubuntu-latest
@@ -45,6 +140,6 @@ jobs:
           GH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "DOCS_DISPATCH_TOKEN not set — skipping docs refresh"; exit 0
+            echo "DOCS_DISPATCH_TOKEN not set - skipping docs refresh"; exit 0
           fi
           gh workflow run deploy.yml --repo pomelohq/pomelo-docs --ref main

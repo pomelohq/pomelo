@@ -12,14 +12,14 @@ case "$FLAVOR" in
     BIN="target/debug/pomelo"
     APP_NAME="PomeloDev"
     DISPLAY_NAME="Pomelo Dev"
-    BUNDLE_ID="app.pomelo.dev"
+    BUNDLE_ID="com.pomelo.app.dev"
     ;;
   prod)
     cargo build -p pomelo -p pom_cli --release
     BIN="target/release/pomelo"
     APP_NAME="Pomelo"
     DISPLAY_NAME="Pomelo"
-    BUNDLE_ID="app.pomelo"
+    BUNDLE_ID="com.pomelo.app"
     ;;
   *)
     echo "usage: $0 <dev|prod>" >&2

@@ -1,19 +1,5 @@
-/dist
 .claude/*
 !.claude/skills/
-dist/
-/pom
-/pomapp
-
-# Wails desktop build artifacts
-cmd/pomapp/build/bin/
-
-# native app build artifacts
-desktop/poc/libpom.a
-desktop/poc/libpom.h
-desktop/poc/pocapp
-desktop/poc/*.o
-
 *.profraw
+.DS_Store
 Makefile.local
-/libpom

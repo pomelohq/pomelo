@@ -1,15 +1,14 @@
 # NOTICE
 
-## Third-party trademarks and brand assets
+## Bundled third-party assets
 
-This project references third-party products for interoperability and shows their
-brand marks nominatively (to identify the product being integrated), not to imply
-any endorsement, sponsorship, or affiliation.
+- **IBM Plex Sans / IBM Plex Mono** (SIL Open Font License 1.1), the app's UI and code fonts:
+  `rust/crates/ui/assets`, license alongside them.
+- **Lucide** icons (ISC License): `rust/crates/ui/assets/icons`, license in `LICENSES` there.
+- **wgpu-hal** (MIT / Apache-2.0), vendored with a one-line change: `rust/vendor/wgpu-hal`.
 
-- **Claude** and the Claude logo are trademarks of Anthropic, PBC. The bundled Claude
-  mark (`desktop/PomeloApp/Sources/PomeloApp/Resources/Assets.xcassets/claude.imageset`)
-  is used unmodified, solely to label the app's Claude integration (e.g. the Claude
-  usage meter).
+## Third-party trademarks
 
-All other product names, logos, and brands are the property of their respective owners.
-Their use here is for identification purposes only.
+This project references third-party products for interoperability (for example Claude Code, GitHub, Jira,
+Docker) by name, to identify the product being integrated, not to imply any endorsement, sponsorship, or
+affiliation. All product names and brands are the property of their respective owners.

@@ -3382,7 +3382,7 @@ fn installed_app() -> Option<std::path::PathBuf> {
 /// The LaunchAgent that opens the app at login.
 fn login_item_path() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(std::path::PathBuf::from(home).join("Library/LaunchAgents/app.pomelo.login.plist"))
+    Some(std::path::PathBuf::from(home).join("Library/LaunchAgents/com.pomelo.app.login.plist"))
 }
 
 fn start_at_login() -> bool {
@@ -3410,7 +3410,7 @@ fn set_start_at_login(enabled: bool) -> std::io::Result<()> {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\">\n<dict>\n\
-  <key>Label</key><string>app.pomelo.login</string>\n\
+  <key>Label</key><string>com.pomelo.app.login</string>\n\
   <key>ProgramArguments</key><array><string>/usr/bin/open</string><string>{}</string></array>\n\
   <key>RunAtLoad</key><true/>\n\
 </dict>\n</plist>\n",

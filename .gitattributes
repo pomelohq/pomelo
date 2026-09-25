@@ -1,11 +1,2 @@
-# Language stats (GitHub Linguist): exclude vendored / generated code so the
-# repo reads as Go + Swift, not the bundled tree-sitter C parsers.
-
-# Vendored third-party editor packages (CodeEdit fork) used for syntax highlighting.
-desktop/PomeloApp/LocalPackages/** linguist-vendored
-# Generated tree-sitter grammar parsers (huge machine-generated C).
-desktop/PomeloApp/LocalPackages/**/parser.c linguist-generated
-desktop/PomeloApp/LocalPackages/**/scanner.c linguist-generated
-
-# Generated cgo bridge header for the libpom FFI.
-desktop/PomeloApp/Sources/CPom/include/libpom.h linguist-generated
+# Language stats (GitHub Linguist): the vendored wgpu backend is not ours.
+rust/vendor/** linguist-vendored
