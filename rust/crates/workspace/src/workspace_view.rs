@@ -1097,6 +1097,7 @@ impl WorkspaceView {
             .map(|(project, index, branch)| crate::panel::WorkspaceRow {
                 index,
                 label: project.label(index).to_string(),
+                branch: branch.clone(),
                 agent: self.layout.agent_states.get(branch).copied(),
                 ticket: project.tickets.get(index).cloned().unwrap_or_default(),
                 ticket_category: project
@@ -1122,7 +1123,38 @@ impl WorkspaceView {
             ops: &workspace_ops,
             expanded: &expanded_ops,
         };
-        if !self.layout.left.collapsed {
+        let mut rail_tip = None;
+        if self.layout.left.collapsed {
+            let region = self.layout.left_region(w, h);
+            let rail = Rect::new(
+                region.x,
+                region.y,
+                region.w,
+                (region.h - crate::STATUS_BAR_H).max(0.0),
+                Rgba::TRANSPARENT,
+            );
+            let p = ui::render(
+                &crate::panel::workspace_rail(&list, region.w / ui::ui_text_scale()),
+                rail,
+            );
+            rail_tip = self.session_menu_hover.and_then(|hovered| {
+                let index = hovered.checked_sub(crate::WORKSPACE_ROW_BASE)? as usize;
+                let row = workspaces.iter().find(|row| row.index == index)?;
+                let (cell, _) = p.hits.iter().find(|(_, id)| *id == hovered)?;
+                let scale = ui::ui_text_scale();
+                // Beside the cell, centred on it, rather than under it where the next cells are.
+                let anchor = Rect::new(
+                    cell.x + cell.w + 6.0 * scale,
+                    cell.y + cell.h / 2.0 - 17.0 * scale,
+                    0.0,
+                    0.0,
+                    Rgba::TRANSPARENT,
+                );
+                Some(tooltip(anchor, &row.label, w))
+            });
+            panel_hits.extend(p.hits.iter().copied());
+            blit(p);
+        } else {
             let region = self.layout.left_region(w, h);
             let p = self.layout.left.render_body(region, &list);
             panel_hits.extend(p.hits.iter().copied());
@@ -1527,7 +1559,7 @@ impl WorkspaceView {
             }
         }
 
-        if let Some(t) = status_tip {
+        for t in [status_tip, rail_tip].into_iter().flatten() {
             overlays.push(Overlay {
                 painted: t,
                 clip: None,
@@ -5478,6 +5510,22 @@ mod tests {
         );
         e.update(app.app_mut(), |v, _| v.set_services_running(false));
         assert_eq!(dots(&mut app), 0);
+    }
+
+    #[test]
+    fn the_folded_sidebar_is_a_rail_that_names_its_cells_on_hover() {
+        let (mut app, h, e) = open();
+        e.update(app.app_mut(), |v, _| v.layout.left.collapsed = true);
+        app.draw(h);
+        let cell = app
+            .window(h)
+            .and_then(|w| w.center_of(crate::WORKSPACE_ROW_BASE + 1))
+            .expect("the feat-login cell is laid out");
+        let text = frame_text(&app.draw(h).expect("frame"));
+        assert!(text.contains("feat"), "{text}");
+        e.update(app.app_mut(), |v, _| v.mouse_move(cell.0, cell.1));
+        let text = frame_text(&app.draw(h).expect("frame"));
+        assert!(text.contains("feat-login"), "hover names it: {text}");
     }
 
     #[test]

@@ -752,6 +752,12 @@ fn main() -> anyhow::Result<()> {
                 view.open_window_modal(Box::new(modal))
             });
         }
+        // RAIL=1: the WORKSPACES panel folded to its rail.
+        if std::env::var("RAIL").is_ok() {
+            entity.update(app.app_mut(), |view, _| {
+                view.run_action(workspace::keymap::Action::ToggleLeftDock)
+            });
+        }
         if mode == "prompt" {
             entity.update(app.app_mut(), |view, _| {
                 view.ask(workspace::Prompt {
