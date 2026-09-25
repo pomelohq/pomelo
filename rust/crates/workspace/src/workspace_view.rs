@@ -2224,6 +2224,18 @@ impl WorkspaceView {
             ]
             .into_iter()
             .chain(
+                self.group_view(self.menu_group)
+                    .and_then(|group| group.active_item())
+                    .filter(|item| item.previewable())
+                    .map(|_| {
+                        item(
+                            crate::MENU_EDIT_MARKDOWN_PREVIEW,
+                            "Open Markdown Preview",
+                            true,
+                        )
+                    }),
+            )
+            .chain(
                 self.input_ref(self.menu_group)
                     .and_then(|input| input.editor_split_diff())
                     .map(|split| MenuItem {
@@ -2630,6 +2642,11 @@ impl WorkspaceView {
                 crate::MENU_EDIT_SPLIT_DIFF => {
                     if let Some(input) = self.input(group) {
                         input.editor_key(EditKey::ToggleSplitDiff, false);
+                    }
+                }
+                crate::MENU_EDIT_MARKDOWN_PREVIEW => {
+                    if let Some(files) = self.layout.files_view.as_mut() {
+                        files.editor_key(EditKey::OpenMarkdownPreview, false);
                     }
                 }
                 crate::MENU_EDIT_OPEN_TERMINAL => {

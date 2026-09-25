@@ -375,6 +375,7 @@ pub const MENU_EDIT_REVEAL: u64 = 895;
 pub const MENU_TREE_OPEN_TERMINAL: u64 = 884;
 pub const MENU_EDIT_OPEN_TERMINAL: u64 = 896;
 pub const MENU_EDIT_SPLIT_DIFF: u64 = 897;
+pub const MENU_EDIT_MARKDOWN_PREVIEW: u64 = 898;
 pub const TAB_MENU_TARGET: u64 = 852;
 pub const MENU_TAB_CLOSE: u64 = 900;
 pub const MENU_TAB_CLOSE_OTHERS: u64 = 901;
@@ -629,6 +630,10 @@ pub trait Item: 'static {
     }
 
     fn is_editable(&self) -> bool {
+        false
+    }
+    /// Has a rendered preview (a markdown file); its pane then shows a preview button.
+    fn previewable(&self) -> bool {
         false
     }
     fn set_focused(&mut self, _focused: bool) {}

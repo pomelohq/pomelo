@@ -1797,6 +1797,7 @@ impl FileItem {
             return Vec::new();
         }
         let end_row = last.min(n).saturating_sub(1);
+        let unit = self.lang.tab_size();
         const TRAILING_LIMIT: usize = 25;
         let mut result: Vec<(usize, usize, usize)> = Vec::new();
         let mut stack: Vec<(usize, usize, usize)> = Vec::new(); // (start_row, end_row, depth)
@@ -1805,7 +1806,7 @@ impl FileItem {
             let first_row = row;
             let mut last_row = row;
             let (depth, _found) = match Self::indent_cols(b, row) {
-                Some(c) => (c / TAB_COLS, true),
+                Some(c) => (c / unit, true),
                 None => {
                     // Blank: seek forward to the next non-blank line (bounded) and adopt its depth.
                     let mut d = 0usize;
@@ -1814,7 +1815,7 @@ impl FileItem {
                     while r < n && r <= end_row + TRAILING_LIMIT {
                         if let Some(c) = Self::indent_cols(b, r) {
                             last_row = r.min(end_row);
-                            d = c / TAB_COLS;
+                            d = c / unit;
                             found = true;
                             break;
                         }
@@ -3701,6 +3702,10 @@ impl Item for FileItem {
         self.place_cursor((x - body.x).max(0.0), y - body.y, true);
     }
 
+    fn previewable(&self) -> bool {
+        markdown_preview::is_markdown(&self.path)
+    }
+
     fn is_editable(&self) -> bool {
         self.buffer.is_some()
     }
@@ -4284,8 +4289,9 @@ impl Item for FileItem {
         let cursor_line = b.line_col_of(b.newest().head()).0;
         let active_block = Self::enclosing_indent(b, cursor_line);
         for (s, e, depth) in self.indent_guides(buf_first, buf_last) {
+            let unit = self.lang.tab_size();
             let active = active_block.is_some_and(|(start, end, column)| {
-                depth * TAB_COLS == column && start <= e && s <= end
+                depth * unit == column && start <= e && s <= end
             });
             let guide = if active {
                 theme().editor_indent_guide_active
@@ -4299,7 +4305,7 @@ impl Item for FileItem {
                 continue;
             }
             rects.push(Rect::new(
-                content.x + gw + (depth * TAB_COLS) as f32 * cw - self.scroll_x,
+                content.x + gw + (depth * unit) as f32 * cw - self.scroll_x,
                 row_y(top),
                 1.0,
                 (bottom + 1 - top) as f32 * edit_line_h(),
@@ -4884,6 +4890,10 @@ impl FilesView {
                 id_base: FUNC_VIEW_BASE,
                 show_nav: true,
                 buttons: vec![
+                    PaneButton {
+                        icon: IconKind::Eye,
+                        action: PaneButtonAction::Preview,
+                    },
                     PaneButton {
                         icon: IconKind::PanelRight,
                         action: PaneButtonAction::Split(SplitDirection::Right),
@@ -6463,9 +6473,16 @@ impl FunctionView for FilesView {
                 return true;
             }
             GroupClick::Button { path, action } => {
-                if let PaneButtonAction::Split(direction) = action {
-                    let item = self.panes.clone_active_of(&path);
-                    self.panes.split(&path, direction, item);
+                match action {
+                    PaneButtonAction::Split(direction) => {
+                        let item = self.panes.clone_active_of(&path);
+                        self.panes.split(&path, direction, item);
+                    }
+                    PaneButtonAction::Preview => {
+                        self.panes.active = path;
+                        self.open_markdown_preview(false);
+                    }
+                    PaneButtonAction::NewItem | PaneButtonAction::ToggleZoom => {}
                 }
                 return true;
             }
@@ -7286,6 +7303,27 @@ mod indent_guide_tests {
         assert_eq!(FileItem::enclosing_indent(&b, 2), Some((1, 2, 4)));
         assert_eq!(FileItem::enclosing_indent(&b, 4), Some((0, 4, 0)));
         assert_eq!(FileItem::enclosing_indent(&b, 1), Some((1, 2, 4)));
+    }
+
+    #[test]
+    fn guides_follow_the_languages_indent_size() {
+        let text = "export default defineConfig({\n  testDir: \"./e2e\",\n  use: {\n    trace: \"on\",\n    shot: \"off\"\n  },\n  projects: [\n    { name: \"chromium\" }\n  ]\n});\n";
+        let item = FileItem::new(
+            PathBuf::from("/nonexistent"),
+            "playwright.config.ts",
+            Some(text.into()),
+        );
+        let mut guides = item.indent_guides(0, 11);
+        guides.sort();
+        // Rows 1-8 sit one level in (a guide at column 0); rows 3-4 and 7 two levels (a guide at column 2).
+        assert_eq!(guides, vec![(1, 8, 0), (3, 4, 1), (7, 7, 1)]);
+
+        let rust = FileItem::new(
+            PathBuf::from("/nonexistent"),
+            "a.rs",
+            Some("fn a() {\n    b();\n}\n".into()),
+        );
+        assert_eq!(rust.indent_guides(0, 3), vec![(1, 1, 0)]);
     }
 }
 
@@ -8546,6 +8584,33 @@ mod markdown_preview_tests {
             );
         });
         count
+    }
+
+    #[test]
+    fn a_markdown_tab_shows_a_preview_button_that_opens_the_preview() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().to_path_buf();
+        std::fs::write(root.join("NOTES.md"), "# Notes\n").expect("write");
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").expect("write");
+        let mut view = FilesView::new(root.clone());
+        view.open_file("main.rs");
+        view.panes
+            .layout(Rect::new(0.0, 0.0, 1200.0, 800.0, ui::Rgba::TRANSPARENT));
+        assert!(!view
+            .panes
+            .active_item()
+            .is_some_and(|item| item.previewable()));
+        view.open_file("NOTES.md");
+        assert!(view
+            .panes
+            .active_item()
+            .is_some_and(|item| item.previewable()));
+        let preview_button = view.panes.button_id(0, 0);
+        assert!(view.on_click(preview_button));
+        assert_eq!(
+            view.panes.active_item().and_then(|item| item.id()),
+            Some(markdown_preview::preview_id("NOTES.md"))
+        );
     }
 
     #[test]
