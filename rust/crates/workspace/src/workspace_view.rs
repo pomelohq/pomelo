@@ -71,6 +71,8 @@ pub struct WorkspaceEffects {
 pub struct WorkspaceRequests {
     pub new_workspace: bool,
     pub row: Option<(usize, crate::RowAction)>,
+    /// Move the workspace at the first index to the second.
+    pub reorder: Option<(usize, usize)>,
     pub op: Option<(u64, crate::OpAction)>,
 }
 
@@ -155,6 +157,15 @@ enum Drag {
     Center(u64),
     Tab,
     EditorSel(InputGroup),
+    WorkspaceRow,
+}
+
+/// A WORKSPACES row being dragged to a new place: its index, where the press was, and the row it would take.
+#[derive(Clone, Copy)]
+struct RowDrag {
+    from: usize,
+    press: (f32, f32),
+    to: Option<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -220,6 +231,7 @@ pub struct WorkspaceView {
     header_hits: Vec<(Rect, u64)>,
     dragging: Drag,
     pending_tab: Option<(u64, f32, f32)>,
+    row_drag: Option<RowDrag>,
     tab_ghost_at: Option<(f32, f32)>,
     last_click: Option<(Instant, f32, f32)>,
     /// An open right-click context menu: `(anchor_x, anchor_top, anchor_bottom, target button id)`.
@@ -248,6 +260,7 @@ impl WorkspaceView {
             header_hits: Vec::new(),
             dragging: Drag::None,
             pending_tab: None,
+            row_drag: None,
             tab_ghost_at: None,
             last_click: None,
             menu: None,
@@ -1157,8 +1170,43 @@ impl WorkspaceView {
         } else {
             let region = self.layout.left_region(w, h);
             let p = self.layout.left.render_body(region, &list);
+            let target = self
+                .row_drag
+                .filter(|_| self.dragging == Drag::WorkspaceRow)
+                .and_then(|drag| {
+                    let to = drag.to?;
+                    let (rect, _) = p
+                        .hits
+                        .iter()
+                        .find(|(_, id)| *id == crate::WORKSPACE_ROW_BASE + to as u64)?;
+                    Some((drag.from, to, *rect))
+                });
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
+            if let Some((from, to, rect)) = target {
+                // Like a tab drop: the target is tinted, with a bar on the side the row lands.
+                let mut drop = Painted::default();
+                drop.rects.push(Rect::new(
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h,
+                    ui::theme().text_accent.alpha(0.22),
+                ));
+                let bar_y = if to < from {
+                    rect.y
+                } else {
+                    rect.y + rect.h - 2.0
+                };
+                drop.rects.push(Rect::new(
+                    rect.x,
+                    bar_y,
+                    rect.w,
+                    2.0,
+                    ui::theme().border_focused,
+                ));
+                blit(drop);
+            }
         }
         // not in the main status bar (which never covers this special sidebar) and not in the header. Always
         // shown (even in the collapsed rail), accented while the sidebar is open.
@@ -1784,9 +1832,11 @@ impl WorkspaceView {
             Drag::Left | Drag::Right | Drag::Tree => return Some(ResizeCursor::Horizontal),
             Drag::Bottom => return Some(ResizeCursor::Vertical),
             Drag::Center(id) | Drag::TerminalDivider(id) => return self.center_divider_cursor(id),
-            Drag::Tab | Drag::EditorSel(_) | Drag::TerminalTab | Drag::ItemPointer(_) => {
-                return None
-            }
+            Drag::Tab
+            | Drag::EditorSel(_)
+            | Drag::TerminalTab
+            | Drag::ItemPointer(_)
+            | Drag::WorkspaceRow => return None,
             Drag::None => {}
         }
         let (w, h) = self.viewport;
@@ -3028,7 +3078,14 @@ impl WorkspaceView {
             Drag::EditorSel(group) => self
                 .input(group)
                 .is_some_and(|input| input.editor_drag(x, y)),
+            Drag::WorkspaceRow => self.update_row_drag(x, y),
             Drag::None => {
+                if let Some(drag) = self.row_drag {
+                    if (x - drag.press.0).abs() > 5.0 || (y - drag.press.1).abs() > 5.0 {
+                        self.dragging = Drag::WorkspaceRow;
+                        return self.update_row_drag(x, y);
+                    }
+                }
                 if let Some((id, px, py)) = self.pending_tab {
                     if (x - px).abs() > 5.0 || (y - py).abs() > 5.0 {
                         self.pending_tab = None;
@@ -3236,6 +3293,16 @@ impl WorkspaceView {
                 self.focus_group(InputGroup::Agent);
                 self.pending_tab = Some((id, x, y));
             } else {
+                self.row_drag = id
+                    .checked_sub(crate::WORKSPACE_ROW_BASE)
+                    .filter(|_| id < crate::WORKSPACE_ROW_END)
+                    .map(|index| index as usize)
+                    .filter(|index| *index > 0)
+                    .map(|from| RowDrag {
+                        from,
+                        press: (x, y),
+                        to: None,
+                    });
                 self.header_click(id);
             }
         } else {
@@ -3574,6 +3641,13 @@ impl WorkspaceView {
             if let Some(request) = request {
                 self.open_terminal_target(request);
             }
+        } else if self.dragging == Drag::WorkspaceRow {
+            if let Some(RowDrag {
+                from, to: Some(to), ..
+            }) = self.row_drag
+            {
+                self.workspace_requests.reorder = Some((from, to));
+            }
         } else if self.dragging == Drag::Tab {
             self.finish_center_tab_drag();
         } else if self.dragging == Drag::TerminalTab {
@@ -3588,8 +3662,33 @@ impl WorkspaceView {
             }
         }
         self.pending_tab = None;
+        self.row_drag = None;
         self.tab_ghost_at = None;
         self.dragging = Drag::None;
+    }
+
+    /// The row under the pointer becomes the drop target; main (the first row) never moves.
+    fn update_row_drag(&mut self, x: f32, y: f32) -> bool {
+        let Some(mut drag) = self.row_drag else {
+            return false;
+        };
+        let to = self
+            .header_hits
+            .iter()
+            .filter(|(rect, id)| {
+                (crate::WORKSPACE_ROW_BASE..crate::WORKSPACE_ROW_END).contains(id)
+                    && x >= rect.x
+                    && x < rect.x + rect.w
+                    && y >= rect.y
+                    && y < rect.y + rect.h
+            })
+            .map(|(_, id)| (id - crate::WORKSPACE_ROW_BASE) as usize)
+            .next_back()
+            .filter(|index| *index > 0 && *index != drag.from);
+        let changed = to != drag.to;
+        drag.to = to;
+        self.row_drag = Some(drag);
+        changed
     }
 
     /// The terminal panel in `region`: a backdrop to blit, with its panes pushed onto `overlays`. In its dock
@@ -5274,6 +5373,41 @@ mod tests {
             .map(|text| text.text.as_str())
             .collect::<Vec<_>>()
             .join("|")
+    }
+
+    #[test]
+    fn dragging_a_workspace_row_onto_another_asks_to_move_it_but_main_stays() {
+        let mut project = sample_project();
+        project.workspaces.push("feat-signup".into());
+        let (mut app, h, e) = open_with(Some(project));
+        app.draw(h);
+        let center = |app: &Application, index: u64| {
+            app.window(h)
+                .and_then(|w| w.center_of(crate::WORKSPACE_ROW_BASE + index))
+                .expect("row laid out")
+        };
+        let (last, second, main) = (center(&app, 2), center(&app, 1), center(&app, 0));
+        e.update(app.app_mut(), |v, _| {
+            v.mouse_down(last.0, last.1);
+            v.mouse_move(second.0, second.1);
+            v.mouse_up();
+        });
+        let requests = e.update(app.app_mut(), |v, _| v.take_workspace_requests());
+        assert_eq!(requests.reorder, Some((2, 1)));
+
+        e.update(app.app_mut(), |v, _| {
+            v.mouse_down(last.0, last.1);
+            v.mouse_move(main.0, main.1);
+            v.mouse_up();
+            v.mouse_down(main.0, main.1);
+            v.mouse_move(last.0, last.1);
+            v.mouse_up();
+        });
+        let requests = e.update(app.app_mut(), |v, _| v.take_workspace_requests());
+        assert_eq!(
+            requests.reorder, None,
+            "main neither moves nor is displaced"
+        );
     }
 
     #[test]

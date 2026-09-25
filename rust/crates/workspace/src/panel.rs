@@ -337,6 +337,16 @@ impl AgentDot {
             AgentDot::AwaitingInput => theme().error,
         }
     }
+
+    fn label(self) -> &'static str {
+        match self {
+            AgentDot::Idle => "Idle",
+            AgentDot::Thinking => "Thinking",
+            AgentDot::ToolUse => "Using tools",
+            AgentDot::Compacting => "Compacting",
+            AgentDot::AwaitingInput => "Awaiting input",
+        }
+    }
 }
 
 /// A row of the WORKSPACES list: its index in `ProjectInfo::workspaces`, what it is called and its agent.
@@ -601,6 +611,14 @@ fn workspace_row(row: &WorkspaceRow, current: bool) -> Node {
     }
     let mut details = div().row().h_px(16.0).gap(10.0).items_center().pl(14.0);
     let mut has_details = false;
+    if let Some(agent) = row.agent {
+        let color = match agent {
+            AgentDot::Idle => colors.text_muted,
+            _ => agent.color(),
+        };
+        details = details.child(label(agent.label()).size(11.0).color(color));
+        has_details = true;
+    }
     if !row.ticket.is_empty() {
         let color = match row.ticket_category.as_str() {
             "done" => colors.success,
