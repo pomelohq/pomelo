@@ -2,7 +2,7 @@
 //! separate `auto_update_ui` crate.
 //!
 //! On launch (background thread) the *production* bundle asks the GitHub Releases API for the newest
-//! `rust-v*` release; if it names a higher version than this build it downloads the app tarball, swaps it
+//! `v*` release; if it names a higher version than this build it downloads the app tarball, swaps it
 //! over the running `Pomelo.app`, and relaunches. The dev bundle (`PomeloDev.app`) and `cargo run` are
 //! skipped so they never self-replace. Disable with `POMELO_AUTO_UPDATE=0`; override the source repo with
 //! `POMELO_UPDATE_REPO=owner/name` at build time. No HTTP crate: shells out to `curl`/`tar`/`ditto`.
@@ -37,6 +37,29 @@ pub fn spawn_background_check() {
     macos::spawn_background_check();
 }
 
+/// The release signing key's public half: the same EdDSA key the previous app's updater trusts.
+pub const UPDATE_PUBLIC_KEY: &str = "tGnmpupAySzHVMfQcDqtlMFoxuSLC9Pl6TtF4DmGECY=";
+
+/// Checks `bytes` against a base64 Ed25519 `signature` made with the key whose public half is `public_key`.
+pub fn verify(bytes: &[u8], signature: &str, public_key: &str) -> Result<(), String> {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let key: [u8; 32] = engine
+        .decode(public_key)
+        .ok()
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or("bad update public key")?;
+    let signature: [u8; 64] = engine
+        .decode(signature)
+        .ok()
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or("the update's signature is malformed")?;
+    let key =
+        ed25519_dalek::VerifyingKey::from_bytes(&key).map_err(|e| format!("update key: {e}"))?;
+    key.verify_strict(bytes, &ed25519_dalek::Signature::from_bytes(&signature))
+        .map_err(|_| "the update's signature does not match; not installing it".to_string())
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use std::path::{Path, PathBuf};
@@ -46,7 +69,7 @@ mod macos {
         Some(r) => r,
         None => "pomelohq/pomelo",
     };
-    const TAG_PREFIX: &str = "rust-v";
+    const TAG_PREFIX: &str = "v";
 
     pub fn spawn_background_check() {
         if std::env::var("POMELO_AUTO_UPDATE").as_deref() == Ok("0") {
@@ -82,7 +105,7 @@ mod macos {
             serde_json::from_str(&body).map_err(|e| format!("parse releases: {e}"))?;
         let releases = releases.as_array().ok_or("releases not an array")?;
 
-        let mut best: Option<(Vec<u32>, String)> = None; // (version, tarball asset url)
+        let mut best: Option<(Vec<u32>, String, String)> = None; // (version, tarball url, signature url)
         for r in releases {
             let tag = r.get("tag_name").and_then(|v| v.as_str()).unwrap_or("");
             let Some(ver) = tag.strip_prefix(TAG_PREFIX) else {
@@ -91,13 +114,18 @@ mod macos {
             let Some(parsed) = parse_version(ver) else {
                 continue;
             };
-            let Some(url) = tarball_url(r) else { continue };
-            if best.as_ref().map(|(bv, _)| parsed > *bv).unwrap_or(true) {
-                best = Some((parsed, url));
+            // Releases from before the app verified updates carry no signature; they are skipped.
+            let (Some(url), Some(signature)) =
+                (asset_url(r, ".app.tar.gz"), asset_url(r, ".app.tar.gz.sig"))
+            else {
+                continue;
+            };
+            if best.as_ref().map(|(bv, _, _)| parsed > *bv).unwrap_or(true) {
+                best = Some((parsed, url, signature));
             }
         }
 
-        let Some((latest, url)) = best else {
+        let Some((latest, url, signature)) = best else {
             return Ok(()); // no rust release yet
         };
         let cur = parse_version(current).ok_or("bad current version")?;
@@ -109,14 +137,14 @@ mod macos {
             "[update] {current} -> {} available, downloading",
             join_version(&latest)
         );
-        apply(app_root, &url)
+        apply(app_root, &url, &signature)
     }
 
-    fn tarball_url(release: &serde_json::Value) -> Option<String> {
+    fn asset_url(release: &serde_json::Value, suffix: &str) -> Option<String> {
         let assets = release.get("assets")?.as_array()?;
         for a in assets {
             let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            if name.ends_with(".app.tar.gz") {
+            if name.ends_with(suffix) {
                 return a
                     .get("browser_download_url")
                     .and_then(|v| v.as_str())
@@ -126,7 +154,7 @@ mod macos {
         None
     }
 
-    fn apply(app_root: &Path, url: &str) -> Result<(), String> {
+    fn apply(app_root: &Path, url: &str, signature_url: &str) -> Result<(), String> {
         let tmp = std::env::temp_dir().join("pomelo-update");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).map_err(|e| format!("mktmp: {e}"))?;
@@ -136,6 +164,9 @@ mod macos {
             .args(["-fsSL", "-o"])
             .arg(&tarball)
             .arg(url))?;
+        let signature = curl(signature_url)?;
+        let bytes = std::fs::read(&tarball).map_err(|e| format!("read update: {e}"))?;
+        crate::verify(&bytes, signature.trim(), crate::UPDATE_PUBLIC_KEY)?;
         run(Command::new("tar")
             .arg("-xzf")
             .arg(&tarball)
@@ -191,5 +222,24 @@ mod macos {
             .map(|n| n.to_string())
             .collect::<Vec<_>>()
             .join(".")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use ed25519_dalek::Signer;
+
+    #[test]
+    fn only_an_update_signed_by_the_release_key_passes() {
+        let engine = base64::engine::general_purpose::STANDARD;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let public = engine.encode(key.verifying_key().to_bytes());
+        let signature = engine.encode(key.sign(b"Pomelo.app tarball").to_bytes());
+        assert!(verify(b"Pomelo.app tarball", &signature, &public).is_ok());
+        assert!(verify(b"tampered tarball", &signature, &public).is_err());
+        assert!(verify(b"Pomelo.app tarball", &signature, UPDATE_PUBLIC_KEY).is_err());
+        assert!(verify(b"x", "not base64!", &public).is_err());
     }
 }
