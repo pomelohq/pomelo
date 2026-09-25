@@ -623,6 +623,7 @@ fn main() -> anyhow::Result<()> {
                     severity: workspace::PrSeverity::Danger,
                 }),
             ],
+            missing: Vec::new(),
         });
         let current = project.as_ref().map(|_| 0);
         let mut app = ui::Application::new();

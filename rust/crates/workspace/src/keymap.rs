@@ -34,10 +34,12 @@ pub enum Action {
     OpenTicket,
     OpenProjectConfig,
     SetUpProjectWithAi,
+    AddRepository,
+    ApplyConfig,
 }
 
 impl Action {
-    pub const ALL: [Action; 31] = [
+    pub const ALL: [Action; 33] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -69,6 +71,8 @@ impl Action {
         Action::OpenTicket,
         Action::OpenProjectConfig,
         Action::SetUpProjectWithAi,
+        Action::AddRepository,
+        Action::ApplyConfig,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -105,6 +109,8 @@ impl Action {
             Action::OpenTicket => "workspace::OpenTicket",
             Action::OpenProjectConfig => "pomelo::OpenProjectConfig",
             Action::SetUpProjectWithAi => "pomelo::SetUpProjectWithAi",
+            Action::AddRepository => "pomelo::AddRepository",
+            Action::ApplyConfig => "pomelo::ApplyConfig",
         }
     }
 
@@ -142,6 +148,8 @@ impl Action {
             Action::OpenTicket => "Open Jira Ticket",
             Action::OpenProjectConfig => "Open Project Config",
             Action::SetUpProjectWithAi => "Set Up Project with AI",
+            Action::AddRepository => "Add Repository",
+            Action::ApplyConfig => "Apply Config to All Workspaces",
         }
     }
 

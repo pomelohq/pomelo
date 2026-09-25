@@ -18,6 +18,7 @@ pom_sync = { path = "../pom_sync" }
 pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
 pom_services = { path = "../pom_services" }
+pom_core = { path = "../pom_core" }
 pom_workspace = { path = "../pom_workspace" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }

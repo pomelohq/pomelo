@@ -363,6 +363,8 @@ pub struct WorkspaceRow {
     /// How many of its services run.
     pub running: usize,
     pub pr: Option<crate::PrSummary>,
+    /// Repos of the config this workspace lacks.
+    pub missing: Vec<String>,
 }
 
 /// What the WORKSPACES panel shows: the workspaces, which one is current, and creations/deletions in flight.
@@ -623,6 +625,14 @@ fn workspace_row(row: &WorkspaceRow, current: bool) -> Node {
     }
     let mut details = div().row().h_px(16.0).gap(10.0).items_center().pl(14.0);
     let mut has_details = false;
+    if !row.missing.is_empty() {
+        details = details.child(
+            label(format!("missing {}", row.missing.join(", ")))
+                .size(11.0)
+                .color(colors.warning),
+        );
+        has_details = true;
+    }
     if let Some(agent) = row.agent {
         let color = match agent {
             AgentDot::Idle => colors.text_muted,
@@ -959,6 +969,7 @@ mod tests {
             ticket_category: String::new(),
             running: 0,
             pr: None,
+            missing: Vec::new(),
         }
     }
 

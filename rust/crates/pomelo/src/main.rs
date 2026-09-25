@@ -5,6 +5,7 @@
 //! layout/dock system in `workspace`, self-update in `auto_update`.
 
 #[cfg(target_os = "macos")]
+mod add_repo;
 mod config_bundle;
 mod notifications;
 mod workspaces;
@@ -199,6 +200,11 @@ fn project_info(
             .workspaces
             .iter()
             .map(|workspace| pull_requests.and_then(|prs| prs.summary(&workspace.branch)))
+            .collect(),
+        missing: project
+            .workspaces
+            .iter()
+            .map(|workspace| project.missing_repos(workspace))
             .collect(),
     }
 }
@@ -600,6 +606,8 @@ struct App {
     agents: AgentTracker,
     next_agent_item: u64,
     scaffolding: Option<Scaffolding>,
+    adding_repo: Option<add_repo::AddingRepo>,
+    cloning_repos: Option<add_repo::CloningRepos>,
     keymap: workspace::keymap::Keymap,
     /// The first keys of a longer binding typed so far (`cmd-k` of `cmd-k cmd-s`).
     pending_keys: Vec<workspace::keymap::Keystroke>,
@@ -1997,6 +2005,8 @@ impl App {
             }
             Action::OpenInExternalEditor => self.open_in_external_editor(id),
             Action::OpenProjectConfig => self.open_project_config(id),
+            Action::AddRepository => self.open_add_repo(id),
+            Action::ApplyConfig => self.apply_config(id),
             Action::SetUpProjectWithAi => {
                 if claude_installed() {
                     self.open_project_config(id);
@@ -2378,6 +2388,8 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.poll_scaffold();
+        self.poll_add_repo();
+        self.poll_clone_repos();
         self.reload_keymap_if_changed();
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {

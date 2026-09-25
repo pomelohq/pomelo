@@ -23,14 +23,14 @@ pub struct ScaffoldRequest {
     pub repos: Vec<RepoSpec>,
 }
 
-fn is_git_url(source: &str) -> bool {
+pub(crate) fn is_git_url(source: &str) -> bool {
     source.contains("://")
         || source
             .find(':')
             .is_some_and(|at| at > 0 && !source.starts_with('/') && !source.starts_with('.'))
 }
 
-fn repo_name_from_url(url: &str) -> String {
+pub(crate) fn repo_name_from_url(url: &str) -> String {
     let url = url.trim_end_matches('/');
     let url = url.strip_suffix(".git").unwrap_or(url);
     let name = url.rsplit(['/', ':']).next().unwrap_or(url);
@@ -55,7 +55,7 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
     }
 }
 
-fn clone_remote(url: &str, destination: &Path) -> Result<(), String> {
+pub(crate) fn clone_remote(url: &str, destination: &Path) -> Result<(), String> {
     let mut child = Command::new("git")
         .args(["clone", "--", url])
         .arg(destination)
@@ -94,7 +94,7 @@ fn clone_remote(url: &str, destination: &Path) -> Result<(), String> {
 }
 
 /// A local clone that keeps the source's origin and carries over its modified and untracked files.
-fn clone_with_changes(source: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) fn clone_with_changes(source: &Path, destination: &Path) -> Result<(), String> {
     git(
         None,
         &[
@@ -158,7 +158,7 @@ fn parse_env_line(line: &str) -> Option<(String, String)> {
 
 /// Stores the values of the source repo's gitignored `.env*` files (not examples or samples) as the session's
 /// secrets, so the config can reference them by name only.
-fn import_ignored_env(source: &Path, state: &StateDir, session: &str) {
+pub(crate) fn import_ignored_env(source: &Path, state: &StateDir, session: &str) {
     let Ok(listed) = git(
         Some(source),
         &[

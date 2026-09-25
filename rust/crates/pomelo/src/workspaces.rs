@@ -129,6 +129,7 @@ impl App {
                 "Preparing main",
             ),
             workspace::RowAction::OpenTicket => self.open_ticket(id, &target.branch),
+            workspace::RowAction::AddMissingRepos => self.add_missing_repos(id, &target),
         }
     }
 
@@ -182,7 +183,7 @@ impl App {
         }
     }
 
-    fn op_context(&self, id: WindowId) -> Option<OpContext> {
+    pub(crate) fn op_context(&self, id: WindowId) -> Option<OpContext> {
         let services = self.mains.get(&id)?.services.as_ref()?;
         let config = services.config.read().ok()?.clone()?;
         Some(OpContext {
@@ -298,6 +299,10 @@ impl App {
                 self.rename_workspace(id, rename);
             } else if let Some(project) = value.downcast_ref::<workspaces_ui::NewProject>() {
                 self.start_scaffold(id, project);
+            } else if let Some(request) = value.downcast_ref::<workspaces_ui::AddRepo>() {
+                self.start_add_repo(id, request);
+            } else if let Some(clone) = value.downcast_ref::<workspaces_ui::CloneRepos>() {
+                self.start_clone_repos(id, clone);
             } else if let Some(export) = value.downcast_ref::<workspaces_ui::ExportConfig>() {
                 self.export_config(id, export);
             } else if let Some(import) = value.downcast_ref::<workspaces_ui::ImportConfig>() {

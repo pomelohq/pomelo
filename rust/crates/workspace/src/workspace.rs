@@ -194,6 +194,8 @@ pub struct ProjectInfo {
     /// Each ticket status's Jira category (`new`, `indeterminate`, `done`; same order).
     pub ticket_categories: Vec<String>,
     pub prs: Vec<Option<PrSummary>>,
+    /// Repos of the config each workspace lacks (same order).
+    pub missing: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,6 +282,8 @@ pub enum RowAction {
     UpdateMain,
     PrepareMain,
     OpenTicket,
+    /// Check out (or, in main, clone) the repos the config has that this workspace lacks.
+    AddMissingRepos,
 }
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
@@ -327,6 +331,7 @@ pub const MENU_WS_DELETE: u64 = 942;
 pub const MENU_WS_UPDATE_MAIN: u64 = 943;
 pub const MENU_WS_PREPARE_MAIN: u64 = 944;
 pub const MENU_WS_OPEN_TICKET: u64 = 945;
+pub const MENU_WS_ADD_MISSING: u64 = 946;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,
