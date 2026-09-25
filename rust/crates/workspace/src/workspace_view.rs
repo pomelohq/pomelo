@@ -163,6 +163,8 @@ enum Drag {
     Tab,
     EditorSel(InputGroup),
     WorkspaceRow,
+    /// A tab of the agent dock, moved within that dock.
+    AgentTab,
 }
 
 /// A WORKSPACES row being dragged to a new place: its index, where the press was, and the row it would take.
@@ -1565,7 +1567,13 @@ impl WorkspaceView {
                 .terminal_view
                 .as_ref()
                 .filter(|_| self.layout.terminal_visible())
-                .and_then(|v| v.tab_drag_overlay());
+                .and_then(|v| v.tab_drag_overlay())
+                .or_else(|| {
+                    self.layout
+                        .agent_view
+                        .as_ref()
+                        .and_then(|v| v.tab_drag_overlay())
+                });
             if let Some(preview) = panel_preview {
                 drag.rects.push(Rect::new(
                     preview.x,
@@ -1579,6 +1587,11 @@ impl WorkspaceView {
                 Drag::TerminalTab => self
                     .layout
                     .terminal_view
+                    .as_ref()
+                    .and_then(|v| v.tab_drag_ghost()),
+                Drag::AgentTab => self
+                    .layout
+                    .agent_view
                     .as_ref()
                     .and_then(|v| v.tab_drag_ghost()),
                 Drag::Tab => self
@@ -1975,6 +1988,7 @@ impl WorkspaceView {
             Drag::Tab
             | Drag::EditorSel(_)
             | Drag::TerminalTab
+            | Drag::AgentTab
             | Drag::ItemPointer(_)
             | Drag::WorkspaceRow => return None,
             Drag::None => {}
@@ -3198,6 +3212,13 @@ impl WorkspaceView {
                 self.update_center_foreign_drop(x, y, over);
                 own
             }
+            Drag::AgentTab => {
+                self.tab_ghost_at = Some((x, y));
+                self.layout
+                    .agent_view
+                    .as_mut()
+                    .is_some_and(|v| v.update_tab_drag(x, y, over))
+            }
             Drag::TerminalDivider(id) => self
                 .layout
                 .terminal_view
@@ -3250,7 +3271,16 @@ impl WorkspaceView {
                 if let Some((id, px, py)) = self.pending_tab {
                     if (x - px).abs() > 5.0 || (y - py).abs() > 5.0 {
                         self.pending_tab = None;
-                        if crate::is_terminal_id(id) {
+                        if crate::is_agent_id(id) {
+                            if let Some(v) = self.layout.agent_view.as_mut() {
+                                if v.begin_tab_drag(id) {
+                                    self.dragging = Drag::AgentTab;
+                                    v.update_tab_drag(x, y, over);
+                                    self.tab_ghost_at = Some((x, y));
+                                    return true;
+                                }
+                            }
+                        } else if crate::is_terminal_id(id) {
                             if let Some(v) = self.layout.terminal_view.as_mut() {
                                 if v.begin_tab_drag(id) {
                                     self.dragging = Drag::TerminalTab;
@@ -3841,6 +3871,10 @@ impl WorkspaceView {
             }
         } else if self.dragging == Drag::Tab {
             self.finish_center_tab_drag();
+        } else if self.dragging == Drag::AgentTab {
+            if let Some(view) = self.layout.agent_view.as_mut() {
+                view.drop_tab();
+            }
         } else if self.dragging == Drag::TerminalTab {
             self.finish_panel_tab_drag();
         } else if self.dragging != Drag::None {
