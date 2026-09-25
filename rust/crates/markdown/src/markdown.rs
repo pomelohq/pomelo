@@ -96,7 +96,7 @@ pub struct MarkdownStyle {
     pub headings: HeadingStyle,
     pub code_size: f32,
     pub code_line_height: f32,
-    /// Code blocks drawn on the editor background inside a border.
+    /// Code blocks drawn on a faint panel of their own.
     pub code_block_box: bool,
 }
 
@@ -178,6 +178,8 @@ pub const DOCUMENT_STYLE: MarkdownStyle = MarkdownStyle {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Markdown {
     blocks: Vec<Block>,
+    /// Byte offset in the source where each block starts.
+    sources: Vec<usize>,
     links: Vec<String>,
 }
 
@@ -191,6 +193,9 @@ struct TableState {
 #[derive(Default)]
 struct ParseState {
     blocks: Vec<Block>,
+    sources: Vec<usize>,
+    /// Where the innermost block being read started in the source.
+    block_start: usize,
     links: Vec<String>,
     spans: Vec<Span>,
     kind: Option<TextKind>,
@@ -232,6 +237,11 @@ impl ParseState {
                 style,
             }),
         }
+    }
+
+    fn push_block(&mut self, block: Block) {
+        self.sources.push(self.block_start);
+        self.blocks.push(block);
     }
 
     fn link_index(&mut self, url: &str) -> u16 {
@@ -287,6 +297,8 @@ impl ParseState {
                 return;
             }
         }
+        let start = self.block_start;
+        self.sources.push(start);
         self.blocks.push(Block::Text {
             spans: std::mem::take(&mut self.spans),
             kind,
@@ -295,6 +307,18 @@ impl ParseState {
             quoted: self.quote > 0,
         });
     }
+}
+
+fn heading_slug(text: &str) -> String {
+    text.trim()
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
 }
 
 fn find_url(text: &str) -> Option<usize> {
@@ -311,7 +335,23 @@ impl Markdown {
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_GFM;
         let mut state = ParseState::default();
-        for event in Parser::new_ext(source, options) {
+        for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+            if let Event::Start(
+                Tag::Paragraph
+                | Tag::Heading { .. }
+                | Tag::Item
+                | Tag::CodeBlock(_)
+                | Tag::Table(_),
+            ) = &event
+            {
+                if !matches!(event, Event::Start(Tag::Paragraph)) || state.kind.is_none() {
+                    state.block_start = range.start;
+                }
+            }
+            if matches!(event, Event::Rule) {
+                state.flush();
+                state.block_start = range.start;
+            }
             match event {
                 Event::Start(Tag::Paragraph) if state.kind.is_none() => {
                     state.kind = Some(TextKind::Paragraph);
@@ -366,7 +406,7 @@ impl Markdown {
                         if text.ends_with('\n') {
                             text.pop();
                         }
-                        state.blocks.push(Block::Code { language, text });
+                        state.push_block(Block::Code { language, text });
                     }
                 }
                 Event::Start(Tag::Table(alignments)) => {
@@ -396,7 +436,7 @@ impl Markdown {
                 }
                 Event::End(TagEnd::Table) => {
                     if let Some(table) = state.table.take() {
-                        state.blocks.push(Block::Table {
+                        state.push_block(Block::Table {
                             alignments: table.alignments,
                             rows: table.rows,
                         });
@@ -456,7 +496,7 @@ impl Markdown {
                 }
                 Event::Rule => {
                     state.flush();
-                    state.blocks.push(Block::Rule);
+                    state.push_block(Block::Rule);
                 }
                 _ => {}
             }
@@ -464,8 +504,38 @@ impl Markdown {
         state.flush();
         Self {
             blocks: state.blocks,
+            sources: state.sources,
             links: state.links,
         }
+    }
+
+    /// The block holding source byte `offset`: the last one starting at or before it.
+    pub fn block_at_source(&self, offset: usize) -> Option<usize> {
+        match self.sources.partition_point(|start| *start <= offset) {
+            0 => None,
+            after => Some(after - 1),
+        }
+    }
+
+    /// The heading a `#slug` link points at, slugged like hosted markdown: lowercase, spaces to dashes,
+    /// punctuation dropped.
+    pub fn heading_block(&self, slug: &str) -> Option<usize> {
+        let wanted = slug.trim_start_matches('#').to_lowercase();
+        self.blocks.iter().position(|block| match block {
+            Block::Text {
+                spans,
+                kind: TextKind::Heading(_),
+                ..
+            } => {
+                heading_slug(
+                    &spans
+                        .iter()
+                        .map(|span| span.text.as_str())
+                        .collect::<String>(),
+                ) == wanted
+            }
+            _ => false,
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -539,6 +609,7 @@ enum LineKind {
 struct Line {
     kind: LineKind,
     height: f32,
+    block: usize,
 }
 
 /// Markdown laid out at a width, in design px.
@@ -756,12 +827,14 @@ impl Markdown {
                 lines.push(Line {
                     kind: LineKind::Gap,
                     height,
+                    block: 0,
                 });
             }
         };
         let mut widest: f32 = 0.0;
         let last = self.blocks.len().saturating_sub(1);
         for (index, block) in self.blocks.iter().enumerate() {
+            let before = lines.len();
             match block {
                 Block::Text {
                     spans,
@@ -807,6 +880,7 @@ impl Markdown {
                                 marker_width,
                             },
                             height: line_height,
+                            block: 0,
                         });
                     }
                     match (heading, style.headings) {
@@ -823,6 +897,7 @@ impl Markdown {
                                 lines.push(Line {
                                     kind: LineKind::Rule(RuleKind::Heading),
                                     height: RULE_THICKNESS,
+                                    block: 0,
                                 });
                                 widest = width;
                             }
@@ -879,6 +954,7 @@ impl Markdown {
                                 last: end,
                             },
                             height,
+                            block: 0,
                         });
                     }
                     if index != last {
@@ -890,6 +966,7 @@ impl Markdown {
                     lines.push(Line {
                         kind: LineKind::Rule(RuleKind::Thematic),
                         height: RULE_THICKNESS,
+                        block: 0,
                     });
                     gap(&mut lines, style.paragraph_spacing);
                     widest = width;
@@ -938,12 +1015,16 @@ impl Markdown {
                                 odd: row_index > 0 && row_index % 2 == 0,
                             },
                             height: style.line_height + 2.0 * TABLE_CELL_PAD_Y,
+                            block: 0,
                         });
                     }
                     if index != last {
                         gap(&mut lines, style.paragraph_spacing);
                     }
                 }
+            }
+            for line in &mut lines[before..] {
+                line.block = index;
             }
         }
         MarkdownLayout {
@@ -988,6 +1069,12 @@ impl MarkdownLayout {
             .take(count)
             .map(|line| line.height)
             .sum()
+    }
+
+    /// How far down block `block` starts, in design px.
+    pub fn offset_of_block(&self, block: usize) -> Option<f32> {
+        let first = self.lines.iter().position(|line| line.block == block)?;
+        Some(self.height_of(0, first))
     }
 
     /// The first line at or below `offset` design px from the top, for a view scrolled that far.
@@ -1120,7 +1207,7 @@ impl MarkdownLayout {
                             .w_px(width)
                             .h_px(line.height)
                             .px(CODE_BLOCK_PAD)
-                            .bg(colors.editor_background);
+                            .bg(with_alpha(colors.editor_foreground, 0.04));
                         if *first {
                             boxed_row = boxed_row.pt(CODE_BLOCK_PAD);
                         }
@@ -1466,6 +1553,23 @@ mod tests {
         };
         let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(joined, text);
+    }
+
+    #[test]
+    fn source_offsets_find_blocks_and_their_place_in_the_layout() {
+        let source = "# Top\n\nfirst paragraph\n\n## Second Part\n\n- item\n\n```\ncode\n```\n";
+        let markdown = Markdown::parse(source);
+        let paragraph = source.find("first").expect("paragraph");
+        assert_eq!(markdown.block_at_source(paragraph + 3), Some(1));
+        assert_eq!(markdown.block_at_source(0), Some(0));
+        let code = source.find("code").expect("code");
+        assert_eq!(markdown.block_at_source(code), Some(4));
+        assert_eq!(markdown.heading_block("#second-part"), Some(2));
+        let layout = markdown.layout(500.0, DOCUMENT_STYLE);
+        let top = layout.offset_of_block(0).expect("top");
+        let second = layout.offset_of_block(2).expect("second");
+        assert_eq!(top, 0.0);
+        assert!(second > top);
     }
 
     #[test]

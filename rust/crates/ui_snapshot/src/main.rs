@@ -551,6 +551,14 @@ fn main() -> anyhow::Result<()> {
                     for path in &paths {
                         workspace::FunctionView::open_file_at(&mut files, path, None, None);
                     }
+                    // MDPREVIEW=1: preview the last (markdown) file beside its editor.
+                    if std::env::var("MDPREVIEW").is_ok() {
+                        workspace::ItemInput::editor_key(
+                            &mut files,
+                            workspace::EditKey::OpenMarkdownPreviewToTheSide,
+                            false,
+                        );
+                    }
                     Some(Box::new(files) as Box<dyn workspace::FunctionView>)
                 });
                 let mut view = workspace::WorkspaceView::new(workspace::Layout {

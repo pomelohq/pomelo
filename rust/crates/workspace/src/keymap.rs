@@ -29,10 +29,12 @@ pub enum Action {
     OpenInExternalEditor,
     ExportConfig,
     ImportConfig,
+    MarkdownPreview,
+    MarkdownPreviewToTheSide,
 }
 
 impl Action {
-    pub const ALL: [Action; 26] = [
+    pub const ALL: [Action; 28] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -59,6 +61,8 @@ impl Action {
         Action::OpenInExternalEditor,
         Action::ExportConfig,
         Action::ImportConfig,
+        Action::MarkdownPreview,
+        Action::MarkdownPreviewToTheSide,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -90,6 +94,8 @@ impl Action {
             Action::OpenInExternalEditor => "workspace::OpenInExternalEditor",
             Action::ExportConfig => "workspace::ExportConfig",
             Action::ImportConfig => "workspace::ImportConfig",
+            Action::MarkdownPreview => "markdown::OpenPreview",
+            Action::MarkdownPreviewToTheSide => "markdown::OpenPreviewToTheSide",
         }
     }
 
@@ -122,6 +128,8 @@ impl Action {
             Action::OpenInExternalEditor => "Open in External Editor",
             Action::ExportConfig => "Export Config",
             Action::ImportConfig => "Import Config",
+            Action::MarkdownPreview => "Markdown Preview",
+            Action::MarkdownPreviewToTheSide => "Markdown Preview to the Side",
         }
     }
 
@@ -240,6 +248,8 @@ const DEFAULTS: &[(&str, Action)] = &[
     ("cmd-t", Action::NewTerminal),
     ("cmd-w", Action::CloseActiveItem),
     ("cmd-alt-w", Action::CloseAllItems),
+    ("cmd-shift-v", Action::MarkdownPreview),
+    ("cmd-k v", Action::MarkdownPreviewToTheSide),
 ];
 
 fn sequence(text: &str) -> Option<Vec<Keystroke>> {
