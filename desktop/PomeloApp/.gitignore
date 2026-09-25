@@ -1,9 +1,0 @@
-.build/
-.ddata/
-*.profraw
-Package.resolved
-Vendor/libpom.a
-Vendor/libpom.h
-Sources/CPom/include/libpom.h
-
-dist/
