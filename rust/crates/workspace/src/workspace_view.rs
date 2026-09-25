@@ -3098,10 +3098,12 @@ impl WorkspaceView {
 
     /// A terminal-panel tab dragged over the center previews where it would land there.
     fn update_center_foreign_drop(&mut self, x: f32, y: f32, over: Option<(u64, Rect)>) {
-        if let (Some(files), Some(panel)) = (
-            self.layout.files_view.as_mut(),
-            self.layout.terminal_view.as_ref(),
-        ) {
+        let source = if self.dragging == Drag::AgentTab {
+            self.layout.agent_view.as_ref()
+        } else {
+            self.layout.terminal_view.as_ref()
+        };
+        if let (Some(files), Some(panel)) = (self.layout.files_view.as_mut(), source) {
             match panel.dragged_item() {
                 Some(item) => {
                     files.update_foreign_drop(x, y, over, item);
@@ -3163,6 +3165,40 @@ impl WorkspaceView {
         }
     }
 
+    /// An agent tab dropped over the editor area moves there, next to the code; elsewhere it stays in its dock.
+    fn finish_agent_tab_drag(&mut self) {
+        let over_center = self
+            .layout
+            .files_view
+            .as_ref()
+            .and_then(|files| files.tab_drag_overlay())
+            .is_some();
+        let moved = if over_center {
+            self.layout
+                .agent_view
+                .as_mut()
+                .and_then(|panel| panel.take_dragged_item())
+        } else {
+            None
+        };
+        match moved {
+            Some(item) => {
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    files.accept_foreign_item(item);
+                }
+                self.set_agent_focus(false);
+            }
+            None => {
+                if let Some(panel) = self.layout.agent_view.as_mut() {
+                    panel.drop_tab();
+                }
+            }
+        }
+        if let Some(files) = self.layout.files_view.as_mut() {
+            files.clear_foreign_drop();
+        }
+    }
+
     fn finish_panel_tab_drag(&mut self) {
         let foreign = self
             .layout
@@ -3214,10 +3250,13 @@ impl WorkspaceView {
             }
             Drag::AgentTab => {
                 self.tab_ghost_at = Some((x, y));
-                self.layout
+                let own = self
+                    .layout
                     .agent_view
                     .as_mut()
-                    .is_some_and(|v| v.update_tab_drag(x, y, over))
+                    .is_some_and(|v| v.update_tab_drag(x, y, over));
+                self.update_center_foreign_drop(x, y, over);
+                own
             }
             Drag::TerminalDivider(id) => self
                 .layout
@@ -3872,9 +3911,7 @@ impl WorkspaceView {
         } else if self.dragging == Drag::Tab {
             self.finish_center_tab_drag();
         } else if self.dragging == Drag::AgentTab {
-            if let Some(view) = self.layout.agent_view.as_mut() {
-                view.drop_tab();
-            }
+            self.finish_agent_tab_drag();
         } else if self.dragging == Drag::TerminalTab {
             self.finish_panel_tab_drag();
         } else if self.dragging != Drag::None {
