@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assemble a macOS .app bundle (Apple Silicon only). Flavor decides name + bundle id so the dev build
-# (PomeloDev.app) installs alongside the release build (Pomelo.app). Unsigned for now; signing hooks are
-# marked with TODO(sign).
+# (PomeloDev.app) installs alongside the release build (Pomelo.app). With SIGN_ID set (a Developer ID
+# identity in the keychain) the binaries and the bundle are signed with the hardened runtime.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -56,6 +56,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# TODO(sign): codesign --deep --options runtime --sign "Developer ID Application: ..." "$APP"; then notarize.
+if [ -n "${SIGN_ID:-}" ]; then
+  # Inner executables first: signing the bundle does not re-sign what it contains.
+  for BIN in "$APP/Contents/MacOS/pom" "$APP/Contents/MacOS/pomelo"; do
+    codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$BIN" >&2
+  done
+  codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP" >&2
+  codesign --verify --strict --verbose=2 "$APP" >&2
+fi
 touch "$APP"
 echo "$APP"
