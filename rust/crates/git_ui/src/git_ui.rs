@@ -646,7 +646,7 @@ impl GitPanel {
                     .flex(1.0)
                     .gap(6.0)
                     .items_center()
-                    .child(label(name).size(12.0).color(theme().text))
+                    .child(label(name).size(12.0).color(theme().text).truncate())
                     .child(
                         label(changes.branch.clone())
                             .size(12.0)

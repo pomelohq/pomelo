@@ -443,3 +443,78 @@ fn shows_one_repo_at_a_time_and_picks_another_from_the_selector() {
     assert!(panel.key(workspace::EditKey::Escape, false));
     assert!(!texts(&mut panel).contains("Select a repository..."));
 }
+
+#[test]
+fn a_long_repo_name_gives_way_to_the_badge_and_the_branch_position() {
+    let temp = tempfile::tempdir().expect("temp");
+    let name = "a-very-long-repository-name-for-layout";
+    let root = temp.path().join(name);
+    std::fs::create_dir_all(&root).expect("repo");
+    run(&root, &["init", "-q", "-b", "main"]);
+    run(&root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("app.rs"), "one\n").expect("write");
+    run(&root, &["add", "."]);
+    run(&root, &["commit", "-q", "-m", "base"]);
+    run(&root, &["checkout", "-q", "-b", "feat"]);
+    std::fs::write(root.join("app.rs"), "two\n").expect("write");
+    run(&root, &["commit", "-q", "-am", "change"]);
+    let prs = pull_request_ui::PullRequests::new(
+        pom_paths::StateDir::new(temp.path().join("state")),
+        "myproject",
+        Arc::new(|| {}),
+    );
+    prs.show(
+        "feat",
+        vec![(
+            root.clone(),
+            pom_forge::PrTarget {
+                repo: name.into(),
+                owner: "acme".into(),
+                name: name.into(),
+                head: "feat".into(),
+            },
+            pom_forge::PullRequest {
+                number: 4242,
+                state: "OPEN".into(),
+                ..pom_forge::PullRequest::default()
+            },
+        )],
+    );
+    let mut panel = GitPanel::new(
+        vec![RepoSource {
+            name: name.into(),
+            root,
+            default_branch: "main".into(),
+        }],
+        None,
+        Arc::new(|| {}),
+    )
+    .with_pull_requests(prs);
+    let width = 240.0;
+    panel.render(width, 400.0);
+    panel.wait_for_scan();
+    let node = panel.render(width, 400.0);
+    let painted = ui::render(
+        &node,
+        ui::Rect::new(0.0, 0.0, width, 400.0, ui::Rgba::TRANSPARENT),
+    );
+    let find = |wanted: &dyn Fn(&str) -> bool| {
+        painted
+            .texts
+            .iter()
+            .filter(|text| wanted(&text.text))
+            .max_by(|a, b| a.y.total_cmp(&b.y))
+            .cloned()
+    };
+    let badge = find(&|text| text == "#4242").expect("badge");
+    let position = find(&|text| text.ends_with("ahead")).expect("position");
+    let shown_name = find(&|text| text.starts_with("a-very")).expect("name");
+    let badge_end =
+        badge.x + ui::measure_text_width(&badge.text, badge.size, badge.mono, badge.weight);
+    assert!(
+        badge_end <= position.x,
+        "badge ends {badge_end}, position starts {}",
+        position.x
+    );
+    assert!(shown_name.text.ends_with("..."), "{}", shown_name.text);
+}
