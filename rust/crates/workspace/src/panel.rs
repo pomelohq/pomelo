@@ -338,7 +338,7 @@ impl AgentDot {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             AgentDot::Idle => "Idle",
             AgentDot::Thinking => "Thinking",
@@ -509,75 +509,87 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
                 .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
         );
     for row in list.rows {
-        let current = row.index == list.current;
-        let (top, bottom) = rail_label(row);
-        let ticket_color = match row.ticket_category.as_str() {
-            "done" => colors.success,
-            "indeterminate" => colors.text_accent,
-            _ => colors.text_muted,
-        };
-        let text_color = if current {
+        column = column.child(rail_cell(row, row.index == list.current, cell_w));
+    }
+    column.into()
+}
+
+/// One workspace folded into a single badge: the ring is its agent (colored by what it is doing, faint when
+/// none runs), the number inside is colored by its ticket status, and the strip under it counts running
+/// services and carries a pull-request mark.
+fn rail_cell(row: &WorkspaceRow, current: bool, cell_w: f32) -> Node {
+    const BADGE: f32 = 32.0;
+    let colors = theme();
+    let (top, bottom) = rail_label(row);
+    let (caption, name) = if bottom.is_empty() {
+        (None, top)
+    } else {
+        (Some(top), bottom)
+    };
+    let name_color = if row.ticket.is_empty() {
+        if current {
             colors.text
         } else {
             colors.text_muted
-        };
-        let mut dots = div()
-            .row()
-            .h_px(6.0)
-            .gap(3.0)
-            .items_center()
-            .justify_center();
-        if let Some(agent) = row.agent {
-            dots = dots.child(div().w_px(5.0).h_px(5.0).rounded(2.5).bg(agent.color()));
         }
-        if row.running > 0 {
-            dots = dots.child(div().w_px(5.0).h_px(5.0).rounded(2.5).bg(colors.success));
+    } else {
+        match row.ticket_category.as_str() {
+            "done" => colors.success,
+            "indeterminate" => colors.text_accent,
+            _ => colors.text_muted,
         }
-        if let Some(pr) = row.pr {
-            dots = dots.child(
-                div()
-                    .w_px(5.0)
-                    .h_px(5.0)
-                    .rounded(2.5)
-                    .bg(pr.severity.color()),
-            );
-        }
-        let line = |text: String, size: f32, color: Rgba| {
-            div()
-                .row()
-                .justify_center()
-                .w_px(cell_w)
-                .child(label(text).size(size).color(color).truncate())
-        };
-        let mut cell = div()
-            .col()
-            .items_center()
-            .justify_center()
-            .gap(1.0)
-            .w_px(cell_w)
-            .h_px(if bottom.is_empty() { 30.0 } else { 42.0 })
-            .rounded(4.0)
-            .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64);
-        if bottom.is_empty() {
-            cell = cell.child(line(top, 11.0, text_color));
-        } else if row.ticket.is_empty() {
-            cell = cell
-                .child(line(top, 9.0, colors.text_placeholder))
-                .child(line(bottom, 11.0, text_color));
-        } else {
-            cell = cell.child(line(top, 9.0, colors.text_muted)).child(line(
-                bottom,
-                12.0,
-                ticket_color,
-            ));
-        }
-        cell = cell.child(dots);
-        if current {
-            cell = cell.bg(colors.element_selected);
-        }
-        column = column.child(cell);
+    };
+    let (ring_width, ring) = match row.agent {
+        Some(agent) => (2.0, agent.color()),
+        None => (1.0, colors.border_variant),
+    };
+    let mut badge = div()
+        .row()
+        .items_center()
+        .justify_center()
+        .w_px(BADGE)
+        .h_px(BADGE)
+        .rounded(BADGE / 2.0)
+        .border(ring_width, ring)
+        .child(label(name).size(10.5).color(name_color).truncate());
+    if current {
+        badge = badge.bg(colors.element_selected);
     }
-    column.into()
+    let mut strip = div()
+        .row()
+        .h_px(8.0)
+        .gap(2.0)
+        .items_center()
+        .justify_center();
+    for _ in 0..row.running.min(4) {
+        strip = strip.child(div().w_px(3.0).h_px(3.0).rounded(1.5).bg(colors.success));
+    }
+    if let Some(pr) = row.pr {
+        strip = strip.child(
+            icon(IconKind::PullRequest)
+                .size(8.0)
+                .color(pr.severity.color()),
+        );
+    }
+    let mut cell = div()
+        .col()
+        .items_center()
+        .gap(2.0)
+        .w_px(cell_w)
+        .py(3.0)
+        .rounded(6.0)
+        .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64);
+    if let Some(caption) = caption {
+        cell = cell.child(
+            div().row().justify_center().w_px(cell_w).child(
+                label(caption)
+                    .size(8.5)
+                    .color(colors.text_placeholder)
+                    .truncate(),
+            ),
+        );
+    }
+    cell.child(badge).child(strip).into()
 }
 
 /// One workspace: its agent (when one runs), name and pull requests, and below, when there is any, the
