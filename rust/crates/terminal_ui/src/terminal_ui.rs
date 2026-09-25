@@ -637,6 +637,7 @@ mod tests {
         let metrics = GridMetrics {
             cell_width: 9.0,
             line_height: 19.5,
+            font_size: 15.0,
         };
         let bounds = metrics.bounds(909.0, 200.0);
         assert_eq!(bounds.num_columns(), 100);
