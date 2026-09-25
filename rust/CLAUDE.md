@@ -1,6 +1,6 @@
-# Pomelo (Rust rewrite) — guidelines
+# Pomelo (Rust) - guidelines
 
-Scope: the `rust/` workspace only (the ground-up Rust rewrite; the Go/Swift app is elsewhere). Read before
+Scope: the `rust/` workspace, which is all of Pomelo (the app and the `pom` CLI). Read before
 touching anything here. These override defaults.
 
 ## Rust
@@ -40,13 +40,15 @@ Our crates must be warning-clean; vendored deps are cap-lint-allowed so their wa
 ## Build / run / release (macOS, Apple Silicon only)
 
 - `make run` builds + launches **PomeloDev.app** (kills the previous dev instance first). Dev and prod are
-  distinct bundles that coexist: `PomeloDev.app` (`app.pomelo.dev`) and `Pomelo.app` (`app.pomelo`).
+  distinct bundles that coexist: `PomeloDev.app` (`com.pomelo.app.dev`) and `Pomelo.app` (`com.pomelo.app`,
+  the same id as the earlier Swift app, so installs update in place and keep their permissions).
 - Local builds are unsigned. `scripts/bundle-macos.sh` signs (hardened runtime) when `SIGN_ID` is set and
   `scripts/make-dmg.sh` notarizes + staples when `NOTARY_PROFILE` is set; the release workflow sets both.
-- Release: `make patch|minor|major` bumps the workspace version, commits, tags `rust-v<x>` (kept distinct from
-  the Go/Swift app's `v*` tags). Pushing that tag triggers `.github/workflows/rust-release.yml` (build -> sign
-  -> notarized DMG + update tarball -> GitHub Release). The Rust job in `.github/workflows/ci.yml` runs
-  `make check` on every push/PR touching `rust/**` and is part of the required `CI Gate`.
+- Release: `make patch|minor|major` on `main` bumps the workspace version, commits, tags `v<x>` and pushes.
+  The tag triggers `.github/workflows/release.yml` (build -> sign -> notarized DMG, update tarball + `.sig`,
+  Sparkle `appcast.xml` -> GitHub Release). The updater (`auto_update`) installs only a tarball whose `.sig`
+  verifies against the Sparkle public key. `.github/workflows/ci.yml` runs `make check` on every push/PR
+  touching `rust/**`; its `CI Gate` is the required check.
 
 ## Vendored deps
 

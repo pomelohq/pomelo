@@ -1,146 +1,96 @@
 # Contributing to Pomelo
 
-Thanks for helping improve Pomelo. It's a Go core plus a native SwiftUI macOS
-app; most changes touch one or the other. One rule underpins everything: the
-macOS app, the `pom` CLI, and `pom mcp` are **thin clients of one core** — no
-business logic in a client (enforced by `internal/arch/deps_test.go`).
+Thanks for helping improve Pomelo. It is one Rust workspace under `rust/`: the macOS app and the `pom` CLI,
+built from one crate per feature. The app is a thin composition root; logic lives in the feature crates, and
+each feature's view in its `_ui` crate. Read `rust/CLAUDE.md` for the layout and rules.
 
 ## Setup
 
-Requirements: **Go 1.26+**, **Xcode** (macOS 14+ SDK), and **zsh**. tmux is *not*
-required — services run on self-managed PTY holders.
+Requirements: macOS 14+ on Apple Silicon, Xcode command line tools, `rustup` (the pinned toolchain in
+`rust/rust-toolchain.toml` installs itself), Docker for shared services, and `zsh`.
 
 ```bash
 git clone https://github.com/<your-fork>/pomelo.git && cd pomelo
-make build                             # Go core / CLI -> ./pom
-make app-run                           # build the native app (Debug .app) and open it
+make run      # build and open PomeloDev.app; it runs alongside an installed Pomelo.app
 ```
 
-`make app` builds an unsigned Debug `.app` bundle; `make app-run` also opens it.
-The dev build runs as a real `.app` (not a bare binary) so bundle-dependent APIs
-(auto-update, notifications) behave like the shipped app.
+The dev build is a real `.app` bundle (not a bare binary), so bundle-dependent features (notifications,
+updates) behave like the shipped app.
 
-## Build & test
+## Build and test
 
 ```bash
-go build ./... && go vet ./... && go test ./...   # Go core
-make check                                          # project rules (security + comment bloat)
-cd desktop/PomeloApp && swift test                  # app ViewModel unit tests
+make check    # cargo fmt --check, cargo clippy --all-targets -D warnings, cargo test
 ```
 
-Run all of the above before opening a PR. The app links a prebuilt `libpom.a`,
-so a Go-only change still needs `desktop/PomeloApp/build.sh` to rebuild the
-c-archive before the app picks it up.
+This is exactly what CI runs; run it before opening a PR. Tests must not start login shells or leave
+processes behind: terminal tests use a plain `/bin/sh`, service tests kill their holders on drop.
 
 ## Code style
 
-Match the surrounding code. The non-negotiables (full rules in `CLAUDE.md`):
+Match the surrounding code. The non-negotiables (full rules in `rust/CLAUDE.md`):
 
-- **Almost no comments.** A comment explains *why* / a trade-off, never *what* —
-  one line, only when non-obvious. Prefer clear names over comments.
-- **Go:** `gofmt`/`go vet` clean; wrap errors with context
-  (`fmt.Errorf("...: %w", err)`); `exec.Command` with separate args, never a
-  shell string with user input; no `panic` in libraries; file perms
-  `0o644`/`0o755`, never `0o777`.
-- **Swift:** keep FFI off the main thread and view bodies cheap — the app targets
-  120fps. Put fetch/decode in a ViewModel with a test, not in a View.
-- **Dependencies point inward** — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- **Almost no comments.** A comment explains *why* (a trade-off, gotcha, constraint), never *what*; one line,
+  only when non-obvious. Prefer clear names.
+- **No panics in library code**: no `unwrap()`/`expect()`/blind indexing; propagate with `?` or handle it.
+  Never discard a fallible result with `let _ =` outside genuine teardown.
+- **Crate per feature**: a new feature is its own crate (`<feature>` + `<feature>_ui` once it has a screen),
+  `[lib] path = "src/<crate>.rs"`, never `mod.rs`.
+- **UI** is built with the `ui` element tree (`div().col().child(label(...))`) and the shared components and
+  theme tokens, not hand-placed rects or new colors.
+- **Processes** get separate args, never a shell string built from user input; network calls have timeouts.
 
 ## Commits
 
-[Conventional Commits](https://www.conventionalcommits.org/), single line, no
-body. Common types: `feat` `fix` `docs` `refactor` `chore` `ci`. Scope is
-optional (`feat(forge): ...`).
-
-```
-feat(forge): show PR review comments in the Overview tab
-fix: agent hooks fail with "node: command not found"
-docs: document GitHub token setup
-```
-
-**No emoji** — not in commit messages, PR titles, or descriptions.
+Short imperative subject, capitalized, no conventional-commit prefix, no trailing period
+(`Scroll the workspace list`, `pom_config: check edits before saving`). **No emoji** anywhere.
 
 Every commit must be **signed off** (DCO, below):
 
 ```bash
-git commit -s -m "fix: ..."
+git commit -s -m "Fix the palette losing keys"
 ```
-
-## Branch naming
-
-Branch off `main`:
-
-- `feat/pr-review-comments`
-- `fix/agent-node-path`
-- `docs/github-token-setup`
 
 ## Pull requests
 
-One logical change per PR. Make sure the build is green and `make check` is
-clean.
+Branch off `main`, one logical change per PR, `make check` green.
 
-Checklist:
-
-- [ ] `go build ./... && go vet ./... && go test ./...` pass; `make check` clean
-- [ ] App touched → `desktop/PomeloApp` builds and `swift test` passes
-- [ ] User-facing change → docs updated in
-      [`pomelo-docs`](https://github.com/toantran292/pomelo-docs) (same PR)
-- [ ] Commits are Conventional and signed off (`-s`)
-- [ ] No emoji anywhere
+- [ ] `make check` passes
+- [ ] UI touched: checked in `make run`
+- [ ] User-facing change: docs updated in [`pomelo-docs`](https://github.com/pomelohq/pomelo-docs)
+- [ ] Commits signed off (`-s`), no emoji
 
 ## Project layout
 
 ```
-cmd/pom/               CLI entry + one cobra command per file (no business logic)
-cmd/libpom/            c-archive FFI: //export bindings + PomStream (drives the app)
-internal/config/       pom.yml parsing, {{var}} resolution, load-time validation
-internal/core/         shared Server + business logic (used by libpom and pom mcp)
-internal/provider/     provider seams — tracker (Jira), forge (GitHub), dbclient, shell
-internal/agent/claude/ built-in Claude agent (headless stream driver + hooks)
-internal/pipeline/     workspace lifecycle (staged create/delete + events)
-internal/commands/     CLI operation implementations
-internal/services/     infrastructure — docker, git, databases, port allocation
-internal/ptyhost/      self-managed PTY holders (tmux-free, durable exec)
-internal/mcp/          pom mcp stdio server (agent-facing tools)
-desktop/PomeloApp/     native SwiftUI macOS app (MVVM; links libpom)
-docs/                  design docs + architecture diagram
-scripts/               release / packaging scripts
+rust/crates/pomelo/        the app: windows, macOS glue, wiring (no feature logic)
+rust/crates/pom_cli/       the pom CLI
+rust/crates/ui/            GPU UI toolkit: wgpu/winit rendering + the element tree
+rust/crates/workspace/     window layout: docks, pane groups, tabs, palette, WORKSPACES panel
+rust/crates/editor/        editor core: buffer, syntax, display
+rust/crates/*_ui/          a feature's views (files, git, services, database, settings, ...)
+rust/crates/pom_*/         core logic: config, services, workspaces, PTY holders, proxy, MCP, agents, ...
+rust/vendor/wgpu-hal/      vendored with a one-line change (see rust/CLAUDE.md)
+docs/                      config reference (schema and template variables)
 ```
-
-## Adding an integration
-
-Put domain logic in its own `internal/<feature>` package (model: `internal/jira`,
-`internal/archive`) or behind a provider seam in `internal/provider/`. Keep the
-client thin: an FFI export for the app, a cobra command for the CLI, an MCP
-endpoint for agents. Never pile logic into a client, and never add a raw field to
-the core `config` schema for a volatile integration. See the PLAYBOOK in
-`CLAUDE.md`.
 
 ## Developer Certificate of Origin (DCO)
 
-We do not use a CLA. Instead, sign off every commit to certify you wrote the
-change (or have the right to submit it) under the project's license — the
-[Developer Certificate of Origin 1.1](https://developercertificate.org/).
+We do not use a CLA. Sign off every commit to certify you wrote the change (or have the right to submit it)
+under the project's license, per the [Developer Certificate of Origin 1.1](https://developercertificate.org/).
 `git commit -s` appends:
 
 ```
 Signed-off-by: Your Name <you@example.com>
 ```
 
-The name/email must be real and match your Git identity. PRs whose commits are
-not signed off will be asked to amend.
+The name and email must be real and match your Git identity.
 
 ## Reporting bugs
 
-Open a [GitHub issue](https://github.com/pomelohq/pomelo/issues) with:
-
-- macOS version
-- Pomelo version (top bar / `pom --version`)
-- Reproduction steps
-- Relevant `pom.yml` shape (redact secrets/real names)
-
-For security issues, contact the maintainer privately rather than opening a
-public issue.
+Open a [GitHub issue](https://github.com/pomelohq/pomelo/issues) with your macOS version, the Pomelo version
+(Settings > General, or `pom version`), reproduction steps, and the relevant `pom.yml` shape (redact secrets
+and real names). For security issues, contact the maintainer privately.
 
 ## License
 
