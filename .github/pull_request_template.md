@@ -8,8 +8,8 @@
 
 ## Checklist
 
-- [ ] `go build ./... && go vet ./... && go test ./...` pass
-- [ ] App touched: `swift build && swift test` in `desktop/PomeloApp` pass
+- [ ] `make check` passes (fmt, clippy -D warnings, tests)
+- [ ] UI touched: checked in `make run` (and a `ui_snapshot` render where one exists)
 - [ ] User-facing change: docs updated in `pomelohq/pomelo-docs`
 - [ ] No secrets, tokens, or real project config committed
-- [ ] Commits follow Conventional Commits; no emoji
+- [ ] No emoji

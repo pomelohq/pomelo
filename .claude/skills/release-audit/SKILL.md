@@ -5,8 +5,8 @@ description: Run before cutting a Pomelo release (make patch/minor/major). Recon
 
 # Release audit
 
-Releases are cut by `make patch|minor|major`, which bumps both version consts,
-commits, tags `v<x>`, and pushes. CI (`release.yml`) then reads the matching
+Releases are cut by `make patch|minor|major`, which bumps the version in
+`rust/Cargo.toml`, commits, tags `v<x>`, and pushes. CI (`release.yml`) then reads the matching
 `## [<version>]` block from `CHANGELOG.md` to build the GitHub Release notes AND
 the Sparkle appcast. If that block is missing, notes fall back to an auto PR list.
 So the CHANGELOG must be curated BEFORE tagging — that is this skill's whole job.
