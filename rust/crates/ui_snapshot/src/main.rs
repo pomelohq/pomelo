@@ -1012,6 +1012,27 @@ fn main() -> anyhow::Result<()> {
     let live = std::env::var("LIVE").is_ok();
     let state = settings_ui::PageState {
         jira,
+        project: settings_ui::ProjectPage {
+            session: "myproject".into(),
+            repos: vec![
+                settings_ui::RepoSummary {
+                    name: "api".into(),
+                    alias: "be".into(),
+                    services: 2,
+                    cloned: true,
+                    present: 3,
+                    workspaces: 4,
+                },
+                settings_ui::RepoSummary {
+                    name: "web".into(),
+                    alias: "web".into(),
+                    services: 1,
+                    cloned: false,
+                    present: 0,
+                    workspaces: 4,
+                },
+            ],
+        },
         agent: if live {
             settings_ui::AgentPage {
                 mcp: settings_ui::Registration::Done,

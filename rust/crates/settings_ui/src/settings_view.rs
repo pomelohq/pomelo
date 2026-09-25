@@ -47,6 +47,13 @@ pub struct SideEffects {
     pub export_config: bool,
     pub import_config: bool,
     pub edit_project_config: bool,
+    pub add_repo: bool,
+    pub apply_config: bool,
+    pub split_config: bool,
+    pub normalize_config: bool,
+    /// The repo whose alias to change, or to take out of the project.
+    pub rename_repo: Option<String>,
+    pub remove_repo: Option<String>,
 }
 
 /// Innermost hit id under `(x, y)` (regions pushed outer-first, inner-last), like `ui::Window::hit_at`.
@@ -155,6 +162,23 @@ impl SettingsView {
         let changed = self.pages.keymap != keymap;
         self.pages.keymap = keymap;
         changed
+    }
+
+    pub fn set_project_page(&mut self, project: settings_ui::ProjectPage) -> bool {
+        let changed = self.pages.project != project;
+        self.pages.project = project;
+        changed
+    }
+
+    fn repo_for(&self, id: u64, base: u64) -> Option<String> {
+        let index = id
+            .checked_sub(base)
+            .filter(|index| *index < settings_ui::CTRL_REPO_LIMIT)?;
+        self.pages
+            .project
+            .repos
+            .get(index as usize)
+            .map(|repo| repo.name.clone())
     }
 
     pub fn set_network_page(&mut self, network: settings_ui::NetworkPage) -> bool {
@@ -870,6 +894,24 @@ impl SettingsView {
         } else if id == settings_ui::CTRL_EDIT_PROJECT_CONFIG {
             self.commit_edit();
             self.pending.edit_project_config = true;
+        } else if id == settings_ui::CTRL_ADD_REPO {
+            self.commit_edit();
+            self.pending.add_repo = true;
+        } else if id == settings_ui::CTRL_APPLY_CONFIG {
+            self.commit_edit();
+            self.pending.apply_config = true;
+        } else if id == settings_ui::CTRL_SPLIT_CONFIG {
+            self.commit_edit();
+            self.pending.split_config = true;
+        } else if id == settings_ui::CTRL_NORMALIZE_CONFIG {
+            self.commit_edit();
+            self.pending.normalize_config = true;
+        } else if let Some(repo) = self.repo_for(id, settings_ui::CTRL_REPO_RENAME_BASE) {
+            self.commit_edit();
+            self.pending.rename_repo = Some(repo);
+        } else if let Some(repo) = self.repo_for(id, settings_ui::CTRL_REPO_REMOVE_BASE) {
+            self.commit_edit();
+            self.pending.remove_repo = Some(repo);
         } else if id == settings_ui::CTRL_REINSTALL_AGENTS {
             self.commit_edit();
             self.pending.reinstall_agents = true;

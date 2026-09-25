@@ -1432,11 +1432,17 @@ impl App {
                 .collect(),
             problems: self.keymap_problems.clone(),
         };
+        let project = self.project_page();
         let changed = self.with_settings_view(|view, _| {
+            let project_changed = view.set_project_page(project);
             let agent_changed = view.set_agent_page(agent);
             let general_changed = view.set_general_page(general);
             let keymap_changed = view.set_keymap_page(keymap);
-            view.set_network_page(network) || agent_changed || general_changed || keymap_changed
+            view.set_network_page(network)
+                || agent_changed
+                || general_changed
+                || keymap_changed
+                || project_changed
         });
         if changed == Some(true) {
             self.settings_dirty = true;
@@ -2197,6 +2203,34 @@ impl App {
         }
         if effects.edit_keymap {
             self.edit_keymap();
+        }
+        if let Some(id) = self.bundle_window() {
+            let asked = effects.add_repo
+                || effects.apply_config
+                || effects.split_config
+                || effects.normalize_config
+                || effects.rename_repo.is_some()
+                || effects.remove_repo.is_some();
+            if effects.add_repo {
+                self.open_add_repo(id);
+            }
+            if effects.apply_config {
+                self.apply_config(id);
+            }
+            if effects.split_config || effects.normalize_config {
+                self.tidy_config(id, effects.normalize_config);
+            }
+            if let Some(repo) = &effects.rename_repo {
+                self.open_rename_alias(id, repo);
+            }
+            if let Some(repo) = &effects.remove_repo {
+                self.focus_main_with_modal(id, Box::new(workspaces_ui::RemoveRepoModal::new(repo)));
+            }
+            if asked {
+                if let Some(main) = self.mains.get(&id) {
+                    main.window.focus_window();
+                }
+            }
         }
         if effects.edit_project_config {
             if let Some(id) = self.bundle_window() {

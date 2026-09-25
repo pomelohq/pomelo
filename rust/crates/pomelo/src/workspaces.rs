@@ -303,6 +303,10 @@ impl App {
                 self.start_add_repo(id, request);
             } else if let Some(clone) = value.downcast_ref::<workspaces_ui::CloneRepos>() {
                 self.start_clone_repos(id, clone);
+            } else if let Some(rename) = value.downcast_ref::<workspaces_ui::RenameAlias>() {
+                self.rename_alias(id, rename);
+            } else if let Some(remove) = value.downcast_ref::<workspaces_ui::RemoveRepo>() {
+                self.remove_repo(id, &remove.repo);
             } else if let Some(export) = value.downcast_ref::<workspaces_ui::ExportConfig>() {
                 self.export_config(id, export);
             } else if let Some(import) = value.downcast_ref::<workspaces_ui::ImportConfig>() {

@@ -154,6 +154,56 @@ pub fn guess_remote(project: &Project, name: &str) -> String {
         .unwrap_or_default()
 }
 
+/// What taking a repo out left behind: worktrees kept because they had changes, and main's clone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemovedRepo {
+    pub removed_worktrees: Vec<String>,
+    pub kept_worktrees: Vec<String>,
+    pub main_clone: Option<PathBuf>,
+}
+
+/// Takes `repo` out of the config, then removes its worktree from every other workspace where it has no
+/// changes. Main's clone stays: it may hold work, and the user deletes it knowingly.
+pub fn remove_repo(project: &Project, repo: &str) -> Result<RemovedRepo, String> {
+    pom_config::maintain::remove_repo(&project.config_path, repo)?;
+    let main = pom_layout::workspace_root(&project.root, project.branch(), true);
+    let clone = main.join(repo);
+    let mut outcome = RemovedRepo {
+        main_clone: clone.is_dir().then(|| clone.clone()),
+        ..RemovedRepo::default()
+    };
+    for workspace in project
+        .workspaces
+        .iter()
+        .filter(|workspace| !workspace.is_main)
+    {
+        let worktree = workspace.path.join(repo);
+        if !worktree.is_dir() {
+            continue;
+        }
+        let clean = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&worktree)
+            .args(["status", "--porcelain"])
+            .output()
+            .is_ok_and(|output| output.status.success() && output.stdout.is_empty());
+        let removed = clean
+            && std::process::Command::new("git")
+                .arg("-C")
+                .arg(&clone)
+                .args(["worktree", "remove"])
+                .arg(&worktree)
+                .status()
+                .is_ok_and(|status| status.success());
+        if removed {
+            outcome.removed_worktrees.push(workspace.branch.clone());
+        } else {
+            outcome.kept_worktrees.push(workspace.branch.clone());
+        }
+    }
+    Ok(outcome)
+}
+
 fn shared_entries(kinds: &[String]) -> String {
     kinds
         .iter()

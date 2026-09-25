@@ -10,7 +10,10 @@ use pom_layout::Workspace;
 use pom_paths::{write_atomic, StateDir};
 use pom_sessions::{Projects, Sessions};
 
-pub use add_repo::{add_repo, clone_into_main, guess_remote, repo_name, AddRepoRequest, AddedRepo};
+pub use add_repo::{
+    add_repo, clone_into_main, guess_remote, remove_repo, repo_name, AddRepoRequest, AddedRepo,
+    RemovedRepo,
+};
 pub use scaffold::{scaffold_session, RepoSpec, ScaffoldRequest};
 pub use watch::ConfigWatcher;
 
