@@ -9,6 +9,7 @@ members = [
     "crates/ui",
     "crates/workspace",
     "crates/editor",
+    "crates/markdown",
     "crates/files",
     "crates/files_ui",
     "crates/git",

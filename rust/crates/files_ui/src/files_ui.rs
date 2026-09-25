@@ -38,7 +38,6 @@ mod go_to_line;
 mod hover;
 mod list_scrollbar;
 mod lsp_completion;
-mod markdown_view;
 mod outline_view;
 mod project_search;
 mod saved_state;

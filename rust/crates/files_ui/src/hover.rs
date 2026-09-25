@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use ui::{div, theme, Node, Rect, Rgba};
 
-use crate::markdown_view::{self, Markdown, MarkdownLayout, MarkdownStyle};
 use crate::{char_advance, edit_line_h, DiagnosticEntry, FileItem};
+use markdown::{Markdown, MarkdownLayout, MarkdownStyle};
 
 pub(crate) const HOVER_DELAY: Duration = Duration::from_millis(300);
 const HIDING_DELAY: Duration = Duration::from_millis(300);
@@ -31,6 +31,11 @@ const BORDER: f32 = 1.0;
 const RADIUS: f32 = 8.0;
 
 /// A laid-out document kept for the width it was laid out at.
+/// Info popover markdown with code in the editor's font.
+pub(crate) fn hover_style() -> MarkdownStyle {
+    markdown::HOVER_STYLE.with_code(crate::edit_font(), crate::edit_line_h())
+}
+
 #[derive(Default)]
 struct LayoutCache(RefCell<Option<(u32, MarkdownLayout)>>);
 
@@ -172,17 +177,17 @@ fn severity_colors(severity: lsp::lsp_types::DiagnosticSeverity) -> (Rgba, Rgba)
 
 /// A diagnostic as markdown: its message, then its source and code in parentheses.
 pub(crate) fn diagnostic_markdown(entry: &DiagnosticEntry) -> String {
-    let mut markdown = markdown_view::escape(&entry.message);
+    let mut markdown = markdown::escape(&entry.message);
     if entry.source.is_some() || entry.code.is_some() {
         markdown.push_str(" (");
         if let Some(source) = entry.source.as_deref() {
-            markdown.push_str(&markdown_view::escape(source));
+            markdown.push_str(&markdown::escape(source));
         }
         if entry.source.is_some() && entry.code.is_some() {
             markdown.push(' ');
         }
         if let Some(code) = entry.code.as_deref() {
-            markdown.push_str(&markdown_view::escape(code));
+            markdown.push_str(&markdown::escape(code));
         }
         markdown.push(')');
     }
@@ -556,7 +561,7 @@ impl FileItem {
         let layout = popover.layout.get(
             &popover.markdown,
             max_width,
-            markdown_view::DIAGNOSTIC_STYLE,
+            markdown::DIAGNOSTIC_STYLE.with_code(crate::edit_font(), crate::edit_line_h()),
         );
         let first = popover.scroll.min(layout.line_count().saturating_sub(1));
         let count = layout.lines_fitting(first, max_height);
@@ -596,7 +601,7 @@ impl FileItem {
         let text_width = (max_width - INFO_PADDING * 2.0).max(1.0);
         let layout = popover
             .layout
-            .get(&popover.markdown, text_width, markdown_view::HOVER_STYLE);
+            .get(&popover.markdown, text_width, hover_style());
         let first = popover.scroll.min(layout.line_count().saturating_sub(1));
         let count = layout.lines_fitting(first, (max_height - INFO_PADDING * 2.0).max(1.0));
         let body_height = layout.height_of(first, count);

@@ -37,6 +37,7 @@ pub fn banner(status: &Status, width: f32) -> (Vec<Rect>, Vec<Text>) {
                 text: format!("Update {version} available - restarting to apply"),
                 mono: false,
                 weight: 400,
+                italic: false,
                 wrap: 0.0,
             }];
             (rects, texts)

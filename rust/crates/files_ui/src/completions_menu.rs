@@ -181,7 +181,7 @@ pub struct CompletionsMenu {
     /// Candidates the server was already asked to fill in.
     pub doc_resolved: std::collections::HashSet<usize>,
     aside_scroll: usize,
-    aside_layout: std::cell::RefCell<Option<(usize, u32, crate::markdown_view::MarkdownLayout)>>,
+    aside_layout: std::cell::RefCell<Option<(usize, u32, markdown::MarkdownLayout)>>,
 }
 
 impl CompletionsMenu {
@@ -350,9 +350,7 @@ impl CompletionsMenu {
             lsp::CompletionDocumentation::MultiLineMarkdown(text) if !text.is_empty() => {
                 Some(text.clone())
             }
-            lsp::CompletionDocumentation::MultiLinePlainText(text) => {
-                Some(crate::markdown_view::escape(text))
-            }
+            lsp::CompletionDocumentation::MultiLinePlainText(text) => Some(markdown::escape(text)),
             _ => None,
         }
     }
@@ -367,8 +365,8 @@ impl CompletionsMenu {
         let mut cache = self.aside_layout.try_borrow_mut().ok()?;
         let fresh = !matches!(cache.as_ref(), Some((c, k, _)) if *c == candidate && *k == key);
         if fresh {
-            let layout = crate::markdown_view::Markdown::parse(&markdown)
-                .layout(text_width, crate::markdown_view::HOVER_STYLE);
+            let layout = markdown::Markdown::parse(&markdown)
+                .layout(text_width, crate::hover::hover_style());
             *cache = Some((candidate, key, layout));
         }
         let (_, _, layout) = cache.as_ref()?;

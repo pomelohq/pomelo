@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use glyphon::{
-    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
-    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
+    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, Style,
+    SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
 };
 use wgpu::util::DeviceExt;
 use wgpu::{
@@ -92,6 +92,7 @@ pub struct Text {
     /// OpenType weight (400 = regular, 500 = medium, 700 = bold). Most UI text is regular, matching the
     /// reference; only emphasized runs bump this.
     pub weight: u16,
+    pub italic: bool,
     /// Wrap width in logical (design) px; `0` = single line. Used for wrapping setting descriptions.
     pub wrap: f32,
 }
@@ -467,6 +468,15 @@ fn load_font(font_system: &mut FontSystem, faces: &[&'static [u8]]) -> Option<St
     first
 }
 
+fn text_attrs(family: Family<'_>, weight: u16, italic: bool) -> Attrs<'_> {
+    let attrs = Attrs::new().family(family).weight(Weight(weight));
+    if italic {
+        attrs.style(Style::Italic)
+    } else {
+        attrs
+    }
+}
+
 /// Bundle our UI fonts (IBM Plex Sans + Mono, OFL) and return their real family names. We expose them under
 /// the aliases ".PomeloSans" / ".PomeloMono". All static weights
 /// (Thin 100 .. Bold 700) are registered so the Font Weight control spans the family's real range.
@@ -481,6 +491,8 @@ fn load_ui_fonts(font_system: &mut FontSystem) -> (Option<String>, Option<String
             include_bytes!("../assets/IBMPlexSans-Medium.ttf"),
             include_bytes!("../assets/IBMPlexSans-SemiBold.ttf"),
             include_bytes!("../assets/IBMPlexSans-Bold.ttf"),
+            include_bytes!("../assets/IBMPlexSans-Italic.ttf"),
+            include_bytes!("../assets/IBMPlexSans-BoldItalic.ttf"),
         ],
     );
     let mono = load_font(
@@ -518,6 +530,17 @@ thread_local! {
 /// Width in logical px of `text` shaped at `size` in the sans (or mono) UI font. Used by the element tree's
 /// intrinsic sizing so a label's box matches its real glyph extent.
 pub fn measure_text_width(text: &str, size: f32, mono: bool, weight: u16) -> f32 {
+    measure_text_width_styled(text, size, mono, weight, false)
+}
+
+/// `measure_text_width` for italic text too.
+pub fn measure_text_width_styled(
+    text: &str,
+    size: f32,
+    mono: bool,
+    weight: u16,
+    italic: bool,
+) -> f32 {
     if text.is_empty() {
         return 0.0;
     }
@@ -546,9 +569,10 @@ pub fn measure_text_width(text: &str, size: f32, mono: bool, weight: u16) -> f32
         let weight = theme::snap_weight(family_name.as_deref(), weight);
         let key = (
             format!(
-                "{}\u{0}{}\u{0}{}",
+                "{}\u{0}{}\u{0}{}\u{0}{}",
                 family_name.as_deref().unwrap_or(""),
                 weight,
+                italic,
                 text
             ),
             (size * 4.0).round() as u32,
@@ -566,7 +590,7 @@ pub fn measure_text_width(text: &str, size: f32, mono: bool, weight: u16) -> f32
         buffer.set_text(
             &mut m.font_system,
             text,
-            Attrs::new().family(family).weight(Weight(weight)),
+            text_attrs(family, weight, italic),
             Shaping::Advanced,
         );
         buffer.shape_until_scroll(&mut m.font_system, false);
@@ -1499,10 +1523,7 @@ impl UiRenderer {
             buf.set_text(
                 &mut self.font_system,
                 &t.text,
-                Attrs::new()
-                    .family(family)
-                    .weight(Weight(weight))
-                    .color(glyph_color(t.color)),
+                text_attrs(family, weight, t.italic).color(glyph_color(t.color)),
                 Shaping::Advanced,
             );
             buf.shape_until_scroll(&mut self.font_system, false);
@@ -1968,6 +1989,7 @@ impl UiRenderer {
                 t.text.hash(&mut h);
                 sz.to_bits().hash(&mut h);
                 weight.hash(&mut h);
+                t.italic.hash(&mut h);
                 t.mono.hash(&mut h);
                 wrap_w.map(f32::to_bits).hash(&mut h);
                 fam.hash(&mut h);
@@ -1984,7 +2006,7 @@ impl UiRenderer {
                 buf.set_text(
                     &mut self.font_system,
                     &t.text,
-                    Attrs::new().family(family).weight(Weight(weight)),
+                    text_attrs(family, weight, t.italic),
                     Shaping::Advanced,
                 );
                 buf.shape_until_scroll(&mut self.font_system, false);

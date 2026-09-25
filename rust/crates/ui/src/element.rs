@@ -314,6 +314,9 @@ pub struct Label {
     pub color: Rgba,
     pub mono: bool,
     pub weight: u16,
+    pub italic: bool,
+    pub underline: Option<Rgba>,
+    pub strikethrough: Option<Rgba>,
     /// Wrap width in design px (0 = single line).
     pub wrap: f32,
     /// Shrink when its row overflows and cut the text with a trailing "...".
@@ -350,6 +353,9 @@ pub fn label(text: impl Into<String>) -> Label {
         color: theme().text,
         mono: false,
         weight: crate::ui_font_weight(),
+        italic: false,
+        underline: None,
+        strikethrough: None,
         wrap: 0.0,
         truncate: false,
         truncate_start: false,
@@ -376,6 +382,20 @@ impl Label {
     pub fn medium(self) -> Self {
         self.weight(500)
     }
+    pub fn italic(mut self) -> Self {
+        self.italic = true;
+        self
+    }
+    /// A 1px line under the text, as under links.
+    pub fn underline(mut self, color: Rgba) -> Self {
+        self.underline = Some(color);
+        self
+    }
+    /// A 1px line through the middle of the text.
+    pub fn strikethrough(mut self, color: Rgba) -> Self {
+        self.strikethrough = Some(color);
+        self
+    }
     pub fn truncate(mut self) -> Self {
         self.truncate = true;
         self
@@ -401,7 +421,13 @@ impl Label {
             );
         }
         (
-            crate::measure_text_width(&self.text, self.size, self.mono, self.weight),
+            crate::measure_text_width_styled(
+                &self.text,
+                self.size,
+                self.mono,
+                self.weight,
+                self.italic,
+            ),
             self.size * crate::ui_text_scale() * 1.4,
         )
     }
@@ -854,14 +880,31 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
             } else {
                 l.text.clone()
             };
+            let top = area.y + (area.h - lh).max(0.0) / 2.0;
+            for (color, at) in [(l.underline, 0.86), (l.strikethrough, 0.55)] {
+                let Some(color) = color else {
+                    continue;
+                };
+                let width =
+                    crate::measure_text_width_styled(&text, l.size, l.mono, l.weight, l.italic)
+                        .min(area.w);
+                out.rects.push(Rect::new(
+                    area.x,
+                    (top + lh * at).round(),
+                    width,
+                    crate::ui_text_scale().max(1.0),
+                    color,
+                ));
+            }
             out.texts.push(Text {
                 x: area.x,
-                y: area.y + (area.h - lh).max(0.0) / 2.0,
+                y: top,
                 size: l.size,
                 color: l.color,
                 text,
                 mono: l.mono,
                 weight: l.weight,
+                italic: l.italic,
                 wrap: l.wrap,
             });
         }
