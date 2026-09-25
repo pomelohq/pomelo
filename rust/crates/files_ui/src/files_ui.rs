@@ -6,6 +6,10 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// Vets a file's new text before it is written: `Err` refuses the save with the reason. It decides itself which
+/// files it cares about.
+pub type SaveCheck = std::sync::Arc<dyn Fn(&Path, &str) -> Result<(), String> + Send + Sync>;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -339,6 +343,8 @@ struct FileItem {
     active_diagnostic: Option<diagnostic_nav::ActiveDiagnostic>,
     scratch: Option<(String, String)>,
     read_only: bool,
+    /// Asked before writing: may refuse the save (the project config must keep loading).
+    save_check: Option<SaveCheck>,
     footer: Option<Footer>,
 }
 
@@ -618,6 +624,7 @@ impl FileItem {
             active_diagnostic: None,
             scratch: None,
             read_only: false,
+            save_check: None,
             footer: None,
         }
     }
@@ -3527,7 +3534,12 @@ impl Item for FileItem {
         let Some(b) = self.buffer.as_mut() else {
             return Ok(());
         };
-        let mtime = files::write(&self.root, &self.path, &b.text_for_save())
+        let text = b.text_for_save();
+        if let Some(check) = self.save_check.as_ref() {
+            check(&self.root.join(&self.path), &text)
+                .map_err(|problem| format!("Not saved: {problem}"))?;
+        }
+        let mtime = files::write(&self.root, &self.path, &text)
             .map_err(|e| format!("Could not save {}: {e}", self.path))?;
         b.mark_saved();
         self.saved_mtime = Some(mtime);
@@ -4782,6 +4794,7 @@ pub struct FilesView {
     root: PathBuf,
     /// Files open here can be read but not edited (the main workspace: work happens in branch workspaces).
     read_only: bool,
+    save_check: Option<SaveCheck>,
     /// Paths still editable in a read-only view: the project's config lives outside any branch.
     writable: Vec<PathBuf>,
     tree: Vec<FileNode>,
@@ -4850,6 +4863,11 @@ impl FilesView {
 
     pub fn writable(mut self, paths: Vec<PathBuf>) -> Self {
         self.writable = paths;
+        self
+    }
+
+    pub fn save_check(mut self, check: SaveCheck) -> Self {
+        self.save_check = Some(check);
         self
     }
 
@@ -4937,6 +4955,7 @@ impl FilesView {
             }),
             hover: None,
             read_only: false,
+            save_check: None,
             writable: Vec::new(),
             pending_moves: Vec::new(),
             other_dirty: Vec::new(),
@@ -6853,6 +6872,18 @@ impl FunctionView for FilesView {
         outcome.changed |= self.apply_disk_changes();
         outcome.changed |= self.serve_project_search();
         self.sync_markdown_previews();
+        if let Some(check) = self.save_check.as_ref() {
+            self.panes.for_each_item_mut(&mut |item| {
+                if let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                {
+                    if file.save_check.is_none() {
+                        file.save_check = Some(check.clone());
+                    }
+                }
+            });
+        }
         if self.read_only {
             let writable = &self.writable;
             self.panes.for_each_item_mut(&mut |item| {
@@ -8692,6 +8723,33 @@ mod markdown_preview_tests {
         assert!(view
             .cursor_position()
             .is_some_and(|status| status.starts_with("Read only")));
+    }
+
+    #[test]
+    fn a_save_check_can_refuse_a_save_and_leave_the_file_untouched() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().to_path_buf();
+        std::fs::write(root.join("pom.yml"), "session: demo\n").expect("write");
+        let check: SaveCheck = std::sync::Arc::new(|_path, text| {
+            if text.contains('[') {
+                Err("yaml parse error".into())
+            } else {
+                Ok(())
+            }
+        });
+        let mut view = FilesView::new(root.clone()).save_check(check);
+        view.open_file("pom.yml");
+        view.tick_items(&|| None);
+        view.editor_text("[");
+        let saved = view.editor_save();
+        assert!(
+            matches!(saved, Some(Err(ref reason)) if reason.starts_with("Not saved")),
+            "{saved:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("pom.yml")).expect("read"),
+            "session: demo\n"
+        );
     }
 
     #[test]

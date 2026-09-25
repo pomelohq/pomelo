@@ -1,5 +1,6 @@
 mod decode;
 mod depgraph;
+pub mod edit;
 mod include;
 mod lookup;
 pub mod maintain;

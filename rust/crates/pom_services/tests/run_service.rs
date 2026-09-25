@@ -212,3 +212,33 @@ fn unknown_services_are_refused() {
     assert!(error.to_string().contains("nope"), "{error}");
     assert!(fixture.runner.holders().holders().is_empty());
 }
+
+#[test]
+fn a_running_service_is_stale_once_the_config_changes_its_env() {
+    let fixture = Fixture::new();
+    fixture
+        .runner
+        .start(&fixture.config, &fixture.target)
+        .expect("start");
+    let targets = ServiceRunner::service_targets(&fixture.config, "feat/x", false);
+    assert_eq!(targets, vec![fixture.target.clone()]);
+    assert!(fixture
+        .runner
+        .stale_services(&fixture.config, &targets)
+        .is_empty());
+
+    let root = fixture.temp.path().join("project");
+    let edited = std::fs::read_to_string(root.join("pom.yml"))
+        .expect("read")
+        .replace("hi-{{branch.safe}}", "hello-{{branch.safe}}");
+    std::fs::write(root.join("pom.yml"), edited).expect("write");
+    let changed = Config::load(&root.join("pom.yml")).expect("config");
+    fixture
+        .runner
+        .refresh_workspace_env(&changed, "feat/x")
+        .expect("refresh env");
+    assert_eq!(
+        fixture.runner.stale_services(&changed, &targets),
+        vec![fixture.target.clone()]
+    );
+}

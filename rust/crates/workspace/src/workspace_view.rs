@@ -61,6 +61,8 @@ pub struct WorkspaceEffects {
     /// Open (or focus) the workspace's coding agent.
     pub open_agent: bool,
     pub fix_setup: bool,
+    /// Restart the services still running with the previous config.
+    pub restart_stale: bool,
     /// A command palette pick the app runs (settings, projects, themes...).
     pub action: Option<crate::keymap::Action>,
 }
@@ -125,6 +127,7 @@ struct Notification {
 enum NotificationAction {
     OpenFile(std::path::PathBuf, Option<u32>),
     FixSetup,
+    RestartStale,
 }
 
 /// A zoomed group drawn over the workspace: its frame (with the border on `sides`) and the content inside it.
@@ -675,6 +678,31 @@ impl WorkspaceView {
                 config_path.to_path_buf(),
                 line,
             )),
+        });
+    }
+
+    /// Running services started with the previous config: offer to restart them (none clears the offer).
+    pub fn set_stale_services(&mut self, names: &[String]) {
+        let showing = matches!(
+            self.notification.as_ref().and_then(|n| n.action.as_ref()),
+            Some(NotificationAction::RestartStale)
+        );
+        if names.is_empty() {
+            if showing {
+                self.notification = None;
+            }
+            return;
+        }
+        let noun = if names.len() == 1 {
+            "service"
+        } else {
+            "services"
+        };
+        self.notification = Some(Notification {
+            title: format!("{} {noun} still run the old config", names.len()),
+            message: names.join(", "),
+            primary: Some("Restart".into()),
+            action: Some(NotificationAction::RestartStale),
         });
     }
 
@@ -4937,6 +4965,7 @@ impl WorkspaceView {
                     }
                 }
                 Some(NotificationAction::FixSetup) => self.pending.fix_setup = true,
+                Some(NotificationAction::RestartStale) => self.pending.restart_stale = true,
                 None => {}
             }
         }
