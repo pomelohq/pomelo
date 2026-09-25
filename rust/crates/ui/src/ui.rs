@@ -878,7 +878,13 @@ fn rasterize_icon(kind: IconKind, px: u32) -> Vec<u8> {
     let transform = resvg::tiny_skia::Transform::from_scale(scale, scale).post_translate(tx, ty);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     // tiny-skia stores premultiplied RGBA; the alpha channel is the coverage we tint later.
-    pixmap.data().chunks_exact(4).map(|p| p[3]).collect()
+    pixmap
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| p[3])
+        .collect()
 }
 
 fn material_svg(m: MaterialIcon) -> &'static [u8] {
@@ -926,7 +932,7 @@ fn rasterize_material(m: MaterialIcon, px: u32) -> Vec<u8> {
     let transform = resvg::tiny_skia::Transform::from_scale(scale, scale).post_translate(tx, ty);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     let mut out = Vec::with_capacity((px * px * 4) as usize);
-    for p in pixmap.data().chunks_exact(4) {
+    for p in pixmap.data().as_chunks::<4>().0 {
         let a = p[3];
         if a == 0 {
             out.extend_from_slice(&[0, 0, 0, 0]);
