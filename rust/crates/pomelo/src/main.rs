@@ -2802,6 +2802,8 @@ impl ApplicationHandler for App {
                             m.dirty = true;
                         }
                     }
+                    // A key can pick a palette command meant for the app (open a file, a modal...).
+                    self.sync_workspace_effects(id, event_loop);
                     return;
                 }
             }
