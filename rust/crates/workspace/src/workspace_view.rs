@@ -251,6 +251,8 @@ pub struct WorkspaceView {
     toast: Option<Toast>,
     notification: Option<Notification>,
     shown_problem: Option<String>,
+    /// The config files the open "Open Project Config" list picks from.
+    config_files: Vec<std::path::PathBuf>,
     /// The coding agent is installed: setup problems offer "Fix with Claude", else point at pom.yml.
     ai_available: bool,
     dismissed_setup: Option<String>,
@@ -310,6 +312,7 @@ impl WorkspaceView {
             toast: None,
             notification: None,
             shown_problem: None,
+            config_files: Vec::new(),
             ai_available: true,
             dismissed_setup: None,
             pending: WorkspaceEffects::default(),
@@ -589,6 +592,35 @@ impl WorkspaceView {
     pub fn external_target(&self) -> Option<std::path::PathBuf> {
         let files = self.layout.files_view.as_ref()?;
         files.active_file_path().or_else(|| files.root_dir())
+    }
+
+    /// Opens the project's config: the file itself when it is the only one, else a list of `pom.yml` and
+    /// its `pom.d/` fragments to pick from (named relative to `root`).
+    pub fn pick_config_file(&mut self, root: &std::path::Path, files: Vec<std::path::PathBuf>) {
+        if let [only] = files.as_slice() {
+            let only = only.clone();
+            self.open_file(&only);
+            return;
+        }
+        let entries: Vec<crate::ExtraCommand> = files
+            .iter()
+            .enumerate()
+            .map(|(index, path)| crate::ExtraCommand {
+                name: path
+                    .strip_prefix(root)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string(),
+                keys: Vec::new(),
+                id: PALETTE_CONFIG_BASE + index as u64,
+            })
+            .collect();
+        self.config_files = files;
+        self.set_terminal_focus(false);
+        self.set_agent_focus(false);
+        if let Some(view) = self.layout.files_view.as_mut() {
+            view.open_command_list(entries, "Open config file...");
+        }
     }
 
     pub fn open_file(&mut self, path: &std::path::Path) {
@@ -885,6 +917,12 @@ impl WorkspaceView {
         else {
             return;
         };
+        if let Some(index) = id.checked_sub(PALETTE_CONFIG_BASE) {
+            if let Some(path) = self.config_files.get(index as usize).cloned() {
+                self.open_file(&path);
+            }
+            return;
+        }
         if let Some(index) = id
             .checked_sub(PALETTE_WORKSPACE_BASE)
             .filter(|index| *index < PALETTE_PANEL_BASE - PALETTE_WORKSPACE_BASE)
@@ -4915,6 +4953,8 @@ const PALETTE_ACTION_BASE: u64 = 1;
 const PALETTE_WORKSPACE_BASE: u64 = 500;
 const PALETTE_PANEL_BASE: u64 = 1_000;
 const PALETTE_PANEL_STRIDE: u64 = 100_000;
+/// Project config files offered by "Open Project Config": id = base + index into `config_files`.
+const PALETTE_CONFIG_BASE: u64 = 50_000_000;
 const PROMPT_BUTTON_BASE: u64 = 999_000_000;
 const PROMPT_BUTTON_SPAN: u64 = 16;
 const PROMPT_BACKDROP: u64 = PROMPT_BUTTON_BASE + PROMPT_BUTTON_SPAN;

@@ -18,6 +18,7 @@ files_ui = { path = "../files_ui" }
 terminal = { path = "../terminal" }
 terminal_ui = { path = "../terminal_ui" }
 auto_update = { path = "../auto_update" }
+pom_config = { path = "../pom_config" }
 pom_core = { path = "../pom_core" }
 pom_paths = { path = "../pom_paths" }
 pom_proxy = { path = "../pom_proxy" }

@@ -786,15 +786,13 @@ impl App {
 
     /// Opens the project's `pom.yml` for editing in the active pane; it stays editable even from main.
     pub(crate) fn open_project_config(&mut self, id: WindowId) {
-        let Some(path) = self
-            .mains
-            .get(&id)
-            .and_then(|main| main.project.as_ref())
-            .map(|project| project.config_path.clone())
-        else {
+        let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
             return;
         };
-        self.with_workspace_view(id, |view, _| view.open_file(&path));
+        let root = project.root.clone();
+        let mut files = vec![project.config_path.clone()];
+        files.extend(pom_config::fragment_files(&root).unwrap_or_default());
+        self.with_workspace_view(id, |view, _| view.pick_config_file(&root, files));
     }
 
     /// Opens the workspace's coding agent in the terminal panel, or focuses its tab. The agent runs in
