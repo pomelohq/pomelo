@@ -1,0 +1,117 @@
+# Pomelo, rewritten from scratch in Rust (cross-platform: Linux/macOS/Windows).
+# A cargo workspace: `editor` is the GPU editor core (rope + tree-sitter + wgpu/glyphon),
+# `app` is the winit application that will grow the pane/tab/file-tree/terminal UI.
+[workspace]
+resolver = "2"
+members = [
+    "crates/pomelo",
+    "crates/reactor",
+    "crates/ui",
+    "crates/workspace",
+    "crates/editor",
+    "crates/markdown",
+    "crates/files",
+    "crates/files_ui",
+    "crates/git",
+    "crates/lsp",
+    "crates/terminal",
+    "crates/terminal_ui",
+    "crates/auto_update",
+    "crates/auto_update_ui",
+    "crates/settings",
+    "crates/settings_ui",
+    "crates/ui_snapshot",
+    "crates/pom_config",
+    "crates/pom_env",
+    "crates/pom_paths",
+    "crates/pom_sessions",
+    "crates/pom_lock",
+    "crates/pom_secrets",
+    "crates/pom_bundle",
+    "crates/pom_forge",
+    "crates/pom_doctor",
+    "crates/pom_detect",
+    "crates/pull_request_ui",
+    "crates/jira_ui",
+    "crates/environment_ui",
+    "crates/pom_layout",
+    "crates/pom_core",
+    "crates/pom_ptyhost",
+    "crates/pom_ports",
+    "crates/pom_proxy",
+    "crates/pom_services",
+    "crates/services_ui",
+    "crates/pom_cli",
+    "crates/pom_mcp",
+    "crates/pom_agent",
+    "crates/git_ui",
+    "crates/pom_workspace",
+    "crates/workspaces_ui",
+    "crates/pom_jira",
+    "crates/pom_sync",
+    "crates/pom_db",
+    "crates/database_ui",
+]
+
+[workspace.package]
+version = "0.6.1"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+wgpu = "22"
+winit = "0.30"
+glyphon = "0.6"
+resvg = { version = "0.44", default-features = false }
+pollster = "0.3"
+anyhow = "1"
+bytemuck = "1"
+ropey = "1.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tree-sitter = "0.27.0"
+tree-sitter-rust = "0.24.2"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-go = "0.25.0"
+tree-sitter-python = "0.25.0"
+tree-sitter-json = "0.24.8"
+
+# Vendored one-line change: enable CAMetalLayer transaction-coupled present (smooth live-resize).
+# Upstream hardcodes it off with no public toggle. See vendor/wgpu-hal/src/metal/surface.rs:69.
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }
+
+# Our crates stay unoptimized for fast rebuilds; the hot third-party code on every frame (syntax queries, text
+# shaping, the rope, GPU submission) is optimized so a dev build scrolls smoothly.
+[profile.dev.package]
+# Third-party debug info piles up as unpacked object files on macOS (tens of GB) and nobody steps into it.
+"*" = { debug = false }
+tree-sitter = { opt-level = 3 }
+cosmic-text = { opt-level = 3 }
+glyphon = { opt-level = 3 }
+swash = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+skrifa = { opt-level = 3 }
+read-fonts = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+fontdb = { opt-level = 3 }
+ropey = { opt-level = 3 }
+resvg = { opt-level = 3 }
+usvg = { opt-level = 3 }
+tiny-skia = { opt-level = 3 }
+tiny-skia-path = { opt-level = 3 }
+wgpu = { opt-level = 3 }
+wgpu-core = { opt-level = 3 }
+wgpu-hal = { opt-level = 3 }
+wgpu-types = { opt-level = 3 }
+naga = { opt-level = 3 }
+alacritty_terminal = { opt-level = 3 }
+vte = { opt-level = 3 }
+imara-diff = { opt-level = 3 }
+nucleo-matcher = { opt-level = 3 }
+serde_json = { opt-level = 3 }
+scrypt = { opt-level = 3 }
+salsa20 = { opt-level = 3 }
+pbkdf2 = { opt-level = 3 }
+sha2 = { opt-level = 3 }

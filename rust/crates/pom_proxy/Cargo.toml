@@ -1,0 +1,28 @@
+[package]
+name = "pom_proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The dev proxy that routes service URLs into workspaces, and the webhook relay that fans hooks out to them."
+
+[lib]
+path = "src/pom_proxy.rs"
+
+[dependencies]
+bytes = "1.12.1"
+libc = "0.2"
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", features = ["server", "client", "http1"] }
+hyper-tls = "0.6.0"
+hyper-util = { version = "0.1.21", features = ["tokio", "client-legacy", "http1", "server"] }
+pom_config = { path = "../pom_config" }
+pom_env = { path = "../pom_env" }
+pom_layout = { path = "../pom_layout" }
+pom_paths = { path = "../pom_paths" }
+pom_ports = { path = "../pom_ports" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+regex = "1"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros", "io-util", "time", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"

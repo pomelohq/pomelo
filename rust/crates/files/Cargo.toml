@@ -1,0 +1,23 @@
+[package]
+name = "files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Files feature (logic): workspace file listing, tree model, and read — ported from the Go core's file endpoints. No rendering."
+
+[lib]
+path = "src/files.rs"
+
+[dev-dependencies]
+tempfile = "3"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "tree"
+harness = false
+
+[dependencies]
+globset = "0.4"
+ignore = "0.4"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+trash = "5"

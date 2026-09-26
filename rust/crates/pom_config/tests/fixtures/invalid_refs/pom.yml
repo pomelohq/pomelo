@@ -1,0 +1,12 @@
+repos:
+  r:
+    profiles: [local, ghost]
+    env:
+      A: "{{db:main}}"
+    services:
+      s:
+        cmd: x
+        profiles: [phantom]
+        env:
+          B: "{{conn:postgres | upper}}"
+          C: "{{shared.postgres.url}}"

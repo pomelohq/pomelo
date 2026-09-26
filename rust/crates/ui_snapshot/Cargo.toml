@@ -1,0 +1,36 @@
+[package]
+name = "ui_snapshot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless UI snapshot tool: render a screen to PNG so we can eyeball layout without a window."
+
+[[bin]]
+name = "ui_snapshot"
+path = "src/main.rs"
+
+[dependencies]
+pom_secrets = { path = "../pom_secrets" }
+environment_ui = { path = "../environment_ui" }
+pom_forge = { path = "../pom_forge" }
+pull_request_ui = { path = "../pull_request_ui" }
+ui = { path = "../ui" }
+settings = { path = "../settings" }
+settings_ui = { path = "../settings_ui" }
+workspace = { path = "../workspace" }
+git_ui = { path = "../git_ui" }
+files = { path = "../files" }
+files_ui = { path = "../files_ui" }
+workspaces_ui = { path = "../workspaces_ui" }
+pom_agent = { path = "../pom_agent" }
+pom_jira = { path = "../pom_jira" }
+jira_ui = { path = "../jira_ui" }
+database_ui = { path = "../database_ui" }
+pom_db = { path = "../pom_db" }
+pom_config = { path = "../pom_config" }
+pom_services = { path = "../pom_services" }
+pom_paths = { path = "../pom_paths" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+terminal = { path = "../terminal" }
+anyhow.workspace = true
+png = "0.17"

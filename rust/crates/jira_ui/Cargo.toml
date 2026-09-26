@@ -1,0 +1,20 @@
+[package]
+name = "jira_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A workspace's Jira ticket as a tab: status, description, web links and comments."
+
+[lib]
+path = "src/jira_ui.rs"
+
+[dependencies]
+markdown = { path = "../markdown" }
+pom_jira = { path = "../pom_jira" }
+pom_paths = { path = "../pom_paths" }
+terminal = { path = "../terminal" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }
+
+[dev-dependencies]
+tempfile = "3"

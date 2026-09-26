@@ -1,0 +1,150 @@
+{
+  "branches": [
+    {
+      "hash": "b28b7af6",
+      "host": "main",
+      "label": "main",
+      "port_ws_key": "ws-main",
+      "safe": "main"
+    },
+    {
+      "hash": "e6d5778d",
+      "host": "proj-855",
+      "label": "proj-855",
+      "port_ws_key": "ws-proj-855",
+      "safe": "proj-855"
+    },
+    {
+      "hash": "7d9db299",
+      "host": "proj-855",
+      "label": "proj-855",
+      "port_ws_key": "ws-PROJ-855",
+      "safe": "PROJ-855"
+    },
+    {
+      "hash": "dfba4765",
+      "host": "feat-add-login",
+      "label": "feat-add-login",
+      "port_ws_key": "ws-feat_add-login",
+      "safe": "feat_add-login"
+    },
+    {
+      "hash": "abdb2060",
+      "host": "bss-send-confirm",
+      "label": "bss-send-confirm",
+      "port_ws_key": "ws-bss_send_confirm",
+      "safe": "bss_send_confirm"
+    },
+    {
+      "hash": "5f5508d4",
+      "host": "weird",
+      "label": "weird",
+      "port_ws_key": "ws--weird-_",
+      "safe": "-weird-_"
+    },
+    {
+      "hash": "1ea411b9",
+      "host": "proj-1147-add-log",
+      "label": "proj-1147",
+      "port_ws_key": "ws-proj-1147-add-log",
+      "safe": "proj-1147-add-log"
+    },
+    {
+      "hash": "913f3e77",
+      "host": "feature--ber-cool",
+      "label": "feature--ber-cool",
+      "port_ws_key": "ws-Feature_ÜBER-cool",
+      "safe": "Feature_ÜBER-cool"
+    },
+    {
+      "hash": "ee2be6da",
+      "host": "a-b-c",
+      "label": "a-b-c",
+      "port_ws_key": "ws-a_b_c",
+      "safe": "a_b_c"
+    },
+    {
+      "hash": "882f65b9",
+      "host": "x",
+      "label": "x",
+      "port_ws_key": "ws-x-",
+      "safe": "x-"
+    },
+    {
+      "hash": "e6cfeb54",
+      "host": "proj-1069-rent-manager-let-partners-map-their-own-cust-e6cfeb54",
+      "label": "proj-1069",
+      "port_ws_key": "ws-proj-1069-rent-manager-let-partners-map-their-own-custom-fields-udfs-to-acme-fields",
+      "safe": "proj-1069-rent-manager-let-partners-map-their-own-custom-fields-udfs-to-acme-fields"
+    }
+  ],
+  "resolved": [
+    [
+      "proj-1147-add-log",
+      "proj-1147-add-log",
+      "proj-1147-add-log",
+      "1ea411b9",
+      "{{branch.nope}}",
+      "127.0.0.1",
+      "/_pom_dev/api/server",
+      "server.api.proj-1147.localhost",
+      "http://server.api.proj-1147.localhost:8767",
+      "ws://server.api.proj-1147.localhost:8767",
+      "http://server.api.proj-1147.localhost:8767",
+      "0",
+      "{{api.server.bogus}}",
+      "http://server.api.proj-1147.localhost:8767",
+      "http://api.backend.proj-1147.localhost:8767",
+      "ws://api.backend.proj-1147.localhost:8767",
+      "{{nope.x.y}}",
+      "{{api}}",
+      "acme",
+      "pw",
+      "127.0.0.1",
+      "28775",
+      "acme:pw@127.0.0.1:28775",
+      "acme:pw@127.0.0.1:28775",
+      "0",
+      "postgres:postgres@127.0.0.1:24986",
+      "24986",
+      "postgres",
+      "{{shared.missing.url}}",
+      "{{shared}}",
+      "acme_proj_1147_add_log",
+      "postgres://acme:pw@127.0.0.1:28775/acme_proj_1147_add_log",
+      "",
+      "{{db}}",
+      "0",
+      "{{slot}}",
+      "{{secret.API_KEY}}",
+      "DB=acme_proj_1147_add_log?x=1",
+      "acme_proj_1147_add_log",
+      "a proj-1147-add-log b {{unterminated"
+    ],
+    [
+      "https://api.staging.example",
+      "wss://api.staging.example",
+      "/_pom_dev/backend/api",
+      "https://api.staging.example",
+      "http://app.web.feat-add-login.localhost:8767",
+      "http://user@10.0.0.5:9000/x",
+      "feat-add-login",
+      "postgres://acme:pw@127.0.0.1:28775/",
+      "https://api.staging.example",
+      "http://user@10.0.0.5:9000/x",
+      "http://user@10.0.0.5:9000/x",
+      "http://user@10.0.0.5:9000/x"
+    ],
+    [
+      "http://api.backend.main.localhost:8767",
+      "server.api.main.localhost",
+      "postgres://acme:pw@127.0.0.1:28775/acme"
+    ]
+  ],
+  "stable_ports": [
+    28775,
+    28187,
+    23208,
+    28588
+  ]
+}

@@ -1,3 +1,0 @@
-File-type icons (mi-*.imageset) are from the Material Icon Theme
-(github.com/material-extensions/vscode-material-icon-theme), MIT License.
-Copyright (c) Philipp Kief and the material-extensions contributors.

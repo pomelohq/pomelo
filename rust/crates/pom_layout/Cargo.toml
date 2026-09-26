@@ -1,0 +1,17 @@
+[package]
+name = "pom_layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "On-disk workspace layout: workspace--<branch> folders, repo worktrees, per-workspace state."
+
+[lib]
+path = "src/pom_layout.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+indexmap = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"

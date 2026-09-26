@@ -1,0 +1,5 @@
+repos:
+  api:
+    setup: [new]
+    commands:
+      lint: golangci-lint run

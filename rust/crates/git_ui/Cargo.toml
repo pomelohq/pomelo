@@ -1,0 +1,22 @@
+[package]
+name = "git_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Git panel: what each repo of the active workspace changed on its branch, to review and open."
+
+[lib]
+path = "src/git_ui.rs"
+
+[dependencies]
+pom_forge = { path = "../pom_forge" }
+files_ui = { path = "../files_ui" }
+git = { path = "../git" }
+pull_request_ui = { path = "../pull_request_ui" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }
+serde_json.workspace = true
+
+[dev-dependencies]
+pom_paths = { path = "../pom_paths" }
+tempfile = "3"

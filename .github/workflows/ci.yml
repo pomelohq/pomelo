@@ -1,9 +1,7 @@
 name: CI
 
-# Path-gated so work is only spent on what changed: a docs-only PR runs neither
-# the Go tests nor the app build; a Go change runs the Go gate and relinks/tests
-# the app; an app-only change runs just the app. Dependencies are cached so repeat
-# runs stay fast. Release signing/publishing lives in release.yml (app-build.yml).
+# Path-gated so a docs-only change runs nothing heavy; dependencies are cached so repeat runs stay fast.
+# Releases live in release.yml.
 on:
   pull_request:
   push:
@@ -22,79 +20,45 @@ jobs:
     name: Detect changed areas
     runs-on: ubuntu-latest
     outputs:
-      go: ${{ steps.f.outputs.go }}
-      app: ${{ steps.f.outputs.app }}
+      rust: ${{ steps.f.outputs.rust }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: f
         with:
           filters: |
-            go:
-              - '**/*.go'
-              - 'go.mod'
-              - 'go.sum'
-              - 'internal/detect/stacks/**'
-              - 'internal/detect/catalog.yaml'
-            app:
-              - 'desktop/PomeloApp/**'
-              - '**/*.go'
-              - 'go.mod'
-              - 'go.sum'
+            rust:
+              - 'rust/**'
+              - 'docs/config-*.md'
               - '.github/workflows/ci.yml'
-              - '.github/workflows/app-build.yml'
-              - '.github/actions/setup-xcode/**'
 
-  go:
-    name: Go build + vet + test
+  # The same `make check` run locally: fmt, clippy -D warnings, tests.
+  rust:
+    name: Rust fmt + clippy + test
     needs: changes
-    if: ${{ needs.changes.outputs.go == 'true' }}
-    runs-on: macos-26
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: rust
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      # Installs the toolchain rust/rust-toolchain.toml pins.
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
         with:
-          go-version: '1.26'
-          cache: true
-      - run: go build ./...
-      - run: go vet ./...
-      - name: Test (-short skips subprocess integration tests, headless CI can't PTY)
-        run: go test -short ./...
+          workspaces: rust
+      - run: make check
 
-  # Reuse the single build definition (app-build.yml) instead of duplicating it.
-  # publish=false = compile the app + run Swift tests, sharing the same DerivedData
-  # cache as the release build.
-  app:
-    name: App build + Swift tests
-    needs: changes
-    if: ${{ needs.changes.outputs.app == 'true' }}
-    uses: ./.github/workflows/app-build.yml
-    with:
-      publish: false
-
-  lint:
-    name: Lint (ADR conventions)
-    needs: changes
-    if: ${{ needs.changes.outputs.app == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: View-layer FFI boundary (ADR 0001)
-        run: ./scripts/lint-view-ffi.sh
-
-  # Single stable required check. Path-gated jobs may be skipped (docs-only PR),
-  # and a skipped job never satisfies a branch rule — so gate on this always-run
-  # job that passes when the needed jobs each succeeded or were skipped.
+  # The one required check: path-gated jobs may be skipped, and a skipped job never satisfies a branch rule.
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, go, app, lint]
+    needs: [changes, rust]
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "changes=${{ needs.changes.result }} go=${{ needs.go.result }} app=${{ needs.app.result }} lint=${{ needs.lint.result }}"
+          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }}"
           test "${{ needs.changes.result }}" = "success" || exit 1
-          for r in "${{ needs.go.result }}" "${{ needs.app.result }}" "${{ needs.lint.result }}"; do
-            case "$r" in success|skipped) ;; *) echo "dependency failed: $r"; exit 1 ;; esac
-          done
+          case "${{ needs.rust.result }}" in success|skipped) ;; *) echo "rust failed"; exit 1 ;; esac
           echo "CI gate passed"

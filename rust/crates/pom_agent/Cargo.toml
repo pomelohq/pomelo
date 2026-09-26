@@ -1,0 +1,18 @@
+[package]
+name = "pom_agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Coding agents in workspaces: registering pom's MCP server and hooks with Claude Code, and the agent state they report."
+
+[lib]
+path = "src/pom_agent.rs"
+
+[dependencies]
+pom_paths = { path = "../pom_paths" }
+serde_json.workspace = true
+sha1 = "0.10"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+
+[dev-dependencies]
+tempfile = "3"

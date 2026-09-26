@@ -1,0 +1,3 @@
+shared_services:
+  postgres:
+    image: postgres:15

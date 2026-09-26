@@ -1,0 +1,22 @@
+[package]
+name = "environment_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The project's secrets (names, reveal, copy, add, delete) and each service's resolved env with where every value comes from, as tabs."
+
+[lib]
+path = "src/environment_ui.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_paths = { path = "../pom_paths" }
+pom_secrets = { path = "../pom_secrets" }
+pom_services = { path = "../pom_services" }
+terminal = { path = "../terminal" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }
+
+[dev-dependencies]
+pom_ptyhost = { path = "../pom_ptyhost" }
+tempfile = "3"

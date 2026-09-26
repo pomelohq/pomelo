@@ -1,0 +1,52 @@
+[package]
+name = "pomelo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pomelo — a cross-platform dev-environment app, rewritten in Rust."
+
+[[bin]]
+name = "pomelo"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }
+settings = { path = "../settings" }
+settings_ui = { path = "../settings_ui" }
+files_ui = { path = "../files_ui" }
+terminal = { path = "../terminal" }
+terminal_ui = { path = "../terminal_ui" }
+auto_update = { path = "../auto_update" }
+pom_config = { path = "../pom_config" }
+pom_core = { path = "../pom_core" }
+pom_paths = { path = "../pom_paths" }
+pom_proxy = { path = "../pom_proxy" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+pom_env = { path = "../pom_env" }
+pom_services = { path = "../pom_services" }
+pom_mcp = { path = "../pom_mcp" }
+pom_agent = { path = "../pom_agent" }
+services_ui = { path = "../services_ui" }
+workspaces_ui = { path = "../workspaces_ui" }
+database_ui = { path = "../database_ui" }
+pom_workspace = { path = "../pom_workspace" }
+pom_layout = { path = "../pom_layout" }
+pom_jira = { path = "../pom_jira" }
+jira_ui = { path = "../jira_ui" }
+arboard = "3.6.1"
+git_ui = { path = "../git_ui" }
+pull_request_ui = { path = "../pull_request_ui" }
+pom_doctor = { path = "../pom_doctor" }
+environment_ui = { path = "../environment_ui" }
+pom_secrets = { path = "../pom_secrets" }
+pom_bundle = { path = "../pom_bundle" }
+winit.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-app-kit = { version = "0.2", features = ["NSWindow", "NSView", "NSButton", "NSResponder", "NSControl", "NSAlert", "NSApplication", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSSound", "block2"] }
+block2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString", "NSURL", "NSBundle", "NSError"] }
+objc2-user-notifications = { version = "0.2", features = ["block2", "UNUserNotificationCenter", "UNNotification", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger"] }
