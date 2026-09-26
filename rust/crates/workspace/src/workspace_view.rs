@@ -3187,6 +3187,15 @@ impl WorkspaceView {
                     files.accept_foreign_item(item);
                 }
                 self.set_agent_focus(false);
+                let dock_empty = self
+                    .layout
+                    .agent_view
+                    .as_ref()
+                    .is_none_or(|view| view.is_empty());
+                if dock_empty {
+                    self.layout.right.collapsed = true;
+                    self.pending.persist = true;
+                }
             }
             None => {
                 if let Some(panel) = self.layout.agent_view.as_mut() {
@@ -4497,6 +4506,20 @@ impl WorkspaceView {
         id: &str,
         make: impl FnOnce() -> Option<Box<dyn crate::Item>>,
     ) {
+        // Moved next to the code, the agent is shown there rather than opened a second time in the dock.
+        let in_center = self
+            .layout
+            .files_view
+            .as_mut()
+            .and_then(|files| files.pane_group_mut())
+            .is_some_and(|group| group.reveal_item(id));
+        if in_center {
+            self.set_terminal_focus(false);
+            self.set_agent_focus(false);
+            self.focus_group(InputGroup::Center);
+            self.panes_input = true;
+            return;
+        }
         let Some(view) = self.layout.agent_view.as_mut() else {
             return;
         };

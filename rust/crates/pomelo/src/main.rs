@@ -3486,7 +3486,27 @@ fn register_with_agents(status: Arc<std::sync::Mutex<settings_ui::AgentPage>>) {
     }
 }
 
+/// Markers a Claude Code session sets for the processes it starts. Launched from inside one (a terminal agent
+/// running `open`), the app would hand them to every shell and agent it spawns, and those agents would then
+/// think they are nested sessions (no transcripts, a warning).
+const AGENT_SESSION_MARKERS: [&str; 11] = [
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
 fn main() -> anyhow::Result<()> {
+    for marker in AGENT_SESSION_MARKERS {
+        std::env::remove_var(marker);
+    }
     let args: Vec<String> = std::env::args().collect();
     if let Some(code) = pom_ptyhost::cli::run(&args)
         .or_else(|| pom_mcp::run(&args))
