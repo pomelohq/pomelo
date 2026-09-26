@@ -905,7 +905,7 @@ impl Panel for AgentEmptyPanel {
             .gap(8.0)
             .child(panel_header(self.title()))
             .child(
-                label("No agent running in this workspace.")
+                label("No agent open in this dock.")
                     .size(13.0)
                     .color(theme().text_muted),
             )
