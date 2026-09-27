@@ -1427,7 +1427,7 @@ impl WorkspaceView {
                     .function_panel_painted(DockPosition::Right, region)
                     .unwrap_or_default(),
                 Some(Shown::Agent) if self.layout.agent_visible() => {
-                    self.agent_painted(region, &mut center_overlays, &mut panel_hits)
+                    self.agent_painted(region, true, &mut center_overlays, &mut panel_hits)
                 }
                 // With no agent session open (and when nothing is docked) the dock shows the AgentEmptyPanel.
                 Some(Shown::Agent) | None => self.layout.right.render_body(region, &list),
@@ -1472,9 +1472,12 @@ impl WorkspaceView {
         header_hits.extend(status_hits);
         if let Some(zoom) = self.zoom {
             let rect = zoom.outer;
-            if zoom.group == InputGroup::Panel {
-                let backdrop =
-                    self.terminal_painted(zoom.inner, false, &mut zoom_overlays, &mut zoom_hits);
+            if zoom.group == InputGroup::Panel || zoom.group == InputGroup::Agent {
+                let backdrop = if zoom.group == InputGroup::Agent {
+                    self.agent_painted(zoom.inner, false, &mut zoom_overlays, &mut zoom_hits)
+                } else {
+                    self.terminal_painted(zoom.inner, false, &mut zoom_overlays, &mut zoom_hits)
+                };
                 zoom_overlays.insert(
                     0,
                     Overlay {
@@ -4029,9 +4032,16 @@ impl WorkspaceView {
     fn agent_painted(
         &mut self,
         region: Rect,
+        in_dock: bool,
         overlays: &mut Vec<Overlay>,
         hits: &mut Vec<(Rect, u64)>,
     ) -> Painted {
+        let zoomed = self
+            .zoom
+            .is_some_and(|zoom| zoom.group == InputGroup::Agent);
+        if in_dock && zoomed {
+            return ui::render(&ui::div().bg(ui::theme().panel_background).into(), region);
+        }
         let focused = self.agent_focused;
         match self.layout.agent_view.as_mut() {
             Some(view) => {
@@ -4107,14 +4117,25 @@ impl WorkspaceView {
                         .as_ref()
                         .is_some_and(|view| view.panes_ref().zoom_shown())
             }
-            InputGroup::Agent => false,
+            InputGroup::Agent => {
+                self.layout.agent_visible()
+                    && self
+                        .layout
+                        .agent_view
+                        .as_ref()
+                        .is_some_and(|view| view.panes_ref().zoom_shown())
+            }
         };
         if !shown {
             return None;
         }
         let area = self.layout.editor_area(w, h);
         let (mut x, mut y, mut rw, mut rh) = (area.x, area.y, area.w, area.h);
-        let side = self.layout.terminal_side;
+        let side = if group == InputGroup::Agent {
+            self.layout.agent_side
+        } else {
+            self.layout.terminal_side
+        };
         let (top, right, bottom, left) = match group {
             InputGroup::Center => (true, true, true, true),
             InputGroup::Panel | InputGroup::Agent => (

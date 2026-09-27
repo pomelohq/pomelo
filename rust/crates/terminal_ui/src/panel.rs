@@ -105,7 +105,10 @@ impl TerminalPanel {
         let mut panes = PaneGroupView::new(PaneGroupConfig {
             id_base: AGENT_VIEW_BASE,
             show_nav: false,
-            buttons: Vec::new(),
+            buttons: vec![PaneButton {
+                icon: IconKind::Maximize,
+                action: PaneButtonAction::ToggleZoom,
+            }],
             max_panes: 1,
             split_filter: None,
             zoom_whole_group: true,
