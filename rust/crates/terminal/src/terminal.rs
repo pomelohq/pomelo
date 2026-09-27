@@ -298,6 +298,8 @@ pub struct Terminal {
     pty: Backend,
     events: mpsc::Receiver<BackendEvent>,
     pending_resize: Option<TerminalBounds>,
+    /// A reattached program drew for its last size; nudging the size once makes it redraw for this view.
+    redraw_on_resize: bool,
     pending_scroll_to_bottom: bool,
     content: Content,
     title: String,
@@ -418,11 +420,13 @@ impl Terminal {
         bounds: TerminalBounds,
         process: pty_info::PtyProcessInfo,
     ) -> Self {
+        let redraw_on_resize = matches!(pty, Backend::Holder(_));
         Self {
             term,
             pty,
             events,
             pending_resize: None,
+            redraw_on_resize,
             pending_scroll_to_bottom: false,
             content: Content {
                 bounds,
@@ -867,7 +871,14 @@ impl Terminal {
             return false;
         };
         self.content.bounds = bounds;
-        self.pty.resize(bounds.window_size());
+        let size = bounds.window_size();
+        if std::mem::take(&mut self.redraw_on_resize) && size.num_lines > 1 {
+            self.pty.resize(WindowSize {
+                num_lines: size.num_lines - 1,
+                ..size
+            });
+        }
+        self.pty.resize(size);
         self.term.lock().resize(bounds);
         self.content_version += 1;
         self.snapshot();

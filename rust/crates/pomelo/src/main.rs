@@ -1647,6 +1647,19 @@ impl App {
     }
 
     fn reload_changed_projects(&mut self) {
+        let rescans: Vec<WindowId> = self
+            .mains
+            .iter()
+            .filter(|(_, main)| {
+                main.watcher
+                    .as_ref()
+                    .is_some_and(pom_core::ConfigWatcher::take_workspaces_changed)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in rescans {
+            self.rescan_project(id);
+        }
         let state = pom_paths::StateDir::from_env();
         let mut updates = Vec::new();
         let mut rerooted = Vec::new();

@@ -374,6 +374,18 @@ impl App {
                             .position(|workspace| workspace.branch == done.branch)
                     });
                 if let Some(index) = index {
+                    // A folder recreated at a deleted workspace's path must not bring back that one's views.
+                    if let Some(main) = self.mains.get_mut(&id) {
+                        let fresh = main.project.as_ref().and_then(|project| {
+                            project
+                                .workspaces
+                                .get(index)
+                                .map(|workspace| workspace.path.clone())
+                        });
+                        if let Some(fresh) = fresh {
+                            main.parked.remove(&fresh);
+                        }
+                    }
                     self.activate_workspace(id, index);
                 }
             }
@@ -458,7 +470,7 @@ impl App {
     }
 
     /// Rescans the window's workspaces after one was created or deleted.
-    fn rescan_project(&mut self, id: WindowId) {
+    pub(crate) fn rescan_project(&mut self, id: WindowId) {
         let state = pom_paths::StateDir::from_env();
         let rerooted = match self.mains.get_mut(&id) {
             Some(main) => {
