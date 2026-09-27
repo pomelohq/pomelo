@@ -753,6 +753,110 @@ mod tests {
     }
 
     #[test]
+    fn rust_match_arms_and_where_clauses_indent_their_continuations() {
+        assert_eq!(
+            newline(
+                Lang::Rust,
+                "fn a() {\n    match x {\n        Some(y) =>|f(y),\n    }\n}"
+            ),
+            "fn a() {\n    match x {\n        Some(y) =>\n            |f(y),\n    }\n}"
+        );
+        assert_eq!(
+            newline(Lang::Rust, "fn a<T>()\nwhere|T: Clone,\n{\n}"),
+            "fn a<T>()\nwhere\n    |T: Clone,\n{\n}"
+        );
+    }
+
+    #[test]
+    fn python_dedenting_keywords_line_up_with_their_block() {
+        assert_eq!(
+            newline(Lang::Python, "def f():\n    return 1|"),
+            "def f():\n    return 1\n    |"
+        );
+        assert_eq!(
+            typed(Lang::Python, "try:\n    a()\n    except|", ":"),
+            "try:\n    a()\nexcept:|"
+        );
+        assert_eq!(
+            typed(
+                Lang::Python,
+                "if a:\n    if b:\n        x\n    elif c|",
+                ":"
+            ),
+            "if a:\n    if b:\n        x\n    elif c:|"
+        );
+    }
+
+    #[test]
+    fn go_cases_sit_level_with_their_switch() {
+        assert_eq!(
+            newline(Lang::Go, "func a() {\n    switch x {|}\n}"),
+            "func a() {\n    switch x {\n        |\n    }\n}"
+        );
+        assert_eq!(
+            typed(
+                Lang::Go,
+                "func a() {\n    switch x {\n        |\n    }\n}",
+                "case 1:"
+            ),
+            "func a() {\n    switch x {\n    case 1:|\n    }\n}"
+        );
+        assert_eq!(
+            newline(
+                Lang::Go,
+                "func a() {\n    switch x {\n    case 1:|\n    }\n}"
+            ),
+            "func a() {\n    switch x {\n    case 1:\n        |\n    }\n}"
+        );
+        assert_eq!(
+            typed(
+                Lang::Go,
+                "func a() {\n    switch x {\n    case 1:\n        f()\n        |\n    }\n}",
+                "default:"
+            ),
+            "func a() {\n    switch x {\n    case 1:\n        f()\n    default:|\n    }\n}"
+        );
+    }
+
+    #[test]
+    fn typescript_blocks_cases_and_chains_indent() {
+        assert_eq!(
+            newline(Lang::TypeScript, "function a() {|}"),
+            "function a() {\n    |\n}"
+        );
+        assert_eq!(
+            newline(Lang::TypeScript, "switch (x) {\n    case 1:|\n}"),
+            "switch (x) {\n    case 1:\n        |\n}"
+        );
+        assert_eq!(
+            newline(Lang::TypeScript, "const p = fetch(u)|.then(f);"),
+            "const p = fetch(u)\n    |.then(f);"
+        );
+        assert_eq!(
+            newline(Lang::Tsx, "const a = <div>|\n</div>;"),
+            "const a = <div>\n    |\n</div>;"
+        );
+    }
+
+    #[test]
+    fn c_bodies_without_braces_indent_one_statement() {
+        assert_eq!(newline(Lang::C, "if (x)|a();"), "if (x)\n    |a();");
+        assert_eq!(newline(Lang::C, "if (x)\n    a();|"), "if (x)\n    a();\n|");
+    }
+
+    #[test]
+    fn html_children_indent_inside_their_element() {
+        assert_eq!(
+            newline(Lang::Html, "<div>|\n</div>"),
+            "<div>\n    |\n</div>"
+        );
+        assert_eq!(
+            newline(Lang::Html, "<ul>\n    <li>a</li>|\n</ul>"),
+            "<ul>\n    <li>a</li>\n    |\n</ul>"
+        );
+    }
+
+    #[test]
     fn autoindent_undoes_with_its_edit() {
         let mut buffer = EditorBuffer::from_text("fn a() {}");
         buffer.set_group_interval(Duration::ZERO);

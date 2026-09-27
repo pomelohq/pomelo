@@ -1,18 +1,40 @@
-(mod_item (visibility_modifier)? @context "mod" @context name: (_) @name) @item
+(mod_item
+  (visibility_modifier)? @context
+  "mod" @context
+  name: (_) @name) @item
 
-(struct_item (visibility_modifier)? @context "struct" @context name: (_) @name) @item
+(struct_item
+  (visibility_modifier)? @context
+  "struct" @context
+  name: (_) @name) @item
 
-(union_item (visibility_modifier)? @context "union" @context name: (_) @name) @item
+(union_item
+  (visibility_modifier)? @context
+  "union" @context
+  name: (_) @name) @item
 
-(enum_item (visibility_modifier)? @context "enum" @context name: (_) @name) @item
+(enum_item
+  (visibility_modifier)? @context
+  "enum" @context
+  name: (_) @name) @item
 
-(enum_variant name: (_) @name) @item
+(enum_variant
+  name: (_) @name) @item
 
-(field_declaration (visibility_modifier)? @context name: (_) @name) @item
+(field_declaration
+  (visibility_modifier)? @context
+  name: (_) @name) @item
 
-(trait_item (visibility_modifier)? @context "trait" @context name: (_) @name) @item
+(trait_item
+  (visibility_modifier)? @context
+  "trait" @context
+  name: (_) @name) @item
 
-(impl_item "impl" @context trait: (_)? @name "for"? @context type: (_) @name) @item
+(impl_item
+  "impl" @context
+  trait: (_)? @name
+  "for"? @context
+  type: (_) @name) @item
 
 (function_item
   (visibility_modifier)? @context
@@ -26,10 +48,22 @@
   "fn" @context
   name: (_) @name) @item
 
-(type_item (visibility_modifier)? @context "type" @context name: (_) @name) @item
+(type_item
+  (visibility_modifier)? @context
+  "type" @context
+  name: (_) @name) @item
 
-(const_item (visibility_modifier)? @context "const" @context name: (_) @name) @item
+(const_item
+  (visibility_modifier)? @context
+  "const" @context
+  name: (_) @name) @item
 
-(static_item (visibility_modifier)? @context "static" @context name: (_) @name) @item
+(static_item
+  (visibility_modifier)? @context
+  "static" @context
+  (mutable_specifier)? @context
+  name: (_) @name) @item
 
-(macro_definition "macro_rules!" @context name: (_) @name) @item
+(macro_definition
+  "macro_rules!" @context
+  name: (_) @name) @item

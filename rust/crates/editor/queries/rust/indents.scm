@@ -1,13 +1,7 @@
-; Statements and expressions that keep going on the next line.
-[
-  (let_declaration)
-  (assignment_expression)
-  (compound_assignment_expr)
-  (call_expression)
-  (field_expression)
-  (await_expression)
-] @indent
-
+(type_parameters ">" @end) @indent
+(type_arguments ">" @end) @indent
 (where_clause) @indent
-
-(_ "<" ">" @end) @indent
+(match_arm) @indent
+(field_expression) @indent
+(let_declaration) @indent
+(assignment_expression) @indent

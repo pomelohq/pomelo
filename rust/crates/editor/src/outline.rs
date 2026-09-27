@@ -239,6 +239,25 @@ mod tests {
     }
 
     #[test]
+    fn rust_outline_covers_every_item_kind() {
+        let text = "mod net {\n    pub const PORT: u16 = 80;\n}\n\nenum Shape {\n    Circle,\n}\n\ntrait Area {\n    fn area(&self) -> f64;\n}\n\nimpl Shape {\n    pub fn new() -> Self { Shape::Circle }\n}\n\nfn main() {}\n";
+        assert_eq!(
+            outline(Lang::Rust, text),
+            vec![
+                (0, "mod net".to_string()),
+                (1, "pub const PORT".to_string()),
+                (0, "enum Shape".to_string()),
+                (1, "Circle".to_string()),
+                (0, "trait Area".to_string()),
+                (1, "fn area".to_string()),
+                (0, "impl Shape".to_string()),
+                (1, "pub fn new".to_string()),
+                (0, "fn main".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn ruby_outline_has_definitions_and_spec_blocks() {
         assert_eq!(
             outline(

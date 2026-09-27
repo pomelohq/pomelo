@@ -1,6 +1,2 @@
 (comment) @comment.inclusive
-
-[
-  (double_quote_scalar)
-  (single_quote_scalar)
-] @string
+[(double_quote_scalar) (single_quote_scalar) (block_scalar)] @string

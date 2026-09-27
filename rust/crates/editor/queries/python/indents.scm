@@ -1,4 +1,5 @@
-; Where each kind of block begins, so `elif` / `else` / `except` / `finally` can line up with it.
+; Blocks come from the line rules; these name where each block opens so a dedenting keyword can
+; line up with the statement it continues.
 (if_statement) @start.if
 (elif_clause) @start.elif
 (else_clause) @start.else

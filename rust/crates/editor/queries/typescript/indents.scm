@@ -1,14 +1,8 @@
-; Statements and expressions that keep going on the next line.
-[
-  (lexical_declaration)
-  (variable_declaration)
-  (assignment_expression)
-  (call_expression)
-  (member_expression)
-  (if_statement)
-  (for_statement)
-  (while_statement)
-  (type_alias_declaration)
-] @indent
-
-(_ "<" ">" @end) @indent
+(switch_body
+  [(switch_case ":" @start) (switch_default ":" @start)]
+  .
+  [(switch_case) (switch_default) "}"] @end)
+(member_expression) @indent
+(variable_declarator) @indent
+(type_parameters ">" @end) @indent
+(type_arguments ">" @end) @indent

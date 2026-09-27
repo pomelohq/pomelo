@@ -961,6 +961,23 @@ mod scope_tests {
         assert_eq!(scope(Lang::Rust, "x; |// note\ny;"), COMMENT);
     }
 
+    #[test]
+    fn rust_and_go_string_and_comment_scopes() {
+        assert_eq!(scope(Lang::Rust, "let s = r#\"a|b\"#;"), STRING);
+        assert_eq!(scope(Lang::Rust, "let c = 'a|';"), STRING);
+        assert_eq!(scope(Lang::Rust, "x; /* a|b */ y;"), COMMENT);
+        assert_eq!(scope(Lang::Rust, "x; /* ab */| y;"), COMMENT);
+        assert_eq!(scope(Lang::Rust, "x; /* ab */ |y;"), CODE);
+        assert_eq!(scope(Lang::Go, "s := \"a|b\""), STRING);
+        assert_eq!(scope(Lang::Go, "s := `a|b`"), STRING);
+        assert_eq!(scope(Lang::Go, "s := |\"ab\""), CODE);
+        assert_eq!(scope(Lang::Go, "x := 1 // a|b"), COMMENT);
+        assert_eq!(scope(Lang::Go, "x := 1 |// ab"), COMMENT);
+        assert_eq!(scope(Lang::Go, "f(|x)"), CODE);
+        assert_eq!(scope(Lang::Yaml, "a: \"b|c\"\n"), STRING);
+        assert_eq!(scope(Lang::Yaml, "a: 1 # b|c\n"), COMMENT);
+    }
+
     fn typed_quote(text: &str) -> String {
         let at = text.find('|').unwrap();
         let mut buffer = EditorBuffer::from_text(&text.replace('|', ""));
@@ -1010,6 +1027,23 @@ mod new_language_tests {
             .into_iter()
             .find(|run| run.range.start <= start && start < run.range.end)
             .and_then(|run| run.capture)
+    }
+
+    #[test]
+    fn proto_colors_types_fields_and_services() {
+        let text = "// c\npackage demo.v1;\nmessage User {\n  int32 id = 1;\n  Role role = 2;\n}\nservice Users {\n  rpc Get(User) returns (User);\n}\n";
+        assert_eq!(capture_of(Lang::Proto, text, "// c"), Some("comment"));
+        assert_eq!(capture_of(Lang::Proto, text, "demo"), Some("namespace"));
+        assert_eq!(capture_of(Lang::Proto, text, "User {"), Some("type"));
+        assert_eq!(capture_of(Lang::Proto, text, "int32"), Some("type.builtin"));
+        assert_eq!(capture_of(Lang::Proto, text, "id ="), Some("property"));
+        assert_eq!(capture_of(Lang::Proto, text, "Role"), Some("type"));
+        assert_eq!(capture_of(Lang::Proto, text, "1;\n  Role"), Some("number"));
+        assert_eq!(capture_of(Lang::Proto, text, "rpc"), Some("keyword"));
+        assert_eq!(
+            capture_of(Lang::Proto, text, "Get"),
+            Some("function.method")
+        );
     }
 
     #[test]
