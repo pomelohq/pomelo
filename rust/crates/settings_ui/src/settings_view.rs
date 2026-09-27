@@ -516,7 +516,14 @@ impl SettingsView {
             self.nav_scroll = self.nav_max;
         }
         let nav_clip = chrome.nav_clip;
-        let nav = chrome.nav;
+        let mut nav = chrome.nav;
+        if let Some(bar) = settings_ui::content_scrollbar(
+            (nav_clip.x, nav_clip.y, nav_clip.w, nav_clip.h),
+            chrome.nav_height,
+            self.nav_scroll,
+        ) {
+            nav.rects.push(bar);
+        }
         let chrome = chrome.fixed;
 
         let popover = self.popover.and_then(|cid| {
@@ -1180,6 +1187,15 @@ mod tests {
         assert!(
             !visible(&frame),
             "the last category starts below the window"
+        );
+        let thumb = ui::theme().scrollbar_thumb_background;
+        assert!(
+            frame.overlays[2]
+                .painted
+                .rects
+                .iter()
+                .any(|rect| rect.color == thumb),
+            "the category list shows a scrollbar"
         );
         let moved = view.update(app.app_mut(), |v, _| v.scroll(-10_000.0, 20.0, 200.0));
         assert!(moved);
