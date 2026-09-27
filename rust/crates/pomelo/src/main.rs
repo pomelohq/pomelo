@@ -1704,13 +1704,14 @@ impl App {
                 view.update_project(info);
                 view.set_config_problem(problem, &config_path);
             });
-            self.start_doctor(id);
         }
         for id in rerooted {
             self.install_project_views(id);
         }
+        // Every reload re-runs the doctor, env-only edits included: they are what adds or drops a secret.
         for id in reloaded {
             self.with_workspace_view(id, |view, _| view.show_toast("pom.yml reloaded", None));
+            self.start_doctor(id);
         }
         for (id, names) in stale_notices {
             self.with_workspace_view(id, |view, _| view.set_stale_services(&names));

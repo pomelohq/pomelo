@@ -111,7 +111,7 @@ impl Default for Settings {
             split_diff: true,
             external_editor: String::new(),
             terminal_font_size: 15.0,
-            agent_font_size: 15.0,
+            agent_font_size: 12.0,
             terminal_shell: String::new(),
             terminal_scrollback: 10_000,
         }

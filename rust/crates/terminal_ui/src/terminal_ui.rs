@@ -19,14 +19,14 @@ pub use panel::{HolderScope, TerminalPanel};
 
 pub const DEFAULT_FONT_SIZE: f32 = 15.0;
 /// Terminal text size in hundredths of a design px, set from the app's settings.
-static FONT_HUNDREDTHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1500);
+static FONT_HUNDREDTHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1200);
 
 pub fn font_size() -> f32 {
     FONT_HUNDREDTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }
 
 static AGENT_FONT_HUNDREDTHS: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(1500);
+    std::sync::atomic::AtomicU32::new(1200);
 
 /// The text size of coding-agent tabs, set apart from shells: agents are read like documents.
 pub fn agent_font_size() -> f32 {

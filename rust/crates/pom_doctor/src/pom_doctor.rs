@@ -205,7 +205,7 @@ pub fn diagnose(
             .detail(format!(
                 "config uses {{{{secret.{name}}}}} but no value is stored"
             ))
-            .fix("add it in Settings > Integrations > Secrets"),
+            .fix("add it in the Services panel > Secrets (the key button)"),
         );
     }
     let mut services: Vec<&String> = config.shared_services.keys().collect();
