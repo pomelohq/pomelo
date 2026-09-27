@@ -509,6 +509,7 @@ impl SettingsView {
             &self.search_query,
             self.search_active(),
             self.nav_scroll,
+            &self.pages.project.session,
         );
         self.nav_clip = chrome.nav_clip;
         self.nav_max = (chrome.nav_height - chrome.nav_clip.h).max(0.0);

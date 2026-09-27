@@ -946,7 +946,10 @@ pub fn chrome(
     search: &str,
     search_active: bool,
     nav_scroll: f32,
+    project: &str,
 ) -> Chrome {
+    let project_scope =
+        (matches!(selected, PROJECT | INTEGRATIONS) && !project.is_empty()).then_some(project);
     let x = rem(SIDEBAR_W);
     let mut out = render(
         &sidebar_head(search, search_active),
@@ -977,7 +980,7 @@ pub fn chrome(
         .bg(bg_c())
         .px(CONTENT_PAD)
         .child(div().h_px(CONTENT_TOP))
-        .child(toolbar())
+        .child(toolbar(project_scope))
         .into();
     let sp = render(
         &strip,
@@ -1120,6 +1123,7 @@ pub fn panel(
         search,
         search_active,
         0.0,
+        &state.project.session,
     );
     for part in [ch.fixed, ch.nav] {
         out.rects.extend(part.rects);
@@ -1337,7 +1341,31 @@ fn sub_item(name: &str, id: u64, hovered: bool, active: bool) -> Node {
 /// The content-pane top bar: file switcher on the left, "Edit in settings.json" on the right. Like the
 /// reference's files header, it's `justify_between` so the right button stays pinned to the content's right
 /// edge (never pushed off-window); the left group truncates/overlaps under it when space is tight.
-fn toolbar() -> Node {
+/// The scope the page edits: the user's settings file, or (Project and Integrations) the open project, whose
+/// config the right button then opens.
+fn toolbar(project: Option<&str>) -> Node {
+    let (scope, file): (Node, Node) = match project {
+        Some(name) => (
+            button_static(name.to_string(), ButtonStyle::TintedAccent).into(),
+            ui::button_sized(
+                CTRL_EDIT_PROJECT_CONFIG,
+                "Edit pom.yml",
+                ButtonStyle::OutlinedGhost,
+                ui::ButtonSize::Default,
+            )
+            .into(),
+        ),
+        None => (
+            button_static("User", ButtonStyle::TintedAccent).into(),
+            ui::button_sized(
+                CTRL_OPEN_JSON,
+                "Edit in settings.json",
+                ButtonStyle::OutlinedGhost,
+                ui::ButtonSize::Default,
+            )
+            .into(),
+        ),
+    };
     // The left file group grows to fill, pushing the right button to the content's right edge. When the left
     // group's content is wider than its grown slot, it overflows under the (last-drawn, on-top) right button
     // rather than shoving it off-window.
@@ -1346,18 +1374,8 @@ fn toolbar() -> Node {
         .h_px(30.0)
         .items_center()
         .justify_between()
-        .child(
-            div()
-                .row()
-                .gap(8.0)
-                .items_center()
-                .child(button_static("User", ButtonStyle::TintedAccent))
-                .child(button_static("pomelo-project", ButtonStyle::Subtle)),
-        )
-        .child(button_static(
-            "Edit in settings.json",
-            ButtonStyle::OutlinedGhost,
-        ))
+        .child(div().row().gap(8.0).items_center().child(scope))
+        .child(file)
         .into()
 }
 

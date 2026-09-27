@@ -1114,6 +1114,7 @@ fn main() -> anyhow::Result<()> {
             &search,
             false,
             0.0,
+            "myproject",
         );
         let mut chrome = parts.fixed;
         chrome.rects.extend(parts.nav.rects);
