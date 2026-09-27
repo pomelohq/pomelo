@@ -470,6 +470,16 @@ impl WindowModal for NewProjectModal {
     }
 }
 
+/// `~/...` for a path under the home folder, so the part that matters fits.
+fn home_relative(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && path.starts_with(&format!("{home}/")) => {
+            format!("~{}", &path[home.len()..])
+        }
+        _ => path.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -568,15 +578,5 @@ mod tests {
         assert!(form.can_create());
         form.click(REMOVE_BASE);
         assert!(!form.can_create());
-    }
-}
-
-/// `~/...` for a path under the home folder, so the part that matters fits.
-fn home_relative(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&format!("{home}/")) => {
-            format!("~{}", &path[home.len()..])
-        }
-        _ => path.to_string(),
     }
 }
