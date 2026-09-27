@@ -1104,8 +1104,20 @@ fn main() -> anyhow::Result<()> {
         let clip = settings_ui::content_region(lw, lh);
         let (page, total_h) =
             settings_ui::page(category, &settings, &state, None, &search, lw, lh, scroll);
-        let mut chrome =
-            settings_ui::chrome(category, None, Some(0), &expanded, lw, lh, &search, false);
+        let parts = settings_ui::chrome(
+            category,
+            None,
+            Some(0),
+            &expanded,
+            lw,
+            lh,
+            &search,
+            false,
+            0.0,
+        );
+        let mut chrome = parts.fixed;
+        chrome.rects.extend(parts.nav.rects);
+        chrome.texts.extend(parts.nav.texts);
         if let Some(bar) = settings_ui::content_scrollbar(clip, total_h, scroll) {
             chrome.rects.push(bar);
         }

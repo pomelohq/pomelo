@@ -72,6 +72,10 @@ pub struct SettingsView {
     expanded: Vec<bool>,
     search_query: String,
     page_scroll: f32,
+    /// How far the sidebar's category list is scrolled, how far it can go, and where it shows.
+    nav_scroll: f32,
+    nav_max: f32,
+    nav_clip: Rect,
     page_total_h: f32,
     editing: Option<(u64, String)>,
     hovered: Option<u64>,
@@ -110,6 +114,9 @@ impl SettingsView {
             expanded,
             search_query: String::new(),
             page_scroll: 0.0,
+            nav_scroll: 0.0,
+            nav_max: 0.0,
+            nav_clip: Rect::new(0.0, 0.0, 0.0, 0.0, ui::Rgba::TRANSPARENT),
             page_total_h: 0.0,
             editing: None,
             hovered: None,
@@ -501,7 +508,16 @@ impl SettingsView {
             h,
             &self.search_query,
             self.search_active(),
+            self.nav_scroll,
         );
+        self.nav_clip = chrome.nav_clip;
+        self.nav_max = (chrome.nav_height - chrome.nav_clip.h).max(0.0);
+        if self.nav_scroll > self.nav_max {
+            self.nav_scroll = self.nav_max;
+        }
+        let nav_clip = chrome.nav_clip;
+        let nav = chrome.nav;
+        let chrome = chrome.fixed;
 
         let popover = self.popover.and_then(|cid| {
             let anchor = page
@@ -545,6 +561,12 @@ impl SettingsView {
             .copied()
             .collect();
         hits.extend(overlay.hits.iter().copied());
+        hits.extend(
+            nav.hits
+                .iter()
+                .copied()
+                .filter(|(r, _)| r.y + r.h > nav_clip.y && r.y < nav_clip.y + nav_clip.h),
+        );
         if let Some(pop) = &popover {
             hits.extend(pop.hits.iter().copied());
         }
@@ -565,6 +587,10 @@ impl SettingsView {
             Overlay {
                 painted: overlay,
                 clip: None,
+            },
+            Overlay {
+                painted: nav,
+                clip: Some(nav_clip),
             },
         ];
         if let Some(pop) = popover {
@@ -635,6 +661,15 @@ impl SettingsView {
     /// Scroll the page or the open popover by a wheel delta (logical px). `(x, y)` is the cursor. Returns true
     /// if something moved (repaint needed).
     pub fn scroll(&mut self, dy: f32, x: f32, y: f32) -> bool {
+        let clip = self.nav_clip;
+        if x < clip.x + clip.w && y >= clip.y && self.popover.is_none() {
+            let next = (self.nav_scroll - dy).clamp(0.0, self.nav_max);
+            if (next - self.nav_scroll).abs() <= 0.01 {
+                return false;
+            }
+            self.nav_scroll = next;
+            return true;
+        }
         if self.popover.is_none() || !self.over_popover(x, y) {
             let clip_h = self.content_clip_h();
             let max = (self.page_total_h - clip_h).max(0.0);
@@ -1120,10 +1155,36 @@ mod tests {
     fn opens_on_appearance_with_layers() {
         let (mut app, h) = open();
         let frame = app.draw(h).expect("frame");
-        // A clipped page layer plus the fixed chrome layer (no popover yet).
-        assert_eq!(frame.overlays.len(), 2);
+        // A clipped page layer, the fixed chrome, and the clipped category list (no popover yet).
+        assert_eq!(frame.overlays.len(), 3);
         assert!(frame.overlays[0].clip.is_some(), "page is clipped");
         assert!(frame.overlays[1].clip.is_none(), "chrome is unclipped");
+        assert!(frame.overlays[2].clip.is_some(), "category list is clipped");
+    }
+
+    #[test]
+    fn a_short_window_scrolls_the_category_list() {
+        let mut app = Application::new();
+        let (h, view) = app.open_raw_window(
+            ui::WindowOptions {
+                width: 920.0,
+                height: 360.0,
+                scale: 2.0,
+                ..Default::default()
+            },
+            |_| SettingsView::new(Settings::default()),
+        );
+        let project = settings_ui::PROJECT as u64;
+        let visible = |frame: &ui::Frame| frame.hits.iter().any(|(_, id)| *id == project);
+        let frame = app.draw(h).expect("frame");
+        assert!(
+            !visible(&frame),
+            "the last category starts below the window"
+        );
+        let moved = view.update(app.app_mut(), |v, _| v.scroll(-10_000.0, 20.0, 200.0));
+        assert!(moved);
+        let frame = app.draw(h).expect("frame");
+        assert!(visible(&frame), "scrolled into view");
     }
 
     #[test]
@@ -1136,11 +1197,11 @@ mod tests {
             .expect("theme control laid out");
         app.simulate_click(h, theme_anchor.0, theme_anchor.1);
         let frame = app.draw(h).expect("frame");
-        assert_eq!(frame.overlays.len(), 3, "popover layer added");
+        assert_eq!(frame.overlays.len(), 4, "popover layer added");
         // Click the control again to toggle it closed.
         app.simulate_click(h, theme_anchor.0, theme_anchor.1);
         let frame = app.draw(h).expect("frame");
-        assert_eq!(frame.overlays.len(), 2, "popover closed");
+        assert_eq!(frame.overlays.len(), 3, "popover closed");
     }
 
     #[test]
@@ -1161,7 +1222,7 @@ mod tests {
         let hit = app.simulate_click(h, item.0, item.1);
         assert_eq!(hit, Some(settings_ui::POPOVER_BASE + 1));
         let frame = app.draw(h).expect("frame");
-        assert_eq!(frame.overlays.len(), 2, "popover closed after choosing");
+        assert_eq!(frame.overlays.len(), 3, "popover closed after choosing");
     }
 
     #[test]

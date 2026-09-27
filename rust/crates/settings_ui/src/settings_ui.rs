@@ -925,7 +925,16 @@ pub fn content_scrollbar(clip: (f32, f32, f32, f32), total_h: f32, scroll: f32) 
     })
 }
 
-/// The fixed chrome: the sidebar plus the toolbar strip (opaque, so it masks scrolled-away page content).
+/// The window chrome: `fixed` is the sidebar's top and the toolbar strip (opaque, so it masks scrolled-away page
+/// content); `nav` is the category list laid out `nav_scroll` up, to be clipped to `nav_clip`, and `nav_height`
+/// its full height.
+pub struct Chrome {
+    pub fixed: ui::Painted,
+    pub nav: ui::Painted,
+    pub nav_clip: Rect,
+    pub nav_height: f32,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn chrome(
     selected: usize,
@@ -936,19 +945,32 @@ pub fn chrome(
     h: f32,
     search: &str,
     search_active: bool,
-) -> ui::Painted {
+    nav_scroll: f32,
+) -> Chrome {
     let x = rem(SIDEBAR_W);
     let mut out = render(
-        &sidebar(
-            selected,
-            hovered,
-            active_section,
-            expanded,
-            search,
-            search_active,
-        ),
+        &sidebar_head(search, search_active),
         Rect::new(0.0, 0.0, x, h, sidebar_c()),
     );
+    let nav_top = out
+        .hits
+        .iter()
+        .find(|(_, id)| *id == CTRL_SEARCH)
+        .map_or(0.0, |(rect, _)| rect.y + rect.h)
+        + rem(10.0);
+    let nav_clip = Rect::new(0.0, nav_top, x, (h - nav_top).max(0.0), Rgba::TRANSPARENT);
+    let origin = nav_top - nav_scroll;
+    let nav = render(
+        &sidebar_nav(selected, hovered, active_section, expanded, search),
+        Rect::new(0.0, origin, x, h.max(1.0) * 4.0, Rgba::TRANSPARENT),
+    );
+    let nav_height = nav
+        .hits
+        .iter()
+        .map(|(rect, _)| rect.y + rect.h)
+        .fold(origin, f32::max)
+        - origin
+        + rem(10.0);
     let strip: Node = div()
         .col()
         .h_px(PAGE_TOP)
@@ -966,7 +988,12 @@ pub fn chrome(
     out.texts.extend(sp.texts);
     out.icons.extend(sp.icons);
     out.hits.extend(sp.hits);
-    out
+    Chrome {
+        fixed: out,
+        nav,
+        nav_clip,
+        nav_height,
+    }
 }
 
 /// The scrollable page for `selected`, laid out in the content region offset up by `scroll`. Returns the
@@ -1092,24 +1119,21 @@ pub fn panel(
         h,
         search,
         search_active,
+        0.0,
     );
-    out.rects.extend(ch.rects);
-    out.tris.extend(ch.tris);
-    out.texts.extend(ch.texts);
-    out.icons.extend(ch.icons);
-    out.hits.extend(ch.hits);
+    for part in [ch.fixed, ch.nav] {
+        out.rects.extend(part.rects);
+        out.tris.extend(part.tris);
+        out.texts.extend(part.texts);
+        out.icons.extend(part.icons);
+        out.hits.extend(part.hits);
+    }
     out
 }
 
-fn sidebar(
-    selected: usize,
-    hovered: Option<u64>,
-    active_section: Option<usize>,
-    expanded: &[bool],
-    search: &str,
-    search_active: bool,
-) -> Node {
-    let mut col = div()
+/// The sidebar's fixed top: room for the traffic lights and the search box.
+fn sidebar_head(search: &str, search_active: bool) -> Node {
+    let col = div()
         .col()
         .w_px(240.0)
         .bg(sidebar_c())
@@ -1155,9 +1179,18 @@ fn sidebar(
                 .child(close_icon().size(14.0).color(dim_c())),
         );
     }
-    col = col.child(search_box);
-    col = col.child(div().h_px(8.0));
+    col.child(search_box).into()
+}
 
+/// The category list under the search box; it scrolls when it is taller than the window.
+fn sidebar_nav(
+    selected: usize,
+    hovered: Option<u64>,
+    active_section: Option<usize>,
+    expanded: &[bool],
+    search: &str,
+) -> Node {
+    let mut col = div().col().w_px(240.0).px(10.0).pb(10.0).gap(2.0);
     let searching = !search.is_empty();
     let q = search.to_lowercase();
     for (i, (name, subs)) in CATEGORIES.iter().enumerate() {
