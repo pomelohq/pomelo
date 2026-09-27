@@ -82,6 +82,11 @@ tree-sitter-json = "0.24.8"
 [patch.crates-io]
 wgpu-hal = { path = "vendor/wgpu-hal" }
 
+# Line tables keep panics and profilers pointing at the right lines; full debug info for every crate and test
+# binary is what filled target/ with tens of GB.
+[profile.dev]
+debug = "line-tables-only"
+
 # Our crates stay unoptimized for fast rebuilds; the hot third-party code on every frame (syntax queries, text
 # shaping, the rope, GPU submission) is optimized so a dev build scrolls smoothly.
 [profile.dev.package]

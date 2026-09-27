@@ -1170,6 +1170,7 @@ dependencies = [
  "lsp",
  "markdown",
  "nucleo-matcher",
+ "pom_paths",
  "pomelo-editor",
  "ropey",
  "serde",
@@ -4145,6 +4146,7 @@ dependencies = [
 name = "settings"
 version = "0.6.1"
 dependencies = [
+ "pom_paths",
  "serde",
  "serde_json",
 ]
@@ -6333,6 +6335,7 @@ name = "workspace"
 version = "0.6.1"
 dependencies = [
  "arboard",
+ "pom_paths",
  "pomelo-editor",
  "serde",
  "serde_json",
