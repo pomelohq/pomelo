@@ -689,6 +689,13 @@ impl WorkspaceView {
     }
 
     /// Running services started with the previous config: offer to restart them (none clears the offer).
+    /// Returns whether the header has to move.
+    pub fn set_fullscreen(&mut self, fullscreen: bool) -> bool {
+        let changed = self.layout.fullscreen != fullscreen;
+        self.layout.fullscreen = fullscreen;
+        changed
+    }
+
     pub fn set_stale_services(&mut self, names: &[String]) {
         let showing = matches!(
             self.notification.as_ref().and_then(|n| n.action.as_ref()),
@@ -5808,6 +5815,23 @@ mod tests {
             effects.action,
             Some(crate::keymap::Action::OpenProjectConfig)
         );
+    }
+
+    #[test]
+    fn fullscreen_moves_the_project_name_to_the_edge() {
+        let (mut app, h, e) = open();
+        app.draw(h);
+        let windowed = app
+            .window(h)
+            .and_then(|w| w.center_of(SESSION_TRIGGER))
+            .expect("trigger");
+        assert!(e.update(app.app_mut(), |v, _| v.set_fullscreen(true)));
+        app.draw(h);
+        let full = app
+            .window(h)
+            .and_then(|w| w.center_of(SESSION_TRIGGER))
+            .expect("trigger");
+        assert!(full.0 < windowed.0 - 50.0, "{full:?} vs {windowed:?}");
     }
 
     #[test]

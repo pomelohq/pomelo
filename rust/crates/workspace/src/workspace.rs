@@ -101,6 +101,7 @@ pub const BOTTOM_MAX: f32 = 600.0;
 pub const DIVIDER_HIT: f32 = 5.0;
 pub const TRAFFIC_INSET: f32 = 82.0; // left space reserved for the macOS traffic lights
 const SESSION_LEFT: f32 = TRAFFIC_INSET + 14.0; // extra gap so the session trigger clears the traffic lights
+const FULLSCREEN_LEFT: f32 = 8.0;
 
 // Colors resolved from the active theme so the workspace restyles with it. Placeholder content panels keep
 // fixed demo colors until real content lands.
@@ -519,6 +520,8 @@ pub struct Layout {
     pub session_menu: bool,
     /// Pixel scroll offset of the (scrollable) session menu list.
     pub session_scroll: f32,
+    /// The window fills the screen: macOS hides the traffic lights, so the header needs no room for them.
+    pub fullscreen: bool,
     pub files_view: Option<Box<dyn FunctionView>>,
     pub terminal_view: Option<Box<dyn TerminalPanelView>>,
     /// Agent sessions, shown in the agent dock rather than among the terminals.
@@ -1438,6 +1441,7 @@ impl Default for Layout {
             current_session: None,
             session_menu: false,
             session_scroll: 0.0,
+            fullscreen: false,
             files_view: None,
             terminal_view: None,
             agent_view: None,
@@ -1918,6 +1922,15 @@ impl Layout {
 
     /// The interactive session switcher in the header (left, after the traffic lights): just the current
     /// session name as a subtle Button-style trigger, like the reference's project name button.
+    /// Where the session switcher starts: past the traffic lights, or near the edge once they are hidden.
+    fn session_left(&self) -> f32 {
+        if self.fullscreen {
+            FULLSCREEN_LEFT
+        } else {
+            SESSION_LEFT
+        }
+    }
+
     pub fn header(&self, w: f32, hovered: Option<u64>) -> Painted {
         let name = self
             .current_session
@@ -1944,9 +1957,9 @@ impl Layout {
         render(
             &bar,
             Rect::new(
-                SESSION_LEFT,
+                self.session_left(),
                 0.0,
-                (w - SESSION_LEFT).max(0.0),
+                (w - self.session_left()).max(0.0),
                 TOP_BAR_H,
                 Rgba::TRANSPARENT,
             ),
@@ -2018,7 +2031,7 @@ impl Layout {
     ) -> SessionMenu {
         let entries = self.session_entries(query);
         let scale = ui::ui_text_scale();
-        let x = SESSION_LEFT;
+        let x = self.session_left();
         let y = TOP_BAR_H + 2.0;
         let menu_w = 300.0 * scale;
 

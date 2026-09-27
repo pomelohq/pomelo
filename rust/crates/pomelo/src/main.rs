@@ -3092,6 +3092,11 @@ impl ApplicationHandler for App {
                         center_traffic_lights(&m.window);
                     }
                 }
+                let fullscreen = self
+                    .mains
+                    .get(&id)
+                    .is_some_and(|m| m.window.fullscreen().is_some());
+                self.with_workspace_view(id, |v, _| v.set_fullscreen(fullscreen));
                 // Remember the window size (persisted on quit / dock change), not on every resize event.
                 self.settings.window_width = size.width as f32 / scale;
                 self.settings.window_height = size.height as f32 / scale;
