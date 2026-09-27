@@ -150,9 +150,13 @@ pub const CTRL_SEARCH: u64 = 103;
 pub const CTRL_SEARCH_CLEAR: u64 = 104;
 pub const NAV_JUMP_BASE: u64 = 400;
 pub const NAV_JUMP_STRIDE: u64 = 10;
+pub const NAV_JUMP_END: u64 = NAV_JUMP_BASE + CATEGORY_COUNT as u64 * NAV_JUMP_STRIDE;
 /// A category's disclosure toggle (the chevron): clicking id `NAV_TOGGLE_BASE + category_index` expands or
 /// collapses it. Only the chevron toggles; clicking the row selects the category (reference behavior).
-pub const NAV_TOGGLE_BASE: u64 = 500;
+pub const NAV_TOGGLE_BASE: u64 = 2_000;
+const _: () = assert!(
+    NAV_JUMP_END <= NAV_TOGGLE_BASE && NAV_TOGGLE_BASE + CATEGORY_COUNT as u64 <= POPOVER_BASE
+);
 /// A section header's geometry marker in the page (so the app can read its y to scroll to it). Not a visible
 /// affordance -- it only exists to record the header's rect in the hit list.
 pub const SECTION_ANCHOR_BASE: u64 = 5000;
@@ -3015,6 +3019,13 @@ mod tests {
         // Sub-section label appears in the navbar and a chevron icon is drawn.
         assert!(p.texts.iter().any(|x| x.text == "Theme"));
         assert!(!p.icons.is_empty());
+    }
+
+    #[test]
+    fn nav_jump_ids_never_collide_with_category_toggles() {
+        for (category, (_, subs)) in CATEGORIES.iter().enumerate() {
+            assert!(subs.len() as u64 <= NAV_JUMP_STRIDE, "{category}");
+        }
     }
 
     #[test]

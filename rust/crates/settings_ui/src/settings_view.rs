@@ -876,12 +876,15 @@ impl SettingsView {
         } else if id == settings_ui::CTRL_SEARCH {
             self.commit_edit();
             self.close_popover();
-        } else if (settings_ui::NAV_TOGGLE_BASE..settings_ui::NAV_TOGGLE_BASE + 100).contains(&id) {
+        } else if (settings_ui::NAV_TOGGLE_BASE
+            ..settings_ui::NAV_TOGGLE_BASE + settings_ui::CATEGORY_COUNT as u64)
+            .contains(&id)
+        {
             let ci = (id - settings_ui::NAV_TOGGLE_BASE) as usize;
             if let Some(e) = self.expanded.get_mut(ci) {
                 *e = !*e;
             }
-        } else if (settings_ui::NAV_JUMP_BASE..settings_ui::NAV_TOGGLE_BASE).contains(&id) {
+        } else if (settings_ui::NAV_JUMP_BASE..settings_ui::NAV_JUMP_END).contains(&id) {
             self.commit_edit();
             self.popover = None;
             let rel = id - settings_ui::NAV_JUMP_BASE;
