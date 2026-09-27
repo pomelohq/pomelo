@@ -87,7 +87,6 @@ impl Node {
         matches!(self.kind, NodeKind::Mapping(_))
     }
 
-    #[cfg(test)]
     pub fn without_lines(&self) -> Node {
         let kind = match &self.kind {
             NodeKind::Scalar { .. } => self.kind.clone(),

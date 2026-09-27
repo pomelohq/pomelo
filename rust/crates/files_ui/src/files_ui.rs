@@ -8761,7 +8761,7 @@ mod markdown_preview_tests {
         std::fs::write(project.join("pom.yml"), "session: demo\n").expect("write");
         let mut view = FilesView::new(main)
             .read_only(true)
-            .writable(vec![project.join("pom.yml"), project.join("pom.d")]);
+            .writable(vec![project.join("pom.yml")]);
         view.open_file_at(&project.join("pom.yml"), None, None);
         view.tick_items(&|| None);
         view.editor_text("# ");

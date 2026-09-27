@@ -43,7 +43,7 @@ Before cutting a release, run the `release-audit` skill: release notes and the S
 - **Crate-per-feature.** `crates/pomelo` is a thin composition root (windows + macOS glue). Each feature is a
   crate, split into logic (`<feature>`) and its view (`<feature>_ui`). Toolkit crates: `ui` (wgpu/winit GPU
   primitives + the `div()/label()` element tree), `workspace` (layout, docks, panes), `editor`.
-- **Core crates**: `pom_config` (pom.yml + pom.d parse, templates, validation, maintenance edits), `pom_core`
+- **Core crates**: `pom_config` (pom.yml parse, templates, validation, maintenance edits), `pom_core`
   (projects, scaffolding, adding/removing repos), `pom_services` (service runner, env files, ports, shared
   Docker services), `pom_workspace` (staged create/delete), `pom_ptyhost` (self-managed PTY holders),
   `pom_proxy` (dev proxy + webhook relay), `pom_mcp` (stdio MCP server for agents), `pom_agent` (agent

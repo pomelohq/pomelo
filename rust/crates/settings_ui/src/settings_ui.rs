@@ -232,8 +232,6 @@ pub const CTRL_IMPORT_CONFIG: u64 = 278;
 pub const CTRL_EDIT_PROJECT_CONFIG: u64 = 279;
 pub const CTRL_ADD_REPO: u64 = 280;
 pub const CTRL_APPLY_CONFIG: u64 = 281;
-pub const CTRL_SPLIT_CONFIG: u64 = 282;
-pub const CTRL_NORMALIZE_CONFIG: u64 = 283;
 /// Per repository row of the Project page: id = base + row index.
 pub const CTRL_REPO_RENAME_BASE: u64 = 20_000;
 pub const CTRL_REPO_REMOVE_BASE: u64 = 21_000;
@@ -2368,8 +2366,8 @@ fn project_config_items() -> Vec<PageItem> {
     vec![
             PageItem::Header("Config"),
             PageItem::Row(SettingRow {
-                title: "Config Files".into(),
-                description: "pom.yml and its pom.d fragments. Each save is checked first and reloads at once, even from main.".into(),
+                title: "Config File".into(),
+                description: "The project's pom.yml. Each save is checked first and reloads at once, even from main.".into(),
                 control: Control::Button {
                     id: CTRL_EDIT_PROJECT_CONFIG,
                     label: "Edit...",
@@ -2387,30 +2385,10 @@ fn project_config_items() -> Vec<PageItem> {
                 },
                 reset: None,
             }),
-            PageItem::Row(SettingRow {
-                title: "Split into pom.d".into(),
-                description: "One file per repo plus shared services and environments; the old file is kept as a backup.".into(),
-                control: Control::Button {
-                    id: CTRL_SPLIT_CONFIG,
-                    label: "Split",
-                    enabled: true,
-                },
-                reset: None,
-            }),
-            PageItem::Row(SettingRow {
-                title: "Normalize".into(),
-                description: "Drop removed keys, rewrite old colon tokens to dot notation, then split.".into(),
-                control: Control::Button {
-                    id: CTRL_NORMALIZE_CONFIG,
-                    label: "Normalize",
-                    enabled: true,
-                },
-                reset: None,
-            }),
             PageItem::Header("Config Bundle"),
             PageItem::Row(SettingRow {
                 title: "Export".into(),
-                description: "Save this project's merged config as YAML, or with its secrets sealed under a password, to hand to a teammate.".into(),
+                description: "Save this project's config as YAML, or with its secrets sealed under a password, to hand to a teammate.".into(),
                 control: Control::Button {
                     id: CTRL_EXPORT_CONFIG,
                     label: "Export...",

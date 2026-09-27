@@ -5,79 +5,11 @@ use std::path::{Path, PathBuf};
 
 use pom_config::yaml_node::{self, Node};
 use pom_config::Config;
-use serde::Serialize;
 
-#[derive(Serialize)]
-pub struct ConfigFile {
-    pub name: String,
-    pub path: PathBuf,
-    pub root: bool,
-}
-
-fn config_dir(config_path: &Path) -> PathBuf {
-    config_path
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
-}
-
-fn fragments(config_path: &Path) -> Vec<PathBuf> {
-    pom_config::fragment_files(&config_dir(config_path)).unwrap_or_default()
-}
-
-/// The root `pom.yml` first, then every `pom.d` fragment.
-pub fn list(config_path: &Path) -> Vec<ConfigFile> {
-    let dir = config_dir(config_path);
-    let root = ConfigFile {
-        name: config_path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        path: config_path.to_path_buf(),
-        root: true,
-    };
-    std::iter::once(root)
-        .chain(fragments(config_path).into_iter().map(|path| {
-            ConfigFile {
-                name: path
-                    .strip_prefix(&dir)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .into_owned(),
-                path,
-                root: false,
-            }
-        }))
-        .collect()
-}
-
-/// The config as one text: the root file, or with a split config every file under a header naming it.
-pub fn merged_text(config_path: &Path) -> Result<String, String> {
-    let files = list(config_path);
-    if files.len() == 1 {
-        return std::fs::read_to_string(config_path).map_err(|error| error.to_string());
-    }
-    let mut out = String::from(
-        "# The config is split: the root pom.yml plus pom.d fragments, merged in this order.\n",
-    );
-    for file in files {
-        let body = std::fs::read_to_string(&file.path).map_err(|error| error.to_string())?;
-        out.push_str(&format!("\n# --- {} ---\n{body}", file.name));
-        if !body.ends_with('\n') {
-            out.push('\n');
-        }
-    }
-    Ok(out)
-}
-
-pub fn read(config_path: &Path, path: &Path) -> Result<String, String> {
-    if !allowed(config_path, path) {
-        return Err("unknown config file".into());
-    }
-    std::fs::read_to_string(path).map_err(|error| error.to_string())
-}
-
-fn allowed(config_path: &Path, path: &Path) -> bool {
-    list(config_path).iter().any(|file| file.path == path)
+/// The config text, after folding a legacy `pom.d/` into it.
+pub fn read(config_path: &Path) -> Result<String, String> {
+    pom_config::migrate_fragments(config_path).map_err(|error| error.to_string())?;
+    std::fs::read_to_string(config_path).map_err(|error| error.to_string())
 }
 
 fn parse(yaml: &str) -> Result<Option<Node>, String> {
@@ -107,38 +39,8 @@ pub fn validate_text(yaml: &str) -> Result<(), String> {
 }
 
 pub fn write_root(config_path: &Path, yaml: &str) -> Result<(), String> {
-    if list(config_path).len() > 1 {
-        return Err(
-            "config is split across pom.d/*.yml - edit those files directly (use config_file_set)"
-                .into(),
-        );
-    }
     validate_text(yaml)?;
     std::fs::write(config_path, yaml).map_err(|error| error.to_string())
-}
-
-/// Writes one file after checking the whole config as it would be with the edit. An edit is still
-/// accepted while the config was already broken elsewhere, so a fix can land one file at a time.
-pub fn write_file(
-    config_path: &Path,
-    path: &Path,
-    yaml: &str,
-    dry: bool,
-) -> Result<String, String> {
-    if !allowed(config_path, path) {
-        return Err("unknown config file".into());
-    }
-    let note = match pom_config::edit::check_file_edit(config_path, path, yaml)? {
-        None => "Saved.".to_string(),
-        Some(problem) => {
-            format!("Saved (config still has errors elsewhere - keep fixing): {problem}")
-        }
-    };
-    if dry {
-        return Ok(note.replacen("Saved", "Would save", 1));
-    }
-    std::fs::write(path, yaml).map_err(|error| error.to_string())?;
-    Ok(note)
 }
 
 fn load_and_validate(path: &Path) -> Result<(), String> {
@@ -183,41 +85,15 @@ mod tests {
     }
 
     #[test]
-    fn split_configs_are_edited_file_by_file() {
+    fn a_rejected_write_leaves_the_config_alone() {
         let temp = tempfile::tempdir().expect("temp");
         let root = temp.path().join("pom.yml");
-        std::fs::write(&root, "session: demo\n").expect("root");
-        std::fs::create_dir_all(temp.path().join("pom.d/repos")).expect("pom.d");
-        let fragment = temp.path().join("pom.d/repos/10-api.yml");
-        std::fs::write(
-            &fragment,
-            "repos:\n  api:\n    services:\n      web: rails s\n",
-        )
-        .expect("fragment");
-
-        let names: Vec<String> = list(&root).into_iter().map(|file| file.name).collect();
-        assert_eq!(names, ["pom.yml", "pom.d/repos/10-api.yml"]);
-        assert!(merged_text(&root)
-            .expect("merged")
-            .contains("# --- pom.d/repos/10-api.yml ---"));
-        assert!(
-            write_root(&root, VALID).is_err(),
-            "a split config rejects a root rewrite"
-        );
-
+        std::fs::write(&root, VALID).expect("root");
         let broken = "repos:\n  api:\n    profiles: [staging]\n    services:\n      web: rails s\n";
-        assert!(write_file(&root, &fragment, broken, false).is_err());
-        assert!(
-            read(&root, &fragment).expect("read").contains("rails s"),
-            "nothing written"
-        );
-
-        let fixed = "repos:\n  api:\n    services:\n      web: rails server\n";
-        assert_eq!(
-            write_file(&root, &fragment, fixed, false),
-            Ok("Saved.".to_string())
-        );
-        assert_eq!(read(&root, &fragment).expect("read"), fixed);
-        assert!(read(&root, Path::new("/etc/hosts")).is_err());
+        assert!(write_root(&root, broken).is_err());
+        assert_eq!(read(&root).expect("read"), VALID);
+        let fixed = VALID.replace("rails s", "rails server");
+        write_root(&root, &fixed).expect("write");
+        assert_eq!(read(&root).expect("read"), fixed);
     }
 }

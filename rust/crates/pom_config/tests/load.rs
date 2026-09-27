@@ -272,7 +272,7 @@ fn syntax_error_names_the_file() {
 }
 
 #[test]
-fn fragments_merge_in_order() {
+fn legacy_fragments_fold_into_pom_yml_in_order() {
     let project = Project::new(
         "session: demo\ndefault_branch: main\nrepos:\n  api:\n    alias: api\n    services:\n      s:\n        cmd: go run .\n",
     );
@@ -287,10 +287,12 @@ fn fragments_merge_in_order() {
     let config = project.load();
     assert_eq!(keys(&config.repos), ["api", "web"]);
     assert_eq!(config.shared_services["postgres"].image, "postgres:16");
+    assert!(!project.dir.path().join("pom.d").exists());
+    assert_eq!(keys(&project.load().repos), ["api", "web"]);
 }
 
 #[test]
-fn later_fragment_overrides_leaf_and_merges_maps() {
+fn a_later_legacy_fragment_overrides_leaves_and_merges_maps() {
     let project = Project::new("repos:\n  api:\n    setup: [a]\n    commands:\n      test: t\n");
     project.write(
         "pom.d/01.yml",
@@ -302,7 +304,7 @@ fn later_fragment_overrides_leaf_and_merges_maps() {
 }
 
 #[test]
-fn fragment_syntax_error_names_the_fragment() {
+fn a_broken_legacy_fragment_names_the_fragment() {
     let project = Project::new("session: x\n");
     project.write("pom.d/bad.yml", "a: [\n");
     let error = project.try_load().err();

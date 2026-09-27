@@ -129,10 +129,26 @@ fn project(config: &Config) -> Value {
     })
 }
 
+/// Loads a copy: loading folds a legacy `pom.d/` into `pom.yml`, which must not rewrite the fixture.
 fn rust_projection(fixture: &Path) -> Value {
-    match Config::load(&fixture.join("pom.yml")) {
+    let copy = tempfile::tempdir().expect("temp");
+    copy_tree(fixture, copy.path());
+    match Config::load(&copy.path().join("pom.yml")) {
         Ok(config) => normalize(project(&config)),
         Err(_) => json!({"load_error": true}),
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    for entry in std::fs::read_dir(from).expect("read fixture") {
+        let entry = entry.expect("entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("type").is_dir() {
+            std::fs::create_dir_all(&target).expect("dir");
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy");
+        }
     }
 }
 

@@ -50,8 +50,6 @@ pub struct SideEffects {
     pub edit_project_config: bool,
     pub add_repo: bool,
     pub apply_config: bool,
-    pub split_config: bool,
-    pub normalize_config: bool,
     /// The repo whose alias to change, or to take out of the project.
     pub rename_repo: Option<String>,
     pub remove_repo: Option<String>,
@@ -953,12 +951,6 @@ impl SettingsView {
         } else if id == settings_ui::CTRL_APPLY_CONFIG {
             self.commit_edit();
             self.pending.apply_config = true;
-        } else if id == settings_ui::CTRL_SPLIT_CONFIG {
-            self.commit_edit();
-            self.pending.split_config = true;
-        } else if id == settings_ui::CTRL_NORMALIZE_CONFIG {
-            self.commit_edit();
-            self.pending.normalize_config = true;
         } else if let Some(repo) = self.repo_for(id, settings_ui::CTRL_REPO_RENAME_BASE) {
             self.commit_edit();
             self.pending.rename_repo = Some(repo);

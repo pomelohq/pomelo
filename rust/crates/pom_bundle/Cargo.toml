@@ -3,7 +3,7 @@ name = "pom_bundle"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Config bundles: a project's merged config, optionally with its secrets sealed under a password."
+description = "Config bundles: a project's config, optionally with its secrets sealed under a password."
 
 [lib]
 path = "src/pom_bundle.rs"

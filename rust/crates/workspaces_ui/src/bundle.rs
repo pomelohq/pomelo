@@ -84,7 +84,7 @@ impl WindowModal for ExportConfigModal {
             section.child(status_line(
                 IconKind::File,
                 colors.icon_muted,
-                "Exports the merged config as plain YAML, without secrets",
+                "Exports the config as plain YAML, without secrets",
             ))
         };
         let buttons = div()
@@ -374,7 +374,7 @@ impl WindowModal for ImportConfigModal {
                 section = section.child(checkbox(
                     WRITE_CONFIG,
                     self.write_config,
-                    "Replace my pom.yml (kept as pom.yml.bak, split into pom.d)",
+                    "Replace my pom.yml (kept as pom.yml.bak)",
                 ));
                 start = Some(outlined_button(
                     ADAPT,

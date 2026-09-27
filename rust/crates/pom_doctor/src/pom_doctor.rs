@@ -96,15 +96,6 @@ pub fn docker_answers(path: &str) -> bool {
     }
 }
 
-fn merged_text(config_path: &Path) -> String {
-    let dir = config_path.parent().unwrap_or(Path::new("."));
-    std::iter::once(config_path.to_path_buf())
-        .chain(pom_config::fragment_files(dir).unwrap_or_default())
-        .filter_map(|file| std::fs::read_to_string(file).ok())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn template_refs(text: &str) -> Vec<&str> {
     let mut refs = Vec::new();
     let mut rest = text;
@@ -192,7 +183,7 @@ pub fn diagnose(
             .agent_fixable(),
         );
     }
-    let merged = merged_text(config_path);
+    let merged = std::fs::read_to_string(config_path).unwrap_or_default();
     let refs = template_refs(&merged);
     let mut missing: Vec<&str> = refs
         .iter()

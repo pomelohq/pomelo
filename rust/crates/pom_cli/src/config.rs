@@ -13,9 +13,6 @@ use crate::{say, Session};
 pub(crate) enum ConfigCommand {
     Path,
     Edit,
-    Split {
-        dry: bool,
-    },
     Normalize {
         dry: bool,
     },
@@ -45,9 +42,9 @@ impl ConfigCommand {
 }
 
 pub(crate) fn parse(words: &[&str]) -> Result<ConfigCommand, String> {
-    let (verb, rest) = words.split_first().ok_or(
-        "config needs a subcommand (path, edit, split, normalize, explain, export, import)",
-    )?;
+    let (verb, rest) = words
+        .split_first()
+        .ok_or("config needs a subcommand (path, edit, normalize, explain, export, import)")?;
     let args = Args::parse(rest, &["-o", "--output", "--branch", "--env"])?;
     let none = |args: &Args| args.at_most(0, &format!("config {verb}"));
     match *verb {
@@ -61,14 +58,11 @@ pub(crate) fn parse(words: &[&str]) -> Result<ConfigCommand, String> {
             none(&args)?;
             Ok(ConfigCommand::Edit)
         }
-        "split" | "normalize" => {
+        "normalize" => {
             args.allow(&["--dry-run"])?;
             none(&args)?;
-            let dry = args.has("--dry-run");
-            Ok(if *verb == "split" {
-                ConfigCommand::Split { dry }
-            } else {
-                ConfigCommand::Normalize { dry }
+            Ok(ConfigCommand::Normalize {
+                dry: args.has("--dry-run"),
             })
         }
         "explain" => {
@@ -119,26 +113,10 @@ pub(crate) fn execute(
     match command {
         ConfigCommand::Path => return say(out, &config_path.display().to_string()),
         ConfigCommand::Edit => return edit(config_path, out),
-        ConfigCommand::Split { dry } => {
-            let result = pom_config::maintain::split(config_path, *dry)?;
-            let verb = if *dry { "would write" } else { "wrote" };
-            say(out, &format!("root    {}", result.root.display()))?;
-            for fragment in &result.fragments {
-                say(out, &format!("{verb}   {}", fragment.display()))?;
-            }
-            return if *dry {
-                say(out, "dry run: nothing written")
-            } else {
-                say(out, &format!("backup  {}", result.backup.display()))
-            };
-        }
         ConfigCommand::Normalize { dry: true } => {
             let removed = pom_config::maintain::removed_keys_in(config_path);
             if removed.is_empty() {
-                say(
-                    out,
-                    "no removed keys; normalize would only migrate tokens and split",
-                )?;
+                say(out, "no removed keys; normalize would only migrate tokens")?;
             } else {
                 say(out, &format!("would remove: {}", removed.join(", ")))?;
             }
@@ -201,15 +179,10 @@ pub(crate) fn execute(
             };
             let applied = pom_bundle::apply(config_path, &state, &session, yaml, secret_values)?;
             if yaml.is_some() {
-                let tidied = if applied.split {
-                    ", split into pom.d"
-                } else {
-                    ""
-                };
                 say(
                     out,
                     &format!(
-                        "replaced {} (previous kept as pom.yml.bak{tidied})",
+                        "replaced {} (previous kept as pom.yml.bak)",
                         config_path.display()
                     ),
                 )?;
@@ -454,7 +427,7 @@ pub(crate) fn table(out: &mut dyn Write, indent: &str, rows: &[Vec<String>]) -> 
 
 /// The session name straight off the file, so a config that fails validation can still be replaced.
 fn session_of(config_path: &Path) -> Result<String, String> {
-    let document = pom_config::merged_document(config_path).map_err(|error| error.to_string())?;
+    let document = pom_config::document(config_path).map_err(|error| error.to_string())?;
     document
         .get("session")
         .map(|node| node.text().to_string())

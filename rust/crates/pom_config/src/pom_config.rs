@@ -1,9 +1,9 @@
 mod decode;
 mod depgraph;
 pub mod edit;
-mod include;
 mod lookup;
 pub mod maintain;
+mod migrate;
 mod presets;
 mod schema;
 mod validate;
@@ -12,8 +12,8 @@ pub mod yaml_node;
 use std::path::{Path, PathBuf};
 
 pub use depgraph::{CycleError, DepGraph};
-pub use include::{fragment_files, FRAGMENT_DIR};
 pub use lookup::ResolvedService;
+pub use migrate::{migrate_fragments, Migrated};
 pub use schema::{
     CodeAgentsConfig, Config, Dir, EnvFileEntry, HealthCheck, Preset, Service, SharedServiceDef,
     SharedServiceRef, Shortcut, SyncConfig, UiConfig, DEFAULT_ENV_FILE, DEFAULT_SESSION,
@@ -38,10 +38,10 @@ impl std::fmt::Display for LoadError {
 impl std::error::Error for LoadError {}
 
 impl Config {
-    /// Parses `path` plus every `pom.d` fragment beside it, then fills preset and well-known
-    /// defaults. Validation is separate so callers can still show a config that fails it.
+    /// Parses `path` (folding a legacy `pom.d/` into it first), then fills preset and well-known defaults.
+    /// Validation is separate so callers can still show a config that fails it.
     pub fn load(path: &Path) -> Result<Config, LoadError> {
-        let root = merged_document(path)?;
+        let root = document(path)?;
         let mut decoder = decode::Decoder::default();
         let mut config = Config::decode(&root, &mut decoder);
         if !decoder.errors.is_empty() {
@@ -57,42 +57,10 @@ impl Config {
     }
 }
 
-/// The root document with fragments merged in, before any typing.
-pub fn merged_document(path: &Path) -> Result<Node, LoadError> {
-    let error = |path: &Path, message: String| LoadError {
-        path: path.to_path_buf(),
-        message,
-    };
-    let mut root = read_document(path)?.unwrap_or_else(Node::empty_mapping);
-    let config_dir = path.parent().unwrap_or(Path::new("."));
-    let fragments = fragment_files(config_dir)
-        .map_err(|e| error(config_dir, format!("read {FRAGMENT_DIR}: {e}")))?;
-    if fragments.is_empty() {
-        return Ok(root);
-    }
-    if !root.is_mapping() {
-        return Err(error(path, "root is not a mapping".into()));
-    }
-    for fragment in fragments {
-        match read_document(&fragment)? {
-            Some(document) if document.is_mapping() => include::merge_mapping(&mut root, document),
-            _ => {}
-        }
-    }
-    Ok(root)
-}
-
-/// The config as one YAML text: the root file itself when there are no fragments, else the merged tree.
-pub fn merged_yaml(path: &Path) -> Result<String, LoadError> {
-    let config_dir = path.parent().unwrap_or(Path::new("."));
-    let has_fragments = fragment_files(config_dir).is_ok_and(|files| !files.is_empty());
-    if !has_fragments {
-        return std::fs::read_to_string(path).map_err(|e| LoadError {
-            path: path.to_path_buf(),
-            message: format!("read failed: {e}"),
-        });
-    }
-    Ok(yaml_node::to_yaml(&merged_document(path)?))
+/// The config document before any typing.
+pub fn document(path: &Path) -> Result<Node, LoadError> {
+    migrate::migrate_fragments(path)?;
+    Ok(read_document(path)?.unwrap_or_else(Node::empty_mapping))
 }
 
 fn read_document(path: &Path) -> Result<Option<Node>, LoadError> {

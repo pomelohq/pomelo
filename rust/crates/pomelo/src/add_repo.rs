@@ -239,32 +239,6 @@ impl App {
         self.with_workspace_view(id, |view, _| view.show_toast(message, None));
     }
 
-    /// Splits the config into `pom.d`, or normalizes it (which also splits).
-    pub(crate) fn tidy_config(&mut self, id: WindowId, normalize: bool) {
-        let Some(config_path) = self
-            .mains
-            .get(&id)
-            .and_then(|main| main.project.as_ref())
-            .map(|project| project.config_path.clone())
-        else {
-            return;
-        };
-        let message = if normalize {
-            match pom_config::maintain::normalize(&config_path) {
-                Ok(changes) if changes.is_empty() => "The config is already normal".to_string(),
-                Ok(changes) => format!("Normalized: {}", changes.join("; ")),
-                Err(error) => format!("Could not normalize: {error}"),
-            }
-        } else {
-            match pom_config::maintain::split(&config_path, false) {
-                Ok(result) => format!("Split into {} files under pom.d", result.fragments.len()),
-                Err(error) => format!("Could not split: {error}"),
-            }
-        };
-        self.refresh_project_now(id);
-        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
-    }
-
     /// Clones into main the repos the config names but main lacks; other workspaces keep the repos they chose.
     pub(crate) fn clone_missing_repos(&mut self, id: WindowId) {
         let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {

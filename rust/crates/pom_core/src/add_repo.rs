@@ -94,7 +94,7 @@ pub fn add_repo(
         .into_iter()
         .filter(|kind| !config.shared_services.contains_key(kind))
         .collect();
-    let file = write_entry(&project.config_path, &name, &block, &new_kinds)?;
+    let file = write_entry(&project.config_path, &block, &new_kinds)?;
     Ok(AddedRepo { name, file })
 }
 
@@ -211,42 +211,8 @@ fn shared_entries(kinds: &[String]) -> String {
         .collect()
 }
 
-/// Writes the entry into a new `pom.d/repos` fragment when the config is split, else into `pom.yml`, and
-/// takes it back if the config then fails to load.
-fn write_entry(
-    config_path: &Path,
-    name: &str,
-    block: &str,
-    new_kinds: &[String],
-) -> Result<PathBuf, String> {
-    let dir = config_path.parent().unwrap_or(Path::new("."));
-    let fragments = pom_config::fragment_files(dir).unwrap_or_default();
-    if !fragments.is_empty() {
-        let repos_dir = dir.join(pom_config::FRAGMENT_DIR).join("repos");
-        let next = fragments
-            .iter()
-            .filter(|path| path.starts_with(&repos_dir))
-            .filter_map(|path| {
-                let stem = path.file_name()?.to_string_lossy().into_owned();
-                stem.split('-').next()?.parse::<u32>().ok()
-            })
-            .max()
-            .map_or(1, |highest| highest + 1);
-        let file = repos_dir.join(format!("{next:02}-{name}.yml"));
-        let mut text = format!("repos:\n{block}");
-        if !new_kinds.is_empty() {
-            text.push_str(&format!("shared_services:\n{}", shared_entries(new_kinds)));
-        }
-        std::fs::create_dir_all(&repos_dir).map_err(|error| error.to_string())?;
-        std::fs::write(&file, text).map_err(|error| error.to_string())?;
-        if let Err(problem) = pom_config::edit::load_and_validate(config_path) {
-            if let Err(error) = std::fs::remove_file(&file) {
-                eprintln!("add repo: take back {}: {error}", file.display());
-            }
-            return Err(format!("the new entry breaks the config: {problem}"));
-        }
-        return Ok(file);
-    }
+/// Writes the entry into `pom.yml` and takes it back if the config then fails to load.
+fn write_entry(config_path: &Path, block: &str, new_kinds: &[String]) -> Result<PathBuf, String> {
     let before = std::fs::read_to_string(config_path).map_err(|error| error.to_string())?;
     let mut text = insert_under_top_key(&before, "repos", block);
     if !new_kinds.is_empty() {
@@ -333,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn a_local_repo_is_cloned_into_main_and_gets_a_fragment_in_a_split_config() {
+    fn a_local_repo_is_cloned_into_main_and_added_to_pom_yml() {
         let temp = tempfile::tempdir().expect("temp");
         let source = temp.path().join("src/web");
         std::fs::create_dir_all(&source).expect("source");
@@ -348,13 +314,11 @@ mod tests {
 
         let root = temp.path().join("demo");
         std::fs::create_dir_all(root.join("workspace--main")).expect("main");
-        std::fs::create_dir_all(root.join("pom.d/repos")).expect("pom.d");
-        std::fs::write(root.join("pom.yml"), "session: demo\n").expect("root");
         std::fs::write(
-            root.join("pom.d/repos/01-api.yml"),
-            "repos:\n  api:\n    alias: api\n",
+            root.join("pom.yml"),
+            "session: demo\nrepos:\n  api:\n    alias: api\n",
         )
-        .expect("fragment");
+        .expect("root");
         let state = StateDir::new(temp.path().join("state"));
         let project = Project::open(&root.join("pom.yml"), &state);
         let request = AddRepoRequest {
@@ -363,7 +327,7 @@ mod tests {
         };
         let added = add_repo(&project, &request, &state).expect("add");
         assert_eq!(added.name, "web");
-        assert_eq!(added.file, root.join("pom.d/repos/02-web.yml"));
+        assert_eq!(added.file, root.join("pom.yml"));
         assert!(root.join("workspace--main/web/.git").exists());
         let reloaded = Project::open(&root.join("pom.yml"), &state);
         let repo = reloaded

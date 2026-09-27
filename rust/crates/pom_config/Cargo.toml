@@ -3,7 +3,7 @@ name = "pom_config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Project config (pom.yml + pom.d fragments): parse, merge, presets, defaults, validation."
+description = "Project config (pom.yml): parse, presets, defaults, validation."
 
 [lib]
 path = "src/pom_config.rs"

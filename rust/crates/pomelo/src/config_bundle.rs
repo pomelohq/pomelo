@@ -123,11 +123,7 @@ impl App {
             Ok(applied) => {
                 let mut parts = Vec::new();
                 if yaml.is_some() {
-                    parts.push(if applied.split {
-                        "config replaced and split into pom.d".to_string()
-                    } else {
-                        "config replaced".to_string()
-                    });
+                    parts.push("config replaced".to_string());
                 }
                 if applied.secrets_created > 0 {
                     parts.push(format!("{} secret(s) stored", applied.secrets_created));

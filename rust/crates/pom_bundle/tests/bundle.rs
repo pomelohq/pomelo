@@ -18,7 +18,7 @@ fn bundles_sealed_by_the_previous_core_open() {
 }
 
 #[test]
-fn export_then_apply_carries_the_merged_config_and_secrets_to_another_project() {
+fn export_folds_a_legacy_split_config_and_apply_carries_it_with_secrets() {
     let home = tempfile::tempdir().expect("temp dir");
     let state = StateDir::new(home.path().join("state"));
     let source = home.path().join("source");
@@ -59,7 +59,6 @@ fn export_then_apply_carries_the_merged_config_and_secrets_to_another_project() 
     )
     .expect("apply");
     assert_eq!(applied.secrets_created, 1);
-    assert!(applied.split);
     let loaded = pom_config::Config::load(&target.join("pom.yml")).expect("load");
     assert!(loaded.repos["api"].services.contains_key("server"));
     assert_eq!(

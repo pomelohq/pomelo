@@ -19,7 +19,7 @@ pub(crate) const COMMANDS: &[(&str, &[&str])] = &[
     ("db", &["create", "drop", "reset", "clean"]),
     (
         "config",
-        &["path", "split", "normalize", "explain", "export", "import"],
+        &["path", "normalize", "explain", "export", "import"],
     ),
     ("ws", &["create", "delete", "rename", "list"]),
     ("workspace", &["create", "delete", "rename", "list"]),
@@ -98,7 +98,7 @@ mod tests {
     fn scripts_list_commands_and_subcommands() {
         let bash = script("bash").expect("bash");
         assert!(bash.contains("complete -F _pom pom"));
-        assert!(bash.contains("config) COMPREPLY=($(compgen -W \"path split"));
+        assert!(bash.contains("config) COMPREPLY=($(compgen -W \"path normalize"));
         let zsh = script("zsh").expect("zsh");
         assert!(zsh.starts_with("#compdef pom"));
         assert!(zsh.contains("db) compadd -- create drop reset clean"));

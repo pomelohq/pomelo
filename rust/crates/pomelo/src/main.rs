@@ -868,10 +868,8 @@ impl App {
         let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
             return;
         };
-        let root = project.root.clone();
-        let mut files = vec![project.config_path.clone()];
-        files.extend(pom_config::fragment_files(&root).unwrap_or_default());
-        self.with_workspace_view(id, |view, _| view.pick_config_file(&root, files));
+        let config_path = project.config_path.clone();
+        self.with_workspace_view(id, |view, _| view.open_file(&config_path));
     }
 
     /// Opens the workspace's coding agent in the terminal panel, or focuses its tab. The agent runs in
@@ -1518,19 +1516,13 @@ impl App {
                 .is_none_or(|workspace| workspace.is_main)
         });
         let files: Option<Box<dyn workspace::FunctionView>> = workspace_root.clone().map(|root| {
-            let project_dir = config_path.parent().map(std::path::Path::to_path_buf);
-            let writable = project_dir
-                .map(|dir| vec![config_path.clone(), dir.join("pom.d")])
-                .unwrap_or_default();
+            let writable = vec![config_path.clone()];
             let checked_config = config_path.clone();
             let check: files_ui::SaveCheck = Arc::new(move |path, text| {
-                if !pom_config::edit::config_files(&checked_config)
-                    .iter()
-                    .any(|file| file == path)
-                {
+                if path != checked_config.as_path() {
                     return Ok(());
                 }
-                pom_config::edit::check_file_edit(&checked_config, path, text).map(|_| ())
+                pom_config::edit::check_edit(&checked_config, text).map(|_| ())
             });
             Box::new(
                 files_ui::FilesView::new(root)
@@ -2255,8 +2247,6 @@ impl App {
         if let Some(id) = self.bundle_window() {
             let asked = effects.add_repo
                 || effects.apply_config
-                || effects.split_config
-                || effects.normalize_config
                 || effects.rename_repo.is_some()
                 || effects.remove_repo.is_some();
             if effects.add_repo {
@@ -2264,9 +2254,6 @@ impl App {
             }
             if effects.apply_config {
                 self.clone_missing_repos(id);
-            }
-            if effects.split_config || effects.normalize_config {
-                self.tidy_config(id, effects.normalize_config);
             }
             if let Some(repo) = &effects.rename_repo {
                 self.open_rename_alias(id, repo);

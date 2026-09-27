@@ -74,11 +74,10 @@ config
   config edit        open it in $EDITOR, then check it still loads
   config explain [repo | repo/service] [--branch b] [--env name] [-o json]
                      what the config resolves to and where each value comes from
-  config split [--dry-run]    move repos and shared blocks into pom.d
   config normalize [--dry-run]
-                     drop removed keys, migrate old tokens, split
+                     drop removed keys, migrate old tokens
   config export [--secrets] [-o file]
-                     the merged config as YAML; --secrets seals the session's secrets with it
+                     the config as YAML; --secrets seals the session's secrets with it
                      into a bundle (password read from stdin)
   config import <file> [--config-only|--secrets-only]
                      replace pom.yml with a YAML file or bundle (old one kept as pom.yml.bak)

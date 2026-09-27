@@ -1,6 +1,6 @@
 # Pomelo config variables (v2)
 
-Templates in `pom.yml` / `pom.d/**` use **dot-notation**: `{{ <source>.<name>[.<field>] }}`.
+Templates in `pom.yml` use **dot-notation**: `{{ <source>.<name>[.<field>] }}`.
 One grammar resolves every value — resolver: `services/resolve_v2.go`
 (`ResolveCtx.lookup`). Validated at load by `config.Validate` (a typo / renamed
 alias fails loudly).

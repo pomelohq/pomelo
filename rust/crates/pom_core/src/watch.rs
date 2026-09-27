@@ -4,12 +4,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use notify::{RecursiveMode, Watcher};
-use pom_config::FRAGMENT_DIR;
 
 /// Editors save in bursts (write temp, rename, touch); one reload per burst is enough.
 const DEBOUNCE: Duration = Duration::from_millis(100);
 
-/// Watches a project's `pom.yml` and `pom.d/` and raises a flag, then calls `wake`, once a burst
+/// Watches a project's `pom.yml` and raises a flag, then calls `wake`, once a burst
 /// of changes settles. The owner polls `take_changed` on its own thread and reloads.
 pub struct ConfigWatcher {
     _watcher: notify::RecommendedWatcher,
@@ -21,12 +20,7 @@ impl ConfigWatcher {
         let changed = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = std::sync::mpsc::channel::<()>();
         let config_path = root.join(pom_config::CONFIG_FILE_NAME);
-        let fragments = root.join(FRAGMENT_DIR);
-        let relevant = {
-            let config_path = config_path.clone();
-            let fragments = fragments.clone();
-            move |path: &PathBuf| *path == config_path || path.starts_with(&fragments)
-        };
+        let relevant = move |path: &PathBuf| *path == config_path;
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else {
@@ -40,9 +34,6 @@ impl ConfigWatcher {
             })?;
         // The root is watched non-recursively: worktrees under it are large and irrelevant here.
         watcher.watch(root, RecursiveMode::NonRecursive)?;
-        if fragments.is_dir() {
-            watcher.watch(&fragments, RecursiveMode::Recursive)?;
-        }
         let flag = changed.clone();
         std::thread::Builder::new()
             .name("pom-config-watch".into())
@@ -100,7 +91,6 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let root = temp.path().canonicalize()?;
         std::fs::write(root.join("pom.yml"), "session: a\n")?;
-        std::fs::create_dir_all(root.join("pom.d"))?;
         let wakes = Arc::new(AtomicUsize::new(0));
         let counter = wakes.clone();
         let watcher = ConfigWatcher::new(
@@ -126,9 +116,6 @@ mod tests {
         assert_eq!(wakes.load(Ordering::SeqCst), 1);
         assert!(watcher.take_changed());
         assert!(!watcher.take_changed());
-
-        std::fs::write(root.join("pom.d/10-web.yml"), "repos: {}\n")?;
-        assert!(wait_for(|| watcher.take_changed()));
         Ok(())
     }
 }

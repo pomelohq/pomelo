@@ -88,14 +88,16 @@ pub struct Export {
     pub data: Vec<u8>,
 }
 
-/// The project's merged config; with a password, sealed together with every secret of the session.
+/// The project's config; with a password, sealed together with every secret of the session.
 pub fn export(
     config_path: &Path,
     state: &StateDir,
     session: &str,
     password: Option<&str>,
 ) -> Result<Export, String> {
-    let config = pom_config::merged_yaml(config_path).map_err(|error| error.to_string())?;
+    pom_config::migrate_fragments(config_path).map_err(|error| error.to_string())?;
+    let config = std::fs::read_to_string(config_path)
+        .map_err(|error| format!("read {}: {error}", config_path.display()))?;
     let Some(password) = password else {
         return Ok(Export {
             file_name: PLAIN_FILE_NAME,
@@ -118,10 +120,9 @@ pub fn export(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Applied {
     pub secrets_created: usize,
-    pub split: bool,
 }
 
-/// Replaces `pom.yml` with `yaml` (the old one kept as `pom.yml.bak`, then tidied into `pom.d`) and/or stores
+/// Replaces `pom.yml` with `yaml` (the old one kept as `pom.yml.bak`) and/or stores
 /// the bundle's secrets in the session.
 pub fn apply(
     config_path: &Path,
@@ -139,7 +140,6 @@ pub fn apply(
         }
         std::fs::write(config_path, yaml)
             .map_err(|error| format!("write {}: {error}", config_path.display()))?;
-        applied.split = pom_config::maintain::split(config_path, false).is_ok();
     }
     if !secrets.is_empty() {
         let store = SecretStore::new(state.clone(), session);

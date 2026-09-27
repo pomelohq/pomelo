@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::yaml_node::{self, Node, NodeKind};
-use crate::{fragment_files, FRAGMENT_DIR};
 
 pub const REMOVED_TOP_KEYS: [&str; 5] = [
     "schema_version",
@@ -23,21 +22,11 @@ pub fn removed_keys(root: &Node) -> Vec<String> {
 }
 
 pub fn removed_keys_in(config_path: &Path) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    for file in config_files(config_path) {
-        let Ok(text) = std::fs::read_to_string(&file) else {
-            continue;
-        };
-        let Ok(Some(root)) = yaml_node::parse(&text) else {
-            continue;
-        };
-        for key in removed_keys(&root) {
-            if !found.contains(&key) {
-                found.push(key);
-            }
-        }
-    }
-    found
+    std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|text| yaml_node::parse(&text).ok().flatten())
+        .map(|root| removed_keys(&root))
+        .unwrap_or_default()
 }
 
 /// Each removed key with the line (1-based) its entry starts on.
@@ -71,15 +60,6 @@ fn removed_entries(root: &Node) -> Vec<(String, usize)> {
         }
     }
     found
-}
-
-fn config_files(config_path: &Path) -> Vec<PathBuf> {
-    let dir = config_path
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    std::iter::once(config_path.to_path_buf())
-        .chain(fragment_files(&dir).unwrap_or_default())
-        .collect()
 }
 
 fn indent(line: &str) -> usize {
@@ -161,154 +141,37 @@ pub fn migrate_colon_tokens(text: &str) -> String {
     out
 }
 
-/// Deletes the removed keys from every config file, moves colon tokens to dot notation, then splits the root
-/// into `pom.d` fragments when it can. Returns the keys it removed.
+/// Deletes the removed keys and moves colon tokens to dot notation. Returns the keys it removed.
 pub fn normalize(config_path: &Path) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(config_path)
+        .map_err(|error| format!("read {}: {error}", config_path.display()))?;
     let mut removed: Vec<String> = Vec::new();
-    for file in config_files(config_path) {
-        let Ok(text) = std::fs::read_to_string(&file) else {
-            continue;
-        };
-        let mut next = text.clone();
-        if let Ok(Some(root)) = yaml_node::parse(&text) {
-            let entries = removed_entries(&root);
-            if !entries.is_empty() {
-                let lines: Vec<&str> = text.lines().collect();
-                let ranges = entries
-                    .iter()
-                    .map(|(_, line)| entry_lines(&lines, line.saturating_sub(1)))
-                    .collect();
-                next = remove_ranges(&lines, ranges);
-                for (key, _) in entries {
-                    if !removed.contains(&key) {
-                        removed.push(key);
-                    }
+    let mut next = text.clone();
+    if let Ok(Some(root)) = yaml_node::parse(&text) {
+        let entries = removed_entries(&root);
+        if !entries.is_empty() {
+            let lines: Vec<&str> = text.lines().collect();
+            let ranges = entries
+                .iter()
+                .map(|(_, line)| entry_lines(&lines, line.saturating_sub(1)))
+                .collect();
+            next = remove_ranges(&lines, ranges);
+            for (key, _) in entries {
+                if !removed.contains(&key) {
+                    removed.push(key);
                 }
             }
         }
-        let next = migrate_colon_tokens(&next);
-        if next != text {
-            std::fs::write(&file, next)
-                .map_err(|error| format!("write {}: {error}", file.display()))?;
-        }
     }
-    if let Err(error) = split(config_path, false) {
-        eprintln!("normalize: split skipped: {error}");
+    let next = migrate_colon_tokens(&next);
+    if next != text {
+        std::fs::write(config_path, next)
+            .map_err(|error| format!("write {}: {error}", config_path.display()))?;
     }
     Ok(removed)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SplitResult {
-    pub root: PathBuf,
-    pub fragments: Vec<PathBuf>,
-    pub backup: PathBuf,
-}
-
-fn fragment_name(repo: &str) -> String {
-    repo.replace(['/', ' '], "-")
-}
-
-fn is_split_repo_fragment(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    bytes.len() > 3
-        && bytes[0].is_ascii_digit()
-        && bytes[1].is_ascii_digit()
-        && bytes[2] == b'-'
-        && (name.ends_with(".yml") || name.ends_with(".yaml"))
-}
-
-/// Moves `repos` (one fragment per repo, numbered in order), `environments`, `presets` and `shared_services`
-/// out of the root `pom.yml` into `pom.d`, keeping each block's text as written. The root is backed up to
-/// `pom.yml.bak`; `dry` only reports what would be written.
-pub fn split(config_path: &Path, dry: bool) -> Result<SplitResult, String> {
-    let text = std::fs::read_to_string(config_path)
-        .map_err(|error| format!("read {}: {error}", config_path.display()))?;
-    let root = yaml_node::parse(&text)
-        .map_err(|error| format!("parse {}: {error}", config_path.display()))?
-        .filter(Node::is_mapping)
-        .ok_or_else(|| format!("{} is not a YAML mapping", config_path.display()))?;
-    let lines: Vec<&str> = text.lines().collect();
-    let dir = config_path
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let fragment_dir = dir.join(FRAGMENT_DIR);
-    let mut plan: Vec<(PathBuf, String)> = Vec::new();
-    let mut moved: Vec<std::ops::Range<usize>> = Vec::new();
-    let top_entry = |name: &str| {
-        root.entries()
-            .unwrap_or_default()
-            .iter()
-            .find(|(key, _)| key.text() == name)
-            .map(|(key, value)| (key.line.saturating_sub(1), value))
-    };
-    if let Some((line, repos)) = top_entry("repos") {
-        let entries = repos.entries().unwrap_or_default();
-        if !entries.is_empty() {
-            for (index, (name, _)) in entries.iter().enumerate() {
-                let block = entry_lines(&lines, name.line.saturating_sub(1));
-                let body = lines[block].join("\n");
-                let file = fragment_dir.join("repos").join(format!(
-                    "{:02}-{}.yml",
-                    index + 1,
-                    fragment_name(name.text())
-                ));
-                plan.push((file, format!("repos:\n{body}\n")));
-            }
-            moved.push(entry_lines(&lines, line));
-        }
-    }
-    for (key, file) in [
-        ("environments", "environments.yml"),
-        ("presets", "presets.yml"),
-        ("shared_services", "shared-services.yml"),
-    ] {
-        if let Some((line, _)) = top_entry(key) {
-            let block = entry_lines(&lines, line);
-            plan.push((
-                fragment_dir.join(file),
-                format!("{}\n", lines[block.clone()].join("\n")),
-            ));
-            moved.push(block);
-        }
-    }
-    if moved.is_empty() {
-        return Err(format!(
-            "nothing to split in {} (no repos/environments/presets/shared_services)",
-            config_path.display()
-        ));
-    }
-    let result = SplitResult {
-        root: config_path.to_path_buf(),
-        fragments: plan.iter().map(|(file, _)| file.clone()).collect(),
-        backup: PathBuf::from(format!("{}.bak", config_path.display())),
-    };
-    if dry {
-        return Ok(result);
-    }
-    let new_root = remove_ranges(&lines, moved);
-    std::fs::write(&result.backup, &text).map_err(|error| format!("backup: {error}"))?;
-    if let Ok(entries) = std::fs::read_dir(fragment_dir.join("repos")) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if is_split_repo_fragment(&name) {
-                if let Err(error) = std::fs::remove_file(entry.path()) {
-                    eprintln!("split: remove {name}: {error}");
-                }
-            }
-        }
-    }
-    for (file, body) in &plan {
-        if let Some(parent) = file.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        std::fs::write(file, body).map_err(|error| format!("write {}: {error}", file.display()))?;
-    }
-    std::fs::write(config_path, new_root).map_err(|error| format!("write root: {error}"))?;
-    Ok(result)
-}
-
-/// Sets and removes keys of a repo's `env:` in whichever config file declares the repo, returning that file.
+/// Sets and removes keys of a repo's `env:`, returning the file written.
 /// Only the env block is rewritten (its comments go); the result must still load or the file is restored.
 pub fn edit_repo_env(
     config_path: &Path,
@@ -321,15 +184,12 @@ pub fn edit_repo_env(
             return Err(format!("{key:?} is not an env var name"));
         }
     }
-    let (file, text, root) = config_files(config_path)
-        .into_iter()
-        .find_map(|file| {
-            let text = std::fs::read_to_string(&file).ok()?;
-            let root = yaml_node::parse(&text).ok()??;
-            root.get("repos")?.get(repo)?;
-            Some((file, text, root))
-        })
-        .ok_or_else(|| format!("repo {repo:?} is not in any config file"))?;
+    let file = config_path.to_path_buf();
+    let text = std::fs::read_to_string(&file)
+        .map_err(|error| format!("read {}: {error}", file.display()))?;
+    let root = yaml_node::parse(&text)
+        .map_err(|error| format!("parse {}: {error}", file.display()))?
+        .ok_or_else(|| format!("repo {repo:?} is not in the config"))?;
     let (repo_key, repo_node) = root
         .get("repos")
         .and_then(Node::entries)
@@ -448,14 +308,11 @@ mod tests {
     fn repo_env_edits_touch_only_the_env_block_of_the_file_with_the_repo() {
         let dir = tempfile::tempdir().expect("temp");
         let root = dir.path().join("pom.yml");
-        std::fs::write(&root, "session: shop\n# keep me\n").expect("pom.yml");
-        std::fs::create_dir_all(dir.path().join("pom.d/repos")).expect("pom.d");
-        let fragment = dir.path().join("pom.d/repos/01-api.yml");
         std::fs::write(
-            &fragment,
-            "repos:\n  api:\n    alias: be # the backend\n    env:\n      A: \"1\"\n      B: two\n    services:\n      web:\n        cmd: run\n  web:\n    services: {}\n",
+            &root,
+            "session: shop\n# keep me\nrepos:\n  api:\n    alias: be # the backend\n    env:\n      A: \"1\"\n      B: two\n    services:\n      web:\n        cmd: run\n  web:\n    services: {}\n",
         )
-        .expect("fragment");
+        .expect("pom.yml");
         let edited = edit_repo_env(
             &root,
             "api",
@@ -463,8 +320,9 @@ mod tests {
             &["B".into()],
         )
         .expect("edit");
-        assert_eq!(edited, fragment);
-        let text = std::fs::read_to_string(&fragment).expect("read");
+        assert_eq!(edited, root);
+        let text = std::fs::read_to_string(&root).expect("read");
+        assert!(text.contains("# keep me\n"), "{text}");
         assert!(text.contains("alias: be # the backend"), "{text}");
         assert!(
             text.contains("    env:\n      A: \"9\"\n      C: \"x y\"\n    services:"),
@@ -513,61 +371,38 @@ mod tests {
     }
 
     #[test]
-    fn split_moves_blocks_as_written_and_normalize_cleans_first() -> Result<(), String> {
-        let temp = std::env::temp_dir().join(format!("pom-maintain-{}", std::process::id()));
-        std::fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
-        let config = temp.join("pom.yml");
+    fn normalize_strips_removed_keys_as_written() -> Result<(), String> {
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let config = temp.path().join("pom.yml");
         std::fs::write(&config, CONFIG).map_err(|error| error.to_string())?;
-        let dry = split(&config, true)?;
-        assert_eq!(dry.fragments.len(), 3);
-        assert_eq!(
-            std::fs::read_to_string(&config).map_err(|error| error.to_string())?,
-            CONFIG
-        );
-
         let removed = normalize(&config)?;
         assert_eq!(removed, ["webhook", "proxy", "plugins", "exposes"]);
-        let root = std::fs::read_to_string(&config).map_err(|error| error.to_string())?;
-        assert_eq!(root, "session: demo\n# repos below\n");
-        let api = std::fs::read_to_string(temp.join("pom.d/repos/01-api.yml"))
-            .map_err(|error| error.to_string())?;
+        let text = std::fs::read_to_string(&config).map_err(|error| error.to_string())?;
         assert_eq!(
-            api,
-            "repos:\n  api:\n    services:\n      web:\n        cmd: rails s\n"
+            text,
+            "session: demo\n# repos below\nrepos:\n  api:\n    services:\n      web:\n        cmd: rails s\n\n  web:\n    services:\n      dev: npm run dev\nshared_services:\n  postgres:\n    type: postgres\n"
         );
-        let shared = std::fs::read_to_string(temp.join("pom.d/shared-services.yml"))
-            .map_err(|error| error.to_string())?;
-        assert_eq!(
-            shared,
-            "shared_services:\n  postgres:\n    type: postgres\n"
-        );
-        assert!(temp.join("pom.yml.bak").exists());
-        let loaded = crate::Config::load(&config).map_err(|error| error.message)?;
-        assert_eq!(loaded.repos.len(), 2);
-        assert!(split(&config, false).is_err(), "nothing left to split");
-        if let Err(error) = std::fs::remove_dir_all(&temp) {
-            eprintln!("cleanup: {error}");
-        }
+        assert_eq!(normalize(&config)?, Vec::<String>::new());
         Ok(())
     }
 }
 
-/// The config file that declares `repo`, its text, and the line (0-based) of the repo's key.
+/// The config's text and the line (0-based) of `repo`'s key.
 fn repo_file(config_path: &Path, repo: &str) -> Result<(PathBuf, String, usize), String> {
-    config_files(config_path)
-        .into_iter()
-        .find_map(|file| {
-            let text = std::fs::read_to_string(&file).ok()?;
-            let root = yaml_node::parse(&text).ok()??;
-            let line = root
-                .get("repos")?
+    let text = std::fs::read_to_string(config_path)
+        .map_err(|error| format!("read {}: {error}", config_path.display()))?;
+    let line = yaml_node::parse(&text)
+        .ok()
+        .flatten()
+        .and_then(|root| {
+            root.get("repos")?
                 .entries()?
                 .iter()
                 .find(|(key, _)| key.text() == repo)
-                .map(|(key, _)| key.line.saturating_sub(1))?;
-            Some((file, text, line))
+                .map(|(key, _)| key.line.saturating_sub(1))
         })
-        .ok_or_else(|| format!("repo {repo:?} is not in any config file"))
+        .ok_or_else(|| format!("repo {repo:?} is not in the config"))?;
+    Ok((config_path.to_path_buf(), text, line))
 }
 
 /// Writes every `(file, text)`, then takes them all back if the config no longer loads and validates.
@@ -593,8 +428,7 @@ fn write_checked(config_path: &Path, edits: &[(PathBuf, String, String)]) -> Res
     Err(format!("the edit would break the config: {problem}"))
 }
 
-/// Gives `repo` a new alias and rewrites every `{{<old>.` reference to it across the config files. Returns the
-/// files that changed.
+/// Gives `repo` a new alias and rewrites every `{{<old>.` reference to it. Returns the files that changed.
 pub fn rename_alias(config_path: &Path, repo: &str, alias: &str) -> Result<Vec<PathBuf>, String> {
     let alias = alias.trim();
     if alias.is_empty()
@@ -659,29 +493,18 @@ pub fn rename_alias(config_path: &Path, repo: &str, alias: &str) -> Result<Vec<P
     renamed.push('\n');
     let from = format!("{{{{{old}.");
     let to = format!("{{{{{alias}.");
-    let mut edits = Vec::new();
-    for path in config_files(config_path) {
-        let before = if path == file {
-            text.clone()
-        } else {
-            std::fs::read_to_string(&path).map_err(|error| error.to_string())?
-        };
-        let base = if path == file {
-            renamed.clone()
-        } else {
-            before.clone()
-        };
-        let next = base.replace(&from, &to);
-        if next != before {
-            edits.push((path, before, next));
-        }
-    }
+    let next = renamed.replace(&from, &to);
+    let edits = if next == text {
+        Vec::new()
+    } else {
+        vec![(file, text, next)]
+    };
     write_checked(config_path, &edits)?;
     Ok(edits.into_iter().map(|(path, _, _)| path).collect())
 }
 
-/// Takes `repo` out of the config: its entry goes, and a `pom.d` fragment left with nothing else is deleted.
-/// Refused (nothing written) when the rest of the config still refers to it. Returns the file edited.
+/// Takes `repo` out of the config. Refused (nothing written) when the rest of the config still refers to it.
+/// Returns the file edited.
 pub fn remove_repo(config_path: &Path, repo: &str) -> Result<PathBuf, String> {
     let (file, text, repo_line) = repo_file(config_path, repo)?;
     let lines: Vec<&str> = text.lines().collect();
@@ -692,53 +515,10 @@ pub fn remove_repo(config_path: &Path, repo: &str) -> Result<PathBuf, String> {
         .filter(|alias| !alias.is_empty())
         .unwrap_or_else(|| repo.to_string());
     let needles = [format!("{{{{{alias}."), format!("{{{{{repo}.")];
-    let dir = config_path.parent().unwrap_or(Path::new("."));
-    let referring: Vec<String> = config_files(config_path)
-        .iter()
-        .filter_map(|path| {
-            let body = if *path == file {
-                next.clone()
-            } else {
-                std::fs::read_to_string(path).ok()?
-            };
-            needles
-                .iter()
-                .any(|needle| body.contains(needle.as_str()))
-                .then(|| path.strip_prefix(dir).unwrap_or(path).display().to_string())
-        })
-        .collect();
-    if !referring.is_empty() {
+    if needles.iter().any(|needle| next.contains(needle.as_str())) {
         return Err(format!(
-            "{repo} is still referred to in {}; change those first",
-            referring.join(", ")
+            "{repo} is still referred to in the config; change those first"
         ));
-    }
-    let emptied = file != config_path
-        && yaml_node::parse(&next).ok().flatten().is_none_or(|root| {
-            root.entries()
-                .unwrap_or_default()
-                .iter()
-                .all(|(key, value)| {
-                    key.text() == "repos"
-                        && value.entries().is_none_or(|entries| entries.is_empty())
-                })
-        });
-    if emptied {
-        std::fs::remove_file(&file)
-            .map_err(|error| format!("remove {}: {error}", file.display()))?;
-        if let Err(problem) = crate::Config::load(config_path)
-            .map_err(|error| error.message)
-            .and_then(|config| config.validate())
-        {
-            if let Err(error) = std::fs::write(&file, &text) {
-                return Err(format!(
-                    "{problem}; restoring {} failed: {error}",
-                    file.display()
-                ));
-            }
-            return Err(format!("the edit would break the config: {problem}"));
-        }
-        return Ok(file);
     }
     write_checked(config_path, &[(file.clone(), text, next)])?;
     Ok(file)
@@ -759,19 +539,16 @@ mod repo_edit_tests {
         (temp, config)
     }
 
+    const REPOS: &str = "session: demo\nrepos:\n  api:\n    alias: be\n    services:\n      web:\n        cmd: rails s\n        port: true\n  web:\n    env:\n      API_URL: \"{{be.web.url}}\"\n  jobs:\n    services:\n      worker:\n        cmd: sidekiq\n";
+
     #[test]
-    fn renaming_an_alias_rewrites_references_in_every_file() {
-        let (temp, config) = project(&[
-            ("pom.yml", "session: demo\n"),
-            ("pom.d/repos/01-api.yml", "repos:\n  api:\n    alias: be\n    services:\n      web:\n        cmd: rails s\n        port: true\n"),
-            ("pom.d/repos/02-web.yml", "repos:\n  web:\n    env:\n      API_URL: \"{{be.web.url}}\"\n"),
-        ]);
+    fn renaming_an_alias_rewrites_its_references() {
+        let (_temp, config) = project(&[("pom.yml", REPOS)]);
         let changed = rename_alias(&config, "api", "backend").expect("rename");
-        assert_eq!(changed.len(), 2);
-        let api = std::fs::read_to_string(temp.path().join("pom.d/repos/01-api.yml")).expect("api");
-        assert!(api.contains("    alias: backend\n"), "{api}");
-        let web = std::fs::read_to_string(temp.path().join("pom.d/repos/02-web.yml")).expect("web");
-        assert!(web.contains("{{backend.web.url}}"), "{web}");
+        assert_eq!(changed, std::slice::from_ref(&config));
+        let text = std::fs::read_to_string(&config).expect("read");
+        assert!(text.contains("    alias: backend\n"), "{text}");
+        assert!(text.contains("{{backend.web.url}}"), "{text}");
         assert!(
             rename_alias(&config, "api", "web").is_err(),
             "taken by another repo"
@@ -779,22 +556,15 @@ mod repo_edit_tests {
     }
 
     #[test]
-    fn removing_a_repo_deletes_its_own_fragment_and_refuses_while_referenced() {
-        let (temp, config) = project(&[
-            ("pom.yml", "session: demo\n"),
-            ("pom.d/repos/01-api.yml", "repos:\n  api:\n    services:\n      web:\n        cmd: rails s\n        port: true\n"),
-            ("pom.d/repos/02-web.yml", "repos:\n  web:\n    env:\n      API_URL: \"{{api.web.url}}\"\n"),
-            ("pom.d/repos/03-jobs.yml", "repos:\n  jobs:\n    services:\n      worker:\n        cmd: sidekiq\n"),
-        ]);
+    fn removing_a_repo_refuses_while_referenced() {
+        let (_temp, config) = project(&[("pom.yml", REPOS)]);
         assert!(
             remove_repo(&config, "api").is_err(),
             "web still points at api"
         );
-        assert!(temp.path().join("pom.d/repos/01-api.yml").exists());
-        let removed = remove_repo(&config, "jobs").expect("remove");
-        assert_eq!(removed, temp.path().join("pom.d/repos/03-jobs.yml"));
-        assert!(!removed.exists());
+        remove_repo(&config, "jobs").expect("remove");
         let config_now = crate::Config::load(&config).expect("loads");
         assert!(!config_now.repos.contains_key("jobs"));
+        assert!(config_now.repos.contains_key("api"));
     }
 }
