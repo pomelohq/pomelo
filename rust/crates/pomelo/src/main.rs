@@ -1865,7 +1865,40 @@ impl App {
         }
     }
 
+    /// The window other than `except` that has the project at `folder` open.
+    fn window_with_project(
+        &self,
+        folder: &std::path::Path,
+        except: Option<WindowId>,
+    ) -> Option<WindowId> {
+        let wanted = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+        self.mains.iter().find_map(|(window, main)| {
+            let root = &main.project.as_ref()?.root;
+            let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            (Some(*window) != except && root == wanted).then_some(*window)
+        })
+    }
+
+    /// A project lives in one window: opening it again brings that window forward instead.
+    fn focus_window_with_project(
+        &mut self,
+        folder: &std::path::Path,
+        except: Option<WindowId>,
+    ) -> bool {
+        let Some(window) = self.window_with_project(folder, except) else {
+            return false;
+        };
+        if let Some(main) = self.mains.get(&window) {
+            main.window.set_minimized(false);
+            main.window.focus_window();
+        }
+        true
+    }
+
     fn open_folder_in(&mut self, id: WindowId, folder: &std::path::Path) {
+        if self.focus_window_with_project(folder, Some(id)) {
+            return;
+        }
         match pom_core::config_in(folder) {
             Some(config) => self.open_project_in(id, Some(config)),
             None => {
@@ -2352,10 +2385,12 @@ impl App {
         }
         if let Some(index) = effects.open_new_window {
             if let Some((_, path)) = self.session_path(id, index) {
-                let mut layout = Layout::default();
-                apply_dock_settings(&self.settings, &mut layout);
-                let new_id = self.new_main_window(event_loop, layout);
-                self.open_folder_in(new_id, &path);
+                if !self.focus_window_with_project(&path, None) {
+                    let mut layout = Layout::default();
+                    apply_dock_settings(&self.settings, &mut layout);
+                    let new_id = self.new_main_window(event_loop, layout);
+                    self.open_folder_in(new_id, &path);
+                }
             }
         }
         if let Some(request) = effects.session {
