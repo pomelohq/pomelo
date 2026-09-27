@@ -1665,11 +1665,13 @@ impl App {
         let mut rerooted = Vec::new();
         let mut reloaded = Vec::new();
         let mut stale_notices = Vec::new();
+        let mut touched = Vec::new();
         for (id, main) in self.mains.iter_mut() {
             let changed = main.watcher.as_ref().is_some_and(|w| w.take_changed());
             let Some(project) = main.project.as_mut().filter(|_| changed) else {
                 continue;
             };
+            touched.push(*id);
             let root_before = project.active_root();
             let shown_changed = project.reload(&state);
             // Env or service edits change nothing the list shows, but services must still run the new config.
@@ -1725,6 +1727,11 @@ impl App {
         for id in reloaded {
             self.with_workspace_view(id, |view, _| view.show_toast("pom.yml reloaded", None));
             self.start_doctor(id);
+        }
+        // pom.yml sits beside the workspace folders, outside the tree watcher: an open tab of it
+        // only notices an agent's or another editor's write through here.
+        for id in touched {
+            self.with_workspace_view(id, |view, _| view.refresh_disk_state());
         }
         for (id, names) in stale_notices {
             self.with_workspace_view(id, |view, _| view.set_stale_services(&names));

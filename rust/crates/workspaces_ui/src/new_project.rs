@@ -263,10 +263,11 @@ impl NewProjectModal {
             )
             .child(
                 div().row().items_center().flex(1.0).child(
-                    label(repo.source.clone())
+                    label(home_relative(&repo.source))
                         .label_size(LabelSize::Small)
                         .mono()
-                        .color(colors.text),
+                        .color(colors.text)
+                        .truncate_start(),
                 ),
             )
             .child(alias)
@@ -366,8 +367,8 @@ impl WindowModal for NewProjectModal {
         let name_error = self.name_error();
         let branch_error = self.branch_error();
         let location = match self.name_text() {
-            name if name.is_empty() => self.sessions_root.display().to_string(),
-            name => self.sessions_root.join(name).display().to_string(),
+            name if name.is_empty() => home_relative(&self.sessions_root.display().to_string()),
+            name => home_relative(&self.sessions_root.join(name).display().to_string()),
         };
         let section = modal_section(10.0)
             .child(self.name.render(
@@ -471,6 +472,20 @@ impl WindowModal for NewProjectModal {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn paths_under_home_read_from_the_tilde() {
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(
+            super::home_relative(&format!("{home}/pom/shop")),
+            "~/pom/shop"
+        );
+        assert_eq!(super::home_relative("/srv/pom/shop"), "/srv/pom/shop");
+        assert_eq!(
+            super::home_relative(&format!("{home}x/pom")),
+            format!("{home}x/pom")
+        );
+    }
+
     use super::*;
 
     fn modal(root: &Path, folders: Vec<PathBuf>) -> NewProjectModal {
@@ -553,5 +568,15 @@ mod tests {
         assert!(form.can_create());
         form.click(REMOVE_BASE);
         assert!(!form.can_create());
+    }
+}
+
+/// `~/...` for a path under the home folder, so the part that matters fits.
+fn home_relative(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && path.starts_with(&format!("{home}/")) => {
+            format!("~{}", &path[home.len()..])
+        }
+        _ => path.to_string(),
     }
 }

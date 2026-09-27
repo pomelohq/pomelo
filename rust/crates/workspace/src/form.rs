@@ -235,10 +235,12 @@ impl InputField {
                 .color(colors.text),
         );
         if let Some(hint) = hint {
+            // A long hint (a path) keeps its end, the part that differs, and never pushes past the field.
             title = title.child(
                 label(hint.to_string())
                     .label_size(LabelSize::Small)
-                    .color(colors.text_muted),
+                    .color(colors.text_muted)
+                    .truncate_start(),
             );
         }
         let input = self.render_input(click_id, focused, error.is_some());
