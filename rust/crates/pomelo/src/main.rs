@@ -1886,6 +1886,9 @@ impl App {
             return;
         };
         m.last_drawn = Instant::now();
+        let fullscreen = is_native_fullscreen(&m.window);
+        m.entity
+            .update(app.app_mut(), |view, _| view.set_fullscreen(fullscreen));
         let (w, h) = m.ui.size();
         let scale = m.window.scale_factor() as f32;
         app.resize(m.handle, w, h, scale);
@@ -3092,11 +3095,6 @@ impl ApplicationHandler for App {
                         center_traffic_lights(&m.window);
                     }
                 }
-                let fullscreen = self
-                    .mains
-                    .get(&id)
-                    .is_some_and(|m| m.window.fullscreen().is_some());
-                self.with_workspace_view(id, |v, _| v.set_fullscreen(fullscreen));
                 // Remember the window size (persisted on quit / dock change), not on every resize event.
                 self.settings.window_width = size.width as f32 / scale;
                 self.settings.window_height = size.height as f32 / scale;
@@ -3302,6 +3300,34 @@ fn choose_folders(_multiple: bool) -> Vec<std::path::PathBuf> {
 // (two levels up) to a fixed height pinned to the window top, then place the buttons at a constant offset within it,
 // so they don't drift when the window is resized.
 #[cfg(target_os = "macos")]
+/// Native fullscreen (the green button) as AppKit reports it; winit only tracks fullscreen it entered itself.
+#[cfg(target_os = "macos")]
+fn is_native_fullscreen(window: &Window) -> bool {
+    use objc2_app_kit::{NSView, NSWindowStyleMask};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+        return false;
+    };
+    // SAFETY: the handle's view lives as long as the window, and reading its style mask has no side effects.
+    unsafe {
+        let view: &NSView = &*(h.ns_view.as_ptr() as *const NSView);
+        view.window().is_some_and(|ns_window| {
+            ns_window
+                .styleMask()
+                .contains(NSWindowStyleMask::FullScreen)
+        })
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_native_fullscreen(window: &Window) -> bool {
+    window.fullscreen().is_some()
+}
+
 fn center_traffic_lights(window: &Window) {
     use objc2::msg_send;
     use objc2::runtime::AnyClass;
