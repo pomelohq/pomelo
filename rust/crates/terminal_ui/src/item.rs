@@ -691,7 +691,45 @@ pub(crate) fn saved_holder(item: &workspace::persistence::SerializedItem) -> Opt
         .flatten()
 }
 
+const RECENT_LINES: usize = 40;
+
 impl Item for TerminalItem {
+    fn terminal_context(&self) -> Option<workspace::TerminalContext> {
+        let lines = self.terminal.output_lines();
+        let recent: Vec<&str> = lines
+            .iter()
+            .map(|line| line.trim_end())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .skip_while(|line| line.is_empty())
+            .take(RECENT_LINES)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        Some(workspace::TerminalContext {
+            selection: self
+                .terminal
+                .selection_text()
+                .filter(|text| !text.trim().is_empty()),
+            recent: recent.join("\n"),
+            cwd: self
+                .terminal
+                .process_info()
+                .map_or_else(|| self.start_dir.clone(), |info| info.cwd.clone()),
+            title: self.title(),
+        })
+    }
+
+    fn terminal_command(&mut self, command: workspace::TerminalCommand) {
+        match command {
+            workspace::TerminalCommand::Paste(text) => self.terminal.paste(&text),
+            workspace::TerminalCommand::SelectAll => self.terminal.select_all(),
+            workspace::TerminalCommand::Clear => self.terminal.clear(),
+        }
+    }
+
     fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
         if self.console.is_some() {
             return None;

@@ -617,6 +617,14 @@ pub const MENU_EDIT_SELECT_ALL: u64 = 833;
 pub const MENU_COPY_NAME: u64 = 824;
 pub const TREE_MENU_TARGET: u64 = 850;
 pub const EDITOR_MENU_TARGET: u64 = 851;
+pub const TERMINAL_MENU_TARGET: u64 = 853;
+pub const MENU_TERM_COPY: u64 = 930;
+pub const MENU_TERM_PASTE: u64 = 931;
+pub const MENU_TERM_SELECT_ALL: u64 = 932;
+pub const MENU_TERM_CLEAR: u64 = 933;
+pub const MENU_TERM_ADD_TO_AGENT: u64 = 934;
+pub const MENU_TERM_ASK_AGENT: u64 = 935;
+pub const MENU_TERM_CLOSE: u64 = 936;
 pub const MENU_SUBMENU_BASE: u64 = 860;
 pub const MENU_SUBMENU_COPY: u64 = 860;
 pub const MENU_TREE_NEW_FILE: u64 = 870;
@@ -956,6 +964,11 @@ pub trait Item: 'static {
     fn diff_stat(&self) -> Option<(usize, usize)> {
         None
     }
+    /// A terminal's selection, recent output and directory, for its context menu; `None` for anything else.
+    fn terminal_context(&self) -> Option<TerminalContext> {
+        None
+    }
+    fn terminal_command(&mut self, _command: TerminalCommand) {}
     fn set_focused(&mut self, _focused: bool) {}
     fn input_text(&mut self, _text: &str) {}
     /// An input method's in-progress text; `selected` is its caret inside `text`, in chars.
@@ -1330,6 +1343,22 @@ pub enum TerminalKeyOutcome {
     Handled,
     Copy(String),
     Paste,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalContext {
+    pub selection: Option<String>,
+    /// The last lines of output, for asking about it when nothing is selected.
+    pub recent: String,
+    pub cwd: std::path::PathBuf,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalCommand {
+    Paste(String),
+    SelectAll,
+    Clear,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

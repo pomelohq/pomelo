@@ -281,6 +281,11 @@ impl PaneGroupView {
         false
     }
 
+    /// The active item of the pane at `path`.
+    pub fn item_at_path_mut(&mut self, path: &[usize]) -> Option<&mut dyn Item> {
+        self.group.leaf_at_mut(path)?.active_item_mut()
+    }
+
     /// Where item `id` is: its pane's path and its index there.
     pub fn index_path_of(&self, id: &str) -> Option<(Vec<usize>, usize)> {
         self.paths().into_iter().find_map(|path| {

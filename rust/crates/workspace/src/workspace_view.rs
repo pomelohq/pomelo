@@ -295,6 +295,8 @@ pub struct WorkspaceView {
     menu_tab: Option<(InputGroup, u64, usize)>,
     /// The pane group an editor context menu was opened in.
     menu_group: InputGroup,
+    /// The terminal a terminal context menu was opened on: its group, pane path and what it showed then.
+    menu_terminal: Option<(InputGroup, Vec<usize>, crate::TerminalContext)>,
     toast: Option<Toast>,
     notification: Option<Notification>,
     shown_problem: Option<String>,
@@ -330,6 +332,7 @@ impl WorkspaceView {
             menu_editor_anchor: None,
             menu_tab: None,
             menu_group: InputGroup::Center,
+            menu_terminal: None,
             modal_rect: None,
             window_modal: None,
             modal_result: None,
@@ -2583,6 +2586,179 @@ impl WorkspaceView {
         Some((InputGroup::Center, pane, index))
     }
 
+    /// The terminal under the pointer in `group`, with its pane's path and what it shows.
+    fn terminal_at(
+        &self,
+        group: InputGroup,
+        x: f32,
+        y: f32,
+    ) -> Option<(InputGroup, Vec<usize>, crate::TerminalContext)> {
+        let view = self.group_view(group)?;
+        let (path, _, _) = view.body_point(x, y)?;
+        let context = view.pane_at(&path)?.active_item()?.terminal_context()?;
+        Some((group, path, context))
+    }
+
+    fn terminal_menu_items(&self) -> Vec<MenuItem> {
+        let Some((group, _, context)) = self.menu_terminal.as_ref() else {
+            return Vec::new();
+        };
+        let entry = |id: u64,
+                     label: &'static str,
+                     sep: bool,
+                     disabled: bool,
+                     hint: Option<&'static str>| {
+            MenuItem {
+                id,
+                label: label.into(),
+                checked: false,
+                sep,
+                disabled,
+                danger: false,
+                icon: None,
+                hint: hint.map(Into::into),
+            }
+        };
+        let selected = context.selection.is_some();
+        let mut items = vec![
+            entry(
+                crate::MENU_TERM_COPY,
+                "Copy",
+                false,
+                !selected,
+                Some("cmd-c"),
+            ),
+            entry(crate::MENU_TERM_PASTE, "Paste", false, false, Some("cmd-v")),
+            entry(
+                crate::MENU_TERM_SELECT_ALL,
+                "Select All",
+                false,
+                false,
+                Some("cmd-a"),
+            ),
+            entry(crate::MENU_TERM_CLEAR, "Clear", false, false, Some("cmd-k")),
+        ];
+        // An agent's own tab is not sent to an agent.
+        if *group != InputGroup::Agent {
+            let mut add = entry(
+                crate::MENU_TERM_ADD_TO_AGENT,
+                "Add Selection to Agent",
+                true,
+                !selected,
+                None,
+            );
+            add.icon = Some(ui::IconKind::Sparkle);
+            items.push(add);
+            let mut ask = entry(
+                crate::MENU_TERM_ASK_AGENT,
+                if selected {
+                    "Ask Agent about Selection"
+                } else {
+                    "Ask Agent about This Output"
+                },
+                false,
+                context.selection.is_none() && context.recent.trim().is_empty(),
+                None,
+            );
+            ask.icon = Some(ui::IconKind::HelpCircle);
+            items.push(ask);
+        }
+        items.push(entry(
+            crate::MENU_TERM_CLOSE,
+            "Close Terminal Tab",
+            true,
+            false,
+            None,
+        ));
+        items
+    }
+
+    fn terminal_menu_click(&mut self, item: u64) {
+        let Some((group, path, context)) = self.menu_terminal.take() else {
+            return;
+        };
+        let with_item = |view: &mut Self, command: crate::TerminalCommand| {
+            if let Some(active) = view
+                .group_view_mut(group)
+                .and_then(|panes| panes.item_at_path_mut(&path))
+            {
+                active.terminal_command(command);
+            }
+        };
+        match item {
+            crate::MENU_TERM_COPY => {
+                if let Some(text) = &context.selection {
+                    Self::clip_set(text);
+                }
+            }
+            crate::MENU_TERM_PASTE => {
+                if let Some(text) = Self::clip_get() {
+                    with_item(self, crate::TerminalCommand::Paste(text));
+                }
+            }
+            crate::MENU_TERM_SELECT_ALL => with_item(self, crate::TerminalCommand::SelectAll),
+            crate::MENU_TERM_CLEAR => with_item(self, crate::TerminalCommand::Clear),
+            crate::MENU_TERM_ADD_TO_AGENT => {
+                let Some(text) = context.selection else {
+                    return;
+                };
+                let quoted = format!("```\n{}\n```\n", text.trim_end());
+                let main = self.main_agent_id();
+                let sent = main.is_some_and(|id| {
+                    self.layout
+                        .agent_view
+                        .as_mut()
+                        .is_some_and(|view| view.paste_into(&id, &quoted))
+                });
+                if sent {
+                    self.focus_group(InputGroup::Agent);
+                } else {
+                    self.show_toast("Start the agent first to add the selection to it", None);
+                }
+            }
+            crate::MENU_TERM_ASK_AGENT => {
+                let (what, text) = match &context.selection {
+                    Some(text) => ("this from the terminal", text.clone()),
+                    None => ("the latest output of the terminal", context.recent.clone()),
+                };
+                let prompt = format!(
+                    "Explain {what} ({}) and what to do about it:\n```\n{}\n```",
+                    context.title,
+                    text.trim_end()
+                );
+                self.agent_fix = Some((
+                    crate::AgentFix {
+                        prompt,
+                        cwd: context.cwd,
+                    },
+                    crate::SideAgentRole::Ask,
+                ));
+            }
+            crate::MENU_TERM_CLOSE => {
+                if let Some(panes) = self.group_view_mut(group) {
+                    let index = panes.pane_at(&path).and_then(|pane| pane.active);
+                    if let Some(index) = index {
+                        panes.close_tab(&path, index);
+                    }
+                }
+                self.panes_input = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// The workspace's main agent tab, pinned first in the agent dock.
+    fn main_agent_id(&mut self) -> Option<String> {
+        let view = self.layout.agent_view.as_mut()?;
+        let mut found = None;
+        view.panes().for_each_item_mut(&mut |item| {
+            if found.is_none() && item.pinned_at_front() {
+                found = item.id();
+            }
+        });
+        found
+    }
+
     fn group_view(&self, group: InputGroup) -> Option<&crate::pane_group_view::PaneGroupView> {
         match group {
             InputGroup::Center => self.layout.files_view.as_ref()?.pane_group(),
@@ -2994,6 +3170,9 @@ impl WorkspaceView {
                 items.push(item(MENU_TREE_COLLAPSE_ALL, "Collapse All", false));
             }
             return items;
+        }
+        if target == crate::TERMINAL_MENU_TARGET {
+            return self.terminal_menu_items();
         }
         if target == EDITOR_MENU_TARGET {
             return vec![
@@ -3621,6 +3800,10 @@ impl WorkspaceView {
             }
             return;
         }
+        if target == crate::TERMINAL_MENU_TARGET {
+            self.terminal_menu_click(item);
+            return;
+        }
         if target == EDITOR_MENU_TARGET {
             let group = self.menu_group;
             match item {
@@ -3840,6 +4023,17 @@ impl WorkspaceView {
             .zoom_group_at(x, y)
             .or_else(|| self.dock_body_group_at(x, y))
             .or_else(|| in_center.then_some(InputGroup::Center));
+        if let Some((group, path, context)) = group.and_then(|group| self.terminal_at(group, x, y))
+        {
+            self.focus_group(group);
+            self.menu_group = group;
+            self.menu_terminal = Some((group, path, context));
+            self.menu = Some((x, y, y, crate::TERMINAL_MENU_TARGET));
+            self.menu_path = None;
+            self.submenu = None;
+            self.menu_editor_anchor = None;
+            return true;
+        }
         let pressed = group.filter(|group| {
             self.input(*group)
                 .is_some_and(|input| input.editor_right_press(x, y))
@@ -7093,6 +7287,71 @@ mod tests {
             .and_then(|w| w.center_of(SESSION_TRIGGER))
             .expect("trigger");
         assert!(full.0 < windowed.0 - 50.0, "{full:?} vs {windowed:?}");
+    }
+
+    #[test]
+    fn a_terminal_menu_asks_a_side_agent_about_the_selection_or_the_output() {
+        let (mut app, _, e) = open();
+        let context = |selection: Option<&str>| crate::TerminalContext {
+            selection: selection.map(str::to_string),
+            recent: "npm ERR! missing script: dev".into(),
+            cwd: "/work/web".into(),
+            title: "zsh".into(),
+        };
+        let (items, fix) = e.update(app.app_mut(), |view, _| {
+            view.menu_terminal = Some((InputGroup::Panel, vec![], context(None)));
+            let items: Vec<(u64, String, bool)> = view
+                .terminal_menu_items()
+                .into_iter()
+                .map(|item| (item.id, item.label.to_string(), item.disabled))
+                .collect();
+            view.terminal_menu_click(crate::MENU_TERM_ASK_AGENT);
+            (items, view.take_agent_fix())
+        });
+        let disabled = |id: u64| items.iter().find(|item| item.0 == id).map(|item| item.2);
+        assert_eq!(
+            disabled(crate::MENU_TERM_COPY),
+            Some(true),
+            "nothing selected"
+        );
+        assert_eq!(disabled(crate::MENU_TERM_ADD_TO_AGENT), Some(true));
+        assert!(items
+            .iter()
+            .any(|item| item.1 == "Ask Agent about This Output"));
+        let (fix, role) = fix.expect("a side agent is asked");
+        assert_eq!(role, crate::SideAgentRole::Ask);
+        assert!(
+            fix.prompt.contains("npm ERR! missing script: dev"),
+            "{}",
+            fix.prompt
+        );
+        assert_eq!(fix.cwd, std::path::PathBuf::from("/work/web"));
+
+        let (items, fix) = e.update(app.app_mut(), |view, _| {
+            view.menu_terminal = Some((InputGroup::Panel, vec![], context(Some("panic: boom"))));
+            let items = view.terminal_menu_items();
+            view.terminal_menu_click(crate::MENU_TERM_ASK_AGENT);
+            (items, view.take_agent_fix())
+        });
+        assert!(items
+            .iter()
+            .any(|item| item.label == "Ask Agent about Selection" && !item.disabled));
+        let prompt = fix.map(|(fix, _)| fix.prompt).unwrap_or_default();
+        assert!(
+            prompt.contains("panic: boom") && !prompt.contains("npm ERR!"),
+            "{prompt}"
+        );
+
+        let items = e.update(app.app_mut(), |view, _| {
+            view.menu_terminal = Some((InputGroup::Agent, vec![], context(Some("x"))));
+            view.terminal_menu_items()
+        });
+        assert!(
+            !items
+                .iter()
+                .any(|item| item.id == crate::MENU_TERM_ASK_AGENT),
+            "an agent's own tab is not sent to an agent"
+        );
     }
 
     #[test]
