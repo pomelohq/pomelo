@@ -375,6 +375,8 @@ pub struct WorkspaceList<'a> {
     pub expanded: &'a [u64],
     /// The hit id under the pointer, for hover backgrounds.
     pub hovered: Option<u64>,
+    /// Main's background update just succeeded; its row says so for a moment.
+    pub upkeep_done: bool,
 }
 
 /// A dockable piece of UI. Mirrors the framework's `Panel` (position + icon + render), trimmed to what we draw now.
@@ -396,6 +398,7 @@ pub struct ProjectPanel {
     ops: Vec<crate::WorkspaceOp>,
     expanded: Vec<u64>,
     hovered: Option<u64>,
+    upkeep_done: bool,
 }
 
 impl Panel for ProjectPanel {
@@ -417,6 +420,7 @@ impl Panel for ProjectPanel {
         self.ops = list.ops.to_vec();
         self.expanded = list.expanded.to_vec();
         self.hovered = list.hovered;
+        self.upkeep_done = list.upkeep_done;
     }
 
     fn render(&mut self) -> Node {
@@ -437,23 +441,22 @@ impl Panel for ProjectPanel {
                     .child(icon(IconKind::Plus).size(14.0).color(theme().icon_muted)),
             );
         let mut col = div().col().px(10.0).py(10.0).gap(2.0).child(header);
-        for (position, op) in self.ops.iter().enumerate() {
-            if op.quiet {
-                if let Some(line) = quiet_op_line(op) {
-                    col = col.child(line);
-                }
-                continue;
-            }
-            let expanded = self.expanded.contains(&op.id);
-            col = col.child(op_row(op, position, expanded));
-        }
+        let upkeep = upkeep_of(&self.ops, &self.expanded, self.upkeep_done);
         for row in &self.rows {
             let id = crate::WORKSPACE_ROW_BASE + row.index as u64;
+            let state = if row.index == 0 { upkeep } else { Upkeep::None };
             col = col.child(workspace_row(
                 row,
                 row.index == self.current,
                 self.hovered == Some(id),
+                state,
             ));
+            if row.index == 0 {
+                for (position, op) in self.ops.iter().enumerate().filter(|(_, op)| !op.quiet) {
+                    let expanded = self.expanded.contains(&op.id);
+                    col = col.child(op_row(op, position, expanded));
+                }
+            }
         }
         col.into()
     }
@@ -519,15 +522,21 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
                 .on_click(crate::WORKSPACE_NEW)
                 .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
         );
+    let upkeep = upkeep_of(list.ops, list.expanded, list.upkeep_done);
     for row in list.rows {
         let id = crate::WORKSPACE_ROW_BASE + row.index as u64;
+        let state = if row.index == 0 { upkeep } else { Upkeep::None };
         column = column.child(rail_cell(
             row,
             row.index == list.current,
             list.hovered == Some(id),
             cell_w,
+            state,
         ));
         if row.index == 0 {
+            for (position, op) in list.ops.iter().enumerate().filter(|(_, op)| !op.quiet) {
+                column = column.child(op_tile(op, position, cell_w));
+            }
             column = column.child(div().w_px(20.0).h_px(1.0).bg(theme().border_variant));
         }
     }
@@ -594,7 +603,13 @@ fn category_color(category: &str) -> Rgba {
 
 /// One workspace folded into a tile that only raises what needs you: a ring while its agent works or waits,
 /// a pill with the reason and count when its PRs are in trouble, a strip along the bottom while services run.
-fn rail_cell(row: &WorkspaceRow, current: bool, hovered: bool, cell_w: f32) -> Node {
+fn rail_cell(
+    row: &WorkspaceRow,
+    current: bool,
+    hovered: bool,
+    cell_w: f32,
+    upkeep: Upkeep<'_>,
+) -> Node {
     const TILE: f32 = 36.0;
     let colors = theme();
     let (top, bottom) = rail_label(row);
@@ -666,6 +681,23 @@ fn rail_cell(row: &WorkspaceRow, current: bool, hovered: bool, cell_w: f32) -> N
             );
         tile = tile.pin(Corner::TopRight, 4.0, -6.0, width, 16.0, pill);
     }
+    // Main never shows PRs, so its corner carries its background update instead.
+    let upkeep_pill = match upkeep {
+        Upkeep::Running(_) => Some((IconKind::RotateCw, colors.text_accent)),
+        Upkeep::Done => Some((IconKind::Check, colors.success)),
+        Upkeep::Failed { .. } => Some((IconKind::Warning, colors.error)),
+        Upkeep::None => None,
+    };
+    if let Some((glyph, color)) = upkeep_pill {
+        tile = tile.pin(
+            Corner::TopRight,
+            4.0,
+            -6.0,
+            16.0,
+            16.0,
+            corner_pill(glyph, color),
+        );
+    }
     let mut cell = div()
         .row()
         .items_center()
@@ -687,10 +719,109 @@ fn rail_cell(row: &WorkspaceRow, current: bool, hovered: bool, cell_w: f32) -> N
     cell.into()
 }
 
+fn corner_pill(glyph: IconKind, color: Rgba) -> Node {
+    div()
+        .row()
+        .items_center()
+        .justify_center()
+        .rounded(8.0)
+        .bg(color)
+        .border(2.0, theme().panel_background)
+        .child(icon(glyph).size(8.0).color(theme().editor_background))
+        .into()
+}
+
+/// A workspace being created, folded into an ordinary tile with a dim name: a progress strip while it runs, a
+/// clock while it waits, a red corner when it failed.
+fn op_tile(op: &crate::WorkspaceOp, position: usize, cell_w: f32) -> Node {
+    use crate::OpStatus;
+    const TILE: f32 = 36.0;
+    let colors = theme();
+    let mut parts = op
+        .branch
+        .split(['-', '_', '/'])
+        .filter(|part| !part.is_empty());
+    let number = parts
+        .nth(1)
+        .filter(|part| part.chars().all(|c| c.is_ascii_digit()));
+    let name: String = match number {
+        Some(number) => number.to_string(),
+        None => op
+            .title
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .take(4)
+            .collect(),
+    };
+    let mut tile = div()
+        .row()
+        .items_center()
+        .justify_center()
+        .w_px(TILE)
+        .h_px(TILE)
+        .rounded(8.0)
+        .bg(with_alpha(colors.text, 0.03))
+        .child(
+            label(name)
+                .size(11.0)
+                .medium()
+                .color(colors.text_placeholder),
+        );
+    match op.status {
+        OpStatus::Running => {
+            let done = op_progress(op).clamp(0.02, 1.0);
+            let strip = div()
+                .row()
+                .rounded(1.0)
+                .bg(with_alpha(colors.text_accent, 0.25))
+                .child(
+                    div()
+                        .h_px(2.0)
+                        .flex(done)
+                        .rounded(1.0)
+                        .bg(colors.text_accent),
+                )
+                .child(div().h_px(2.0).flex(1.0 - done));
+            tile = tile.pin(Corner::BottomLeft, 8.0, -3.0, TILE - 16.0, 2.0, strip);
+        }
+        OpStatus::Queued => {
+            tile = tile.pin(
+                Corner::TopRight,
+                4.0,
+                -6.0,
+                16.0,
+                16.0,
+                corner_pill(IconKind::Clock, colors.text_placeholder),
+            );
+        }
+        OpStatus::Failed => {
+            tile = tile.pin(
+                Corner::TopRight,
+                4.0,
+                -6.0,
+                16.0,
+                16.0,
+                corner_pill(IconKind::Warning, colors.error),
+            );
+        }
+        OpStatus::Done => {}
+    }
+    let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
+    div()
+        .row()
+        .items_center()
+        .justify_center()
+        .w_px(cell_w)
+        .h_px(TILE + 6.0)
+        .on_click(base + crate::WORKSPACE_OP_TOGGLE)
+        .child(tile)
+        .into()
+}
+
 /// One workspace in the list. The name has the first line to itself (the PR count at its end); the second line
 /// carries the ticket key, its status, why a PR needs you and how many services run. An agent at work is a dot
 /// at the left edge.
-fn workspace_row(row: &WorkspaceRow, current: bool, hovered: bool) -> Node {
+fn workspace_row(row: &WorkspaceRow, current: bool, hovered: bool, upkeep: Upkeep<'_>) -> Node {
     let colors = theme();
     let key = ticket_key(row);
     let pr = shown_pr(row);
@@ -718,7 +849,56 @@ fn workspace_row(row: &WorkspaceRow, current: bool, hovered: bool) -> Node {
 
     let mut details = div().row().h_px(16.0).gap(8.0).items_center();
     let mut has_details = false;
-    if let Some(key) = &key {
+    // Main's update takes its second line while it runs, has just finished, or failed.
+    let upkeep_line = match upkeep {
+        Upkeep::None => None,
+        Upkeep::Running(op) => Some(status_line(
+            IconKind::RotateCw,
+            colors.text_accent,
+            format!("Updating - {}", op_step(op)),
+        )),
+        Upkeep::Done => Some(status_line(
+            IconKind::Check,
+            colors.success,
+            "Up to date".into(),
+        )),
+        Upkeep::Failed {
+            op,
+            position,
+            expanded,
+        } => {
+            let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
+            Some(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .gap(8.0)
+                    .items_center()
+                    .child(status_line(
+                        IconKind::Warning,
+                        colors.error,
+                        format!("Update failed: {}", op.error),
+                    ))
+                    .child(
+                        div()
+                            .row()
+                            .items_center()
+                            .on_click(base + crate::WORKSPACE_OP_TOGGLE)
+                            .child(
+                                label(if expanded { "Hide" } else { "Details" })
+                                    .size(10.5)
+                                    .color(colors.text_muted)
+                                    .underline(colors.text_muted),
+                            ),
+                    )
+                    .into(),
+            )
+        }
+    };
+    if let Some(line) = upkeep_line {
+        details = details.child(line);
+        has_details = true;
+    } else if let Some(key) = &key {
         details = details.child(
             label(key.clone())
                 .size(10.5)
@@ -727,7 +907,7 @@ fn workspace_row(row: &WorkspaceRow, current: bool, hovered: bool) -> Node {
         );
         has_details = true;
     }
-    if !row.missing.is_empty() {
+    if matches!(upkeep, Upkeep::None) && !row.missing.is_empty() {
         details = details.child(
             div().row().flex(1.0).items_center().child(
                 label(format!("not cloned: {}", row.missing.join(", ")))
@@ -737,7 +917,7 @@ fn workspace_row(row: &WorkspaceRow, current: bool, hovered: bool) -> Node {
             ),
         );
         has_details = true;
-    } else if !row.ticket.is_empty() {
+    } else if matches!(upkeep, Upkeep::None) && !row.ticket.is_empty() {
         // A PR problem outranks the status name; the status keeps its colour square either way.
         let square = div()
             .w_px(6.0)
@@ -760,7 +940,7 @@ fn workspace_row(row: &WorkspaceRow, current: bool, hovered: bool) -> Node {
         }
         details = details.child(status);
         has_details = true;
-    } else if row.branch != row.label && row.running > 0 {
+    } else if matches!(upkeep, Upkeep::None) && row.branch != row.label && row.running > 0 {
         details = details.child(
             label(row.branch.clone())
                 .size(10.5)
@@ -780,7 +960,7 @@ fn workspace_row(row: &WorkspaceRow, current: bool, hovered: bool) -> Node {
             ),
         );
         has_details = true;
-    } else if has_details && row.ticket.is_empty() {
+    } else if has_details && row.ticket.is_empty() && matches!(upkeep, Upkeep::None) {
         // Push the running count to the end only when something sits before it.
         details = details.child(div().row().flex(1.0));
     }
@@ -801,10 +981,20 @@ fn workspace_row(row: &WorkspaceRow, current: bool, hovered: bool) -> Node {
         has_details = true;
     }
 
+    let open_failure = match upkeep {
+        Upkeep::Failed {
+            op,
+            position,
+            expanded: true,
+        } => Some((op, position)),
+        _ => None,
+    };
     let height = if has_details { 42.0 } else { 30.0 };
-    let mut item = div()
-        .col()
-        .h_px(height)
+    let mut item = div().col();
+    if open_failure.is_none() {
+        item = item.h_px(height);
+    }
+    let mut item = item
         .gap(2.0)
         .pl(18.0)
         .pr(8.0)
@@ -814,6 +1004,9 @@ fn workspace_row(row: &WorkspaceRow, current: bool, hovered: bool) -> Node {
         .child(first);
     if has_details {
         item = item.child(details);
+    }
+    if let Some((op, position)) = open_failure {
+        item = item.child(op_details(op, position));
     }
     if current {
         item = item.bg(colors.element_selected).pin(
@@ -851,7 +1044,7 @@ pub fn workspace_row_ghost(row: &WorkspaceRow) -> Node {
         .rounded(6.0)
         .bg(theme().elevated_surface_background)
         .border(1.0, theme().border)
-        .child(workspace_row(row, true, false))
+        .child(workspace_row(row, true, false, Upkeep::None))
         .into()
 }
 
@@ -890,166 +1083,224 @@ fn pr_pill(index: usize, pr: crate::PrSummary) -> Node {
         .into()
 }
 
-/// A creation or deletion in flight: its title, the stage it is on and a progress bar; expanded, every stage.
-/// A failed one shows its error with Retry (when it can resume) and a dismiss button.
-/// Background upkeep in flight as a single muted line: what it is and the step it is on.
-fn quiet_op_line(op: &crate::WorkspaceOp) -> Option<Node> {
-    use crate::{OpStatus, StageState};
-    if !matches!(op.status, OpStatus::Queued | OpStatus::Running) {
-        return None;
-    }
-    let colors = theme();
-    let step = op
-        .stages
-        .iter()
-        .find(|(_, state)| *state == StageState::Running)
-        .map(|(name, _)| name.clone())
-        .filter(|name| !name.is_empty());
-    let text = match step {
-        Some(step) => format!("{} - {step}", op.title),
-        None => op.title.clone(),
-    };
-    Some(
-        div()
-            .row()
-            .items_center()
-            .gap(6.0)
-            .h_px(20.0)
-            .px(4.0)
-            .child(icon(IconKind::RotateCw).size(11.0).color(colors.icon_muted))
-            .child(
-                div()
-                    .row()
-                    .flex(1.0)
-                    .items_center()
-                    .child(label(text).size(11.0).color(colors.text_muted).truncate()),
-            )
-            .into(),
-    )
+/// Main's background update as its row shows it.
+#[derive(Clone, Copy)]
+enum Upkeep<'a> {
+    None,
+    Running(&'a crate::WorkspaceOp),
+    Done,
+    Failed {
+        op: &'a crate::WorkspaceOp,
+        position: usize,
+        expanded: bool,
+    },
 }
 
-fn op_row(op: &crate::WorkspaceOp, position: usize, expanded: bool) -> Node {
-    use crate::{OpStatus, StageState};
+fn upkeep_of<'a>(ops: &'a [crate::WorkspaceOp], expanded: &[u64], done: bool) -> Upkeep<'a> {
+    use crate::OpStatus;
+    match ops.iter().enumerate().find(|(_, op)| op.quiet) {
+        Some((position, op)) if op.status == OpStatus::Failed => Upkeep::Failed {
+            op,
+            position,
+            expanded: expanded.contains(&op.id),
+        },
+        Some((_, op)) if matches!(op.status, OpStatus::Queued | OpStatus::Running) => {
+            Upkeep::Running(op)
+        }
+        _ if done => Upkeep::Done,
+        _ => Upkeep::None,
+    }
+}
+
+/// The step an operation is on: its running stage and that stage's latest line.
+fn op_step(op: &crate::WorkspaceOp) -> String {
+    let stage = op
+        .stages
+        .iter()
+        .find(|(_, state)| *state == crate::StageState::Running)
+        .map(|(name, _)| name.clone());
+    match (stage, op.detail.is_empty()) {
+        (Some(stage), false) => format!("{stage}: {}", op.detail),
+        (Some(stage), true) => stage,
+        (None, _) => "starting".to_string(),
+    }
+}
+
+fn op_progress(op: &crate::WorkspaceOp) -> f32 {
+    use crate::StageState;
+    let total = op.stages.len().max(1) as f32;
+    let finished = op
+        .stages
+        .iter()
+        .filter(|(_, state)| matches!(state, StageState::Done | StageState::Skipped))
+        .count() as f32;
+    finished / total
+}
+
+/// An icon and a line of coloured text, the text truncating: the second line of an operation's row.
+fn status_line(glyph: IconKind, color: Rgba, text: String) -> Node {
+    div()
+        .row()
+        .flex(1.0)
+        .gap(5.0)
+        .items_center()
+        .child(icon(glyph).size(11.0).color(color))
+        .child(
+            div()
+                .row()
+                .flex(1.0)
+                .items_center()
+                .child(label(text).size(11.0).color(color).truncate()),
+        )
+        .into()
+}
+
+fn small_button(text: &str, id: u64) -> Node {
     let colors = theme();
-    let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
-    let (status_icon, status_color) = match op.status {
-        OpStatus::Queued => (IconKind::ChevronRight, colors.icon_muted),
-        OpStatus::Running => (IconKind::RotateCw, colors.icon_muted),
-        OpStatus::Done => (IconKind::Check, colors.success),
-        OpStatus::Failed => (IconKind::Warning, colors.error),
-    };
-    let subtitle = match op.status {
-        OpStatus::Queued => "queued".to_string(),
-        OpStatus::Done => "done".to_string(),
-        OpStatus::Failed => op.error.clone(),
-        OpStatus::Running => op
-            .stages
-            .iter()
-            .find(|(_, state)| *state == StageState::Running)
-            .map_or_else(|| "starting".to_string(), |(name, _)| name.clone()),
-    };
-    let mut title_row = div()
+    div()
         .row()
         .items_center()
-        .gap(6.0)
-        .child(icon(status_icon).size(12.0).color(status_color))
-        .child(
-            div().row().flex(1.0).items_center().child(
-                label(op.title.clone())
-                    .size(13.0)
-                    .color(colors.text)
-                    .truncate(),
-            ),
+        .h_px(20.0)
+        .px(7.0)
+        .rounded(4.0)
+        .bg(with_alpha(colors.text, 0.07))
+        .border(1.0, colors.border)
+        .on_click(id)
+        .child(label(text.to_string()).size(11.0).color(colors.text))
+        .into()
+}
+
+/// A failure opened up: which stages ran and which broke, the error in full, and what to do about it.
+fn op_details(op: &crate::WorkspaceOp, position: usize) -> Node {
+    use crate::StageState;
+    let colors = theme();
+    let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
+    let mut stages = div().col().gap(1.0);
+    for (name, state) in &op.stages {
+        let (kind, color) = match state {
+            StageState::Pending => (IconKind::Dash, colors.text_disabled),
+            StageState::Running => (IconKind::RotateCw, colors.text_accent),
+            StageState::Done => (IconKind::Check, colors.success),
+            StageState::Skipped => (IconKind::SquareMinus, colors.text_disabled),
+            StageState::Failed => (IconKind::Close, colors.error),
+        };
+        stages = stages.child(
+            div()
+                .row()
+                .h_px(16.0)
+                .gap(5.0)
+                .items_center()
+                .child(icon(kind).size(10.0).color(color))
+                .child(label(name.clone()).size(11.0).color(color).truncate()),
         );
+    }
+    let error = div()
+        .col()
+        .p(7.0)
+        .rounded(5.0)
+        .bg(colors.editor_background)
+        .border(1.0, colors.border_variant)
+        .child(
+            label(op.error.clone())
+                .size(10.5)
+                .mono()
+                .color(colors.text_muted)
+                .wrap(210.0),
+        );
+    let mut actions = div().row().gap(6.0).items_center();
+    if op.retryable {
+        actions = actions.child(small_button("Retry", base + crate::WORKSPACE_OP_RETRY));
+    }
+    actions = actions
+        .child(div().row().flex(1.0))
+        .child(small_button("Dismiss", base + crate::WORKSPACE_OP_DISMISS));
+    div()
+        .col()
+        .gap(6.0)
+        .pt(6.0)
+        .child(stages)
+        .child(error)
+        .child(actions)
+        .into()
+}
+
+/// A workspace being created or deleted, as a row where it will land: its name, then the step it is on with a
+/// thin progress bar, "Queued", or the error with a toggle to open the details.
+fn op_row(op: &crate::WorkspaceOp, position: usize, expanded: bool) -> Node {
+    use crate::OpStatus;
+    let colors = theme();
+    let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
+    let line = match op.status {
+        OpStatus::Running => status_line(IconKind::RotateCw, colors.text_accent, op_step(op)),
+        OpStatus::Queued => status_line(IconKind::Clock, colors.text_placeholder, "Queued".into()),
+        OpStatus::Done => status_line(IconKind::Check, colors.success, "Done".into()),
+        OpStatus::Failed => status_line(IconKind::Warning, colors.error, op.error.clone()),
+    };
+    let mut second = div().row().h_px(16.0).gap(8.0).items_center().child(line);
     if op.status == OpStatus::Failed {
-        if op.retryable {
-            title_row = title_row.child(
-                div()
-                    .row()
-                    .items_center()
-                    .h_px(18.0)
-                    .px(4.0)
-                    .rounded(4.0)
-                    .border(1.0, colors.border_variant)
-                    .on_click(base + crate::WORKSPACE_OP_RETRY)
-                    .child(label("Retry").size(12.0).color(colors.text)),
-            );
-        }
-        title_row = title_row.child(
+        second = second.child(
             div()
                 .row()
                 .items_center()
-                .justify_center()
-                .w_px(18.0)
-                .h_px(18.0)
-                .rounded(4.0)
-                .on_click(base + crate::WORKSPACE_OP_DISMISS)
-                .child(icon(IconKind::Close).size(12.0).color(colors.icon_muted)),
+                .on_click(base + crate::WORKSPACE_OP_TOGGLE)
+                .child(
+                    label(if expanded { "Hide" } else { "Details" })
+                        .size(10.5)
+                        .color(colors.text_muted)
+                        .underline(colors.text_muted),
+                ),
         );
     }
-    let subtitle_color = if op.status == OpStatus::Failed {
-        colors.error
+    let title_color = if op.status == OpStatus::Queued {
+        colors.text_placeholder
     } else {
         colors.text_muted
     };
-    let mut card = div()
+    let mut row = div()
         .col()
-        .gap(4.0)
-        .p(6.0)
-        .rounded(4.0)
-        .border(1.0, colors.border_variant)
-        .on_click(base + crate::WORKSPACE_OP_TOGGLE)
-        .child(title_row)
+        .gap(2.0)
+        .pl(18.0)
+        .pr(8.0)
+        .py(4.0)
+        .rounded(6.0)
         .child(
             div()
                 .row()
-                .child(label(subtitle).size(12.0).color(subtitle_color).truncate()),
-        );
-    if op.status == OpStatus::Running || op.status == OpStatus::Queued {
-        let total = op.stages.len().max(1) as f32;
-        let finished = op
-            .stages
-            .iter()
-            .filter(|(_, state)| matches!(state, StageState::Done | StageState::Skipped))
-            .count() as f32;
-        card = card.child(crate::form::progress_bar(finished / total));
+                .h_px(18.0)
+                .items_center()
+                .child(label(op.title.clone()).truncate().color(title_color)),
+        )
+        .child(second);
+    if expanded && op.status == OpStatus::Failed {
+        row = row
+            .bg(with_alpha(colors.error, 0.06))
+            .child(op_details(op, position));
+    } else {
+        row = row.h_px(if op.status == OpStatus::Running {
+            46.0
+        } else {
+            42.0
+        });
     }
-    if expanded {
-        for (name, state) in &op.stages {
-            let (kind, color) = match state {
-                StageState::Pending => (IconKind::ChevronRight, colors.text_disabled),
-                StageState::Running => (IconKind::RotateCw, colors.icon_muted),
-                StageState::Done => (IconKind::Check, colors.success),
-                StageState::Skipped => (IconKind::SquareMinus, colors.text_disabled),
-                StageState::Failed => (IconKind::XCircle, colors.error),
-            };
-            card = card.child(
+    if op.status == OpStatus::Running {
+        // Two growing halves split the width by progress, so the bar follows the row at any sidebar width.
+        let done = op_progress(op).clamp(0.02, 1.0);
+        let bar = div()
+            .row()
+            .h_px(2.0)
+            .rounded(1.0)
+            .bg(colors.border_variant)
+            .child(
                 div()
-                    .row()
-                    .items_center()
-                    .gap(6.0)
-                    .child(icon(kind).size(12.0).color(color))
-                    .child(
-                        label(name.clone())
-                            .size(12.0)
-                            .color(colors.text_muted)
-                            .truncate(),
-                    ),
-            );
-            if *state == StageState::Running && !op.detail.is_empty() {
-                card = card.child(
-                    div().row().pl(18.0).child(
-                        label(op.detail.clone())
-                            .size(11.0)
-                            .mono()
-                            .color(colors.text_muted)
-                            .truncate(),
-                    ),
-                );
-            }
-        }
+                    .h_px(2.0)
+                    .flex(done)
+                    .rounded(1.0)
+                    .bg(colors.text_accent),
+            )
+            .child(div().h_px(2.0).flex(1.0 - done));
+        row = row.child(bar);
     }
-    card.into()
+    row.into()
 }
 
 /// What the agent dock shows while no agent session runs in the workspace: a way to start one.
@@ -1164,11 +1415,12 @@ mod tests {
             ops,
             expanded: &[],
             hovered: None,
+            upkeep_done: false,
         }
     }
 
     #[test]
-    fn background_upkeep_is_one_quiet_line_and_hides_when_it_ends() {
+    fn background_upkeep_lives_on_the_main_row_and_a_failure_stays() {
         let mut op = crate::WorkspaceOp {
             id: 3,
             branch: String::new(),
@@ -1180,31 +1432,33 @@ mod tests {
             retryable: true,
             quiet: true,
         };
+        let rows = [row(0, "main", None)];
         let text_of = |op: &crate::WorkspaceOp| {
             let mut p = ProjectPanel::default();
-            p.sync(&list(&[], std::slice::from_ref(op)));
+            p.sync(&list(&rows, std::slice::from_ref(op)));
             let painted = ui::render(
                 &p.render(),
-                ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),
+                ui::Rect::new(0.0, 0.0, 600.0, 600.0, ui::Rgba::TRANSPARENT),
             );
             let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
             let text: Vec<String> = painted.texts.iter().map(|t| t.text.clone()).collect();
             (text, ids)
         };
         let (text, ids) = text_of(&op);
-        assert!(text.iter().any(|t| t == "Updating main - api"), "{text:?}");
+        assert!(text.iter().any(|t| t == "Updating - api"), "{text:?}");
         assert!(
             !ids.iter().any(|id| *id >= crate::WORKSPACE_OP_BASE
                 && *id < crate::WORKSPACE_OP_BASE + crate::WORKSPACE_OP_STRIDE),
-            "no card controls"
+            "no controls while it runs"
         );
         op.status = crate::OpStatus::Failed;
         op.error = "migrate failed".into();
-        let (text, _) = text_of(&op);
+        let (text, ids) = text_of(&op);
         assert!(
-            !text.iter().any(|t| t.contains("Updating main")),
-            "a failure goes to a toast"
+            text.iter().any(|t| t == "Update failed: migrate failed"),
+            "{text:?}"
         );
+        assert!(ids.contains(&(crate::WORKSPACE_OP_BASE + crate::WORKSPACE_OP_TOGGLE)));
     }
 
     #[test]
@@ -1224,7 +1478,12 @@ mod tests {
             quiet: false,
         };
         let mut p = ProjectPanel::default();
-        p.sync(&list(&[], std::slice::from_ref(&op)));
+        let expanded = [op.id];
+        let rows = [row(0, "main", None)];
+        p.sync(&WorkspaceList {
+            expanded: &expanded,
+            ..list(&rows, std::slice::from_ref(&op))
+        });
         let painted = ui::render(
             &p.render(),
             ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),

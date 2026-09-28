@@ -961,6 +961,85 @@ fn main() -> anyhow::Result<()> {
                 view.open_window_modal(Box::new(modal))
             });
         }
+        // MAINVIEW=sidebar OPS=1: main's update failed (opened), one creation running, one queued, one failed.
+        if sidebar && std::env::var("OPS").is_ok() {
+            use workspace::{OpStatus, StageState, WorkspaceOp};
+            let op = |id: u64,
+                      branch: &str,
+                      title: &str,
+                      status: OpStatus,
+                      stages: Vec<(&str, StageState)>,
+                      error: &str,
+                      quiet: bool| WorkspaceOp {
+                id,
+                branch: branch.into(),
+                title: title.into(),
+                status,
+                stages: stages
+                    .into_iter()
+                    .map(|(name, state)| (name.to_string(), state))
+                    .collect(),
+                detail: String::new(),
+                error: error.into(),
+                retryable: true,
+                quiet,
+            };
+            use StageState::{Done, Failed, Pending, Running, Skipped};
+            let ops = vec![
+                op(
+                    1,
+                    "",
+                    "Updating main",
+                    OpStatus::Failed,
+                    vec![("api", Failed), ("web", Done), ("worker", Skipped)],
+                    "api: Your local changes to app/models/user.rb would be overwritten by merge",
+                    true,
+                ),
+                op(
+                    2,
+                    "dark-mode",
+                    "Dark mode",
+                    OpStatus::Running,
+                    vec![
+                        ("worktrees", Done),
+                        ("ports", Done),
+                        ("databases", Running),
+                        ("env files", Pending),
+                        ("setup", Pending),
+                    ],
+                    "",
+                    false,
+                ),
+                op(
+                    3,
+                    "proj-111-export-orders",
+                    "PROJ-111 Export orders to CSV",
+                    OpStatus::Queued,
+                    Vec::new(),
+                    "",
+                    false,
+                ),
+                op(
+                    4,
+                    "proj-112-checkout-redesign",
+                    "PROJ-112 Checkout redesign",
+                    OpStatus::Failed,
+                    vec![
+                        ("worktrees", Done),
+                        ("ports", Done),
+                        ("databases", Done),
+                        ("env files", Done),
+                        ("setup", Failed),
+                    ],
+                    "web: npm install: ERESOLVE unable to resolve dependency tree",
+                    false,
+                ),
+            ];
+            entity.update(app.app_mut(), |view, _| {
+                view.set_workspace_ops(ops);
+                view.toggle_workspace_op(4);
+            });
+        }
         if mode == "wsops" {
             use workspace::{OpStatus, StageState, WorkspaceOp};
             let stages = |states: [StageState; 7]| -> Vec<(String, StageState)> {

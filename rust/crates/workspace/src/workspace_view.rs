@@ -27,6 +27,7 @@ use crate::{
 use crate::{TOAST_ACTION, TOAST_CLOSE};
 
 const TOAST_DISMISS: Duration = Duration::from_secs(10);
+const UPKEEP_DONE_SHOWN: Duration = Duration::from_secs(4);
 /// How long after the panes first change they are written, so a burst of changes costs one write.
 const PANES_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 /// Prompt tokens the view hands out itself, above the ones features number from 1.
@@ -228,10 +229,8 @@ pub struct WorkspaceView {
     press: (f32, f32),
     show_after_switch: Option<PaneKind>,
     toast_then: Option<(PaneKind, crate::PanelRequest)>,
-    /// The failed background operation the toast offers to retry.
-    toast_retry_op: Option<u64>,
-    /// Background operations whose failure was already announced.
-    announced_failures: Vec<u64>,
+    /// When main's background update last succeeded; its row says "Up to date" for a moment after.
+    upkeep_done_at: Option<Instant>,
     /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
     terminal_click: Option<(Instant, f32, f32, u32)>,
     layout: Layout,
@@ -312,8 +311,7 @@ impl WorkspaceView {
             press: (0.0, 0.0),
             show_after_switch: None,
             toast_then: None,
-            toast_retry_op: None,
-            announced_failures: Vec::new(),
+            upkeep_done_at: None,
             terminal_click: None,
             toast: None,
             notification: None,
@@ -574,19 +572,20 @@ impl WorkspaceView {
     pub fn set_workspace_ops(&mut self, ops: Vec<crate::WorkspaceOp>) {
         self.expanded_ops
             .retain(|id| ops.iter().any(|op| op.id == *id));
-        self.announced_failures
-            .retain(|id| ops.iter().any(|op| op.id == *id));
-        let failed = ops.iter().find(|op| {
-            op.quiet
-                && op.status == crate::OpStatus::Failed
-                && !self.announced_failures.contains(&op.id)
+        // A background update that ran and is gone without failing succeeded (failures stay in the queue).
+        let succeeded = self.workspace_ops.iter().any(|old| {
+            old.quiet
+                && matches!(
+                    old.status,
+                    crate::OpStatus::Queued | crate::OpStatus::Running
+                )
+                && !ops.iter().any(|op| op.id == old.id)
         });
-        if let Some(op) = failed {
-            self.announced_failures.push(op.id);
-            let message = format!("{} failed: {}", op.title, op.error);
-            self.show_toast(message, op.retryable.then(|| "Retry".to_string()));
-            self.toast_then = None;
-            self.toast_retry_op = Some(op.id);
+        if succeeded {
+            self.upkeep_done_at = Some(Instant::now());
+        }
+        if ops.iter().any(|op| op.quiet) {
+            self.upkeep_done_at = None;
         }
         self.workspace_ops = ops;
     }
@@ -758,7 +757,6 @@ impl WorkspaceView {
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, action: Option<String>) {
-        self.toast_retry_op = None;
         let now = Instant::now();
         self.toast = Some(Toast {
             message: message.into(),
@@ -773,6 +771,7 @@ impl WorkspaceView {
 
     pub fn ticking(&self) -> bool {
         self.toast.is_some()
+            || self.upkeep_done_at.is_some()
             || self.window_modal.as_ref().is_some_and(|modal| modal.busy())
             || self.panes_write_at.is_some()
             || self.panes_check_owed
@@ -1229,6 +1228,12 @@ impl WorkspaceView {
                 );
                 Some(ui::render(&crate::panel::workspace_row_ghost(row), area))
             });
+        if self
+            .upkeep_done_at
+            .is_some_and(|at| at.elapsed() >= UPKEEP_DONE_SHOWN)
+        {
+            self.upkeep_done_at = None;
+        }
         let workspace_ops = self.workspace_ops.clone();
         let expanded_ops = self.expanded_ops.clone();
         let list = crate::panel::WorkspaceList {
@@ -1237,6 +1242,7 @@ impl WorkspaceView {
             ops: &workspace_ops,
             expanded: &expanded_ops,
             hovered: self.session_menu_hover,
+            upkeep_done: self.upkeep_done_at.is_some(),
         };
         let mut rail_tip = None;
         {
@@ -4906,15 +4912,6 @@ impl WorkspaceView {
     fn header_click(&mut self, id: u64) {
         if id == TOAST_CLOSE || id == TOAST_ACTION {
             self.toast = None;
-            if let Some(op) = self.toast_retry_op.take() {
-                let action = if id == TOAST_ACTION {
-                    crate::OpAction::Retry
-                } else {
-                    crate::OpAction::Dismiss
-                };
-                self.workspace_requests.op = Some((op, action));
-                return;
-            }
             let then = self.toast_then.take();
             if let (TOAST_ACTION, Some((kind, then))) = (id, then) {
                 self.apply_request(kind, then);
@@ -6115,7 +6112,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_background_update_toasts_once_with_retry() {
+    fn a_failed_background_update_stays_on_main_and_retries_from_its_details() {
         let (mut app, h, e) = open();
         let failed = crate::WorkspaceOp {
             id: 9,
@@ -6128,25 +6125,42 @@ mod tests {
             retryable: true,
             quiet: true,
         };
-        e.update(app.app_mut(), |v, _| {
-            v.set_workspace_ops(vec![failed.clone()])
+        let toast = e.update(app.app_mut(), |v, _| {
+            v.set_workspace_ops(vec![failed]);
+            v.header_click(crate::WORKSPACE_OP_BASE + crate::WORKSPACE_OP_TOGGLE);
+            v.toast.is_some()
         });
+        assert!(!toast, "a failure stays in the sidebar, not a toast");
         let text = frame_text(&app.draw(h).expect("frame"));
-        assert!(
-            text.contains("Updating main failed: api: migrate failed"),
-            "{text}"
-        );
+        assert!(text.contains("Update failed"), "{text}");
         assert!(text.contains("Retry"), "{text}");
         let request = e.update(app.app_mut(), |v, _| {
-            v.header_click(TOAST_ACTION);
+            v.header_click(crate::WORKSPACE_OP_BASE + crate::WORKSPACE_OP_RETRY);
             v.take_workspace_requests().op
         });
         assert_eq!(request, Some((9, crate::OpAction::Retry)));
-        let again = e.update(app.app_mut(), |v, _| {
-            v.set_workspace_ops(vec![failed]);
-            v.toast.is_some()
+    }
+
+    #[test]
+    fn a_background_update_that_finishes_says_up_to_date() {
+        let (mut app, h, e) = open();
+        let running = crate::WorkspaceOp {
+            id: 9,
+            branch: String::new(),
+            title: "Updating main".into(),
+            status: crate::OpStatus::Running,
+            stages: Vec::new(),
+            detail: String::new(),
+            error: String::new(),
+            retryable: true,
+            quiet: true,
+        };
+        e.update(app.app_mut(), |v, _| {
+            v.set_workspace_ops(vec![running]);
+            v.set_workspace_ops(Vec::new());
         });
-        assert!(!again, "announced once");
+        let text = frame_text(&app.draw(h).expect("frame"));
+        assert!(text.contains("Up to date"), "{text}");
     }
 
     #[test]
