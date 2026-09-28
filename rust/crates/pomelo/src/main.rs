@@ -947,6 +947,35 @@ impl App {
         });
     }
 
+    /// An agent on a failed workspace operation, started in the checkout the failure names.
+    pub(crate) fn open_op_fixer(&mut self, id: WindowId, op: &workspace::WorkspaceOp) {
+        let stage = op
+            .stages
+            .iter()
+            .find(|(_, state)| *state == workspace::StageState::Failed)
+            .map(|(name, _)| name.as_str())
+            .unwrap_or("a step");
+        let what = if op.quiet {
+            "Updating the main workspace from origin".to_string()
+        } else {
+            format!("The Pomelo operation \"{}\"", op.title)
+        };
+        let log = if op.log.is_empty() {
+            &op.error
+        } else {
+            &op.log
+        };
+        let prompt = format!(
+            "{what} failed at \"{stage}\":\n\n{log}\n\nFind the cause and fix it. If the fix belongs in \
+             the project's pom.yml, say what to change. Don't retry the operation yourself; tell me when to \
+             press Retry."
+        );
+        let dir = (!op.fix_dir.is_empty()).then(|| std::path::PathBuf::from(&op.fix_dir));
+        self.open_task_agent_in(id, dir, |context| {
+            pom_agent::claude_task_launch(context, "fixer", &prompt)
+        });
+    }
+
     fn open_onboarder(&mut self, id: WindowId) {
         self.open_task_agent(id, pom_agent::onboard_launch);
     }
@@ -954,6 +983,16 @@ impl App {
     fn open_task_agent(
         &mut self,
         id: WindowId,
+        launch: impl FnOnce(&pom_agent::LaunchContext<'_>) -> pom_agent::AgentLaunch,
+    ) {
+        self.open_task_agent_in(id, None, launch);
+    }
+
+    /// A task agent in `dir` instead of the active workspace's root.
+    fn open_task_agent_in(
+        &mut self,
+        id: WindowId,
+        dir: Option<std::path::PathBuf>,
         launch: impl FnOnce(&pom_agent::LaunchContext<'_>) -> pom_agent::AgentLaunch,
     ) {
         let Some(main) = self.mains.get(&id) else {
@@ -967,7 +1006,7 @@ impl App {
         };
         let home = std::path::PathBuf::from(home);
         let state = pom_paths::StateDir::from_env();
-        let cwd = project.active_root();
+        let cwd = dir.unwrap_or_else(|| project.active_root());
         let branch = project.active_branch().to_string();
         let is_main = project
             .active_workspace()

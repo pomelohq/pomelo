@@ -39,11 +39,21 @@ impl App {
             self.reorder_workspace(id, from, to);
         }
         if let Some((op, action)) = requests.op {
+            let failed = self
+                .mains
+                .get(&id)
+                .and_then(|main| main.ops.snapshot().into_iter().find(|view| view.id == op));
             if let Some(main) = self.mains.get(&id) {
                 match action {
                     workspace::OpAction::Retry => main.ops.retry(op),
                     workspace::OpAction::Dismiss => main.ops.dismiss(op),
+                    workspace::OpAction::Cancel => main.ops.cancel(op),
+                    workspace::OpAction::Skip => main.ops.skip(op),
+                    workspace::OpAction::FixWithAgent => {}
                 }
+            }
+            if let (workspace::OpAction::FixWithAgent, Some(failed)) = (action, failed) {
+                self.open_op_fixer(id, &failed);
             }
         }
         if let Some(main) = self.mains.get_mut(&id) {

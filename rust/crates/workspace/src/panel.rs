@@ -379,6 +379,8 @@ pub struct WorkspaceList<'a> {
     pub upkeep_done: bool,
     /// The panel's width in layout units, for content that wraps.
     pub width: f32,
+    /// The failed operation whose menu of manual fixes is open.
+    pub manual: Option<u64>,
 }
 
 /// A dockable piece of UI. Mirrors the framework's `Panel` (position + icon + render), trimmed to what we draw now.
@@ -402,6 +404,7 @@ pub struct ProjectPanel {
     hovered: Option<u64>,
     upkeep_done: bool,
     width: f32,
+    manual: Option<u64>,
 }
 
 impl Panel for ProjectPanel {
@@ -425,6 +428,7 @@ impl Panel for ProjectPanel {
         self.hovered = list.hovered;
         self.upkeep_done = list.upkeep_done;
         self.width = list.width;
+        self.manual = list.manual;
     }
 
     fn render(&mut self) -> Node {
@@ -457,12 +461,14 @@ impl Panel for ProjectPanel {
                 self.hovered == Some(id),
                 state,
                 inner_w,
+                self.manual,
             ));
             if row.index == 0 {
                 let mut ahead = 0;
                 for (position, op) in self.ops.iter().enumerate().filter(|(_, op)| !op.quiet) {
                     let expanded = self.expanded.contains(&op.id);
-                    col = col.child(op_row(op, position, expanded, ahead, inner_w));
+                    let manual_open = self.manual == Some(op.id);
+                    col = col.child(op_row(op, position, expanded, ahead, inner_w, manual_open));
                     if op.status != crate::OpStatus::Failed {
                         ahead += 1;
                     }
@@ -699,7 +705,13 @@ fn rail_cell(
     tile = match upkeep {
         Upkeep::Running(_) => pin_pill(tile, Some(IconKind::RotateCw), None, colors.text_accent),
         Upkeep::Done => pin_pill(tile, Some(IconKind::BadgeCheck), None, colors.success),
-        Upkeep::Failed { .. } => pin_pill(tile, Some(IconKind::BadgeAlert), None, colors.error),
+        Upkeep::Failed { position, .. } => pin_pill_with(
+            tile,
+            Some(IconKind::BadgeAlert),
+            None,
+            colors.error,
+            Some(op_base(position) + crate::WORKSPACE_OP_POPOVER),
+        ),
         Upkeep::None => tile,
     };
     let mut cell = div()
@@ -726,6 +738,16 @@ fn rail_cell(
 /// Hangs a pill off a tile's top-right corner: a glyph, a count, or both, on `bg` with a ring of the panel colour
 /// cutting it from the tile. A lone glyph makes a circle; a count stretches it into a capsule.
 fn pin_pill(tile: Div, glyph: Option<IconKind>, text: Option<String>, bg: Rgba) -> Div {
+    pin_pill_with(tile, glyph, text, bg, None)
+}
+
+fn pin_pill_with(
+    tile: Div,
+    glyph: Option<IconKind>,
+    text: Option<String>,
+    bg: Rgba,
+    click: Option<u64>,
+) -> Div {
     const INNER_H: f32 = 15.0;
     const GLYPH: f32 = 9.0;
     const RING: f32 = 2.0;
@@ -754,6 +776,9 @@ fn pin_pill(tile: Div, glyph: Option<IconKind>, text: Option<String>, bg: Rgba) 
     } else {
         INNER_H
     };
+    if let Some(id) = click {
+        pill = pill.on_click(id);
+    }
     let (w, h) = (inner_w.max(INNER_H) + 2.0 * RING, INNER_H + 2.0 * RING);
     tile.pin(Corner::TopRight, 8.0 + RING, -6.0 - RING, w, h, pill)
 }
@@ -819,15 +844,53 @@ fn op_tile(op: &crate::WorkspaceOp, position: usize, cell_w: f32) -> Node {
         }
         OpStatus::Done => {}
     }
-    let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
-    div()
+    let mut cell = div()
         .row()
         .items_center()
         .justify_center()
         .w_px(cell_w)
         .h_px(TILE + 6.0)
-        .on_click(base + crate::WORKSPACE_OP_TOGGLE)
-        .child(tile)
+        .child(tile);
+    // Only a failure has something to open; a running or queued tile is just there to be seen.
+    if op.status == OpStatus::Failed {
+        cell = cell.on_click(op_base(position) + crate::WORKSPACE_OP_POPOVER);
+    }
+    cell.into()
+}
+
+fn op_base(position: usize) -> u64 {
+    crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE
+}
+
+/// A failure's details beside its rail tile, for when the list is folded away.
+pub fn failure_popover(op: &crate::WorkspaceOp, position: usize, manual_open: bool) -> Node {
+    const WIDTH: f32 = 290.0;
+    let colors = theme();
+    let title = if op.quiet {
+        "main".to_string()
+    } else {
+        op.title.clone()
+    };
+    div()
+        .col()
+        .w_px(WIDTH)
+        .p(10.0)
+        .rounded(8.0)
+        .bg(colors.elevated_surface_background)
+        .border(1.0, colors.border)
+        .child(label(title).medium().color(colors.text).truncate())
+        .child(div().row().h_px(16.0).items_center().child(status_line(
+            IconKind::Warning,
+            colors.error,
+            op.error.clone(),
+        )))
+        .child(op_details(
+            op,
+            position,
+            WIDTH - 20.0,
+            !op.quiet,
+            manual_open,
+        ))
         .into()
 }
 
@@ -840,6 +903,7 @@ fn workspace_row(
     hovered: bool,
     upkeep: Upkeep<'_>,
     inner_w: f32,
+    manual: Option<u64>,
 ) -> Node {
     let colors = theme();
     let key = ticket_key(row);
@@ -1005,7 +1069,10 @@ fn workspace_row(
         item = item.child(details);
     }
     if let Some((op, position)) = open_failure {
-        item = item.pb(8.0).child(op_details(op, position, inner_w, false));
+        let manual_open = manual == Some(op.id);
+        item = item
+            .pb(8.0)
+            .child(op_details(op, position, inner_w, false, manual_open));
     }
     if current {
         item = item.bg(colors.element_selected).pin_left_edge(
@@ -1041,7 +1108,7 @@ pub fn workspace_row_ghost(row: &WorkspaceRow) -> Node {
         .rounded(6.0)
         .bg(theme().elevated_surface_background)
         .border(1.0, theme().border)
-        .child(workspace_row(row, true, false, Upkeep::None, 240.0))
+        .child(workspace_row(row, true, false, Upkeep::None, 240.0, None))
         .into()
 }
 
@@ -1200,7 +1267,13 @@ fn failure_line(text: String, base: u64, expanded: bool) -> Node {
 
 /// A failure opened up: the stages as chips that wrap to the width, the error in full, and what to do about it.
 /// Main's update can't be dismissed, only retried: it would just fail again on the next refresh.
-fn op_details(op: &crate::WorkspaceOp, position: usize, width: f32, dismissable: bool) -> Node {
+fn op_details(
+    op: &crate::WorkspaceOp,
+    position: usize,
+    width: f32,
+    dismissable: bool,
+    manual_open: bool,
+) -> Node {
     use crate::StageState;
     const CHIP_GAP: f32 = 10.0;
     const CHIP_ICON: f32 = 12.0;
@@ -1239,6 +1312,11 @@ fn op_details(op: &crate::WorkspaceOp, position: usize, width: f32, dismissable:
         }
         stages = stages.child(row);
     }
+    let log = if op.log.is_empty() {
+        &op.error
+    } else {
+        &op.log
+    };
     let error = div()
         .col()
         .px(8.0)
@@ -1247,33 +1325,166 @@ fn op_details(op: &crate::WorkspaceOp, position: usize, width: f32, dismissable:
         .bg(colors.editor_background)
         .border(1.0, colors.border_variant)
         .child(
-            label(op.error.clone())
+            label(log.clone())
                 .size(10.0)
                 .mono()
                 .color(colors.text)
                 .wrap((width - 18.0).max(60.0)),
         );
-    let mut actions = div().row().gap(6.0).items_center();
+    let mut fixes = div().row().gap(6.0).items_center();
+    let mut fixes_w = 0.0;
     if op.retryable {
-        actions = actions.child(small_button("Retry", base + crate::WORKSPACE_OP_RETRY));
+        fixes = fixes.child(small_button("Retry", base + crate::WORKSPACE_OP_RETRY));
+        fixes_w += button_width("Retry", 0.0) + 6.0;
     }
-    actions = actions
-        .child(div().row().flex(1.0))
+    fixes = fixes.child(agent_button(base + crate::WORKSPACE_OP_AGENT));
+    fixes_w += button_width(AGENT_LABEL, 15.0);
+    let manual: Node = div()
+        .row()
+        .items_center()
+        .gap(3.0)
+        .h_px(18.0)
+        .px(7.0)
+        .rounded(4.0)
+        .border(1.0, colors.border)
+        .on_click(base + crate::WORKSPACE_OP_MANUAL)
+        .child(label("Fix manually").size(10.5).color(colors.text_muted))
+        .child(
+            icon(IconKind::ChevronDown)
+                .size(8.0)
+                .color(colors.text_placeholder),
+        )
+        .into();
+    let manual_w = button_width("Fix manually", 11.0);
+    let mut icons = div()
+        .row()
+        .gap(2.0)
+        .items_center()
         .child(icon_button(IconKind::Copy, base + crate::WORKSPACE_OP_COPY));
+    let mut icons_w = 22.0;
     if dismissable {
-        actions = actions.child(icon_button(
+        icons = icons.child(icon_button(
             IconKind::Close,
             base + crate::WORKSPACE_OP_DISMISS,
         ));
+        icons_w += 24.0;
     }
-    div()
+    // One line while everything fits; otherwise the manual routes and the icons move to a second line.
+    let actions: Node = if fixes_w + 6.0 + manual_w + 6.0 + icons_w <= width {
+        fixes
+            .child(manual)
+            .child(div().row().flex(1.0))
+            .child(icons)
+            .into()
+    } else {
+        div()
+            .col()
+            .gap(6.0)
+            .child(fixes)
+            .child(
+                div()
+                    .row()
+                    .items_center()
+                    .child(manual)
+                    .child(div().row().flex(1.0))
+                    .child(icons),
+            )
+            .into()
+    };
+    let mut body = div()
         .col()
         .gap(6.0)
         .pt(6.0)
         .child(stages)
         .child(error)
-        .child(actions)
+        .child(actions);
+    if manual_open {
+        body = body.child(manual_menu(op, base, width));
+    }
+    body.into()
+}
+
+const AGENT_LABEL: &str = "Fix with Claude";
+
+/// A small button's width: its label, padding and border, plus `extra` for an icon beside the label.
+fn button_width(text: &str, extra: f32) -> f32 {
+    ui::measure_text_width(text, 10.5, false, 400) + 14.0 + 2.0 + extra
+}
+
+fn agent_button(id: u64) -> Node {
+    let tint = theme().terminal_ansi[5];
+    div()
+        .row()
+        .items_center()
+        .gap(4.0)
+        .h_px(18.0)
+        .px(7.0)
+        .rounded(4.0)
+        .bg(with_alpha(tint, 0.12))
+        .border(1.0, with_alpha(tint, 0.55))
+        .on_click(id)
+        .child(icon(IconKind::Sparkle).size(11.0).color(tint))
+        .child(label(AGENT_LABEL).size(10.5).color(theme().text))
         .into()
+}
+
+/// The routes to fix a failure by hand: a terminal in the checkout it names, the config, or doing without the step.
+fn manual_menu(op: &crate::WorkspaceOp, base: u64, width: f32) -> Node {
+    let colors = theme();
+    let item = |title: String, note: String, id: u64| -> Node {
+        div()
+            .col()
+            .gap(1.0)
+            .px(8.0)
+            .py(6.0)
+            .rounded(5.0)
+            .on_click(id)
+            .child(label(title).size(12.0).color(colors.text))
+            .child(
+                label(note)
+                    .size(10.5)
+                    .mono()
+                    .color(colors.text_placeholder)
+                    .wrap((width - 34.0).max(60.0)),
+            )
+            .into()
+    };
+    let mut menu = div()
+        .col()
+        .p(4.0)
+        .rounded(7.0)
+        .bg(colors.elevated_surface_background)
+        .border(1.0, colors.border);
+    if !op.fix_dir.is_empty() {
+        let path = std::path::Path::new(&op.fix_dir);
+        let repo = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let parent = path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        menu = menu.child(item(
+            format!("Open terminal in {repo}/"),
+            format!("{parent}/{repo}"),
+            base + crate::WORKSPACE_OP_TERMINAL,
+        ));
+    }
+    menu = menu.child(item(
+        "Edit pom.yml".into(),
+        "the project config, then Retry".into(),
+        base + crate::WORKSPACE_OP_CONFIG,
+    ));
+    if !op.skip.is_empty() {
+        menu = menu.child(item(
+            "Skip this step and finish".into(),
+            op.skip.clone(),
+            base + crate::WORKSPACE_OP_SKIP,
+        ));
+    }
+    menu.into()
 }
 
 /// A workspace being created or deleted, as a row where it will land: its name, then its ticket key and the step
@@ -1284,6 +1495,7 @@ fn op_row(
     expanded: bool,
     ahead: usize,
     width: f32,
+    manual_open: bool,
 ) -> Node {
     use crate::OpStatus;
     let colors = theme();
@@ -1313,6 +1525,18 @@ fn op_row(
         );
     }
     second = second.child(line);
+    if op.status == OpStatus::Queued {
+        second = second.child(
+            div()
+                .row()
+                .items_center()
+                .h_px(16.0)
+                .px(6.0)
+                .rounded(4.0)
+                .on_click(base + crate::WORKSPACE_OP_CANCEL)
+                .child(label("Cancel").size(10.5).color(colors.text_muted)),
+        );
+    }
     let title_color = if op.status == OpStatus::Queued {
         colors.text_placeholder
     } else {
@@ -1341,7 +1565,7 @@ fn op_row(
         row = row
             .pb(8.0)
             .bg(with_alpha(colors.error, 0.06))
-            .child(op_details(op, position, width, true));
+            .child(op_details(op, position, width, true, manual_open));
     } else {
         row = row.h_px(if op.status == OpStatus::Running {
             46.0
@@ -1484,6 +1708,7 @@ mod tests {
             hovered: None,
             upkeep_done: false,
             width: 272.0,
+            manual: None,
         }
     }
 
@@ -1499,6 +1724,7 @@ mod tests {
             error: String::new(),
             retryable: true,
             quiet: true,
+            ..Default::default()
         };
         let rows = [row(0, "main", None)];
         let text_of = |op: &crate::WorkspaceOp| {
@@ -1533,6 +1759,51 @@ mod tests {
     }
 
     #[test]
+    fn the_manual_fixes_offer_a_terminal_where_it_broke_and_skipping_when_allowed() {
+        let op = crate::WorkspaceOp {
+            id: 7,
+            title: "feat-x".into(),
+            status: crate::OpStatus::Failed,
+            stages: vec![("databases".into(), crate::StageState::Failed)],
+            error: "web: boom".into(),
+            retryable: true,
+            fix_dir: "/work/myproject/feat-x/web".into(),
+            skip: "no databases until they start".into(),
+            ..Default::default()
+        };
+        let mut p = ProjectPanel::default();
+        let rows = [row(0, "main", None)];
+        let expanded = [op.id];
+        p.sync(&WorkspaceList {
+            expanded: &expanded,
+            manual: Some(op.id),
+            ..list(&rows, std::slice::from_ref(&op))
+        });
+        let painted = ui::render(
+            &p.render(),
+            ui::Rect::new(0.0, 0.0, 272.0, 900.0, ui::Rgba::TRANSPARENT),
+        );
+        let text: Vec<String> = painted.texts.iter().map(|t| t.text.clone()).collect();
+        for expected in [
+            "Open terminal in web/",
+            "feat-x/web",
+            "Edit pom.yml",
+            "Skip this step and finish",
+        ] {
+            assert!(text.iter().any(|t| t == expected), "{expected} in {text:?}");
+        }
+        let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
+        for part in [
+            crate::WORKSPACE_OP_TERMINAL,
+            crate::WORKSPACE_OP_SKIP,
+            crate::WORKSPACE_OP_AGENT,
+            crate::WORKSPACE_OP_COPY,
+        ] {
+            assert!(ids.contains(&(crate::WORKSPACE_OP_BASE + part)), "{part}");
+        }
+    }
+
+    #[test]
     fn a_failed_creation_offers_retry_and_dismiss() {
         let op = crate::WorkspaceOp {
             id: 7,
@@ -1547,6 +1818,7 @@ mod tests {
             error: "web: git worktree add failed".into(),
             retryable: true,
             quiet: false,
+            ..Default::default()
         };
         let mut p = ProjectPanel::default();
         let expanded = [op.id];

@@ -983,6 +983,7 @@ fn main() -> anyhow::Result<()> {
                 error: error.into(),
                 retryable: true,
                 quiet,
+                ..Default::default()
             };
             use StageState::{Done, Failed, Pending, Running, Skipped};
             let ops = vec![
@@ -1025,21 +1026,40 @@ fn main() -> anyhow::Result<()> {
                     "PROJ-112 Checkout redesign",
                     OpStatus::Failed,
                     vec![
-                        ("worktrees", Done),
-                        ("ports", Done),
-                        ("databases", Done),
-                        ("env files", Done),
-                        ("setup", Failed),
+                        ("validate", Done),
+                        ("provision", Done),
+                        ("databases", Failed),
+                        ("worktrees", Pending),
+                        ("configure", Pending),
+                        ("setup", Pending),
                     ],
-                    "web: npm install: ERESOLVE unable to resolve dependency tree",
+                    "shared services: docker: Cannot connect to the Docker daemon",
                     false,
                 ),
             ];
+            let mut ops = ops;
+            ops[0].log = "api: Your local changes to app/models/user.rb would be overwritten by merge\n\
+                          error: Your local changes to the following files would be overwritten by merge:\n\
+                          \tapp/models/user.rb\n\
+                          Please commit your changes or stash them before you merge."
+                .into();
+            ops[0].fix_dir = "/Users/me/myproject/main/api".into();
+            ops[3].log = "shared services: docker: Cannot connect to the Docker daemon at \
+                          unix:///var/run/docker.sock. Is the docker daemon running?"
+                .into();
+            ops[3].skip = "no shared services or databases until they start".into();
             entity.update(app.app_mut(), |view, _| {
                 view.set_workspace_ops(ops);
                 view.toggle_workspace_op(4);
                 if std::env::var("MAINOPEN").is_ok() {
                     view.toggle_workspace_op(1);
+                }
+                if std::env::var("MANUAL").is_ok() {
+                    view.toggle_manual_fixes(4);
+                }
+                if std::env::var("POPOVER").is_ok() {
+                    view.toggle_failure_popover(1);
+                    view.toggle_manual_fixes(1);
                 }
             });
         }
@@ -1072,6 +1092,7 @@ fn main() -> anyhow::Result<()> {
                     error: String::new(),
                     retryable: true,
                     quiet: false,
+                    ..Default::default()
                 },
                 WorkspaceOp {
                     id: 2,
@@ -1083,6 +1104,7 @@ fn main() -> anyhow::Result<()> {
                     error: "shared services: docker: No such file or directory".into(),
                     retryable: true,
                     quiet: false,
+                    ..Default::default()
                 },
             ];
             entity.update(app.app_mut(), |view, _| {

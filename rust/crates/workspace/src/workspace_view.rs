@@ -195,6 +195,11 @@ pub struct WorkspaceView {
     workspace_ops: Vec<crate::WorkspaceOp>,
     /// Operation cards showing their stages.
     expanded_ops: Vec<u64>,
+    /// The failed operation whose menu of manual fixes is open.
+    manual_menu: Option<u64>,
+    /// The failed operation shown in a popover beside its rail tile, and where that popover was drawn.
+    rail_popover: Option<u64>,
+    rail_popover_rect: Option<Rect>,
     /// The WORKSPACES row a context menu was opened on.
     menu_workspace: Option<usize>,
     workspace_requests: WorkspaceRequests,
@@ -288,6 +293,9 @@ impl WorkspaceView {
             modal_result: None,
             workspace_ops: Vec::new(),
             expanded_ops: Vec::new(),
+            manual_menu: None,
+            rail_popover: None,
+            rail_popover_rect: None,
             menu_workspace: None,
             workspace_requests: WorkspaceRequests::default(),
             popover_rects: Vec::new(),
@@ -555,6 +563,16 @@ impl WorkspaceView {
         }
     }
 
+    /// Opens a failure's menu of manual fixes (as its button does).
+    pub fn toggle_manual_fixes(&mut self, op_id: u64) {
+        self.manual_menu = (self.manual_menu != Some(op_id)).then_some(op_id);
+    }
+
+    /// Opens a failure's details beside its rail tile (as its "!" does).
+    pub fn toggle_failure_popover(&mut self, op_id: u64) {
+        self.rail_popover = (self.rail_popover != Some(op_id)).then_some(op_id);
+    }
+
     /// Shows or hides an operation card's stages.
     pub fn toggle_workspace_op(&mut self, op_id: u64) {
         match self.expanded_ops.iter().position(|id| *id == op_id) {
@@ -572,6 +590,16 @@ impl WorkspaceView {
     pub fn set_workspace_ops(&mut self, ops: Vec<crate::WorkspaceOp>) {
         self.expanded_ops
             .retain(|id| ops.iter().any(|op| op.id == *id));
+        let still_failed = |id: &u64| {
+            ops.iter()
+                .any(|op| op.id == *id && op.status == crate::OpStatus::Failed)
+        };
+        if !self.manual_menu.as_ref().is_some_and(still_failed) {
+            self.manual_menu = None;
+        }
+        if !self.rail_popover.as_ref().is_some_and(still_failed) {
+            self.rail_popover = None;
+        }
         // A background update that ran and is gone without failing succeeded (failures stay in the queue).
         let succeeded = self.workspace_ops.iter().any(|old| {
             old.quiet
@@ -1244,8 +1272,10 @@ impl WorkspaceView {
             hovered: self.session_menu_hover,
             upkeep_done: self.upkeep_done_at.is_some(),
             width: self.layout.left_region(w, h).w / ui::ui_text_scale(),
+            manual: self.manual_menu,
         };
         let mut rail_tip = None;
+        let mut rail_popover = None;
         {
             let region = self.layout.left_region(w, h);
             // The list scrolls under the fixed footer strip: laid out from its scroll offset, then clipped.
@@ -1324,6 +1354,37 @@ impl WorkspaceView {
                         }
                     }
                     Some(tooltip(anchor, &text, w))
+                });
+                rail_popover = self.rail_popover.and_then(|op_id| {
+                    let (position, op) = self
+                        .workspace_ops
+                        .iter()
+                        .enumerate()
+                        .find(|(_, op)| op.id == op_id)?;
+                    let target = crate::WORKSPACE_OP_BASE
+                        + position as u64 * crate::WORKSPACE_OP_STRIDE
+                        + crate::WORKSPACE_OP_POPOVER;
+                    let (cell, _) = p.hits.iter().find(|(_, id)| *id == target)?;
+                    let scale = ui::ui_text_scale();
+                    let node = crate::panel::failure_popover(
+                        op,
+                        position,
+                        self.manual_menu == Some(op_id),
+                    );
+                    let x = region.x + region.w + 6.0 * scale;
+                    // Wrapped so the card keeps its own size instead of filling the area it is laid into.
+                    let node: ui::Node = ui::div().col().child(ui::div().row().child(node)).into();
+                    let place =
+                        |y: f32| ui::render(&node, Rect::new(x, y, w - x, h, Rgba::TRANSPARENT));
+                    let mut y = (cell.y - 4.0 * scale).max(8.0 * scale);
+                    let mut painted = place(y);
+                    let bottom = painted.rects.iter().map(|r| r.y + r.h).fold(y, f32::max);
+                    // Lifted to stay on screen when the tile sits low.
+                    if bottom > h - 8.0 * scale {
+                        y = (y - (bottom - (h - 8.0 * scale))).max(8.0 * scale);
+                        painted = place(y);
+                    }
+                    Some(painted)
                 });
             }
             if let Some(drop) = self.row_drop_painted(&p.hits) {
@@ -1758,6 +1819,28 @@ impl WorkspaceView {
                 painted: t,
                 clip: None,
             });
+        }
+        self.rail_popover_rect = None;
+        if let Some(p) = rail_popover {
+            let left = p.rects.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+            let top = p.rects.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+            let right = p.rects.iter().map(|r| r.x + r.w).fold(left, f32::max);
+            let bottom = p.rects.iter().map(|r| r.y + r.h).fold(top, f32::max);
+            let rect = Rect::new(left, top, right - left, bottom - top, Rgba::TRANSPARENT);
+            header_hits.extend(p.hits.iter().copied());
+            let mut painted = Painted::default();
+            painted
+                .rects
+                .extend(elevation_shadow(rect, crate::Elevation::Elevated));
+            painted.rects.extend(p.rects);
+            painted.tris.extend(p.tris);
+            painted.texts.extend(p.texts);
+            painted.icons.extend(p.icons);
+            overlays.push(Overlay {
+                painted,
+                clip: None,
+            });
+            self.rail_popover_rect = Some(rect);
         }
 
         self.popover_rects.clear();
@@ -3410,6 +3493,20 @@ impl WorkspaceView {
                 self.answer_prompt(index as usize);
             }
             return;
+        }
+        if self.rail_popover.is_some() {
+            let inside = self
+                .rail_popover_rect
+                .is_some_and(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+            let on_toggle = self.hit(x, y).is_some_and(|id| {
+                (crate::WORKSPACE_OP_BASE..crate::WORKSPACE_OP_END).contains(&id)
+                    && (id - crate::WORKSPACE_OP_BASE) % crate::WORKSPACE_OP_STRIDE
+                        == crate::WORKSPACE_OP_POPOVER
+            });
+            if !inside && !on_toggle {
+                self.rail_popover = None;
+                self.manual_menu = None;
+            }
         }
         let pressed_panel = self.hit(x, y).and_then(crate::side_panel_kind);
         for panel in self.layout.side_panels.iter_mut() {
@@ -5071,7 +5168,49 @@ impl WorkspaceView {
                 crate::WORKSPACE_OP_DISMISS => {
                     self.workspace_requests.op = Some((op.id, crate::OpAction::Dismiss));
                 }
-                crate::WORKSPACE_OP_COPY => Self::clip_set(&op.error),
+                crate::WORKSPACE_OP_COPY => Self::clip_set(if op.log.is_empty() {
+                    &op.error
+                } else {
+                    &op.log
+                }),
+                crate::WORKSPACE_OP_CANCEL => {
+                    self.workspace_requests.op = Some((op.id, crate::OpAction::Cancel));
+                }
+                crate::WORKSPACE_OP_SKIP => {
+                    self.manual_menu = None;
+                    self.workspace_requests.op = Some((op.id, crate::OpAction::Skip));
+                }
+                crate::WORKSPACE_OP_AGENT => {
+                    self.rail_popover = None;
+                    self.workspace_requests.op = Some((op.id, crate::OpAction::FixWithAgent));
+                }
+                crate::WORKSPACE_OP_TERMINAL => {
+                    let dir = std::path::PathBuf::from(&op.fix_dir);
+                    self.manual_menu = None;
+                    self.rail_popover = None;
+                    self.open_terminal_at(Some(dir));
+                }
+                crate::WORKSPACE_OP_CONFIG => {
+                    let config = self
+                        .layout
+                        .project
+                        .as_ref()
+                        .map(|project| project.config_path.clone());
+                    self.manual_menu = None;
+                    self.rail_popover = None;
+                    if let Some(config) = config {
+                        self.open_file(&config);
+                    }
+                }
+                crate::WORKSPACE_OP_MANUAL => {
+                    let op_id = op.id;
+                    self.manual_menu = (self.manual_menu != Some(op_id)).then_some(op_id);
+                }
+                crate::WORKSPACE_OP_POPOVER => {
+                    let op_id = op.id;
+                    self.manual_menu = None;
+                    self.rail_popover = (self.rail_popover != Some(op_id)).then_some(op_id);
+                }
                 _ => {
                     let op_id = op.id;
                     self.toggle_workspace_op(op_id);
@@ -6126,6 +6265,7 @@ mod tests {
             error: "api: migrate failed".into(),
             retryable: true,
             quiet: true,
+            ..Default::default()
         };
         let toast = e.update(app.app_mut(), |v, _| {
             v.set_workspace_ops(vec![failed]);
@@ -6156,6 +6296,7 @@ mod tests {
             error: String::new(),
             retryable: true,
             quiet: true,
+            ..Default::default()
         };
         e.update(app.app_mut(), |v, _| {
             v.set_workspace_ops(vec![running]);

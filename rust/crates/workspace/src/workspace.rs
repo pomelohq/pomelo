@@ -271,8 +271,9 @@ impl ProjectInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OpStatus {
+    #[default]
     Queued,
     Running,
     Done,
@@ -289,7 +290,7 @@ pub enum StageState {
 }
 
 /// A workspace being created or deleted, as the WORKSPACES panel shows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceOp {
     pub id: u64,
     pub branch: String,
@@ -303,12 +304,24 @@ pub struct WorkspaceOp {
     pub retryable: bool,
     /// Background upkeep (keeping main fresh): shown on main's row rather than as a row of its own.
     pub quiet: bool,
+    /// The whole error of a failed run (a command's exit and the tail of its output), `error` being its first line.
+    pub log: String,
+    /// The checkout the failure happened in, where a manual fix starts; empty when no repo is to blame.
+    pub fix_dir: String,
+    /// What skipping the failed stage would leave undone, empty when that stage can't be skipped.
+    pub skip: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpAction {
     Retry,
     Dismiss,
+    /// Drop a queued operation before it starts.
+    Cancel,
+    /// Resume past the failed stage.
+    Skip,
+    /// Start an agent on the failure, in the checkout it happened in.
+    FixWithAgent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -358,11 +371,20 @@ pub const SESSION_EDIT_CONFIG: u64 = 16;
 /// A workspace operation card: base + position * stride + part.
 pub const WORKSPACE_OP_BASE: u64 = 3000;
 pub const WORKSPACE_OP_END: u64 = 4000;
-pub const WORKSPACE_OP_STRIDE: u64 = 4;
+pub const WORKSPACE_OP_STRIDE: u64 = 12;
 pub const WORKSPACE_OP_TOGGLE: u64 = 0;
 pub const WORKSPACE_OP_RETRY: u64 = 1;
 pub const WORKSPACE_OP_DISMISS: u64 = 2;
 pub const WORKSPACE_OP_COPY: u64 = 3;
+pub const WORKSPACE_OP_CANCEL: u64 = 4;
+pub const WORKSPACE_OP_SKIP: u64 = 5;
+pub const WORKSPACE_OP_AGENT: u64 = 6;
+pub const WORKSPACE_OP_TERMINAL: u64 = 7;
+pub const WORKSPACE_OP_CONFIG: u64 = 8;
+/// Opens or closes the menu of manual fixes.
+pub const WORKSPACE_OP_MANUAL: u64 = 9;
+/// The "!" on a rail tile: the failure's details in a popover beside it.
+pub const WORKSPACE_OP_POPOVER: u64 = 10;
 /// The context menu of a WORKSPACES row, and its items.
 pub const WORKSPACE_ROW_MENU_TARGET: u64 = 1600;
 pub const MENU_WS_RENAME: u64 = 940;

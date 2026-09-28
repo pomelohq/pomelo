@@ -124,8 +124,45 @@ pub fn apply_event(view: &mut WorkspaceOp, event: &Event) {
             set(*index, StageState::Failed);
             view.status = OpStatus::Failed;
             view.error = error.lines().next().unwrap_or_default().to_string();
+            view.log = error.clone();
         }
     }
+}
+
+/// What skipping a failed stage leaves for later, for the stages a run can do without.
+fn skip_note(kind: &OpKind, stage: usize) -> &'static str {
+    match (kind, stage) {
+        (OpKind::Create { .. } | OpKind::AddRepos(_), 2) => {
+            "no shared services or databases until they start"
+        }
+        (OpKind::Delete(_), 0) => "its services may keep running",
+        (OpKind::Delete(_), 2) => "pre-delete commands won't run",
+        _ => "",
+    }
+}
+
+/// The checkout a failure names (`web: ...`), in the workspace when it has one there, else main's.
+fn fix_dir(kind: &OpKind, context: &OpContext, error: &str) -> String {
+    let Some(repo) = error
+        .split(':')
+        .next()
+        .map(str::trim)
+        .filter(|repo| context.config.repos.contains_key(*repo))
+    else {
+        return String::new();
+    };
+    let root = context.runner.project_root();
+    let main_branch = context.config.global_default_branch();
+    let main = pom_layout::repo_worktree(root, repo, main_branch, true);
+    let branch = match kind {
+        OpKind::Create { request, .. } | OpKind::AddRepos(request) => Some(&request.branch),
+        OpKind::Delete(request) => Some(&request.branch),
+        OpKind::RefreshMain | OpKind::PrepareMain(_) => None,
+    };
+    let own = branch
+        .map(|branch| pom_layout::workspace_folder(root, branch).join(repo))
+        .filter(|dir| dir.is_dir());
+    own.unwrap_or(main).to_string_lossy().into_owned()
 }
 
 impl OpQueue {
@@ -154,7 +191,7 @@ impl OpQueue {
         {
             let mut queue = self.lock();
             if quiet {
-                // A fresh run supersedes the last failed one, which only lived on as its toast.
+                // A fresh run supersedes the last failed one still shown on main.
                 queue
                     .ops
                     .retain(|op| !(op.view.quiet && op.view.status == OpStatus::Failed));
@@ -174,6 +211,7 @@ impl OpQueue {
                     error: String::new(),
                     retryable: true,
                     quiet,
+                    ..Default::default()
                 },
             });
         }
@@ -206,8 +244,53 @@ impl OpQueue {
             op.view.stages.clear();
             op.view.status = OpStatus::Queued;
             op.view.error.clear();
+            op.view.log.clear();
+            op.view.skip.clear();
         }
         self.start_worker();
+        (self.waker)();
+    }
+
+    /// Resumes a failed operation past its failed stage, when that stage can be done without.
+    pub fn skip(&self, id: u64) {
+        {
+            let mut queue = self.lock();
+            let Some(op) = queue.ops.iter_mut().find(|op| op.view.id == id) else {
+                return;
+            };
+            if op.view.status != OpStatus::Failed || op.view.skip.is_empty() {
+                return;
+            }
+            let Some(failed) = op
+                .view
+                .stages
+                .iter()
+                .position(|(_, state)| *state == StageState::Failed)
+            else {
+                return;
+            };
+            match &mut op.kind {
+                OpKind::Create { request, .. } | OpKind::AddRepos(request) => {
+                    request.from_stage = failed + 1
+                }
+                OpKind::Delete(request) => request.from_stage = failed + 1,
+                OpKind::RefreshMain | OpKind::PrepareMain(_) => return,
+            }
+            op.view.stages.clear();
+            op.view.status = OpStatus::Queued;
+            op.view.error.clear();
+            op.view.log.clear();
+            op.view.skip.clear();
+        }
+        self.start_worker();
+        (self.waker)();
+    }
+
+    /// Drops an operation that is still waiting its turn.
+    pub fn cancel(&self, id: u64) {
+        self.lock()
+            .ops
+            .retain(|op| op.view.id != id || op.view.status != OpStatus::Queued);
         (self.waker)();
     }
 
@@ -323,7 +406,13 @@ impl OpQueue {
                 queue.ops.retain(|op| op.view.id != id);
                 (true, outcome.warnings)
             }
-            Err(_) => (false, Vec::new()),
+            Err(error) => {
+                if let Some(op) = queue.ops.iter_mut().find(|op| op.view.id == id) {
+                    op.view.fix_dir = fix_dir(kind, context, &error.message);
+                    op.view.skip = skip_note(kind, error.stage).to_string();
+                }
+                (false, Vec::new())
+            }
         };
         queue.finished.push(Finished {
             title,
@@ -382,6 +471,9 @@ impl OpQueue {
                     }
                     Some(first) => {
                         fail(&mut queue, id, first);
+                        if let Some(op) = queue.ops.iter_mut().find(|op| op.view.id == id) {
+                            op.view.fix_dir = fix_dir(&OpKind::RefreshMain, context, first);
+                        }
                         (false, warnings)
                     }
                 }
@@ -405,6 +497,7 @@ fn fail(queue: &mut Queue, id: u64, error: &str) {
     if let Some(op) = queue.ops.iter_mut().find(|op| op.view.id == id) {
         op.view.status = OpStatus::Failed;
         op.view.error = error.lines().next().unwrap_or_default().to_string();
+        op.view.log = error.to_string();
     }
 }
 
@@ -432,7 +525,19 @@ mod tests {
             error: String::new(),
             retryable: true,
             quiet: false,
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn only_stages_a_workspace_can_do_without_are_skippable() {
+        let create = OpKind::Create {
+            request: CreateRequest::default(),
+            display_name: String::new(),
+        };
+        assert!(!skip_note(&create, 2).is_empty(), "shared services");
+        assert!(skip_note(&create, 3).is_empty(), "worktrees");
+        assert!(skip_note(&OpKind::RefreshMain, 0).is_empty());
     }
 
     #[test]
