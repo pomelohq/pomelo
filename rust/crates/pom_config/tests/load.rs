@@ -362,6 +362,22 @@ fn commands_derive_setup_migrate_and_shortcuts() {
 }
 
 #[test]
+fn tasks_is_read_and_wins_over_the_old_shortcuts_name() {
+    let config = load(
+        "repos:\n  api:\n    tasks:\n      - { cmd: npm test, desc: tests }\n  web:\n    shortcuts:\n      - { cmd: pnpm lint, desc: lint }\n    tasks:\n      - { cmd: pnpm test, desc: test }\n",
+    );
+    let cmds = |repo: &str| -> Vec<String> {
+        config.repos[repo]
+            .effective_shortcuts()
+            .iter()
+            .map(|s| s.cmd.clone())
+            .collect()
+    };
+    assert_eq!(cmds("api"), ["npm test"]);
+    assert_eq!(cmds("web"), ["pnpm test"]);
+}
+
+#[test]
 fn custom_commands_follow_known_ones_sorted() {
     let config = load(
         "repos:\n  api:\n    shortcuts:\n      - { cmd: npm test, desc: tests }\n    commands:\n      zeta: z\n      test: npm test\n      alpha: a\n      build: b\n",

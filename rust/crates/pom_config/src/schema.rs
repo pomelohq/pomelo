@@ -222,7 +222,7 @@ impl Dir {
         dir.pre_start = decoder.string(field("pre_start"));
         dir.shell_env = decoder.string(field("shell_env"));
         dir.default_branch = decoder.string(field("default_branch"));
-        dir.shortcuts = decode_shortcuts(decoder, field("shortcuts"));
+        dir.shortcuts = decode_shortcuts(decoder, tasks_node(node));
         dir.services = decoder.map(field("services"), "map[string]Service", Service::decode);
         dir.proxy_port = decoder.opt_u16(field("proxy_port"));
         dir.profiles = decoder.string_list(field("profiles"));
@@ -264,7 +264,7 @@ impl Dir {
         if !pre_start.is_empty() {
             self.pre_start = pre_start;
         }
-        let shortcuts = decode_shortcuts(decoder, block.get("shortcuts"));
+        let shortcuts = decode_shortcuts(decoder, tasks_node(block));
         if !shortcuts.is_empty() {
             self.shortcuts = shortcuts;
         }
@@ -290,7 +290,7 @@ impl Preset {
         preset.pre_start = decoder.string(field("pre_start"));
         preset.copy = decoder.strings(field("copy"));
         preset.seed_from_main = decoder.bool(field("seed_from_main"));
-        preset.shortcuts = decode_shortcuts(decoder, field("shortcuts"));
+        preset.shortcuts = decode_shortcuts(decoder, tasks_node(node));
         preset.services = decoder.map(field("services"), "map[string]Service", Service::decode);
         preset.commands = decoder.string_map(field("commands"));
         preset.migrate = decoder.strings(field("migrate"));
@@ -316,7 +316,7 @@ impl Service {
         service.env = decoder.string_map(field("env"));
         service.pre_start = decoder.string(field("pre_start"));
         service.proxy_port = decoder.opt_u16(field("proxy_port"));
-        service.shortcuts = decode_shortcuts(decoder, field("shortcuts"));
+        service.shortcuts = decode_shortcuts(decoder, tasks_node(node));
         service.depends_on = decoder.strings(field("depends_on"));
         service.port = decoder.opt_bool(field("port"));
         service.modes = decoder.string_map(field("modes"));
@@ -378,6 +378,11 @@ impl SharedServiceDef {
         def.capacity = decoder.opt_u16(field("capacity"));
         def
     }
+}
+
+/// A repo's, preset's or service's quick commands: `tasks:`, or `shortcuts:`, the name configs used before.
+fn tasks_node(node: &Node) -> Option<&Node> {
+    node.get("tasks").or_else(|| node.get("shortcuts"))
 }
 
 fn decode_shortcuts(decoder: &mut Decoder, node: Option<&Node>) -> Vec<Shortcut> {
