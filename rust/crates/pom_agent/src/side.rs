@@ -112,10 +112,43 @@ impl MainSession {
 /// The main session of the workspace `context` launches in, measured from its transcript.
 pub fn main_session(context: &LaunchContext<'_>) -> MainSession {
     let id = session_id(&main_session_key(context));
-    let tokens = transcript_path(context.home, context.cwd, &id)
-        .and_then(|path| std::fs::metadata(path).ok())
-        .map(|meta| meta.len() as usize / TRANSCRIPT_BYTES_PER_TOKEN);
+    let tokens = transcript_path(context.home, context.cwd, &id).and_then(|path| {
+        context_tokens(&path).or_else(|| {
+            std::fs::metadata(&path)
+                .ok()
+                .map(|meta| meta.len() as usize / TRANSCRIPT_BYTES_PER_TOKEN)
+        })
+    });
     MainSession { tokens }
+}
+
+/// What the session holds now: the prompt size of its latest answer (input plus cached input), read from
+/// the transcript's tail. The file keeps compacted history too, so its size overstates the context.
+fn context_tokens(path: &Path) -> Option<usize> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 512 * 1024;
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(length.saturating_sub(TAIL)))
+        .ok()?;
+    let mut tail = String::new();
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    tail.push_str(&String::from_utf8_lossy(&bytes));
+    tail.lines().rev().find_map(|line| {
+        let value: serde_json::Value = serde_json::from_str(line).ok()?;
+        let usage = value.get("message")?.get("usage")?;
+        let field = |name: &str| {
+            usage
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        let total = field("input_tokens")
+            + field("cache_read_input_tokens")
+            + field("cache_creation_input_tokens");
+        (total > 0).then_some(total as usize)
+    })
 }
 
 /// "9.3k", "62k", "800".

@@ -3371,6 +3371,7 @@ impl WorkspaceView {
             ),
         };
         let scale = ui::ui_text_scale();
+        let height = ui::measure(&node).1;
         let x = (anchor.x + anchor.w - width * scale).clamp(
             8.0 * scale,
             (w - width * scale - 8.0 * scale).max(8.0 * scale),
@@ -3378,7 +3379,7 @@ impl WorkspaceView {
         let y = anchor.y + anchor.h + 4.0 * scale;
         Some(ui::render(
             &node,
-            Rect::new(x, y, width * scale, 2000.0 * scale, Rgba::TRANSPARENT),
+            Rect::new(x, y, width * scale, height * scale, Rgba::TRANSPARENT),
         ))
     }
 
