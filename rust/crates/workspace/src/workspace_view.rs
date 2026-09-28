@@ -1243,6 +1243,7 @@ impl WorkspaceView {
             expanded: &expanded_ops,
             hovered: self.session_menu_hover,
             upkeep_done: self.upkeep_done_at.is_some(),
+            width: self.layout.left_region(w, h).w / ui::ui_text_scale(),
         };
         let mut rail_tip = None;
         {
@@ -5070,6 +5071,7 @@ impl WorkspaceView {
                 crate::WORKSPACE_OP_DISMISS => {
                     self.workspace_requests.op = Some((op.id, crate::OpAction::Dismiss));
                 }
+                crate::WORKSPACE_OP_COPY => Self::clip_set(&op.error),
                 _ => {
                     let op_id = op.id;
                     self.toggle_workspace_op(op_id);

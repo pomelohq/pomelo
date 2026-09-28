@@ -1038,6 +1038,9 @@ fn main() -> anyhow::Result<()> {
             entity.update(app.app_mut(), |view, _| {
                 view.set_workspace_ops(ops);
                 view.toggle_workspace_op(4);
+                if std::env::var("MAINOPEN").is_ok() {
+                    view.toggle_workspace_op(1);
+                }
             });
         }
         if mode == "wsops" {

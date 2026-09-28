@@ -301,7 +301,7 @@ pub struct WorkspaceOp {
     pub error: String,
     /// Whether a failed run can resume from its failed stage.
     pub retryable: bool,
-    /// Background upkeep (keeping main fresh): one quiet line while it runs, a toast if it fails.
+    /// Background upkeep (keeping main fresh): shown on main's row rather than as a row of its own.
     pub quiet: bool,
 }
 
@@ -362,6 +362,7 @@ pub const WORKSPACE_OP_STRIDE: u64 = 4;
 pub const WORKSPACE_OP_TOGGLE: u64 = 0;
 pub const WORKSPACE_OP_RETRY: u64 = 1;
 pub const WORKSPACE_OP_DISMISS: u64 = 2;
+pub const WORKSPACE_OP_COPY: u64 = 3;
 /// The context menu of a WORKSPACES row, and its items.
 pub const WORKSPACE_ROW_MENU_TARGET: u64 = 1600;
 pub const MENU_WS_RENAME: u64 = 940;
