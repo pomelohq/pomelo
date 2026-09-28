@@ -146,6 +146,29 @@ pub(crate) fn action_button(
     button.into()
 }
 
+/// A small button that cannot be pressed right now.
+pub(crate) fn disabled_button(kind: Option<IconKind>, text: &str) -> Node {
+    let colors = theme();
+    let mut button = div()
+        .row()
+        .h_px(22.0)
+        .px(7.0)
+        .gap(4.0)
+        .items_center()
+        .rounded(4.0)
+        .border(1.0, colors.border_variant);
+    if let Some(kind) = kind {
+        button = button.child(icon(kind).size(11.0).color(colors.icon_muted.alpha(0.4)));
+    }
+    button
+        .child(
+            label(text.to_string())
+                .size(11.5)
+                .color(colors.text_disabled),
+        )
+        .into()
+}
+
 /// Lays `nodes` out left to right, starting a new line when the next would pass `width`.
 pub(crate) fn pack(nodes: Vec<Node>, width: f32, gap: f32) -> Node {
     let mut column = div().col().gap(gap);

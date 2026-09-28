@@ -305,6 +305,15 @@ impl PaneGroupView {
                 if pane.is_preview(index) {
                     pane.keep_preview();
                 }
+                let wants_find = pane
+                    .open
+                    .get_mut(index)
+                    .is_some_and(|item| item.take_find_request());
+                if wants_find {
+                    if let Some((bar, item)) = pane.search_target() {
+                        bar.deploy(item, false);
+                    }
+                }
                 self.active = path;
                 return GroupClick::Handled;
             }

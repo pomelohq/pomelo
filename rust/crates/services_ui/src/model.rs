@@ -129,6 +129,7 @@ pub enum TabRequest {
     Fix(ServiceTarget),
     OpenUrl(String),
     Copy(String),
+    OpenFile(std::path::PathBuf),
 }
 
 /// How a service died: the line of its output that most likely says why, how it exited, and when.

@@ -1801,12 +1801,21 @@ impl WorkspaceView {
         let status_hits = status.hits.clone();
         blit(status);
         let status_tip = self.session_menu_hover.and_then(|hv| {
-            let text = status_tooltip(hv)?;
+            let (text, key) = status_tooltip(hv)?;
             let rect = status_hits
                 .iter()
                 .find(|(_, id)| *id == hv)
                 .map(|(r, _)| *r)?;
-            Some(tooltip_above(rect, &text, w))
+            let keys = match key {
+                crate::StatusKey::Action(action) => self
+                    .bindings
+                    .iter()
+                    .find(|(bound, _)| *bound == action)
+                    .map(|(_, keys)| keys.clone()),
+                crate::StatusKey::Fixed(keys) => Some(keys.to_string()),
+                crate::StatusKey::None => None,
+            };
+            Some(tooltip_above(rect, &text, keys.as_deref(), w))
         });
 
         let header = self.layout.header(w, self.session_menu_hover);
@@ -3193,6 +3202,30 @@ impl WorkspaceView {
     }
 
     /// Apply a context-menu item to its target button.
+    /// Runs the open menu's item whose key hint is `key` (a menu shows "S", "R", "Enter" for its items).
+    fn menu_shortcut(&mut self, key: &str) -> bool {
+        let Some((_, _, _, target)) = self.menu else {
+            return false;
+        };
+        let item = self
+            .menu_items(target)
+            .into_iter()
+            .find(|item| !item.disabled && item.hint.as_deref() == Some(key));
+        let Some(item) = item else {
+            return false;
+        };
+        self.close_menu();
+        self.apply_menu(target, item.id);
+        true
+    }
+
+    fn close_menu(&mut self) {
+        self.menu = None;
+        self.submenu = None;
+        self.menu_path = None;
+        self.menu_editor_anchor = None;
+    }
+
     fn apply_menu(&mut self, target: u64, item: u64) {
         if target == crate::WORKSPACE_ROW_MENU_TARGET {
             self.apply_workspace_row_menu(item);
@@ -4230,6 +4263,9 @@ impl WorkspaceView {
         if self.prompt_shown.is_some() {
             return false;
         }
+        if self.menu.is_some() {
+            return self.menu_shortcut(&text.trim().to_uppercase());
+        }
         if let Some(modal) = self.window_modal.as_mut() {
             return modal.text(text);
         }
@@ -4290,6 +4326,18 @@ impl WorkspaceView {
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
         if self.prompt_shown.is_some() {
             return self.prompt_key(key, shift);
+        }
+        if self.menu.is_some() {
+            match key {
+                EditKey::Enter if self.menu_shortcut("Enter") => return true,
+                EditKey::Left if self.menu_shortcut("Left") => return true,
+                EditKey::Right if self.menu_shortcut("Right") => return true,
+                EditKey::Escape => {
+                    self.close_menu();
+                    return true;
+                }
+                _ => {}
+            }
         }
         if key == EditKey::ToggleCommandPalette && self.window_modal.is_none() {
             let commands = self.palette_commands();

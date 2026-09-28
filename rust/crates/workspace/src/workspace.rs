@@ -863,6 +863,10 @@ pub trait Item: 'static {
     fn toolbar_click(&mut self, _id: u64) -> bool {
         false
     }
+    /// Whether a toolbar click asked for the pane's find bar, once.
+    fn take_find_request(&mut self) -> bool {
+        false
+    }
     /// Whether a diff has room to lay out side by side at its current width.
     fn diff_split_room(&self) -> bool {
         true
@@ -2930,31 +2934,60 @@ pub fn context_menu(
     out
 }
 
-/// The tooltip label for a hovered status-bar item (function nav / dock toggles), if any.
-pub fn status_tooltip(id: u64) -> Option<String> {
+/// The tooltip of a hovered status-bar item (function nav / dock toggles): its title, and the action whose
+/// binding it shows (or a fixed key for the ones that are not keymap actions).
+pub fn status_tooltip(id: u64) -> Option<(String, StatusKey)> {
+    use crate::keymap::Action;
+    let func = |kind: PaneKind| match kind {
+        PaneKind::Files => StatusKey::Action(Action::FocusFiles),
+        PaneKind::Services => StatusKey::Action(Action::FocusServices),
+        PaneKind::Git => StatusKey::Action(Action::FocusGit),
+        PaneKind::Database => StatusKey::Action(Action::FocusDatabase),
+        _ => StatusKey::None,
+    };
     if id == BOTTOM_TOGGLE {
-        Some("Terminal  ⌘J".into())
-    } else if id == RIGHT_TOGGLE {
-        Some("Agent  ⌘?".into())
+        Some(("Terminal".into(), StatusKey::Action(Action::ToggleTerminal)))
+    } else if id == AGENT_TOGGLE || id == RIGHT_TOGGLE {
+        Some(("Agent".into(), StatusKey::Action(Action::ToggleAgent)))
     } else if id == CURSOR_POSITION {
-        Some("Go to Line/Column  ^G".into())
+        Some(("Go to Line/Column".into(), StatusKey::Fixed("ctrl-g")))
     } else if id == DIAGNOSTIC_MESSAGE {
-        Some("Next Diagnostic  F8".into())
+        Some(("Next Diagnostic".into(), StatusKey::Fixed("f8")))
     } else if id == STATUS_TICKET {
-        Some("Jira Ticket".into())
+        Some(("Jira Ticket".into(), StatusKey::None))
     } else if (FUNC_BASE..FUNC_BASE + PaneKind::ALL.len() as u64).contains(&id) {
-        Some(PaneKind::ALL[(id - FUNC_BASE) as usize].title().to_string())
+        let kind = PaneKind::ALL[(id - FUNC_BASE) as usize];
+        Some((kind.title().to_string(), func(kind)))
     } else {
         None
     }
 }
 
+/// The key a status-bar tooltip shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusKey {
+    None,
+    Action(crate::keymap::Action),
+    Fixed(&'static str),
+}
+
 /// A tooltip bubble anchored ABOVE `anchor` (for the status bar, which sits at the very bottom).
-pub fn tooltip_above(anchor: Rect, text: &str, viewport_w: f32) -> Painted {
+pub fn tooltip_above(anchor: Rect, text: &str, keys: Option<&str>, viewport_w: f32) -> Painted {
     let scale = ui::ui_text_scale();
-    let tw = ui::measure_text_width(text, 12.0, false, ui::ui_font_weight());
-    let pad = 8.0 * scale;
-    let w = tw + 2.0 * pad;
+    let mut content = div()
+        .row()
+        .gap(8.0)
+        .items_center()
+        .child(label(text).size(12.0).color(text_c()));
+    if let Some(keys) = keys.filter(|keys| !keys.is_empty()) {
+        let mut strokes = div().row().gap(4.0).items_center();
+        for stroke in keys.split_whitespace() {
+            strokes = strokes.child(crate::render_keystroke(stroke, 12.0));
+        }
+        content = content.child(strokes);
+    }
+    let content: Node = content.into();
+    let w = (ui::measure(&content).0 + 16.0) * scale;
     let h = 24.0 * scale;
     let mut x = anchor.x;
     if x + w > viewport_w - 6.0 * scale {
@@ -2969,7 +3002,7 @@ pub fn tooltip_above(anchor: Rect, text: &str, viewport_w: f32) -> Painted {
         .rounded(6.0)
         .bg(theme().elevated_surface_background)
         .border(1.0, theme().border)
-        .child(label(text).size(12.0).color(text_c()))
+        .child(content)
         .into();
     let mut out = Painted::default();
     out.rects.push(Rect {

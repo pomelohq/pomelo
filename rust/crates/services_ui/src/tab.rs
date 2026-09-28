@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use pom_services::ServiceTarget;
 use terminal::{HolderOptions, TerminalOptions, Waker};
-use terminal_ui::{ConsoleToolbar, TerminalItem};
+use terminal_ui::{ConsoleAction, ConsoleToolbar, TerminalItem};
 use ui::{div, icon, label, theme, IconKind, Node};
 
 use crate::model::{run_action, Action, Crash, ServicesContext, Shared, Status, TabRequest};
@@ -21,6 +21,10 @@ const FIX: u64 = 4;
 const NEW_PORT: u64 = 5;
 const COPY_URL: u64 = 6;
 const COPY_COMMAND: u64 = 7;
+const OPEN_ENV: u64 = 8;
+const FIND: u64 = 9;
+const CLEAR: u64 = 10;
+const FOLLOW: u64 = 11;
 const MODE_BASE: u64 = 16;
 const PROFILE_BASE: u64 = 32;
 const IDS_PER_TAB: u64 = 64;
@@ -42,6 +46,8 @@ pub(crate) struct ServiceTab {
     root: PathBuf,
     base: u64,
     showing: Showing,
+    follow: bool,
+    action: Option<ConsoleAction>,
 }
 
 pub(crate) fn tab_id(holder: &str) -> String {
@@ -65,6 +71,8 @@ pub(crate) fn open_tab(
         } else {
             Showing::Leftover
         },
+        follow: true,
+        action: None,
         context,
         shared,
         target,
@@ -101,8 +109,10 @@ pub(crate) fn toolbar_preview(
         root,
         base: TOOLBAR_IDS,
         showing: Showing::Leftover,
+        follow: true,
+        action: None,
     }
-    .render(width)
+    .render(width, 0)
 }
 
 impl ServiceTab {
@@ -205,6 +215,17 @@ impl ServiceTab {
 
     fn button(&self, offset: u64, kind: IconKind, text: &str, tone: Tone) -> Node {
         action_button(self.base + offset, Some(kind), text, tone, false)
+    }
+
+    fn link(id: u64, text: &str) -> Node {
+        div()
+            .on_click(id)
+            .child(
+                label(text.to_string())
+                    .size(12.5)
+                    .color(theme().text_accent),
+            )
+            .into()
     }
 
     fn fact(title: &str, value: Node) -> Node {
@@ -312,16 +333,29 @@ impl ServiceTab {
             title = title.child(view::tag(&mode));
         }
         let mut buttons = Vec::new();
-        if !busy {
-            if running {
-                buttons.push(self.button(STOP, IconKind::Stop, "Stop", Tone::Plain));
-                buttons.push(self.button(RESTART, IconKind::RotateCw, "Restart", Tone::Plain));
-            } else {
-                buttons.push(self.button(START, IconKind::Play, "Start", Tone::Primary));
-            }
+        if running || busy {
+            buttons.push(view::disabled_button(Some(IconKind::Play), "Start"));
+        } else {
+            buttons.push(self.button(START, IconKind::Play, "Start", Tone::Primary));
         }
-        if running && self.url().is_some() {
-            buttons.push(self.button(OPEN, IconKind::ArrowUpRight, "Open in browser", Tone::Plain));
+        if running {
+            buttons.push(self.button(STOP, IconKind::Stop, "Stop", Tone::Plain));
+            buttons.push(self.button(RESTART, IconKind::RotateCw, "Restart", Tone::Plain));
+        }
+        if self.url().is_some() {
+            if running {
+                buttons.push(self.button(
+                    OPEN,
+                    IconKind::ArrowUpRight,
+                    "Open in browser",
+                    Tone::Plain,
+                ));
+            } else {
+                buttons.push(view::disabled_button(
+                    Some(IconKind::ArrowUpRight),
+                    "Open in browser",
+                ));
+            }
         }
         let mut row = div()
             .row()
@@ -478,21 +512,67 @@ impl ServiceTab {
             ));
         }
         if let Some((config, service)) = self.service() {
+            if let Some(port) = self.context.runner.port(&config, &self.target) {
+                facts.push(Self::fact(
+                    "Port",
+                    div()
+                        .row()
+                        .gap(8.0)
+                        .items_center()
+                        .child(
+                            label(format!(":{port}"))
+                                .size(12.5)
+                                .mono()
+                                .color(colors.text),
+                        )
+                        .child(Self::link(self.base + NEW_PORT, "Change"))
+                        .into(),
+                ));
+            }
             let modes = service.mode_names();
+            let current_mode =
+                self.context
+                    .runner
+                    .mode(&self.target.repo, &self.target.service, &service);
             if modes.len() > 1 {
-                let current =
-                    self.context
-                        .runner
-                        .mode(&self.target.repo, &self.target.service, &service);
-                facts.push(Self::fact("Mode", self.choice(&modes, &current, MODE_BASE)));
+                facts.push(Self::fact(
+                    "Mode",
+                    self.choice(&modes, &current_mode, MODE_BASE),
+                ));
+            } else if !current_mode.is_empty() {
+                facts.push(Self::fact(
+                    "Mode",
+                    label(current_mode.clone())
+                        .size(12.5)
+                        .color(colors.text)
+                        .into(),
+                ));
             }
             if let Some(dir) = config.repos.get(&self.target.repo) {
                 let profiles = dir.env_profiles(Some(&service));
+                let current = self.context.runner.env_profile(&config, &self.target);
                 if profiles.len() > 1 {
-                    let current = self.context.runner.env_profile(&config, &self.target);
                     facts.push(Self::fact(
                         "Env profile",
                         self.choice(&profiles, &current, PROFILE_BASE),
+                    ));
+                } else if !current.is_empty() {
+                    facts.push(Self::fact(
+                        "Env profile",
+                        label(current).size(12.5).color(colors.text).into(),
+                    ));
+                }
+                if let Some(file) = dir.env_output.first() {
+                    let shown = format!("{}/{}", self.target.repo, file.file);
+                    facts.push(Self::fact(
+                        "Env file",
+                        div()
+                            .row()
+                            .gap(8.0)
+                            .items_center()
+                            .child(label(shown).size(12.5).mono().color(colors.text))
+                            .child(Self::link(self.base + OPEN_ENV, "Open"))
+                            .into(),
                     ));
                 }
             }
@@ -536,7 +616,7 @@ impl ServiceTab {
 }
 
 impl ConsoleToolbar for ServiceTab {
-    fn render(&self, width: f32) -> Node {
+    fn render(&self, width: f32, lines: usize) -> Node {
         let colors = theme();
         let (state, crash, error) = self.state();
         let mut column = div()
@@ -550,6 +630,8 @@ impl ConsoleToolbar for ServiceTab {
         }
         column
             .child(self.facts(&state, crash.as_ref(), width))
+            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(self.logs_bar(&state, lines))
             .child(div().h_px(1.0).bg(colors.border))
             .into()
     }
@@ -588,6 +670,27 @@ impl ConsoleToolbar for ServiceTab {
                 }
             }
             FIX => self.ask(TabRequest::Fix(self.target.clone())),
+            FIND => self.action = Some(ConsoleAction::Find),
+            CLEAR => self.action = Some(ConsoleAction::Clear),
+            FOLLOW => {
+                self.follow = !self.follow;
+                if self.follow {
+                    self.action = Some(ConsoleAction::ScrollToBottom);
+                }
+            }
+            OPEN_ENV => {
+                let file = self.context.config().and_then(|config| {
+                    let dir = config.repos.get(&self.target.repo)?;
+                    Some(
+                        self.root
+                            .join(&self.target.repo)
+                            .join(&dir.env_output.first()?.file),
+                    )
+                });
+                if let Some(file) = file {
+                    self.ask(TabRequest::OpenFile(file));
+                }
+            }
             offset if (MODE_BASE..PROFILE_BASE).contains(&offset) => {
                 self.pick_mode((offset - MODE_BASE) as usize)
             }
@@ -595,6 +698,14 @@ impl ConsoleToolbar for ServiceTab {
             _ => {}
         }
         true
+    }
+
+    fn take_action(&mut self) -> Option<ConsoleAction> {
+        self.action.take()
+    }
+
+    fn follows(&self) -> bool {
+        self.follow
     }
 
     fn take_respawn(&mut self) -> Option<(TerminalOptions, Waker)> {
@@ -613,6 +724,88 @@ impl ConsoleToolbar for ServiceTab {
 }
 
 impl ServiceTab {
+    /// The bar over the output: whether it is live, find, clear, follow, and how many lines there are.
+    fn logs_bar(&self, state: &State, lines: usize) -> Node {
+        let colors = theme();
+        let live = *state == State::Running;
+        let mut title = div().row().gap(6.0).items_center().child(
+            label("LOGS")
+                .size(11.0)
+                .weight(600)
+                .color(colors.text_placeholder),
+        );
+        if live {
+            title = title
+                .child(view::dot(colors.success, 6.0))
+                .child(label("live").size(11.5).color(colors.success));
+        }
+        let find = div()
+            .row()
+            .w_px(220.0)
+            .h_px(24.0)
+            .px(8.0)
+            .gap(6.0)
+            .items_center()
+            .rounded(5.0)
+            .border(1.0, colors.border_variant)
+            .bg(colors.editor_background)
+            .on_click(self.base + FIND)
+            .child(
+                icon(IconKind::Search)
+                    .size(12.0)
+                    .color(colors.text_placeholder),
+            )
+            .child(
+                label("Filter lines")
+                    .size(12.0)
+                    .color(colors.text_placeholder),
+            );
+        let toggle = |id: u64, kind: IconKind, text: &str, on: bool| -> Node {
+            div()
+                .row()
+                .h_px(24.0)
+                .px(8.0)
+                .gap(5.0)
+                .items_center()
+                .rounded(4.0)
+                .on_click(self.base + id)
+                .bg(if on {
+                    colors.element_selected
+                } else {
+                    ui::Rgba::TRANSPARENT
+                })
+                .child(icon(kind).size(12.0).color(if on {
+                    colors.icon
+                } else {
+                    colors.icon_muted
+                }))
+                .child(label(text.to_string()).size(12.0).color(if on {
+                    colors.text
+                } else {
+                    colors.text_muted
+                }))
+                .into()
+        };
+        div()
+            .row()
+            .h_px(38.0)
+            .px(14.0)
+            .gap(10.0)
+            .items_center()
+            .bg(colors.editor_background)
+            .child(title)
+            .child(find)
+            .child(toggle(CLEAR, IconKind::Trash, "Clear", false))
+            .child(toggle(FOLLOW, IconKind::ArrowDown, "Follow", self.follow))
+            .child(div().flex(1.0))
+            .child(
+                label(format!("{lines} lines above"))
+                    .size(11.5)
+                    .color(colors.text_placeholder),
+            )
+            .into()
+    }
+
     fn restart_if_running(&self) {
         if self.state().0 == State::Running {
             self.run(Action::Restart);

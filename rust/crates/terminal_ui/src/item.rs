@@ -47,16 +47,35 @@ pub struct TerminalItem {
     /// A coding agent's tab, drawn at the agent text size.
     agent: bool,
     toolbar: Option<Box<dyn ConsoleToolbar>>,
+    /// The toolbar asked for the find bar.
+    find_requested: bool,
 }
 
 /// Controls a console tab shows above its output (a service's header and facts). It can hand the tab a new
 /// terminal to show instead, when what it follows starts over.
 pub trait ConsoleToolbar: 'static {
-    fn render(&self, width: f32) -> Node;
+    /// `lines` is how many lines the console holds.
+    fn render(&self, width: f32, lines: usize) -> Node;
     /// A click on one of its own ids; false when the id is not its own.
     fn click(&mut self, id: u64) -> bool;
     /// A terminal to show in place of the current one, once.
     fn take_respawn(&mut self) -> Option<(TerminalOptions, Waker)>;
+    /// What it asked the console to do, once.
+    fn take_action(&mut self) -> Option<ConsoleAction> {
+        None
+    }
+    /// Keep the newest output in view as it arrives.
+    fn follows(&self) -> bool {
+        false
+    }
+}
+
+/// Something a console's toolbar asks of the console under it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsoleAction {
+    Clear,
+    ScrollToBottom,
+    Find,
 }
 
 struct Console {
@@ -272,6 +291,7 @@ impl TerminalItem {
             console: None,
             agent: false,
             toolbar: None,
+            find_requested: false,
         }
     }
 
@@ -700,13 +720,32 @@ impl Item for TerminalItem {
     }
 
     fn toolbar(&self, width: f32) -> Option<Node> {
-        self.toolbar.as_ref().map(|toolbar| toolbar.render(width))
+        let lines = self.terminal.history_size();
+        self.toolbar
+            .as_ref()
+            .map(|toolbar| toolbar.render(width, lines))
     }
 
     fn toolbar_click(&mut self, id: u64) -> bool {
-        self.toolbar
+        let handled = self
+            .toolbar
             .as_mut()
-            .is_some_and(|toolbar| toolbar.click(id))
+            .is_some_and(|toolbar| toolbar.click(id));
+        match self
+            .toolbar
+            .as_mut()
+            .and_then(|toolbar| toolbar.take_action())
+        {
+            Some(ConsoleAction::Clear) => self.terminal.clear(),
+            Some(ConsoleAction::ScrollToBottom) => self.terminal.scroll_to_bottom(),
+            Some(ConsoleAction::Find) => self.find_requested = true,
+            None => {}
+        }
+        handled
+    }
+
+    fn take_find_request(&mut self) -> bool {
+        std::mem::take(&mut self.find_requested)
     }
 
     fn tick(&mut self, clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
@@ -725,6 +764,14 @@ impl Item for TerminalItem {
             clipboard,
         };
         let result = self.sync(&host);
+        if result.changed
+            && self
+                .toolbar
+                .as_ref()
+                .is_some_and(|toolbar| toolbar.follows())
+        {
+            self.terminal.scroll_to_bottom();
+        }
         ItemTick {
             changed: result.changed || result.title_changed,
             clipboard_store: result.clipboard_store,

@@ -2458,6 +2458,9 @@ impl SidePanelView for ServicesPanel {
                 }
                 model::TabRequest::OpenUrl(url) => self.requests.push(PanelRequest::OpenUrl(url)),
                 model::TabRequest::Copy(text) => self.requests.push(PanelRequest::Copy(text)),
+                model::TabRequest::OpenFile(path) => {
+                    self.requests.push(PanelRequest::OpenFile(path))
+                }
             }
         }
         let mut requests = std::mem::take(&mut self.requests);
