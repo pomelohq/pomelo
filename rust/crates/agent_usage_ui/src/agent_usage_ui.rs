@@ -1164,8 +1164,8 @@ pub fn preview_page() -> UsagePage {
         today,
         limits: UsageInfo {
             account: Some(workspace::UsageAccount {
-                name: "toan".into(),
-                email: "toan@example.com".into(),
+                name: "dev".into(),
+                email: "dev@example.com".into(),
                 plan: "Team".into(),
                 organization: "Example".into(),
             }),

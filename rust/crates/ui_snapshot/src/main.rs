@@ -1525,8 +1525,8 @@ fn main() -> anyhow::Result<()> {
         if mode.starts_with("usage") {
             let usage = workspace::UsageInfo {
                 account: Some(workspace::UsageAccount {
-                    name: "toan".into(),
-                    email: "toan@example.com".into(),
+                    name: "dev".into(),
+                    email: "dev@example.com".into(),
                     plan: "team".into(),
                     organization: "Example".into(),
                 }),
