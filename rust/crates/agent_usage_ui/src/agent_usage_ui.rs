@@ -765,7 +765,8 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         };
         key(b).total_cmp(&key(a))
     });
-    let chip = |text: String| -> Node {
+    let chip = |text: String, max: f32| -> Node {
+        let text_w = ui::measure(&label(text.clone()).size(11.0).into()).0;
         div()
             .row()
             .h_px(18.0)
@@ -773,9 +774,19 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .items_center()
             .rounded(4.0)
             .border(1.0, colors.border_variant)
-            .child(label(text).size(11.0).color(colors.text_muted))
+            .child(
+                div()
+                    .row()
+                    .w_px(text_w.min(max))
+                    .child(label(text).size(11.0).color(colors.text_muted).truncate()),
+            )
             .into()
     };
+    // The numbers and the button keep their room; the title and the workspace share what is left.
+    let fixed = 14.0 + 3.0 * 84.0 + 62.0 + 100.0 + 8.0 * 10.0 + 24.0;
+    let spare = (content_w - fixed).max(120.0);
+    let title_w = (spare * 0.45).min(180.0);
+    let workspace_w = (spare - title_w - 14.0).max(40.0);
     let heavy: Vec<Node> = by_session
         .iter()
         .take(TOP_SESSIONS)
@@ -809,11 +820,11 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     )
                     .child(
                         div()
-                            .w_px(180.0)
+                            .w_px(title_w)
                             .child(label(title).size(13.0).color(colors.text).truncate()),
                     )
-                    .child(chip(workspace.to_string()))
-                    .child(chip(model_family(model).to_string()))
+                    .child(chip(workspace.to_string(), workspace_w))
+                    .child(chip(model_family(model).to_string(), 88.0))
                     .child(div().flex(1.0))
                     .child(num(
                         match replies {

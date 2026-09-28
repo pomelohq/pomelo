@@ -70,6 +70,13 @@ pub fn session_id(key: &str) -> String {
     )
 }
 
+/// ` --settings '<json>'` routing the agent's status line through Pomelo, or nothing when it cannot.
+pub(crate) fn settings_flag(context: &LaunchContext<'_>) -> String {
+    crate::statusline::statusline_settings(context.state, context.binary, context.home)
+        .map(|settings| format!(" --settings {}", shell_quote(&settings)))
+        .unwrap_or_default()
+}
+
 pub(crate) fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
@@ -175,11 +182,12 @@ pub fn claude_launch(context: &LaunchContext<'_>) -> AgentLaunch {
     let mcp = mcp_config_json(context.state, context.binary, context.branch);
     let image_cache = context.home.join(".claude/image-cache");
     let script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {session_flag} {id} --mcp-config {mcp} --add-dir {images} --append-system-prompt {prompt}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {session_flag} {id} --mcp-config {mcp}{settings} --add-dir {images} --append-system-prompt {prompt}",
         path = shell_quote(context.tool_path),
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
         mcp = shell_quote(&mcp),
+        settings = crate::launch::settings_flag(context),
         images = shell_quote(&image_cache.to_string_lossy()),
         prompt = shell_quote(&system_prompt()),
     );
@@ -239,11 +247,12 @@ fn task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str, system: &s
     let claude = resolve_claude(context.home, context.tool_path);
     let mcp = mcp_config_json(context.state, context.binary, context.branch);
     let script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --session-id {id} --mcp-config {mcp} --append-system-prompt {system} {prompt}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --session-id {id} --mcp-config {mcp}{settings} --append-system-prompt {system} {prompt}",
         path = shell_quote(context.tool_path),
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
         mcp = shell_quote(&mcp),
+        settings = crate::launch::settings_flag(context),
         system = shell_quote(system),
         prompt = shell_quote(prompt),
     );

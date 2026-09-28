@@ -18,7 +18,23 @@ use crate::App;
 
 const PERIOD_DAYS: u64 = 60;
 const CHECK_EVERY: Duration = Duration::from_secs(60);
-const BACK_OFF: Duration = Duration::from_secs(300);
+/// The usage endpoint is only asked when no agent reported limits lately, and rarely: Claude Code asks
+/// it too, and it refuses callers that ask often.
+const ASK_EVERY: Duration = Duration::from_secs(300);
+const BACK_OFF: Duration = Duration::from_secs(900);
+/// Limits a status line reported this recently are current enough to show.
+const REPORTED_FRESH: u64 = 20 * 60;
+
+/// The limits an agent's status line last reported, and when.
+fn reported_limits() -> Option<(Limits, u64)> {
+    let path = pom_paths::StateDir::from_env().path(pom_agent::RATE_LIMITS_FILE);
+    let text = std::fs::read_to_string(path).ok()?;
+    let at = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()?
+        .get("at")?
+        .as_u64()?;
+    Some((agent_usage::parse_limits(&text).ok()?, at))
+}
 
 struct Snapshot {
     turns: Vec<Turn>,
@@ -61,13 +77,21 @@ fn start(sender: std::sync::mpsc::Sender<Snapshot>, now: Arc<AtomicBool>) {
                 transcripts.refresh(&projects, since);
                 let account = agent_usage::read_account(&home);
                 let at = agent_usage::unix_now();
+                let reported = reported_limits()
+                    .filter(|(_, reported_at)| at.saturating_sub(*reported_at) < REPORTED_FRESH);
+                if let Some(reported) = reported {
+                    if kept.is_none_or(|(_, kept_at)| reported.1 >= kept_at) {
+                        kept = Some(reported);
+                    }
+                }
                 let mut limits = kept.map(|(limits, _)| limits).ok_or(LimitsError::SignedOut);
-                if account.is_some() && (at >= next_limits || now.swap(false, Ordering::Relaxed)) {
+                let asked = now.swap(false, Ordering::Relaxed);
+                if account.is_some() && reported.is_none() && (at >= next_limits || asked) {
                     match agent_usage::fetch_limits(&home) {
                         Ok(fresh) => {
                             kept = Some((fresh, at));
                             limits = Ok(fresh);
-                            next_limits = at + CHECK_EVERY.as_secs();
+                            next_limits = at + ASK_EVERY.as_secs();
                         }
                         Err(LimitsError::RateLimited) => {
                             next_limits = at + BACK_OFF.as_secs();
@@ -76,8 +100,10 @@ fn start(sender: std::sync::mpsc::Sender<Snapshot>, now: Arc<AtomicBool>) {
                             }
                         }
                         Err(error) => {
-                            next_limits = at + CHECK_EVERY.as_secs();
-                            limits = Err(error);
+                            next_limits = at + ASK_EVERY.as_secs();
+                            if kept.is_none() {
+                                limits = Err(error);
+                            }
                         }
                     }
                 }
@@ -222,13 +248,14 @@ impl App {
                 format!("Updated {} - asked too often, trying again soon", ago(at))
             }
             (Some(LimitsError::RateLimited), None) => {
-                "Limits are asked too often right now; trying again soon".into()
+                "The limits service is busy; they show once an agent runs here".into()
             }
             (Some(LimitsError::SignedOut), _) if tracker.account.is_some() => {
-                "Claude Code's sign-in has expired: run claude and /login".into()
+                "Claude Code's saved sign-in did not work; limits show once an agent runs here"
+                    .into()
             }
             (Some(LimitsError::Failed(error)), _) => format!("Could not read the limits: {error}"),
-            (_, Some(at)) => format!("Updated {} - checks every minute", ago(at)),
+            (_, Some(at)) => format!("Updated {}", ago(at)),
             _ => "Checks every minute".into(),
         };
         let root = self

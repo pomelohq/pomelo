@@ -65,3 +65,29 @@ fn tokens_and_costs_read_short() {
     assert_eq!(format_cost(1.456), "$1.46");
     assert_eq!(day_name(0), "Thu");
 }
+
+#[test]
+fn long_workspace_names_never_widen_the_page() {
+    let shared = state();
+    {
+        let mut state = shared.borrow_mut();
+        for turn in &mut state.turns {
+            turn.workspace = "crm-1439-ai-email-parser-evals-and-a-much-longer-branch-name".into();
+        }
+    }
+    for width in [700.0_f32, 960.0, 1400.0] {
+        let tree = render(&shared.borrow(), width, None);
+        let painted = ui::render(
+            &tree,
+            ui::Rect::new(0.0, 0.0, width, 3000.0, ui::Rgba::TRANSPARENT),
+        );
+        let open = painted
+            .hits
+            .iter()
+            .find(|(_, id)| *id == OPEN_BASE)
+            .map(|(rect, _)| rect.x + rect.w)
+            .expect("an Open button");
+        let margin = (width - CONTENT_MAX_W.min(width - 2.0 * PAD_X)) / 2.0;
+        assert!(open <= width - margin + 0.5, "{width}: Open ends at {open}");
+    }
+}

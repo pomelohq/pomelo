@@ -3,6 +3,7 @@ fn main() {
     if let Some(code) = pom_ptyhost::cli::run(&args)
         .or_else(|| pom_mcp::run(&args))
         .or_else(|| pom_agent::run(&args))
+        .or_else(|| pom_agent::run_statusline(&args))
     {
         std::process::exit(code);
     }

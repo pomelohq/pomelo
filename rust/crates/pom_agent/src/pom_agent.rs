@@ -4,6 +4,7 @@ mod launch;
 mod naming;
 mod onboard;
 mod side;
+mod statusline;
 mod watch;
 
 pub use claude::{install_mcp, mcp_config_json, ClaudeHome, InstallError};
@@ -22,4 +23,5 @@ pub use side::{
     side_launch, side_records, side_resume, side_title, write_packet, MainSession, SideLaunch,
     SideRecord, SideRole, SideStart, SIDE_AGENT_ENV,
 };
+pub use statusline::{record_rate_limits, run_statusline, statusline_settings, RATE_LIMITS_FILE};
 pub use watch::AgentWatcher;

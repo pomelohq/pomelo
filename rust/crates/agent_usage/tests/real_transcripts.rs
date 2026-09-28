@@ -27,3 +27,12 @@ fn reads_the_last_week_of_this_macs_transcripts() {
         agent_usage::read_account(&home).map(|account| account.plan)
     );
 }
+
+#[test]
+#[ignore]
+fn fetches_this_macs_limits() {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    println!("limits: {:?}", agent_usage::fetch_limits(&home));
+}

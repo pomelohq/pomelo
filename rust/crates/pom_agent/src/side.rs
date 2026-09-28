@@ -230,12 +230,13 @@ pub fn side_launch(
         "acceptEdits"
     };
     let mut script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {side}=1; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {history} --permission-mode {mode} --mcp-config {mcp} --append-system-prompt {system}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {side}=1; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {history} --permission-mode {mode} --mcp-config {mcp}{settings} --append-system-prompt {system}",
         path = shell_quote(context.tool_path),
         side = SIDE_AGENT_ENV,
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
         mcp = shell_quote(&mcp),
+        settings = crate::launch::settings_flag(context),
         system = shell_quote(&side_system_prompt(role)),
     );
     if !first.is_empty() {
@@ -487,13 +488,14 @@ pub fn side_resume(
     let mcp = mcp_config_json(context.state, context.binary, context.branch);
     let mode = if read_only { "plan" } else { "acceptEdits" };
     let script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {side}=1; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --resume {session} --permission-mode {mode} --mcp-config {mcp}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {side}=1; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --resume {session} --permission-mode {mode} --mcp-config {mcp}{settings}",
         path = shell_quote(context.tool_path),
         side = SIDE_AGENT_ENV,
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
         session = shell_quote(&record.session),
         mcp = shell_quote(&mcp),
+        settings = crate::launch::settings_flag(context),
     );
     AgentLaunch {
         holder: record.holder.clone(),
