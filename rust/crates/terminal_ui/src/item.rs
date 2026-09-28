@@ -49,6 +49,10 @@ pub struct TerminalItem {
     toolbar: Option<Box<dyn ConsoleToolbar>>,
     /// The toolbar asked for the find bar.
     find_requested: bool,
+    /// Text for other tabs' prompts, taken by the panel.
+    outgoing: Vec<(String, String)>,
+    /// Typed into the prompt once the program is up and quiet a moment, without sending.
+    pending_input: Option<(String, std::time::Instant)>,
 }
 
 /// Controls a console tab shows above its output (a service's header and facts). It can hand the tab a new
@@ -68,6 +72,10 @@ pub trait ConsoleToolbar: 'static {
     fn follows(&self) -> bool {
         false
     }
+    /// Where "send" goes (another tab's id) and what it sends when nothing is selected.
+    fn send_target(&self) -> Option<(String, Option<String>)> {
+        None
+    }
 }
 
 /// Something a console's toolbar asks of the console under it.
@@ -76,6 +84,8 @@ pub enum ConsoleAction {
     Clear,
     ScrollToBottom,
     Find,
+    /// Hand the selection (else the toolbar's fallback) to the tab `send_target` names.
+    Send,
 }
 
 struct Console {
@@ -292,6 +302,8 @@ impl TerminalItem {
             agent: false,
             toolbar: None,
             find_requested: false,
+            outgoing: Vec::new(),
+            pending_input: None,
         }
     }
 
@@ -303,6 +315,31 @@ impl TerminalItem {
             keep_after_exit: true,
         });
         self
+    }
+
+    /// Types `text` into the program's prompt once it has started, without pressing Enter.
+    pub fn with_pending_input(mut self, text: String) -> Self {
+        self.pending_input = Some((text, std::time::Instant::now()));
+        self
+    }
+
+    /// Text this tab hands to other tabs' prompts, (tab id, text).
+    pub fn take_outgoing(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.outgoing)
+    }
+
+    /// Types the pending input once the program has drawn and a few seconds went by (a compaction runs
+    /// first; what is typed meanwhile waits in its prompt).
+    pub fn flush_pending_input(&mut self) {
+        let due = self
+            .pending_input
+            .as_ref()
+            .is_some_and(|(_, since)| since.elapsed() > std::time::Duration::from_secs(3));
+        if due && self.terminal.content_version() > 0 {
+            if let Some((text, _)) = self.pending_input.take() {
+                self.terminal.paste(&text);
+            }
+        }
     }
 
     /// Shows `toolbar` above the output.
@@ -739,6 +776,21 @@ impl Item for TerminalItem {
             Some(ConsoleAction::Clear) => self.terminal.clear(),
             Some(ConsoleAction::ScrollToBottom) => self.terminal.scroll_to_bottom(),
             Some(ConsoleAction::Find) => self.find_requested = true,
+            Some(ConsoleAction::Send) => {
+                let target = self
+                    .toolbar
+                    .as_ref()
+                    .and_then(|toolbar| toolbar.send_target());
+                if let Some((target, fallback)) = target {
+                    let selected = self
+                        .terminal
+                        .selection_text()
+                        .filter(|text| !text.trim().is_empty());
+                    if let Some(text) = selected.or(fallback) {
+                        self.outgoing.push((target, text));
+                    }
+                }
+            }
             None => {}
         }
         handled

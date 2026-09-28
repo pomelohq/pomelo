@@ -2,6 +2,7 @@ mod claude;
 mod hooks;
 mod launch;
 mod naming;
+mod side;
 mod watch;
 
 pub use claude::{install_mcp, mcp_config_json, ClaudeHome, InstallError};
@@ -14,4 +15,8 @@ pub use launch::{
     resolve_claude, session_id, system_prompt, AgentLaunch, LaunchContext,
 };
 pub use naming::{claude_available, naming_prompt, parse_suggestion, suggest_name, NameSuggestion};
+pub use side::{
+    format_tokens, last_answer, main_session, side_launch, write_packet, MainSession, SideLaunch,
+    SideRole, SideStart, SIDE_AGENT_ENV,
+};
 pub use watch::AgentWatcher;

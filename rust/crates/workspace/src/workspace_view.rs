@@ -38,6 +38,17 @@ const DELETE_WORKSPACE_PROMPT_TOKENS: u64 = 1 << 43;
 const PREPARE_MAIN_PROMPT_TOKEN: u64 = 1 << 44;
 /// The gap a zoomed view leaves around it (on its dock's inner side only, for a dock panel).
 const ZOOM_PADDING: f32 = 8.0;
+/// Where tabs' own toolbar ids start (a service's header, a side agent's bar).
+const ITEM_TOOLBAR_IDS: u64 = 1 << 50;
+
+/// "9.3k", "62k", "800".
+fn token_text(tokens: usize) -> String {
+    match tokens {
+        0..=999 => tokens.to_string(),
+        1_000..=9_999 => format!("{:.1}k", tokens as f64 / 1000.0),
+        _ => format!("{}k", tokens / 1000),
+    }
+}
 const TOAST_ANIM: Duration = Duration::from_millis(160);
 const MODAL_TOP: f32 = 80.0;
 
@@ -61,6 +72,8 @@ pub struct WorkspaceEffects {
     pub activate_workspace: Option<usize>,
     /// Open (or focus) the workspace's coding agent.
     pub open_agent: bool,
+    /// Start a side agent next to the main one.
+    pub side_agent: Option<(crate::SideAgentRole, crate::SideAgentStart)>,
     pub fix_setup: bool,
     /// Restart the services still running with the previous config.
     pub restart_stale: bool,
@@ -239,7 +252,7 @@ pub struct WorkspaceView {
     /// The zoom showing this frame, for drawing and routing input.
     zoom: Option<Zoom>,
     pending_prompt: Option<crate::Prompt>,
-    agent_fix: Option<crate::AgentFix>,
+    agent_fix: Option<(crate::AgentFix, crate::SideAgentRole)>,
     /// The side panel prompt waiting for an answer: its token, panel and the panel's tag.
     panel_prompt: Option<(u64, PaneKind, u64)>,
     /// Branch changes the Git panel asked for, which the app carries out.
@@ -831,6 +844,10 @@ impl WorkspaceView {
 
     pub fn set_agent_states(&mut self, states: std::collections::HashMap<String, crate::AgentDot>) {
         self.layout.agent_states = states;
+    }
+
+    pub fn set_side_agent_sizes(&mut self, sizes: [Option<usize>; 4]) {
+        self.layout.side_agent_sizes = sizes;
     }
 
     /// The active editor's file, else the workspace folder: what an external editor should open.
@@ -2722,6 +2739,12 @@ impl WorkspaceView {
         if target == crate::TAB_MENU_TARGET {
             return self.tab_menu_items();
         }
+        if target == crate::AGENT_MENU_TARGET {
+            return self.agent_menu_items();
+        }
+        if is_submenu(target) && self.menu.map(|menu| menu.3) == Some(crate::AGENT_MENU_TARGET) {
+            return self.agent_start_items(target);
+        }
         if is_submenu(target) {
             if let Some(items) = self
                 .layout
@@ -3137,7 +3160,12 @@ impl WorkspaceView {
                 }
             }
             crate::PanelRequest::Copy(text) => Self::clip_set(&text),
-            crate::PanelRequest::FixWithAgent(fix) => self.agent_fix = Some(fix),
+            crate::PanelRequest::FixWithAgent(fix) => {
+                self.agent_fix = Some((fix, crate::SideAgentRole::Fix));
+            }
+            crate::PanelRequest::AskAgent(fix) => {
+                self.agent_fix = Some((fix, crate::SideAgentRole::Ask));
+            }
             crate::PanelRequest::Toast(message) => {
                 self.toast_then = None;
                 self.show_toast(message, None);
@@ -3226,7 +3254,119 @@ impl WorkspaceView {
         self.menu_editor_anchor = None;
     }
 
+    /// The "+" menu under the pressed button: a side agent by what it is for, each with what it starts from.
+    fn open_agent_menu(&mut self) {
+        let (x, y) = self.press;
+        if let Some((_, rect)) = self.hit_with_rect(x, y) {
+            self.menu = Some((rect.x, rect.y, rect.y + rect.h, crate::AGENT_MENU_TARGET));
+            self.submenu = None;
+            self.menu_path = None;
+            self.menu_editor_anchor = None;
+        }
+    }
+
+    fn agent_menu_items(&self) -> Vec<MenuItem> {
+        let branch = self
+            .layout
+            .project
+            .as_ref()
+            .map(|project| project.active.clone())
+            .unwrap_or_default();
+        let item = |id: u64,
+                    label: String,
+                    disabled: bool,
+                    sep: bool,
+                    icon: Option<ui::IconKind>,
+                    hint: Option<&str>| MenuItem {
+            id,
+            label: label.into(),
+            checked: false,
+            sep,
+            disabled,
+            danger: false,
+            icon,
+            hint: hint.map(|hint| hint.to_string().into()),
+        };
+        let mut items = vec![item(
+            crate::AGENT_MENU_TARGET,
+            format!("New side agent in {branch}"),
+            true,
+            false,
+            None,
+            None,
+        )];
+        for (index, role) in crate::SideAgentRole::ALL.into_iter().enumerate() {
+            let (kind, hint) = match role {
+                crate::SideAgentRole::Ask => (ui::IconKind::Search, "read-only"),
+                crate::SideAgentRole::Review => (ui::IconKind::Eye, "read-only"),
+                crate::SideAgentRole::Fix => (ui::IconKind::Sparkle, "can edit"),
+            };
+            items.push(item(
+                crate::MENU_SUBMENU_BASE + index as u64,
+                role.title().to_string(),
+                false,
+                false,
+                Some(kind),
+                Some(hint),
+            ));
+        }
+        items.push(item(
+            crate::AGENT_MENU_NEW_WORKSPACE,
+            "New Agent in a New Workspace".to_string(),
+            false,
+            true,
+            Some(ui::IconKind::Plus),
+            None,
+        ));
+        items
+    }
+
+    /// The starts offered for the role behind submenu `id`, each with roughly what it begins with.
+    fn agent_start_items(&self, id: u64) -> Vec<MenuItem> {
+        let role = (id - crate::MENU_SUBMENU_BASE) as usize;
+        crate::SideAgentStart::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(index, start)| {
+                let size = self.layout.side_agent_sizes.get(index).copied().flatten();
+                let hint = match (start, size) {
+                    (_, Some(tokens)) => format!("~{}", token_text(tokens)),
+                    (crate::SideAgentStart::Auto | crate::SideAgentStart::Fresh, None) => {
+                        String::new()
+                    }
+                    (_, None) => "no main session yet".to_string(),
+                };
+                MenuItem {
+                    id: crate::AGENT_START_BASE + role as u64 * 4 + index as u64,
+                    label: start.title().into(),
+                    checked: false,
+                    sep: index == 1,
+                    disabled: size.is_none()
+                        && matches!(
+                            start,
+                            crate::SideAgentStart::Fork | crate::SideAgentStart::Compacted
+                        ),
+                    danger: false,
+                    icon: None,
+                    hint: (!hint.is_empty()).then(|| hint.into()),
+                }
+            })
+            .collect()
+    }
+
     fn apply_menu(&mut self, target: u64, item: u64) {
+        if target == crate::AGENT_MENU_TARGET {
+            if item == crate::AGENT_MENU_NEW_WORKSPACE {
+                self.workspace_requests.new_workspace = true;
+            } else if let Some(offset) = item.checked_sub(crate::AGENT_START_BASE) {
+                let role = crate::SideAgentRole::ALL.get((offset / 4) as usize);
+                let start = crate::SideAgentStart::ALL.get((offset % 4) as usize);
+                if let (Some(role), Some(start)) = (role, start) {
+                    self.pending.side_agent = Some((*role, *start));
+                }
+            }
+            return;
+        }
         if target == crate::WORKSPACE_ROW_MENU_TARGET {
             self.apply_workspace_row_menu(item);
             return;
@@ -4651,6 +4791,17 @@ impl WorkspaceView {
             if let Some(text) = outcome.clipboard_store {
                 Self::clip_set(&text);
             }
+            let delivered: Vec<bool> = outcome
+                .send
+                .iter()
+                .map(|(target, text)| agent.paste_into(target, text))
+                .collect();
+            if delivered.contains(&true) {
+                self.focus_group(InputGroup::Agent);
+            }
+            if delivered.contains(&false) {
+                self.show_toast("The main agent is not open; start it first", None);
+            }
             if outcome.closed_all {
                 self.set_agent_focus(false);
             }
@@ -5171,7 +5322,7 @@ impl WorkspaceView {
     }
 
     /// A panel's request to start the coding agent on a problem it found.
-    pub fn take_agent_fix(&mut self) -> Option<crate::AgentFix> {
+    pub fn take_agent_fix(&mut self) -> Option<(crate::AgentFix, crate::SideAgentRole)> {
         self.agent_fix.take()
     }
 
@@ -5524,10 +5675,34 @@ impl WorkspaceView {
             self.ask_about_pending_close();
             return;
         }
+        // A tab's own toolbar: its ids sit above every range, so ask the docks' tabs before the editor's.
+        if id >= ITEM_TOOLBAR_IDS {
+            if self
+                .layout
+                .agent_view
+                .as_mut()
+                .is_some_and(|view| view.click(id))
+            {
+                self.focus_group(InputGroup::Agent);
+                return;
+            }
+            if self
+                .layout
+                .terminal_view
+                .as_mut()
+                .is_some_and(|view| view.click(id))
+            {
+                return;
+            }
+        }
         if crate::is_agent_id(id) {
             self.focus_group(InputGroup::Agent);
-            if let Some(view) = self.layout.agent_view.as_mut() {
+            let wants_agent = self.layout.agent_view.as_mut().is_some_and(|view| {
                 view.click(id);
+                view.take_new_agent_request()
+            });
+            if wants_agent {
+                self.open_agent_menu();
             }
             self.ask_about_pending_close();
             return;

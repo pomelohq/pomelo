@@ -70,7 +70,7 @@ pub fn session_id(key: &str) -> String {
     )
 }
 
-fn shell_quote(text: &str) -> String {
+pub(crate) fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
@@ -101,19 +101,35 @@ pub fn resolve_claude(home: &Path, tool_path: &str) -> String {
 }
 
 /// Claude keeps a session's transcript under `~/.claude/projects/<cwd with separators as dashes>/`.
-fn transcript_exists(home: &Path, cwd: &Path, id: &str) -> bool {
+pub(crate) fn transcript_path(home: &Path, cwd: &Path, id: &str) -> Option<PathBuf> {
     let text = cwd.to_string_lossy();
     let slashes = text.replace('/', "-");
     let everything: String = text
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    [slashes, everything].iter().any(|dir| {
-        home.join(".claude/projects")
-            .join(dir)
-            .join(format!("{id}.jsonl"))
-            .is_file()
-    })
+    [slashes, everything]
+        .iter()
+        .map(|dir| {
+            home.join(".claude/projects")
+                .join(dir)
+                .join(format!("{id}.jsonl"))
+        })
+        .find(|path| path.is_file())
+}
+
+fn transcript_exists(home: &Path, cwd: &Path, id: &str) -> bool {
+    transcript_path(home, cwd, id).is_some()
+}
+
+/// What the workspace's main conversation is keyed by, so it always resumes the same session.
+pub(crate) fn main_session_key(context: &LaunchContext<'_>) -> String {
+    let key = if context.is_main {
+        format!("main:{}", context.branch)
+    } else {
+        format!("ws:{}", context.branch)
+    };
+    format!("chat:{key}")
 }
 
 /// A workspace's agent: which holder runs it, where, and with what command.
@@ -140,12 +156,7 @@ pub struct LaunchContext<'a> {
 
 /// Claude Code for the workspace, resuming its conversation when one exists.
 pub fn claude_launch(context: &LaunchContext<'_>) -> AgentLaunch {
-    let key = if context.is_main {
-        format!("main:{}", context.branch)
-    } else {
-        format!("ws:{}", context.branch)
-    };
-    let id = session_id(&format!("chat:{key}"));
+    let id = session_id(&main_session_key(context));
     let session_flag = if transcript_exists(context.home, context.cwd, &id) {
         "--resume"
     } else {

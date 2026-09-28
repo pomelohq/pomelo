@@ -1939,7 +1939,7 @@ impl ServicesPanel {
                 } else {
                     self.root.join(&target.repo)
                 };
-                self.requests.push(PanelRequest::FixWithAgent(AgentFix {
+                self.requests.push(PanelRequest::AskAgent(AgentFix {
                     prompt: format!(
                         "Explain the service {} in this workspace: what it runs, how it is configured in \
                          pom.yml, what it depends on, and anything that looks off.",

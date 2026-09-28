@@ -256,8 +256,10 @@ pub enum PanelRequest {
     },
     OpenUrl(String),
     Copy(String),
-    /// Start the coding agent in `cwd` on `prompt`.
+    /// A side agent that may edit, on `prompt` about `cwd`.
     FixWithAgent(AgentFix),
+    /// A read-only side agent, asked `prompt` about `cwd`.
+    AskAgent(AgentFix),
     Toast(String),
     ToastAction {
         message: String,

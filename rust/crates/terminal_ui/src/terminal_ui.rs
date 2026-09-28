@@ -5,6 +5,7 @@ mod blocks;
 mod contrast;
 mod item;
 mod panel;
+mod side_bar;
 
 use std::collections::HashMap;
 
@@ -16,6 +17,7 @@ use ui::{div, label, Node, Rect, Rgba, ThemeColors};
 pub use contrast::{apca_contrast, ensure_minimum_contrast};
 pub use item::{ConsoleAction, ConsoleToolbar, TerminalItem};
 pub use panel::{HolderScope, TerminalPanel};
+pub use side_bar::SideAgentBar;
 
 pub const DEFAULT_FONT_SIZE: f32 = 15.0;
 /// Terminal text size in hundredths of a design px, set from the app's settings.

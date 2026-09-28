@@ -1363,7 +1363,7 @@ impl DatabasePanel {
 
     fn ask(&mut self, database: &Database, prompt: String) {
         let folder = self.repo_key_of(&database.name);
-        self.requests.push(PanelRequest::FixWithAgent(AgentFix {
+        self.requests.push(PanelRequest::AskAgent(AgentFix {
             prompt,
             cwd: self.checkout(&folder),
         }));
@@ -2167,7 +2167,7 @@ mod tests {
         assert!(panel.open_menu(database));
         panel.menu_action(item(&panel, "Ask Claude about this schema"));
         match panel.take_requests().as_slice() {
-            [PanelRequest::FixWithAgent(fix)] => {
+            [PanelRequest::AskAgent(fix)] => {
                 assert!(fix.prompt.contains("login_tokens"), "{}", fix.prompt);
                 assert!(fix.prompt.contains("user_id bigint references users"));
             }

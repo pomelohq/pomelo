@@ -492,6 +492,62 @@ pub const NOTIFICATION_PRIMARY: u64 = 620;
 pub const NOTIFICATION_CLOSE: u64 = 621;
 /// A row of the WORKSPACES panel: id = base + index into `ProjectInfo::workspaces`.
 pub const SIDE_PANEL_MENU_TARGET: u64 = 1500;
+/// The agent dock's "+" menu: a side agent to start next to the main one.
+pub const AGENT_MENU_TARGET: u64 = 1700;
+pub const AGENT_MENU_NEW_WORKSPACE: u64 = 1701;
+/// A side agent's start: base + role * 4 + start (Auto, Fork, Compacted, Fresh).
+pub const AGENT_START_BASE: u64 = 1710;
+
+/// What a side agent is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideAgentRole {
+    Ask,
+    Review,
+    Fix,
+}
+
+impl SideAgentRole {
+    pub const ALL: [SideAgentRole; 3] = [
+        SideAgentRole::Ask,
+        SideAgentRole::Review,
+        SideAgentRole::Fix,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            SideAgentRole::Ask => "Ask",
+            SideAgentRole::Review => "Review",
+            SideAgentRole::Fix => "Fix",
+        }
+    }
+}
+
+/// What a side agent starts with; `Auto` lets the app pick from the main session's size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideAgentStart {
+    Auto,
+    Fork,
+    Compacted,
+    Fresh,
+}
+
+impl SideAgentStart {
+    pub const ALL: [SideAgentStart; 4] = [
+        SideAgentStart::Auto,
+        SideAgentStart::Fork,
+        SideAgentStart::Compacted,
+        SideAgentStart::Fresh,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            SideAgentStart::Auto => "Auto",
+            SideAgentStart::Fork => "Fork",
+            SideAgentStart::Compacted => "Compacted",
+            SideAgentStart::Fresh => "Fresh",
+        }
+    }
+}
 pub const WORKSPACE_ROW_BASE: u64 = 2000;
 pub const WORKSPACE_ROW_END: u64 = 3000;
 pub const WORKSPACE_PR_BASE: u64 = 4000;
@@ -683,6 +739,9 @@ const MENU_ACTION_H: f32 = 32.0;
 const MENU_MAX_LIST: f32 = 300.0; // list region caps here, then scrolls
 
 pub struct Layout {
+    /// Roughly how many tokens each side agent start would begin with (Auto, Fork, Compacted, Fresh), for
+    /// the "+" menu; `None` where it is not known.
+    pub side_agent_sizes: [Option<usize>; 4],
     pub left: Dock,
     pub right: Dock,
     pub bottom: Dock,
@@ -1281,6 +1340,8 @@ pub struct TerminalSyncOutcome {
     pub clipboard_store: Option<String>,
     /// The last terminal exited, so the panel should close.
     pub closed_all: bool,
+    /// Text a tab sends to another tab's prompt (a side agent's answer for the main agent): (item id, text).
+    pub send: Vec<(String, String)>,
 }
 
 /// The terminal panel as the workspace drives it: drawn into whichever area shows the terminal, fed pointer and
@@ -1326,6 +1387,14 @@ pub trait TerminalPanelView: 'static {
     fn accept_foreign_item(&mut self, item: Box<dyn Item>);
     fn focus_changed(&mut self, focused: bool);
     fn sync(&mut self, clipboard: &dyn Fn() -> Option<String>) -> TerminalSyncOutcome;
+    /// The "+" of the agent dock was pressed: a side agent is wanted, once.
+    fn take_new_agent_request(&mut self) -> bool {
+        false
+    }
+    /// Shows the tab `id` and types `text` into its prompt without sending; false when there is no such tab.
+    fn paste_into(&mut self, _id: &str, _text: &str) -> bool {
+        false
+    }
     /// Start a shell in `cwd` (the project root when `None`) as a new active tab.
     fn open(&mut self, cwd: Option<std::path::PathBuf>);
     fn is_empty(&self) -> bool;
@@ -1618,6 +1687,7 @@ pub struct SessionMenu {
 impl Default for Layout {
     fn default() -> Self {
         Self {
+            side_agent_sizes: [None; 4],
             left: Dock {
                 position: DockPosition::Left,
                 width: 260.0,

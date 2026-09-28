@@ -93,6 +93,8 @@ pub struct TerminalPanel {
     closed_last: bool,
     /// The agent dock: its tabs, restored ones too, use the agent text size.
     agent: bool,
+    /// The agent dock's "+" was pressed; the workspace offers a side agent.
+    new_agent_requested: bool,
 }
 
 impl TerminalPanel {
@@ -105,10 +107,16 @@ impl TerminalPanel {
         let mut panes = PaneGroupView::new(PaneGroupConfig {
             id_base: AGENT_VIEW_BASE,
             show_nav: false,
-            buttons: vec![PaneButton {
-                icon: IconKind::Maximize,
-                action: PaneButtonAction::ToggleZoom,
-            }],
+            buttons: vec![
+                PaneButton {
+                    icon: IconKind::Plus,
+                    action: PaneButtonAction::NewItem,
+                },
+                PaneButton {
+                    icon: IconKind::Maximize,
+                    action: PaneButtonAction::ToggleZoom,
+                },
+            ],
             max_panes: 1,
             split_filter: None,
             zoom_whole_group: true,
@@ -161,6 +169,7 @@ impl TerminalPanel {
             spawn_error: None,
             closed_last: false,
             agent: false,
+            new_agent_requested: false,
         }
     }
 
@@ -327,6 +336,7 @@ impl TerminalPanelView for TerminalPanel {
             GroupClick::Search { pane, click } => self.panes.search_click(pane, click),
             GroupClick::Button { path, action } => match action {
                 PaneButtonAction::Split(direction) => self.split(&path, direction),
+                PaneButtonAction::NewItem if self.agent => self.new_agent_requested = true,
                 PaneButtonAction::NewItem => {
                     if let Some(item) = self.spawn_item(None) {
                         if let Some(pane) = self.panes.group.leaf_at_mut(&path) {
@@ -441,6 +451,27 @@ impl TerminalPanelView for TerminalPanel {
         self.reconcile_focus();
     }
 
+    fn take_new_agent_request(&mut self) -> bool {
+        std::mem::take(&mut self.new_agent_requested)
+    }
+
+    fn paste_into(&mut self, id: &str, text: &str) -> bool {
+        if !self.panes.reveal_item(id) {
+            return false;
+        }
+        let Some(terminal) = self
+            .panes
+            .active_item_mut()
+            .and_then(|item| item.as_any_mut())
+            .and_then(|any| any.downcast_mut::<TerminalItem>())
+        else {
+            return false;
+        };
+        terminal.paste(text);
+        self.reconcile_focus();
+        true
+    }
+
     fn sync(&mut self, clipboard: &dyn Fn() -> Option<String>) -> TerminalSyncOutcome {
         let host = Host {
             palette: crate::palette(&theme()),
@@ -462,6 +493,8 @@ impl TerminalPanelView for TerminalPanel {
                     continue;
                 };
                 let result = terminal.sync(&host);
+                terminal.flush_pending_input();
+                outcome.send.extend(terminal.take_outgoing());
                 pane_changed |= result.changed || result.title_changed;
                 if result.clipboard_store.is_some() {
                     outcome.clipboard_store = result.clipboard_store;

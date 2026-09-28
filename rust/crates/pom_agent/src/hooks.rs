@@ -142,6 +142,10 @@ pub fn run(args: &[String]) -> Option<i32> {
         eprintln!("claude-hook: {error}");
         return Some(0);
     }
+    // A side agent works next to the main one; only the main agent's state is the workspace's.
+    if std::env::var_os(crate::SIDE_AGENT_ENV).is_some() {
+        return Some(0);
+    }
     if let Err(error) = record_hook(&StateDir::from_env(), &input) {
         eprintln!("claude-hook: {error}");
     }

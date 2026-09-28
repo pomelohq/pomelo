@@ -812,7 +812,11 @@ impl App {
                     workspace.branch.clone(),
                 ));
             }
-            self.with_workspace_view(id, |view, _| view.set_agent_states(dots));
+            let sizes = self.side_agent_sizes(id);
+            self.with_workspace_view(id, |view, _| {
+                view.set_agent_states(dots);
+                view.set_side_agent_sizes(sizes);
+            });
         }
         #[cfg(target_os = "macos")]
         for (title, event, body, branch) in notices {
@@ -961,6 +965,139 @@ impl App {
             }
         };
         self.open_agent_item(id, launch);
+    }
+
+    /// What each side agent start of the window's workspace would begin with (Auto, Fork, Compacted, Fresh).
+    fn side_agent_sizes(&self, id: WindowId) -> [Option<usize>; 4] {
+        let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
+            return [None; 4];
+        };
+        let (Ok(binary), Some(home)) = (std::env::current_exe(), std::env::var_os("HOME")) else {
+            return [None; 4];
+        };
+        let home = std::path::PathBuf::from(home);
+        let state = pom_paths::StateDir::from_env();
+        let cwd = project.active_root();
+        let branch = project.active_branch().to_string();
+        let is_main = project
+            .active_workspace()
+            .is_none_or(|workspace| workspace.is_main);
+        let main = pom_agent::main_session(&pom_agent::LaunchContext {
+            state: &state,
+            home: &home,
+            binary: &binary,
+            tool_path: pom_services::tool_path(),
+            session: &project.session,
+            branch: &branch,
+            is_main,
+            cwd: &cwd,
+        });
+        [
+            main.estimate(main.auto()),
+            main.estimate(pom_agent::SideStart::Fork),
+            main.estimate(pom_agent::SideStart::Compacted),
+            main.estimate(pom_agent::SideStart::Fresh),
+        ]
+    }
+
+    /// A side agent next to the workspace's main one: forked from it (compacted when it is long) or fresh
+    /// with a written summary, read-only unless it fixes, with a bar that sends its answer to the main agent.
+    pub(crate) fn open_side_agent(
+        &mut self,
+        id: WindowId,
+        role: workspace::SideAgentRole,
+        start: workspace::SideAgentStart,
+        prompt: String,
+    ) {
+        let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
+            return;
+        };
+        let (Ok(binary), Some(home)) = (std::env::current_exe(), std::env::var_os("HOME")) else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home);
+        let state = pom_paths::StateDir::from_env();
+        let cwd = project.active_root();
+        let branch = project.active_branch().to_string();
+        let is_main = project
+            .active_workspace()
+            .is_none_or(|workspace| workspace.is_main);
+        let repos: Vec<(String, std::path::PathBuf)> = project
+            .config
+            .as_ref()
+            .map(|config| {
+                config
+                    .repos
+                    .keys()
+                    .map(|name| (name.clone(), cwd.join(name)))
+                    .filter(|(_, dir)| dir.is_dir())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ticket = pom_jira::key_for_branch(&branch);
+        let session = project.session.clone();
+        let context = pom_agent::LaunchContext {
+            state: &state,
+            home: &home,
+            binary: &binary,
+            tool_path: pom_services::tool_path(),
+            session: &session,
+            branch: &branch,
+            is_main,
+            cwd: &cwd,
+        };
+        let main = pom_agent::main_session(&context);
+        let start = match start {
+            workspace::SideAgentStart::Auto => main.auto(),
+            workspace::SideAgentStart::Fork => pom_agent::SideStart::Fork,
+            workspace::SideAgentStart::Compacted => pom_agent::SideStart::Compacted,
+            workspace::SideAgentStart::Fresh => pom_agent::SideStart::Fresh,
+        };
+        let start = if main.tokens.is_none() {
+            pom_agent::SideStart::Fresh
+        } else {
+            start
+        };
+        let role = match role {
+            workspace::SideAgentRole::Ask => pom_agent::SideRole::Ask,
+            workspace::SideAgentRole::Review => pom_agent::SideRole::Review,
+            workspace::SideAgentRole::Fix => pom_agent::SideRole::Fix,
+        };
+        let packet = if start == pom_agent::SideStart::Fresh {
+            match pom_agent::write_packet(&state, &branch, ticket.as_deref(), &repos) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    eprintln!("side agent: summary: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let number = self.next_agent_item;
+        let side =
+            pom_agent::side_launch(&context, number, role, start, &prompt, packet.as_deref());
+        let main_item = format!("agent:{}", pom_agent::claude_launch(&context).holder);
+        let size = main
+            .estimate(start)
+            .map(|tokens| format!(" - {}", pom_agent::format_tokens(tokens)))
+            .unwrap_or_default();
+        let label = match start {
+            pom_agent::SideStart::Fork => format!("Forked from main{size}"),
+            pom_agent::SideStart::Compacted => format!("Compacted from main{size}"),
+            pom_agent::SideStart::Fresh => "Fresh - workspace summary".to_string(),
+        };
+        let (answer_home, answer_cwd, answer_session) =
+            (home.clone(), cwd.clone(), side.session.clone());
+        let bar = terminal_ui::SideAgentBar::new(
+            number,
+            role.title(),
+            role.read_only(),
+            label,
+            main_item,
+            Box::new(move || pom_agent::last_answer(&answer_home, &answer_cwd, &answer_session)),
+        );
+        self.open_agent_item_with(id, side.launch, Some(bar), side.pending_input);
     }
 
     fn open_fixer(&mut self, id: WindowId) {
@@ -1113,6 +1250,17 @@ impl App {
     }
 
     fn open_agent_item(&mut self, id: WindowId, launch: pom_agent::AgentLaunch) {
+        self.open_agent_item_with(id, launch, None, None);
+    }
+
+    /// An agent's tab, with `bar` over its console and `pending_input` typed into its prompt once it is up.
+    fn open_agent_item_with(
+        &mut self,
+        id: WindowId,
+        launch: pom_agent::AgentLaunch,
+        bar: Option<terminal_ui::SideAgentBar>,
+        pending_input: Option<String>,
+    ) {
         let Ok(binary) = std::env::current_exe() else {
             return;
         };
@@ -1136,7 +1284,16 @@ impl App {
                     launch.argv.clone(),
                     Arc::new(ui::wake),
                 ) {
-                    Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
+                    Ok(item) => {
+                        let mut item = item;
+                        if let Some(bar) = bar {
+                            item = item.with_toolbar(Box::new(bar));
+                        }
+                        if let Some(text) = pending_input {
+                            item = item.with_pending_input(text);
+                        }
+                        Some(Box::new(item) as Box<dyn workspace::Item>)
+                    }
                     Err(error) => {
                         eprintln!("could not open the agent: {error}");
                         None
@@ -2482,13 +2639,20 @@ impl App {
         if effects.open_agent {
             self.open_agent(id);
         }
+        if let Some((role, start)) = effects.side_agent {
+            self.open_side_agent(id, role, start, String::new());
+        }
         if effects.fix_setup {
             self.open_fixer(id);
         }
-        if let Some(fix) = agent_fix {
-            self.open_task_agent_in(id, Some(fix.cwd), |context| {
-                pom_agent::claude_task_launch(context, "fixer", &fix.prompt)
-            });
+        if let Some((fix, role)) = agent_fix {
+            // A side agent works in the workspace root, where the main session it forks lives.
+            let prompt = format!(
+                "{}\n\nThe code in question is under {}.",
+                fix.prompt,
+                fix.cwd.display()
+            );
+            self.open_side_agent(id, role, workspace::SideAgentStart::Auto, prompt);
         }
         if effects.restart_stale {
             self.restart_stale(id);
