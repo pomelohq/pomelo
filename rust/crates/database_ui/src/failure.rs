@@ -11,7 +11,8 @@ pub(crate) struct Failure {
     pub error: ConnectError,
     /// The repo's key in pom.yml; empty for shared Redis.
     pub repo: String,
-    pub has_migrate: bool,
+    /// Main has no database of this name either, so there is nothing to copy from it.
+    pub main_absent: bool,
     /// Main's copy of this database, when the server has it.
     pub main_copy: Option<String>,
     pub raw_open: bool,
@@ -23,7 +24,6 @@ pub(crate) struct Failure {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FailureAction {
     CreateDatabase,
-    CreateAndMigrate,
     CopyFromMain,
     StartShared,
     Retry,
@@ -35,9 +35,8 @@ pub(crate) enum FailureAction {
 
 pub(crate) const ACTION_STRIDE: u64 = 16;
 
-const ALL: [FailureAction; 9] = [
+const ALL: [FailureAction; 8] = [
     FailureAction::CreateDatabase,
-    FailureAction::CreateAndMigrate,
     FailureAction::CopyFromMain,
     FailureAction::StartShared,
     FailureAction::Retry,
@@ -59,7 +58,6 @@ impl FailureAction {
     pub fn label(self) -> &'static str {
         match self {
             FailureAction::CreateDatabase => "Create database",
-            FailureAction::CreateAndMigrate => "Create and migrate",
             FailureAction::CopyFromMain => "Copy from main",
             FailureAction::StartShared => "Start shared services",
             FailureAction::Retry => "Retry",
@@ -83,7 +81,7 @@ impl Failure {
         Failure {
             error,
             repo,
-            has_migrate: false,
+            main_absent: false,
             main_copy: None,
             raw_open: false,
             busy: None,
@@ -153,9 +151,6 @@ impl Failure {
         match self.error.kind {
             ConnectErrorKind::DatabaseMissing => {
                 let mut actions = vec![FailureAction::CreateDatabase];
-                if self.has_migrate {
-                    actions.push(FailureAction::CreateAndMigrate);
-                }
                 if self.main_copy.is_some() {
                     actions.push(FailureAction::CopyFromMain);
                 }
@@ -279,7 +274,7 @@ impl Failure {
                     .child(
                         div()
                             .row()
-                            .w_px(inner - FACT_LABEL_W - 8.0)
+                            .flex(1.0)
                             .child(label(value).size(11.5).mono().color(colors.text).truncate()),
                     ),
             );
@@ -306,11 +301,30 @@ impl Failure {
         }
         if let Some(error) = &self.action_error {
             block = block.child(
-                label(error.clone())
+                label(fix_summary(error))
                     .size(11.5)
                     .color(colors.error)
                     .wrap(inner),
             );
+            if self.raw_open {
+                block = block.child(
+                    div()
+                        .col()
+                        .w_px(inner)
+                        .px(8.0)
+                        .py(6.0)
+                        .rounded(5.0)
+                        .bg(colors.editor_background)
+                        .border(1.0, colors.border_variant)
+                        .child(
+                            label(output_tail(error))
+                                .size(10.5)
+                                .mono()
+                                .color(colors.text)
+                                .wrap(inner - 18.0),
+                        ),
+                );
+            }
         }
         match &self.busy {
             Some(busy) => {
@@ -353,6 +367,14 @@ impl Failure {
                 );
                 for line in pack(buttons, inner, GAP) {
                     block = block.child(line);
+                }
+                if self.main_absent {
+                    block = block.child(
+                        label("Nothing to copy from main: main has no such database either.")
+                            .size(11.5)
+                            .color(colors.text_placeholder)
+                            .wrap(inner),
+                    );
                 }
             }
         }
@@ -405,6 +427,45 @@ impl Failure {
     }
 }
 
+/// The line of a failed fix worth reading first: a command's output is mostly a backtrace, and the cause is the
+/// line naming what broke (`FATAL: database ... does not exist`), not the first one.
+fn fix_summary(error: &str) -> String {
+    let first = error.lines().next().unwrap_or_default().trim();
+    let cause = error
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != first)
+        .find(|line| {
+            let lower = line.to_lowercase();
+            ["fatal:", "does not exist", "error:", "refused", "failed:"]
+                .iter()
+                .any(|mark| lower.contains(mark))
+        });
+    let text = match cause {
+        Some(cause) => format!("{first} - {cause}"),
+        None => first.to_string(),
+    };
+    const LIMIT: usize = 240;
+    if text.chars().count() > LIMIT {
+        format!("{}...", text.chars().take(LIMIT).collect::<String>())
+    } else {
+        text
+    }
+}
+
+/// The end of a long command output, where the error usually is.
+fn output_tail(error: &str) -> String {
+    const LINES: usize = 40;
+    let lines: Vec<&str> = error.lines().collect();
+    let skipped = lines.len().saturating_sub(LINES);
+    let tail = lines[skipped..].join("\n");
+    if skipped > 0 {
+        format!("... {skipped} earlier lines\n{tail}")
+    } else {
+        tail
+    }
+}
+
 /// Lays `nodes` out left to right, starting a new line when the next one would pass `width`.
 fn pack(nodes: Vec<Node>, width: f32, gap: f32) -> Vec<Node> {
     let mut lines = Vec::new();
@@ -433,6 +494,17 @@ fn pack(nodes: Vec<Node>, width: f32, gap: f32) -> Vec<Node> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_fix_leads_with_the_line_that_names_the_cause() {
+        let output = "migrate: exit 1\n/app/lib/model.rb:12:in 'extend'\n/app/lib/model.rb:10:in '<top>'\nCaused by:\nPG::ConnectionBad: connection to server at \"127.0.0.1\", port 5434 failed: FATAL:  database \"shop_tx\" does not exist\n/app/lib/tx.rb:47:in 'block'";
+        let summary = fix_summary(output);
+        assert!(summary.starts_with("migrate: exit 1 - "), "{summary}");
+        assert!(summary.contains("\"shop_tx\" does not exist"), "{summary}");
+        assert!(!summary.contains("model.rb"), "{summary}");
+        let long: String = (0..100).map(|n| format!("line {n}\n")).collect();
+        assert!(output_tail(&long).starts_with("... 60 earlier lines"));
+    }
 
     fn failure(raw: &str) -> Failure {
         Failure::new(
@@ -515,25 +587,18 @@ mod tests {
     fn each_kind_offers_its_own_fixes() {
         let mut missing = failure("database \"x\" does not exist");
         assert_eq!(missing.actions(), [FailureAction::CreateDatabase]);
-        missing.has_migrate = true;
         missing.main_copy = Some("myproject_api_main".into());
         assert_eq!(
             missing.actions(),
-            [
-                FailureAction::CreateDatabase,
-                FailureAction::CreateAndMigrate,
-                FailureAction::CopyFromMain
-            ]
+            [FailureAction::CreateDatabase, FailureAction::CopyFromMain]
         );
         let shown = texts(&missing);
-        for wanted in [
-            "Create database",
-            "Create and migrate",
-            "Copy from main",
-            "Fix with Claude",
-        ] {
+        for wanted in ["Create database", "Copy from main", "Fix with Claude"] {
             assert!(shown.contains(wanted), "{wanted}: {shown}");
         }
+        missing.main_copy = None;
+        missing.main_absent = true;
+        assert!(texts(&missing).contains("Nothing to copy from main"));
         assert_eq!(
             failure("Connection refused").actions(),
             [FailureAction::StartShared, FailureAction::Retry]

@@ -103,7 +103,6 @@ fn main() -> anyhow::Result<()> {
                     "postgres",
                     format!("db error: FATAL: database \"{missing}\" does not exist"),
                 ),
-                true,
                 Some("myproject_api_main".into()),
             );
             panel.toggle_full_error("myproject_api_feat-login");
@@ -117,7 +116,6 @@ fn main() -> anyhow::Result<()> {
                     "postgres",
                     "error connecting to server: Connection refused (os error 61)".into(),
                 ),
-                false,
                 None,
             );
             panel.fold("myproject_web_feat-login");

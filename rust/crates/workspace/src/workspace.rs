@@ -1800,10 +1800,23 @@ impl Layout {
 
     fn tree_w(&self) -> f32 {
         if self.left_column_active() {
-            self.files_tree_w.clamp(FILES_TREE_MIN, FILES_TREE_MAX)
+            self.files_tree_w.clamp(self.tree_min(), FILES_TREE_MAX)
         } else {
             0.0
         }
+    }
+
+    /// The left column's narrowest width: the tree's, or more when the panel shown there needs it.
+    fn tree_min(&self) -> f32 {
+        let panel = match self.shown_on(DockPosition::Left) {
+            Some(Shown::Func(kind)) => self
+                .side_panels
+                .iter()
+                .find(|panel| panel.kind() == kind)
+                .map_or(0.0, |panel| panel.min_width()),
+            _ => 0.0,
+        };
+        FILES_TREE_MIN.max(panel).min(FILES_TREE_MAX)
     }
 
     /// Left edge of the editor area (right of the sidebar when docked left; 0 when the sidebar is on the right).
@@ -1892,12 +1905,12 @@ impl Layout {
         if !self.left_column_active() {
             return false;
         }
-        let edge = self.editor_l() + self.files_tree_w.clamp(FILES_TREE_MIN, FILES_TREE_MAX);
+        let edge = self.editor_l() + self.files_tree_w.clamp(self.tree_min(), FILES_TREE_MAX);
         y > TOP_BAR_H && (x - edge).abs() <= DIVIDER_HIT
     }
 
     pub fn set_tree_divider(&mut self, x: f32) {
-        self.files_tree_w = (x - self.editor_l()).clamp(FILES_TREE_MIN, FILES_TREE_MAX);
+        self.files_tree_w = (x - self.editor_l()).clamp(self.tree_min(), FILES_TREE_MAX);
     }
     /// The bottom dock's top divider (only over the center x-range, when the dock is open).
     pub fn on_bottom_divider(&self, x: f32, y: f32, w: f32, h: f32) -> bool {

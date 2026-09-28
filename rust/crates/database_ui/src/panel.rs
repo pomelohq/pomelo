@@ -215,16 +215,9 @@ impl DatabasePanel {
     }
 
     /// Shows this failure for a database as if opening it had failed (previews and tests).
-    pub fn show_failure(
-        &mut self,
-        database: &str,
-        error: ConnectError,
-        has_migrate: bool,
-        main_copy: Option<String>,
-    ) {
+    pub fn show_failure(&mut self, database: &str, error: ConnectError, main_copy: Option<String>) {
         let repo = self.repo_key(database);
         let mut failure = Failure::new(error, repo);
-        failure.has_migrate = has_migrate;
         failure.main_copy = main_copy;
         self.open.insert(database.to_string());
         self.tables
@@ -319,23 +312,11 @@ impl DatabasePanel {
             FailureAction::CreateDatabase => {
                 self.start_fix(&name, "Creating database...", move |connector| {
                     connector.create_database(&database.name)?;
-                    Ok(format!("Created {} (empty)", database.name))
+                    Ok(format!(
+                        "Created an empty {} > {} database",
+                        database.repo, database.label
+                    ))
                 })
-            }
-            FailureAction::CreateAndMigrate => {
-                let checkout = self.checkout(&repo);
-                self.start_fix(
-                    &name,
-                    "Creating database and migrating...",
-                    move |connector| {
-                        connector.create_database(&database.name)?;
-                        connector.migrate(&repo, &checkout)?;
-                        Ok(format!(
-                            "Created {} and ran {repo}'s migrate",
-                            database.name
-                        ))
-                    },
-                )
             }
             FailureAction::CopyFromMain => {
                 let Some(main) = main_copy else {
@@ -343,7 +324,10 @@ impl DatabasePanel {
                 };
                 self.start_fix(&name, "Copying from main...", move |connector| {
                     connector.copy_database(&main, &database.name)?;
-                    Ok(format!("Copied {main} into {}", database.name))
+                    Ok(format!(
+                        "Copied main's {} > {} data into this workspace",
+                        database.repo, database.label
+                    ))
                 })
             }
             FailureAction::StartShared => {
@@ -803,9 +787,16 @@ impl DatabasePanel {
     }
 }
 
+/// Wide enough for an error block's facts and its buttons two to a line.
+const MIN_WIDTH: f32 = 260.0;
+
 impl SidePanelView for DatabasePanel {
     fn kind(&self) -> PaneKind {
         PaneKind::Database
+    }
+
+    fn min_width(&self) -> f32 {
+        MIN_WIDTH
     }
 
     fn render(&mut self, width: f32, height: f32) -> Node {
@@ -1031,10 +1022,14 @@ fn open_database(connector: &Connector<'_>, database: &Database) -> Opened {
         *error,
         repo.map(|(key, _)| key.to_string()).unwrap_or_default(),
     );
-    failure.has_migrate = repo.is_some_and(|(_, dir)| !dir.effective_migrate().is_empty());
     if failure.error.kind == ConnectErrorKind::DatabaseMissing {
-        failure.main_copy = pom_db::main_database(connector.config, database)
-            .filter(|main| connector.database_exists(main).unwrap_or(false));
+        if let Some(main) = pom_db::main_database(connector.config, database) {
+            match connector.database_exists(&main) {
+                Ok(true) => failure.main_copy = Some(main),
+                Ok(false) => failure.main_absent = true,
+                Err(_) => {}
+            }
+        }
     }
     Opened::Failed(Box::new(failure))
 }
@@ -1144,7 +1139,6 @@ mod tests {
                 "postgres",
                 format!("database \"{name}\" does not exist"),
             ),
-            false,
             None,
         );
     }

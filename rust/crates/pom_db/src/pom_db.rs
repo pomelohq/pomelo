@@ -21,7 +21,6 @@ pub use statements::{first_keyword, statement_at, statement_ranges};
 
 pub const DEFAULT_LIMIT: usize = 500;
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
-const MIGRATE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -224,31 +223,6 @@ impl Connector<'_> {
         self.runner
             .ensure_shared(self.config)
             .map_err(|error| error.to_string())
-    }
-
-    /// Runs `repo`'s migrate commands in `checkout` with the workspace's env for it.
-    pub fn migrate(&self, repo: &str, checkout: &Path) -> Result<(), String> {
-        let steps = self
-            .config
-            .repos
-            .get(repo)
-            .map(pom_config::Dir::effective_migrate)
-            .unwrap_or_default();
-        if steps.is_empty() {
-            return Err(format!("{repo} has no migrate command in pom.yml"));
-        }
-        let env = self.runner.workspace_env(self.config, self.branch);
-        env.write_env_files()
-            .map_err(|error| format!("write env files: {error}"))?;
-        let mut command = std::process::Command::new("zsh");
-        command
-            .args(["-lc", &steps.join(" && ")])
-            .current_dir(checkout)
-            .env("PATH", pom_services::tool_path())
-            .envs(env.repo_env(repo));
-        pom_services::run_within(&mut command, MIGRATE_TIMEOUT)
-            .map(|_| ())
-            .map_err(|error| format!("migrate: {error}"))
     }
 
     /// Whether the shared Postgres has a database of this name.
