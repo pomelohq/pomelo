@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use pom_forge::{PrCache, PrTarget, PullRequest};
 use pom_paths::StateDir;
-use workspace::{PrSeverity, PrSummary};
+use workspace::{PrSeverity, PrSummary, PrTrouble};
 
 pub use item::PrItem;
 
@@ -191,9 +191,16 @@ impl PullRequests {
             pom_forge::Severity::Merged => PrSeverity::Merged,
             pom_forge::Severity::Danger => PrSeverity::Danger,
         };
+        let trouble = pom_forge::trouble(&prs).map(|trouble| match trouble {
+            pom_forge::Trouble::Pending => PrTrouble::Pending,
+            pom_forge::Trouble::ChangesRequested => PrTrouble::ChangesRequested,
+            pom_forge::Trouble::ChecksFailed => PrTrouble::ChecksFailed,
+            pom_forge::Trouble::Conflict => PrTrouble::Conflict,
+        });
         Some(PrSummary {
             count: prs.len(),
             severity,
+            trouble,
         })
     }
 
@@ -301,7 +308,8 @@ mod tests {
             prs.summary("feat-login"),
             Some(PrSummary {
                 count: 2,
-                severity: PrSeverity::Warn
+                severity: PrSeverity::Warn,
+                trouble: Some(PrTrouble::Pending),
             })
         );
         let found = prs.for_checkout(&temp.path().join("api"));

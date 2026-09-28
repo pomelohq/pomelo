@@ -255,6 +255,35 @@ impl PullRequest {
     }
 }
 
+/// Why a workspace's unmerged PRs need someone, ordered so the most urgent compares greatest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Trouble {
+    Pending,
+    ChangesRequested,
+    ChecksFailed,
+    Conflict,
+}
+
+/// The most urgent reason any unmerged PR needs attention; `None` when they are all fine.
+pub fn trouble<'a>(prs: impl IntoIterator<Item = &'a PullRequest>) -> Option<Trouble> {
+    prs.into_iter()
+        .filter(|pr| pr.state != "MERGED")
+        .filter_map(|pr| {
+            if pr.conflict {
+                Some(Trouble::Conflict)
+            } else if pr.checks == "fail" {
+                Some(Trouble::ChecksFailed)
+            } else if pr.review == "changes" {
+                Some(Trouble::ChangesRequested)
+            } else if pr.checks == "pending" || pr.review == "review" {
+                Some(Trouble::Pending)
+            } else {
+                None
+            }
+        })
+        .max()
+}
+
 /// One token for a workspace's PRs: danger over merged over warn over ok; merged PRs only count as merged.
 pub fn severity<'a>(prs: impl IntoIterator<Item = &'a PullRequest>) -> Severity {
     let (mut worst, mut merged) = (Severity::Ok, false);
@@ -694,6 +723,37 @@ mod tests {
             Severity::Danger
         );
         assert_eq!(severity([]), Severity::Ok);
+    }
+
+    #[test]
+    fn trouble_names_the_most_urgent_reason_of_unmerged_prs() {
+        let pr = |state: &str, checks: &str, review: &str, conflict: bool| PullRequest {
+            state: state.into(),
+            checks: checks.into(),
+            review: review.into(),
+            conflict,
+            ..PullRequest::default()
+        };
+        assert_eq!(trouble([&pr("OPEN", "pass", "approved", false)]), None);
+        assert_eq!(
+            trouble([&pr("OPEN", "pending", "none", false)]),
+            Some(Trouble::Pending)
+        );
+        assert_eq!(
+            trouble([
+                &pr("OPEN", "pass", "changes", false),
+                &pr("OPEN", "fail", "none", false)
+            ]),
+            Some(Trouble::ChecksFailed)
+        );
+        assert_eq!(
+            trouble([
+                &pr("OPEN", "fail", "none", false),
+                &pr("OPEN", "pass", "none", true)
+            ]),
+            Some(Trouble::Conflict)
+        );
+        assert_eq!(trouble([&pr("MERGED", "fail", "changes", true)]), None);
     }
 
     #[test]

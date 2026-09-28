@@ -617,14 +617,135 @@ fn main() -> anyhow::Result<()> {
                 Some(workspace::PrSummary {
                     count: 2,
                     severity: workspace::PrSeverity::Warn,
+                    trouble: Some(workspace::PrTrouble::Pending),
                 }),
                 Some(workspace::PrSummary {
                     count: 1,
                     severity: workspace::PrSeverity::Danger,
+                    trouble: Some(workspace::PrTrouble::ChecksFailed),
                 }),
             ],
             missing: Vec::new(),
         });
+        // MAINVIEW=sidebar: a project in every state the WORKSPACES list shows (RAIL=1 folds it to the rail).
+        let sidebar = mode == "sidebar";
+        let project = if sidebar {
+            let pr = |count: usize,
+                      severity: workspace::PrSeverity,
+                      trouble: Option<workspace::PrTrouble>| {
+                Some(workspace::PrSummary {
+                    count,
+                    severity,
+                    trouble,
+                })
+            };
+            // branch, label, ticket status, its category, running services, PRs.
+            type Sample = (
+                &'static str,
+                &'static str,
+                &'static str,
+                &'static str,
+                usize,
+                Option<workspace::PrSummary>,
+            );
+            let rows: [Sample; 8] = [
+                (
+                    "main",
+                    "",
+                    "",
+                    "",
+                    2,
+                    pr(2, workspace::PrSeverity::Merged, None),
+                ),
+                (
+                    "proj-101-email-open-tracking",
+                    "PROJ-101 Email open tracking",
+                    "QA In Progress",
+                    "indeterminate",
+                    0,
+                    pr(
+                        3,
+                        workspace::PrSeverity::Danger,
+                        Some(workspace::PrTrouble::ChecksFailed),
+                    ),
+                ),
+                (
+                    "proj-102-ai-lead-creation",
+                    "PROJ-102 AI lead creation from forms",
+                    "To QA",
+                    "indeterminate",
+                    0,
+                    pr(1, workspace::PrSeverity::Ok, None),
+                ),
+                (
+                    "proj-103-flag-escalated",
+                    "PROJ-103 Flag escalated conversations",
+                    "Code review",
+                    "indeterminate",
+                    0,
+                    pr(
+                        4,
+                        workspace::PrSeverity::Danger,
+                        Some(workspace::PrTrouble::Conflict),
+                    ),
+                ),
+                (
+                    "proj-10432-migrate-billing-webhooks",
+                    "PROJ-10432 Migrate billing webhooks to the new provider and backfill",
+                    "Waiting for customer feedback",
+                    "indeterminate",
+                    12,
+                    pr(
+                        12,
+                        workspace::PrSeverity::Danger,
+                        Some(workspace::PrTrouble::ChecksFailed),
+                    ),
+                ),
+                (
+                    "proj-106-redesign-listing",
+                    "PROJ-106 Redesign listing page",
+                    "Backlog",
+                    "new",
+                    0,
+                    None,
+                ),
+                (
+                    "proj-108-inbound-call-routing",
+                    "PROJ-108 Inbound call routing",
+                    "Done",
+                    "done",
+                    0,
+                    pr(4, workspace::PrSeverity::Merged, None),
+                ),
+                (
+                    "investigate-0917-5fwg",
+                    "",
+                    "",
+                    "",
+                    0,
+                    pr(
+                        1,
+                        workspace::PrSeverity::Warn,
+                        Some(workspace::PrTrouble::Pending),
+                    ),
+                ),
+            ];
+            Some(workspace::ProjectInfo {
+                name: "myproject".into(),
+                branch: "main".into(),
+                config_path: "/projects/myproject/pom.yml".into(),
+                workspaces: rows.iter().map(|row| row.0.to_string()).collect(),
+                active: "main".into(),
+                labels: rows.iter().map(|row| row.1.to_string()).collect(),
+                running: rows.iter().map(|row| row.4).collect(),
+                tickets: rows.iter().map(|row| row.2.to_string()).collect(),
+                ticket_categories: rows.iter().map(|row| row.3.to_string()).collect(),
+                prs: rows.iter().map(|row| row.5).collect(),
+                missing: Vec::new(),
+            })
+        } else {
+            project
+        };
         let current = project.as_ref().map(|_| 0);
         let mut app = ui::Application::new();
         let (handle, entity) = app.open_raw_window(
@@ -669,12 +790,35 @@ fn main() -> anyhow::Result<()> {
                     }
                     Some(Box::new(files) as Box<dyn workspace::FunctionView>)
                 });
-                let mut view = workspace::WorkspaceView::new(workspace::Layout {
+                let layout = workspace::Layout {
                     project,
                     files_view,
                     ..Default::default()
-                });
+                };
+                let mut view = workspace::WorkspaceView::new(layout);
                 view.set_sessions(sessions, current);
+                if sidebar {
+                    view.set_agent_states(
+                        [
+                            ("main", workspace::AgentDot::ToolUse),
+                            (
+                                "proj-101-email-open-tracking",
+                                workspace::AgentDot::Thinking,
+                            ),
+                            (
+                                "proj-103-flag-escalated",
+                                workspace::AgentDot::AwaitingInput,
+                            ),
+                            (
+                                "proj-10432-migrate-billing-webhooks",
+                                workspace::AgentDot::AwaitingInput,
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(branch, dot)| (branch.to_string(), dot))
+                        .collect(),
+                    );
+                }
                 view
             },
         );

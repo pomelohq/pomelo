@@ -305,6 +305,26 @@ pub struct Div {
     debug: Option<&'static str>,
     image: Option<u64>,
     children: Vec<Node>,
+    pinned: Vec<Pinned>,
+}
+
+/// A corner of a div that a pinned child is measured from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// A child placed out of the flow at a fixed size and offset from one corner of its parent (it may hang past
+/// the edge), painted after the flow children so it sits on top: badges and progress strips on a tile.
+#[derive(Clone)]
+struct Pinned {
+    corner: Corner,
+    offset: (f32, f32),
+    size: (f32, f32),
+    node: Node,
 }
 
 #[derive(Clone)]
@@ -343,6 +363,7 @@ pub fn div() -> Div {
         debug: None,
         image: None,
         children: Vec::new(),
+        pinned: Vec::new(),
     }
 }
 
@@ -528,6 +549,25 @@ impl Div {
     }
     /// Tag this div's laid-out bounds under `name` so tests can assert layout headlessly (the framework's
     /// `debug_selector`). No effect on drawing.
+    /// Pin `node` at `size`, offset by `(dx, dy)` from `corner` (positive moves right/down); it takes no room in the
+    /// flow and paints above the div's children.
+    pub fn pin(
+        mut self,
+        corner: Corner,
+        dx: f32,
+        dy: f32,
+        w: f32,
+        h: f32,
+        node: impl Into<Node>,
+    ) -> Self {
+        self.pinned.push(Pinned {
+            corner,
+            offset: (rem(dx), rem(dy)),
+            size: (rem(w), rem(h)),
+            node: node.into(),
+        });
+        self
+    }
     pub fn debug(mut self, name: &'static str) -> Self {
         self.debug = Some(name);
         self
@@ -940,6 +980,25 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                 out.debug_bounds.push((name, area));
             }
             layout_children(d, area, viewport, out, pending);
+            for pinned in &d.pinned {
+                let (w, h) = pinned.size;
+                let (dx, dy) = pinned.offset;
+                let x = match pinned.corner {
+                    Corner::TopLeft | Corner::BottomLeft => area.x + dx,
+                    Corner::TopRight | Corner::BottomRight => area.x + area.w - w + dx,
+                };
+                let y = match pinned.corner {
+                    Corner::TopLeft | Corner::TopRight => area.y + dy,
+                    Corner::BottomLeft | Corner::BottomRight => area.y + area.h - h + dy,
+                };
+                place(
+                    &pinned.node,
+                    Rect::new(x, y, w, h, Rgba::TRANSPARENT),
+                    viewport,
+                    out,
+                    pending,
+                );
+            }
         }
         Node::Icon(i) => {
             // Icons are real SVGs, rasterized to an alpha mask and tinted at draw time (in the renderer).
@@ -1292,5 +1351,32 @@ mod tests {
         );
         assert_eq!(p.hit(20.0, 20.0), Some(7));
         assert_eq!(p.hit(0.0, 0.0), None);
+    }
+
+    #[test]
+    fn pinned_child_hangs_off_its_corner_without_taking_flow_room() {
+        let tree: Node = div()
+            .w_px(40.0)
+            .h_px(40.0)
+            .child(div().w_px(40.0).h_px(40.0).on_click(1))
+            .pin(Corner::TopRight, 6.0, -6.0, 16.0, 14.0, div().on_click(2))
+            .into();
+        let p = render(&tree, Rect::new(0.0, 0.0, 40.0, 40.0, Rgba::TRANSPARENT));
+        let pinned = p
+            .hits
+            .iter()
+            .find(|(_, id)| *id == 2)
+            .map(|(area, _)| *area);
+        let pinned = pinned.expect("pinned child is hit-testable");
+        assert_eq!(
+            (pinned.x, pinned.y, pinned.w, pinned.h),
+            (rem(30.0), rem(-6.0), rem(16.0), rem(14.0))
+        );
+        let flow = p
+            .hits
+            .iter()
+            .find(|(_, id)| *id == 1)
+            .map(|(area, _)| area.w);
+        assert_eq!(flow, Some(rem(40.0)));
     }
 }

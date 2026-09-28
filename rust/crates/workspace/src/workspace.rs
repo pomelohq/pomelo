@@ -227,10 +227,38 @@ impl PrSeverity {
     }
 }
 
+/// Why a workspace's PRs need someone; the sidebar names it instead of just colouring the count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrTrouble {
+    Pending,
+    ChangesRequested,
+    ChecksFailed,
+    Conflict,
+}
+
+impl PrTrouble {
+    pub fn label(self) -> &'static str {
+        match self {
+            PrTrouble::Pending => "Checks pending",
+            PrTrouble::ChangesRequested => "Changes requested",
+            PrTrouble::ChecksFailed => "CI failed",
+            PrTrouble::Conflict => "Conflict",
+        }
+    }
+
+    pub fn color(self) -> ui::Rgba {
+        match self {
+            PrTrouble::Pending => ui::theme().warning,
+            _ => ui::theme().error,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrSummary {
     pub count: usize,
     pub severity: PrSeverity,
+    pub trouble: Option<PrTrouble>,
 }
 
 impl ProjectInfo {

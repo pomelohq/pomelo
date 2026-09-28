@@ -1236,6 +1236,7 @@ impl WorkspaceView {
             current,
             ops: &workspace_ops,
             expanded: &expanded_ops,
+            hovered: self.session_menu_hover,
         };
         let mut rail_tip = None;
         {
@@ -1288,19 +1289,32 @@ impl WorkspaceView {
                         0.0,
                         Rgba::TRANSPARENT,
                     );
+                    // The tile only raises what needs you; the tooltip carries the rest.
                     let mut text = row.label.clone();
+                    if !row.ticket.is_empty() {
+                        match crate::panel::ticket_key(row) {
+                            Some(key) if !row.label.to_uppercase().starts_with(&key) => {
+                                text.push_str(&format!(" - {key} {}", row.ticket))
+                            }
+                            _ => text.push_str(&format!(" - {}", row.ticket)),
+                        }
+                    }
                     if let Some(agent) = row.agent {
                         text.push_str(&format!(" - Agent: {}", agent.label()));
                     }
                     if row.running > 0 {
                         text.push_str(&format!(" - {} running", row.running));
                     }
-                    if let Some(pr) = row.pr {
+                    if let Some(pr) = row.pr.filter(|_| row.index != 0) {
                         let noun = if pr.count == 1 { "PR" } else { "PRs" };
-                        text.push_str(&format!(" - {} {noun}", pr.count));
-                    }
-                    if !row.ticket.is_empty() {
-                        text.push_str(&format!(" - {}", row.ticket));
+                        match pr.trouble {
+                            Some(trouble) => text.push_str(&format!(
+                                " - {} {noun}: {}",
+                                pr.count,
+                                trouble.label()
+                            )),
+                            None => text.push_str(&format!(" - {} {noun}", pr.count)),
+                        }
                     }
                     Some(tooltip(anchor, &text, w))
                 });
