@@ -4,6 +4,15 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-09-29
+
+### Fixed
+- Check for Updates says what it found: checking, up to date, downloading, or why it failed. (#110)
+- After installing an update, Pomelo opens again by itself instead of staying closed. (#110)
+- cmd-? opens the agent again. (#110)
+- A long repo name no longer pushes Publish out of its card in the Git panel's Remote tab. (#110)
+- The window buttons stay centered in the title bar. (#110)
+
 ## [0.7.2] - 2026-09-29
 
 ### Fixed
