@@ -550,6 +550,7 @@ impl ProjectServices {
                 workspace_root: project.active_root(),
                 config_path: project.config_path.clone(),
                 waker: Arc::new(ui::wake),
+                objects: Arc::new(database_ui::CurlTransport::default()),
             },
         ))
     }

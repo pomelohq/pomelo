@@ -532,6 +532,7 @@ impl TerminalPanelView for TerminalPanel {
         title: String,
         cwd: PathBuf,
         argv: Vec<String>,
+        env: Vec<(String, String)>,
     ) -> Option<Box<dyn Item>> {
         let id = self.next_item_id;
         self.next_item_id += 1;
@@ -544,6 +545,7 @@ impl TerminalPanelView for TerminalPanel {
             title,
             program.clone(),
             argv.collect(),
+            env,
             self.waker.clone(),
         ) {
             Ok(item) => Some(Box::new(item)),

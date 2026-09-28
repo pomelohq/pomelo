@@ -57,8 +57,8 @@ pub fn classify(engine: Engine, raw: &str) -> ConnectErrorKind {
                 ConnectErrorKind::Other
             }
         }
-        Engine::Redis if unreachable => ConnectErrorKind::ServerUnreachable,
-        Engine::Redis => ConnectErrorKind::Other,
+        _ if unreachable => ConnectErrorKind::ServerUnreachable,
+        _ => ConnectErrorKind::Other,
     }
 }
 

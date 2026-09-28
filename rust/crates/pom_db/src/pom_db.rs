@@ -1,11 +1,14 @@
 //! A workspace's databases, to browse: the Postgres databases its repos declare (named for the branch) and the
-//! shared Redis instances (at the workspace's slot). Each call connects, works and disconnects, like the
-//! previous core; values keep NULL apart from the text "NULL".
+//! shared services (Redis at the workspace's slot, object storage, and the rest listed by engine). Each call
+//! connects, works and disconnects, like the previous core; values keep NULL apart from the text "NULL".
 
 mod connect_error;
 mod consoles;
+mod engine;
+pub mod object_storage;
 mod postgres_driver;
 mod redis_driver;
+pub mod sigv4;
 mod statements;
 
 use std::path::Path;
@@ -17,29 +20,38 @@ use serde::{Deserialize, Serialize};
 
 pub use connect_error::{classify, ConnectError, ConnectErrorKind};
 pub use consoles::{load_consoles, save_consoles, Console, ConsoleKind};
+pub use engine::Engine;
+pub use object_storage::ObjectStore;
 pub use statements::{first_keyword, statement_at, statement_ranges};
 
 pub const DEFAULT_LIMIT: usize = 500;
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(600);
+const DEFAULT_MINIO_PORT: u16 = 9000;
+const DEFAULT_MINIO_KEY: &str = "minioadmin";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Engine {
-    Postgres,
-    Redis,
-}
+/// The name repo databases carry in `Database::repo` for a shared service.
+pub const SHARED: &str = "shared";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Database {
-    /// The real database name (Postgres) or the shared service's name (Redis).
+    /// The real database name (Postgres) or the shared service's name.
     pub name: String,
     pub engine: Engine,
     /// The repo alias that declares it, or `shared`.
     pub repo: String,
-    /// What the repo calls it (its `databases:` key).
+    /// What the repo calls it (its `databases:` key), or the service's name.
     pub label: String,
+    /// For a shared service: the repos (aliases) whose config refers to it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub used_by: Vec<String>,
+}
+
+impl Database {
+    pub fn is_shared(&self) -> bool {
+        self.repo == SHARED
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +69,7 @@ pub struct Table {
     pub name: String,
     #[serde(rename = "type")]
     pub kind: TableKind,
-    /// Keys under a keyspace; unknown for tables.
+    /// Keys under a keyspace; the planner's row estimate for a table (unknown until it was analyzed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<usize>,
 }
@@ -74,13 +86,20 @@ impl Table {
 
     /// The identifier to put in SQL, each part double-quoted.
     pub fn sql_name(&self) -> String {
-        let quote = |part: &str| format!("\"{}\"", part.replace('"', "\"\""));
         if self.schema.is_empty() {
-            quote(&self.name)
+            quote_identifier(&self.name)
         } else {
-            format!("{}.{}", quote(&self.schema), quote(&self.name))
+            format!(
+                "{}.{}",
+                quote_identifier(&self.schema),
+                quote_identifier(&self.name)
+            )
         }
     }
+}
+
+pub fn quote_identifier(part: &str) -> String {
+    format!("\"{}\"", part.replace('"', "\"\""))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +109,26 @@ pub struct Column {
     pub name: String,
     #[serde(rename = "type")]
     pub data_type: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary_key: bool,
+    /// The table a foreign key on this column points at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references: Option<String>,
+}
+
+/// What opening a database finds: its tables (or key prefixes) and every table's columns.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Schema {
+    pub tables: Vec<Table>,
+    pub columns: Vec<Column>,
+}
+
+impl Schema {
+    pub fn columns_of<'a>(&'a self, table: &'a Table) -> impl Iterator<Item = &'a Column> + 'a {
+        self.columns
+            .iter()
+            .filter(move |column| column.table == table.name && column.schema == table.schema)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,16 +142,86 @@ pub struct QueryResult {
     pub rows_affected: Option<u64>,
 }
 
+/// How a client logs in to a database: what `psql` or `redis-cli` needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Login {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub password: String,
+    /// The database name (Postgres) or number (Redis).
+    pub database: String,
+}
+
+impl Login {
+    /// `postgres://user:password@host:port/db` or `redis://host:port/db`.
+    pub fn url(&self, engine: Engine) -> String {
+        let escape = |text: &str| sigv4::uri_encode(text, false);
+        match engine {
+            Engine::Redis => format!("redis://{}:{}/{}", self.host, self.port, self.database),
+            _ if self.password.is_empty() => format!(
+                "postgres://{}@{}:{}/{}",
+                escape(&self.user),
+                self.host,
+                self.port,
+                escape(&self.database)
+            ),
+            _ => format!(
+                "postgres://{}:{}@{}:{}/{}",
+                escape(&self.user),
+                escape(&self.password),
+                self.host,
+                self.port,
+                escape(&self.database)
+            ),
+        }
+    }
+}
+
+fn alias<'a>(key: &'a str, dir: &'a pom_config::Dir) -> &'a str {
+    if dir.alias.is_empty() {
+        key
+    } else {
+        &dir.alias
+    }
+}
+
+/// Whether a template refers to shared service `name` (`{{shared.name}}`, `{{shared.name.url}}`).
+fn refers_to(text: &str, name: &str) -> bool {
+    pom_env::template::refs(text).iter().any(|key| {
+        key.strip_prefix("shared.")
+            .is_some_and(|rest| rest == name || rest.starts_with(&format!("{name}.")))
+    })
+}
+
+/// The repos (aliases, config order) whose config uses shared service `name`: its `shared_services:` list or a
+/// `{{shared.name...}}` template in their env, services or env files.
+pub fn service_users(config: &Config, name: &str) -> Vec<String> {
+    config
+        .repos
+        .iter()
+        .filter(|(_, dir)| {
+            dir.shared_refs.iter().any(|shared| shared.name == name)
+                || dir.env.values().any(|value| refers_to(value, name))
+                || dir.own_env.values().any(|value| refers_to(value, name))
+                || dir
+                    .env_output
+                    .iter()
+                    .any(|file| file.env.values().any(|value| refers_to(value, name)))
+                || dir.services.values().any(|service| {
+                    service.env.values().any(|value| refers_to(value, name))
+                        || refers_to(&service.cmd, name)
+                })
+        })
+        .map(|(key, dir)| alias(key, dir).to_string())
+        .collect()
+}
+
 /// The databases a workspace on `branch` can browse, in config order: each repo's `databases:`, then the shared
-/// Redis services.
+/// services other than Postgres (whose databases are the repos' own), each with the repos that use it.
 pub fn list_databases(config: &Config, branch: &str) -> Vec<Database> {
     let mut databases = Vec::new();
     for (repo, dir) in &config.repos {
-        let alias = if dir.alias.is_empty() {
-            repo
-        } else {
-            &dir.alias
-        };
         for (label, template) in &dir.databases {
             databases.push(Database {
                 name: format!(
@@ -121,20 +230,24 @@ pub fn list_databases(config: &Config, branch: &str) -> Vec<Database> {
                     pom_env::resolve_branch_tokens(template, branch)
                 ),
                 engine: Engine::Postgres,
-                repo: alias.clone(),
+                repo: alias(repo, dir).to_string(),
                 label: label.clone(),
+                used_by: Vec::new(),
             });
         }
     }
     for (name, def) in &config.shared_services {
-        if def.kind == "redis" || (def.kind.is_empty() && name == "redis") {
-            databases.push(Database {
-                name: name.clone(),
-                engine: Engine::Redis,
-                repo: "shared".into(),
-                label: name.clone(),
-            });
+        let engine = Engine::of_service(name, def);
+        if engine == Engine::Postgres {
+            continue;
         }
+        databases.push(Database {
+            name: name.clone(),
+            engine,
+            repo: SHARED.into(),
+            label: name.clone(),
+            used_by: service_users(config, name),
+        });
     }
     databases
 }
@@ -146,6 +259,14 @@ pub struct Connector<'a> {
     pub branch: &'a str,
 }
 
+fn unsupported(database: &Database) -> String {
+    format!(
+        "{} is a {} service; the panel cannot browse it",
+        database.name,
+        database.engine.title()
+    )
+}
+
 impl Connector<'_> {
     fn postgres(&self, database: &str, timeout: Duration) -> Result<postgres::Client, String> {
         let endpoint = self.runner.postgres_endpoint(self.config);
@@ -153,8 +274,9 @@ impl Connector<'_> {
             .map_err(|error| format!("connect to {database}: {error}"))
     }
 
-    /// The database's tables, or why it could not be opened: the cause, the login used and the full text.
-    pub fn open(&self, database: &Database) -> Result<Vec<Table>, Box<ConnectError>> {
+    /// The database's tables and columns (key prefixes for Redis), or why it could not be opened: the cause,
+    /// the login used and the full text.
+    pub fn open(&self, database: &Database) -> Result<Schema, Box<ConnectError>> {
         match database.engine {
             Engine::Postgres => {
                 let endpoint = self.runner.postgres_endpoint(self.config);
@@ -170,7 +292,13 @@ impl Connector<'_> {
                 };
                 let mut client = postgres_driver::connect(&endpoint, &database.name, LIST_TIMEOUT)
                     .map_err(|raw| Box::new(self.explain(failure(raw))))?;
-                postgres_driver::tables(&mut client).map_err(|raw| {
+                let listed = postgres_driver::tables(&mut client).and_then(|tables| {
+                    Ok(Schema {
+                        tables,
+                        columns: postgres_driver::columns(&mut client)?,
+                    })
+                });
+                listed.map_err(|raw| {
                     Box::new(ConnectError {
                         kind: ConnectErrorKind::Other,
                         ..failure(raw)
@@ -185,13 +313,26 @@ impl Connector<'_> {
                 };
                 let mut connection =
                     redis_driver::connect(&url).map_err(|raw| Box::new(failure(raw)))?;
-                redis_driver::keyspaces(&mut connection).map_err(|raw| {
-                    Box::new(ConnectError {
-                        kind: ConnectErrorKind::Other,
-                        ..failure(raw)
+                redis_driver::keyspaces(&mut connection)
+                    .map(|tables| Schema {
+                        tables,
+                        columns: Vec::new(),
                     })
-                })
+                    .map_err(|raw| {
+                        Box::new(ConnectError {
+                            kind: ConnectErrorKind::Other,
+                            ..failure(raw)
+                        })
+                    })
             }
+            _ => Err(Box::new(ConnectError::new(
+                database.engine,
+                &database.name,
+                "",
+                0,
+                "",
+                unsupported(database),
+            ))),
         }
     }
 
@@ -210,6 +351,14 @@ impl Connector<'_> {
         self.runner
             .create_databases(self.config, &[name.to_string()])
             .map_err(|error| error.to_string())
+    }
+
+    /// Drops the database and creates it again, empty.
+    pub fn reset_database(&self, name: &str) -> Result<(), String> {
+        self.runner
+            .drop_databases(self.config, &[name.to_string()])
+            .map_err(|error| error.to_string())?;
+        self.create_database(name)
     }
 
     /// Replaces `target` with a copy of `template`.
@@ -234,12 +383,79 @@ impl Connector<'_> {
         redis_driver::connect(&self.runner.redis_url(name, self.branch))
     }
 
+    /// How `psql` or `redis-cli` logs in to it; `None` for engines without a client here.
+    pub fn login(&self, database: &Database) -> Option<Login> {
+        match database.engine {
+            Engine::Postgres => {
+                let endpoint = self.runner.postgres_endpoint(self.config);
+                Some(Login {
+                    host: endpoint.host,
+                    port: endpoint.port,
+                    user: endpoint.user,
+                    password: endpoint.password,
+                    database: database.name.clone(),
+                })
+            }
+            Engine::Redis => {
+                let url = self.runner.redis_url(&database.name, self.branch);
+                let (host, port) = redis_address(&url);
+                Some(Login {
+                    host,
+                    port,
+                    user: String::new(),
+                    password: String::new(),
+                    database: url.rsplit('/').next().unwrap_or("0").to_string(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The shared object storage `name`, at its published port with its root keys.
+    pub fn object_store(&self, name: &str) -> ObjectStore {
+        let def = self.config.shared_services.get(name);
+        let pick = |keys: &[&str], fallback: Option<&String>| {
+            def.and_then(|def| {
+                keys.iter()
+                    .find_map(|key| def.environment.get(*key))
+                    .or(fallback)
+                    .filter(|value| !value.is_empty())
+                    .cloned()
+            })
+            .unwrap_or_else(|| DEFAULT_MINIO_KEY.to_string())
+        };
+        let host = def
+            .map(|def| def.host.clone())
+            .filter(|host| !host.is_empty())
+            .unwrap_or_else(|| "localhost".into());
+        let port = match self.runner.shared_host_port(name) {
+            0 => DEFAULT_MINIO_PORT,
+            port => port,
+        };
+        ObjectStore::new(
+            &host,
+            port,
+            sigv4::Credentials {
+                access_key: pick(
+                    &["MINIO_ROOT_USER", "MINIO_ACCESS_KEY"],
+                    def.map(|def| &def.db_user),
+                ),
+                secret_key: pick(
+                    &["MINIO_ROOT_PASSWORD", "MINIO_SECRET_KEY"],
+                    def.map(|def| &def.db_password),
+                ),
+                region: "us-east-1".into(),
+            },
+        )
+    }
+
     pub fn tables(&self, database: &Database) -> Result<Vec<Table>, String> {
         match database.engine {
             Engine::Postgres => {
                 postgres_driver::tables(&mut self.postgres(&database.name, LIST_TIMEOUT)?)
             }
             Engine::Redis => redis_driver::keyspaces(&mut self.redis(&database.name)?),
+            _ => Err(unsupported(database)),
         }
     }
 
@@ -249,6 +465,27 @@ impl Connector<'_> {
                 postgres_driver::columns(&mut self.postgres(&database.name, LIST_TIMEOUT)?)
             }
             Engine::Redis => Ok(Vec::new()),
+            _ => Err(unsupported(database)),
+        }
+    }
+
+    /// `CREATE TABLE` (or `CREATE VIEW`) text for the table, with its constraints and indexes.
+    pub fn table_ddl(&self, database: &Database, table: &Table) -> Result<String, String> {
+        match database.engine {
+            Engine::Postgres => {
+                postgres_driver::table_ddl(&mut self.postgres(&database.name, LIST_TIMEOUT)?, table)
+            }
+            _ => Err(unsupported(database)),
+        }
+    }
+
+    /// Deletes the Redis keys matching `pattern`; answers how many went.
+    pub fn delete_keys(&self, database: &Database, pattern: &str) -> Result<u64, String> {
+        match database.engine {
+            Engine::Redis => {
+                redis_driver::delete_matching(&mut self.redis(&database.name)?, pattern)
+            }
+            _ => Err(unsupported(database)),
         }
     }
 
@@ -267,6 +504,7 @@ impl Connector<'_> {
                 limit,
             ),
             Engine::Redis => redis_driver::query(&mut self.redis(&database.name)?, text, limit),
+            _ => Err(unsupported(database)),
         }
     }
 
@@ -278,7 +516,7 @@ impl Connector<'_> {
                 sql,
                 path,
             ),
-            Engine::Redis => Err("CSV export is for Postgres only".into()),
+            _ => Err("CSV export is for Postgres only".into()),
         }
     }
 }
@@ -302,14 +540,7 @@ pub fn repo_of<'a>(
     config
         .repos
         .iter()
-        .find(|(key, dir)| {
-            let alias = if dir.alias.is_empty() {
-                key.as_str()
-            } else {
-                dir.alias.as_str()
-            };
-            alias == database.repo
-        })
+        .find(|(key, dir)| alias(key, dir) == database.repo)
         .map(|(key, dir)| (key.as_str(), dir))
 }
 
@@ -420,6 +651,58 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn shared_services_know_the_repos_that_use_them() {
+        let config = config(
+            "session: demo\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  queue:\n    image: rabbitmq:3\nrepos:\n  api:\n    databases:\n      dev: \"api_{{branch.safe}}\"\n    env:\n      REDIS_URL: \"redis://{{shared.redis.host}}:{{shared.redis.port}}\"\n      S3_URL: \"http://{{shared.files.host}}\"\n  web:\n    alias: front\n    shared_services:\n      - redis\n    services:\n      app:\n        cmd: npm start\n        env:\n          CACHE: \"{{shared.redis.url}}\"\n  search:\n    env:\n      NOTE: \"{{shared.redisx.host}}\"\n",
+        );
+        let databases = list_databases(&config, "feat");
+        let shared: Vec<(&str, Engine, Vec<String>)> = databases
+            .iter()
+            .filter(|database| database.is_shared())
+            .map(|database| {
+                (
+                    database.name.as_str(),
+                    database.engine,
+                    database.used_by.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shared,
+            [
+                (
+                    "redis",
+                    Engine::Redis,
+                    vec!["api".to_string(), "front".to_string()]
+                ),
+                ("files", Engine::Minio, vec!["api".to_string()]),
+                ("queue", Engine::Rabbitmq, Vec::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_login_reads_as_a_connection_url() {
+        let login = Login {
+            host: "localhost".into(),
+            port: 5434,
+            user: "postgres".into(),
+            password: "p@ss".into(),
+            database: "demo_api".into(),
+        };
+        assert_eq!(
+            login.url(Engine::Postgres),
+            "postgres://postgres:p%40ss@localhost:5434/demo_api"
+        );
+        let redis = Login {
+            port: 6390,
+            database: "3".into(),
+            ..login
+        };
+        assert_eq!(redis.url(Engine::Redis), "redis://localhost:6390/3");
     }
 
     #[test]

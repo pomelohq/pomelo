@@ -2435,6 +2435,7 @@ impl WorkspaceView {
             checked: false,
             sep,
             disabled,
+            danger: false,
         };
         let mut items = vec![
             entry(crate::MENU_TAB_CLOSE, "Close", false, false),
@@ -2589,6 +2590,7 @@ impl WorkspaceView {
             checked: false,
             sep,
             disabled: false,
+            danger: false,
         };
         let mut items = vec![item(crate::MENU_WS_RENAME, "Rename...", false)];
         if project
@@ -2722,6 +2724,7 @@ impl WorkspaceView {
             checked: false,
             sep: true,
             disabled: false,
+            danger: false,
         };
         let item = |id: u64, label: &'static str, sep: bool| MenuItem {
             id,
@@ -2729,6 +2732,7 @@ impl WorkspaceView {
             checked: false,
             sep,
             disabled: false,
+            danger: false,
         };
         let disabled = |id: u64, label: &'static str, sep: bool, disabled: bool| MenuItem {
             id,
@@ -2736,6 +2740,7 @@ impl WorkspaceView {
             checked: false,
             sep,
             disabled,
+            danger: false,
         };
         if target == MENU_SUBMENU_COPY {
             return vec![
@@ -2830,6 +2835,7 @@ impl WorkspaceView {
                         checked: split,
                         sep: true,
                         disabled: false,
+                        danger: false,
                     }),
             )
             .collect();
@@ -2844,6 +2850,7 @@ impl WorkspaceView {
                     checked: left,
                     sep: false,
                     disabled: false,
+                    danger: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2851,6 +2858,7 @@ impl WorkspaceView {
                     checked: !left,
                     sep: false,
                     disabled: false,
+                    danger: false,
                 },
             ]
         } else if target == AGENT_TOGGLE {
@@ -2862,6 +2870,7 @@ impl WorkspaceView {
                     checked: left,
                     sep: false,
                     disabled: false,
+                    danger: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2869,6 +2878,7 @@ impl WorkspaceView {
                     checked: !left,
                     sep: false,
                     disabled: false,
+                    danger: false,
                 },
                 hide,
             ]
@@ -2881,6 +2891,7 @@ impl WorkspaceView {
                     checked: side == DockPosition::Left,
                     sep: false,
                     disabled: false,
+                    danger: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2888,6 +2899,7 @@ impl WorkspaceView {
                     checked: side == DockPosition::Right,
                     sep: false,
                     disabled: false,
+                    danger: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_BOTTOM,
@@ -2895,6 +2907,7 @@ impl WorkspaceView {
                     checked: side == DockPosition::Bottom,
                     sep: false,
                     disabled: false,
+                    danger: false,
                 },
                 hide,
             ]
@@ -2912,6 +2925,7 @@ impl WorkspaceView {
                     checked: side == DockPosition::Left,
                     sep: false,
                     disabled: false,
+                    danger: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2919,6 +2933,7 @@ impl WorkspaceView {
                     checked: side == DockPosition::Right,
                     sep: false,
                     disabled: false,
+                    danger: false,
                 },
                 hide,
             ]
@@ -3066,11 +3081,16 @@ impl WorkspaceView {
                 self.show_toast(message, Some(action));
                 self.toast_then = Some((kind, *then));
             }
-            crate::PanelRequest::RunCommand { title, cwd, argv } => {
+            crate::PanelRequest::RunCommand {
+                title,
+                cwd,
+                argv,
+                env,
+            } => {
                 let Some(view) = self.layout.terminal_view.as_mut() else {
                     return;
                 };
-                match view.command_item(title, cwd, argv) {
+                match view.command_item(title, cwd, argv, env) {
                     Some(item) => {
                         view.accept_foreign_item(item);
                         self.show_terminal();
@@ -3365,6 +3385,12 @@ impl WorkspaceView {
                 self.menu_editor_anchor = None;
                 return true;
             }
+            if kind != Some(PaneKind::Files) {
+                let had = self.menu.take().is_some();
+                self.submenu = None;
+                self.menu_editor_anchor = None;
+                return had;
+            }
         }
         if let Some(tab) = self.hit(x, y).and_then(|id| self.tab_under(id)) {
             self.menu = Some((x, y, y, crate::TAB_MENU_TARGET));
@@ -3405,7 +3431,9 @@ impl WorkspaceView {
         let (vw, vh) = self.viewport;
         let tree = self.layout.tree_region(vw, vh);
         let in_tree = x >= tree.x && x < tree.x + tree.w && y >= tree.y && y < tree.y + tree.h;
-        if in_tree && self.layout.files_view.is_some() {
+        let files_shown =
+            self.layout.shown_on(DockPosition::Left) == Some(Shown::Func(PaneKind::Files));
+        if in_tree && files_shown && self.layout.files_view.is_some() {
             self.menu = Some((x, y, y, TREE_MENU_TARGET));
             self.menu_path = Some((String::new(), true));
             self.submenu = None;
@@ -3879,7 +3907,12 @@ impl WorkspaceView {
                 if row.disabled {
                     return;
                 }
+                let before = self.menu;
                 self.apply_menu(target, row.id);
+                // A panel item can open a follow-up menu (a picker); keep that one.
+                if self.menu != before {
+                    return;
+                }
             }
             self.menu = None;
             self.submenu = None;

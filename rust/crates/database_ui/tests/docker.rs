@@ -106,6 +106,7 @@ fn a_table_tab_pages_sorts_and_filters() {
         workspace_root: temp.path().join("workspace--feat"),
         config_path: temp.path().join("pom.yml"),
         waker: Arc::new(|| {}),
+        objects: Arc::new(database_ui::CurlTransport::default()),
     };
     let table = pom_db::Table {
         schema: "public".into(),

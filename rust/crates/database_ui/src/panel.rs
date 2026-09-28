@@ -1,153 +1,191 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use pom_db::object_storage::{Listing, ObjectEntry, PrefixStats, PAGE_SIZE};
 use pom_db::{
-    ConnectError, ConnectErrorKind, Connector, Console, ConsoleKind, Database, Engine, Table,
-    TableKind,
+    ConnectError, ConnectErrorKind, Connector, Console, ConsoleKind, Database, Engine, Schema,
+    Table, TableKind,
 };
-use ui::{div, icon, label, measure, theme, IconKind, Node, Rgba};
+use ui::measure;
 use workspace::persistence::SerializedItem;
-use workspace::text_field::{FieldFont, TextField};
+use workspace::text_field::TextField;
 use workspace::{
     side_panel_base, AgentFix, EditKey, Item, MenuItem, PaneKind, PanelRequest, SidePanelView,
 };
 
 use crate::console::{console_item, console_item_id, new_console, restore_console};
 use crate::failure::{Failure, FailureAction, ACTION_STRIDE};
+use crate::menu::{self, Action, Entry, Facts};
+use crate::object_item::{object_item_id, ObjectItem};
+use crate::tree::{
+    bucket_key, database_key, folder_key, group_key, prefix_key, readable, repo_key, table_key,
+    Folder, Loaded, Model, Opened, Row, Section, CONSOLES_KEY,
+};
 use crate::{DatabaseContext, Pending, TableItem};
 
-const ROW_H: f32 = 22.0;
-const INDENT: f32 = 16.0;
-const HEADER_H: f32 = 30.0;
-const FILTER_H: f32 = 28.0;
-const BUTTON: f32 = 20.0;
-const ROW_STRIDE: u64 = 4;
-const REFRESH: u64 = 9_000_000;
-const NEW_CONSOLE: u64 = REFRESH + 1;
-const FILTER: u64 = REFRESH + 2;
-const DELETE_CONSOLE: u64 = REFRESH + 3;
-const FAILURE: u64 = REFRESH + 16;
-const FAILURE_BLOCK_LEFT: f32 = 36.0;
-const FAILURE_BLOCK_RIGHT: f32 = 4.0;
-const FAILURE_BLOCK_TOP: f32 = 2.0;
-const FAILURE_BLOCK_BOTTOM: f32 = 6.0;
+pub(crate) const ROW_H: f32 = 22.0;
+pub(crate) const HEADER_H: f32 = 34.0;
+pub(crate) const FILTER_H: f32 = 34.0;
+pub(crate) const ROW_STRIDE: u64 = 4;
+/// The second click target of a row: its chevron.
+pub(crate) const CHEVRON: u64 = 1;
+pub(crate) const REFRESH: u64 = 9_000_000;
+pub(crate) const NEW_CONSOLE: u64 = REFRESH + 1;
+pub(crate) const FILTER: u64 = REFRESH + 2;
+pub(crate) const COLLAPSE_ALL: u64 = REFRESH + 3;
+pub(crate) const RENAME_FIELD: u64 = REFRESH + 4;
+pub(crate) const FAILURE: u64 = REFRESH + 16;
+const MENU: u64 = 9_500_000;
+pub(crate) const FAILURE_BLOCK_LEFT: f32 = 44.0;
+pub(crate) const FAILURE_BLOCK_RIGHT: f32 = 8.0;
+pub(crate) const FAILURE_BLOCK_TOP: f32 = 2.0;
+pub(crate) const FAILURE_BLOCK_BOTTOM: f32 = 6.0;
 const SERVER_START_WAIT: Duration = Duration::from_secs(30);
-const DELETE_PROMPT: u64 = 1;
+const CONFIRM_PROMPT: u64 = 1;
+const SELECT_LIMIT: usize = 100;
+const PRESIGNED_SECONDS: u64 = 3600;
 
-enum Tables {
-    Loading(Pending<Opened>),
-    Loaded(Vec<Table>),
-    Failed(Box<Failure>),
-}
-
-enum Opened {
-    Tables(Vec<Table>),
-    Failed(Box<Failure>),
+/// What a background action says when it is done, and what to load again after it.
+enum Outcome {
+    Done {
+        message: String,
+        reload: Reload,
+    },
+    Text {
+        id: String,
+        title: String,
+        text: String,
+    },
 }
 
 #[derive(Clone)]
-enum Row {
-    Consoles {
-        collapsed: bool,
-    },
-    Console(Console),
-    Repo {
-        repo: String,
-        collapsed: bool,
-    },
-    Database {
-        index: usize,
-        open: bool,
-    },
-    Table {
-        index: usize,
-        table: Table,
-    },
-    Note {
-        depth: usize,
-        text: String,
-        error: bool,
-    },
-    Failure {
-        index: usize,
+enum Reload {
+    Nothing,
+    Database(String),
+    Folder {
+        database: String,
+        bucket: String,
+        prefix: String,
     },
 }
 
+/// Folder totals by `folder_key`; `None` where counting failed.
+type Counted = Vec<(String, Option<PrefixStats>)>;
+
+/// What a database row says under its name and in its tooltip.
+#[derive(Clone, Default)]
+pub(crate) struct Detail {
+    pub subtitle: String,
+    pub tooltip: String,
+}
+
 pub struct DatabasePanel {
-    context: DatabaseContext,
-    databases: Vec<Database>,
-    tables: HashMap<String, Tables>,
-    collapsed_repos: HashSet<String>,
-    open: HashSet<String>,
-    rows: Vec<Row>,
+    pub(crate) context: DatabaseContext,
+    pub(crate) model: Model,
+    pub(crate) rows: Vec<Row>,
+    pub(crate) found: usize,
+    pub(crate) details: HashMap<String, Detail>,
     scroll: f32,
     viewport_h: f32,
-    hover: Option<u64>,
+    pub(crate) hover: Option<u64>,
     requests: Vec<PanelRequest>,
-    consoles: Vec<Console>,
-    consoles_collapsed: bool,
-    filter: TextField,
-    filter_focused: bool,
-    menu_console: Option<String>,
+    pub(crate) filter: TextField,
+    pub(crate) filter_focused: bool,
+    /// The console being renamed in place, and its field.
+    pub(crate) rename: Option<(String, TextField)>,
+    pub(crate) selected: Option<String>,
+    menu: Option<(Row, Vec<Entry>)>,
+    confirm: Option<(Action, Row)>,
     /// Fixes running for a failed database, by its name; each answers with what to tell the person.
     fixes: HashMap<String, Pending<String>>,
-    width: f32,
+    jobs: Vec<Pending<Outcome>>,
+    counting: Vec<Pending<Counted>>,
+    pub(crate) width: f32,
 }
 
 impl DatabasePanel {
     pub fn new(context: DatabaseContext) -> DatabasePanel {
-        let databases = context.databases();
         let mut panel = DatabasePanel {
+            model: Model::default(),
             context,
-            databases,
-            tables: HashMap::new(),
-            collapsed_repos: HashSet::new(),
-            open: HashSet::new(),
             rows: Vec::new(),
+            found: 0,
+            details: HashMap::new(),
             scroll: 0.0,
             viewport_h: 0.0,
             hover: None,
             requests: Vec::new(),
-            consoles: Vec::new(),
-            consoles_collapsed: false,
             filter: {
                 let mut field = TextField::default();
-                field.set_font_size(12.0);
+                field.set_font_size(12.5);
                 field
             },
             filter_focused: false,
-            menu_console: None,
+            rename: None,
+            selected: None,
+            menu: None,
+            confirm: None,
             fixes: HashMap::new(),
-            width: 320.0,
+            jobs: Vec::new(),
+            counting: Vec::new(),
+            width: 300.0,
         };
+        panel.reload_config();
         panel.load_consoles();
-        if let Some(first) = panel.databases.first().map(|db| db.name.clone()) {
-            panel.toggle_database(&first);
+        let first = panel
+            .model
+            .databases
+            .iter()
+            .find(|database| database.engine.is_sql())
+            .map(|database| (database.repo.clone(), database.name.clone()));
+        if let Some((repo, name)) = first {
+            panel.toggle_database(&repo, &name);
         }
         panel
     }
 
-    fn base() -> u64 {
+    pub(crate) fn base() -> u64 {
         side_panel_base(PaneKind::Database)
     }
 
-    fn id(row: usize) -> u64 {
+    pub(crate) fn id(row: usize) -> u64 {
         Self::base() + row as u64 * ROW_STRIDE
     }
 
-    fn decode(id: u64) -> Option<usize> {
+    fn decode(id: u64) -> Option<(usize, u64)> {
         let offset = id.checked_sub(Self::base())?;
-        (offset < REFRESH).then_some((offset / ROW_STRIDE) as usize)
+        (offset < REFRESH).then_some(((offset / ROW_STRIDE) as usize, offset % ROW_STRIDE))
+    }
+
+    fn reload_config(&mut self) {
+        self.model.databases = self.context.databases();
+        self.model.repos = self.context.repos();
+        let details: Option<HashMap<String, Detail>> = self.context.run_now(|connector| {
+            self.model
+                .databases
+                .iter()
+                .map(|database| (database.name.clone(), detail(connector, database)))
+                .collect()
+        });
+        self.details = details.unwrap_or_default();
     }
 
     fn load_consoles(&mut self) {
-        self.consoles = self
+        self.model.consoles = self
             .context
             .consoles()
             .into_iter()
             .filter(|console| console.kind == ConsoleKind::Query)
             .collect();
+    }
+
+    fn database(&self, name: &str) -> Option<&Database> {
+        self.model.database(name)
+    }
+
+    fn database_at(&self, index: usize) -> Option<Database> {
+        self.model.databases.get(index).cloned()
     }
 
     fn open_console(&mut self, console: Console) {
@@ -158,21 +196,55 @@ impl DatabasePanel {
         });
     }
 
-    fn create_console(&mut self) {
-        let Some(database) = self
-            .databases
-            .iter()
-            .find(|database| database.engine == Engine::Postgres)
-            .or(self.databases.first())
-        else {
+    /// A console on the selected database (else the first one that runs queries), with `sql` in it.
+    fn create_console(&mut self, database: Option<Database>, title: Option<String>, sql: &str) {
+        let queryable =
+            |database: &Database| matches!(database.engine, Engine::Postgres | Engine::Redis);
+        let Some(database) = database.filter(queryable).or_else(|| {
+            self.model
+                .databases
+                .iter()
+                .find(|database| database.engine.is_sql())
+                .or_else(|| {
+                    self.model
+                        .databases
+                        .iter()
+                        .find(|database| queryable(database))
+                })
+                .cloned()
+        }) else {
+            self.toast("No database here runs queries".into());
             return;
         };
         let mut saved = self.context.consoles();
-        let console = new_console(&saved, database);
+        let mut console = new_console(&saved, &database);
+        if let Some(title) = title {
+            console.title = title;
+        }
+        console.sql = sql.to_string();
         saved.push(console.clone());
         self.context.save_consoles(&saved);
         self.load_consoles();
+        self.model.set_open(CONSOLES_KEY, true);
         self.open_console(console);
+    }
+
+    fn selected_database(&self) -> Option<Database> {
+        let key = self.selected.as_ref()?;
+        let row = self.rows.iter().find(|row| row.key() == *key)?;
+        match row {
+            Row::Console { console, .. } => self.database(&console.database).cloned(),
+            _ => row.database().and_then(|index| self.database_at(index)),
+        }
+    }
+
+    fn update_console(&mut self, id: &str, change: impl FnOnce(&mut Console)) {
+        let mut saved = self.context.consoles();
+        if let Some(console) = saved.iter_mut().find(|console| console.id == id) {
+            change(console);
+            self.context.save_consoles(&saved);
+        }
+        self.load_consoles();
     }
 
     fn delete_console(&mut self, id: &str) {
@@ -182,46 +254,194 @@ impl DatabasePanel {
         self.load_consoles();
     }
 
-    fn filter_matches(&self, text: &str) -> bool {
-        let filter = self.filter.text();
-        filter.is_empty() || text.to_lowercase().contains(&filter.trim().to_lowercase())
-    }
-
     pub fn set_filter(&mut self, filter: &str) {
         self.filter.set_text(filter);
         self.filter.move_to_end();
+        self.filter_changed();
     }
 
-    fn database(&self, name: &str) -> Option<&Database> {
-        self.databases.iter().find(|db| db.name == name)
+    fn filter_changed(&mut self) {
+        self.scroll = 0.0;
+        self.model.filter = self.filter.text();
+        if self.model.filter.trim().is_empty() {
+            return;
+        }
+        let unloaded: Vec<String> = self
+            .model
+            .databases
+            .iter()
+            .filter(|database| database.engine.is_sql())
+            .filter(|database| !self.model.loaded.contains_key(&database.name))
+            .map(|database| database.name.clone())
+            .collect();
+        for name in unloaded {
+            self.load(&name);
+        }
     }
 
-    fn load_tables(&mut self, name: &str) {
+    fn load(&mut self, name: &str) {
         let Some(database) = self.database(name).cloned() else {
             return;
         };
-        let pending = self
-            .context
-            .run(move |connector| Ok(open_database(connector, &database)));
-        self.tables
-            .insert(name.to_string(), Tables::Loading(pending));
+        if !database.engine.browsable() {
+            return;
+        }
+        let engine = database.engine;
+        let transport = self.context.objects.clone();
+        let pending = self.context.run(move |connector| {
+            if database.engine == Engine::Minio {
+                return Ok(
+                    match connector
+                        .object_store(&database.name)
+                        .buckets(transport.as_ref())
+                    {
+                        Ok(buckets) => Opened::Buckets(buckets),
+                        Err(raw) => {
+                            Opened::Failed(Box::new(storage_failure(connector, &database, raw)))
+                        }
+                    },
+                );
+            }
+            Ok(open_database(connector, &database))
+        });
+        self.model
+            .loaded
+            .insert(name.to_string(), Loaded::Loading(pending));
+        if engine == Engine::Minio {
+            let stale = format!("{name}\u{1f}");
+            self.model.folders.retain(|key, _| !key.starts_with(&stale));
+            self.model.stats.retain(|key, _| !key.starts_with(&stale));
+        }
+    }
+
+    fn load_folder(&mut self, name: &str, bucket: &str, prefix: &str, token: Option<String>) {
+        let key = folder_key(name, bucket, prefix);
+        if self
+            .model
+            .folders
+            .get(&key)
+            .is_some_and(|folder| folder.loading.is_some())
+        {
+            return;
+        }
+        let (database, bucket_name, prefix_name, transport) = (
+            name.to_string(),
+            bucket.to_string(),
+            prefix.to_string(),
+            self.context.objects.clone(),
+        );
+        let pending = self.context.run(move |connector| {
+            connector.object_store(&database).list(
+                transport.as_ref(),
+                &bucket_name,
+                &prefix_name,
+                token.as_deref(),
+                PAGE_SIZE,
+            )
+        });
+        self.model.folders.entry(key).or_default().loading = Some(pending);
+    }
+
+    fn count_prefixes(&mut self, name: &str, bucket: &str, prefixes: Vec<String>) {
+        if prefixes.is_empty() {
+            return;
+        }
+        for prefix in &prefixes {
+            self.model
+                .stats
+                .insert(folder_key(name, bucket, prefix), None);
+        }
+        let (database, bucket, transport) = (
+            name.to_string(),
+            bucket.to_string(),
+            self.context.objects.clone(),
+        );
+        self.counting.push(self.context.run(move |connector| {
+            let store = connector.object_store(&database);
+            Ok(prefixes
+                .into_iter()
+                .map(|prefix| {
+                    let stats = store
+                        .prefix_stats(transport.as_ref(), &bucket, &prefix)
+                        .ok();
+                    (folder_key(&database, &bucket, &prefix), stats)
+                })
+                .collect())
+        }));
     }
 
     /// Shows these tables for a database as if they had loaded (previews and tests).
     pub fn show_tables(&mut self, database: &str, tables: Vec<Table>) {
-        self.open.insert(database.to_string());
-        self.tables
-            .insert(database.to_string(), Tables::Loaded(tables));
+        self.show_schema(
+            database,
+            Schema {
+                tables,
+                columns: Vec::new(),
+            },
+        );
+    }
+
+    /// Shows this schema for a database as if it had loaded, and opens it (previews and tests).
+    pub fn show_schema(&mut self, database: &str, schema: Schema) {
+        self.expand_everywhere(database);
+        self.model
+            .loaded
+            .insert(database.to_string(), Loaded::Schema(schema));
+    }
+
+    /// Shows these buckets of an object storage as if they had loaded (previews and tests).
+    pub fn show_buckets(&mut self, database: &str, buckets: Vec<String>) {
+        self.expand_everywhere(database);
+        self.model
+            .loaded
+            .insert(database.to_string(), Loaded::Buckets(buckets));
+    }
+
+    /// Shows one listed page of a bucket's prefix, opened (previews and tests).
+    pub fn show_folder(&mut self, database: &str, bucket: &str, prefix: &str, listing: Listing) {
+        for repo in self.repos_showing(database) {
+            let key = if prefix.is_empty() {
+                bucket_key(&repo, database, bucket)
+            } else {
+                prefix_key(&repo, database, bucket, prefix)
+            };
+            self.model.set_open(&key, true);
+        }
+        self.model.folders.insert(
+            folder_key(database, bucket, prefix),
+            Folder::listed(listing),
+        );
+    }
+
+    pub fn show_prefix_stats(
+        &mut self,
+        database: &str,
+        bucket: &str,
+        prefix: &str,
+        stats: PrefixStats,
+    ) {
+        self.model
+            .stats
+            .insert(folder_key(database, bucket, prefix), Some(stats));
+    }
+
+    /// Opens a table's columns wherever the database is listed (previews and tests).
+    pub fn expand_table(&mut self, database: &str, table: &Table) {
+        for repo in self.repos_showing(database) {
+            self.model
+                .set_open(&table_key(&repo, database, table), true);
+        }
     }
 
     /// Shows this failure for a database as if opening it had failed (previews and tests).
     pub fn show_failure(&mut self, database: &str, error: ConnectError, main_copy: Option<String>) {
-        let repo = self.repo_key(database);
+        let repo = self.repo_key_of(database);
         let mut failure = Failure::new(error, repo);
         failure.main_copy = main_copy;
-        self.open.insert(database.to_string());
-        self.tables
-            .insert(database.to_string(), Tables::Failed(Box::new(failure)));
+        self.expand_everywhere(database);
+        self.model
+            .loaded
+            .insert(database.to_string(), Loaded::Failed(Box::new(failure)));
     }
 
     pub fn toggle_full_error(&mut self, database: &str) {
@@ -232,39 +452,83 @@ impl DatabasePanel {
 
     /// Folds a database row without dropping what it loaded.
     pub fn fold(&mut self, database: &str) {
-        self.open.remove(database);
+        for repo in self.repos_showing(database) {
+            self.model.set_open(&database_key(&repo, database), false);
+        }
     }
 
-    fn repo_key(&self, name: &str) -> String {
-        let config = (self.context.config)();
-        match (config, self.database(name)) {
-            (Some(config), Some(database)) => pom_db::repo_of(&config, database)
-                .map(|(key, _)| key.to_string())
-                .unwrap_or_default(),
+    /// The click id of the first row whose name is `name` (previews and tests).
+    pub fn row_named(&mut self, name: &str) -> Option<u64> {
+        self.rebuild_rows();
+        self.rows
+            .iter()
+            .position(|row| crate::render::row_name(self, row).as_deref() == Some(name))
+            .map(Self::id)
+    }
+
+    fn repos_showing(&self, database: &str) -> Vec<String> {
+        match self.database(database) {
+            Some(found) if found.is_shared() && found.used_by.is_empty() => {
+                vec![crate::tree::OTHER_SERVICES.to_string()]
+            }
+            Some(found) if found.is_shared() => found.used_by.clone(),
+            Some(found) => vec![found.repo.clone()],
+            None => Vec::new(),
+        }
+    }
+
+    fn expand_everywhere(&mut self, database: &str) {
+        for repo in self.repos_showing(database) {
+            self.model.set_open(&repo_key(&repo), true);
+            self.model.set_open(&database_key(&repo, database), true);
+        }
+    }
+
+    /// The repo's key in pom.yml (its checkout folder), for a repo alias.
+    fn repo_folder(&self, alias: &str) -> String {
+        (self.context.config)()
+            .and_then(|config| {
+                config
+                    .repos
+                    .iter()
+                    .find(|(key, dir)| {
+                        (dir.alias.is_empty() && key.as_str() == alias) || dir.alias == alias
+                    })
+                    .map(|(key, _)| key.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    fn repo_key_of(&self, name: &str) -> String {
+        match self.database(name) {
+            Some(database) if !database.is_shared() => self.repo_folder(&database.repo),
             _ => String::new(),
         }
     }
 
-    fn failure(&self, name: &str) -> Option<&Failure> {
-        match self.tables.get(name) {
-            Some(Tables::Failed(failure)) => Some(failure),
+    pub(crate) fn failure(&self, name: &str) -> Option<&Failure> {
+        match self.model.loaded.get(name) {
+            Some(Loaded::Failed(failure)) => Some(failure),
             _ => None,
         }
     }
 
     fn failure_mut(&mut self, name: &str) -> Option<&mut Failure> {
-        match self.tables.get_mut(name) {
-            Some(Tables::Failed(failure)) => Some(failure),
+        match self.model.loaded.get_mut(name) {
+            Some(Loaded::Failed(failure)) => Some(failure),
             _ => None,
         }
     }
 
-    fn failure_id(index: usize, action: FailureAction) -> u64 {
+    pub(crate) fn failure_id(index: usize, action: FailureAction) -> u64 {
         Self::base() + FAILURE + index as u64 * ACTION_STRIDE + action.offset()
     }
 
     fn decode_failure(id: u64) -> Option<(usize, FailureAction)> {
         let offset = id.checked_sub(Self::base() + FAILURE)?;
+        if offset >= MENU - FAILURE {
+            return None;
+        }
         let action = FailureAction::from_offset(offset % ACTION_STRIDE)?;
         Some(((offset / ACTION_STRIDE) as usize, action))
     }
@@ -278,8 +542,17 @@ impl DatabasePanel {
         }
     }
 
+    fn toast(&mut self, message: String) {
+        self.requests.push(PanelRequest::Toast(message));
+    }
+
+    fn copy(&mut self, text: String, message: String) {
+        self.requests.push(PanelRequest::Copy(text));
+        self.toast(message);
+    }
+
     fn failure_action(&mut self, index: usize, action: FailureAction) {
-        let Some(database) = self.databases.get(index).cloned() else {
+        let Some(database) = self.database_at(index) else {
             return;
         };
         let name = database.name.clone();
@@ -292,13 +565,10 @@ impl DatabasePanel {
             failure.report(),
             failure.agent_prompt(),
         );
+        let place = readable(&database);
         match action {
             FailureAction::ToggleRaw => self.toggle_full_error(&name),
-            FailureAction::CopyError => {
-                self.requests.push(PanelRequest::Copy(report));
-                self.requests
-                    .push(PanelRequest::Toast("Copied the error".into()));
-            }
+            FailureAction::CopyError => self.copy(report, "Copied the error".into()),
             FailureAction::FixWithAgent => {
                 self.requests.push(PanelRequest::FixWithAgent(AgentFix {
                     prompt,
@@ -308,14 +578,11 @@ impl DatabasePanel {
             FailureAction::EditConfig => self
                 .requests
                 .push(PanelRequest::OpenFile(self.context.config_path.clone())),
-            FailureAction::Retry => self.load_tables(&name),
+            FailureAction::Retry => self.load(&name),
             FailureAction::CreateDatabase => {
                 self.start_fix(&name, "Creating database...", move |connector| {
                     connector.create_database(&database.name)?;
-                    Ok(format!(
-                        "Created an empty {} > {} database",
-                        database.repo, database.label
-                    ))
+                    Ok(format!("Created an empty {place} database"))
                 })
             }
             FailureAction::CopyFromMain => {
@@ -324,10 +591,7 @@ impl DatabasePanel {
                 };
                 self.start_fix(&name, "Copying from main...", move |connector| {
                     connector.copy_database(&main, &database.name)?;
-                    Ok(format!(
-                        "Copied main's {} > {} data into this workspace",
-                        database.repo, database.label
-                    ))
+                    Ok(format!("Copied main's {place} data into this workspace"))
                 })
             }
             FailureAction::StartShared => {
@@ -345,7 +609,7 @@ impl DatabasePanel {
                             _ => break,
                         }
                     }
-                    Ok("Started shared services".to_string())
+                    Ok("Started the shared services".to_string())
                 })
             }
         }
@@ -368,36 +632,42 @@ impl DatabasePanel {
         self.fixes.insert(name.to_string(), pending);
     }
 
-    fn toggle_database(&mut self, name: &str) {
-        if !self.open.remove(name) {
-            self.open.insert(name.to_string());
-            if !self.tables.contains_key(name) {
-                self.load_tables(name);
-            }
+    fn toggle_database(&mut self, repo: &str, name: &str) {
+        let key = database_key(repo, name);
+        self.model.toggle(&key);
+        if self.model.is_open(&key) && !self.model.loaded.contains_key(name) {
+            self.load(name);
         }
     }
 
     fn refresh(&mut self) {
         self.load_consoles();
-        self.databases = self.context.databases();
-        self.tables.clear();
-        let open: Vec<String> = self.open.iter().cloned().collect();
-        for name in open {
-            self.load_tables(&name);
+        self.reload_config();
+        let loaded: Vec<String> = self.model.loaded.keys().cloned().collect();
+        self.model.folders.clear();
+        self.model.stats.clear();
+        for name in loaded {
+            self.load(&name);
         }
     }
 
     fn poll(&mut self) {
         let engines: HashMap<String, Engine> = self
+            .model
             .databases
             .iter()
             .map(|database| (database.name.clone(), database.engine))
             .collect();
-        for (name, tables) in self.tables.iter_mut() {
-            if let Tables::Loading(pending) = tables {
+        let mut opened_buckets: Vec<(String, Vec<String>)> = Vec::new();
+        for (name, loaded) in self.model.loaded.iter_mut() {
+            if let Loaded::Loading(pending) = loaded {
                 match pending.poll() {
-                    Some(Ok(Opened::Tables(loaded))) => *tables = Tables::Loaded(loaded),
-                    Some(Ok(Opened::Failed(failure))) => *tables = Tables::Failed(failure),
+                    Some(Ok(Opened::Schema(schema))) => *loaded = Loaded::Schema(schema),
+                    Some(Ok(Opened::Buckets(buckets))) => {
+                        opened_buckets.push((name.clone(), buckets.clone()));
+                        *loaded = Loaded::Buckets(buckets);
+                    }
+                    Some(Ok(Opened::Failed(failure))) => *loaded = Loaded::Failed(failure),
                     Some(Err(error)) => {
                         let error = ConnectError {
                             kind: ConnectErrorKind::Other,
@@ -409,12 +679,81 @@ impl DatabasePanel {
                             raw: error,
                             container: None,
                         };
-                        *tables = Tables::Failed(Box::new(Failure::new(error, String::new())));
+                        *loaded = Loaded::Failed(Box::new(Failure::new(error, String::new())));
                     }
                     None => {}
                 }
             }
         }
+        for (name, buckets) in opened_buckets {
+            for bucket in buckets {
+                let open = self
+                    .repos_showing(&name)
+                    .iter()
+                    .any(|repo| self.model.is_open(&bucket_key(repo, &name, &bucket)));
+                if open {
+                    self.load_folder(&name, &bucket, "", None);
+                }
+            }
+        }
+        self.poll_folders();
+        self.poll_fixes();
+        self.poll_jobs();
+    }
+
+    fn poll_folders(&mut self) {
+        let mut listed: Vec<(String, Listing, bool)> = Vec::new();
+        for (key, folder) in self.model.folders.iter_mut() {
+            let Some(pending) = folder.loading.as_mut() else {
+                continue;
+            };
+            match pending.poll() {
+                Some(Ok(listing)) => {
+                    folder.loading = None;
+                    folder.error = None;
+                    let more = folder.next.is_some() && !folder.is_empty();
+                    listed.push((key.clone(), listing, more));
+                }
+                Some(Err(error)) => {
+                    folder.loading = None;
+                    folder.error = Some(error);
+                }
+                None => {}
+            }
+        }
+        for (key, listing, more) in listed {
+            let prefixes = listing.prefixes.clone();
+            if let Some(folder) = self.model.folders.get_mut(&key) {
+                if more {
+                    folder.prefixes.extend(listing.prefixes);
+                    folder.objects.extend(listing.objects);
+                    folder.next = listing.next;
+                } else {
+                    *folder = Folder::listed(listing);
+                }
+            }
+            let mut parts = key.split('\u{1f}');
+            if let (Some(name), Some(bucket)) = (parts.next(), parts.next()) {
+                let (name, bucket) = (name.to_string(), bucket.to_string());
+                self.count_prefixes(&name, &bucket, prefixes);
+            }
+        }
+        let mut counted = Vec::new();
+        self.counting.retain_mut(|pending| match pending.poll() {
+            Some(answer) => {
+                counted.push(answer);
+                false
+            }
+            None => true,
+        });
+        for answer in counted.into_iter().flatten() {
+            for (key, stats) in answer {
+                self.model.stats.insert(key, stats);
+            }
+        }
+    }
+
+    fn poll_fixes(&mut self) {
         let mut finished = Vec::new();
         for (name, pending) in self.fixes.iter_mut() {
             if let Some(answer) = pending.poll() {
@@ -425,8 +764,8 @@ impl DatabasePanel {
             self.fixes.remove(&name);
             match answer {
                 Ok(message) => {
-                    self.requests.push(PanelRequest::Toast(message));
-                    self.load_tables(&name);
+                    self.toast(message);
+                    self.load(&name);
                 }
                 Err(error) => {
                     if let Some(failure) = self.failure_mut(&name) {
@@ -438,289 +777,66 @@ impl DatabasePanel {
         }
     }
 
-    fn rebuild_rows(&mut self) {
-        let mut rows = Vec::new();
-        let consoles: Vec<Console> = self
-            .consoles
-            .iter()
-            .filter(|console| self.filter_matches(&console.title))
-            .cloned()
-            .collect();
-        if !consoles.is_empty() {
-            rows.push(Row::Consoles {
-                collapsed: self.consoles_collapsed,
-            });
-            if !self.consoles_collapsed {
-                rows.extend(consoles.into_iter().map(Row::Console));
+    fn poll_jobs(&mut self) {
+        let mut finished = Vec::new();
+        self.jobs.retain_mut(|pending| match pending.poll() {
+            Some(answer) => {
+                finished.push(answer);
+                false
             }
-        }
-        let mut repos: Vec<&str> = Vec::new();
-        for database in &self.databases {
-            if !repos.contains(&database.repo.as_str()) {
-                repos.push(&database.repo);
-            }
-        }
-        for repo in repos {
-            let collapsed = self.collapsed_repos.contains(repo);
-            rows.push(Row::Repo {
-                repo: repo.to_string(),
-                collapsed,
-            });
-            if collapsed {
-                continue;
-            }
-            for (index, database) in self.databases.iter().enumerate() {
-                if database.repo != repo {
-                    continue;
+            None => true,
+        });
+        for answer in finished {
+            match answer {
+                Ok(Outcome::Done { message, reload }) => {
+                    self.toast(message);
+                    self.reload(reload);
                 }
-                let open = self.open.contains(&database.name);
-                rows.push(Row::Database { index, open });
-                if !open {
-                    continue;
-                }
-                match self.tables.get(&database.name) {
-                    Some(Tables::Loaded(tables)) if tables.is_empty() => rows.push(Row::Note {
-                        depth: 2,
-                        text: if database.engine == Engine::Redis {
-                            "No keys".into()
-                        } else {
-                            "No tables".into()
-                        },
-                        error: false,
-                    }),
-                    Some(Tables::Loaded(tables)) => {
-                        let before = rows.len();
-                        rows.extend(
-                            tables
-                                .iter()
-                                .filter(|table| self.filter_matches(&table.qualified()))
-                                .map(|table| Row::Table {
-                                    index,
-                                    table: table.clone(),
-                                }),
-                        );
-                        if rows.len() == before {
-                            rows.push(Row::Note {
-                                depth: 2,
-                                text: "No matches".into(),
-                                error: false,
-                            });
-                        }
-                    }
-                    Some(Tables::Failed(_)) => rows.push(Row::Failure { index }),
-                    Some(Tables::Loading(_)) | None => rows.push(Row::Note {
-                        depth: 2,
-                        text: "Loading...".into(),
-                        error: false,
-                    }),
-                }
-            }
-        }
-        self.rows = rows;
-    }
-
-    fn guide(&self) -> Node {
-        div()
-            .row()
-            .w_px(INDENT)
-            .h_px(ROW_H)
-            .justify_center()
-            .child(div().w_px(1.0).h_px(ROW_H).bg(theme().panel_indent_guide))
-            .into()
-    }
-
-    fn slot(&self, kind: IconKind, color: Rgba) -> Node {
-        div()
-            .row()
-            .w_px(INDENT)
-            .h_px(ROW_H)
-            .items_center()
-            .justify_center()
-            .child(icon(kind).size(12.0).color(color))
-            .into()
-    }
-
-    fn render_row(&self, index: usize, row: &Row) -> Node {
-        let colors = theme();
-        let id = Self::id(index);
-        let mut line = div()
-            .row()
-            .h_px(ROW_H)
-            .pl(8.0)
-            .pr(8.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(id);
-        if self.hover == Some(id) {
-            line = line.bg(colors.ghost_element_hover);
-        }
-        let name = |text: String, color: Rgba| {
-            div()
-                .row()
-                .flex(1.0)
-                .pl(4.0)
-                .items_center()
-                .child(label(text).color(color).truncate())
-        };
-        match row {
-            Row::Consoles { collapsed } => line
-                .child(self.slot(
-                    if *collapsed {
-                        IconKind::ChevronRight
-                    } else {
-                        IconKind::ChevronDown
-                    },
-                    colors.icon_muted,
-                ))
-                .child(name("Consoles".into(), colors.text))
-                .child(
-                    label(self.consoles.len().to_string())
-                        .size(11.0)
-                        .color(colors.text_placeholder),
-                )
-                .into(),
-            Row::Console(console) => {
-                let database = self.database(&console.database).map_or_else(
-                    || console.database.clone(),
-                    |database| database.label.clone(),
-                );
-                line.child(self.guide())
-                    .child(self.slot(IconKind::File, colors.icon_muted))
-                    .child(name(console.title.clone(), colors.text_muted))
-                    .child(label(database).size(11.0).color(colors.text_placeholder))
-                    .into()
-            }
-            Row::Repo { repo, collapsed } => {
-                let engine = self
-                    .databases
-                    .iter()
-                    .find(|db| db.repo == *repo)
-                    .map_or("", |db| match db.engine {
-                        Engine::Postgres => "postgres",
-                        Engine::Redis => "redis",
+                Ok(Outcome::Text { id, title, text }) => {
+                    self.requests.push(PanelRequest::Reveal {
+                        id: id.clone(),
+                        open: Box::new(move || Some(files_ui::text_tab(id, title, &text))),
                     });
-                line.child(self.slot(
-                    if *collapsed {
-                        IconKind::ChevronRight
-                    } else {
-                        IconKind::ChevronDown
-                    },
-                    colors.icon_muted,
-                ))
-                .child(name(repo.clone(), colors.text))
-                .children(self.repo_dot(repo).map(dot))
-                .child(label(engine).size(11.0).color(colors.text_placeholder))
-                .into()
-            }
-            Row::Database { index, open } => {
-                let database = &self.databases[*index];
-                let count = match self.tables.get(&database.name) {
-                    Some(Tables::Loaded(tables)) => tables.len().to_string(),
-                    _ => String::new(),
-                };
-                line.child(self.guide())
-                    .child(self.slot(
-                        if *open {
-                            IconKind::ChevronDown
-                        } else {
-                            IconKind::ChevronRight
-                        },
-                        colors.icon_muted,
-                    ))
-                    .child(self.slot(IconKind::Cylinder, colors.icon_muted))
-                    .child(name(database.label.clone(), colors.text))
-                    .children(self.failure(&database.name).map(|failure| {
-                        dot(if failure.is_warning() {
-                            colors.warning
-                        } else {
-                            colors.error
-                        })
-                    }))
-                    .child(label(count).size(11.0).color(colors.text_placeholder))
-                    .into()
-            }
-            Row::Table { table, .. } => {
-                let kind = match table.kind {
-                    TableKind::Table => IconKind::Table,
-                    TableKind::View => IconKind::Eye,
-                    TableKind::Keyspace => IconKind::Key,
-                };
-                let trailing = table
-                    .count
-                    .map(|count| count.to_string())
-                    .unwrap_or_default();
-                line.child(self.guide())
-                    .child(self.guide())
-                    .child(self.slot(kind, colors.icon_muted))
-                    .child(name(table.qualified(), colors.text_muted))
-                    .child(label(trailing).size(11.0).color(colors.text_placeholder))
-                    .into()
-            }
-            Row::Failure { index } => {
-                let Some(failure) = self
-                    .databases
-                    .get(*index)
-                    .and_then(|database| self.failure(&database.name))
-                else {
-                    return div().into();
-                };
-                let block_width = self.width - 8.0 - FAILURE_BLOCK_LEFT - FAILURE_BLOCK_RIGHT;
-                let row = *index;
-                div()
-                    .row()
-                    .pl(FAILURE_BLOCK_LEFT)
-                    .pr(FAILURE_BLOCK_RIGHT)
-                    .pt(FAILURE_BLOCK_TOP)
-                    .pb(FAILURE_BLOCK_BOTTOM)
-                    .child(failure.render(
-                        block_width,
-                        |action| Self::failure_id(row, action),
-                        self.hover,
-                    ))
-                    .into()
-            }
-            Row::Note { depth, text, error } => {
-                let mut note = div().row().h_px(ROW_H).pl(8.0).items_center();
-                for _ in 0..*depth {
-                    note = note.child(self.guide());
                 }
-                note.child(div().w_px(INDENT))
-                    .child(
-                        label(text.clone())
-                            .size(12.0)
-                            .color(if *error {
-                                colors.error
-                            } else {
-                                colors.text_muted
-                            })
-                            .truncate(),
-                    )
-                    .into()
+                Err(error) => self.toast(error),
             }
         }
     }
 
-    /// The color of the dot on a repo's header: red when one of its databases failed, yellow for a warning only.
-    fn repo_dot(&self, repo: &str) -> Option<Rgba> {
-        let colors = theme();
-        let failures: Vec<&Failure> = self
-            .databases
-            .iter()
-            .filter(|database| database.repo == repo)
-            .filter_map(|database| self.failure(&database.name))
-            .collect();
-        if failures.is_empty() {
-            None
-        } else if failures.iter().all(|failure| failure.is_warning()) {
-            Some(colors.warning)
-        } else {
-            Some(colors.error)
+    fn reload(&mut self, reload: Reload) {
+        match reload {
+            Reload::Nothing => {}
+            Reload::Database(name) => self.load(&name),
+            Reload::Folder {
+                database,
+                bucket,
+                prefix,
+            } => {
+                self.model
+                    .folders
+                    .remove(&folder_key(&database, &bucket, &prefix));
+                self.load_folder(&database, &bucket, &prefix, None);
+            }
         }
+    }
+
+    fn job(
+        &mut self,
+        work: impl FnOnce(&Connector<'_>) -> Result<Outcome, String> + Send + 'static,
+    ) {
+        self.jobs.push(self.context.run(work));
+    }
+
+    pub(crate) fn rebuild_rows(&mut self) {
+        let (rows, found) = self.model.rows();
+        self.rows = rows;
+        self.found = found;
     }
 
     fn row_height(&self, index: usize, row: &Row) -> f32 {
         match row {
-            Row::Failure { .. } => measure(&self.render_row(index, row)).1,
+            Row::Failure { .. } => measure(&crate::render::render_row(self, index, row)).1,
+            Row::Section { .. } => ROW_H + 4.0,
             _ => ROW_H,
         }
     }
@@ -734,56 +850,763 @@ impl DatabasePanel {
                 .enumerate()
                 .map(|(index, row)| self.row_height(index, row))
                 .sum::<f32>()
+            + 8.0
     }
 
-    fn header_button(&self, offset: u64, kind: IconKind) -> Node {
-        let colors = theme();
-        let id = Self::base() + offset;
-        let hot = self.hover == Some(id);
-        div()
-            .w_px(BUTTON)
-            .h_px(BUTTON)
-            .rounded(4.0)
-            .items_center()
-            .justify_center()
-            .on_click(id)
-            .bg(if hot {
-                colors.element_hover
-            } else {
-                Rgba::TRANSPARENT
+    fn menu_facts(&self, row: &Row) -> (Option<Database>, bool, Option<Database>) {
+        let database = match row {
+            Row::Console { console, .. } => self.database(&console.database).cloned(),
+            _ => row.database().and_then(|index| self.database_at(index)),
+        };
+        let has_main_copy = database.as_ref().is_some_and(|database| {
+            (self.context.config)()
+                .and_then(|config| pom_db::main_database(&config, database))
+                .is_some()
+        });
+        let repo_database = match row {
+            Row::Repo { repo, .. } => self
+                .model
+                .databases
+                .iter()
+                .find(|database| database.engine.is_sql() && database.repo == *repo)
+                .cloned(),
+            _ => database.clone(),
+        };
+        (database, has_main_copy, repo_database)
+    }
+
+    fn row_database(&self, row: &Row) -> Option<Database> {
+        self.menu_facts(row).0
+    }
+
+    /// Runs a menu item, asking first when it loses data.
+    fn choose(&mut self, action: Action, row: Row) {
+        let database = self.row_database(&row);
+        if let Some(asked) = menu::confirmation(&action, &row, database.as_ref()) {
+            self.confirm = Some((action, row));
+            self.requests.push(PanelRequest::Prompt {
+                tag: CONFIRM_PROMPT,
+                message: asked.message,
+                detail: Some(asked.detail),
+                buttons: vec![asked.button.to_string(), "Cancel".into()],
+            });
+            return;
+        }
+        self.act(action, row);
+    }
+
+    fn act(&mut self, action: Action, row: Row) {
+        let (database, _, repo_database) = self.menu_facts(&row);
+        let place = database.as_ref().map(readable).unwrap_or_default();
+        match action {
+            Action::Header => {}
+            Action::Refresh => self.refresh_row(&row),
+            Action::CollapseAll => self.model.collapse_all(),
+            Action::Collapse => {
+                if let (Row::Group { repo, kind, .. }, Some(database)) = (&row, &database) {
+                    self.model
+                        .set_open(&group_key(repo, &database.name, *kind), false);
+                }
+            }
+            Action::CopyUrl => {
+                let target = repo_database.or(database);
+                if let Some(target) = target {
+                    if let Some(url) = self.connection_url(&target) {
+                        self.copy(
+                            url,
+                            format!("Copied the connection URL of {}", readable(&target)),
+                        );
+                    }
+                }
+            }
+            Action::OpenClient => {
+                let target = repo_database.or(database);
+                if let Some(target) = target {
+                    self.open_client(&target);
+                }
+            }
+            Action::NewConsole => self.create_console(database, None, ""),
+            Action::CopyName => {
+                let name = match &row {
+                    Row::Table { table, .. } => table.qualified(),
+                    Row::Column { column, .. } => column.name.clone(),
+                    _ => database
+                        .as_ref()
+                        .map(|database| database.name.clone())
+                        .unwrap_or_default(),
+                };
+                self.copy(name.clone(), format!("Copied {name}"));
+            }
+            Action::CopyFromMain => {
+                let Some(database) = database else {
+                    return;
+                };
+                let main = (self.context.config)()
+                    .and_then(|config| pom_db::main_database(&config, &database));
+                let Some(main) = main else {
+                    return;
+                };
+                self.job(move |connector| {
+                    connector.copy_database(&main, &database.name)?;
+                    Ok(Outcome::Done {
+                        message: format!("Copied main's data into {place}"),
+                        reload: Reload::Database(database.name.clone()),
+                    })
+                });
+            }
+            Action::ResetDatabase => {
+                let Some(database) = database else {
+                    return;
+                };
+                self.job(move |connector| {
+                    connector.reset_database(&database.name)?;
+                    Ok(Outcome::Done {
+                        message: format!("Reset {place}: it is empty now"),
+                        reload: Reload::Database(database.name.clone()),
+                    })
+                });
+            }
+            Action::AskAboutSchema => {
+                if let Some(database) = database {
+                    let prompt = self.schema_prompt(&database);
+                    self.ask(&database, prompt);
+                }
+            }
+            Action::AskAboutTable => {
+                if let (Row::Table { table, .. }, Some(database)) = (&row, database) {
+                    let prompt = self.table_prompt(&database, table);
+                    self.ask(&database, prompt);
+                }
+            }
+            Action::OpenData | Action::OpenKeys => {
+                if let (Row::Table { table, .. } | Row::Keyspace { table, .. }, Some(database)) =
+                    (&row, database)
+                {
+                    self.open_table(database, table.clone(), "");
+                }
+            }
+            Action::NewConsoleWithSelect => {
+                if let Row::Table { table, .. } = &row {
+                    let sql = format!("SELECT * FROM {} LIMIT {SELECT_LIMIT};\n", table.sql_name());
+                    self.create_console(database, Some(table.qualified()), &sql);
+                }
+            }
+            Action::CopySelect => {
+                if let Row::Table { table, .. } = &row {
+                    let sql = format!("SELECT * FROM {} LIMIT {SELECT_LIMIT};", table.sql_name());
+                    self.copy(sql, format!("Copied a SELECT of {}", table.qualified()));
+                }
+            }
+            Action::ShowDdl => {
+                if let (Row::Table { table, .. }, Some(database)) = (&row, database) {
+                    let table = table.clone();
+                    self.job(move |connector| {
+                        let text = connector.table_ddl(&database, &table)?;
+                        Ok(Outcome::Text {
+                            id: format!("db-ddl:{}:{}", database.name, table.qualified()),
+                            title: format!("{}.sql", table.qualified()),
+                            text,
+                        })
+                    });
+                }
+            }
+            Action::Truncate | Action::DropTable => {
+                let (Row::Table { table, .. }, Some(database)) = (&row, database) else {
+                    return;
+                };
+                let truncate = action == Action::Truncate;
+                let sql = if truncate {
+                    format!("TRUNCATE TABLE {}", table.sql_name())
+                } else {
+                    format!("DROP TABLE {}", table.sql_name())
+                };
+                let name = table.qualified();
+                self.job(move |connector| {
+                    connector.query(&database, &sql, 1)?;
+                    Ok(Outcome::Done {
+                        message: if truncate {
+                            format!("Truncated {name}: it has no rows now")
+                        } else {
+                            format!("Dropped {name} from {place}")
+                        },
+                        reload: Reload::Database(database.name.clone()),
+                    })
+                });
+            }
+            Action::FilterByColumn => {
+                if let (Row::Column { table, column, .. }, Some(database)) = (&row, database) {
+                    let filter = format!("{} IS NOT NULL", pom_db::quote_identifier(&column.name));
+                    self.open_table(database, table.clone(), &filter);
+                }
+            }
+            Action::DistinctValues => {
+                if let Row::Column { table, column, .. } = &row {
+                    let quoted = pom_db::quote_identifier(&column.name);
+                    let sql = format!(
+                        "SELECT {quoted}, count(*) AS rows FROM {} GROUP BY 1 ORDER BY 2 DESC LIMIT 500;\n",
+                        table.sql_name()
+                    );
+                    let title = format!("{}.{} values", table.qualified(), column.name);
+                    self.create_console(database, Some(title), &sql);
+                }
+            }
+            Action::OpenConsole => {
+                if let Row::Console { console, .. } = row {
+                    self.open_console(console);
+                }
+            }
+            Action::RenameConsole => {
+                if let Row::Console { console, .. } = &row {
+                    let mut field = TextField::default();
+                    field.set_font_size(12.5);
+                    field.set_text(&console.title);
+                    field.select_all();
+                    self.filter_focused = false;
+                    self.rename = Some((console.id.clone(), field));
+                }
+            }
+            Action::ChangeDatabase => {
+                if let Row::Console { console, .. } = &row {
+                    let mut entries = vec![Entry {
+                        label: format!("Run {} on", console.title),
+                        action: Action::Header,
+                        danger: false,
+                        disabled: true,
+                        sep: false,
+                    }];
+                    for database in &self.model.databases {
+                        if !matches!(database.engine, Engine::Postgres | Engine::Redis) {
+                            continue;
+                        }
+                        entries.push(Entry {
+                            label: readable(database),
+                            action: Action::MoveConsole(database.name.clone()),
+                            danger: false,
+                            disabled: database.name == console.database,
+                            sep: false,
+                        });
+                    }
+                    self.menu = Some((row.clone(), entries));
+                    self.requests.push(PanelRequest::OpenMenu);
+                }
+            }
+            Action::MoveConsole(name) => {
+                if let Row::Console { console, .. } = &row {
+                    let place = self.model.place_of(&name);
+                    self.update_console(&console.id, |saved| saved.database = name);
+                    let title = self
+                        .model
+                        .consoles
+                        .iter()
+                        .find(|saved| saved.id == console.id)
+                        .map_or_else(|| console.title.clone(), |saved| saved.title.clone());
+                    self.toast(format!("{title} now runs on {place}"));
+                }
+            }
+            Action::DeleteConsole => {
+                if let Row::Console { console, .. } = &row {
+                    self.delete_console(&console.id);
+                    self.toast(format!("Deleted the console {}", console.title));
+                }
+            }
+            Action::CopyPattern => {
+                if let Row::Keyspace { table, .. } = &row {
+                    let pattern = format!("{}:*", table.name);
+                    self.copy(pattern.clone(), format!("Copied {pattern}"));
+                }
+            }
+            Action::DeleteKeys => {
+                if let (Row::Keyspace { table, .. }, Some(database)) = (&row, database) {
+                    let pattern = format!("{}:*", table.name);
+                    self.job(move |connector| {
+                        let deleted = connector.delete_keys(&database, &pattern)?;
+                        Ok(Outcome::Done {
+                            message: format!("Deleted {deleted} {pattern} keys from {place}"),
+                            reload: Reload::Database(database.name.clone()),
+                        })
+                    });
+                }
+            }
+            Action::CopyPath => {
+                let path = match &row {
+                    Row::Bucket { bucket, .. } => bucket.clone(),
+                    Row::Prefix { bucket, prefix, .. } => format!("{bucket}/{prefix}"),
+                    Row::Object { bucket, object, .. } => format!("{bucket}/{}", object.key),
+                    _ => return,
+                };
+                self.copy(path.clone(), format!("Copied {path}"));
+            }
+            Action::DeleteFolder => {
+                if let (Row::Prefix { bucket, prefix, .. }, Some(database)) = (&row, database) {
+                    let (bucket, prefix) = (bucket.clone(), prefix.clone());
+                    let transport = self.context.objects.clone();
+                    self.job(move |connector| {
+                        let deleted = connector.object_store(&database.name).delete_prefix(
+                            transport.as_ref(),
+                            &bucket,
+                            &prefix,
+                        )?;
+                        Ok(Outcome::Done {
+                            message: format!("Deleted {deleted} objects under {bucket}/{prefix}"),
+                            reload: Reload::Folder {
+                                database: database.name.clone(),
+                                bucket,
+                                prefix: parent_prefix(&prefix),
+                            },
+                        })
+                    });
+                }
+            }
+            Action::OpenObject => {
+                if let (Row::Object { bucket, object, .. }, Some(database)) = (&row, database) {
+                    self.open_object(database, bucket.clone(), object.clone());
+                }
+            }
+            Action::DownloadObject => {
+                if let (Row::Object { bucket, object, .. }, Some(database)) = (&row, database) {
+                    self.download(database, bucket.clone(), object.clone());
+                }
+            }
+            Action::CopyPresignedUrl => {
+                if let (Row::Object { bucket, object, .. }, Some(database)) = (&row, database) {
+                    let url = self.context.run_now(|connector| {
+                        connector.object_store(&database.name).presigned_url(
+                            bucket,
+                            &object.key,
+                            PRESIGNED_SECONDS,
+                        )
+                    });
+                    if let Some(url) = url {
+                        self.copy(url, "Copied a link that works for 1 hour".into());
+                    }
+                }
+            }
+            Action::DeleteObject => {
+                if let (Row::Object { bucket, object, .. }, Some(database)) = (&row, database) {
+                    let (bucket, key) = (bucket.clone(), object.key.clone());
+                    let transport = self.context.objects.clone();
+                    self.job(move |connector| {
+                        connector.object_store(&database.name).delete(
+                            transport.as_ref(),
+                            &bucket,
+                            &key,
+                        )?;
+                        Ok(Outcome::Done {
+                            message: format!("Deleted {bucket}/{key}"),
+                            reload: Reload::Folder {
+                                database: database.name.clone(),
+                                bucket,
+                                prefix: parent_prefix(&key),
+                            },
+                        })
+                    });
+                }
+            }
+        }
+    }
+
+    fn refresh_row(&mut self, row: &Row) {
+        match row {
+            Row::Repo { repo, .. } => {
+                let names: Vec<String> = self
+                    .model
+                    .groups()
+                    .into_iter()
+                    .filter(|(group, _, _)| group == repo)
+                    .flat_map(|(_, _, indexes)| indexes)
+                    .filter_map(|index| self.database_at(index).map(|database| database.name))
+                    .collect();
+                for name in names {
+                    self.load(&name);
+                }
+            }
+            Row::Bucket { index, bucket, .. } | Row::Prefix { index, bucket, .. } => {
+                let prefix = match row {
+                    Row::Prefix { prefix, .. } => prefix.clone(),
+                    _ => String::new(),
+                };
+                if let Some(database) = self.database_at(*index) {
+                    self.reload(Reload::Folder {
+                        database: database.name,
+                        bucket: bucket.clone(),
+                        prefix,
+                    });
+                }
+            }
+            _ => match row.database().and_then(|index| self.database_at(index)) {
+                Some(database) => self.load(&database.name),
+                None => self.refresh(),
+            },
+        }
+    }
+
+    fn connection_url(&self, database: &Database) -> Option<String> {
+        self.context.run_now(|connector| match database.engine {
+            Engine::Minio => Some(connector.object_store(&database.name).base),
+            engine => connector.login(database).map(|login| login.url(engine)),
+        })?
+    }
+
+    fn open_client(&mut self, database: &Database) {
+        let Some(Some(login)) = self.context.run_now(|connector| connector.login(database)) else {
+            return;
+        };
+        let (program, argv, env) = match database.engine {
+            Engine::Redis => (
+                "redis-cli",
+                vec![
+                    "-h".to_string(),
+                    login.host.clone(),
+                    "-p".into(),
+                    login.port.to_string(),
+                    "-n".into(),
+                    login.database.clone(),
+                ],
+                Vec::new(),
+            ),
+            _ => (
+                "psql",
+                vec![
+                    "-h".to_string(),
+                    login.host.clone(),
+                    "-p".into(),
+                    login.port.to_string(),
+                    "-U".into(),
+                    login.user.clone(),
+                    "-d".into(),
+                    login.database.clone(),
+                ],
+                vec![("PGPASSWORD".to_string(), login.password.clone())],
+            ),
+        };
+        let mut command = vec![find_program(program)];
+        command.extend(argv);
+        let mut env = env;
+        env.push(("PATH".into(), pom_services::tool_path().to_string()));
+        let folder = self.repo_key_of(&database.name);
+        self.requests.push(PanelRequest::RunCommand {
+            title: format!("{program} {}", readable(database)),
+            cwd: self.checkout(&folder),
+            argv: command,
+            env,
+        });
+    }
+
+    fn open_table(&mut self, database: Database, table: Table, filter: &str) {
+        let context = self.context.clone();
+        let filter = filter.to_string();
+        let id = if filter.is_empty() {
+            TableItem::item_id(&database, &table)
+        } else {
+            format!("{}:{filter}", TableItem::item_id(&database, &table))
+        };
+        self.requests.push(PanelRequest::Reveal {
+            id,
+            open: Box::new(move || {
+                Some(Box::new(TableItem::filtered(
+                    context, database, table, &filter,
+                )))
+            }),
+        });
+    }
+
+    fn open_object(&mut self, database: Database, bucket: String, object: ObjectEntry) {
+        let context = self.context.clone();
+        self.requests.push(PanelRequest::Reveal {
+            id: object_item_id(&database, &bucket, &object.key),
+            open: Box::new(move || {
+                Some(Box::new(ObjectItem::new(context, database, bucket, object)))
+            }),
+        });
+    }
+
+    fn download(&mut self, database: Database, bucket: String, object: ObjectEntry) {
+        let downloads = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join("Downloads");
+        let name = object.name().replace(['/', '\\'], "_");
+        let mut path = downloads.join(&name);
+        let mut copy = 1;
+        while path.exists() {
+            path = downloads.join(format!("{copy}-{name}"));
+            copy += 1;
+        }
+        let transport = self.context.objects.clone();
+        self.job(move |connector| {
+            connector.object_store(&database.name).download(
+                transport.as_ref(),
+                &bucket,
+                &object.key,
+                &path,
+            )?;
+            Ok(Outcome::Done {
+                message: format!("Downloaded {name} to {}", path.display()),
+                reload: Reload::Nothing,
             })
-            .child(
-                icon(kind)
-                    .size(12.0)
-                    .color(if hot { colors.icon } else { colors.icon_muted }),
-            )
-            .into()
+        });
     }
 
-    fn filter_box(&self) -> Node {
-        let colors = theme();
-        div()
-            .row()
-            .h_px(FILTER_H)
-            .px(10.0)
-            .gap(6.0)
-            .items_center()
-            .on_click(Self::base() + FILTER)
-            .child(icon(IconKind::Search).size(12.0).color(colors.icon_muted))
-            .child(
-                div()
-                    .row()
-                    .flex(1.0)
-                    .items_center()
-                    .child(self.filter.render(
-                        "Filter tables",
-                        self.filter_focused,
-                        colors.text,
-                        FILTER_H - 8.0,
-                        FieldFont::Ui,
-                    )),
-            )
-            .into()
+    fn ask(&mut self, database: &Database, prompt: String) {
+        let folder = self.repo_key_of(&database.name);
+        self.requests.push(PanelRequest::FixWithAgent(AgentFix {
+            prompt,
+            cwd: self.checkout(&folder),
+        }));
+    }
+
+    fn describe_table(schema: &Schema, table: &Table) -> String {
+        let columns: Vec<String> = schema
+            .columns_of(table)
+            .map(|column| {
+                let mut text = format!("{} {}", column.name, column.data_type);
+                if column.primary_key {
+                    text.push_str(" primary key");
+                }
+                if let Some(target) = &column.references {
+                    text.push_str(&format!(" references {target}"));
+                }
+                text
+            })
+            .collect();
+        let rows = table
+            .count
+            .map(|count| format!(" (about {count} rows)"))
+            .unwrap_or_default();
+        let kind = if table.kind == TableKind::View {
+            "view "
+        } else {
+            ""
+        };
+        format!(
+            "- {kind}{}{rows}: {}",
+            table.qualified(),
+            columns.join(", ")
+        )
+    }
+
+    fn about(&self, database: &Database) -> String {
+        let detail = self
+            .details
+            .get(&database.name)
+            .map(|detail| detail.tooltip.clone())
+            .unwrap_or_else(|| database.name.clone());
+        format!("the {} database ({detail})", readable(database))
+    }
+
+    fn schema_prompt(&self, database: &Database) -> String {
+        let tables = match self.model.schema(&database.name) {
+            Some(schema) if !schema.tables.is_empty() => schema
+                .tables
+                .iter()
+                .map(|table| Self::describe_table(schema, table))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => "(the panel has not loaded its tables; list them with the database tools)".into(),
+        };
+        format!(
+            "I have a question about {}. Its tables:\n\n{tables}\n\nRead the schema and find where the code \
+             uses these tables, then wait for my question. Do not change data.",
+            self.about(database)
+        )
+    }
+
+    fn table_prompt(&self, database: &Database, table: &Table) -> String {
+        let columns = self
+            .model
+            .schema(&database.name)
+            .map(|schema| Self::describe_table(schema, table))
+            .unwrap_or_else(|| format!("- {}", table.qualified()));
+        format!(
+            "I have a question about the {} table of {}:\n\n{columns}\n\nFind where the code reads and writes \
+             it, then wait for my question. Do not change data.",
+            table.qualified(),
+            self.about(database)
+        )
+    }
+
+    fn commit_rename(&mut self) {
+        let Some((id, field)) = self.rename.take() else {
+            return;
+        };
+        let title = field.text().trim().to_string();
+        if title.is_empty() {
+            return;
+        }
+        self.update_console(&id, |console| console.title = title);
+    }
+
+    fn click_row(&mut self, index: usize, part: u64) {
+        let Some(row) = self.rows.get(index).cloned() else {
+            return;
+        };
+        self.selected = Some(row.key());
+        match row {
+            Row::Section {
+                section: Section::Consoles,
+                ..
+            } => self.model.toggle(CONSOLES_KEY),
+            Row::Section { .. } | Row::Note { .. } | Row::Failure { .. } | Row::Column { .. } => {}
+            Row::Console { console, .. } => self.open_console(console),
+            Row::Repo { repo, .. } => self.model.toggle(&repo_key(&repo)),
+            Row::Database { index, repo, .. } => {
+                if let Some(database) = self.database_at(index) {
+                    self.toggle_database(&repo, &database.name);
+                }
+            }
+            Row::Group {
+                index, repo, kind, ..
+            } => {
+                if let Some(database) = self.database_at(index) {
+                    self.model.toggle(&group_key(&repo, &database.name, kind));
+                }
+            }
+            Row::Table {
+                index,
+                repo,
+                table,
+                has_columns,
+                ..
+            } => {
+                let Some(database) = self.database_at(index) else {
+                    return;
+                };
+                if part == CHEVRON && has_columns {
+                    self.model.toggle(&table_key(&repo, &database.name, &table));
+                } else {
+                    self.open_table(database, table, "");
+                }
+            }
+            Row::Keyspace { index, table, .. } => {
+                if let Some(database) = self.database_at(index) {
+                    self.open_table(database, table, "");
+                }
+            }
+            Row::Bucket {
+                index,
+                repo,
+                bucket,
+                ..
+            } => {
+                let Some(database) = self.database_at(index) else {
+                    return;
+                };
+                let key = bucket_key(&repo, &database.name, &bucket);
+                self.model.toggle(&key);
+                if self.model.is_open(&key)
+                    && !self
+                        .model
+                        .folders
+                        .contains_key(&folder_key(&database.name, &bucket, ""))
+                {
+                    self.load_folder(&database.name, &bucket, "", None);
+                }
+            }
+            Row::Prefix {
+                index,
+                repo,
+                bucket,
+                prefix,
+                ..
+            } => {
+                let Some(database) = self.database_at(index) else {
+                    return;
+                };
+                let key = prefix_key(&repo, &database.name, &bucket, &prefix);
+                self.model.toggle(&key);
+                if self.model.is_open(&key)
+                    && !self.model.folders.contains_key(&folder_key(
+                        &database.name,
+                        &bucket,
+                        &prefix,
+                    ))
+                {
+                    self.load_folder(&database.name, &bucket, &prefix, None);
+                }
+            }
+            Row::Object {
+                index,
+                bucket,
+                object,
+                ..
+            } => {
+                if let Some(database) = self.database_at(index) {
+                    self.open_object(database, bucket, object);
+                }
+            }
+            Row::More {
+                index,
+                bucket,
+                prefix,
+                ..
+            } => {
+                let Some(database) = self.database_at(index) else {
+                    return;
+                };
+                let next = self
+                    .model
+                    .folders
+                    .get(&folder_key(&database.name, &bucket, &prefix))
+                    .and_then(|folder| folder.next.clone());
+                if next.is_some() {
+                    self.load_folder(&database.name, &bucket, &prefix, next);
+                }
+            }
+        }
+    }
+}
+
+/// `uploads/avatars/u1.jpg` -> `uploads/avatars/`, `uploads/avatars/` -> `uploads/`.
+fn parent_prefix(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rfind('/') {
+        Some(at) => trimmed[..=at].to_string(),
+        None => String::new(),
+    }
+}
+
+/// The program's full path on the tool PATH, or its bare name for the shell to report.
+fn find_program(name: &str) -> String {
+    pom_services::tool_path()
+        .split(':')
+        .map(|dir| std::path::Path::new(dir).join(name))
+        .find(|path| path.is_file())
+        .map_or_else(
+            || name.to_string(),
+            |path| path.to_string_lossy().into_owned(),
+        )
+}
+
+fn detail(connector: &Connector<'_>, database: &Database) -> Detail {
+    let engine = database.engine.title();
+    match database.engine {
+        Engine::Postgres | Engine::Redis => {
+            let Some(login) = connector.login(database) else {
+                return Detail::default();
+            };
+            let (subtitle, what) = if database.engine == Engine::Redis {
+                let subtitle = format!("db {}", login.database);
+                (subtitle.clone(), format!("{} {subtitle}", database.name))
+            } else {
+                (database.name.clone(), database.name.clone())
+            };
+            Detail {
+                subtitle,
+                tooltip: format!("{engine} - {what} on {}:{}", login.host, login.port),
+            }
+        }
+        Engine::Minio => Detail {
+            subtitle: String::new(),
+            tooltip: format!(
+                "{engine} - {} on {}",
+                database.name,
+                connector.object_store(&database.name).host
+            ),
+        },
+        _ => Detail {
+            subtitle: String::new(),
+            tooltip: format!("{engine} - {}", database.name),
+        },
     }
 }
 
@@ -792,98 +1615,46 @@ impl SidePanelView for DatabasePanel {
         PaneKind::Database
     }
 
-    fn render(&mut self, width: f32, height: f32) -> Node {
+    fn render(&mut self, width: f32, height: f32) -> ui::Node {
         self.poll();
         self.width = width;
         self.viewport_h = height;
         self.rebuild_rows();
         let max_scroll = (self.content_height() - height).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
-        let colors = theme();
-        let header = div()
-            .row()
-            .h_px(HEADER_H)
-            .px(10.0)
-            .gap(6.0)
-            .items_center()
-            .child(label("Database").size(12.0).color(colors.text_muted))
-            .child(
-                div().row().flex(1.0).items_center().child(
-                    label(self.context.branch.clone())
-                        .size(11.0)
-                        .color(colors.text_placeholder)
-                        .truncate(),
-                ),
-            )
-            .child(self.header_button(NEW_CONSOLE, IconKind::Plus))
-            .child(self.header_button(REFRESH, IconKind::RotateCw));
-        let mut list = div().col().px(4.0);
-        if self.rows.is_empty() {
-            list = list.child(
-                div().row().h_px(ROW_H).px(8.0).items_center().child(
-                    label("No databases in pom.yml")
-                        .size(12.0)
-                        .color(colors.text_muted),
-                ),
-            );
-        }
+        let mut visible = Vec::new();
         let mut top = 0.0;
         for (index, row) in self.rows.iter().enumerate() {
-            let row_height = self.row_height(index, row);
-            let bottom = top + row_height;
+            let bottom = top + self.row_height(index, row);
             if bottom > self.scroll && top < self.scroll + height {
-                list = list.child(self.render_row(index, row));
+                visible.push(index);
             }
             top = bottom;
         }
-        div()
-            .col()
-            .w_px(width)
-            .h_px(height)
-            .child(header)
-            .child(self.filter_box())
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(list)
-            .into()
+        crate::render::render_panel(self, width, height, &visible)
     }
 
     fn click(&mut self, id: u64) {
+        let renaming = self.rename.as_ref().map(|(id, _)| id.clone());
+        if renaming.is_some() && id != Self::base() + RENAME_FIELD {
+            self.commit_rename();
+        }
         self.filter_focused = id == Self::base() + FILTER;
         match id.checked_sub(Self::base()) {
             Some(REFRESH) => return self.refresh(),
-            Some(NEW_CONSOLE) => return self.create_console(),
-            Some(FILTER) => return,
+            Some(NEW_CONSOLE) => {
+                let database = self.selected_database();
+                return self.create_console(database, None, "");
+            }
+            Some(COLLAPSE_ALL) => return self.model.collapse_all(),
+            Some(FILTER) | Some(RENAME_FIELD) => return,
             _ => {}
         }
         if let Some((index, action)) = Self::decode_failure(id) {
             return self.failure_action(index, action);
         }
-        let Some(row) = Self::decode(id).and_then(|index| self.rows.get(index).cloned()) else {
-            return;
-        };
-        match row {
-            Row::Consoles { .. } => self.consoles_collapsed = !self.consoles_collapsed,
-            Row::Console(console) => self.open_console(console),
-            Row::Repo { repo, .. } => {
-                if !self.collapsed_repos.remove(&repo) {
-                    self.collapsed_repos.insert(repo);
-                }
-            }
-            Row::Database { index, .. } => {
-                let name = self.databases[index].name.clone();
-                self.toggle_database(&name);
-            }
-            Row::Table { index, table } => {
-                let database = self.databases[index].clone();
-                let context = self.context.clone();
-                self.requests.push(PanelRequest::Reveal {
-                    id: TableItem::item_id(&database, &table),
-                    open: Box::new(move || {
-                        Some(Box::new(TableItem::new(context, database, table)))
-                    }),
-                });
-            }
-            Row::Note { .. } | Row::Failure { .. } => {}
+        if let Some((index, part)) = Self::decode(id) {
+            self.click_row(index, part);
         }
     }
 
@@ -902,59 +1673,74 @@ impl SidePanelView for DatabasePanel {
     }
 
     fn open_menu(&mut self, id: u64) -> bool {
-        let row = Self::decode(id).and_then(|index| self.rows.get(index));
-        self.menu_console = match row {
-            Some(Row::Console(console)) => Some(console.id.clone()),
-            _ => None,
+        let Some(row) = Self::decode(id).and_then(|(index, _)| self.rows.get(index).cloned())
+        else {
+            self.menu = None;
+            return false;
         };
-        self.menu_console.is_some()
+        let (database, has_main_copy, repo_database) = self.menu_facts(&row);
+        let entries = menu::entries(
+            &row,
+            &Facts {
+                database: database.as_ref(),
+                has_main_copy,
+                repo_database: repo_database.as_ref(),
+            },
+        );
+        if entries.is_empty() {
+            self.menu = None;
+            return false;
+        }
+        self.selected = Some(row.key());
+        self.menu = Some((row, entries));
+        true
     }
 
     fn menu_items(&self) -> Vec<MenuItem> {
-        if self.menu_console.is_none() {
+        let Some((_, entries)) = &self.menu else {
             return Vec::new();
-        }
-        vec![MenuItem {
-            id: Self::base() + DELETE_CONSOLE,
-            label: "Delete Console".into(),
-            checked: false,
-            sep: false,
-            disabled: false,
-        }]
+        };
+        entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| MenuItem {
+                id: Self::base() + MENU + index as u64,
+                label: entry.label.clone().into(),
+                checked: false,
+                sep: entry.sep,
+                disabled: entry.disabled,
+                danger: entry.danger,
+            })
+            .collect()
     }
 
     fn menu_action(&mut self, item: u64) {
-        if item != Self::base() + DELETE_CONSOLE {
-            self.menu_console = None;
+        let Some((row, entries)) = self.menu.take() else {
             return;
-        }
-        let Some(title) = self
-            .menu_console
-            .as_ref()
-            .and_then(|id| self.consoles.iter().find(|console| console.id == *id))
-            .map(|console| console.title.clone())
+        };
+        let Some(entry) = item
+            .checked_sub(Self::base() + MENU)
+            .and_then(|index| entries.get(index as usize))
         else {
             return;
         };
-        self.requests.push(PanelRequest::Prompt {
-            tag: DELETE_PROMPT,
-            message: format!("Delete the console \"{title}\"?"),
-            detail: Some("Its SQL is removed and cannot be recovered.".into()),
-            buttons: vec!["Delete".into(), "Cancel".into()],
-        });
+        if entry.disabled {
+            return;
+        }
+        self.choose(entry.action.clone(), row);
     }
 
     fn prompt_answered(&mut self, tag: u64, answer: usize) {
-        let Some(id) = self.menu_console.take() else {
+        let Some((action, row)) = self.confirm.take() else {
             return;
         };
-        if tag == DELETE_PROMPT && answer == 0 {
-            self.delete_console(&id);
+        if tag == CONFIRM_PROMPT && answer == 0 {
+            self.act(action, row);
         }
     }
 
     fn text_focused(&self) -> bool {
-        self.filter_focused
+        self.filter_focused || self.rename.is_some()
     }
 
     fn text(&mut self, text: &str) -> bool {
@@ -962,19 +1748,35 @@ impl SidePanelView for DatabasePanel {
         if typed.is_empty() {
             return false;
         }
+        if let Some((_, field)) = self.rename.as_mut() {
+            field.insert(&typed);
+            return true;
+        }
         self.filter.insert(&typed);
-        self.scroll = 0.0;
+        self.filter_changed();
         true
     }
 
     fn key(&mut self, key: EditKey, shift: bool) -> bool {
+        if let Some((_, field)) = self.rename.as_mut() {
+            match key {
+                EditKey::Enter => self.commit_rename(),
+                EditKey::Escape => self.rename = None,
+                _ => return field.key(key, shift),
+            }
+            return true;
+        }
         match key {
             EditKey::Escape if self.filter.text().is_empty() => self.filter_focused = false,
-            EditKey::Escape => self.filter.set_text(""),
+            EditKey::Escape => {
+                self.filter.set_text("");
+                self.filter_changed();
+            }
             EditKey::Enter => self.filter_focused = false,
             _ => {
-                self.scroll = 0.0;
-                return self.filter.key(key, shift);
+                let changed = self.filter.key(key, shift);
+                self.filter_changed();
+                return changed;
             }
         }
         true
@@ -982,6 +1784,7 @@ impl SidePanelView for DatabasePanel {
 
     fn blur(&mut self) {
         self.filter_focused = false;
+        self.rename = None;
     }
 
     fn restore_item(&mut self, item: &SerializedItem) -> Option<Box<dyn Item>> {
@@ -993,21 +1796,10 @@ impl SidePanelView for DatabasePanel {
     }
 }
 
-fn dot(color: Rgba) -> Node {
-    div()
-        .row()
-        .w_px(11.0)
-        .h_px(ROW_H)
-        .items_center()
-        .justify_center()
-        .child(div().w_px(7.0).h_px(7.0).rounded(3.5).bg(color))
-        .into()
-}
-
-/// The database's tables, or why it failed with the fixes that apply to it.
+/// The database's schema, or why it failed with the fixes that apply to it.
 fn open_database(connector: &Connector<'_>, database: &Database) -> Opened {
     let error = match connector.open(database) {
-        Ok(tables) => return Opened::Tables(tables),
+        Ok(schema) => return Opened::Schema(schema),
         Err(error) => error,
     };
     let repo = pom_db::repo_of(connector.config, database);
@@ -1027,22 +1819,53 @@ fn open_database(connector: &Connector<'_>, database: &Database) -> Opened {
     Opened::Failed(Box::new(failure))
 }
 
+fn storage_failure(connector: &Connector<'_>, database: &Database, raw: String) -> Failure {
+    let store = connector.object_store(&database.name);
+    let (host, port) = store
+        .host
+        .rsplit_once(':')
+        .map(|(host, port)| (host.to_string(), port.parse().unwrap_or(0)))
+        .unwrap_or((store.host.clone(), 0));
+    Failure::new(
+        ConnectError::new(
+            Engine::Minio,
+            &database.name,
+            &host,
+            port,
+            &store.credentials.access_key,
+            raw,
+        ),
+        String::new(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::tests::{column, users_schema};
+    use pom_db::object_storage::ObjectEntry;
+
+    fn panel() -> (crate::tests::TestContext, DatabasePanel) {
+        let context = crate::tests::context();
+        let panel = DatabasePanel::new(context.context.clone());
+        (context, panel)
+    }
 
     fn row_id(panel: &mut DatabasePanel, wanted: impl Fn(&Row) -> bool) -> u64 {
-        panel.render(320.0, 600.0);
+        panel.render(320.0, 2000.0);
         match panel.rows.iter().position(wanted) {
             Some(index) => DatabasePanel::id(index),
             None => panic!("row not shown"),
         }
     }
 
+    fn api_main(context: &crate::tests::TestContext) -> String {
+        context.context.databases()[0].name.clone()
+    }
+
     #[test]
     fn new_console_is_saved_listed_and_opened() {
-        let context = crate::tests::context();
-        let mut panel = DatabasePanel::new(context.context.clone());
+        let (context, mut panel) = panel();
         panel.click(DatabasePanel::base() + NEW_CONSOLE);
         let saved = context.context.consoles();
         assert_eq!(saved.len(), 1);
@@ -1051,74 +1874,347 @@ mod tests {
             panel.take_requests().as_slice(),
             [PanelRequest::Reveal { id, .. }] if *id == console_item_id(&saved[0])
         ));
-        let console = row_id(&mut panel, |row| matches!(row, Row::Console(_)));
+        let console = row_id(&mut panel, |row| matches!(row, Row::Console { .. }));
+        assert!(matches!(
+            panel.rows.iter().find(|row| matches!(row, Row::Console { .. })),
+            Some(Row::Console { place, .. }) if place == "api > main"
+        ));
         panel.click(console);
         assert_eq!(panel.take_requests().len(), 1);
     }
 
     #[test]
     fn a_console_is_deleted_only_after_confirming() {
-        let context = crate::tests::context();
-        let mut panel = DatabasePanel::new(context.context.clone());
+        let (context, mut panel) = panel();
         panel.click(DatabasePanel::base() + NEW_CONSOLE);
         panel.take_requests();
-        let console = row_id(&mut panel, |row| matches!(row, Row::Console(_)));
+        let console = row_id(&mut panel, |row| matches!(row, Row::Console { .. }));
         assert!(panel.open_menu(console));
-        let delete = panel.menu_items()[0].id;
+        let delete = panel
+            .menu_items()
+            .into_iter()
+            .find(|item| item.label == "Delete Console...")
+            .map(|item| item.id);
+        let Some(delete) = delete else {
+            panic!("the console menu deletes");
+        };
+        assert!(panel
+            .menu_items()
+            .iter()
+            .any(|item| item.id == delete && item.danger));
         panel.menu_action(delete);
         assert!(matches!(
             panel.take_requests().as_slice(),
-            [PanelRequest::Prompt {
-                tag: DELETE_PROMPT,
-                ..
-            }]
+            [PanelRequest::Prompt { tag: CONFIRM_PROMPT, message, .. }] if message.contains("query 1")
         ));
-        panel.prompt_answered(DELETE_PROMPT, 1);
+        panel.prompt_answered(CONFIRM_PROMPT, 1);
         assert_eq!(context.context.consoles().len(), 1);
         assert!(panel.open_menu(console));
         panel.menu_action(delete);
-        panel.prompt_answered(DELETE_PROMPT, 0);
+        panel.prompt_answered(CONFIRM_PROMPT, 0);
         assert!(context.context.consoles().is_empty());
-        panel.render(320.0, 600.0);
-        assert!(!panel
-            .rows
-            .iter()
-            .any(|row| matches!(row, Row::Consoles { .. })));
     }
 
     #[test]
-    fn the_filter_narrows_tables_and_takes_typing_while_focused() {
-        let context = crate::tests::context();
-        let mut panel = DatabasePanel::new(context.context.clone());
-        let table = |name: &str| Table {
-            schema: "public".into(),
-            name: name.into(),
-            kind: TableKind::Table,
-            count: None,
+    fn a_console_is_renamed_in_place_and_moved_to_another_database() {
+        let (context, mut panel) = panel();
+        panel.click(DatabasePanel::base() + NEW_CONSOLE);
+        panel.take_requests();
+        let console = row_id(&mut panel, |row| matches!(row, Row::Console { .. }));
+        assert!(panel.open_menu(console));
+        let item = |panel: &DatabasePanel, label: &str| {
+            panel
+                .menu_items()
+                .into_iter()
+                .find(|item| item.label == label)
+                .map_or(0, |item| item.id)
         };
-        let name = context.context.databases()[0].name.clone();
-        panel.show_tables(&name, vec![table("users"), table("orders")]);
+        panel.menu_action(item(&panel, "Rename"));
+        assert!(panel.text_focused());
+        panel.key(EditKey::Backspace, false);
+        panel.text("orders by status");
+        panel.key(EditKey::Enter, false);
+        assert!(!panel.text_focused());
+        assert_eq!(context.context.consoles()[0].title, "orders by status");
+        assert!(panel.open_menu(console));
+        panel.menu_action(item(&panel, "Change Database..."));
+        assert!(matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::OpenMenu]
+        ));
+        let web = item(&panel, "web > main");
+        assert_ne!(web, 0);
+        panel.menu_action(web);
+        let web_name = context.context.databases()[1].name.clone();
+        assert_eq!(context.context.consoles()[0].database, web_name);
+        let requests = panel.take_requests();
+        let toasts: Vec<&String> = requests
+            .iter()
+            .filter_map(|request| match request {
+                PanelRequest::Toast(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(toasts, ["orders by status now runs on web > main"]);
+    }
+
+    #[test]
+    fn shared_services_show_under_each_repo_that_uses_them() {
+        let (_context, mut panel) = panel();
+        panel.render(320.0, 2000.0);
+        let placed: Vec<(String, String, Vec<String>)> = panel
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Database {
+                    index,
+                    repo,
+                    shared_with,
+                    ..
+                } => Some((
+                    repo.clone(),
+                    panel.model.databases[*index].label.clone(),
+                    shared_with.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                ("api".to_string(), "main".to_string(), Vec::new()),
+                ("api".into(), "redis".into(), vec!["web".to_string()]),
+                ("api".into(), "files".into(), Vec::new()),
+                ("web".into(), "main".into(), Vec::new()),
+                ("web".into(), "redis".into(), vec!["api".to_string()]),
+                ("Other services".into(), "queue".into(), Vec::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_filter_counts_hits_and_takes_typing_while_focused() {
+        let (context, mut panel) = panel();
+        panel.show_schema(&api_main(&context), users_schema());
         panel.click(DatabasePanel::base() + FILTER);
         assert!(panel.text_focused());
-        assert!(panel.text("ORD"));
+        assert!(panel.text("TOKEN"));
         panel.render(320.0, 600.0);
+        assert_eq!(panel.found, 1);
         let tables: Vec<String> = panel
             .rows
             .iter()
             .filter_map(|row| match row {
-                Row::Table { table, .. } => Some(table.name.clone()),
+                Row::Table { table, hit, .. } => Some(format!("{} {hit:?}", table.name)),
                 _ => None,
             })
             .collect();
-        assert_eq!(tables, ["orders"]);
+        assert_eq!(tables, ["login_tokens Some(6..11)"]);
         assert!(panel.key(EditKey::Escape, false));
         assert!(panel.filter.text().is_empty());
         assert!(panel.text_focused());
         panel.key(EditKey::Escape, false);
         assert!(!panel.text_focused());
-        panel.click(DatabasePanel::base() + FILTER);
-        panel.blur();
-        assert!(!panel.text_focused());
+    }
+
+    #[test]
+    fn menus_come_from_the_row_under_the_pointer() {
+        let (context, mut panel) = panel();
+        let name = api_main(&context);
+        panel.show_schema(&name, users_schema());
+        let table = row_id(
+            &mut panel,
+            |row| matches!(row, Row::Table { table, .. } if table.name == "users"),
+        );
+        assert!(panel.open_menu(table));
+        let labels: Vec<String> = panel
+            .menu_items()
+            .iter()
+            .map(|item| item.label.to_string())
+            .collect();
+        assert!(labels.contains(&"Show DDL".to_string()), "{labels:?}");
+        let section = row_id(&mut panel, |row| matches!(row, Row::Section { .. }));
+        assert!(!panel.open_menu(section));
+        assert!(panel.menu_items().is_empty());
+    }
+
+    #[test]
+    fn destructive_items_ask_and_name_what_is_lost() {
+        let (context, mut panel) = panel();
+        let name = api_main(&context);
+        panel.show_schema(&name, users_schema());
+        let table = row_id(
+            &mut panel,
+            |row| matches!(row, Row::Table { table, .. } if table.name == "users"),
+        );
+        for label in ["Truncate...", "Drop Table..."] {
+            assert!(panel.open_menu(table));
+            let id = panel
+                .menu_items()
+                .into_iter()
+                .find(|item| item.label == label)
+                .map_or(0, |item| item.id);
+            panel.menu_action(id);
+            match panel.take_requests().as_slice() {
+                [PanelRequest::Prompt { detail, .. }] => {
+                    assert!(detail.as_deref().is_some_and(|text| text.contains("users")))
+                }
+                _ => panic!("{label} asks first"),
+            }
+            panel.prompt_answered(CONFIRM_PROMPT, 1);
+            assert!(panel.jobs.is_empty(), "{label} waits for the answer");
+        }
+    }
+
+    #[test]
+    fn copy_and_client_items_use_the_login_without_putting_secrets_in_argv() {
+        let (context, mut panel) = panel();
+        let name = api_main(&context);
+        panel.show_schema(&name, users_schema());
+        let database = row_id(&mut panel, |row| {
+            matches!(row, Row::Database { index: 0, .. })
+        });
+        let item = |panel: &DatabasePanel, label: &str| {
+            panel
+                .menu_items()
+                .into_iter()
+                .find(|item| item.label == label)
+                .map_or(0, |item| item.id)
+        };
+        let Some(Some(login)) = context
+            .context
+            .run_now(|connector| connector.login(&context.context.databases()[0]))
+        else {
+            panic!("a Postgres login");
+        };
+        assert!(panel.open_menu(database));
+        panel.menu_action(item(&panel, "Open psql in Terminal"));
+        match panel.take_requests().as_slice() {
+            [PanelRequest::RunCommand { argv, env, .. }] => {
+                assert!(argv[0].ends_with("psql"));
+                let port = login.port.to_string();
+                assert_eq!(
+                    argv[1..],
+                    [
+                        "-h",
+                        "localhost",
+                        "-p",
+                        port.as_str(),
+                        "-U",
+                        &login.user,
+                        "-d",
+                        &name
+                    ]
+                );
+                assert!(!argv
+                    .iter()
+                    .any(|arg| arg.contains('@') || arg.starts_with("postgres://")));
+                assert!(env.contains(&("PGPASSWORD".to_string(), login.password.clone())));
+            }
+            _ => panic!("opens psql"),
+        }
+        assert!(panel.open_menu(database));
+        panel.menu_action(item(&panel, "Copy Connection URL"));
+        assert!(matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::Copy(url), PanelRequest::Toast(_)] if *url == login.url(Engine::Postgres)
+        ));
+        assert!(panel.open_menu(database));
+        panel.menu_action(item(&panel, "Ask Claude about this schema"));
+        match panel.take_requests().as_slice() {
+            [PanelRequest::FixWithAgent(fix)] => {
+                assert!(fix.prompt.contains("login_tokens"), "{}", fix.prompt);
+                assert!(fix.prompt.contains("user_id bigint references users"));
+            }
+            _ => panic!("asks the agent"),
+        }
+    }
+
+    #[test]
+    fn expanding_a_table_shows_its_columns_with_keys() {
+        let (context, mut panel) = panel();
+        let name = api_main(&context);
+        let mut schema = users_schema();
+        schema.columns.push(column("users", "name", false));
+        panel.show_schema(&name, schema);
+        let users = row_id(
+            &mut panel,
+            |row| matches!(row, Row::Table { table, .. } if table.name == "users"),
+        );
+        panel.click(users + CHEVRON);
+        assert!(panel.take_requests().is_empty());
+        panel.render(320.0, 2000.0);
+        let columns: Vec<(String, bool)> = panel
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Column { column, .. } => Some((column.name.clone(), column.primary_key)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                ("id".to_string(), true),
+                ("email".into(), false),
+                ("name".into(), false)
+            ]
+        );
+        panel.click(users);
+        assert!(matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::Reveal { id, .. }] if id.starts_with("db-table:")
+        ));
+    }
+
+    #[test]
+    fn a_bucket_loads_fifty_at_a_time() {
+        let (_context, mut panel) = panel();
+        let object = |key: &str| ObjectEntry {
+            key: key.into(),
+            size: 10,
+            ..ObjectEntry::default()
+        };
+        panel.show_buckets("files", vec!["uploads".into()]);
+        panel.show_folder(
+            "files",
+            "uploads",
+            "",
+            Listing {
+                prefixes: Vec::new(),
+                objects: (0..50).map(|n| object(&format!("f{n}.txt"))).collect(),
+                next: Some("page-2".into()),
+            },
+        );
+        let more = row_id(&mut panel, |row| matches!(row, Row::More { .. }));
+        let page = r#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>f50.txt</Key><Size>1</Size></Contents></ListBucketResult>"#;
+        let transport = std::sync::Arc::new(crate::tests::FakeTransport::answering(&[page]));
+        panel.context.objects = transport.clone();
+        panel.click(more);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            panel.render(320.0, 4000.0);
+            let loading = panel
+                .model
+                .folders
+                .values()
+                .any(|folder| folder.loading.is_some());
+            if !loading || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let objects = panel
+            .rows
+            .iter()
+            .filter(|row| matches!(row, Row::Object { .. }))
+            .count();
+        assert_eq!(objects, 51);
+        assert!(!panel.rows.iter().any(|row| matches!(row, Row::More { .. })));
+        assert!(transport
+            .urls()
+            .first()
+            .is_some_and(|url| url.contains("continuation-token=page-2")));
     }
 
     fn show_missing(panel: &mut DatabasePanel, name: &str) {
@@ -1138,31 +2234,34 @@ mod tests {
 
     #[test]
     fn a_failed_database_shows_its_block_and_marks_its_rows() {
-        let context = crate::tests::context();
-        let mut panel = DatabasePanel::new(context.context.clone());
-        let name = context.context.databases()[0].name.clone();
+        let (context, mut panel) = panel();
+        let name = api_main(&context);
         show_missing(&mut panel, &name);
         panel.render(320.0, 600.0);
         assert!(panel
             .rows
             .iter()
             .any(|row| matches!(row, Row::Failure { index: 0 })));
-        assert_eq!(panel.repo_dot("api"), Some(theme().error));
-        assert_eq!(panel.repo_dot("web"), None);
+        let failed = |panel: &DatabasePanel, repo: &str| {
+            panel.rows.iter().any(
+                |row| matches!(row, Row::Repo { repo: shown, failed: true, .. } if shown == repo),
+            )
+        };
+        assert!(failed(&panel, "api"));
+        assert!(!failed(&panel, "web"));
         panel.fold(&name);
         panel.render(320.0, 600.0);
         assert!(!panel
             .rows
             .iter()
             .any(|row| matches!(row, Row::Failure { .. })));
-        assert_eq!(panel.repo_dot("api"), Some(theme().error));
+        assert!(failed(&panel, "api"));
     }
 
     #[test]
     fn failure_controls_ask_the_app() {
-        let context = crate::tests::context();
-        let mut panel = DatabasePanel::new(context.context.clone());
-        let name = context.context.databases()[0].name.clone();
+        let (context, mut panel) = panel();
+        let name = api_main(&context);
         show_missing(&mut panel, &name);
         panel.render(320.0, 600.0);
         panel.take_requests();
@@ -1192,9 +2291,8 @@ mod tests {
 
     #[test]
     fn a_fix_runs_off_the_ui_thread_and_reports_its_error() {
-        let context = crate::tests::context();
-        let mut panel = DatabasePanel::new(context.context.clone());
-        let name = context.context.databases()[0].name.clone();
+        let (context, mut panel) = panel();
+        let name = api_main(&context);
         show_missing(&mut panel, &name);
         panel.click(DatabasePanel::failure_id(0, FailureAction::CreateDatabase));
         assert!(panel

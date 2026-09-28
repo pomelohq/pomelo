@@ -19,7 +19,7 @@ fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(
             dir.join("pom.yml"),
-            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\nrepos:\n  api:\n    databases:\n      main: \"api_{{branch.safe}}\"\n  web:\n    databases:\n      main: \"web_{{branch.safe}}\"\n",
+            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  queue:\n    image: rabbitmq:3\nrepos:\n  api:\n    databases:\n      dev: \"{{branch.safe}}\"\n      dev_tx: \"transaction_{{branch.safe}}\"\n      test: \"{{branch.safe}}_test\"\n    env:\n      REDIS_URL: \"{{shared.redis.url}}\"\n      S3_ENDPOINT: \"http://{{shared.files.host}}\"\n  web:\n    shared_services:\n      - redis\n    databases:\n      main: \"web_{{branch.safe}}\"\n",
         )?;
         let config = std::sync::Arc::new(pom_config::Config::load(&dir.join("pom.yml"))?);
         let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
@@ -40,6 +40,7 @@ fn main() -> anyhow::Result<()> {
             workspace_root: dir.join("workspace--feat-login"),
             config_path: dir.join("pom.yml"),
             waker: std::sync::Arc::new(|| {}),
+            objects: std::sync::Arc::new(SnapshotStorage),
         };
         let table = |schema: &str, name: &str, kind: pom_db::TableKind, count: Option<usize>| {
             pom_db::Table {
@@ -51,8 +52,10 @@ fn main() -> anyhow::Result<()> {
         };
         let (width, height) = if which == "failures" {
             (320.0_f32, 620.0_f32)
-        } else if which == "panel" {
-            (320.0_f32, 420.0_f32)
+        } else if which == "panel" || which == "menu" {
+            (300.0_f32, 1180.0_f32)
+        } else if which == "object" {
+            (760.0_f32, 460.0_f32)
         } else if which == "console" {
             (900.0_f32, 280.0_f32)
         } else {
@@ -70,6 +73,7 @@ fn main() -> anyhow::Result<()> {
         consoles.push(database_ui::new_console(&consoles, first));
         consoles[1].id.push('b');
         context.save_consoles(&consoles);
+        let mut overlay: Option<ui::Painted> = None;
         let painted = if which == "console" {
             use workspace::ItemFooter;
             let mut footer = database_ui::ConsoleFooter::new(context, consoles[0].clone());
@@ -92,25 +96,26 @@ fn main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("no footer"))?
         } else if which == "failures" {
             let mut panel = database_ui::DatabasePanel::new(context);
-            let missing = "myproject_api_feat-login-with-escalated-inbox-and-a-long-name";
+            let names: Vec<String> = databases.iter().map(|db| db.name.clone()).collect();
+            let missing = format!("{}-with-escalated-inbox-and-a-long-name", names[0]);
             panel.show_failure(
-                "myproject_api_feat-login",
+                &names[0],
                 pom_db::ConnectError::new(
                     pom_db::Engine::Postgres,
-                    missing,
+                    &missing,
                     "localhost",
                     5434,
                     "postgres",
                     format!("db error: FATAL: database \"{missing}\" does not exist"),
                 ),
-                Some("myproject_api_main".into()),
+                Some("myproject_main".into()),
             );
-            panel.toggle_full_error("myproject_api_feat-login");
+            panel.toggle_full_error(&names[0]);
             panel.show_failure(
-                "myproject_web_feat-login",
+                &names[3],
                 pom_db::ConnectError::new(
                     pom_db::Engine::Postgres,
-                    "myproject_web_feat-login",
+                    &names[3],
                     "localhost",
                     5434,
                     "postgres",
@@ -118,7 +123,7 @@ fn main() -> anyhow::Result<()> {
                 ),
                 None,
             );
-            panel.fold("myproject_web_feat-login");
+            panel.fold(&names[3]);
             let node = panel.render(width, height);
             ui::render(
                 &ui::div()
@@ -127,30 +132,109 @@ fn main() -> anyhow::Result<()> {
                     .into(),
                 body,
             )
-        } else if which == "panel" {
+        } else if which == "panel" || which == "menu" {
             let mut panel = database_ui::DatabasePanel::new(context);
-            panel.set_filter("e");
             std::thread::sleep(std::time::Duration::from_millis(300));
-            panel.show_tables(
-                "myproject_api_feat-login",
-                vec![
-                    table("billing", "invoices", pom_db::TableKind::Table, None),
-                    table("public", "sessions", pom_db::TableKind::Table, None),
-                    table("public", "users", pom_db::TableKind::Table, None),
-                    table("public", "active_users", pom_db::TableKind::View, None),
-                ],
+            let names: Vec<String> = databases.iter().map(|db| db.name.clone()).collect();
+            let column = |table: &str,
+                          name: &str,
+                          data_type: &str,
+                          primary_key: bool,
+                          references: Option<&str>| {
+                pom_db::Column {
+                    schema: "public".into(),
+                    table: table.into(),
+                    name: name.into(),
+                    data_type: data_type.into(),
+                    primary_key,
+                    references: references.map(str::to_string),
+                }
+            };
+            let users = table("public", "users", pom_db::TableKind::Table, Some(1284));
+            panel.show_schema(
+                &names[0],
+                pom_db::Schema {
+                    tables: vec![
+                        users.clone(),
+                        table("public", "login_tokens", pom_db::TableKind::Table, Some(37)),
+                        table("public", "orders", pom_db::TableKind::Table, Some(5120)),
+                        table(
+                            "public",
+                            "schema_migrations",
+                            pom_db::TableKind::Table,
+                            Some(42),
+                        ),
+                        table("public", "active_users", pom_db::TableKind::View, None),
+                    ],
+                    columns: vec![
+                        column("users", "id", "bigint", true, None),
+                        column("users", "email", "varchar(255)", false, None),
+                        column("users", "name", "varchar(120)", false, None),
+                        column("users", "created_at", "timestamptz", false, None),
+                        column("login_tokens", "user_id", "bigint", false, Some("users")),
+                    ],
+                },
+            );
+            panel.expand_table(&names[0], &users);
+            panel.show_failure(
+                &names[2],
+                pom_db::ConnectError::new(
+                    pom_db::Engine::Postgres,
+                    &names[2],
+                    "localhost",
+                    5434,
+                    "postgres",
+                    format!("db error: FATAL: database \"{}\" does not exist", names[2]),
+                ),
+                None,
             );
             panel.show_tables(
                 "redis",
                 vec![
-                    table("", "session", pom_db::TableKind::Keyspace, Some(42)),
-                    table("", "user", pom_db::TableKind::Keyspace, Some(7)),
+                    table("", "session", pom_db::TableKind::Keyspace, Some(214)),
+                    table("", "cache", pom_db::TableKind::Keyspace, Some(1873)),
                 ],
             );
-            panel.set_hover(Some(
-                workspace::side_panel_base(workspace::PaneKind::Database) + 5 * 4,
-            ));
+            panel.fold("redis");
+            panel.show_buckets("files", vec!["uploads".into()]);
+            let object = |key: &str, size: u64| pom_db::object_storage::ObjectEntry {
+                key: key.into(),
+                size,
+                ..pom_db::object_storage::ObjectEntry::default()
+            };
+            panel.show_folder(
+                "files",
+                "uploads",
+                "",
+                pom_db::object_storage::Listing {
+                    prefixes: vec!["avatars/".into(), "exports/".into()],
+                    objects: vec![
+                        object("invoice-4412.pdf", 98_304),
+                        object("import-2026-09.csv", 3_565_158),
+                    ],
+                    next: Some("more".into()),
+                },
+            );
+            panel.show_prefix_stats(
+                "files",
+                "uploads",
+                "avatars/",
+                pom_db::object_storage::PrefixStats {
+                    objects: 2940,
+                    bytes: 1_288_490_188,
+                    capped: false,
+                },
+            );
             let node = panel.render(width, height);
+            if which == "menu" {
+                if let Some(id) = panel.row_named("users") {
+                    panel.open_menu(id);
+                    let items = panel.menu_items();
+                    overlay = Some(workspace::context_menu(
+                        120.0, 250.0, 250.0, width, height, &items, None, None,
+                    ));
+                }
+            }
             ui::render(
                 &ui::div()
                     .bg(ui::theme().panel_background)
@@ -158,6 +242,31 @@ fn main() -> anyhow::Result<()> {
                     .into(),
                 body,
             )
+        } else if which == "object" {
+            let files = databases
+                .iter()
+                .find(|db| db.name == "files")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no object storage"))?;
+            let mut item = database_ui::ObjectItem::new(
+                context,
+                files,
+                "uploads".into(),
+                pom_db::object_storage::ObjectEntry {
+                    key: "exports/orders-2026-09-27.json".into(),
+                    size: 5_347_737,
+                    modified: "2026-09-27T18:42:00.000Z".into(),
+                    etag: "9b2cf5e1a4d0".into(),
+                },
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while item.is_busy() && std::time::Instant::now() < deadline {
+                item.tick(&|| None);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            item.tick(&|| None);
+            item.paint_body(body, true)
+                .ok_or_else(|| anyhow::anyhow!("no body"))?
         } else {
             let database = pom_db::list_databases(
                 &pom_config::Config::load(&dir.join("pom.yml"))?,
@@ -219,13 +328,22 @@ fn main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("no body"))?
         };
         let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
-        let layers: Vec<ui::Layer> = vec![(
+        let mut layers: Vec<ui::Layer> = vec![(
             painted.rects.as_slice(),
             painted.tris.as_slice(),
             painted.texts.as_slice(),
             painted.icons.as_slice(),
             None,
         )];
+        if let Some(overlay) = &overlay {
+            layers.push((
+                overlay.rects.as_slice(),
+                overlay.tris.as_slice(),
+                overlay.texts.as_slice(),
+                overlay.icons.as_slice(),
+                None,
+            ));
+        }
         r.render_frame(ui::theme().editor_background, &layers)?;
         let (w, h, rgba) = r.read_rgba()?;
         let file = std::fs::File::create(&out)?;
@@ -1697,4 +1815,23 @@ fn main() -> anyhow::Result<()> {
     enc.write_header()?.write_image_data(&rgba)?;
     println!("wrote {out} ({w}x{h})");
     Ok(())
+}
+
+/// Canned object storage answers for the Database snapshots.
+struct SnapshotStorage;
+
+impl pom_db::object_storage::HttpTransport for SnapshotStorage {
+    fn send(
+        &self,
+        _request: &pom_db::object_storage::HttpRequest,
+    ) -> Result<pom_db::object_storage::HttpResponse, String> {
+        Ok(pom_db::object_storage::HttpResponse {
+            status: 206,
+            headers: vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("Content-Range".into(), "bytes 0-65535/5347737".into()),
+            ],
+            body: b"[\n  { \"id\": 5120, \"status\": \"paid\", \"total_cents\": 4900 },\n  { \"id\": 5119, \"status\": \"refunded\", \"total_cents\": 1200 }\n]\n".to_vec(),
+        })
+    }
 }

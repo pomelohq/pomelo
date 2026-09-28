@@ -775,7 +775,8 @@ pub fn measure_wrapped(text: &str, size: f32, mono: bool, weight: u16, max_w: f3
     })
 }
 
-/// The SVG source for each icon (Lucide, ISC/MIT — see `assets/icons/LICENSES`), bundled into the binary.
+/// The SVG source for each icon (Lucide, ISC/MIT; engine logos from Simple Icons, CC0 — see `assets/icons/LICENSES`),
+/// bundled into the binary.
 fn icon_svg(kind: IconKind) -> &'static [u8] {
     macro_rules! svg {
         ($f:literal) => {
@@ -818,6 +819,18 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Filter => svg!("filter.svg"),
         IconKind::Copy => svg!("copy.svg"),
         IconKind::Trash => svg!("trash.svg"),
+        IconKind::Column => svg!("column.svg"),
+        IconKind::EnginePostgresql => svg!("engines/postgresql.svg"),
+        IconKind::EngineMysql => svg!("engines/mysql.svg"),
+        IconKind::EngineMariadb => svg!("engines/mariadb.svg"),
+        IconKind::EngineRedis => svg!("engines/redis.svg"),
+        IconKind::EngineMongodb => svg!("engines/mongodb.svg"),
+        IconKind::EngineSqlite => svg!("engines/sqlite.svg"),
+        IconKind::EngineElasticsearch => svg!("engines/elasticsearch.svg"),
+        IconKind::EngineOpensearch => svg!("engines/opensearch.svg"),
+        IconKind::EngineMinio => svg!("engines/minio.svg"),
+        IconKind::EngineRabbitmq => svg!("engines/rabbitmq.svg"),
+        IconKind::EngineKafka => svg!("engines/apachekafka.svg"),
         IconKind::Ticket => svg!("ticket.svg"),
         IconKind::Terminal => svg!("terminal.svg"),
         IconKind::Diamond => svg!("diamond.svg"),

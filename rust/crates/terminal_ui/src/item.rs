@@ -214,11 +214,13 @@ impl TerminalItem {
             title,
             "/usr/bin/tail".into(),
             args,
+            Vec::new(),
             waker,
         )
     }
 
     /// A read-only tab running `program` (a log follower, ...); it stays open after the program ends.
+    #[allow(clippy::too_many_arguments)]
     pub fn command_output(
         id: u64,
         root: PathBuf,
@@ -226,11 +228,13 @@ impl TerminalItem {
         title: String,
         program: String,
         args: Vec<String>,
+        env: Vec<(String, String)>,
         waker: Waker,
     ) -> anyhow::Result<Self> {
         let options = TerminalOptions {
             shell: Some((program, args)),
             working_directory: Some(root.clone()),
+            env: env.into_iter().collect(),
             ..TerminalOptions::default()
         };
         let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);

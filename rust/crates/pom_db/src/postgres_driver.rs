@@ -67,35 +67,80 @@ fn rows(client: &mut Client, sql: &str) -> Result<Vec<Vec<Option<String>>>, Stri
 
 const USER_SCHEMAS: &str =
     "table_schema NOT LIKE 'pg\\_%' AND table_schema <> 'information_schema'";
+const USER_NAMESPACES: &str = "n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'";
 
+fn literal(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
+/// Tables and views, each table with the planner's row estimate (`reltuples`, -1 or 0 before an ANALYZE).
 pub(crate) fn tables(client: &mut Client) -> Result<Vec<Table>, String> {
     let sql = format!(
-        "SELECT table_schema, table_name, table_type FROM information_schema.tables \
-         WHERE {USER_SCHEMAS} AND table_name NOT LIKE 'pg\\_%' ORDER BY table_schema, table_name"
+        "SELECT t.table_schema, t.table_name, t.table_type, c.reltuples::bigint \
+         FROM information_schema.tables t \
+         LEFT JOIN pg_namespace n ON n.nspname = t.table_schema \
+         LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name \
+         WHERE {USER_SCHEMAS} AND t.table_name NOT LIKE 'pg\\_%' ORDER BY t.table_schema, t.table_name"
     );
     Ok(rows(client, &sql)?
         .into_iter()
         .map(|row| {
             let text = |index: usize| row.get(index).cloned().flatten().unwrap_or_default();
+            let view = text(2).to_uppercase().contains("VIEW");
             Table {
                 schema: text(0),
                 name: text(1),
-                kind: if text(2).to_uppercase().contains("VIEW") {
+                kind: if view {
                     TableKind::View
                 } else {
                     TableKind::Table
                 },
-                count: None,
+                count: if view {
+                    None
+                } else {
+                    text(3).parse::<i64>().ok().and_then(estimate)
+                },
             }
         })
         .collect())
 }
 
+fn estimate(reltuples: i64) -> Option<usize> {
+    usize::try_from(reltuples).ok()
+}
+
+/// A type as people write it: `character varying(255)` -> `varchar(255)`.
+pub(crate) fn short_type(full: &str) -> String {
+    const NAMES: [(&str, &str); 8] = [
+        ("character varying", "varchar"),
+        ("timestamp with time zone", "timestamptz"),
+        ("timestamp without time zone", "timestamp"),
+        ("time with time zone", "timetz"),
+        ("time without time zone", "time"),
+        ("double precision", "float8"),
+        ("character", "char"),
+        ("boolean", "bool"),
+    ];
+    for (long, short) in NAMES {
+        if let Some(rest) = full.strip_prefix(long) {
+            return format!("{short}{rest}");
+        }
+    }
+    full.to_string()
+}
+
 pub(crate) fn columns(client: &mut Client) -> Result<Vec<Column>, String> {
     let sql = format!(
-        "SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns \
-         WHERE {USER_SCHEMAS} AND table_name NOT LIKE 'pg\\_%' \
-         ORDER BY table_schema, table_name, ordinal_position"
+        "SELECT n.nspname, c.relname, a.attname, format_type(a.atttypid, a.atttypmod), \
+           EXISTS (SELECT 1 FROM pg_constraint p WHERE p.conrelid = c.oid AND p.contype = 'p' \
+                   AND a.attnum = ANY (p.conkey)), \
+           (SELECT r.relname FROM pg_constraint f JOIN pg_class r ON r.oid = f.confrelid \
+            WHERE f.conrelid = c.oid AND f.contype = 'f' AND a.attnum = ANY (f.conkey) LIMIT 1) \
+         FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'v', 'm', 'p', 'f') \
+           AND {USER_NAMESPACES} AND c.relname NOT LIKE 'pg\\_%' \
+         ORDER BY n.nspname, c.relname, a.attnum"
     );
     Ok(rows(client, &sql)?
         .into_iter()
@@ -105,10 +150,105 @@ pub(crate) fn columns(client: &mut Client) -> Result<Vec<Column>, String> {
                 schema: text(0),
                 table: text(1),
                 name: text(2),
-                data_type: text(3),
+                data_type: short_type(&text(3)),
+                primary_key: text(4) == "t",
+                references: row.get(5).cloned().flatten(),
             }
         })
         .collect())
+}
+
+/// The table's definition as SQL: columns with their types, defaults and NOT NULL, then its constraints and
+/// indexes; a view's `CREATE VIEW`.
+pub(crate) fn table_ddl(client: &mut Client, table: &Table) -> Result<String, String> {
+    let schema = if table.schema.is_empty() {
+        "public"
+    } else {
+        &table.schema
+    };
+    let relation = format!(
+        "(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+          WHERE n.nspname = {} AND c.relname = {})",
+        literal(schema),
+        literal(&table.name)
+    );
+    if table.kind == TableKind::View {
+        let definition = rows(client, &format!("SELECT pg_get_viewdef({relation}, true)"))?;
+        let body = definition
+            .first()
+            .and_then(|row| row.first().cloned().flatten())
+            .ok_or_else(|| format!("{} was not found", table.qualified()))?;
+        return Ok(format!(
+            "CREATE VIEW {} AS\n{}",
+            table.sql_name(),
+            body.trim_end()
+        ));
+    }
+    let columns = rows(
+        client,
+        &format!(
+            "SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull, \
+               pg_get_expr(d.adbin, d.adrelid) \
+             FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             WHERE a.attrelid = {relation} AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
+        ),
+    )?;
+    if columns.is_empty() {
+        return Err(format!("{} was not found", table.qualified()));
+    }
+    let constraints = rows(
+        client,
+        &format!(
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint \
+             WHERE conrelid = {relation} ORDER BY contype, conname"
+        ),
+    )?;
+    let indexes = rows(
+        client,
+        &format!(
+            "SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i \
+             WHERE i.indrelid = {relation} AND NOT i.indisprimary \
+               AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid) \
+             ORDER BY 1"
+        ),
+    )?;
+    let text = |row: &Vec<Option<String>>, index: usize| {
+        row.get(index).cloned().flatten().unwrap_or_default()
+    };
+    let mut lines: Vec<String> = columns
+        .iter()
+        .map(|row| {
+            let mut line = format!(
+                "    {} {}",
+                crate::quote_identifier(&text(row, 0)),
+                text(row, 1)
+            );
+            let default = text(row, 3);
+            if !default.is_empty() {
+                line.push_str(&format!(" DEFAULT {default}"));
+            }
+            if text(row, 2) == "t" {
+                line.push_str(" NOT NULL");
+            }
+            line
+        })
+        .collect();
+    lines.extend(constraints.iter().map(|row| {
+        format!(
+            "    CONSTRAINT {} {}",
+            crate::quote_identifier(&text(row, 0)),
+            text(row, 1)
+        )
+    }));
+    let mut ddl = format!(
+        "CREATE TABLE {} (\n{}\n);\n",
+        table.sql_name(),
+        lines.join(",\n")
+    );
+    for row in &indexes {
+        ddl.push_str(&format!("{};\n", text(row, 0)));
+    }
+    Ok(ddl)
 }
 
 /// The last result set (or command) of the messages, at most `limit` rows.
@@ -216,4 +356,19 @@ pub(crate) fn export_csv(client: &mut Client, sql: &str, path: &Path) -> Result<
     file.flush()
         .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(lines.saturating_sub(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_type_names_read_short() {
+        assert_eq!(short_type("character varying(255)"), "varchar(255)");
+        assert_eq!(short_type("timestamp with time zone"), "timestamptz");
+        assert_eq!(short_type("character(64)"), "char(64)");
+        assert_eq!(short_type("bigint"), "bigint");
+        assert_eq!(estimate(-1), None);
+        assert_eq!(estimate(1284), Some(1284));
+    }
 }

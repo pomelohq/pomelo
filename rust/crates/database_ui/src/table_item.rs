@@ -64,6 +64,16 @@ impl TableItem {
     }
 
     pub fn new(context: DatabaseContext, database: Database, table: Table) -> TableItem {
+        TableItem::filtered(context, database, table, "")
+    }
+
+    /// The table with its WHERE field already holding `filter`.
+    pub fn filtered(
+        context: DatabaseContext,
+        database: Database,
+        table: Table,
+        filter: &str,
+    ) -> TableItem {
         let field = || {
             let mut field = TextField::default();
             field.set_font_size(FIELD_FONT);
@@ -87,6 +97,11 @@ impl TableItem {
             status: None,
             hits: Vec::new(),
         };
+        if !filter.is_empty() {
+            item.filter.set_text(filter);
+            item.filter.move_to_end();
+            item.focus = Focus::Where;
+        }
         item.run();
         item
     }

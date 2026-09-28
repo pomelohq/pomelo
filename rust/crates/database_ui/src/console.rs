@@ -28,6 +28,8 @@ const RUN: u64 = 2;
 pub struct ConsoleFooter {
     context: DatabaseContext,
     console: Console,
+    /// The database this tab last saw in the saved console, to tell a pick made in the panel.
+    known_database: String,
     databases: Vec<Database>,
     height: f32,
     grid: Grid,
@@ -42,9 +44,14 @@ pub struct ConsoleFooter {
 
 impl ConsoleFooter {
     pub fn new(context: DatabaseContext, console: Console) -> ConsoleFooter {
-        let databases = context.databases();
+        let databases = context
+            .databases()
+            .into_iter()
+            .filter(|database| matches!(database.engine, Engine::Postgres | Engine::Redis))
+            .collect();
         ConsoleFooter {
             context,
+            known_database: console.database.clone(),
             console,
             databases,
             height: DEFAULT_HEIGHT,
@@ -80,7 +87,8 @@ impl ConsoleFooter {
             .find(|database| database.name == self.console.database)
     }
 
-    /// A console deleted from the panel while its tab is open is not brought back.
+    /// A console deleted from the panel while its tab is open is not brought back; a rename or another database
+    /// picked in the panel is kept.
     fn save(&mut self) {
         self.save_due = None;
         let mut consoles = self.context.consoles();
@@ -88,8 +96,28 @@ impl ConsoleFooter {
             .iter_mut()
             .find(|saved| saved.id == self.console.id)
         {
+            self.adopt(saved);
             *saved = self.console.clone();
             self.context.save_consoles(&consoles);
+        }
+    }
+
+    fn adopt(&mut self, saved: &Console) {
+        self.console.title = saved.title.clone();
+        if saved.database != self.known_database {
+            self.console.database = saved.database.clone();
+            self.known_database = saved.database.clone();
+        }
+    }
+
+    fn sync_from_saved(&mut self) {
+        if let Some(saved) = self
+            .context
+            .consoles()
+            .into_iter()
+            .find(|saved| saved.id == self.console.id)
+        {
+            self.adopt(&saved);
         }
     }
 
@@ -103,10 +131,12 @@ impl ConsoleFooter {
             .position(|database| database.name == self.console.database)
             .map_or(0, |at| (at + 1) % self.databases.len());
         self.console.database = self.databases[at].name.clone();
+        self.known_database = self.console.database.clone();
         self.save();
     }
 
     fn start(&mut self, sql: String) {
+        self.sync_from_saved();
         let Some(database) = self.database().cloned() else {
             self.note = Some(("Pick a database first".into(), true));
             return;
@@ -135,10 +165,9 @@ impl ConsoleFooter {
             .on_click(DATABASE_PICKER)
             .child(icon(IconKind::Cylinder).size(12.0).color(colors.icon_muted))
             .child(
-                label(database.map_or_else(
-                    || "Select database".to_string(),
-                    |database| format!("{} - {}", database.repo, database.label),
-                ))
+                label(
+                    database.map_or_else(|| "Select database".to_string(), crate::tree::readable),
+                )
                 .size(12.0)
                 .color(colors.text),
             )
@@ -444,6 +473,7 @@ mod tests {
             engine: Engine::Postgres,
             repo: "api".into(),
             label: "main".into(),
+            used_by: Vec::new(),
         };
         let first = new_console(&[], &database);
         assert_eq!(first.title, "query 1");

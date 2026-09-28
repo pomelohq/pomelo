@@ -431,7 +431,10 @@ fn offers_services_and_repo_commands_in_the_palette_and_the_repo_menu() {
         .expect("the repo command is offered");
     fixture.panel.run_palette_entry(migrate.id);
     let requests = fixture.panel.take_requests();
-    let Some(PanelRequest::RunCommand { title, cwd, argv }) = requests.first() else {
+    let Some(PanelRequest::RunCommand {
+        title, cwd, argv, ..
+    }) = requests.first()
+    else {
         panic!("runs in a terminal: {}", requests.len());
     };
     assert_eq!(title, "api: Run migrations");

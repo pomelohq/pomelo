@@ -260,11 +260,12 @@ pub enum PanelRequest {
         then: Box<PanelRequest>,
     },
     OpenMenu,
-    /// Run a command in a new terminal tab (`argv` spawned in `cwd`), titled `title`.
+    /// Run a command in a new terminal tab (`argv` spawned in `cwd` with `env` added), titled `title`.
     RunCommand {
         title: String,
         cwd: std::path::PathBuf,
         argv: Vec<String>,
+        env: Vec<(String, String)>,
     },
     /// Ask before acting; the answer comes back through `prompt_answered` with the same `tag`.
     Prompt {

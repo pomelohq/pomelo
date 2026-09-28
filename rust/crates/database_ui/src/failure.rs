@@ -72,7 +72,7 @@ impl FailureAction {
 fn engine_name(engine: Engine) -> &'static str {
     match engine {
         Engine::Postgres => "Postgres",
-        Engine::Redis => "Redis",
+        other => other.title(),
     }
 }
 

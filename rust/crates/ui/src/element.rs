@@ -120,6 +120,18 @@ pub enum IconKind {
     Filter,
     Copy,
     Trash,
+    Column,
+    EnginePostgresql,
+    EngineMysql,
+    EngineMariadb,
+    EngineRedis,
+    EngineMongodb,
+    EngineSqlite,
+    EngineElasticsearch,
+    EngineOpensearch,
+    EngineMinio,
+    EngineRabbitmq,
+    EngineKafka,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

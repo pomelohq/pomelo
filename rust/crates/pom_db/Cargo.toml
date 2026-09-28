@@ -3,7 +3,7 @@ name = "pom_db"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Browsing a workspace's databases: the Postgres databases and Redis instances it uses, their tables and keys, queries, CSV export, and saved consoles."
+description = "Browsing a workspace's databases: the Postgres databases, Redis instances and object storage it uses, their tables, keys and objects, queries, CSV export, and saved consoles."
 
 [lib]
 path = "src/pom_db.rs"
@@ -17,6 +17,7 @@ postgres = "0.19"
 redis = { version = "0.27", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 
 [dev-dependencies]
 pom_ptyhost = { path = "../pom_ptyhost" }

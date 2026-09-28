@@ -723,6 +723,7 @@ impl ServicesPanel {
                     title,
                     "/usr/bin/env".to_string(),
                     args,
+                    Vec::new(),
                     waker,
                 ) {
                     Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
@@ -753,6 +754,7 @@ impl ServicesPanel {
                     checked,
                     sep,
                     disabled: false,
+                    danger: false,
                 },
                 action,
             ));
@@ -920,6 +922,7 @@ impl ServicesPanel {
             title: format!("{}: {}", command.repo, command.label),
             cwd: worktree,
             argv: vec!["zsh".into(), "-lc".into(), script],
+            env: Vec::new(),
         });
     }
 
@@ -1192,6 +1195,7 @@ impl SidePanelView for ServicesPanel {
                                     checked: false,
                                     sep: false,
                                     disabled: false,
+                                    danger: false,
                                 },
                                 command,
                             )

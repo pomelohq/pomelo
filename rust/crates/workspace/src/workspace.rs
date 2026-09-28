@@ -1321,12 +1321,13 @@ pub trait TerminalPanelView: 'static {
     fn link_hovered(&self) -> bool;
     /// A new shell as a pane item, for placing outside the panel.
     fn new_item(&mut self, cwd: Option<std::path::PathBuf>) -> Option<Box<dyn Item>>;
-    /// A terminal running `argv` in `cwd`, titled `title`.
+    /// A terminal running `argv` in `cwd` with `env` added, titled `title`.
     fn command_item(
         &mut self,
         _title: String,
         _cwd: std::path::PathBuf,
         _argv: Vec<String>,
+        _env: Vec<(String, String)>,
     ) -> Option<Box<dyn Item>> {
         None
     }
@@ -2762,6 +2763,8 @@ pub struct MenuItem {
     pub checked: bool,
     pub sep: bool,
     pub disabled: bool,
+    /// Loses data: drawn in the error color.
+    pub danger: bool,
 }
 
 /// A right-click context menu anchored above `(ax, ay)`, clamped to stay inside `viewport_w`.
@@ -2846,6 +2849,8 @@ pub fn context_menu(
         }
         let label_color = if item.disabled {
             theme().text_disabled
+        } else if item.danger {
+            theme().error
         } else {
             text_c()
         };

@@ -79,6 +79,26 @@ pub(crate) fn keyspaces(connection: &mut Connection) -> Result<Vec<Table>, Strin
         .collect())
 }
 
+/// Deletes every key matching `pattern` (UNLINK, a page of the scan at a time); answers how many went.
+pub(crate) fn delete_matching(connection: &mut Connection, pattern: &str) -> Result<u64, String> {
+    let mut deleted = 0;
+    let mut cursor = 0;
+    loop {
+        let (next, keys) = scan_page(connection, cursor, pattern, 500)?;
+        if !keys.is_empty() {
+            let removed: u64 = redis::cmd("UNLINK")
+                .arg(&keys)
+                .query(connection)
+                .map_err(|error| error.to_string())?;
+            deleted += removed;
+        }
+        cursor = next;
+        if cursor == 0 {
+            return Ok(deleted);
+        }
+    }
+}
+
 /// A key pattern, not a command: it has a glob character, or is one word with a `:`.
 pub(crate) fn looks_like_pattern(text: &str) -> bool {
     text.contains(['*', '?', '[']) || (!text.contains(' ') && text.contains(':'))

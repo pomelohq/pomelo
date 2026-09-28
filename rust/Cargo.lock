@@ -910,6 +910,7 @@ name = "database_ui"
 version = "0.6.1"
 dependencies = [
  "files_ui",
+ "image",
  "pom_config",
  "pom_db",
  "pom_paths",
@@ -3216,6 +3217,7 @@ dependencies = [
  "redis",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
 ]
 
