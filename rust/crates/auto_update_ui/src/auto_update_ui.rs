@@ -17,7 +17,6 @@ fn fg_c() -> Rgba {
 /// Build the banner for the given status, spanning `width`. Empty when there is nothing to show.
 pub fn banner(status: &Status, width: f32) -> (Vec<Rect>, Vec<Text>) {
     match status {
-        Status::Idle => (Vec::new(), Vec::new()),
         Status::UpdateAvailable(version) => {
             let rects = vec![Rect {
                 x: 0.0,
@@ -42,6 +41,7 @@ pub fn banner(status: &Status, width: f32) -> (Vec<Rect>, Vec<Text>) {
             }];
             (rects, texts)
         }
+        _ => (Vec::new(), Vec::new()),
     }
 }
 

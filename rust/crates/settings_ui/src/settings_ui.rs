@@ -1761,6 +1761,10 @@ pub struct GeneralPage {
     pub version: String,
     /// Only the installed app replaces itself; a dev build says so.
     pub updates_apply: bool,
+    /// What the last check found (checking, up to date, downloading, or why it failed).
+    pub update_note: Option<String>,
+    /// A check or a download is under way, so the button waits.
+    pub update_busy: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1826,16 +1830,17 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
             }),
             PageItem::Row(SettingRow {
                 title: "Check Now".into(),
-                description: if general.updates_apply {
-                    "Looks for a newer release right away."
-                } else {
-                    "Only the installed Pomelo updates itself; this build does not."
-                }
-                .into(),
+                description: match (&general.update_note, general.updates_apply) {
+                    (Some(note), true) => note.clone().into(),
+                    (None, true) => "Looks for a newer release right away.".into(),
+                    (_, false) => {
+                        "Only the installed Pomelo updates itself; this build does not.".into()
+                    }
+                },
                 control: Control::Button {
                     id: CTRL_CHECK_UPDATES,
                     label: "Check for Updates",
-                    enabled: general.updates_apply,
+                    enabled: general.updates_apply && !general.update_busy,
                 },
                 reset: None,
             }),
@@ -3227,6 +3232,8 @@ mod tests {
                 start_at_login: true,
                 version: "0.9.0".into(),
                 updates_apply: false,
+                update_note: None,
+                update_busy: false,
             },
             keymap: KeymapPage {
                 rows: vec![(

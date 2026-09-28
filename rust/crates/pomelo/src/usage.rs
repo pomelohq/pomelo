@@ -196,7 +196,7 @@ impl App {
         }
         let updating = match auto_update::status() {
             auto_update::Status::UpdateAvailable(version) => Some(format!("v{version}")),
-            auto_update::Status::Idle => None,
+            _ => None,
         };
         let mut changed = updating != self.usage.updating_to;
         self.usage.updating_to = updating;

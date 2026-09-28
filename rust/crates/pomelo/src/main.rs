@@ -1819,6 +1819,11 @@ impl App {
             start_at_login: start_at_login(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             updates_apply: installed_app().is_some(),
+            update_note: auto_update::status().note(),
+            update_busy: matches!(
+                auto_update::status(),
+                auto_update::Status::Checking | auto_update::Status::UpdateAvailable(_)
+            ),
         };
         let keymap = settings_ui::KeymapPage {
             rows: workspace::keymap::Action::ALL

@@ -2006,6 +2006,8 @@ fn main() -> anyhow::Result<()> {
             start_at_login: false,
             version: env!("CARGO_PKG_VERSION").into(),
             updates_apply: live,
+            update_note: std::env::var("UPDATENOTE").ok(),
+            update_busy: false,
         },
         keymap: settings_ui::KeymapPage {
             rows: workspace::keymap::Action::ALL
