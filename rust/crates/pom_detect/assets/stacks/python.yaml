@@ -12,13 +12,13 @@
     - { lockfile: requirements.txt, pm: pip }
   default_pm: pip
   install:
-    pip: "python -m venv .venv && .venv/bin/pip install -r requirements.txt"
+    pip: "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
     uv: "uv sync"
     poetry: "poetry install"
     pdm: "pdm install"
     pipenv: "pipenv install"
   run:
-    - { kind: server, cmd: "python app.py" }
+    - { kind: server, cmd: "python3 app.py" }
   default_port: 8000
   dep_cache: per-project
 
@@ -29,9 +29,9 @@
   detect:
     markers: ["**/manage.py"]
   run:
-    - { kind: server, cmd: "python manage.py runserver 0.0.0.0:{{port}}" }
+    - { kind: server, cmd: "python3 manage.py runserver 0.0.0.0:{{port}}" }
     - { kind: worker, cmd: "celery -A app worker -l INFO", when_dep: celery }
-  setup: ["python manage.py migrate"]
+  setup: ["python3 manage.py migrate"]
   default_port: 8000
   dep_cache: per-project
 

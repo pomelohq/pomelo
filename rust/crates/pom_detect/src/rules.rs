@@ -362,7 +362,8 @@ fn resolve(root: &Path, lock_root: &Path, rule: &Rule) -> StackFacts {
         .unwrap_or_else(|| rule.default_pm.clone().unwrap_or_default());
     let fill = |text: &str| {
         text.replace("{{pm}}", &pm)
-            .replace("{{port}}", &rule.default_port.to_string())
+            // The emitted service gets a leased port, so it must listen where Pomelo looks.
+            .replace("{{port}}", "$PORT")
     };
     let install = rule
         .install

@@ -4,6 +4,8 @@
 
 use std::io::BufWriter;
 
+mod e2e;
+
 fn main() -> anyhow::Result<()> {
     let out = std::env::args()
         .nth(1)
@@ -12,6 +14,10 @@ fn main() -> anyhow::Result<()> {
         .nth(2)
         .and_then(|s| s.parse().ok())
         .unwrap_or(settings_ui::APPEARANCE);
+
+    if let Ok(repos) = std::env::var("E2E_REPOS") {
+        return e2e::run(out.trim_end_matches(".png"), &repos);
+    }
 
     if let Ok(which) = std::env::var("ONBOARD") {
         use workspace::Item;

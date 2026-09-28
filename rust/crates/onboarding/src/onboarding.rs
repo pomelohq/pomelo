@@ -161,6 +161,8 @@ pub fn verify(
             continue;
         }
         let command = steps.join(" && ");
+        // Later steps (migrate) run the tools the first one installed into the repo's virtualenv.
+        let shell = format!("export PATH=\"$PWD/.venv/bin:$PATH\"; {command}");
         let mut check = Check::running(CheckKind::Install { repo: repo.clone() });
         check.command = command.clone();
         if input.installed.get(repo) == Some(&command) {
@@ -169,7 +171,7 @@ pub fn verify(
         }
         report(&check);
         let started = Instant::now();
-        let result = pom_workspace::run_shell(true, &command, &checkout, &services.repo_env(repo));
+        let result = pom_workspace::run_shell(true, &shell, &checkout, &services.repo_env(repo));
         let check = match result {
             Ok(()) => check.passed(format!("{} - {}", steps[0], seconds(started.elapsed()))),
             Err(output) => check.failed(telling_line(&output), output),

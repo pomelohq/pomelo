@@ -22,6 +22,7 @@ use crate::tool_path::tool_path;
 /// A repo named like this (or empty) addresses a workspace-level service.
 const WORKSPACE_REPO: &str = "_ws";
 const LOCAL_PROFILE: &str = "local";
+const VENV_BIN: &str = ".venv/bin";
 const RELOCATE_ATTEMPTS: usize = 3;
 /// A just-started Postgres takes a few seconds before it accepts connections.
 const DATABASE_WAIT: Duration = Duration::from_secs(30);
@@ -712,6 +713,18 @@ pub fn service_command(
         worktree.join(&service.dir)
     };
     let mut command = format!("cd {}", shell_quote(&service_dir.to_string_lossy()));
+    // A Python repo's tools live in its virtualenv, which nothing activates for a service.
+    if service_dir.join(VENV_BIN).is_dir() || worktree.join(VENV_BIN).is_dir() {
+        let venv = if service_dir.join(VENV_BIN).is_dir() {
+            service_dir.join(VENV_BIN)
+        } else {
+            worktree.join(VENV_BIN)
+        };
+        command.push_str(&format!(
+            " && export PATH={}:\"$PATH\"",
+            shell_quote(&venv.to_string_lossy())
+        ));
+    }
     let pre_start = if service.pre_start.is_empty() {
         &dir.pre_start
     } else {

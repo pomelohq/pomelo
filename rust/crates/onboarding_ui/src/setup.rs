@@ -187,11 +187,12 @@ fn clone_detail(run: &Run, hovered: Option<u64>) -> Option<Node> {
                 .items_center()
                 .gap(10.0)
                 .child(
-                    div().w_px(70.0).child(
+                    div().w_px(150.0).child(
                         label(repo.clone())
                             .size(view::TEXT)
                             .mono()
-                            .color(colors.text),
+                            .color(colors.text)
+                            .truncate(),
                     ),
                 )
                 .child(view::progress_bar(value, None))
@@ -258,11 +259,12 @@ fn scan_detail(run: &Run, width: f32) -> Option<Node> {
             }
             view::row()
                 .child(
-                    div().w_px(70.0).child(
+                    div().w_px(150.0).child(
                         label(name.clone())
                             .size(view::TEXT)
                             .mono()
-                            .color(colors.text),
+                            .color(colors.text)
+                            .truncate(),
                     ),
                 )
                 .child(
@@ -684,11 +686,12 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
         .map(|(alias, stack, services)| {
             view::row()
                 .child(
-                    div().w_px(70.0).child(
+                    div().w_px(150.0).child(
                         label(alias.clone())
                             .size(view::TEXT)
                             .mono()
-                            .color(colors.text),
+                            .color(colors.text)
+                            .truncate(),
                     ),
                 )
                 .child(div().col().flex(1.0).child(view::pack(
@@ -751,7 +754,11 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
         .gap(view::PAGE_GAP)
         .child(view::header(
             &format!("{} is ready", run.name),
-            "Every repo installs and boots from main",
+            &match run.skipped.len() {
+                0 => "Every repo installs and boots from main".to_string(),
+                1 => "Installs and boots from main; 1 service was skipped".to_string(),
+                count => format!("Installs and boots from main; {count} services were skipped"),
+            },
             vec![primary],
         ))
         .child(stats);
