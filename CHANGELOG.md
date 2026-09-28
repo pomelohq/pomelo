@@ -4,6 +4,11 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-09-29
+
+### Fixed
+- Pomelo 0.6.x can update to this version: 0.7.0's app left out the update key 0.6.x checks, so its updater reported "improperly signed". (#108)
+
 ## [0.7.0] - 2026-09-29
 
 ### Changed
