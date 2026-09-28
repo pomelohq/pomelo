@@ -315,6 +315,8 @@ struct FileItem {
     split_active: bool,
     /// How far the old side of a split diff needs to scroll to reach the end of its widest line.
     old_side_max_scroll_x: f32,
+    /// Whether the pane is wide enough for a split diff, as of the last layout.
+    split_room: bool,
     /// Per display row, what the old side shows (split diffs only).
     split_left: Vec<SplitLeft>,
     /// Changes shown expanded, as char ranges carried through edits.
@@ -620,6 +622,7 @@ impl FileItem {
             split: SPLIT_DIFF_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
             split_active: false,
             old_side_max_scroll_x: 0.0,
+            split_room: true,
             split_left: Vec::new(),
             expanded: Vec::new(),
             base: None,
@@ -3192,10 +3195,8 @@ impl Item for FileItem {
     }
 
     fn companion_width(&mut self, body_w: f32) -> f32 {
-        let wide = self.branch_diff
-            && self.split
-            && self.buffer.is_some()
-            && body_w >= SPLIT_MIN_COLUMNS * char_advance();
+        self.split_room = body_w >= SPLIT_MIN_COLUMNS * char_advance();
+        let wide = self.branch_diff && self.split && self.buffer.is_some() && self.split_room;
         if wide != self.split_active {
             self.split_active = wide;
             self.rows = None;
@@ -3806,6 +3807,10 @@ impl Item for FileItem {
 
     fn diff_split(&self) -> Option<bool> {
         self.branch_diff.then_some(self.split)
+    }
+
+    fn diff_split_room(&self) -> bool {
+        self.split_room
     }
 
     fn diff_stat(&self) -> Option<(usize, usize)> {

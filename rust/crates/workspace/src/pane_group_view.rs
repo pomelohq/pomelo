@@ -519,6 +519,13 @@ impl PaneGroupView {
             .and_then(|path| self.group.leaf_at(path))
             .and_then(Pane::active_item)
             .and_then(|item| item.diff_split());
+        let split_room = self
+            .pane_order
+            .get(p)
+            .and_then(|path| self.group.leaf_at(path))
+            .and_then(Pane::active_item)
+            .is_none_or(|item| item.diff_split_room());
+        let shows_split = diff_split == Some(true) && split_room;
         let is_diff_layout = |action: PaneButtonAction| {
             matches!(
                 action,
@@ -536,8 +543,8 @@ impl PaneGroupView {
                 .map(|(index, button)| TabBarButton {
                     icon: button.icon,
                     id: base + index as u64,
-                    selected: (button.action == PaneButtonAction::DiffSplit)
-                        == (diff_split == Some(true)),
+                    selected: (button.action == PaneButtonAction::DiffSplit) == shows_split,
+                    disabled: button.action == PaneButtonAction::DiffSplit && !split_room,
                 })
                 .collect(),
             buttons: self
@@ -556,6 +563,7 @@ impl PaneGroupView {
                     },
                     id: base + index as u64,
                     selected: false,
+                    disabled: false,
                 })
                 .collect(),
         }

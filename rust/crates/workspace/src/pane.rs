@@ -293,6 +293,8 @@ pub struct TabBarButton {
     pub id: u64,
     /// Drawn pressed, for a button that shows which of several modes is on.
     pub selected: bool,
+    /// Dimmed and unclickable, for a mode that cannot apply right now.
+    pub disabled: bool,
 }
 
 /// What a pane's tab bar shows besides its tabs.
@@ -531,6 +533,13 @@ fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node 
 
 fn toolbar_button(button: &TabBarButton) -> Node {
     let colors = theme();
+    let color = if button.disabled {
+        colors.text_disabled
+    } else if button.selected {
+        colors.icon_accent
+    } else {
+        colors.icon_muted
+    };
     let mut face = div()
         .row()
         .w_px(22.0)
@@ -538,12 +547,10 @@ fn toolbar_button(button: &TabBarButton) -> Node {
         .rounded(4.0)
         .items_center()
         .justify_center()
-        .on_click(button.id)
-        .child(icon(button.icon).size(14.0).color(if button.selected {
-            colors.icon_accent
-        } else {
-            colors.icon_muted
-        }));
+        .child(icon(button.icon).size(14.0).color(color));
+    if !button.disabled {
+        face = face.on_click(button.id);
+    }
     if button.selected {
         face = face.bg(colors.element_selected);
     }
@@ -661,6 +668,7 @@ mod tests {
                 icon: IconKind::Plus,
                 id: 500,
                 selected: false,
+                disabled: false,
             }],
             toolbar: Vec::new(),
         };

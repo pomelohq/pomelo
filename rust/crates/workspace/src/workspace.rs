@@ -854,6 +854,10 @@ pub trait Item: 'static {
     fn diff_split(&self) -> Option<bool> {
         None
     }
+    /// Whether a diff has room to lay out side by side at its current width.
+    fn diff_split_room(&self) -> bool {
+        true
+    }
     /// Lines a diff adds and removes, for its toolbar.
     fn diff_stat(&self) -> Option<(usize, usize)> {
         None
