@@ -197,7 +197,7 @@ pub fn welcome_page(
             Some(IconKind::Plus),
             "New project",
             true,
-            Some("cmd-n"),
+            Some("cmd-shift-n"),
         ));
     let card_w = (width - 20.0) / 3.0;
     let cards = div()

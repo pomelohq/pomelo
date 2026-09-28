@@ -6090,6 +6090,9 @@ impl WorkspaceView {
         } else if id == SESSION_OPEN {
             self.close_session_menu();
             self.pending.session = Some(SessionRequest::ChooseFolder);
+        } else if id == crate::SESSION_NEW {
+            self.close_session_menu();
+            self.pending.session = Some(SessionRequest::NewProject);
         } else if id == crate::SESSION_EDIT_CONFIG {
             self.close_session_menu();
             self.pending.action = Some(crate::keymap::Action::OpenProjectConfig);
@@ -7068,6 +7071,11 @@ mod tests {
             effects.action,
             Some(crate::keymap::Action::OpenProjectConfig)
         );
+        let effects = e.update(app.app_mut(), |v, _| {
+            v.header_click(crate::SESSION_NEW);
+            v.take_effects()
+        });
+        assert_eq!(effects.session, Some(SessionRequest::NewProject));
     }
 
     #[test]
@@ -7101,7 +7109,7 @@ mod tests {
         assert!(!frame.overlays.is_empty(), "menu overlays present");
         let text = frame_text(&frame);
         assert!(text.contains("beta") && text.contains("missing"), "{text}");
-        assert!(!text.contains("New session"), "{text}");
+        assert!(text.contains("New session..."), "{text}");
     }
 
     #[test]
