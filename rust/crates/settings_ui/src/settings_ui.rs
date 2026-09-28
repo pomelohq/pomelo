@@ -3249,7 +3249,11 @@ mod tests {
         let terminal = texts_of(TERMINAL, &state, &settings);
         assert!(terminal.iter().any(|t| t.text == "10000"));
         let keymap = texts_of(KEYMAP, &state, &settings);
-        assert!(keymap.iter().any(|t| t.text == "ctrl-shift-g"));
+        assert!(
+            keymap.iter().any(|t| t.text == "G")
+                && !keymap.iter().any(|t| t.text == "ctrl-shift-g"),
+            "a binding is drawn as key glyphs, not its text"
+        );
         assert!(keymap.iter().any(|t| t.text.contains("unknown action")));
     }
 
