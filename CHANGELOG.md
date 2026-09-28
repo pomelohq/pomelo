@@ -4,6 +4,13 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-09-29
+
+### Fixed
+- The editor shows its change strips again: added, modified and deleted lines are marked in the gutter. (#109)
+- Clicking the status bar button of the panel already open closes the left panel column, like the other docks. (#109)
+- A narrow agent dock no longer pushes Send to main and Archive out of the side agent bar. (#109)
+
 ## [0.7.1] - 2026-09-29
 
 ### Fixed
