@@ -26,6 +26,19 @@ pub struct Endpoint {
     pub user: String,
     pub password: String,
 }
+/// The `index`-th `"host:container"` port of `service` in a compose file we wrote.
+fn composed_port(text: &str, service: &str, index: usize) -> Option<u16> {
+    let header = format!("  {service}:");
+    let mut lines = text.lines().skip_while(|line| *line != header).skip(1);
+    lines
+        .by_ref()
+        .take_while(|line| line.starts_with("   ") || line.is_empty())
+        .filter_map(|line| line.trim().strip_prefix("- \""))
+        .filter_map(|mapping| mapping.trim_end_matches('"').split_once(':'))
+        .nth(index)
+        .and_then(|(host, _)| host.parse().ok())
+}
+
 /// Used to reach a Postgres not published by one of our containers.
 const PSQL_IMAGE: &str = "postgres:16-alpine";
 
@@ -43,6 +56,13 @@ impl ServiceRunner {
 
     pub fn compose_file(&self) -> PathBuf {
         self.project_root.join(COMPOSE_FILE)
+    }
+
+    /// The host port the compose file on disk publishes for a shared service's `index`-th port. A running
+    /// container keeps that port even when its lease was reclaimed (Docker paused, the laptop slept).
+    pub(crate) fn composed_port(&self, name: &str, index: usize) -> Option<u16> {
+        let text = std::fs::read_to_string(self.compose_file()).ok()?;
+        composed_port(&text, name, index)
     }
 
     /// The host port a shared service is reached on: its lease, else the stable fallback.
@@ -406,6 +426,7 @@ impl ServiceRunner {
     fn shared_port_at(&self, name: &str, index: usize) -> u16 {
         self.ports
             .port_of(&pom_ports::shared_key(name, index))
+            .or_else(|| self.composed_port(name, index))
             .unwrap_or_else(|| {
                 let lease_name = if index == 0 {
                     name.to_string()
@@ -589,6 +610,15 @@ fn instance_volume(volume: &str, instance: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reclaimed_lease_still_finds_the_port_the_compose_file_publishes() {
+        let text = "name: demo-shared\n\nservices:\n  postgres:\n    image: postgres:16\n    ports:\n      - \"5434:5432\"\n    environment:\n      POSTGRES_USER: \"postgres\"\n\n  minio:\n    ports:\n      - \"9000:9000\"\n      - \"9001:9001\"\n";
+        assert_eq!(composed_port(text, "postgres", 0), Some(5434));
+        assert_eq!(composed_port(text, "minio", 1), Some(9001));
+        assert_eq!(composed_port(text, "postgres", 1), None);
+        assert_eq!(composed_port(text, "redis", 0), None);
+    }
 
     #[test]
     fn volumes_and_ports_per_instance() {

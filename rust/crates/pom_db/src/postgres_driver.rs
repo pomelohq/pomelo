@@ -36,7 +36,11 @@ pub(crate) fn connect(
 fn describe(error: &postgres::Error) -> String {
     match error.as_db_error() {
         Some(db) => db.message().to_string(),
-        None => error.to_string(),
+        // "error connecting to server" alone hides why; the cause (refused, timed out) is its source.
+        None => match std::error::Error::source(error) {
+            Some(cause) => format!("{error}: {cause}"),
+            None => error.to_string(),
+        },
     }
 }
 

@@ -652,6 +652,7 @@ impl EnvSources for ServiceRunner {
     fn shared_port(&self, name: &str) -> Option<u16> {
         self.ports
             .port_of(&pom_ports::shared_key(name, 0))
+            .or_else(|| self.composed_port(name, 0))
             .or_else(|| Some(pom_env::stable_shared_port(&self.session, name)))
     }
 

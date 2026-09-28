@@ -574,7 +574,13 @@ fn group_header(
 }
 
 /// A group on the rail: a rule in its colour either side of its count; dimmer and on a chip when folded.
-fn group_marker(group: crate::TicketGroup, count: usize, folded: bool, cell_w: f32) -> Node {
+fn group_marker(
+    group: crate::TicketGroup,
+    count: usize,
+    folded: bool,
+    cell_w: f32,
+    hovered: bool,
+) -> Node {
     let color = group.color();
     let rule_alpha = if folded { 0.35 } else { 0.7 };
     let rule = || {
@@ -593,11 +599,13 @@ fn group_marker(group: crate::TicketGroup, count: usize, folded: bool, cell_w: f
         .child(rule())
         .child(label(count.to_string()).size(9.5).weight(600).color(color))
         .child(rule());
-    if folded {
-        marker = marker
-            .py(3.0)
-            .rounded(6.0)
-            .bg(with_alpha(theme().text, 0.04));
+    if folded || hovered {
+        let bg = if hovered {
+            theme().element_hover
+        } else {
+            with_alpha(theme().text, 0.04)
+        };
+        marker = marker.py(3.0).rounded(6.0).bg(bg);
     }
     div()
         .row()
@@ -694,7 +702,13 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
                 group,
                 count,
                 folded,
-            } => group_marker(group, count, folded, cell_w),
+            } => group_marker(
+                group,
+                count,
+                folded,
+                cell_w,
+                list.hovered == Some(crate::WORKSPACE_GROUP_BASE + group.index() as u64),
+            ),
         });
     }
     column.into()

@@ -1307,7 +1307,9 @@ impl WorkspaceView {
                     if !bar.rects.is_empty() {
                         scrollbar_overlay = Some(bar);
                     }
-                } else if self.layout.left_column_active() {
+                }
+                // The left column shows its own panel whenever the file tree lives in another dock.
+                if files_side != Some(DockPosition::Left) && self.layout.left_column_active() {
                     let region = self.layout.tree_region(w, h);
                     blit(ui::render(
                         &ui::div().bg(ui::theme().panel_background).into(),
@@ -1535,12 +1537,30 @@ impl WorkspaceView {
                 self.workspace_scroll = self.workspace_scroll_max;
             }
             if self.layout.left.collapsed {
-                rail_tip = self.session_menu_hover.and_then(|hovered| {
-                    let index = hovered.checked_sub(crate::WORKSPACE_ROW_BASE)? as usize;
-                    let row = workspaces.iter().find(|row| row.index == index)?;
+                let group_tip = self.session_menu_hover.and_then(|hovered| {
+                    let group = crate::TicketGroup::ALL
+                        .get(hovered.checked_sub(crate::WORKSPACE_GROUP_BASE)? as usize)
+                        .copied()?;
                     let (cell, _) = p.hits.iter().find(|(_, id)| *id == hovered)?;
+                    let count = workspaces
+                        .iter()
+                        .filter(|row| row.index != 0 && self.row_group(row.index) == group)
+                        .count();
+                    let folded = self
+                        .grouping
+                        .as_ref()
+                        .is_some_and(|grouping| grouping.folded.contains(&group));
+                    let noun = if count == 1 {
+                        "workspace"
+                    } else {
+                        "workspaces"
+                    };
+                    let hint = if folded {
+                        "folded - click to open"
+                    } else {
+                        "click to fold, drag to move the group"
+                    };
                     let scale = ui::ui_text_scale();
-                    // Beside the cell, centred on it, rather than under it where the next cells are.
                     let anchor = Rect::new(
                         cell.x + cell.w + 6.0 * scale,
                         cell.y + cell.h / 2.0 - 17.0 * scale,
@@ -1548,34 +1568,52 @@ impl WorkspaceView {
                         0.0,
                         Rgba::TRANSPARENT,
                     );
-                    // The tile only raises what needs you; the tooltip carries the rest.
-                    let mut text = row.label.clone();
-                    if !row.ticket.is_empty() {
-                        match crate::panel::ticket_key(row) {
-                            Some(key) if !row.label.to_uppercase().starts_with(&key) => {
-                                text.push_str(&format!(" - {key} {}", row.ticket))
-                            }
-                            _ => text.push_str(&format!(" - {}", row.ticket)),
-                        }
-                    }
-                    if let Some(agent) = row.agent {
-                        text.push_str(&format!(" - Agent: {}", agent.label()));
-                    }
-                    if row.running > 0 {
-                        text.push_str(&format!(" - {} running", row.running));
-                    }
-                    if let Some(pr) = row.pr.filter(|_| row.index != 0) {
-                        let noun = if pr.count == 1 { "PR" } else { "PRs" };
-                        match pr.trouble {
-                            Some(trouble) => text.push_str(&format!(
-                                " - {} {noun}: {}",
-                                pr.count,
-                                trouble.label()
-                            )),
-                            None => text.push_str(&format!(" - {} {noun}", pr.count)),
-                        }
-                    }
+                    let text = format!("{} - {count} {noun} - {hint}", group.label());
                     Some(tooltip(anchor, &text, w))
+                });
+                rail_tip = group_tip.or_else(|| {
+                    self.session_menu_hover.and_then(|hovered| {
+                        let index = hovered.checked_sub(crate::WORKSPACE_ROW_BASE)? as usize;
+                        let row = workspaces.iter().find(|row| row.index == index)?;
+                        let (cell, _) = p.hits.iter().find(|(_, id)| *id == hovered)?;
+                        let scale = ui::ui_text_scale();
+                        // Beside the cell, centred on it, rather than under it where the next cells are.
+                        let anchor = Rect::new(
+                            cell.x + cell.w + 6.0 * scale,
+                            cell.y + cell.h / 2.0 - 17.0 * scale,
+                            0.0,
+                            0.0,
+                            Rgba::TRANSPARENT,
+                        );
+                        // The tile only raises what needs you; the tooltip carries the rest.
+                        let mut text = row.label.clone();
+                        if !row.ticket.is_empty() {
+                            match crate::panel::ticket_key(row) {
+                                Some(key) if !row.label.to_uppercase().starts_with(&key) => {
+                                    text.push_str(&format!(" - {key} {}", row.ticket))
+                                }
+                                _ => text.push_str(&format!(" - {}", row.ticket)),
+                            }
+                        }
+                        if let Some(agent) = row.agent {
+                            text.push_str(&format!(" - Agent: {}", agent.label()));
+                        }
+                        if row.running > 0 {
+                            text.push_str(&format!(" - {} running", row.running));
+                        }
+                        if let Some(pr) = row.pr.filter(|_| row.index != 0) {
+                            let noun = if pr.count == 1 { "PR" } else { "PRs" };
+                            match pr.trouble {
+                                Some(trouble) => text.push_str(&format!(
+                                    " - {} {noun}: {}",
+                                    pr.count,
+                                    trouble.label()
+                                )),
+                                None => text.push_str(&format!(" - {} {noun}", pr.count)),
+                            }
+                        }
+                        Some(tooltip(anchor, &text, w))
+                    })
                 });
                 rail_popover = self.rail_popover.and_then(|op_id| {
                     let (position, op) = self
