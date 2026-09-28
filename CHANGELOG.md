@@ -4,6 +4,26 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-29
+
+### Changed
+- Pomelo is rebuilt in Rust: one native app with a GPU-drawn UI and the core built in, no daemon or local server. Installs update in place and keep their permissions. (#107)
+- A project is one pom.yml; templates use dot notation (`{{shared.postgres.url}}`), and every save is checked before it applies. (#107)
+- A repo's quick commands are `tasks:` in pom.yml (the repo menu's Run Task); `shortcuts:` still reads. (#107)
+- Updates install only when their signature verifies. (#107)
+
+### Added
+- A full code editor: language servers, tree-sitter highlighting, multiple cursors, project search, split panes, Markdown preview. (#107)
+- New project setup: pick the repos, then Claude Code, Codex or Gemini CLI writes pom.yml and Pomelo verifies every service boots. (#107)
+- Side agents next to the main agent: Ask, Review, Second opinion or Fix, started as a fork, a compacted fork or fresh. (#107)
+- Agent usage: Claude plan limits in the title bar, today's cost in the status bar, and a usage tab by day, workspace and model. (#107)
+- The Services panel shows what needs attention with its fix, and a service opens as a tab with its live logs. (#107)
+- A Git panel that stages and commits across every repo of the branch, with unified and split branch diffs. (#107)
+- Database consoles, table grids with filters and CSV export, and Redis and MinIO browsing. (#107)
+
+### Removed
+- The iOS remote app. (#107)
+
 ## [0.6.1] - 2026-09-16
 
 ### Fixed
