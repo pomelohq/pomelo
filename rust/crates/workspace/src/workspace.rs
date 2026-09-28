@@ -1655,7 +1655,11 @@ impl Layout {
         self.left.effective()
     }
     pub fn right_w(&self) -> f32 {
-        self.right.effective()
+        let width = self.right.effective();
+        if width <= 0.0 {
+            return width;
+        }
+        width.max(self.panel_min(DockPosition::Right)).min(DOCK_MAX)
     }
     /// The bottom dock's current height (0 when collapsed).
     pub fn bottom_h(&self) -> f32 {
@@ -1808,15 +1812,21 @@ impl Layout {
 
     /// The left column's narrowest width: the tree's, or more when the panel shown there needs it.
     fn tree_min(&self) -> f32 {
-        let panel = match self.shown_on(DockPosition::Left) {
+        FILES_TREE_MIN
+            .max(self.panel_min(DockPosition::Left))
+            .min(FILES_TREE_MAX)
+    }
+
+    /// The minimum width the panel shown on `side` asks for (0 for the tree, terminal and agent).
+    fn panel_min(&self, side: DockPosition) -> f32 {
+        match self.shown_on(side) {
             Some(Shown::Func(kind)) => self
                 .side_panels
                 .iter()
                 .find(|panel| panel.kind() == kind)
                 .map_or(0.0, |panel| panel.min_width()),
             _ => 0.0,
-        };
-        FILES_TREE_MIN.max(panel).min(FILES_TREE_MAX)
+        }
     }
 
     /// Left edge of the editor area (right of the sidebar when docked left; 0 when the sidebar is on the right).
