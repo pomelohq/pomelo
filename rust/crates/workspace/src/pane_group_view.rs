@@ -48,6 +48,8 @@ pub enum PaneButtonAction {
     /// Only shown while the pane's active item is a diff; they pick its layout.
     DiffUnified,
     DiffSplit,
+    /// The agent dock's archived side agents.
+    History,
 }
 
 #[derive(Clone, Copy)]

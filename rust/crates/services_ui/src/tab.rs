@@ -1002,6 +1002,17 @@ impl Item for ServiceItem {
         }
     }
 
+    /// Its buttons can also arrive as window clicks (the window hit-tests the tab's painted ids first).
+    fn toolbar_click(&mut self, id: u64) -> bool {
+        let ours = id
+            .checked_sub(self.base)
+            .is_some_and(|offset| offset < IDS_PER_TAB);
+        if ours {
+            self.click(id);
+        }
+        ours
+    }
+
     fn pointer_down(&mut self, x: f32, y: f32, _click_count: u32, _modifiers: Modifiers) -> bool {
         let hit = self
             .hits

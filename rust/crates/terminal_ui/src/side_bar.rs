@@ -1,7 +1,7 @@
 //! The row over a side agent's console: what it is for, whether it may edit, what it started with, and the
 //! button that hands its answer to the main agent's prompt.
 
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, Node};
 
 use crate::item::{ConsoleAction, ConsoleToolbar};
 
@@ -10,11 +10,14 @@ const SEND: u64 = 0;
 const IDS: u64 = 1 << 51;
 const IDS_PER_BAR: u64 = 8;
 
+const ARCHIVE: u64 = 1;
+
 pub struct SideAgentBar {
     base: u64,
+    role_icon: IconKind,
     role: String,
     read_only: bool,
-    /// What it started with ("Forked from main - 12k", "Fresh").
+    /// What it started with ("Auto: fork + compact - 9.3k", "Fresh - packet").
     context: String,
     /// The main agent's tab.
     main_item: String,
@@ -26,6 +29,7 @@ pub struct SideAgentBar {
 impl SideAgentBar {
     pub fn new(
         number: u64,
+        role_icon: IconKind,
         role: &str,
         read_only: bool,
         context: String,
@@ -34,6 +38,7 @@ impl SideAgentBar {
     ) -> SideAgentBar {
         SideAgentBar {
             base: IDS + number * IDS_PER_BAR,
+            role_icon,
             role: role.to_string(),
             read_only,
             context,
@@ -47,60 +52,73 @@ impl SideAgentBar {
 impl ConsoleToolbar for SideAgentBar {
     fn render(&self, width: f32, _lines: usize) -> Node {
         let colors = theme();
-        let (tag, tag_color) = if self.read_only {
-            ("read-only", colors.text_muted)
-        } else {
-            ("can edit", colors.warning)
-        };
-        let chip = |text: String, color: Rgba| -> Node {
+        let tag = if self.read_only {
             div()
                 .row()
-                .h_px(18.0)
+                .h_px(20.0)
                 .px(6.0)
                 .items_center()
-                .rounded(3.0)
+                .rounded(4.0)
                 .border(1.0, colors.border_variant)
-                .child(label(text).size(11.0).color(color))
-                .into()
+                .child(label("read-only").size(12.0).color(colors.text_muted))
+        } else {
+            div()
+                .row()
+                .h_px(20.0)
+                .px(6.0)
+                .items_center()
+                .rounded(4.0)
+                .border(1.0, colors.warning.alpha(0.5))
+                .child(label("can edit").size(12.0).color(colors.warning))
         };
-        let send = div()
+        let context = div()
             .row()
-            .h_px(22.0)
-            .px(8.0)
+            .h_px(24.0)
+            .px(9.0)
             .gap(5.0)
             .items_center()
-            .rounded(4.0)
-            .bg(colors.info_background)
-            .border(1.0, colors.info_border)
+            .rounded(12.0)
+            .border(1.0, colors.border_variant)
+            .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
+            .child(label(self.context.clone()).size(12.5).color(colors.text));
+        let send = div()
+            .row()
+            .h_px(26.0)
+            .px(10.0)
+            .gap(6.0)
+            .items_center()
+            .rounded(5.0)
+            .border(1.0, colors.border_variant)
             .on_click(self.base + SEND)
-            .child(icon(IconKind::ArrowUpRight).size(11.0).color(colors.icon))
-            .child(label("Send to main").size(12.0).color(colors.text));
+            .child(icon(IconKind::Return).size(12.0).color(colors.icon_muted))
+            .child(label("Send to main").size(12.5).color(colors.text));
+        let archive = div()
+            .row()
+            .w_px(26.0)
+            .h_px(26.0)
+            .items_center()
+            .justify_center()
+            .rounded(4.0)
+            .on_click(self.base + ARCHIVE)
+            .child(icon(IconKind::Archive).size(14.0).color(colors.icon_muted));
         div()
             .col()
             .w_px(width)
             .child(
                 div()
                     .row()
-                    .h_px(32.0)
+                    .h_px(38.0)
                     .px(10.0)
-                    .gap(6.0)
+                    .gap(8.0)
                     .items_center()
                     .bg(colors.toolbar_background)
-                    .child(
-                        icon(IconKind::Sparkle)
-                            .size(12.0)
-                            .color(colors.terminal_ansi[5]),
-                    )
-                    .child(
-                        label(self.role.clone())
-                            .size(12.5)
-                            .medium()
-                            .color(colors.text),
-                    )
-                    .child(chip(tag.to_string(), tag_color))
-                    .child(chip(self.context.clone(), colors.text_muted))
+                    .child(icon(self.role_icon).size(13.0).color(colors.icon_muted))
+                    .child(label(self.role.clone()).size(13.0).color(colors.text))
+                    .child(tag)
+                    .child(context)
                     .child(div().flex(1.0))
-                    .child(send),
+                    .child(send)
+                    .child(archive),
             )
             .child(div().h_px(1.0).bg(colors.border))
             .into()
@@ -109,6 +127,10 @@ impl ConsoleToolbar for SideAgentBar {
     fn click(&mut self, id: u64) -> bool {
         if id == self.base + SEND {
             self.action = Some(ConsoleAction::Send);
+            return true;
+        }
+        if id == self.base + ARCHIVE {
+            self.action = Some(ConsoleAction::Archive);
             return true;
         }
         false

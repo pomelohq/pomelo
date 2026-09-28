@@ -2,6 +2,7 @@
 //! right dock, both resizable via a divider and collapsing to a fixed icon rail instead of vanishing, plus the
 //! content area. Computes rectangles, text runs and hit regions; the app drives input and rendering.
 
+pub mod agent_popover;
 mod form;
 mod key_binding;
 pub mod keymap;
@@ -492,24 +493,21 @@ pub const NOTIFICATION_PRIMARY: u64 = 620;
 pub const NOTIFICATION_CLOSE: u64 = 621;
 /// A row of the WORKSPACES panel: id = base + index into `ProjectInfo::workspaces`.
 pub const SIDE_PANEL_MENU_TARGET: u64 = 1500;
-/// The agent dock's "+" menu: a side agent to start next to the main one.
-pub const AGENT_MENU_TARGET: u64 = 1700;
-pub const AGENT_MENU_NEW_WORKSPACE: u64 = 1701;
-/// A side agent's start: base + role * 4 + start (Auto, Fork, Compacted, Fresh).
-pub const AGENT_START_BASE: u64 = 1710;
 
 /// What a side agent is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SideAgentRole {
     Ask,
     Review,
+    SecondOpinion,
     Fix,
 }
 
 impl SideAgentRole {
-    pub const ALL: [SideAgentRole; 3] = [
+    pub const ALL: [SideAgentRole; 4] = [
         SideAgentRole::Ask,
         SideAgentRole::Review,
+        SideAgentRole::SecondOpinion,
         SideAgentRole::Fix,
     ];
 
@@ -517,6 +515,7 @@ impl SideAgentRole {
         match self {
             SideAgentRole::Ask => "Ask",
             SideAgentRole::Review => "Review",
+            SideAgentRole::SecondOpinion => "Second opinion",
             SideAgentRole::Fix => "Fix",
         }
     }
@@ -742,6 +741,12 @@ pub struct Layout {
     /// Roughly how many tokens each side agent start would begin with (Auto, Fork, Compacted, Fresh), for
     /// the "+" menu; `None` where it is not known.
     pub side_agent_sizes: [Option<usize>; 4],
+    /// The main agent's session size, for the "+" popover.
+    pub main_agent_tokens: Option<usize>,
+    /// Side agents that were closed, newest first, for the history popover.
+    pub archived_agents: Vec<agent_popover::ArchivedAgent>,
+    /// The other coding CLI a second opinion runs with, when one is installed.
+    pub other_cli: Option<String>,
     pub left: Dock,
     pub right: Dock,
     pub bottom: Dock,
@@ -912,6 +917,10 @@ pub trait Item: 'static {
     /// A diff's layout (`Some(true)` side by side, `Some(false)` unified); `None` for anything else.
     fn diff_split(&self) -> Option<bool> {
         None
+    }
+    /// Kept first and pinned in its pane (a workspace's main agent).
+    fn pinned_at_front(&self) -> bool {
+        false
     }
     /// Muted text after the title on its tab (a service's repo).
     fn tab_detail(&self) -> Option<String> {
@@ -1399,6 +1408,10 @@ pub trait TerminalPanelView: 'static {
     fn take_new_agent_request(&mut self) -> bool {
         false
     }
+    /// The agent dock's history button was pressed, once.
+    fn take_history_request(&mut self) -> bool {
+        false
+    }
     /// Shows the tab `id` and types `text` into its prompt without sending; false when there is no such tab.
     fn paste_into(&mut self, _id: &str, _text: &str) -> bool {
         false
@@ -1696,6 +1709,9 @@ impl Default for Layout {
     fn default() -> Self {
         Self {
             side_agent_sizes: [None; 4],
+            main_agent_tokens: None,
+            archived_agents: Vec::new(),
+            other_cli: None,
             left: Dock {
                 position: DockPosition::Left,
                 width: 260.0,

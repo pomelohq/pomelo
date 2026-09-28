@@ -16,7 +16,8 @@ pub use launch::{
 };
 pub use naming::{claude_available, naming_prompt, parse_suggestion, suggest_name, NameSuggestion};
 pub use side::{
-    format_tokens, last_answer, main_session, side_launch, write_packet, MainSession, SideLaunch,
-    SideRole, SideStart, SIDE_AGENT_ENV,
+    format_tokens, last_answer, main_session, other_cli, record_side, second_opinion_launch,
+    side_launch, side_records, side_resume, side_title, write_packet, MainSession, SideLaunch,
+    SideRecord, SideRole, SideStart, SIDE_AGENT_ENV,
 };
 pub use watch::AgentWatcher;

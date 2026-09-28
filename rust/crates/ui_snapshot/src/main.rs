@@ -13,6 +13,46 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(settings_ui::APPEARANCE);
 
+    if let Ok(which) = std::env::var("AGENTPOP") {
+        let node = if which == "history" {
+            workspace::agent_popover::history(&[], None)
+        } else {
+            workspace::agent_popover::new_agent(
+                "feat-login",
+                workspace::SideAgentRole::Ask,
+                workspace::SideAgentStart::Auto,
+                [Some(9_300), Some(62_000), Some(9_300), Some(5_200)],
+                Some(62_000),
+                Some("codex"),
+                None,
+            )
+        };
+        let (width, height) = (420.0_f32, 760.0_f32);
+        let painted = ui::render(
+            &ui::div().p(20.0).child(node).into(),
+            ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT),
+        );
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().editor_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if std::env::var("SERVICES").is_ok() {
         use workspace::SidePanelView;
         let dir = std::env::temp_dir().join(format!("pom-snapshot-svc-{}", std::process::id()));

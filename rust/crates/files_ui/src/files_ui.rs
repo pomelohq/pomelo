@@ -6653,7 +6653,9 @@ impl FunctionView for FilesView {
                             }
                         });
                     }
-                    PaneButtonAction::NewItem | PaneButtonAction::ToggleZoom => {}
+                    PaneButtonAction::NewItem
+                    | PaneButtonAction::ToggleZoom
+                    | PaneButtonAction::History => {}
                 }
                 return true;
             }

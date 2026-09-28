@@ -53,6 +53,12 @@ pub struct TerminalItem {
     outgoing: Vec<(String, String)>,
     /// Typed into the prompt once the program is up and quiet a moment, without sending.
     pending_input: Option<(String, std::time::Instant)>,
+    tab_icon: IconKind,
+    /// Closing the tab stops the program (a side agent), where a console otherwise keeps running.
+    stop_on_close: bool,
+    close_requested: bool,
+    /// Kept first and pinned in its pane (the workspace's main agent).
+    pinned_first: bool,
 }
 
 /// Controls a console tab shows above its output (a service's header and facts). It can hand the tab a new
@@ -86,6 +92,8 @@ pub enum ConsoleAction {
     Find,
     /// Hand the selection (else the toolbar's fallback) to the tab `send_target` names.
     Send,
+    /// Stop the program and close the tab.
+    Archive,
 }
 
 struct Console {
@@ -304,6 +312,10 @@ impl TerminalItem {
             find_requested: false,
             outgoing: Vec::new(),
             pending_input: None,
+            tab_icon: IconKind::Terminal,
+            stop_on_close: false,
+            close_requested: false,
+            pinned_first: false,
         }
     }
 
@@ -315,6 +327,28 @@ impl TerminalItem {
             keep_after_exit: true,
         });
         self
+    }
+
+    pub fn with_tab_icon(mut self, kind: IconKind) -> Self {
+        self.tab_icon = kind;
+        self
+    }
+
+    /// Closing the tab stops the program too.
+    pub fn stopping_on_close(mut self) -> Self {
+        self.stop_on_close = true;
+        self
+    }
+
+    /// Keeps the tab first and pinned.
+    pub fn pinned_first(mut self) -> Self {
+        self.pinned_first = true;
+        self
+    }
+
+    /// The tab asked to close (its toolbar archived it), once.
+    pub fn take_close_request(&mut self) -> bool {
+        std::mem::take(&mut self.close_requested)
     }
 
     /// Types `text` into the program's prompt once it has started, without pressing Enter.
@@ -658,9 +692,13 @@ impl Item for TerminalItem {
     }
 
     fn closed(&mut self) {
-        if self.console.is_none() {
+        if self.console.is_none() || self.stop_on_close {
             self.terminal.terminate();
         }
+    }
+
+    fn pinned_at_front(&self) -> bool {
+        self.pinned_first
     }
 
     fn id(&self) -> Option<String> {
@@ -678,7 +716,7 @@ impl Item for TerminalItem {
     }
 
     fn tab_icon(&self) -> Option<IconKind> {
-        Some(IconKind::Terminal)
+        Some(self.tab_icon)
     }
 
     fn body_background(&self) -> Rgba {
@@ -776,6 +814,10 @@ impl Item for TerminalItem {
             Some(ConsoleAction::Clear) => self.terminal.clear(),
             Some(ConsoleAction::ScrollToBottom) => self.terminal.scroll_to_bottom(),
             Some(ConsoleAction::Find) => self.find_requested = true,
+            Some(ConsoleAction::Archive) => {
+                self.terminal.terminate();
+                self.close_requested = true;
+            }
             Some(ConsoleAction::Send) => {
                 let target = self
                     .toolbar

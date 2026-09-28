@@ -186,6 +186,13 @@ impl Pane {
 
     /// Append `item` as a new tab and activate it.
     pub fn add_item(&mut self, item: Box<dyn Item>) {
+        if item.pinned_at_front() {
+            self.open.insert(0, item);
+            self.pinned += 1;
+            self.active = self.active.map(|active| active + 1);
+            self.activate_user(0);
+            return;
+        }
         self.open.push(item);
         self.activate_user(self.open.len() - 1);
     }

@@ -69,10 +69,11 @@ pub fn render_keystroke(keystroke: &str, size: f32) -> Node {
         return row.child(glyph(kind)).into();
     }
     let text = key_label(key);
-    // A word such as "Escape" needs its own line height; boxed to the glyph size it sits too low.
+    // The key keeps its own line height and the row centers it on the glyphs; boxed to the glyph size it
+    // would sit below them.
     let key_box = div().row().items_center();
     let key_box = if text.chars().count() == 1 {
-        key_box.h_px(size).w_px(size).justify_center()
+        key_box.w_px(size).justify_center()
     } else {
         key_box.px(2.0)
     };

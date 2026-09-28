@@ -374,3 +374,186 @@ mod tests {
         assert_eq!(compacted.pending_input.as_deref(), Some("fix it"));
     }
 }
+
+/// A side agent as it was started, kept so a closed one can be reopened from its transcript.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SideRecord {
+    pub session: String,
+    pub holder: String,
+    /// "ask", "review", "fix", or the other CLI's name for a second opinion.
+    pub role: String,
+    pub title: String,
+    pub context: String,
+    /// Seconds since the epoch.
+    pub started: u64,
+}
+
+fn records_path(state: &pom_paths::StateDir, branch: &str) -> PathBuf {
+    state
+        .path("agents")
+        .join(format!("side-{}.json", branch.replace('/', "_")))
+}
+
+/// The side agents started in the workspace on `branch`, newest first.
+pub fn side_records(state: &pom_paths::StateDir, branch: &str) -> Vec<SideRecord> {
+    let mut records: Vec<SideRecord> = std::fs::read_to_string(records_path(state, branch))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    records.sort_by_key(|record| std::cmp::Reverse(record.started));
+    records
+}
+
+/// Remembers a side agent; the newest 50 are kept.
+pub fn record_side(
+    state: &pom_paths::StateDir,
+    branch: &str,
+    record: SideRecord,
+) -> std::io::Result<()> {
+    let mut records = side_records(state, branch);
+    records.retain(|kept| kept.session != record.session);
+    records.insert(0, record);
+    records.truncate(50);
+    let path = records_path(state, branch);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let text = serde_json::to_string_pretty(&records).map_err(std::io::Error::other)?;
+    pom_paths::write_atomic(&path, text.as_bytes(), 0o644)
+}
+
+/// A short tab title from what the agent was asked: the file it names, else its first words.
+pub fn side_title(role: &str, prompt: &str) -> String {
+    let file = prompt
+        .split(|c: char| c.is_whitespace() || c == '@' || c == '`' || c == '#')
+        .find(|word| word.contains('/') || (word.contains('.') && !word.ends_with('.')))
+        .and_then(|word| {
+            word.trim_matches(|c: char| !c.is_alphanumeric())
+                .rsplit('/')
+                .next()
+        })
+        .filter(|name| !name.is_empty());
+    let subject = file.map(str::to_string).unwrap_or_else(|| {
+        let words: Vec<&str> = prompt.split_whitespace().take(3).collect();
+        words.join(" ")
+    });
+    if subject.is_empty() {
+        role.to_string()
+    } else {
+        format!("{role}: {subject}")
+    }
+}
+
+/// Reopens a closed Claude side agent on its own transcript.
+pub fn side_resume(
+    context: &LaunchContext<'_>,
+    record: &SideRecord,
+    read_only: bool,
+) -> AgentLaunch {
+    let claude = resolve_claude(context.home, context.tool_path);
+    let mcp = mcp_config_json(context.state, context.binary, context.branch);
+    let mode = if read_only { "plan" } else { "acceptEdits" };
+    let script = format!(
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {side}=1; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --resume {session} --permission-mode {mode} --mcp-config {mcp}",
+        path = shell_quote(context.tool_path),
+        side = SIDE_AGENT_ENV,
+        cwd = shell_quote(&context.cwd.to_string_lossy()),
+        claude = shell_quote(&claude),
+        session = shell_quote(&record.session),
+        mcp = shell_quote(&mcp),
+    );
+    AgentLaunch {
+        holder: record.holder.clone(),
+        cwd: context.cwd.to_path_buf(),
+        argv: vec!["zsh".into(), "-c".into(), script],
+        title: record.title.clone(),
+    }
+}
+
+/// The other coding CLI installed on the tool path, for a second opinion: codex, else gemini.
+pub fn other_cli(tool_path: &str) -> Option<String> {
+    ["codex", "gemini"]
+        .into_iter()
+        .find(|name| {
+            tool_path
+                .split(':')
+                .any(|dir| Path::new(dir).join(name).is_file())
+        })
+        .map(str::to_string)
+}
+
+/// A second opinion from `cli`: it cannot read Claude's session, so it reads the written summary first.
+pub fn second_opinion_launch(
+    context: &LaunchContext<'_>,
+    number: u64,
+    cli: &str,
+    prompt: &str,
+    packet: Option<&Path>,
+) -> AgentLaunch {
+    let intro = packet.map_or(String::new(), |packet| {
+        format!(
+            "Read {} for what this workspace is about. ",
+            packet.display()
+        )
+    });
+    let question = format!("{intro}Do not edit files. {}", prompt.trim());
+    let command = match cli {
+        "gemini" => format!("gemini -i {}", shell_quote(&question)),
+        _ => format!("{cli} {}", shell_quote(&question)),
+    };
+    let script = format!(
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor; unsetopt monitor 2>/dev/null; cd {cwd} && exec {command}",
+        path = shell_quote(context.tool_path),
+        cwd = shell_quote(&context.cwd.to_string_lossy()),
+    );
+    AgentLaunch {
+        holder: format!(
+            "ws-{}-{}-side-{cli}-{number}",
+            context.session.replace('/', "_"),
+            context.branch.replace('/', "_")
+        ),
+        cwd: context.cwd.to_path_buf(),
+        argv: vec!["zsh".into(), "-c".into(), script],
+        title: format!("Second opinion ({cli})"),
+    }
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+
+    #[test]
+    fn a_side_agent_is_titled_by_the_file_it_is_about() {
+        assert_eq!(
+            side_title("Fix", "@api/app/models/user.rb#L46-49 there is a bug"),
+            "Fix: user.rb"
+        );
+        assert_eq!(
+            side_title("Ask", "why does login fail"),
+            "Ask: why does login"
+        );
+        assert_eq!(side_title("Review", ""), "Review");
+    }
+
+    #[test]
+    fn records_keep_the_newest_first() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let state = pom_paths::StateDir::new(temp.path());
+        let record = |session: &str, started: u64| SideRecord {
+            session: session.into(),
+            holder: format!("h-{session}"),
+            role: "ask".into(),
+            title: "Ask".into(),
+            context: "Fork".into(),
+            started,
+        };
+        record_side(&state, "feat", record("a", 1))?;
+        record_side(&state, "feat", record("b", 2))?;
+        let sessions: Vec<String> = side_records(&state, "feat")
+            .into_iter()
+            .map(|record| record.session)
+            .collect();
+        assert_eq!(sessions, ["b", "a"]);
+        Ok(())
+    }
+}

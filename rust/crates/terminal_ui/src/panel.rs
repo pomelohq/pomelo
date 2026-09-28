@@ -95,6 +95,7 @@ pub struct TerminalPanel {
     agent: bool,
     /// The agent dock's "+" was pressed; the workspace offers a side agent.
     new_agent_requested: bool,
+    history_requested: bool,
 }
 
 impl TerminalPanel {
@@ -111,6 +112,10 @@ impl TerminalPanel {
                 PaneButton {
                     icon: IconKind::Plus,
                     action: PaneButtonAction::NewItem,
+                },
+                PaneButton {
+                    icon: IconKind::Clock,
+                    action: PaneButtonAction::History,
                 },
                 PaneButton {
                     icon: IconKind::Maximize,
@@ -170,6 +175,7 @@ impl TerminalPanel {
             closed_last: false,
             agent: false,
             new_agent_requested: false,
+            history_requested: false,
         }
     }
 
@@ -345,6 +351,7 @@ impl TerminalPanelView for TerminalPanel {
                     }
                 }
                 PaneButtonAction::ToggleZoom => self.panes.toggle_zoom(),
+                PaneButtonAction::History => self.history_requested = true,
                 PaneButtonAction::Preview
                 | PaneButtonAction::DiffUnified
                 | PaneButtonAction::DiffSplit => {}
@@ -455,6 +462,10 @@ impl TerminalPanelView for TerminalPanel {
         std::mem::take(&mut self.new_agent_requested)
     }
 
+    fn take_history_request(&mut self) -> bool {
+        std::mem::take(&mut self.history_requested)
+    }
+
     fn paste_into(&mut self, id: &str, text: &str) -> bool {
         if !self.panes.reveal_item(id) {
             return false;
@@ -495,6 +506,9 @@ impl TerminalPanelView for TerminalPanel {
                 let result = terminal.sync(&host);
                 terminal.flush_pending_input();
                 outcome.send.extend(terminal.take_outgoing());
+                if terminal.take_close_request() {
+                    exited.push((pane.id, id.clone()));
+                }
                 pane_changed |= result.changed || result.title_changed;
                 if result.clipboard_store.is_some() {
                     outcome.clipboard_store = result.clipboard_store;

@@ -41,14 +41,6 @@ const ZOOM_PADDING: f32 = 8.0;
 /// Where tabs' own toolbar ids start (a service's header, a side agent's bar).
 const ITEM_TOOLBAR_IDS: u64 = 1 << 50;
 
-/// "9.3k", "62k", "800".
-fn token_text(tokens: usize) -> String {
-    match tokens {
-        0..=999 => tokens.to_string(),
-        1_000..=9_999 => format!("{:.1}k", tokens as f64 / 1000.0),
-        _ => format!("{}k", tokens / 1000),
-    }
-}
 const TOAST_ANIM: Duration = Duration::from_millis(160);
 const MODAL_TOP: f32 = 80.0;
 
@@ -74,6 +66,8 @@ pub struct WorkspaceEffects {
     pub open_agent: bool,
     /// Start a side agent next to the main one.
     pub side_agent: Option<(crate::SideAgentRole, crate::SideAgentStart)>,
+    /// Reopen an archived side agent (an index into `Layout::archived_agents`).
+    pub reopen_agent: Option<usize>,
     pub fix_setup: bool,
     /// Restart the services still running with the previous config.
     pub restart_stale: bool,
@@ -229,6 +223,9 @@ pub struct WorkspaceView {
     rail_popover: Option<u64>,
     rail_popover_rect: Option<Rect>,
     manual_menu_rect: Option<Rect>,
+    /// The agent dock's open popover and the button it drops from.
+    agent_popover: Option<(crate::agent_popover::AgentPopoverKind, Rect)>,
+    agent_popover_rect: Option<Rect>,
     /// The list grouped by ticket status, when that setting is on.
     grouping: Option<crate::Grouping>,
     group_drag: Option<GroupDrag>,
@@ -332,6 +329,8 @@ impl WorkspaceView {
             rail_popover: None,
             rail_popover_rect: None,
             manual_menu_rect: None,
+            agent_popover: None,
+            agent_popover_rect: None,
             grouping: None,
             group_drag: None,
             menu_workspace: None,
@@ -846,8 +845,18 @@ impl WorkspaceView {
         self.layout.agent_states = states;
     }
 
-    pub fn set_side_agent_sizes(&mut self, sizes: [Option<usize>; 4]) {
+    /// What the agent dock's popovers show: start sizes, the main session's, the history, a second CLI.
+    pub fn set_side_agents(
+        &mut self,
+        sizes: [Option<usize>; 4],
+        main_tokens: Option<usize>,
+        archived: Vec<crate::agent_popover::ArchivedAgent>,
+        other_cli: Option<String>,
+    ) {
         self.layout.side_agent_sizes = sizes;
+        self.layout.main_agent_tokens = main_tokens;
+        self.layout.archived_agents = archived;
+        self.layout.other_cli = other_cli;
     }
 
     /// The active editor's file, else the workspace folder: what an external editor should open.
@@ -2143,6 +2152,9 @@ impl WorkspaceView {
         self.manual_menu_rect = self
             .manual_menu_painted(&header_hits, w, h)
             .map(|p| push_card(p, &mut header_hits, &mut overlays));
+        self.agent_popover_rect = self
+            .agent_popover_painted(w)
+            .map(|p| push_card(p, &mut header_hits, &mut overlays));
 
         self.popover_rects.clear();
         self.popover_groups.clear();
@@ -2739,12 +2751,6 @@ impl WorkspaceView {
         if target == crate::TAB_MENU_TARGET {
             return self.tab_menu_items();
         }
-        if target == crate::AGENT_MENU_TARGET {
-            return self.agent_menu_items();
-        }
-        if is_submenu(target) && self.menu.map(|menu| menu.3) == Some(crate::AGENT_MENU_TARGET) {
-            return self.agent_start_items(target);
-        }
         if is_submenu(target) {
             if let Some(items) = self
                 .layout
@@ -3254,119 +3260,124 @@ impl WorkspaceView {
         self.menu_editor_anchor = None;
     }
 
-    /// The "+" menu under the pressed button: a side agent by what it is for, each with what it starts from.
-    fn open_agent_menu(&mut self) {
+    /// Opens the agent dock's popover under the pressed button, or closes it when that one is already open.
+    fn toggle_agent_popover(&mut self, kind: crate::agent_popover::AgentPopoverKind) {
+        let same = self.agent_popover.is_some_and(|(open, _)| {
+            std::mem::discriminant(&open) == std::mem::discriminant(&kind)
+        });
+        if same {
+            self.agent_popover = None;
+            return;
+        }
         let (x, y) = self.press;
-        if let Some((_, rect)) = self.hit_with_rect(x, y) {
-            self.menu = Some((rect.x, rect.y, rect.y + rect.h, crate::AGENT_MENU_TARGET));
-            self.submenu = None;
-            self.menu_path = None;
-            self.menu_editor_anchor = None;
+        self.agent_popover = self.hit_with_rect(x, y).map(|(_, rect)| (kind, rect));
+    }
+
+    fn agent_popover_click(&mut self, id: u64) {
+        use crate::agent_popover::{
+            AgentPopoverKind, HISTORY_BASE, NEW_WORKSPACE, ROLE_BASE, START_BASE, START_BUTTON,
+        };
+        let Some((kind, anchor)) = self.agent_popover else {
+            return;
+        };
+        let (x, y) = self.press;
+        let double = self.click_count(x, y) >= 2;
+        match kind {
+            AgentPopoverKind::New { role, start } => {
+                if id == NEW_WORKSPACE {
+                    self.agent_popover = None;
+                    self.workspace_requests.new_workspace = true;
+                } else if id == START_BUTTON {
+                    self.agent_popover = None;
+                    self.pending.side_agent = Some((role, start));
+                } else if let Some(picked) = id
+                    .checked_sub(ROLE_BASE)
+                    .and_then(|offset| crate::SideAgentRole::ALL.get(offset as usize))
+                    .filter(|_| id < START_BASE)
+                {
+                    let start = if *picked == crate::SideAgentRole::SecondOpinion {
+                        crate::SideAgentStart::Fresh
+                    } else {
+                        start
+                    };
+                    self.agent_popover = Some((
+                        AgentPopoverKind::New {
+                            role: *picked,
+                            start,
+                        },
+                        anchor,
+                    ));
+                } else if let Some(picked) = id
+                    .checked_sub(START_BASE)
+                    .and_then(|offset| crate::SideAgentStart::ALL.get(offset as usize))
+                    .filter(|_| id < START_BUTTON)
+                {
+                    if double {
+                        self.agent_popover = None;
+                        self.pending.side_agent = Some((role, *picked));
+                    } else {
+                        self.agent_popover = Some((
+                            AgentPopoverKind::New {
+                                role,
+                                start: *picked,
+                            },
+                            anchor,
+                        ));
+                    }
+                }
+            }
+            AgentPopoverKind::History => {
+                if let Some(index) = id.checked_sub(HISTORY_BASE) {
+                    self.agent_popover = None;
+                    self.pending.reopen_agent = Some(index as usize);
+                }
+            }
         }
     }
 
-    fn agent_menu_items(&self) -> Vec<MenuItem> {
+    /// The agent dock's popover, dropped from its button and kept inside the window.
+    fn agent_popover_painted(&self, w: f32) -> Option<Painted> {
+        let (kind, anchor) = self.agent_popover?;
         let branch = self
             .layout
             .project
             .as_ref()
             .map(|project| project.active.clone())
             .unwrap_or_default();
-        let item = |id: u64,
-                    label: String,
-                    disabled: bool,
-                    sep: bool,
-                    icon: Option<ui::IconKind>,
-                    hint: Option<&str>| MenuItem {
-            id,
-            label: label.into(),
-            checked: false,
-            sep,
-            disabled,
-            danger: false,
-            icon,
-            hint: hint.map(|hint| hint.to_string().into()),
+        let (node, width) = match kind {
+            crate::agent_popover::AgentPopoverKind::New { role, start } => (
+                crate::agent_popover::new_agent(
+                    &branch,
+                    role,
+                    start,
+                    self.layout.side_agent_sizes,
+                    self.layout.main_agent_tokens,
+                    self.layout.other_cli.as_deref(),
+                    self.session_menu_hover,
+                ),
+                crate::agent_popover::WIDTH,
+            ),
+            crate::agent_popover::AgentPopoverKind::History => (
+                crate::agent_popover::history(
+                    &self.layout.archived_agents,
+                    self.session_menu_hover,
+                ),
+                crate::agent_popover::WIDTH - 40.0,
+            ),
         };
-        let mut items = vec![item(
-            crate::AGENT_MENU_TARGET,
-            format!("New side agent in {branch}"),
-            true,
-            false,
-            None,
-            None,
-        )];
-        for (index, role) in crate::SideAgentRole::ALL.into_iter().enumerate() {
-            let (kind, hint) = match role {
-                crate::SideAgentRole::Ask => (ui::IconKind::Search, "read-only"),
-                crate::SideAgentRole::Review => (ui::IconKind::Eye, "read-only"),
-                crate::SideAgentRole::Fix => (ui::IconKind::Sparkle, "can edit"),
-            };
-            items.push(item(
-                crate::MENU_SUBMENU_BASE + index as u64,
-                role.title().to_string(),
-                false,
-                false,
-                Some(kind),
-                Some(hint),
-            ));
-        }
-        items.push(item(
-            crate::AGENT_MENU_NEW_WORKSPACE,
-            "New Agent in a New Workspace".to_string(),
-            false,
-            true,
-            Some(ui::IconKind::Plus),
-            None,
-        ));
-        items
-    }
-
-    /// The starts offered for the role behind submenu `id`, each with roughly what it begins with.
-    fn agent_start_items(&self, id: u64) -> Vec<MenuItem> {
-        let role = (id - crate::MENU_SUBMENU_BASE) as usize;
-        crate::SideAgentStart::ALL
-            .into_iter()
-            .enumerate()
-            .map(|(index, start)| {
-                let size = self.layout.side_agent_sizes.get(index).copied().flatten();
-                let hint = match (start, size) {
-                    (_, Some(tokens)) => format!("~{}", token_text(tokens)),
-                    (crate::SideAgentStart::Auto | crate::SideAgentStart::Fresh, None) => {
-                        String::new()
-                    }
-                    (_, None) => "no main session yet".to_string(),
-                };
-                MenuItem {
-                    id: crate::AGENT_START_BASE + role as u64 * 4 + index as u64,
-                    label: start.title().into(),
-                    checked: false,
-                    sep: index == 1,
-                    disabled: size.is_none()
-                        && matches!(
-                            start,
-                            crate::SideAgentStart::Fork | crate::SideAgentStart::Compacted
-                        ),
-                    danger: false,
-                    icon: None,
-                    hint: (!hint.is_empty()).then(|| hint.into()),
-                }
-            })
-            .collect()
+        let scale = ui::ui_text_scale();
+        let x = (anchor.x + anchor.w - width * scale).clamp(
+            8.0 * scale,
+            (w - width * scale - 8.0 * scale).max(8.0 * scale),
+        );
+        let y = anchor.y + anchor.h + 4.0 * scale;
+        Some(ui::render(
+            &node,
+            Rect::new(x, y, width * scale, 2000.0 * scale, Rgba::TRANSPARENT),
+        ))
     }
 
     fn apply_menu(&mut self, target: u64, item: u64) {
-        if target == crate::AGENT_MENU_TARGET {
-            if item == crate::AGENT_MENU_NEW_WORKSPACE {
-                self.workspace_requests.new_workspace = true;
-            } else if let Some(offset) = item.checked_sub(crate::AGENT_START_BASE) {
-                let role = crate::SideAgentRole::ALL.get((offset / 4) as usize);
-                let start = crate::SideAgentStart::ALL.get((offset % 4) as usize);
-                if let (Some(role), Some(start)) = (role, start) {
-                    self.pending.side_agent = Some((*role, *start));
-                }
-            }
-            return;
-        }
         if target == crate::WORKSPACE_ROW_MENU_TARGET {
             self.apply_workspace_row_menu(item);
             return;
@@ -4082,6 +4093,15 @@ impl WorkspaceView {
         {
             self.manual_menu = None;
         }
+        if let Some((_, anchor)) = self.agent_popover {
+            let on_anchor = x >= anchor.x
+                && x < anchor.x + anchor.w
+                && y >= anchor.y
+                && y < anchor.y + anchor.h;
+            if !within(self.agent_popover_rect) && !on_anchor {
+                self.agent_popover = None;
+            }
+        }
         if self.rail_popover.is_some() {
             let inside = within(self.rail_popover_rect) || within(self.manual_menu_rect);
             let on_toggle = self.hit(x, y).is_some_and(|id| {
@@ -4466,6 +4486,10 @@ impl WorkspaceView {
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
         if self.prompt_shown.is_some() {
             return self.prompt_key(key, shift);
+        }
+        if self.agent_popover.is_some() && key == EditKey::Escape {
+            self.agent_popover = None;
+            return true;
         }
         if self.menu.is_some() {
             match key {
@@ -5675,6 +5699,10 @@ impl WorkspaceView {
             self.ask_about_pending_close();
             return;
         }
+        if (crate::agent_popover::POPOVER_BASE..crate::agent_popover::POPOVER_END).contains(&id) {
+            self.agent_popover_click(id);
+            return;
+        }
         // A tab's own toolbar: its ids sit above every range, so ask the docks' tabs before the editor's.
         if id >= ITEM_TOOLBAR_IDS {
             if self
@@ -5697,12 +5725,23 @@ impl WorkspaceView {
         }
         if crate::is_agent_id(id) {
             self.focus_group(InputGroup::Agent);
-            let wants_agent = self.layout.agent_view.as_mut().is_some_and(|view| {
-                view.click(id);
-                view.take_new_agent_request()
-            });
-            if wants_agent {
-                self.open_agent_menu();
+            let (wants_new, wants_history) =
+                self.layout
+                    .agent_view
+                    .as_mut()
+                    .map_or((false, false), |view| {
+                        view.click(id);
+                        (view.take_new_agent_request(), view.take_history_request())
+                    });
+            if wants_new || wants_history {
+                self.toggle_agent_popover(if wants_new {
+                    crate::agent_popover::AgentPopoverKind::New {
+                        role: crate::SideAgentRole::Ask,
+                        start: crate::SideAgentStart::Auto,
+                    }
+                } else {
+                    crate::agent_popover::AgentPopoverKind::History
+                });
             }
             self.ask_about_pending_close();
             return;
