@@ -1,0 +1,35 @@
+[package]
+name = "pom_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The `pom` command line: workspaces and their services from a terminal."
+
+[lib]
+path = "src/pom_cli.rs"
+
+[[bin]]
+name = "pom"
+path = "src/bin/pom.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_bundle = { path = "../pom_bundle" }
+pom_doctor = { path = "../pom_doctor" }
+pom_secrets = { path = "../pom_secrets" }
+pom_core = { path = "../pom_core" }
+pom_layout = { path = "../pom_layout" }
+pom_mcp = { path = "../pom_mcp" }
+pom_agent = { path = "../pom_agent" }
+pom_paths = { path = "../pom_paths" }
+pom_ports = { path = "../pom_ports" }
+pom_proxy = { path = "../pom_proxy" }
+pom_sessions = { path = "../pom_sessions" }
+pom_env = { path = "../pom_env" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+pom_services = { path = "../pom_services" }
+pom_workspace = { path = "../pom_workspace" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,18 @@
+[package]
+name = "workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Workspace layout: top bar, docks (workspace-list panel), pane/tab groups. Computes rects + hit regions."
+
+[lib]
+path = "src/workspace.rs"
+
+[dependencies]
+pom_paths = { path = "../pom_paths" }
+ui = { path = "../ui" }
+terminal = { path = "../terminal" }
+editor = { package = "pomelo-editor", path = "../editor" }
+arboard = "3.6.1"
+serde.workspace = true
+serde_json.workspace = true

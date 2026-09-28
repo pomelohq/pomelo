@@ -1,0 +1,47 @@
+{
+  "default_branch": "main",
+  "prepare_main": [
+    "reset",
+    "migrate",
+    "seed"
+  ],
+  "repos": [
+    {
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "name": "web",
+      "services": [
+        {
+          "cmd": "npm start",
+          "env": {
+            "NODE_ENV": "development"
+          },
+          "has_port": true,
+          "name": "a",
+          "type": "frontend"
+        },
+        {
+          "cmd": "npm run b",
+          "env": {
+            "EXTRA": "1",
+            "NODE_ENV": "development"
+          },
+          "has_port": true,
+          "name": "b",
+          "type": "frontend"
+        }
+      ]
+    }
+  ],
+  "session": "pomelo",
+  "valid": true,
+  "workspaces": {
+    "pomelo": [
+      "a",
+      "b"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+[package]
+name = "pom_mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "`pom mcp`: a stdio MCP server that lets a coding agent see and drive its workspace (services, ports, env, config)."
+
+[lib]
+path = "src/pom_mcp.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_db = { path = "../pom_db" }
+pom_doctor = { path = "../pom_doctor" }
+pom_core = { path = "../pom_core" }
+pom_layout = { path = "../pom_layout" }
+pom_paths = { path = "../pom_paths" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+pom_secrets = { path = "../pom_secrets" }
+pom_env = { path = "../pom_env" }
+pom_services = { path = "../pom_services" }
+serde.workspace = true
+libc = "0.2"
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

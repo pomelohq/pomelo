@@ -1,0 +1,4 @@
+# One toolchain for local builds and CI, so a new clippy lint lands when we move this, not on its own.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

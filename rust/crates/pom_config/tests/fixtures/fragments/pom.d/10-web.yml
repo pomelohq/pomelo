@@ -1,0 +1,6 @@
+repos:
+  web:
+    alias: web
+    services:
+      dev:
+        cmd: vite

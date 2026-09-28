@@ -1,0 +1,10 @@
+session: auto
+repos:
+  api:
+    alias: be
+    services:
+      server: go run .
+      worker: go run ./w
+  web:
+    services:
+      dev: vite

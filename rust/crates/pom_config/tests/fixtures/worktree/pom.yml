@@ -1,0 +1,30 @@
+session: test
+repos:
+  api:
+    services:
+      server:
+        cmd: "go run ."
+    copy: [.env.local]
+    databases:
+      main: "{{branch.safe}}"
+      cache: mydb
+    env:
+      "*":
+        DB_BASE: shared
+      .env: {}
+      .env.local:
+        DB_HOST: localhost
+      ignored: scalar
+    shared_services:
+      - postgres
+      - redis:
+          db_name: cache_db
+    setup: [npm install]
+    seed_from_main: true
+    pre_delete: [rm -rf tmp]
+  web:
+    env:
+      A: '1'
+      B: 2
+      C:
+      D: ~

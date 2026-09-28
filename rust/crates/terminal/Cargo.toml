@@ -1,0 +1,20 @@
+[package]
+name = "terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal core: a shell on a PTY feeding a VT emulator, with input encoding and a renderable grid snapshot. Pure logic, no rendering."
+
+[lib]
+path = "src/terminal.rs"
+
+[dependencies]
+alacritty_terminal = "0.26.0"
+anyhow.workspace = true
+libc = "0.2"
+pom_ptyhost = { path = "../pom_ptyhost" }
+regex = "1"
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+
+[dev-dependencies]
+tempfile = "3"

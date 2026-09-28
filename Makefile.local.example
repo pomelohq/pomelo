@@ -1,8 +1,0 @@
-# Copy this to Makefile.local (gitignored) and fill in your own values to make
-# signed + notarized release builds. Without it, builds are adhoc-signed and
-# local-only (great for contributors; not distributable).
-SIGN_ID = Developer ID Application: Your Name (TEAMID)
-NOTARY_PROFILE = your-notarytool-keychain-profile
-GH_USER_PUBLISH = your-github-username
-GH_USER_BACK =
-RELEASE_REPO = your-org/pomelo-releases

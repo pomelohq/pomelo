@@ -1,0 +1,111 @@
+{
+  "default_branch": "main",
+  "prepare_main": [
+    "reset",
+    "migrate",
+    "seed"
+  ],
+  "repos": [
+    {
+      "commands": {
+        "alpha": "a",
+        "build": "b",
+        "generate": "npm run gen",
+        "install": "npm ci",
+        "migrate": "npm run migrate",
+        "test": "npm test",
+        "zeta": "z"
+      },
+      "effective_migrate": [
+        "npm run migrate"
+      ],
+      "effective_setup": [
+        "npm ci",
+        "npm run gen",
+        "npm run migrate"
+      ],
+      "effective_shortcuts": [
+        {
+          "cmd": "npm test",
+          "desc": "tests"
+        },
+        {
+          "cmd": "npm ci",
+          "desc": "Install dependencies",
+          "key": "install"
+        },
+        {
+          "cmd": "npm run gen",
+          "desc": "Generate types",
+          "key": "generate"
+        },
+        {
+          "cmd": "npm run migrate",
+          "desc": "Migrate database",
+          "key": "migrate"
+        },
+        {
+          "cmd": "b",
+          "desc": "Build",
+          "key": "build"
+        },
+        {
+          "cmd": "a",
+          "desc": "Alpha",
+          "key": "alpha"
+        },
+        {
+          "cmd": "z",
+          "desc": "Zeta",
+          "key": "zeta"
+        }
+      ],
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "has_worktree_config": true,
+      "name": "api"
+    },
+    {
+      "commands": {
+        "install": "npm ci",
+        "migrate": "npm run migrate"
+      },
+      "effective_migrate": [
+        "explicit migrate"
+      ],
+      "effective_setup": [
+        "explicit setup"
+      ],
+      "effective_shortcuts": [
+        {
+          "cmd": "npm ci",
+          "desc": "Install dependencies",
+          "key": "install"
+        },
+        {
+          "cmd": "npm run migrate",
+          "desc": "Migrate database",
+          "key": "migrate"
+        }
+      ],
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "has_worktree_config": true,
+      "migrate": [
+        "explicit migrate"
+      ],
+      "name": "explicit",
+      "setup": [
+        "explicit setup"
+      ]
+    }
+  ],
+  "session": "pomelo",
+  "valid": true
+}

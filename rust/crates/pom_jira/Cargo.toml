@@ -1,0 +1,18 @@
+[package]
+name = "pom_jira"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reading Jira: the per-session site, email and token, boards, sprint tickets, ticket status and detail, with a disk cache."
+
+[lib]
+path = "src/pom_jira.rs"
+
+[dependencies]
+pom_paths = { path = "../pom_paths" }
+pom_secrets = { path = "../pom_secrets" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

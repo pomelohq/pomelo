@@ -1,0 +1,20 @@
+[package]
+name = "pom_ptyhost"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Detached PTY holders: a process per service/shell behind a Unix socket, surviving app restarts."
+
+[lib]
+path = "src/pom_ptyhost.rs"
+
+[[bin]]
+name = "pomelo-pty"
+path = "src/bin/pomelo_pty.rs"
+
+[dependencies]
+libc = "0.2"
+sha1 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

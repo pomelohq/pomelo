@@ -1,0 +1,12 @@
+[package]
+name = "pom_lock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Advisory per-session locks (primary instance, per-service)."
+
+[lib]
+path = "src/pom_lock.rs"
+
+[dev-dependencies]
+tempfile = "3"

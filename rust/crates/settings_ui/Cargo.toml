@@ -1,0 +1,21 @@
+[package]
+name = "settings_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The settings screen: renders settings::Settings into ui primitives (read-only overlay for now)."
+
+[lib]
+path = "src/settings_ui.rs"
+
+[dependencies]
+pom_jira = { path = "../pom_jira" }
+pom_config = { path = "../pom_config" }
+pom_sync = { path = "../pom_sync" }
+pom_paths = { path = "../pom_paths" }
+ui = { path = "../ui" }
+settings = { path = "../settings" }
+
+[dev-dependencies]
+pom_secrets = { path = "../pom_secrets" }
+tempfile = "3"

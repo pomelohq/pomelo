@@ -1,0 +1,37 @@
+session: test-project
+default_branch: develop
+environments:
+  staging:
+    backend.api: https://api.staging.example
+repos:
+  api:
+    alias: api
+    shell_env: .env
+    default_branch: trunk
+    profiles: staging
+    services:
+      server:
+        type: backend
+        cmd: "go run ./cmd/server"
+        proxy_port: 8080
+        depends_on: [worker]
+        modes:
+          debug: dlv debug
+        mode: debug
+        env:
+          PORT: 3000
+          URL: "{{api.server.url}}"
+      worker: "go run ./cmd/worker"
+  client:
+    alias: web
+    services:
+      dev:
+        cmd: "npm run dev"
+        port: true
+        profiles: [local, staging]
+        shortcuts:
+          - { cmd: npm test, desc: Run tests, key: t }
+combinations:
+  full: [api/server, api/worker, web/dev]
+prepare_main: [migrate, bogus]
+seed: [make seed]

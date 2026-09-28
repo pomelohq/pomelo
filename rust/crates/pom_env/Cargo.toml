@@ -1,0 +1,17 @@
+[package]
+name = "pom_env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Workspace env resolution: template tokens, branch naming helpers, shared/service/db refs."
+
+[lib]
+path = "src/pom_env.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+sha1 = "0.10"
+indexmap = "2"
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,0 +1,89 @@
+{
+  "default_branch": "main",
+  "prepare_main": [
+    "reset",
+    "migrate",
+    "seed"
+  ],
+  "repos": [
+    {
+      "copy": [
+        ".env.local"
+      ],
+      "databases": {
+        "cache": "mydb",
+        "main": "{{branch.safe}}"
+      },
+      "effective_setup": [
+        "npm install"
+      ],
+      "env": {
+        "DB_BASE": "shared"
+      },
+      "env_files": [
+        {
+          "file": ".env"
+        },
+        {
+          "env": {
+            "DB_HOST": "localhost"
+          },
+          "file": ".env.local"
+        }
+      ],
+      "has_worktree_config": true,
+      "name": "api",
+      "own_env": {
+        "DB_BASE": "shared"
+      },
+      "pre_delete": [
+        "rm -rf tmp"
+      ],
+      "seed_from_main": true,
+      "services": [
+        {
+          "cmd": "go run .",
+          "name": "server"
+        }
+      ],
+      "setup": [
+        "npm install"
+      ],
+      "shared_refs": [
+        {
+          "name": "postgres"
+        },
+        {
+          "db_name": "cache_db",
+          "name": "redis"
+        }
+      ]
+    },
+    {
+      "env": {
+        "A": "1",
+        "B": "2",
+        "D": "~"
+      },
+      "env_files": [
+        {
+          "file": ".env.local"
+        }
+      ],
+      "has_worktree_config": true,
+      "name": "web",
+      "own_env": {
+        "A": "1",
+        "B": "2",
+        "D": "~"
+      }
+    }
+  ],
+  "session": "test",
+  "valid": true,
+  "workspaces": {
+    "test": [
+      "server"
+    ]
+  }
+}

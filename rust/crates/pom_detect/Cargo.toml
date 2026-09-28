@@ -1,0 +1,18 @@
+[package]
+name = "pom_detect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reading a repo to guess how it runs: stack rules (language, framework, package manager, commands, port) as data, monorepo members, docker-compose backing services, and a draft pom.yml."
+
+[lib]
+path = "src/pom_detect.rs"
+
+[dependencies]
+globset = "0.4"
+pom_config = { path = "../pom_config" }
+regex = "1"
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

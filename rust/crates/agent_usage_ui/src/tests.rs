@@ -1,0 +1,127 @@
+use super::*;
+
+fn turn(workspace: &str, kind: AgentKind, day: i64, session: &str, cost: f64) -> UsageTurn {
+    UsageTurn {
+        workspace: workspace.into(),
+        kind,
+        model: "claude-opus-5-5".into(),
+        day,
+        session: session.into(),
+        tokens: (cost * 1000.0) as u64,
+        output: 10,
+        cache_read: (cost * 900.0) as u64,
+        cost,
+    }
+}
+
+fn state() -> Shared {
+    Rc::new(RefCell::new(UsageState {
+        turns: vec![
+            turn("feat-login", AgentKind::Main, 100, "a", 5.0),
+            turn("feat-login", AgentKind::Side, 99, "b", 1.0),
+            turn("main", AgentKind::Main, 100, "c", 2.0),
+            turn("main", AgentKind::Main, 80, "old", 50.0),
+        ],
+        today: 100,
+        ..UsageState::default()
+    }))
+}
+
+#[test]
+fn a_period_groups_its_turns_and_a_workspace_row_filters_to_it() {
+    let shared = state();
+    let mut page = UsagePage::new(shared.clone());
+    {
+        let state = shared.borrow();
+        let turns = state.in_period(0, state.period);
+        assert_eq!(turns.len(), 3, "the 30-day-old turn is outside 7 days");
+        let groups = state.groups(&turns);
+        assert_eq!(groups[0].key, "feat-login", "the costliest workspace first");
+    }
+    page.click(ROW_BASE);
+    assert_eq!(shared.borrow().filter.as_deref(), Some("feat-login"));
+    assert_eq!(shared.borrow().group, Group::Agent);
+    page.click(OPEN_BASE);
+    assert_eq!(
+        shared.borrow_mut().requests.pop(),
+        Some(Request::OpenSession {
+            session: "a".into(),
+            workspace: "feat-login".into()
+        })
+    );
+    page.click(CLEAR_FILTER);
+    page.click(PERIOD_BASE + 2);
+    let state = shared.borrow();
+    assert_eq!(state.period, 30);
+    assert_eq!(state.in_period(0, 30).len(), 4);
+    assert!(ui::measure(&render(&state, 1000.0, None)).1 > 400.0);
+}
+
+#[test]
+fn tokens_and_costs_read_short() {
+    assert_eq!(format_tokens(1_234.0), "1K");
+    assert_eq!(format_tokens(4_547_117_590.0), "4.5B");
+    assert_eq!(format_cost(8006.84), "$8007");
+    assert_eq!(format_cost(1.456), "$1.46");
+    assert_eq!(day_name(0), "Thu");
+}
+
+#[test]
+fn long_workspace_names_never_widen_the_page() {
+    let shared = state();
+    {
+        let mut state = shared.borrow_mut();
+        for turn in &mut state.turns {
+            turn.workspace = "crm-1439-ai-email-parser-evals-and-a-much-longer-branch-name".into();
+        }
+    }
+    for width in [700.0_f32, 960.0, 1400.0] {
+        let tree = render(&shared.borrow(), width, None);
+        let painted = ui::render(
+            &tree,
+            ui::Rect::new(0.0, 0.0, width, 3000.0, ui::Rgba::TRANSPARENT),
+        );
+        let open = painted
+            .hits
+            .iter()
+            .find(|(_, id)| *id == OPEN_BASE)
+            .map(|(rect, _)| rect.x + rect.w)
+            .expect("an Open button");
+        let margin = (width - CONTENT_MAX_W.min(width - 2.0 * PAD_X)) / 2.0;
+        assert!(open <= width - margin + 0.5, "{width}: Open ends at {open}");
+    }
+}
+
+#[test]
+fn many_workspaces_wrap_the_legend_and_fold_into_others() {
+    let shared = state();
+    {
+        let mut state = shared.borrow_mut();
+        state.turns = (0..8)
+            .map(|index| {
+                turn(
+                    &format!("crm-14{index}-a-rather-long-workspace-branch-name"),
+                    AgentKind::Main,
+                    100,
+                    &format!("s{index}"),
+                    10.0 - index as f64,
+                )
+            })
+            .collect();
+    }
+    let width = 960.0_f32;
+    let painted = ui::render(
+        &render(&shared.borrow(), width, None),
+        ui::Rect::new(0.0, 0.0, width, 3000.0, ui::Rgba::TRANSPARENT),
+    );
+    assert!(painted.texts.iter().any(|text| text.text == "3 others"));
+    for text in &painted.texts {
+        let text_w = ui::measure_text_width(&text.text, text.size, text.mono, text.weight);
+        assert!(
+            text.x + text_w <= width + 0.5,
+            "{} ends at {}",
+            text.text,
+            text.x + text_w
+        );
+    }
+}

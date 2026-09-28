@@ -1,0 +1,23 @@
+[package]
+name = "terminal_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal view: draws a terminal's grid snapshot (cells, theme ANSI colors, selection, cursor) with the ui element tree."
+
+[lib]
+path = "src/terminal_ui.rs"
+
+[dependencies]
+pom_ptyhost = { path = "../pom_ptyhost" }
+ui = { path = "../ui" }
+terminal = { path = "../terminal" }
+workspace = { path = "../workspace" }
+editor = { package = "pomelo-editor", path = "../editor" }
+regex = "1"
+anyhow.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+image = { version = "0.25.10", default-features = false, features = ["png"] }

@@ -1,0 +1,13 @@
+[package]
+name = "auto_update_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The auto-update notification banner: renders auto_update::Status into ui primitives."
+
+[lib]
+path = "src/auto_update_ui.rs"
+
+[dependencies]
+ui = { path = "../ui" }
+auto_update = { path = "../auto_update" }

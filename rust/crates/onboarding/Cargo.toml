@@ -1,0 +1,22 @@
+[package]
+name = "onboarding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Onboarding a new project: what its config sets up, and checking it installs and boots."
+
+[lib]
+path = "src/onboarding.rs"
+
+[dependencies]
+pom_config = { path = "../pom_config" }
+pom_doctor = { path = "../pom_doctor" }
+pom_env = { path = "../pom_env" }
+pom_layout = { path = "../pom_layout" }
+pom_services = { path = "../pom_services" }
+pom_workspace = { path = "../pom_workspace" }
+
+[dev-dependencies]
+pom_paths = { path = "../pom_paths" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+tempfile = "3"

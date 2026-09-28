@@ -1,0 +1,14 @@
+[package]
+name = "markdown"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Markdown laid out with the ui element tree: popovers, pull request and ticket bodies, previews."
+
+[lib]
+path = "src/markdown.rs"
+
+[dependencies]
+ui = { path = "../ui" }
+editor = { package = "pomelo-editor", path = "../editor" }
+pulldown-cmark = { version = "0.13", default-features = false }

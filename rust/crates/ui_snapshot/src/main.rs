@@ -1,0 +1,2150 @@
+//! Render a screen headlessly to a PNG so the UI can be eyeballed without launching a window. Usage:
+//!   cargo run -p ui_snapshot -- [out.png] [category_index]
+//! Defaults: /tmp/pomelo-ui.png, the Appearance page (all categories expanded).
+
+use std::io::BufWriter;
+
+mod e2e;
+
+fn main() -> anyhow::Result<()> {
+    let out = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/tmp/pomelo-ui.png".into());
+    let category = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(settings_ui::APPEARANCE);
+
+    if std::env::var("MENUKEYS").is_ok() {
+        let item = |id: u64, text: &'static str, sep: bool, disabled: bool| workspace::MenuItem {
+            id,
+            label: text.into(),
+            checked: false,
+            sep,
+            disabled,
+            danger: false,
+            icon: None,
+            hint: None,
+        };
+        let mut items = vec![
+            item(workspace::MENU_EDIT_CUT, "Cut", false, false),
+            item(workspace::MENU_EDIT_COPY, "Copy", false, false),
+            item(workspace::MENU_EDIT_PASTE, "Paste", false, false),
+            item(
+                workspace::MENU_COPY_REL_PATH,
+                "Copy Relative Path",
+                true,
+                false,
+            ),
+            item(workspace::MENU_REVEAL, "Reveal in Finder", false, false),
+            item(workspace::MENU_TREE_RENAME, "Rename", true, false),
+            item(workspace::MENU_TREE_DELETE, "Delete", false, false),
+            item(
+                workspace::MENU_EDIT_GO_TO_DECLARATION,
+                "Go to Declaration",
+                true,
+                false,
+            ),
+        ];
+        items[0].hint = None;
+        let painted = workspace::context_menu(40.0, 40.0, 40.0, 400.0, 400.0, &items, None, None);
+        let (width, height) = (400.0_f32, 400.0_f32);
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().editor_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(repos) = std::env::var("E2E_REPOS") {
+        return e2e::run(out.trim_end_matches(".png"), &repos);
+    }
+
+    if std::env::var("USAGEPAGE").is_ok() {
+        use workspace::Item;
+        let mut page = agent_usage_ui::preview_page();
+        let (width, height) = (1000.0_f32, 1500.0_f32);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = page.paint_body(body, true).unwrap_or_default();
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().editor_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(which) = std::env::var("ONBOARD") {
+        use workspace::Item;
+        let mut page = onboarding_ui::preview_page(&which);
+        let (width, height) = (1000.0_f32, 900.0_f32);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = page.paint_body(body, true).unwrap_or_default();
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().editor_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(which) = std::env::var("AGENTPOP") {
+        let node = if which == "history" {
+            workspace::agent_popover::history(&[], None)
+        } else {
+            workspace::agent_popover::new_agent(
+                "feat-login",
+                workspace::SideAgentRole::Ask,
+                workspace::SideAgentStart::Auto,
+                [Some(9_300), Some(62_000), Some(9_300), Some(5_200)],
+                Some(62_000),
+                Some("codex"),
+                None,
+            )
+        };
+        let (width, height) = (420.0_f32, 760.0_f32);
+        let painted = ui::render(
+            &ui::div().p(20.0).child(node).into(),
+            ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT),
+        );
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().editor_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if std::env::var("SERVICES").is_ok() {
+        use workspace::SidePanelView;
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-svc-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("workspace--feat-login"))?;
+        std::fs::write(
+            dir.join("pom.yml"),
+            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  mail:\n    image: axllent/mailpit\nworkspace_services:\n  gateway:\n    cmd: caddy run\n    port: 8080\nrepos:\n  api:\n    shared_services: [postgres, redis, files]\n    services:\n      server:\n        type: backend\n        mode: dev\n        modes:\n          dev: bin/rails s -p $PORT\n          prod: bin/rails s -e production -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n      mailer: bin/mailer\n  web:\n    services:\n      vite:\n        type: frontend\n        mode: dev\n        modes:\n          dev: npm run dev -- --port $PORT\n      storybook:\n        type: frontend\n        cmd: npm run storybook -- -p $PORT\n",
+        )?;
+        let config = pom_config::Config::load(&dir.join("pom.yml"))?;
+        let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
+            pom_services::RunnerOptions {
+                project_root: dir.clone(),
+                session: "myproject".into(),
+                state: pom_paths::StateDir::new(dir.join("state")),
+                holders: pom_ptyhost::SocketDir::new(dir.join("s")),
+                binary: "/nonexistent".into(),
+                docker: "/nonexistent".into(),
+            },
+        ));
+        let mut panel = services_ui::ServicesPanel::new(
+            services_ui::ServicesContext {
+                runner,
+                config: std::sync::Arc::new(std::sync::RwLock::new(Some(std::sync::Arc::new(
+                    config,
+                )))),
+                branch: "feat-login".into(),
+                ticket: "PROJ-101".into(),
+                is_main: false,
+                waker: std::sync::Arc::new(|| {}),
+            },
+            dir.join("workspace--feat-login"),
+        );
+        use services_ui::Status;
+        panel.show_status("_ws", "gateway", Status::Running, None, None);
+        panel.show_status("api", "server", Status::Running, None, None);
+        panel.show_status(
+            "api",
+            "jobs",
+            Status::Crashed,
+            None,
+            Some(services_ui::Crash {
+                line: Some("KeyError: key not found: \"REDIS_URL\"".into()),
+                exit: "exit 1".into(),
+                at: Some(std::time::SystemTime::now() - std::time::Duration::from_secs(130)),
+            }),
+        );
+        panel.show_status("web", "vite", Status::Running, None, None);
+        panel.show_status(
+            "web",
+            "storybook",
+            Status::Stopped,
+            Some("port 6006 is already in use by node (pid 48213)".into()),
+            None,
+        );
+        for name in ["postgres", "redis", "files"] {
+            panel.show_shared_running(name);
+        }
+        let tab = std::env::var("SERVICES").ok().filter(|which| which != "1");
+        let (width, height) = if tab.is_some() {
+            (1000.0_f32, 520.0_f32)
+        } else {
+            (320.0_f32, 900.0_f32)
+        };
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let node = match tab.as_deref().and_then(|which| which.split_once('/')) {
+            Some((repo, service)) => panel.tab_preview(
+                repo,
+                service,
+                &[
+                    "[vite] hmr update /src/pages/Login.tsx",
+                    "[vite] page reload src/main.tsx",
+                    "Warning: something is deprecated",
+                    "[vite] page reload src/main.tsx",
+                    "Error: could not resolve 'vite-plugin-svgr'",
+                    "[vite] hmr update /src/components/Button.tsx",
+                ],
+                &std::env::var("FILTER").unwrap_or_default(),
+                width,
+                height,
+            ),
+            None => panel.render(width, height),
+        };
+        let painted = ui::render(
+            &ui::div()
+                .bg(ui::theme().panel_background)
+                .child(node)
+                .into(),
+            body,
+        );
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().panel_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            eprintln!("remove {}: {error}", dir.display());
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(which) = std::env::var("DATABASE") {
+        use workspace::{Item, SidePanelView};
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-db-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("pom.yml"),
+            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  queue:\n    image: rabbitmq:3\nrepos:\n  api:\n    databases:\n      dev: \"{{branch.safe}}\"\n      dev_tx: \"transaction_{{branch.safe}}\"\n      test: \"{{branch.safe}}_test\"\n    env:\n      REDIS_URL: \"{{shared.redis.url}}\"\n      S3_ENDPOINT: \"http://{{shared.files.host}}\"\n  web:\n    shared_services:\n      - redis\n    databases:\n      main: \"web_{{branch.safe}}\"\n",
+        )?;
+        let config = std::sync::Arc::new(pom_config::Config::load(&dir.join("pom.yml"))?);
+        let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
+            pom_services::RunnerOptions {
+                project_root: dir.clone(),
+                session: "myproject".into(),
+                state: pom_paths::StateDir::new(dir.join("state")),
+                holders: pom_ptyhost::SocketDir::new(dir.join("s")),
+                binary: "/nonexistent".into(),
+                docker: "/nonexistent".into(),
+            },
+        ));
+        let context = database_ui::DatabaseContext {
+            runner,
+            state: pom_paths::StateDir::new(dir.join("state")),
+            config: std::sync::Arc::new(move || Some(config.clone())),
+            branch: "feat-login".into(),
+            workspace_root: dir.join("workspace--feat-login"),
+            config_path: dir.join("pom.yml"),
+            waker: std::sync::Arc::new(|| {}),
+            objects: std::sync::Arc::new(SnapshotStorage),
+        };
+        let table = |schema: &str, name: &str, kind: pom_db::TableKind, count: Option<usize>| {
+            pom_db::Table {
+                schema: schema.into(),
+                name: name.into(),
+                kind,
+                count,
+            }
+        };
+        let (width, height) = if which == "failures" {
+            (320.0_f32, 620.0_f32)
+        } else if which == "panel" || which == "menu" {
+            (300.0_f32, 1180.0_f32)
+        } else if which == "object" {
+            (760.0_f32, 460.0_f32)
+        } else if which == "console" {
+            (900.0_f32, 280.0_f32)
+        } else {
+            (900.0_f32, 460.0_f32)
+        };
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let databases = pom_db::list_databases(
+            &pom_config::Config::load(&dir.join("pom.yml"))?,
+            "feat-login",
+        );
+        let first = databases
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no database"))?;
+        let mut consoles = vec![database_ui::new_console(&[], first)];
+        consoles.push(database_ui::new_console(&consoles, first));
+        consoles[1].id.push('b');
+        context.save_consoles(&consoles);
+        let mut overlay: Option<ui::Painted> = None;
+        let painted = if which == "console" {
+            use workspace::ItemFooter;
+            let mut footer = database_ui::ConsoleFooter::new(context, consoles[0].clone());
+            footer.show_result(Ok(pom_db::QueryResult {
+                columns: ["id", "email", "role"].map(str::to_string).to_vec(),
+                rows: (1..=12)
+                    .map(|row| {
+                        vec![
+                            Some(row.to_string()),
+                            Some(format!("user{row}@example.com")),
+                            Some(if row % 3 == 0 { "admin" } else { "member" }.to_string()),
+                        ]
+                    })
+                    .collect(),
+                ..pom_db::QueryResult::default()
+            }));
+            footer.height(height);
+            footer
+                .paint(body)
+                .ok_or_else(|| anyhow::anyhow!("no footer"))?
+        } else if which == "failures" {
+            let mut panel = database_ui::DatabasePanel::new(context);
+            let names: Vec<String> = databases.iter().map(|db| db.name.clone()).collect();
+            let missing = format!("{}-with-escalated-inbox-and-a-long-name", names[0]);
+            panel.show_failure(
+                &names[0],
+                pom_db::ConnectError::new(
+                    pom_db::Engine::Postgres,
+                    &missing,
+                    "localhost",
+                    5434,
+                    "postgres",
+                    format!("db error: FATAL: database \"{missing}\" does not exist"),
+                ),
+                Some("myproject_main".into()),
+            );
+            panel.toggle_full_error(&names[0]);
+            panel.show_failure(
+                &names[3],
+                pom_db::ConnectError::new(
+                    pom_db::Engine::Postgres,
+                    &names[3],
+                    "localhost",
+                    5434,
+                    "postgres",
+                    "error connecting to server: Connection refused (os error 61)".into(),
+                ),
+                None,
+            );
+            panel.fold(&names[3]);
+            let node = panel.render(width, height);
+            ui::render(
+                &ui::div()
+                    .bg(ui::theme().panel_background)
+                    .child(node)
+                    .into(),
+                body,
+            )
+        } else if which == "panel" || which == "menu" {
+            let mut panel = database_ui::DatabasePanel::new(context);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let names: Vec<String> = databases.iter().map(|db| db.name.clone()).collect();
+            let column = |table: &str,
+                          name: &str,
+                          data_type: &str,
+                          primary_key: bool,
+                          references: Option<&str>| {
+                pom_db::Column {
+                    schema: "public".into(),
+                    table: table.into(),
+                    name: name.into(),
+                    data_type: data_type.into(),
+                    primary_key,
+                    references: references.map(str::to_string),
+                }
+            };
+            let users = table("public", "users", pom_db::TableKind::Table, Some(1284));
+            panel.show_schema(
+                &names[0],
+                pom_db::Schema {
+                    tables: vec![
+                        users.clone(),
+                        table("public", "login_tokens", pom_db::TableKind::Table, Some(37)),
+                        table("public", "orders", pom_db::TableKind::Table, Some(5120)),
+                        table(
+                            "public",
+                            "schema_migrations",
+                            pom_db::TableKind::Table,
+                            Some(42),
+                        ),
+                        table("public", "active_users", pom_db::TableKind::View, None),
+                    ],
+                    columns: vec![
+                        column("users", "id", "bigint", true, None),
+                        column("users", "email", "varchar(255)", false, None),
+                        column("users", "name", "varchar(120)", false, None),
+                        column("users", "created_at", "timestamptz", false, None),
+                        column("login_tokens", "user_id", "bigint", false, Some("users")),
+                    ],
+                },
+            );
+            panel.expand_table(&names[0], &users);
+            panel.show_failure(
+                &names[2],
+                pom_db::ConnectError::new(
+                    pom_db::Engine::Postgres,
+                    &names[2],
+                    "localhost",
+                    5434,
+                    "postgres",
+                    format!("db error: FATAL: database \"{}\" does not exist", names[2]),
+                ),
+                None,
+            );
+            panel.show_tables(
+                "redis",
+                vec![
+                    table("", "session", pom_db::TableKind::Keyspace, Some(214)),
+                    table("", "cache", pom_db::TableKind::Keyspace, Some(1873)),
+                ],
+            );
+            panel.fold("redis");
+            panel.show_buckets("files", vec!["uploads".into()]);
+            let object = |key: &str, size: u64| pom_db::object_storage::ObjectEntry {
+                key: key.into(),
+                size,
+                ..pom_db::object_storage::ObjectEntry::default()
+            };
+            panel.show_folder(
+                "files",
+                "uploads",
+                "",
+                pom_db::object_storage::Listing {
+                    prefixes: vec!["avatars/".into(), "exports/".into()],
+                    objects: vec![
+                        object("invoice-4412.pdf", 98_304),
+                        object("import-2026-09.csv", 3_565_158),
+                    ],
+                    next: Some("more".into()),
+                },
+            );
+            panel.show_prefix_stats(
+                "files",
+                "uploads",
+                "avatars/",
+                pom_db::object_storage::PrefixStats {
+                    objects: 2940,
+                    bytes: 1_288_490_188,
+                    capped: false,
+                },
+            );
+            let node = panel.render(width, height);
+            if which == "menu" {
+                if let Some(id) = panel.row_named("users") {
+                    panel.open_menu(id);
+                    let items = panel.menu_items();
+                    overlay = Some(workspace::context_menu(
+                        120.0, 250.0, 250.0, width, height, &items, None, None,
+                    ));
+                }
+            }
+            ui::render(
+                &ui::div()
+                    .bg(ui::theme().panel_background)
+                    .child(node)
+                    .into(),
+                body,
+            )
+        } else if which == "object" {
+            let files = databases
+                .iter()
+                .find(|db| db.name == "files")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no object storage"))?;
+            let mut item = database_ui::ObjectItem::new(
+                context,
+                files,
+                "uploads".into(),
+                pom_db::object_storage::ObjectEntry {
+                    key: "exports/orders-2026-09-27.json".into(),
+                    size: 5_347_737,
+                    modified: "2026-09-27T18:42:00.000Z".into(),
+                    etag: "9b2cf5e1a4d0".into(),
+                },
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while item.is_busy() && std::time::Instant::now() < deadline {
+                item.tick(&|| None);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            item.tick(&|| None);
+            item.paint_body(body, true)
+                .ok_or_else(|| anyhow::anyhow!("no body"))?
+        } else {
+            let database = pom_db::list_databases(
+                &pom_config::Config::load(&dir.join("pom.yml"))?,
+                "feat-login",
+            )
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no database"))?;
+            let mut item = database_ui::TableItem::new(
+                context,
+                database,
+                table("public", "users", pom_db::TableKind::Table, None),
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while item.is_busy() && std::time::Instant::now() < deadline {
+                item.tick(&|| None);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let names = ["Ann", "Bob", "Cy", "Di", "Ed", "Flo", "Gus", "Hal"];
+            let rows = (0..40)
+                .map(|row| {
+                    vec![
+                        Some((row + 1).to_string()),
+                        Some(format!(
+                            "{}@example.com",
+                            names[row % names.len()].to_lowercase()
+                        )),
+                        Some(names[row % names.len()].to_string()),
+                        (row % 4 != 0)
+                            .then(|| format!("2026-09-{:02} 10:{:02}:00", row % 28 + 1, row % 60)),
+                        Some(if row % 3 == 0 { "admin" } else { "member" }.to_string()),
+                    ]
+                })
+                .collect();
+            item.show_page(
+                pom_db::QueryResult {
+                    columns: ["id", "email", "name", "last_seen_at", "role"]
+                        .map(str::to_string)
+                        .to_vec(),
+                    rows,
+                    ..pom_db::QueryResult::default()
+                },
+                Some(1234),
+            );
+            item.paint_body(body, true);
+            item.pointer_down(
+                330.0,
+                37.0 + 27.0 + 22.0 * 2.5,
+                1,
+                terminal::Modifiers::default(),
+            );
+            item.pointer_move(
+                200.0,
+                37.0 + 27.0 + 22.0 * 5.5,
+                terminal::Modifiers::default(),
+                true,
+            );
+            item.paint_body(body, true)
+                .ok_or_else(|| anyhow::anyhow!("no body"))?
+        };
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let mut layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        if let Some(overlay) = &overlay {
+            layers.push((
+                overlay.rects.as_slice(),
+                overlay.tris.as_slice(),
+                overlay.texts.as_slice(),
+                overlay.icons.as_slice(),
+                None,
+            ));
+        }
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            eprintln!("remove {}: {error}", dir.display());
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(which) = std::env::var("ENVTAB") {
+        use workspace::Item;
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("pom.yml"),
+            "session: myproject\npresets:\n  rails:\n    env:\n      RAILS_ENV: development\n      RAILS_LOG_TO_STDOUT: \"1\"\nshared_services:\n  postgres:\n    image: postgres:16\nrepos:\n  api:\n    preset: [rails]\n    databases:\n      main: \"api_{{branch.safe}}\"\n      cache: \"api_cache_{{branch.safe}}\"\n    env:\n      DATABASE_URL: \"postgresql://{{shared.postgres.url}}/{{db.main}}\"\n      STRIPE_KEY: \"{{secret.STRIPE_KEY}}\"\n      APP_HOST: \"{{api.web.host}}\"\n    services:\n      web:\n        cmd: rails s\n",
+        )?;
+        let config = std::sync::Arc::new(pom_config::Config::load(&dir.join("pom.yml"))?);
+        let state = pom_paths::StateDir::new(dir.join("state"));
+        let store = pom_secrets::SecretStore::new(state.clone(), "myproject");
+        for (name, value) in [
+            ("STRIPE_KEY", "sk_test_123"),
+            ("GITHUB_TOKEN", "ghp_example"),
+            ("SENTRY_DSN", "https://example.invalid/1"),
+        ] {
+            store
+                .set(name, value)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+        }
+        let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
+            pom_services::RunnerOptions {
+                project_root: dir.clone(),
+                session: "myproject".into(),
+                state: state.clone(),
+                holders: pom_ptyhost::SocketDir::new(dir.join("s")),
+                binary: "/nonexistent".into(),
+                docker: "/nonexistent".into(),
+            },
+        ));
+        let context = environment_ui::EnvironmentContext {
+            state,
+            runner,
+            config: std::sync::Arc::new(move || Some(config.clone())),
+            workspaces: vec![("main".into(), true), ("feat-login".into(), false)],
+            branch: "feat-login".into(),
+        };
+        let (width, height) = (820.0_f32, 420.0_f32);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let mut item: Box<dyn Item> = if which == "secrets" {
+            Box::new(environment_ui::SecretsItem::new(context))
+        } else {
+            Box::new(environment_ui::EnvItem::new(context))
+        };
+        let painted = item
+            .paint_body(body, true)
+            .ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            eprintln!("remove {}: {error}", dir.display());
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(query) = std::env::var("SEARCH") {
+        let root = std::env::current_dir()?;
+        let mut item =
+            files_ui::project_search_preview(root, &query, std::env::var("FILTERS").is_ok());
+        let (width, height) = (900.0_f32, 560.0_f32);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = item
+            .paint_body(body, true)
+            .ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(query) = std::env::var("FINDER") {
+        let root = std::env::current_dir()?;
+        let paths = files::project_files(&root, false);
+        let recent = vec![
+            "crates/files_ui/src/files_ui.rs".to_string(),
+            "crates/workspace/src/workspace_view.rs".to_string(),
+        ];
+        let node = files_ui::file_finder_preview(paths, recent, &query);
+        let (width, height) = (560.0_f32, 460.0_f32);
+        let painted = ui::render(
+            &ui::div().p(8.0).child(node).into(),
+            ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT),
+        );
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if std::env::var("TICKETTAB").is_ok() {
+        use workspace::Item;
+        let (width, height) = (720.0_f32, 620.0_f32);
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-ticket-{}", std::process::id()));
+        let mut item = jira_ui::TicketItem::new(
+            pom_paths::StateDir::new(dir.join("state")),
+            "myproject".into(),
+            "PROJ-101".into(),
+            std::sync::Arc::new(|| {}),
+        );
+        item.show(
+            pom_jira::IssueDetail {
+                key: "PROJ-101".into(),
+                summary: "Flag escalated conversations in the inbox".into(),
+                status: "In Progress".into(),
+                url: "https://example.atlassian.net/browse/PROJ-101".into(),
+                description: "## Background\n\nNothing marks a message where the sender **asks for a person**. See https://example.com/spec.\n\n## Acceptance criteria\n\n- [x] Detect a direct ask\n- [ ] Show a banner in the conversation\n- [ ] Email the team".into(),
+                comments: vec![
+                    pom_jira::Comment {
+                        id: "1".into(),
+                        author: "Ann".into(),
+                        avatar: String::new(),
+                        created: "2026-09-17T03:53:12.000+0700".into(),
+                        body: "Should this cover *email* too?".into(),
+                    },
+                    pom_jira::Comment {
+                        id: "2".into(),
+                        author: "Bea".into(),
+                        avatar: String::new(),
+                        created: "2026-09-18T10:05:00.000+0700".into(),
+                        body: "Yes, every channel. Use `inbox_flag`.".into(),
+                    },
+                ],
+                web_links: vec![pom_jira::WebLink {
+                    title: "Design doc".into(),
+                    url: "https://example.com/design".into(),
+                    icon: String::new(),
+                }],
+            },
+            "indeterminate",
+        );
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = item
+            .paint_body(body, true)
+            .ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if dir.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&dir) {
+                eprintln!("remove {}: {error}", dir.display());
+            }
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+    if std::env::var("PRTAB").is_ok() {
+        use workspace::Item;
+        let (width, height) = (720.0_f32, 520.0_f32);
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-pr-{}", std::process::id()));
+        let target = pom_forge::PrTarget {
+            repo: "web".into(),
+            owner: "acme".into(),
+            name: "web".into(),
+            head: "feat-login".into(),
+        };
+        let check = |name: &str, workflow: &str, result: &str| pom_forge::Check {
+            name: name.into(),
+            workflow_name: workflow.into(),
+            details_url: "https://example.com".into(),
+            result: result.into(),
+            ..pom_forge::Check::default()
+        };
+        let mut pr = pom_forge::PullRequest {
+            number: 42,
+            title: "Add the login page with remember-me and rate limiting".into(),
+            state: "OPEN".into(),
+            head_ref_name: "feat-login".into(),
+            base_ref_name: "main".into(),
+            author: Some(pom_forge::Actor { login: "dev".into(), avatar_url: String::new() }),
+            additions: 184,
+            deletions: 23,
+            body: "### Related ticket\n[PROJ-101](https://example.atlassian.net/browse/PROJ-101)\n\n### Description\nAdds the **login form** and `session` handling. See https://example.com/docs.\n\n- Remember me for *30 days*\n- Five attempts per minute per IP\n- [x] tests\n\n| Case | Result |\n|---|---|\n| valid | 200 |\n| locked | 423 |\n\n```rust\nfn login() -> bool { true }\n```".into(),
+            labels: vec![
+                pom_forge::Label { name: "feature".into(), color: "a2eeef".into() },
+                pom_forge::Label { name: "needs-review".into(), color: "fbca04".into() },
+            ],
+            status_check_rollup: vec![
+                check("test", "CI", "pass"),
+                check("lint", "CI", "fail"),
+                check("deploy-preview", "", "pending"),
+            ],
+            reviewers: vec![
+                pom_forge::Reviewer { name: "ann".into(), state: "pending".into() },
+                pom_forge::Reviewer { name: "bea".into(), state: "changes".into() },
+                pom_forge::Reviewer { name: "cy".into(), state: "approved".into() },
+            ],
+            ..pom_forge::PullRequest::default()
+        };
+        pr.checks = "fail".into();
+        pr.timeline = vec![
+            pom_forge::TimelineItem {
+                kind: pom_forge::TimelineKind::Review,
+                author: "bea".into(),
+                body: "The rate limit should key on the **account**, not only the IP.".into(),
+                at: "2026-09-01T09:00:00Z".into(),
+                state: "CHANGES_REQUESTED".into(),
+                threads: vec![pom_forge::ReviewThread {
+                    path: "src/auth/limit.rs".into(),
+                    line: Some(42),
+                    resolved: true,
+                    comments: vec![
+                        pom_forge::ThreadComment {
+                            author: "bea".into(),
+                            body: "This counter never resets.".into(),
+                            at: "2026-09-01T09:00:00Z".into(),
+                        },
+                        pom_forge::ThreadComment {
+                            author: "dev".into(),
+                            body: "Fixed with a sliding window, see `Window::tick`.".into(),
+                            at: "2026-09-01T12:00:00Z".into(),
+                        },
+                    ],
+                }],
+            },
+            pom_forge::TimelineItem {
+                kind: pom_forge::TimelineKind::Comment,
+                author: "ann".into(),
+                body: "QA notes are in https://example.com/qa.".into(),
+                at: "2026-09-02T10:00:00Z".into(),
+                ..pom_forge::TimelineItem::default()
+            },
+        ];
+        let mut item = pull_request_ui::PrItem::new(
+            pom_paths::StateDir::new(dir.join("state")),
+            "myproject".into(),
+            std::sync::Arc::new(|| {}),
+            target,
+            None,
+        );
+        item.show(Some(pr));
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        item.paint_body(body, true);
+        if std::env::var("CHECKS").is_ok() {
+            item.pointer_down(110.0, 119.0, 1, terminal::Modifiers::default());
+        }
+        if let Some(scroll) = std::env::var("SCROLL")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+        {
+            item.pointer_scroll(0.0, 0.0, -scroll, terminal::Modifiers::default());
+        }
+        let painted = item
+            .paint_body(body, true)
+            .ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if dir.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&dir) {
+                eprintln!("remove {}: {error}", dir.display());
+            }
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    // With GITPANEL=<repo dir>, render the Git panel for that repository (against `main`).
+    if let Ok(repo) = std::env::var("GITPANEL") {
+        use workspace::SidePanelView;
+        let (width, height) = (330.0_f32, 820.0_f32);
+        // GITPANEL=<repo>[,<repo>...]; WSBRANCH names the workspace branch.
+        let sources: Vec<git_ui::RepoSource> = repo
+            .split(',')
+            .map(|path| git_ui::RepoSource {
+                name: std::path::Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                root: path.into(),
+                default_branch: "main".into(),
+                expected_branch: std::env::var("WSBRANCH").unwrap_or_else(|_| "feat-login".into()),
+                kept: false,
+            })
+            .collect();
+        let mut panel = git_ui::GitPanel::new(sources, None, std::sync::Arc::new(|| {}));
+        panel.render(width, height);
+        panel.wait_for_scan();
+        // TAB=remote|history picks the tab; HOVER=<offset> hovers a panel id (a row is row * 8 + control).
+        match std::env::var("TAB").as_deref() {
+            Ok("remote") => panel.set_tab(git_ui::Tab::Remote),
+            Ok("history") => panel.set_tab(git_ui::Tab::History),
+            _ => {}
+        }
+        panel.render(width, height);
+        if let Ok(hover) = std::env::var("HOVER") {
+            if let Ok(offset) = hover.parse::<u64>() {
+                panel.set_hover(Some(
+                    workspace::side_panel_base(workspace::PaneKind::Git) + offset,
+                ));
+            }
+        }
+        let node = panel.render(width, height);
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let frame = ui::paint_frame(
+            &ui::div()
+                .bg(ui::theme().panel_background)
+                .child(node)
+                .into(),
+            ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT),
+        );
+        let layers: Vec<ui::Layer> = std::iter::once((&frame.base, None))
+            .chain(
+                frame
+                    .overlays
+                    .iter()
+                    .map(|overlay| (&overlay.painted, overlay.clip.map(|r| (r.x, r.y, r.w, r.h)))),
+            )
+            .map(|(painted, clip)| {
+                (
+                    painted.rects.as_slice(),
+                    painted.tris.as_slice(),
+                    painted.texts.as_slice(),
+                    painted.icons.as_slice(),
+                    clip,
+                )
+            })
+            .collect();
+        r.render_frame(ui::theme().panel_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    let scale = 2.0_f32;
+    let (lw, lh) = match std::env::var("MAINVIEW") {
+        Ok(_) => (
+            std::env::var("SNAPW")
+                .ok()
+                .and_then(|width| width.parse().ok())
+                .unwrap_or(1200.0_f32),
+            780.0_f32,
+        ),
+        Err(_) => (920.0_f32, 760.0_f32),
+    }; // logical
+    let mut r = ui::UiRenderer::new_headless((lw * scale) as u32, (lh * scale) as u32, scale)?;
+
+    if let Ok(mode) = std::env::var("MAINVIEW") {
+        let sessions: Vec<workspace::Session> = ["myproject", "api", "web", "old"]
+            .iter()
+            .map(|name| workspace::Session {
+                name: name.to_string(),
+                path: format!("/projects/{name}").into(),
+                running: false,
+                missing: *name == "old",
+            })
+            .collect();
+        let project = (mode != "welcome" && mode != "onboard").then(|| workspace::ProjectInfo {
+            name: "myproject".into(),
+            branch: "main".into(),
+            config_path: "/projects/myproject/pom.yml".into(),
+            workspaces: vec![
+                "main".into(),
+                "feat-login".into(),
+                "proj-101-a-very-long-branch-name-for-the-workspace-panel".into(),
+            ],
+            active: "feat-login".into(),
+            labels: vec![String::new(), "Login page".into(), String::new()],
+            running: vec![0, 2, 0],
+            tickets: vec![String::new(), String::new(), "In Progress".into()],
+            ticket_categories: vec![String::new(), String::new(), "indeterminate".into()],
+            prs: vec![
+                None,
+                Some(workspace::PrSummary {
+                    count: 2,
+                    severity: workspace::PrSeverity::Warn,
+                    trouble: Some(workspace::PrTrouble::Pending),
+                }),
+                Some(workspace::PrSummary {
+                    count: 1,
+                    severity: workspace::PrSeverity::Danger,
+                    trouble: Some(workspace::PrTrouble::ChecksFailed),
+                }),
+            ],
+            missing: Vec::new(),
+            repo_branches: Vec::new(),
+        });
+        // MAINVIEW=sidebar: a project in every state the WORKSPACES list shows (RAIL=1 folds it to the rail).
+        let sidebar = mode == "sidebar";
+        let project = if sidebar {
+            let pr = |count: usize,
+                      severity: workspace::PrSeverity,
+                      trouble: Option<workspace::PrTrouble>| {
+                Some(workspace::PrSummary {
+                    count,
+                    severity,
+                    trouble,
+                })
+            };
+            // branch, label, ticket status, its category, running services, PRs.
+            type Sample = (
+                &'static str,
+                &'static str,
+                &'static str,
+                &'static str,
+                usize,
+                Option<workspace::PrSummary>,
+            );
+            let rows: [Sample; 8] = [
+                (
+                    "main",
+                    "",
+                    "",
+                    "",
+                    2,
+                    pr(2, workspace::PrSeverity::Merged, None),
+                ),
+                (
+                    "proj-101-email-open-tracking",
+                    "PROJ-101 Email open tracking",
+                    "QA In Progress",
+                    "indeterminate",
+                    0,
+                    pr(
+                        3,
+                        workspace::PrSeverity::Danger,
+                        Some(workspace::PrTrouble::ChecksFailed),
+                    ),
+                ),
+                (
+                    "proj-102-ai-lead-creation",
+                    "PROJ-102 AI lead creation from forms",
+                    "To QA",
+                    "indeterminate",
+                    0,
+                    pr(1, workspace::PrSeverity::Ok, None),
+                ),
+                (
+                    "proj-103-flag-escalated",
+                    "PROJ-103 Flag escalated conversations",
+                    "Code review",
+                    "indeterminate",
+                    0,
+                    pr(
+                        4,
+                        workspace::PrSeverity::Danger,
+                        Some(workspace::PrTrouble::Conflict),
+                    ),
+                ),
+                (
+                    "proj-10432-migrate-billing-webhooks",
+                    "PROJ-10432 Migrate billing webhooks to the new provider and backfill",
+                    "Waiting for customer feedback",
+                    "indeterminate",
+                    12,
+                    pr(
+                        12,
+                        workspace::PrSeverity::Danger,
+                        Some(workspace::PrTrouble::ChecksFailed),
+                    ),
+                ),
+                (
+                    "proj-106-redesign-listing",
+                    "PROJ-106 Redesign listing page",
+                    "Backlog",
+                    "new",
+                    0,
+                    None,
+                ),
+                (
+                    "proj-108-inbound-call-routing",
+                    "PROJ-108 Inbound call routing",
+                    "Done",
+                    "done",
+                    0,
+                    pr(4, workspace::PrSeverity::Merged, None),
+                ),
+                (
+                    "investigate-0917-5fwg",
+                    "",
+                    "",
+                    "",
+                    0,
+                    pr(
+                        1,
+                        workspace::PrSeverity::Warn,
+                        Some(workspace::PrTrouble::Pending),
+                    ),
+                ),
+            ];
+            Some(workspace::ProjectInfo {
+                name: "myproject".into(),
+                branch: "main".into(),
+                config_path: "/projects/myproject/pom.yml".into(),
+                workspaces: rows.iter().map(|row| row.0.to_string()).collect(),
+                active: "main".into(),
+                labels: rows.iter().map(|row| row.1.to_string()).collect(),
+                running: rows.iter().map(|row| row.4).collect(),
+                tickets: rows.iter().map(|row| row.2.to_string()).collect(),
+                ticket_categories: rows.iter().map(|row| row.3.to_string()).collect(),
+                prs: rows.iter().map(|row| row.5).collect(),
+                missing: Vec::new(),
+                repo_branches: Vec::new(),
+            })
+        } else {
+            project
+        };
+        let current = project.as_ref().map(|_| 0);
+        let mut app = ui::Application::new();
+        let (handle, entity) = app.open_raw_window(
+            ui::WindowOptions {
+                width: lw,
+                height: lh,
+                scale,
+                ..Default::default()
+            },
+            move |_| {
+                // With DIFFFILE=<file> (and DIFFBASE=<file with its old text>), show that file's diff;
+                // SPLITDIFF=1 opens it side by side.
+                if std::env::var("SPLITDIFF").is_ok() {
+                    let font_changed = files_ui::set_editor_defaults(
+                        files_ui::default_buffer_font_size(),
+                        false,
+                        true,
+                    );
+                    if font_changed {
+                        eprintln!("snapshot: buffer font reset to its default");
+                    }
+                }
+                let files_view = std::env::var("DIFFFILE").ok().map(|file| {
+                    let path = std::path::PathBuf::from(&file);
+                    let root = path
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                        .unwrap_or_default();
+                    let mut files = files_ui::FilesView::new(root);
+                    let base = std::env::var("DIFFBASE")
+                        .ok()
+                        .and_then(|base| std::fs::read_to_string(base).ok());
+                    workspace::FunctionView::open_diff(&mut files, &path, base);
+                    Box::new(files) as Box<dyn workspace::FunctionView>
+                });
+                // OPENFILES=<a,b,...>: open each file as a tab (the tab strip scrolls once they overflow).
+                let files_view = files_view.or_else(|| {
+                    let list = std::env::var("OPENFILES").ok()?;
+                    let paths: Vec<std::path::PathBuf> =
+                        list.split(',').map(std::path::PathBuf::from).collect();
+                    let root = paths.first()?.parent()?.to_path_buf();
+                    let mut files = files_ui::FilesView::new(root);
+                    for path in &paths {
+                        workspace::FunctionView::open_file_at(&mut files, path, None, None);
+                    }
+                    // MDPREVIEW=1: preview the last (markdown) file beside its editor.
+                    if std::env::var("MDPREVIEW").is_ok() {
+                        workspace::ItemInput::editor_key(
+                            &mut files,
+                            workspace::EditKey::OpenMarkdownPreviewToTheSide,
+                            false,
+                        );
+                    }
+                    Some(Box::new(files) as Box<dyn workspace::FunctionView>)
+                });
+                let layout = workspace::Layout {
+                    project,
+                    files_view,
+                    ..Default::default()
+                };
+                let mut view = workspace::WorkspaceView::new(layout);
+                view.set_sessions(sessions, current);
+                if sidebar {
+                    view.set_agent_states(
+                        [
+                            ("main", workspace::AgentDot::ToolUse),
+                            (
+                                "proj-101-email-open-tracking",
+                                workspace::AgentDot::Thinking,
+                            ),
+                            (
+                                "proj-103-flag-escalated",
+                                workspace::AgentDot::AwaitingInput,
+                            ),
+                            (
+                                "proj-10432-migrate-billing-webhooks",
+                                workspace::AgentDot::AwaitingInput,
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(branch, dot)| (branch.to_string(), dot))
+                        .collect(),
+                    );
+                }
+                view
+            },
+        );
+        if mode == "problem" {
+            entity.update(app.app_mut(), |view, _| {
+                view.set_config_problem(
+                    Some((
+                        "/projects/myproject/pom.yml: unmarshal errors:\n  line 4: cannot unmarshal !!str `npm i` into []string".into(),
+                        Some(4),
+                    )),
+                    std::path::Path::new("/projects/myproject/pom.yml"),
+                )
+            });
+        }
+        // wscreate / wsrename: the workspace forms; wsops: creation cards (one running, one failed).
+        let namer: workspaces_ui::Namer = std::sync::Arc::new(|seed: &str, _: &str| {
+            Ok(pom_agent::NameSuggestion {
+                name: seed.to_string(),
+                slug: seed.to_string(),
+            })
+        });
+        if mode == "wscreate" || mode == "wsticket" {
+            let mut modal = workspaces_ui::CreateWorkspaceModal::new(
+                vec![
+                    "api".into(),
+                    "web".into(),
+                    "notifications-service-worker".into(),
+                ],
+                vec!["main".into(), "feat-login".into()],
+                namer.clone(),
+            );
+            if mode == "wsticket" {
+                let issue =
+                    |key: &str, summary: &str, status: &str, mine: bool| pom_jira::SprintIssue {
+                        key: key.into(),
+                        summary: summary.into(),
+                        status: status.into(),
+                        mine,
+                        ..pom_jira::SprintIssue::default()
+                    };
+                let issues = vec![
+                    issue(
+                        "PROJ-101",
+                        "Payments page crashes on submit",
+                        "In Progress",
+                        true,
+                    ),
+                    issue("PROJ-104", "Add CSV export to reports", "To Do", false),
+                    issue(
+                        "PROJ-97",
+                        "Login redirect loses the query string",
+                        "To Do",
+                        false,
+                    ),
+                ];
+                modal = modal.with_tickets(workspaces_ui::TicketSource {
+                    boards: std::sync::Arc::new(|| {
+                        Ok(vec![
+                            pom_jira::Board {
+                                id: 1,
+                                name: "Team board".into(),
+                            },
+                            pom_jira::Board {
+                                id: 2,
+                                name: "Platform board".into(),
+                            },
+                        ])
+                    }),
+                    sprint: std::sync::Arc::new(move |_| Ok(issues.clone())),
+                    board: None,
+                    only_mine: false,
+                });
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while workspace::WindowModal::busy(&modal) && std::time::Instant::now() < deadline {
+                    workspace::WindowModal::tick(&mut modal);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                if std::env::var_os("BOARDMENU").is_some() {
+                    workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 8);
+                }
+            } else {
+                workspace::WindowModal::text(&mut modal, "Fix checkout page");
+                workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 101);
+            }
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        // wsbranches: the create form with web on a taken-over branch and the api picker open (PICKROW=2 opens
+        // the last row's, which flips above near the bottom).
+        if mode == "wsbranches" {
+            let info = |name: &str, remote: bool, author: &str, when: &str, subject: &str| {
+                pom_workspace::BranchInfo {
+                    name: name.into(),
+                    remote,
+                    author: author.into(),
+                    relative_time: when.into(),
+                    subject: subject.into(),
+                }
+            };
+            let before = vec![
+                info("main", false, "you", "1 day ago", "Merge PROJ-98"),
+                info(
+                    "ana/checkout-api",
+                    true,
+                    "Ana Lima",
+                    "2 hours ago",
+                    "Validate cart totals",
+                ),
+                info(
+                    "ana/checkout-ui",
+                    true,
+                    "Ana Lima",
+                    "40 minutes ago",
+                    "New checkout summary card",
+                ),
+                info(
+                    "ben/payments",
+                    true,
+                    "Ben Okafor",
+                    "3 days ago",
+                    "Stripe webhook retries with a much longer subject line",
+                ),
+            ];
+            let mut after = before.clone();
+            after.insert(
+                1,
+                info(
+                    "ben/checkout-copy",
+                    true,
+                    "Ben Okafor",
+                    "10 minutes ago",
+                    "Checkout copy tweaks",
+                ),
+            );
+            let fetched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let listed = fetched.clone();
+            let source = workspaces_ui::BranchSource {
+                list: std::sync::Arc::new(move |_| {
+                    let branches = if listed.load(std::sync::atomic::Ordering::SeqCst) {
+                        after.clone()
+                    } else {
+                        before.clone()
+                    };
+                    Ok(workspaces_ui::RepoBranches {
+                        base: "main".into(),
+                        branches,
+                    })
+                }),
+                fetch: std::sync::Arc::new(move |_| {
+                    fetched.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }),
+            };
+            let mut modal = workspaces_ui::CreateWorkspaceModal::new(
+                vec!["api".into(), "web".into(), "mobile".into()],
+                vec!["main".into()],
+                namer.clone(),
+            )
+            .with_branches(source);
+            let settle = |modal: &mut workspaces_ui::CreateWorkspaceModal| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while workspace::WindowModal::busy(modal) && std::time::Instant::now() < deadline {
+                    workspace::WindowModal::tick(modal);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            };
+            workspace::WindowModal::text(&mut modal, "Fix checkout page");
+            settle(&mut modal);
+            let branch_box = workspace::WINDOW_MODAL_BASE + 300;
+            workspace::WindowModal::click(&mut modal, branch_box + 1);
+            workspace::WindowModal::text(&mut modal, "checkout-ui");
+            workspace::WindowModal::key(&mut modal, workspace::EditKey::Enter, false);
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 102);
+            settle(&mut modal);
+            let row: u64 = std::env::var("PICKROW")
+                .ok()
+                .and_then(|row| row.parse().ok())
+                .unwrap_or(0);
+            workspace::WindowModal::click(&mut modal, branch_box + row);
+            settle(&mut modal);
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        // usebranch: an existing workspace's worker picking another branch, after a fetch brought one in.
+        if mode == "usebranch" {
+            let info = |name: &str, remote: bool, author: &str, when: &str, subject: &str| {
+                pom_workspace::BranchInfo {
+                    name: name.into(),
+                    remote,
+                    author: author.into(),
+                    relative_time: when.into(),
+                    subject: subject.into(),
+                }
+            };
+            let before = vec![
+                info(
+                    "fix-checkout-page",
+                    false,
+                    "you",
+                    "5 minutes ago",
+                    "Checkout page layout",
+                ),
+                info("main", false, "you", "1 day ago", "Merge PROJ-98"),
+                info(
+                    "ana/mail-retry",
+                    true,
+                    "Ana Lima",
+                    "2 hours ago",
+                    "Retry failed mail with a much longer subject line than fits",
+                ),
+            ];
+            let mut after = before.clone();
+            after.push(info(
+                "ben/queue-metrics",
+                true,
+                "Ben Okafor",
+                "10 minutes ago",
+                "Queue depth metrics",
+            ));
+            let fetched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let listed = fetched.clone();
+            let source = workspaces_ui::BranchSource {
+                list: std::sync::Arc::new(move |_| {
+                    let branches = if listed.load(std::sync::atomic::Ordering::SeqCst) {
+                        after.clone()
+                    } else {
+                        before.clone()
+                    };
+                    Ok(workspaces_ui::RepoBranches {
+                        base: "fix-checkout-page".into(),
+                        branches,
+                    })
+                }),
+                fetch: std::sync::Arc::new(move |_| {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    fetched.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }),
+            };
+            let mut modal = workspaces_ui::UseBranchModal::new(
+                "worker",
+                "fix-checkout-page",
+                Some("fix-checkout-page"),
+                "workspace--fix-checkout-page",
+                source,
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while workspace::WindowModal::busy(&modal) && std::time::Instant::now() < deadline {
+                workspace::WindowModal::tick(&mut modal);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            workspace::WindowModal::key(&mut modal, workspace::EditKey::Down, false);
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        if mode.starts_with("usage") {
+            let usage = workspace::UsageInfo {
+                account: Some(workspace::UsageAccount {
+                    name: "dev".into(),
+                    email: "dev@example.com".into(),
+                    plan: "team".into(),
+                    organization: "Example".into(),
+                }),
+                session: Some(workspace::UsageWindow {
+                    used: 23.0,
+                    resets: "in 2h 31m".into(),
+                }),
+                weekly: Some(workspace::UsageWindow {
+                    used: 74.0,
+                    resets: "Sat 17:00".into(),
+                }),
+                note: "Updated 12s ago - checks every minute".into(),
+                today: Some(workspace::UsageToday {
+                    total: "$17.25".into(),
+                    sessions: 4,
+                    by_workspace: vec![
+                        ("Login page".into(), "$11.02".into()),
+                        ("main".into(), "$6.23".into()),
+                    ],
+                }),
+                updating_to: None,
+            };
+            let (w, h) = (lw * 2.0, lh * 2.0);
+            entity.update(app.app_mut(), |view, _| {
+                view.set_usage(usage);
+                match mode.as_str() {
+                    "usagecard" => view.show_usage_card(
+                        false,
+                        ui::Rect::new(w - 300.0, 14.0, 250.0, 48.0, ui::Rgba::TRANSPARENT),
+                    ),
+                    "usagetoday" => view.show_usage_card(
+                        true,
+                        ui::Rect::new(w - 420.0, h - 44.0, 200.0, 40.0, ui::Rgba::TRANSPARENT),
+                    ),
+                    "usagemenu" => view.show_app_menu(ui::Rect::new(
+                        w - 68.0,
+                        14.0,
+                        48.0,
+                        48.0,
+                        ui::Rgba::TRANSPARENT,
+                    )),
+                    _ => {}
+                }
+            });
+        }
+        if mode == "newproject" || mode == "onboard" {
+            let which = std::env::var("ONBOARDPAGE").unwrap_or_else(|_| "repos".into());
+            let page = onboarding_ui::preview_page(&which);
+            entity.update(app.app_mut(), |view, _| view.open_page(Box::new(page)));
+        }
+        if mode == "exportconfig" {
+            let mut modal = workspaces_ui::ExportConfigModal::new(3);
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 4);
+            workspace::WindowModal::text(&mut modal, "secret");
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        if mode == "importconfig" {
+            let file = std::env::temp_dir().join("pom-snapshot-import.yml");
+            let yaml = "session: myproject\ndefault_branch: main\nrepos:\n  api:\n    alias: be\n    services:\n      server:\n        type: backend\n        cmd: bundle exec rails s -p $PORT\n        env:\n          DATABASE_URL: \"{{db.main.url}}\"\n          API_KEY: \"{{secret.API_KEY}}\"\n  web:\n    services:\n      app:\n        cmd: pnpm dev --port $PORT\n        env:\n          API_URL: \"{{be.server.url}}\"\n";
+            if let Err(error) = std::fs::write(&file, yaml) {
+                eprintln!("snapshot: {error}");
+            }
+            let mut modal =
+                workspaces_ui::ImportConfigModal::new(Box::new(move || Some(file.clone())));
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 6);
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        // RAIL=1: the WORKSPACES panel folded to its rail.
+        if std::env::var("RAIL").is_ok() {
+            entity.update(app.app_mut(), |view, _| {
+                view.run_action(workspace::keymap::Action::ToggleLeftDock)
+            });
+        }
+        if mode == "prompt" {
+            entity.update(app.app_mut(), |view, _| {
+                view.ask(workspace::Prompt {
+                    token: 1,
+                    message: "Stop all shared services?".into(),
+                    detail: Some(
+                        "Shared services are used by all workspaces; 12 services in other workspaces are still running."
+                            .into(),
+                    ),
+                    buttons: vec!["Stop".into(), "Cancel".into()],
+                })
+            });
+        }
+        if mode == "wsrename" {
+            let modal = workspaces_ui::RenameWorkspaceModal::new("feat-login", "Login page", namer);
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        // MAINVIEW=sidebar GROUPED=1: the list grouped by ticket status, Done folded.
+        if sidebar && std::env::var("GROUPED").is_ok() {
+            entity.update(app.app_mut(), |view, _| {
+                view.set_workspace_grouping(Some(workspace::Grouping::from_keys(
+                    &[],
+                    &["done".to_string()],
+                )))
+            });
+        }
+        // MAINVIEW=sidebar OPS=1: main's update failed (opened), one creation running, one queued, one failed.
+        if sidebar && std::env::var("OPS").is_ok() {
+            use workspace::{OpStatus, StageState, WorkspaceOp};
+            let op = |id: u64,
+                      branch: &str,
+                      title: &str,
+                      status: OpStatus,
+                      stages: Vec<(&str, StageState)>,
+                      error: &str,
+                      quiet: bool| WorkspaceOp {
+                id,
+                branch: branch.into(),
+                title: title.into(),
+                status,
+                stages: stages
+                    .into_iter()
+                    .map(|(name, state)| (name.to_string(), state))
+                    .collect(),
+                detail: String::new(),
+                error: error.into(),
+                retryable: true,
+                quiet,
+                ..Default::default()
+            };
+            use StageState::{Done, Failed, Pending, Running, Skipped};
+            let ops = vec![
+                op(
+                    1,
+                    "",
+                    "Updating main",
+                    OpStatus::Failed,
+                    vec![("api", Failed), ("web", Done), ("worker", Skipped)],
+                    "api: Your local changes to app/models/user.rb would be overwritten by merge",
+                    true,
+                ),
+                op(
+                    2,
+                    "dark-mode",
+                    "Dark mode",
+                    OpStatus::Running,
+                    vec![
+                        ("worktrees", Done),
+                        ("ports", Done),
+                        ("databases", Running),
+                        ("env files", Pending),
+                        ("setup", Pending),
+                    ],
+                    "",
+                    false,
+                ),
+                op(
+                    3,
+                    "proj-111-export-orders",
+                    "PROJ-111 Export orders to CSV",
+                    OpStatus::Queued,
+                    Vec::new(),
+                    "",
+                    false,
+                ),
+                op(
+                    4,
+                    "proj-112-checkout-redesign",
+                    "PROJ-112 Checkout redesign",
+                    OpStatus::Failed,
+                    vec![
+                        ("validate", Done),
+                        ("provision", Done),
+                        ("databases", Failed),
+                        ("worktrees", Pending),
+                        ("configure", Pending),
+                        ("setup", Pending),
+                    ],
+                    "shared services: docker: Cannot connect to the Docker daemon",
+                    false,
+                ),
+            ];
+            let mut ops = ops;
+            ops[0].log = "api: Your local changes to app/models/user.rb would be overwritten by merge\n\
+                          error: Your local changes to the following files would be overwritten by merge:\n\
+                          \tapp/models/user.rb\n\
+                          Please commit your changes or stash them before you merge."
+                .into();
+            ops[0].fix_dir = "/Users/me/myproject/main/api".into();
+            ops[3].log = "shared services: docker: Cannot connect to the Docker daemon at \
+                          unix:///var/run/docker.sock. Is the docker daemon running?"
+                .into();
+            ops[3].skip = "no shared services or databases until they start".into();
+            entity.update(app.app_mut(), |view, _| {
+                view.set_workspace_ops(ops);
+                view.toggle_workspace_op(4);
+                if std::env::var("MAINOPEN").is_ok() {
+                    view.toggle_workspace_op(1);
+                }
+                if std::env::var("MANUAL").is_ok() {
+                    view.toggle_manual_fixes(4);
+                }
+                if std::env::var("POPOVER").is_ok() {
+                    view.toggle_failure_popover(1);
+                    view.toggle_manual_fixes(1);
+                }
+            });
+        }
+        if mode == "wsops" {
+            use workspace::{OpStatus, StageState, WorkspaceOp};
+            let stages = |states: [StageState; 7]| -> Vec<(String, StageState)> {
+                [
+                    "Validating config and hosts",
+                    "Provisioning workspace",
+                    "Starting shared services and databases",
+                    "Creating git worktrees (parallel)",
+                    "Configuring repos (parallel)",
+                    "Running setup commands (parallel)",
+                    "Seeding databases (parallel)",
+                ]
+                .iter()
+                .zip(states)
+                .map(|(label, state)| (label.to_string(), state))
+                .collect()
+            };
+            use StageState::{Done, Failed, Pending, Running};
+            let ops = vec![
+                WorkspaceOp {
+                    id: 1,
+                    branch: "fix-checkout".into(),
+                    title: "Fix checkout page".into(),
+                    status: OpStatus::Running,
+                    stages: stages([Done, Done, Done, Running, Pending, Pending, Pending]),
+                    detail: "worktree: web".into(),
+                    error: String::new(),
+                    retryable: true,
+                    quiet: false,
+                    ..Default::default()
+                },
+                WorkspaceOp {
+                    id: 2,
+                    branch: "proj-101".into(),
+                    title: "PROJ-101 Payments".into(),
+                    status: OpStatus::Failed,
+                    stages: stages([Done, Done, Failed, Pending, Pending, Pending, Pending]),
+                    detail: String::new(),
+                    error: "shared services: docker: No such file or directory".into(),
+                    retryable: true,
+                    quiet: false,
+                    ..Default::default()
+                },
+            ];
+            entity.update(app.app_mut(), |view, _| {
+                view.set_workspace_ops(ops);
+                view.toggle_workspace_op(1);
+            });
+        }
+        // Background work (the diff's hunks) settles over a few frames.
+        for _ in 0..40 {
+            app.draw(handle).expect("frame");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let frame = app.draw(handle).expect("frame");
+        let mut layers: Vec<ui::Layer> = vec![(
+            frame.base.rects.as_slice(),
+            frame.base.tris.as_slice(),
+            frame.base.texts.as_slice(),
+            frame.base.icons.as_slice(),
+            None,
+        )];
+        for overlay in &frame.overlays {
+            layers.push((
+                overlay.painted.rects.as_slice(),
+                overlay.painted.tris.as_slice(),
+                overlay.painted.texts.as_slice(),
+                overlay.painted.icons.as_slice(),
+                overlay.clip.map(|c| (c.x, c.y, c.w, c.h)),
+            ));
+        }
+        r.render_frame(ui::theme().background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    // With MAINMENU=1, render the main window with the header session switcher menu open.
+    if std::env::var("MAINMENU").is_ok() {
+        let mut layout = workspace::Layout {
+            session_menu: true,
+            ..Default::default()
+        };
+        if let Ok(s) = std::env::var("MENUSCROLL")
+            .unwrap_or_default()
+            .parse::<f32>()
+        {
+            layout.session_scroll = s;
+        }
+        let (mut rects, mut texts) = layout.build(lw, lh);
+        let mut tris: Vec<ui::Tri> = Vec::new();
+        let hover = std::env::var("MENUHOVER")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok());
+        let header = layout.header(lw, None);
+        rects.extend(header.rects);
+        tris.extend(header.tris);
+        texts.extend(header.texts);
+        let menu = layout.session_menu("", hover, true);
+        let tip = hover.and_then(|hv| {
+            let text = workspace::session_action_tooltip(hv)?;
+            let rect = menu
+                .list
+                .hits
+                .iter()
+                .find(|(_, id)| *id == hv)
+                .map(|(r, _)| *r)?;
+            Some(workspace::tooltip(rect, text, lw))
+        });
+        let mut layers: Vec<ui::Layer> = vec![
+            (
+                rects.as_slice(),
+                tris.as_slice(),
+                texts.as_slice(),
+                &[],
+                None,
+            ),
+            (
+                menu.fixed.rects.as_slice(),
+                menu.fixed.tris.as_slice(),
+                menu.fixed.texts.as_slice(),
+                &[],
+                None,
+            ),
+            (
+                menu.list.rects.as_slice(),
+                menu.list.tris.as_slice(),
+                menu.list.texts.as_slice(),
+                &[],
+                Some(menu.clip),
+            ),
+        ];
+        if let Some(t) = &tip {
+            layers.push((
+                t.rects.as_slice(),
+                t.tris.as_slice(),
+                t.texts.as_slice(),
+                &[],
+                None,
+            ));
+        }
+        r.render_frame(ui::Rgba::new(0.0, 0.0, 0.0, 1.0), &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    let mut settings = settings::Settings::default();
+    if let Ok(fs) = std::env::var("FONTSIZE").unwrap_or_default().parse::<f32>() {
+        settings.ui_font_size = fs;
+        ui::set_ui_text_scale(fs / ui::UI_FONT_BASE);
+    }
+    if let Ok(t) = std::env::var("THEME") {
+        if t == "light" {
+            ui::set_theme(ui::one_light());
+        } else {
+            settings.theme = t.clone();
+            ui::set_theme(ui::by_name(&t));
+        }
+    }
+    if let Ok(f) = std::env::var("UIFONT") {
+        settings.ui_font = f;
+    }
+    if let Ok(w) = std::env::var("UIWEIGHT").unwrap_or_default().parse::<u16>() {
+        settings.ui_font_weight = w as f32;
+        ui::set_ui_font_weight(w);
+    }
+    r.set_ui_font(&settings.ui_font);
+    let expanded = vec![true; settings_ui::CATEGORY_COUNT];
+    // JIRA=1: the Integrations page as a configured project sees it.
+    let jira = if std::env::var("JIRA").is_ok() {
+        settings_ui::IntegrationsPage {
+            session: "myproject".into(),
+            keep_main_fresh: true,
+            refresh_minutes: 30,
+            site: "https://acme.atlassian.net".into(),
+            email: "you@example.com".into(),
+            token: settings_ui::TokenSource::Secret,
+            status: settings_ui::ConnectionStatus::SignedIn("Sam (you@example.com)".into()),
+        }
+    } else {
+        settings_ui::IntegrationsPage::default()
+    };
+    // LIVE=1: the Agent and Network pages with registration done and some proxy traffic.
+    let live = std::env::var("LIVE").is_ok();
+    let state = settings_ui::PageState {
+        jira,
+        project: settings_ui::ProjectPage {
+            session: "myproject".into(),
+            repos: vec![
+                settings_ui::RepoSummary {
+                    name: "api".into(),
+                    alias: "be".into(),
+                    services: 2,
+                    cloned: true,
+                    present: 3,
+                    workspaces: 4,
+                },
+                settings_ui::RepoSummary {
+                    name: "web".into(),
+                    alias: "web".into(),
+                    services: 1,
+                    cloned: false,
+                    present: 0,
+                    workspaces: 4,
+                },
+            ],
+        },
+        agent: if live {
+            settings_ui::AgentPage {
+                mcp: settings_ui::Registration::Done,
+                hooks: settings_ui::Registration::Done,
+            }
+        } else {
+            settings_ui::AgentPage::default()
+        },
+        network: settings_ui::NetworkPage {
+            proxy_running: live,
+            webhook_running: live,
+            proxy_port: 8767,
+            webhook_port: 8766,
+            served_elsewhere: false,
+            requests: if live {
+                vec![
+                    settings_ui::RequestRow {
+                        time: "10:42:07".into(),
+                        method: "GET".into(),
+                        path: "/_pom_dev/api/server/v1/me".into(),
+                        profile: "local".into(),
+                        target: "127.0.0.1:41822".into(),
+                        status: 200,
+                        ms: 12,
+                    },
+                    settings_ui::RequestRow {
+                        time: "10:42:05".into(),
+                        method: "POST".into(),
+                        path: "/_pom_dev/api/server/v1/login".into(),
+                        profile: "staging".into(),
+                        target: "https://api.staging.example.com".into(),
+                        status: 401,
+                        ms: 184,
+                    },
+                ]
+            } else {
+                Vec::new()
+            },
+        },
+        general: settings_ui::GeneralPage {
+            start_at_login: false,
+            version: env!("CARGO_PKG_VERSION").into(),
+            updates_apply: live,
+        },
+        keymap: settings_ui::KeymapPage {
+            rows: workspace::keymap::Action::ALL
+                .iter()
+                .map(|action| {
+                    (
+                        action.label().to_string(),
+                        action.name().to_string(),
+                        workspace::keymap::Keymap::defaults()
+                            .binding_for(*action)
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect(),
+            problems: Vec::new(),
+        },
+    };
+    let fs_edit = std::env::var("FSEDIT").ok();
+    let editing = fs_edit
+        .as_deref()
+        .map(|b| (settings_ui::CTRL_FONT_SIZE_EDIT, b));
+    let search = std::env::var("SEARCH").unwrap_or_default();
+
+    // With SCROLL=<px>, exercise the scissor-clipped scrolling page path.
+    if let Ok(scroll) = std::env::var("SCROLL").unwrap_or_default().parse::<f32>() {
+        let clip = settings_ui::content_region(lw, lh);
+        let (page, total_h) =
+            settings_ui::page(category, &settings, &state, None, &search, lw, lh, scroll);
+        let parts = settings_ui::chrome(
+            category,
+            None,
+            Some(0),
+            &expanded,
+            lw,
+            lh,
+            &search,
+            false,
+            0.0,
+            "myproject",
+        );
+        let mut chrome = parts.fixed;
+        chrome.rects.extend(parts.nav.rects);
+        chrome.texts.extend(parts.nav.texts);
+        if let Some(bar) = settings_ui::content_scrollbar(clip, total_h, scroll) {
+            chrome.rects.push(bar);
+        }
+        r.render_layered_clip(
+            (&page.rects, &page.tris, &page.texts),
+            (&chrome.rects, &chrome.tris, &chrome.texts),
+            Some(clip),
+            None,
+            ui::theme().editor_background,
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+    let base = settings_ui::panel(
+        category,
+        None,
+        &expanded,
+        &settings,
+        &state,
+        lw,
+        lh,
+        editing,
+        &search,
+        !search.is_empty(),
+    );
+
+    // With POPOVER=1, render an open Theme dropdown to verify the floating overlay.
+    // With FONTPOP=1, render the (long, scrolled) font-family dropdown to verify the scrollbar.
+    if std::env::var("POPOVER").is_ok() || std::env::var("FONTPOP").is_ok() {
+        let font_pop = std::env::var("FONTPOP").is_ok();
+        let cid = if font_pop {
+            settings_ui::CTRL_FONT_FAMILY
+        } else {
+            settings_ui::CTRL_THEME
+        };
+        let anchor = base
+            .hits
+            .iter()
+            .find(|(_, id)| *id == cid)
+            .map(|(r, _)| *r)
+            .expect("control anchor");
+        let fonts = if font_pop { r.font_families() } else { vec![] };
+        let items = settings_ui::control_items(cid, &fonts);
+        let query = std::env::var("QUERY").unwrap_or_default();
+        let (current, scroll) = if font_pop {
+            (
+                settings.ui_font.clone(),
+                if query.is_empty() { 8 } else { 0 },
+            )
+        } else {
+            (settings.theme.clone(), 0)
+        };
+        let hover = std::env::var("HOVER")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|i| settings_ui::POPOVER_BASE + i);
+        let pop = settings_ui::popover(anchor, &current, &items, scroll, &query, hover, lw, lh);
+        r.render_layered(
+            (&base.rects, &base.tris, &base.texts),
+            (&pop.rects, &pop.tris, &pop.texts),
+        )?;
+    } else {
+        r.render(&base.rects, &base.tris, &base.texts)?;
+    }
+
+    let (w, h, rgba) = r.read_rgba()?;
+    let file = std::fs::File::create(&out)?;
+    let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()?.write_image_data(&rgba)?;
+    println!("wrote {out} ({w}x{h})");
+    Ok(())
+}
+
+/// Canned object storage answers for the Database snapshots.
+struct SnapshotStorage;
+
+impl pom_db::object_storage::HttpTransport for SnapshotStorage {
+    fn send(
+        &self,
+        _request: &pom_db::object_storage::HttpRequest,
+    ) -> Result<pom_db::object_storage::HttpResponse, String> {
+        Ok(pom_db::object_storage::HttpResponse {
+            status: 206,
+            headers: vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("Content-Range".into(), "bytes 0-65535/5347737".into()),
+            ],
+            body: b"[\n  { \"id\": 5120, \"status\": \"paid\", \"total_cents\": 4900 },\n  { \"id\": 5119, \"status\": \"refunded\", \"total_cents\": 1200 }\n]\n".to_vec(),
+        })
+    }
+}

@@ -1,0 +1,25 @@
+[package]
+name = "database_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Database tool window: a workspace's databases and shared services as a tree, tabs that browse a table's rows in a grid, and object previews."
+
+[lib]
+path = "src/database_ui.rs"
+
+[dependencies]
+files_ui = { path = "../files_ui" }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+pom_config = { path = "../pom_config" }
+pom_db = { path = "../pom_db" }
+pom_paths = { path = "../pom_paths" }
+pom_services = { path = "../pom_services" }
+serde_json.workspace = true
+terminal = { path = "../terminal" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }
+
+[dev-dependencies]
+pom_ptyhost = { path = "../pom_ptyhost" }
+tempfile = "3"
