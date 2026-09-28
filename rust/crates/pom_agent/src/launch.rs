@@ -124,12 +124,21 @@ fn transcript_exists(home: &Path, cwd: &Path, id: &str) -> bool {
 
 /// What the workspace's main conversation is keyed by, so it always resumes the same session.
 pub(crate) fn main_session_key(context: &LaunchContext<'_>) -> String {
-    let key = if context.is_main {
-        format!("main:{}", context.branch)
+    main_key(context.branch, context.is_main)
+}
+
+fn main_key(branch: &str, is_main: bool) -> String {
+    let key = if is_main {
+        format!("main:{branch}")
     } else {
-        format!("ws:{}", context.branch)
+        format!("ws:{branch}")
     };
     format!("chat:{key}")
+}
+
+/// The conversation id of a workspace's main agent.
+pub fn main_session_id(branch: &str, is_main: bool) -> String {
+    session_id(&main_key(branch, is_main))
 }
 
 /// A workspace's agent: which holder runs it, where, and with what command.

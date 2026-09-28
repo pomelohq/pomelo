@@ -42,6 +42,13 @@ fn key_label(key: &str) -> String {
 
 /// One keystroke as modifier glyphs (control, option, command, shift, in that order) then the key.
 pub fn render_keystroke(keystroke: &str, size: f32) -> Node {
+    if keystroke.trim().contains(' ') {
+        let mut chord = div().row().items_center().gap(size * 0.4);
+        for stroke in keystroke.split_whitespace() {
+            chord = chord.child(render_keystroke(stroke, size));
+        }
+        return chord.into();
+    }
     let muted = theme().text_muted;
     let (modifiers, key) = parse_keystroke(keystroke);
     let glyph = |kind: IconKind| -> Node {

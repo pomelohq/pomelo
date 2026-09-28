@@ -36,10 +36,11 @@ pub enum Action {
     SetUpProjectWithAi,
     AddRepository,
     CloneMissingRepos,
+    OpenAgentUsage,
 }
 
 impl Action {
-    pub const ALL: [Action; 33] = [
+    pub const ALL: [Action; 34] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -73,6 +74,7 @@ impl Action {
         Action::SetUpProjectWithAi,
         Action::AddRepository,
         Action::CloneMissingRepos,
+        Action::OpenAgentUsage,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -111,6 +113,7 @@ impl Action {
             Action::SetUpProjectWithAi => "pomelo::SetUpProjectWithAi",
             Action::AddRepository => "pomelo::AddRepository",
             Action::CloneMissingRepos => "pomelo::CloneMissingRepos",
+            Action::OpenAgentUsage => "pomelo::OpenAgentUsage",
         }
     }
 
@@ -150,6 +153,7 @@ impl Action {
             Action::SetUpProjectWithAi => "Set Up Project with AI",
             Action::AddRepository => "Add Repository",
             Action::CloneMissingRepos => "Clone Missing Repos into Main",
+            Action::OpenAgentUsage => "Agent Usage",
         }
     }
 
@@ -270,6 +274,7 @@ const DEFAULTS: &[(&str, Action)] = &[
     ("cmd-alt-w", Action::CloseAllItems),
     ("cmd-shift-v", Action::MarkdownPreview),
     ("cmd-k v", Action::MarkdownPreviewToTheSide),
+    ("cmd-shift-u", Action::OpenAgentUsage),
 ];
 
 fn sequence(text: &str) -> Option<Vec<Keystroke>> {

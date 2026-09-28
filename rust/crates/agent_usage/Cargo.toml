@@ -1,0 +1,16 @@
+[package]
+name = "agent_usage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "What the coding agents used: the Claude account's plan limits, and tokens per turn from the transcripts."
+
+[lib]
+path = "src/agent_usage.rs"
+
+[dependencies]
+libc = "0.2"
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

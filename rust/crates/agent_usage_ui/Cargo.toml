@@ -1,0 +1,14 @@
+[package]
+name = "agent_usage_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Agent usage tab: tokens and estimated cost of the coding agents by day, workspace, agent and model."
+
+[lib]
+path = "src/agent_usage_ui.rs"
+
+[dependencies]
+terminal = { path = "../terminal" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }

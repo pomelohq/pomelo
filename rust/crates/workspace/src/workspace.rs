@@ -13,6 +13,7 @@ pub mod persistence;
 pub mod search_bar;
 pub mod tab_drag;
 pub mod text_field;
+mod usage;
 mod welcome;
 mod workspace_view;
 pub use form::{
@@ -27,6 +28,10 @@ pub use panel::{
     TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use ui::render_keystroke;
+pub use usage::{
+    tone as usage_tone, UsageAccount, UsageInfo, UsageToday, UsageWindow, APP_MENU, USAGE_CHIP,
+    USAGE_OPEN, USAGE_REFRESH, USAGE_STATUS,
+};
 pub use welcome::{
     is_welcome_id, MachineCheck, WELCOME_FIX_BASE, WELCOME_IMPORT_BUNDLE, WELCOME_NEW_PROJECT,
     WELCOME_NEW_PROJECT_CARD, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,
@@ -651,6 +656,16 @@ pub const MENU_EDIT_OPEN_TERMINAL: u64 = 896;
 pub const MENU_EDIT_SPLIT_DIFF: u64 = 897;
 pub const MENU_EDIT_MARKDOWN_PREVIEW: u64 = 898;
 pub const TAB_MENU_TARGET: u64 = 852;
+/// The title bar's app menu (its chevron).
+pub const APP_MENU_TARGET: u64 = 854;
+pub const MENU_APP_ACCOUNT: u64 = 950;
+pub const MENU_APP_UPDATING: u64 = 951;
+pub const MENU_APP_SETTINGS: u64 = 952;
+pub const MENU_APP_KEYMAP: u64 = 953;
+pub const MENU_APP_THEME: u64 = 954;
+pub const MENU_APP_USAGE: u64 = 955;
+/// The app menu's Panel Layout submenu.
+pub const MENU_SUBMENU_LAYOUT: u64 = 869;
 pub const MENU_TAB_CLOSE: u64 = 900;
 pub const MENU_TAB_CLOSE_OTHERS: u64 = 901;
 pub const MENU_TAB_CLOSE_LEFT: u64 = 902;
@@ -779,6 +794,12 @@ pub struct Layout {
     /// Which content area each function's content renders in (its dock side), index = `PaneKind::ALL` index.
     pub func_side: Vec<DockPosition>,
     pub sessions: Vec<Session>,
+    /// The agents' usage: the title bar chip and the status bar's total.
+    pub usage: UsageInfo,
+    /// The app menu or the usage card is open, so their buttons stay lit.
+    pub app_menu_open: bool,
+    pub usage_card_open: bool,
+    pub usage_today_open: bool,
     /// What the welcome page reports about this Mac.
     pub machine: Vec<MachineCheck>,
     pub current_session: Option<usize>,
@@ -1772,6 +1793,10 @@ impl Default for Layout {
             },
             sessions: Vec::new(),
             machine: Vec::new(),
+            usage: UsageInfo::default(),
+            app_menu_open: false,
+            usage_card_open: false,
+            usage_today_open: false,
             project: None,
             sidebar_side: DockPosition::Left,
             agent_side: DockPosition::Right,
@@ -2321,7 +2346,7 @@ impl Layout {
             bar_row = bar_row.child(trigger);
         }
         let bar: Node = bar_row.into();
-        render(
+        let mut painted = render(
             &bar,
             Rect::new(
                 self.session_left(),
@@ -2330,7 +2355,53 @@ impl Layout {
                 TOP_BAR_H,
                 Rgba::TRANSPARENT,
             ),
-        )
+        );
+        let chevron_hot = hovered == Some(APP_MENU) || self.app_menu_open;
+        let mut chevron = div()
+            .row()
+            .w_px(24.0)
+            .h_px(24.0)
+            .rounded(5.0)
+            .items_center()
+            .justify_center()
+            .on_click(APP_MENU)
+            .child(
+                ui::icon(ui::IconKind::ChevronDown)
+                    .size(12.0)
+                    .color(if chevron_hot { text_c() } else { text_dim_c() }),
+            );
+        if chevron_hot {
+            chevron = chevron.bg(theme().ghost_element_hover);
+        }
+        let right: Node = div()
+            .row()
+            .items_center()
+            .gap(4.0)
+            .h_px(TOP_BAR_H)
+            .child(crate::usage::chip(
+                &self.usage,
+                hovered == Some(USAGE_CHIP) || self.usage_card_open,
+            ))
+            .child(chevron)
+            .into();
+        let scale = ui::ui_text_scale();
+        let right_w = ui::measure(&right).0 * scale;
+        let cluster = render(
+            &right,
+            Rect::new(
+                (w - right_w - 10.0 * scale).max(0.0),
+                0.0,
+                right_w,
+                TOP_BAR_H,
+                Rgba::TRANSPARENT,
+            ),
+        );
+        painted.rects.extend(cluster.rects);
+        painted.tris.extend(cluster.tris);
+        painted.texts.extend(cluster.texts);
+        painted.icons.extend(cluster.icons);
+        painted.hits.extend(cluster.hits);
+        painted
     }
 
     /// Largest pixel scroll offset for the session list (list content height minus the visible region).
@@ -2900,6 +2971,12 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                     row = row.child(vsep());
                 }
                 row = row.child(label(language).size(12.0).color(dim));
+            }
+            if let Some(today) = &layout.usage.today {
+                row = row.child(vsep()).child(crate::usage::status_item(
+                    today,
+                    hovered == Some(USAGE_STATUS) || layout.usage_today_open,
+                ));
             }
             if let Some(g) = dock_group(DockPosition::Bottom) {
                 row = row.child(vsep()).child(g);

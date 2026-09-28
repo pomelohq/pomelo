@@ -74,6 +74,33 @@ fn main() -> anyhow::Result<()> {
         return e2e::run(out.trim_end_matches(".png"), &repos);
     }
 
+    if std::env::var("USAGEPAGE").is_ok() {
+        use workspace::Item;
+        let mut page = agent_usage_ui::preview_page();
+        let (width, height) = (1000.0_f32, 1500.0_f32);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = page.paint_body(body, true).unwrap_or_default();
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().editor_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(which) = std::env::var("ONBOARD") {
         use workspace::Item;
         let mut page = onboarding_ui::preview_page(&which);
@@ -1493,6 +1520,56 @@ fn main() -> anyhow::Result<()> {
             workspace::WindowModal::key(&mut modal, workspace::EditKey::Down, false);
             entity.update(app.app_mut(), |view, _| {
                 view.open_window_modal(Box::new(modal))
+            });
+        }
+        if mode.starts_with("usage") {
+            let usage = workspace::UsageInfo {
+                account: Some(workspace::UsageAccount {
+                    name: "toan".into(),
+                    email: "toan@example.com".into(),
+                    plan: "team".into(),
+                    organization: "Example".into(),
+                }),
+                session: Some(workspace::UsageWindow {
+                    used: 23.0,
+                    resets: "in 2h 31m".into(),
+                }),
+                weekly: Some(workspace::UsageWindow {
+                    used: 74.0,
+                    resets: "Sat 17:00".into(),
+                }),
+                note: "Updated 12s ago - checks every minute".into(),
+                today: Some(workspace::UsageToday {
+                    total: "$17.25".into(),
+                    sessions: 4,
+                    by_workspace: vec![
+                        ("Login page".into(), "$11.02".into()),
+                        ("main".into(), "$6.23".into()),
+                    ],
+                }),
+                updating_to: None,
+            };
+            let (w, h) = (lw * 2.0, lh * 2.0);
+            entity.update(app.app_mut(), |view, _| {
+                view.set_usage(usage);
+                match mode.as_str() {
+                    "usagecard" => view.show_usage_card(
+                        false,
+                        ui::Rect::new(w - 300.0, 14.0, 250.0, 48.0, ui::Rgba::TRANSPARENT),
+                    ),
+                    "usagetoday" => view.show_usage_card(
+                        true,
+                        ui::Rect::new(w - 420.0, h - 44.0, 200.0, 40.0, ui::Rgba::TRANSPARENT),
+                    ),
+                    "usagemenu" => view.show_app_menu(ui::Rect::new(
+                        w - 68.0,
+                        14.0,
+                        48.0,
+                        48.0,
+                        ui::Rgba::TRANSPARENT,
+                    )),
+                    _ => {}
+                }
             });
         }
         if mode == "newproject" || mode == "onboard" {

@@ -12,8 +12,8 @@ pub use hooks::{
     AgentState, AgentStatus,
 };
 pub use launch::{
-    claude_launch, claude_task_launch, is_agent_holder, onboard_launch, onboard_system_prompt,
-    resolve_claude, session_id, system_prompt, AgentLaunch, LaunchContext,
+    claude_launch, claude_task_launch, is_agent_holder, main_session_id, onboard_launch,
+    onboard_system_prompt, resolve_claude, session_id, system_prompt, AgentLaunch, LaunchContext,
 };
 pub use naming::{claude_available, naming_prompt, parse_suggestion, suggest_name, NameSuggestion};
 pub use onboard::{onboard_launch_with, AgentCli};

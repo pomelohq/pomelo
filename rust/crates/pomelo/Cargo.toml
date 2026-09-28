@@ -43,6 +43,9 @@ pom_secrets = { path = "../pom_secrets" }
 pom_bundle = { path = "../pom_bundle" }
 onboarding = { path = "../onboarding" }
 onboarding_ui = { path = "../onboarding_ui" }
+agent_usage = { path = "../agent_usage" }
+agent_usage_ui = { path = "../agent_usage_ui" }
+libc = "0.2"
 winit.workspace = true
 anyhow.workspace = true
 

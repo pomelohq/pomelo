@@ -9,6 +9,7 @@ mod add_repo;
 mod config_bundle;
 mod notifications;
 mod onboarding;
+mod usage;
 mod workspaces;
 
 use std::sync::Arc;
@@ -634,6 +635,7 @@ struct App {
     next_agent_item: u64,
     onboarding: Option<onboarding::OnboardingFlow>,
     machine: onboarding::MachineChecks,
+    usage: usage::UsageTracker,
     adding_repo: Option<add_repo::AddingRepo>,
     cloning_repos: Option<add_repo::CloningRepos>,
     keymap: workspace::keymap::Keymap,
@@ -2371,6 +2373,7 @@ impl App {
             Action::OpenProjectConfig => self.open_project_config(id),
             Action::AddRepository => self.open_add_repo(id),
             Action::CloneMissingRepos => self.clone_missing_repos(id),
+            Action::OpenAgentUsage => self.open_agent_usage(id),
             Action::SetUpProjectWithAi => {
                 if claude_installed() {
                     self.open_project_config(id);
@@ -2730,6 +2733,9 @@ impl App {
             );
             self.open_side_agent(id, role, workspace::SideAgentStart::Auto, prompt);
         }
+        if effects.refresh_usage {
+            self.refresh_usage_now();
+        }
         if effects.restart_stale {
             self.restart_stale(id);
         }
@@ -2834,6 +2840,8 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.poll_onboarding();
         self.poll_machine();
+        self.poll_usage();
+        self.poll_usage_pages();
         self.poll_add_repo();
         self.poll_clone_repos();
         self.reload_keymap_if_changed();

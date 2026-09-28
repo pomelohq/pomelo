@@ -75,6 +75,8 @@ pub struct WorkspaceEffects {
     pub restart_stale: bool,
     /// A command palette pick the app runs (settings, projects, themes...).
     pub action: Option<crate::keymap::Action>,
+    /// The usage card's Refresh Now.
+    pub refresh_usage: bool,
 }
 
 /// What the WORKSPACES panel asked for: the new-workspace form, an action on a row (an index into
@@ -232,6 +234,9 @@ pub struct WorkspaceView {
     /// The agent dock's open popover and the button it drops from.
     agent_popover: Option<(crate::agent_popover::AgentPopoverKind, Rect)>,
     agent_popover_rect: Option<Rect>,
+    /// The usage card open under the title bar chip (`false`) or over the status item (`true`), and its anchor.
+    usage_popover: Option<(bool, Rect)>,
+    usage_popover_rect: Option<Rect>,
     /// The list grouped by ticket status, when that setting is on.
     grouping: Option<crate::Grouping>,
     group_drag: Option<GroupDrag>,
@@ -344,6 +349,8 @@ impl WorkspaceView {
             manual_menu_rect: None,
             agent_popover: None,
             agent_popover_rect: None,
+            usage_popover: None,
+            usage_popover_rect: None,
             grouping: None,
             group_drag: None,
             menu_workspace: None,
@@ -1313,6 +1320,11 @@ impl WorkspaceView {
         let (w, h) = (window.width, window.height);
         self.viewport = (w, h);
         self.restore_saved_panes();
+        self.layout.app_menu_open = self
+            .menu
+            .is_some_and(|menu| menu.3 == crate::APP_MENU_TARGET);
+        self.layout.usage_card_open = self.usage_popover.is_some_and(|(status, _)| !status);
+        self.layout.usage_today_open = self.usage_popover.is_some_and(|(status, _)| status);
         if self.layout.files_view.is_some() {
             if let Some(mut page) = self.page.take() {
                 if let Some(item) = page.open.pop() {
@@ -2302,6 +2314,9 @@ impl WorkspaceView {
         self.agent_popover_rect = self
             .agent_popover_painted(w)
             .map(|p| push_card(p, &mut header_hits, &mut overlays));
+        self.usage_popover_rect = self
+            .usage_popover_painted(w)
+            .map(|p| push_card(p, &mut header_hits, &mut overlays));
 
         self.popover_rects.clear();
         self.popover_groups.clear();
@@ -3065,6 +3080,12 @@ impl WorkspaceView {
 
     /// The context-menu items for a given status-bar button (dock positions valid for it + Hide Button).
     fn menu_items(&self, target: u64) -> Vec<MenuItem> {
+        if target == crate::APP_MENU_TARGET {
+            return self.app_menu_items();
+        }
+        if target == crate::MENU_SUBMENU_LAYOUT {
+            return self.panel_layout_items();
+        }
         if target == crate::WORKSPACE_ROW_MENU_TARGET {
             return self.workspace_row_menu_items();
         }
@@ -3706,7 +3727,182 @@ impl WorkspaceView {
         ))
     }
 
+    /// Opens the usage card under the chip, or the app menu, as a click on them would (for snapshots).
+    pub fn show_usage_card(&mut self, over_status: bool, anchor: Rect) {
+        self.usage_popover = Some((over_status, anchor));
+    }
+
+    pub fn show_app_menu(&mut self, anchor: Rect) {
+        self.menu = Some((
+            anchor.x + anchor.w,
+            anchor.y,
+            anchor.y + anchor.h,
+            crate::APP_MENU_TARGET,
+        ));
+    }
+
+    pub fn set_usage(&mut self, usage: crate::UsageInfo) -> bool {
+        if self.layout.usage == usage {
+            return false;
+        }
+        self.layout.usage = usage;
+        true
+    }
+
+    fn toggle_usage_popover(&mut self, over_status: bool) {
+        if self
+            .usage_popover
+            .is_some_and(|(status, _)| status == over_status)
+        {
+            self.usage_popover = None;
+            return;
+        }
+        let (x, y) = self.press;
+        self.usage_popover = self
+            .hit_with_rect(x, y)
+            .map(|(_, rect)| (over_status, rect));
+    }
+
+    fn usage_popover_painted(&self, w: f32) -> Option<Painted> {
+        let (over_status, anchor) = self.usage_popover?;
+        let (node, width) = if over_status {
+            (
+                crate::usage::today_card(&self.layout.usage, self.session_menu_hover),
+                crate::usage::TODAY_WIDTH,
+            )
+        } else {
+            (
+                crate::usage::chip_card(&self.layout.usage, self.session_menu_hover),
+                crate::usage::CARD_WIDTH,
+            )
+        };
+        let scale = ui::ui_text_scale();
+        let height = ui::measure(&node).1 * scale;
+        let x = (anchor.x + anchor.w - width * scale).clamp(
+            8.0 * scale,
+            (w - width * scale - 8.0 * scale).max(8.0 * scale),
+        );
+        let y = if over_status {
+            anchor.y - height - 4.0 * scale
+        } else {
+            anchor.y + anchor.h + 4.0 * scale
+        };
+        Some(ui::render(
+            &node,
+            Rect::new(x, y, width * scale, height, Rgba::TRANSPARENT),
+        ))
+    }
+
+    fn app_menu_items(&self) -> Vec<MenuItem> {
+        let entry = |id: u64, label: String, sep: bool, hint: Option<&'static str>| MenuItem {
+            id,
+            label: label.into(),
+            checked: false,
+            sep,
+            disabled: false,
+            danger: false,
+            icon: None,
+            hint: hint.map(Into::into),
+        };
+        let mut items = Vec::new();
+        if let Some(account) = &self.layout.usage.account {
+            let mut item = entry(crate::MENU_APP_ACCOUNT, account.name.clone(), false, None);
+            item.icon = Some(ui::IconKind::Sparkle);
+            item.hint = (!account.plan.is_empty()).then(|| {
+                let mut plan = account.plan.clone();
+                if let Some(first) = plan.get(0..1) {
+                    plan = first.to_uppercase() + &plan[1..];
+                }
+                plan.into()
+            });
+            items.push(item);
+        }
+        if let Some(version) = &self.layout.usage.updating_to {
+            let mut item = entry(
+                crate::MENU_APP_UPDATING,
+                format!("Updating to {version}..."),
+                !items.is_empty(),
+                None,
+            );
+            item.disabled = true;
+            items.push(item);
+        }
+        let first = !items.is_empty();
+        items.push(entry(
+            crate::MENU_APP_SETTINGS,
+            "Settings".into(),
+            first,
+            Some("cmd-,"),
+        ));
+        items.push(entry(
+            crate::MENU_APP_KEYMAP,
+            "Keymap".into(),
+            false,
+            Some("cmd-k cmd-s"),
+        ));
+        items.push(entry(
+            crate::MENU_APP_THEME,
+            "Next Theme".into(),
+            false,
+            Some("cmd-k cmd-t"),
+        ));
+        items.push(entry(
+            crate::MENU_APP_USAGE,
+            "Agent Usage".into(),
+            true,
+            Some("cmd-shift-u"),
+        ));
+        items.push(entry(
+            crate::MENU_SUBMENU_LAYOUT,
+            "Panel Layout".into(),
+            false,
+            None,
+        ));
+        items
+    }
+
+    fn panel_layout_items(&self) -> Vec<MenuItem> {
+        let left = self.layout.agent_side == DockPosition::Left;
+        let entry = |id: u64, label: &'static str, checked: bool| MenuItem {
+            id,
+            label: label.into(),
+            checked,
+            sep: false,
+            disabled: false,
+            danger: false,
+            icon: None,
+            hint: None,
+        };
+        vec![
+            entry(MENU_DOCK_RIGHT, "Agent on the Right", !left),
+            entry(MENU_DOCK_LEFT, "Agent on the Left", left),
+        ]
+    }
+
     fn apply_menu(&mut self, target: u64, item: u64) {
+        if target == crate::APP_MENU_TARGET {
+            match item {
+                crate::MENU_APP_ACCOUNT | crate::MENU_APP_USAGE => {
+                    self.pending.action = Some(crate::keymap::Action::OpenAgentUsage)
+                }
+                crate::MENU_APP_SETTINGS => self.pending.open_settings = true,
+                crate::MENU_APP_KEYMAP => {
+                    self.pending.action = Some(crate::keymap::Action::OpenKeymap)
+                }
+                crate::MENU_APP_THEME => {
+                    self.pending.action = Some(crate::keymap::Action::CycleTheme)
+                }
+                _ => {}
+            }
+            return;
+        }
+        if target == crate::MENU_SUBMENU_LAYOUT {
+            if matches!(item, MENU_DOCK_LEFT | MENU_DOCK_RIGHT) {
+                self.move_agent_to(Self::dock_item_side(item));
+                self.pending.persist = true;
+            }
+            return;
+        }
         if target == crate::WORKSPACE_ROW_MENU_TARGET {
             self.apply_workspace_row_menu(item);
             return;
@@ -4450,6 +4646,15 @@ impl WorkspaceView {
         {
             self.manual_menu = None;
         }
+        if let Some((_, anchor)) = self.usage_popover {
+            let on_anchor = x >= anchor.x
+                && x < anchor.x + anchor.w
+                && y >= anchor.y
+                && y < anchor.y + anchor.h;
+            if !within(self.usage_popover_rect) && !on_anchor {
+                self.usage_popover = None;
+            }
+        }
         if let Some((_, anchor)) = self.agent_popover {
             let on_anchor = x >= anchor.x
                 && x < anchor.x + anchor.w
@@ -4843,6 +5048,10 @@ impl WorkspaceView {
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
         if self.prompt_shown.is_some() {
             return self.prompt_key(key, shift);
+        }
+        if self.usage_popover.is_some() && key == EditKey::Escape {
+            self.usage_popover = None;
+            return true;
         }
         if self.agent_popover.is_some() && key == EditKey::Escape {
             self.agent_popover = None;
@@ -6311,6 +6520,35 @@ impl WorkspaceView {
             if openable && Some(index) != self.layout.current_session {
                 self.pending.session = Some(SessionRequest::Switch(index));
             }
+        } else if id == crate::USAGE_CHIP {
+            self.toggle_usage_popover(false);
+        } else if id == crate::USAGE_STATUS {
+            self.toggle_usage_popover(true);
+        } else if id == crate::USAGE_OPEN {
+            self.usage_popover = None;
+            self.pending.action = Some(crate::keymap::Action::OpenAgentUsage);
+        } else if id == crate::USAGE_REFRESH {
+            self.pending.refresh_usage = true;
+        } else if id == crate::APP_MENU {
+            let open = self
+                .menu
+                .is_some_and(|menu| menu.3 == crate::APP_MENU_TARGET);
+            self.menu = None;
+            self.submenu = None;
+            self.usage_popover = None;
+            if !open {
+                let (x, y) = self.press;
+                if let Some((_, rect)) = self.hit_with_rect(x, y) {
+                    self.menu = Some((
+                        rect.x + rect.w,
+                        rect.y,
+                        rect.y + rect.h,
+                        crate::APP_MENU_TARGET,
+                    ));
+                    self.menu_path = None;
+                    self.menu_editor_anchor = None;
+                }
+            }
         } else if id == PAGE_TAB_CLOSE {
             if let Some(mut page) = self.page.take() {
                 page.close_tab(0);
@@ -7287,6 +7525,63 @@ mod tests {
             .and_then(|w| w.center_of(SESSION_TRIGGER))
             .expect("trigger");
         assert!(full.0 < windowed.0 - 50.0, "{full:?} vs {windowed:?}");
+    }
+
+    #[test]
+    fn the_title_bar_shows_usage_and_its_menus_run_their_actions() {
+        let (mut app, h, e) = open();
+        e.update(app.app_mut(), |view, _| {
+            view.set_usage(crate::UsageInfo {
+                account: Some(crate::UsageAccount {
+                    name: "dev".into(),
+                    email: "dev@example.com".into(),
+                    plan: "max".into(),
+                    organization: String::new(),
+                }),
+                session: Some(crate::UsageWindow {
+                    used: 23.0,
+                    resets: "in 2h".into(),
+                }),
+                weekly: Some(crate::UsageWindow {
+                    used: 74.0,
+                    resets: "Sat 17:00".into(),
+                }),
+                ..crate::UsageInfo::default()
+            })
+        });
+        let frame = app.draw(h).expect("frame");
+        let text = frame_text(&frame);
+        assert!(text.contains("23%") && text.contains("74%"), "{text}");
+        let chip = app
+            .window(h)
+            .and_then(|w| w.center_of(crate::USAGE_CHIP))
+            .expect("chip laid out");
+        e.update(app.app_mut(), |v, _| v.mouse_down(chip.0, chip.1));
+        let text = frame_text(&app.draw(h).expect("frame"));
+        assert!(
+            text.contains("dev@example.com") && text.contains("Refresh Now"),
+            "{text}"
+        );
+        let items: Vec<(u64, String)> = e.update(app.app_mut(), |view, _| {
+            view.app_menu_items()
+                .into_iter()
+                .map(|item| (item.id, item.label.to_string()))
+                .collect()
+        });
+        assert_eq!(items[0], (crate::MENU_APP_ACCOUNT, "dev".to_string()));
+        assert!(items
+            .iter()
+            .any(|item| item.0 == crate::MENU_SUBMENU_LAYOUT));
+        let effects = e.update(app.app_mut(), |view, _| {
+            view.apply_menu(crate::APP_MENU_TARGET, crate::MENU_APP_USAGE);
+            view.take_effects()
+        });
+        assert_eq!(effects.action, Some(crate::keymap::Action::OpenAgentUsage));
+        let side = e.update(app.app_mut(), |view, _| {
+            view.apply_menu(crate::MENU_SUBMENU_LAYOUT, MENU_DOCK_LEFT);
+            view.layout.agent_side
+        });
+        assert_eq!(side, DockPosition::Left);
     }
 
     #[test]
