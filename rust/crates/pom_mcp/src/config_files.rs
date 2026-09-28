@@ -50,9 +50,12 @@ fn load_and_validate(path: &Path) -> Result<(), String> {
 }
 
 fn tempdir() -> Result<PathBuf, String> {
+    // The clock alone repeats on macOS (microsecond steps), so two checks at once shared a folder.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let unique = format!(
-        "pom-cfg-{}-{}",
+        "pom-cfg-{}-{}-{}",
         std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos())
