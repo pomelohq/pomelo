@@ -1037,6 +1037,7 @@ impl GitPanel {
                         sep,
                         disabled: action == MenuAction::Header,
                         danger: false,
+                        icon: None,
                     },
                     action,
                 )

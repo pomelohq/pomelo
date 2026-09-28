@@ -755,6 +755,7 @@ impl ServicesPanel {
                     sep,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
                 action,
             ));
@@ -1196,6 +1197,7 @@ impl SidePanelView for ServicesPanel {
                                     sep: false,
                                     disabled: false,
                                     danger: false,
+                                    icon: None,
                                 },
                                 command,
                             )

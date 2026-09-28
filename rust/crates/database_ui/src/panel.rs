@@ -853,6 +853,11 @@ impl DatabasePanel {
             + 8.0
     }
 
+    fn on_main(&self) -> bool {
+        (self.context.config)()
+            .is_some_and(|config| self.context.branch == config.global_default_branch())
+    }
+
     fn menu_facts(&self, row: &Row) -> (Option<Database>, bool, Option<Database>) {
         let database = match row {
             Row::Console { console, .. } => self.database(&console.database).cloned(),
@@ -1685,6 +1690,7 @@ impl SidePanelView for DatabasePanel {
                 database: database.as_ref(),
                 has_main_copy,
                 repo_database: repo_database.as_ref(),
+                on_main: self.on_main(),
             },
         );
         if entries.is_empty() {
@@ -1710,6 +1716,7 @@ impl SidePanelView for DatabasePanel {
                 sep: entry.sep,
                 disabled: entry.disabled,
                 danger: entry.danger,
+                icon: menu::icon(&entry.action),
             })
             .collect()
     }

@@ -534,7 +534,7 @@ fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node 
 fn toolbar_button(button: &TabBarButton) -> Node {
     let colors = theme();
     let color = if button.disabled {
-        colors.text_disabled
+        colors.icon_muted.alpha(0.3)
     } else if button.selected {
         colors.icon_accent
     } else {

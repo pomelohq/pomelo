@@ -41,7 +41,7 @@ pub enum Node {
     Anchored(Box<Anchored>),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IconKind {
     ChevronRight,
     /// Heavier glyphs for the small pills on rail tiles, where the regular strokes vanish.

@@ -2765,6 +2765,8 @@ pub struct MenuItem {
     pub disabled: bool,
     /// Loses data: drawn in the error color.
     pub danger: bool,
+    /// Shown before the label when the item is not checked.
+    pub icon: Option<ui::IconKind>,
 }
 
 /// A right-click context menu anchored above `(ax, ay)`, clamped to stay inside `viewport_w`.
@@ -2854,12 +2856,20 @@ pub fn context_menu(
         } else {
             text_c()
         };
-        let mark = if item.checked {
-            ui::check_icon().size(12.0)
-        } else {
-            ui::icon(ui::IconKind::Check)
+        let mark = match (item.checked, item.icon) {
+            (true, _) => ui::check_icon().size(12.0),
+            (false, Some(kind)) => ui::icon(kind).size(12.0).color(if item.disabled {
+                theme().text_disabled
+            } else if item.danger {
+                theme().error
+            } else if kind == ui::IconKind::Sparkle {
+                theme().icon_accent
+            } else {
+                theme().icon_muted
+            }),
+            (false, None) => ui::icon(ui::IconKind::Check)
                 .size(12.0)
-                .color(Rgba::TRANSPARENT)
+                .color(Rgba::TRANSPARENT),
         };
         row = row
             .child(mark)

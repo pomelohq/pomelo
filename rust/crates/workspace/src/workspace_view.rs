@@ -2436,6 +2436,7 @@ impl WorkspaceView {
             sep,
             disabled,
             danger: false,
+            icon: None,
         };
         let mut items = vec![
             entry(crate::MENU_TAB_CLOSE, "Close", false, false),
@@ -2591,6 +2592,7 @@ impl WorkspaceView {
             sep,
             disabled: false,
             danger: false,
+            icon: None,
         };
         let mut items = vec![item(crate::MENU_WS_RENAME, "Rename...", false)];
         if project
@@ -2725,6 +2727,7 @@ impl WorkspaceView {
             sep: true,
             disabled: false,
             danger: false,
+            icon: None,
         };
         let item = |id: u64, label: &'static str, sep: bool| MenuItem {
             id,
@@ -2733,6 +2736,7 @@ impl WorkspaceView {
             sep,
             disabled: false,
             danger: false,
+            icon: None,
         };
         let disabled = |id: u64, label: &'static str, sep: bool, disabled: bool| MenuItem {
             id,
@@ -2741,6 +2745,7 @@ impl WorkspaceView {
             sep,
             disabled,
             danger: false,
+            icon: None,
         };
         if target == MENU_SUBMENU_COPY {
             return vec![
@@ -2836,6 +2841,7 @@ impl WorkspaceView {
                         sep: true,
                         disabled: false,
                         danger: false,
+                        icon: None,
                     }),
             )
             .collect();
@@ -2851,6 +2857,7 @@ impl WorkspaceView {
                     sep: false,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2859,6 +2866,7 @@ impl WorkspaceView {
                     sep: false,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
             ]
         } else if target == AGENT_TOGGLE {
@@ -2871,6 +2879,7 @@ impl WorkspaceView {
                     sep: false,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2879,6 +2888,7 @@ impl WorkspaceView {
                     sep: false,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
                 hide,
             ]
@@ -2892,6 +2902,7 @@ impl WorkspaceView {
                     sep: false,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2900,6 +2911,7 @@ impl WorkspaceView {
                     sep: false,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_BOTTOM,
@@ -2908,6 +2920,7 @@ impl WorkspaceView {
                     sep: false,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
                 hide,
             ]
@@ -2926,6 +2939,7 @@ impl WorkspaceView {
                     sep: false,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2934,6 +2948,7 @@ impl WorkspaceView {
                     sep: false,
                     disabled: false,
                     danger: false,
+                    icon: None,
                 },
                 hide,
             ]

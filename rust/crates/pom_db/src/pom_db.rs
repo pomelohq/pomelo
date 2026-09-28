@@ -549,12 +549,13 @@ pub fn main_database(config: &Config, database: &Database) -> Option<String> {
     if database.engine != Engine::Postgres {
         return None;
     }
-    let (key, dir) = repo_of(config, database)?;
+    let (_, dir) = repo_of(config, database)?;
     let template = dir.databases.get(&database.label)?;
+    // Named after the main workspace's branch, as creating a workspace does, not a repo's own default branch.
     let main = format!(
         "{}_{}",
         config.session,
-        pom_env::resolve_branch_tokens(template, config.default_branch_for(key))
+        pom_env::resolve_branch_tokens(template, config.global_default_branch())
     );
     (main != database.name).then_some(main)
 }
@@ -708,7 +709,7 @@ mod tests {
     #[test]
     fn a_database_knows_its_repo_and_its_main_copy() {
         let config = config(
-            "session: demo\ndefault_branch: main\nrepos:\n  web:\n    alias: front\n    databases:\n      main: \"web_{{branch.safe}}\"\n      audit: audit\n",
+            "session: demo\ndefault_branch: main\nrepos:\n  web:\n    alias: front\n    default_branch: master\n    databases:\n      main: \"web_{{branch.safe}}\"\n      audit: audit\n",
         );
         let databases = list_databases(&config, "feat/x");
         assert_eq!(

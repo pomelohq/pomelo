@@ -1,6 +1,7 @@
 //! The right-click menu of each kind of row, and what the destructive items ask before they run.
 
 use pom_db::{Database, Engine, TableKind};
+use ui::IconKind;
 
 use crate::tree::{prefix_name, readable, Row};
 
@@ -59,6 +60,8 @@ pub(crate) struct Facts<'a> {
     pub has_main_copy: bool,
     /// The repo's first Postgres database, for its connection and `psql`.
     pub repo_database: Option<&'a Database>,
+    /// The main workspace: its databases are what the others copy, so they cannot copy or reset.
+    pub on_main: bool,
 }
 
 #[derive(Default)]
@@ -100,6 +103,14 @@ impl Builder {
         self
     }
 
+    fn when(self, condition: bool, add: impl FnOnce(Builder) -> Builder) -> Builder {
+        if condition {
+            add(self)
+        } else {
+            self
+        }
+    }
+
     /// The next item draws a line above it.
     fn sep(mut self) -> Builder {
         self.separate = true;
@@ -109,6 +120,39 @@ impl Builder {
     fn finish(self) -> Vec<Entry> {
         self.entries
     }
+}
+
+/// The icon an item shows before its label.
+pub(crate) fn icon(action: &Action) -> Option<IconKind> {
+    Some(match action {
+        Action::Refresh => IconKind::RotateCw,
+        Action::CollapseAll | Action::Collapse => IconKind::ChevronUp,
+        Action::CopyUrl
+        | Action::CopyName
+        | Action::CopySelect
+        | Action::CopyPattern
+        | Action::CopyPath
+        | Action::CopyPresignedUrl
+        | Action::CopyFromMain => IconKind::Copy,
+        Action::OpenClient => IconKind::Terminal,
+        Action::NewConsole | Action::NewConsoleWithSelect | Action::OpenConsole => IconKind::File,
+        Action::OpenData | Action::OpenKeys => IconKind::Table,
+        Action::OpenObject => IconKind::ArrowUpRight,
+        Action::DownloadObject => IconKind::ArrowDown,
+        Action::ShowDdl => IconKind::File,
+        Action::FilterByColumn => IconKind::Filter,
+        Action::DistinctValues => IconKind::Column,
+        Action::ChangeDatabase | Action::MoveConsole(_) => IconKind::Cylinder,
+        Action::AskAboutSchema | Action::AskAboutTable => IconKind::Sparkle,
+        Action::ResetDatabase
+        | Action::Truncate
+        | Action::DropTable
+        | Action::DeleteConsole
+        | Action::DeleteKeys
+        | Action::DeleteFolder
+        | Action::DeleteObject => IconKind::Trash,
+        Action::Header | Action::RenameConsole => return None,
+    })
 }
 
 fn client_label(engine: Engine) -> &'static str {
@@ -151,10 +195,12 @@ pub(crate) fn entries(row: &Row, facts: &Facts<'_>) -> Vec<Entry> {
                     .item("Copy Name", Action::CopyName)
                     .item("Copy Connection URL", Action::CopyUrl)
                     .item("Open psql in Terminal", Action::OpenClient)
-                    .sep()
-                    .item("Copy Data from Main...", Action::CopyFromMain)
-                    .disabled_if(!facts.has_main_copy)
-                    .danger("Reset Database...", Action::ResetDatabase)
+                    .when(!facts.on_main, |menu| {
+                        menu.sep()
+                            .item("Copy Data from Main...", Action::CopyFromMain)
+                            .disabled_if(!facts.has_main_copy)
+                            .danger("Reset Database...", Action::ResetDatabase)
+                    })
                     .sep()
                     .item("Ask Claude about this schema", Action::AskAboutSchema),
                 Engine::Redis => menu
@@ -363,6 +409,7 @@ mod tests {
             database,
             has_main_copy: false,
             repo_database: database,
+            on_main: false,
         }
     }
 
