@@ -3208,7 +3208,12 @@ impl WorkspaceView {
             | crate::PanelRequest::PickBranch { .. }) => self.branch_requests.push(request),
             crate::PanelRequest::OpenMenu => {
                 let (x, y) = self.press;
-                if let Some((_, rect)) = self.hit_with_rect(x, y) {
+                // A tab's own button is not among the window's hits; the menu then drops from the press.
+                let anchor = self
+                    .hit_with_rect(x, y)
+                    .map(|(_, rect)| rect)
+                    .or(Some(Rect::new(x, y, 0.0, 0.0, Rgba::TRANSPARENT)));
+                if let Some(rect) = anchor {
                     self.menu = Some((
                         rect.x,
                         rect.y,
