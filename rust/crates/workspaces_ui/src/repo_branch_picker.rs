@@ -10,7 +10,7 @@ use std::time::Instant;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use pom_workspace::BranchInfo;
-use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{deferred, div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::WINDOW_MODAL_BASE;
 
@@ -211,12 +211,62 @@ impl BranchPicker {
         entries
     }
 
+    /// The picker dropped from a repo row's branch box, floating above the form.
     pub fn render(
         &self,
         workspace_branch: &str,
         branches: Option<&RepoBranches>,
         choice: Option<&str>,
     ) -> Node {
+        let colors = theme();
+        let panel = self
+            .panel(
+                &format!("Branch for {}", self.repo),
+                workspace_branch,
+                branches,
+                choice,
+            )
+            .w_px(WIDTH)
+            .rounded(8.0)
+            .border(1.0, colors.border)
+            .bg(colors.elevated_surface_background)
+            .on_click(PICKER_SURFACE);
+        deferred(panel)
+            .below_or_above(TRIGGER_HEIGHT, TRIGGER_GAP)
+            .priority(1)
+            .into()
+    }
+
+    /// The picker laid into a modal as its body, open for as long as the modal is.
+    pub fn render_inline(
+        &self,
+        workspace_branch: &str,
+        branches: Option<&RepoBranches>,
+        choice: Option<&str>,
+    ) -> Node {
+        let divider = div().h_px(1.0).bg(theme().border_variant);
+        div()
+            .col()
+            .child(divider)
+            .child(
+                self.panel(
+                    &format!("Branches of {}", self.repo),
+                    workspace_branch,
+                    branches,
+                    choice,
+                )
+                .on_click(PICKER_SURFACE),
+            )
+            .into()
+    }
+
+    fn panel(
+        &self,
+        title: &str,
+        workspace_branch: &str,
+        branches: Option<&RepoBranches>,
+        choice: Option<&str>,
+    ) -> Div {
         let colors = theme();
         let entries = self.entries(workspace_branch, branches);
         let base = branches
@@ -255,7 +305,7 @@ impl BranchPicker {
             .min(entries.len().saturating_sub(ROWS_SHOWN));
         let mut list = div().col().p(4.0).child(
             div().row().px(8.0).pt(4.0).pb(2.0).child(
-                label(format!("Branch for {}", self.repo))
+                label(title.to_string())
                     .label_size(LabelSize::XSmall)
                     .color(colors.text_placeholder),
             ),
@@ -265,22 +315,13 @@ impl BranchPicker {
                 list.child(self.entry_row(entry, index, workspace_branch, branches, base, choice));
         }
         let divider = || div().h_px(1.0).bg(colors.border_variant);
-        let panel = div()
+        div()
             .col()
-            .w_px(WIDTH)
-            .rounded(8.0)
-            .border(1.0, colors.border)
-            .bg(colors.elevated_surface_background)
-            .on_click(PICKER_SURFACE)
             .child(query_row)
             .child(divider())
             .child(list)
             .child(divider())
-            .child(self.footer());
-        deferred(panel)
-            .below_or_above(TRIGGER_HEIGHT, TRIGGER_GAP)
-            .priority(1)
-            .into()
+            .child(self.footer())
     }
 
     fn footer(&self) -> Node {

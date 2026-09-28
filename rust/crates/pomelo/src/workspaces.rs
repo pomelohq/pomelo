@@ -377,6 +377,7 @@ impl App {
     pub(crate) fn poll_workspaces(&mut self, id: WindowId) {
         self.poll_doctor(id);
         self.poll_services_badge(id);
+        self.poll_use_branch(id);
         let result = self.with_workspace_view(id, |view, _| {
             view.tick_window_modal();
             view.take_modal_result()
@@ -402,6 +403,8 @@ impl App {
                 self.export_config(id, export);
             } else if let Some(import) = value.downcast_ref::<workspaces_ui::ImportConfig>() {
                 self.import_config(id, import);
+            } else if let Some(choice) = value.downcast_ref::<workspaces_ui::UseBranch>() {
+                self.start_use_branch(id, choice);
             }
         }
         let tickets_changed = match self.mains.get_mut(&id) {
@@ -556,6 +559,122 @@ impl App {
             return;
         }
         self.refresh_project_info(id);
+    }
+
+    /// Opens the form that picks the branch `repo` uses in the active workspace.
+    pub(crate) fn open_use_branch(&mut self, id: WindowId, repo: &str) {
+        let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
+            return;
+        };
+        let Some(active) = project.active_workspace() else {
+            return;
+        };
+        let worktree = active
+            .repos
+            .iter()
+            .find(|found| found.name == repo)
+            .map(|found| found.path.clone())
+            .unwrap_or_else(|| active.path.join(repo));
+        let current = match pom_layout::read_head(&worktree) {
+            Some(pom_layout::Head::Branch(branch)) => Some(branch),
+            _ => None,
+        };
+        let checkout = if pom_layout::is_git_repo(&worktree) {
+            worktree
+        } else {
+            let main_checkout = project
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.is_main)
+                .and_then(|main| main.repos.iter().find(|found| found.name == repo))
+                .map(|found| found.path.clone());
+            match main_checkout {
+                Some(path) => path,
+                None => {
+                    let message = format!("{repo} has no checkout to list branches from");
+                    self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+                    return;
+                }
+            }
+        };
+        let folder = active
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let source = branch_source(Arc::new(std::collections::HashMap::from([(
+            repo.to_string(),
+            checkout,
+        )])));
+        let modal = workspaces_ui::UseBranchModal::new(
+            repo,
+            project.active_branch(),
+            current.as_deref(),
+            &folder,
+            source,
+        );
+        self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
+    }
+
+    /// Checks out the branch picked for a repo off the UI thread; the fetch can take up to a minute.
+    fn start_use_branch(&mut self, id: WindowId, choice: &workspaces_ui::UseBranch) {
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        if main.use_branch.is_some() {
+            self.with_workspace_view(id, |view, _| {
+                view.show_toast("Another branch checkout is still running", None)
+            });
+            return;
+        }
+        let Some((folder, workspace_branch)) = main.project.as_ref().and_then(|project| {
+            let active = project.active_workspace()?;
+            Some((active.path.clone(), project.active_branch().to_string()))
+        }) else {
+            return;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (repo, branch) = (choice.repo.clone(), choice.branch.clone());
+        let spawned = std::thread::Builder::new()
+            .name("use-branch".into())
+            .spawn(move || {
+                let outcome = if branch == workspace_branch {
+                    pom_workspace::switch_repo_branch(&folder, &workspace_branch, &repo, &branch)
+                } else {
+                    pom_workspace::use_another_branch(&folder, &workspace_branch, &repo, &branch)
+                };
+                let message = match outcome {
+                    Ok(()) => format!("{repo} now uses {branch}"),
+                    Err(error) => error.lines().next().unwrap_or_default().to_string(),
+                };
+                if sender.send(message).is_ok() {
+                    ui::wake();
+                }
+            });
+        let message = match spawned {
+            Ok(_) => {
+                main.use_branch = Some(receiver);
+                format!("Checking out {} in {}...", choice.branch, choice.repo)
+            }
+            Err(error) => format!("Could not check out {}: {error}", choice.branch),
+        };
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+    }
+
+    fn poll_use_branch(&mut self, id: WindowId) {
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        let message = match main.use_branch.as_ref().map(|receiver| receiver.try_recv()) {
+            Some(Ok(message)) => message,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                "The branch checkout stopped".to_string()
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => return,
+        };
+        main.use_branch = None;
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+        self.rescan_project(id);
     }
 
     /// Rescans the window's workspaces after one was created or deleted.

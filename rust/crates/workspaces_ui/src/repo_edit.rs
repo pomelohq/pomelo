@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+
 use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::{
     checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section, status_line,
@@ -9,6 +12,10 @@ const CLOSE: u64 = WINDOW_MODAL_BASE + 1;
 const FIELD: u64 = WINDOW_MODAL_BASE + 2;
 const CANCEL: u64 = WINDOW_MODAL_BASE + 3;
 const CONFIRM: u64 = WINDOW_MODAL_BASE + 4;
+
+use crate::repo_branch_picker::{
+    BranchPicker, BranchSource, Entry, RepoBranches, ENTRY_BASE, ENTRY_END, PICKER_REFRESH,
+};
 
 /// A repo's new alias.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -349,6 +356,235 @@ impl WindowModal for PickReposModal {
     }
 }
 
+const USE_BRANCH_WIDTH: f32 = 360.0;
+
+/// Check out this branch in the repo's worktree of the workspace and remember it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UseBranch {
+    pub repo: String,
+    pub branch: String,
+}
+
+/// Picks the branch one repo of an existing workspace uses: the workspace's first, then the repo's own.
+pub struct UseBranchModal {
+    workspace_branch: String,
+    /// The branch the worktree is on now, `None` when detached or unreadable.
+    current: Option<String>,
+    /// Where the worktree is, as the line under the title names it.
+    checkout: String,
+    picker: BranchPicker,
+    source: BranchSource,
+    known: HashMap<String, RepoBranches>,
+    listing: Option<Receiver<Result<RepoBranches, String>>>,
+    result: Option<ModalResult>,
+}
+
+impl UseBranchModal {
+    pub fn new(
+        repo: &str,
+        workspace_branch: &str,
+        current: Option<&str>,
+        checkout: &str,
+        source: BranchSource,
+    ) -> UseBranchModal {
+        let (sender, receiver) = mpsc::channel();
+        let (list, listed_repo) = (source.list.clone(), repo.to_string());
+        std::thread::spawn(move || {
+            if sender.send(list(&listed_repo)).is_err() {
+                eprintln!("workspaces: the branch form closed before {listed_repo} listed");
+            }
+        });
+        UseBranchModal {
+            workspace_branch: workspace_branch.to_string(),
+            current: current.map(str::to_string),
+            checkout: checkout.to_string(),
+            picker: BranchPicker::open(repo, Some(&source)),
+            source,
+            known: HashMap::new(),
+            listing: Some(receiver),
+            result: None,
+        }
+    }
+
+    fn repo(&self) -> &str {
+        &self.picker.repo
+    }
+
+    fn choice(&self) -> Option<&str> {
+        match self.current.as_deref() {
+            Some(branch) if branch == self.workspace_branch => None,
+            Some(branch) => Some(branch),
+            // A detached worktree is on no listed branch, so no row gets the check.
+            None => Some(""),
+        }
+    }
+
+    fn entries(&self) -> Vec<Entry> {
+        self.picker
+            .entries(&self.workspace_branch, self.known.get(self.repo()))
+    }
+
+    fn typed(&mut self) {
+        let count = self.entries().len();
+        self.picker.typed(count);
+    }
+
+    fn submit(&mut self, index: usize) {
+        let branch = match self.entries().into_iter().nth(index) {
+            Some(Entry::WorkspaceBranch) => self.workspace_branch.clone(),
+            Some(Entry::Branch(info)) => info.name,
+            Some(Entry::Create(name)) => {
+                if let Err(error) = pom_workspace::validate_branch_name(&name) {
+                    self.picker.error = Some(error);
+                    return;
+                }
+                name
+            }
+            None => return,
+        };
+        self.result = Some(ModalResult::Submitted(Box::new(UseBranch {
+            repo: self.repo().to_string(),
+            branch,
+        })));
+    }
+
+    fn poll_listing(&mut self) -> bool {
+        let Some(receiver) = &self.listing else {
+            return false;
+        };
+        let listed = match receiver.try_recv() {
+            Ok(listed) => listed,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => Err("the listing stopped".into()),
+        };
+        self.listing = None;
+        match listed {
+            Ok(branches) => {
+                self.known
+                    .entry(self.repo().to_string())
+                    .or_insert(branches);
+            }
+            Err(error) => eprintln!("workspaces: branches of {}: {error}", self.repo()),
+        }
+        true
+    }
+}
+
+impl WindowModal for UseBranchModal {
+    fn width(&self) -> f32 {
+        USE_BRANCH_WIDTH
+    }
+
+    fn render(&mut self) -> Node {
+        let colors = theme();
+        let repo = self.repo().to_string();
+        let on = match &self.current {
+            Some(branch) => format!("{repo} is on {branch}."),
+            None => format!("{repo} is not on a branch."),
+        };
+        let intro = modal_section(0.0).child(
+            label(format!(
+                "{on} Pick the branch it should use in this workspace; Pomelo fetches, checks it out in \
+                 {}/{repo} and remembers it.",
+                self.checkout
+            ))
+            .label_size(LabelSize::Small)
+            .color(colors.text_muted)
+            .wrap(USE_BRANCH_WIDTH - 24.0),
+        );
+        let picker =
+            self.picker
+                .render_inline(&self.workspace_branch, self.known.get(&repo), self.choice());
+        let buttons = div()
+            .row()
+            .items_center()
+            .gap(4.0)
+            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
+            .child(modal_button(
+                CONFIRM,
+                "Check Out",
+                Some("enter"),
+                !self.entries().is_empty(),
+            ));
+        modal_frame(USE_BRANCH_WIDTH)
+            .child(modal_header(
+                &format!("Use another branch in {repo}"),
+                Some(CLOSE),
+            ))
+            .child(intro)
+            .child(picker)
+            .child(modal_footer(None, buttons.into()))
+            .into()
+    }
+
+    fn click(&mut self, id: u64) {
+        match id {
+            CLOSE | CANCEL => self.result = Some(ModalResult::Cancelled),
+            CONFIRM => self.submit(self.picker.highlighted()),
+            PICKER_REFRESH => self.picker.fetch(&self.source),
+            id if (ENTRY_BASE..ENTRY_END).contains(&id) => {
+                let index = (id - ENTRY_BASE) as usize;
+                self.picker.highlight(index);
+                self.submit(index);
+            }
+            _ => {}
+        }
+    }
+
+    fn key(&mut self, key: EditKey, shift: bool) -> bool {
+        match key {
+            EditKey::Escape => self.result = Some(ModalResult::Cancelled),
+            EditKey::Enter => self.submit(self.picker.highlighted()),
+            EditKey::Up | EditKey::Down => {
+                let count = self.entries().len();
+                self.picker.move_highlight(key == EditKey::Down, count);
+            }
+            EditKey::Tab | EditKey::Backtab => {}
+            key => {
+                if self.picker.query.key(key, shift) {
+                    self.typed();
+                }
+            }
+        }
+        true
+    }
+
+    fn text(&mut self, text: &str) -> bool {
+        let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+        if typed.is_empty() {
+            return false;
+        }
+        self.picker.query.insert(&typed);
+        self.typed();
+        true
+    }
+
+    fn copy(&self) -> Option<String> {
+        self.picker.query.selected_text()
+    }
+
+    fn cut(&mut self) -> Option<String> {
+        let text = self.copy()?;
+        if self.picker.query.key(EditKey::Backspace, false) {
+            self.typed();
+        }
+        Some(text)
+    }
+
+    fn tick(&mut self) -> bool {
+        let listed = self.poll_listing();
+        self.picker.poll(&mut self.known) || listed
+    }
+
+    fn busy(&self) -> bool {
+        self.listing.is_some() || self.picker.busy()
+    }
+
+    fn take_result(&mut self) -> Option<ModalResult> {
+        self.result.take()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +627,88 @@ mod tests {
             ),
             _ => panic!("submitted"),
         }
+    }
+
+    fn use_branch_modal() -> UseBranchModal {
+        let info = |name: &str, remote: bool| pom_workspace::BranchInfo {
+            name: name.into(),
+            remote,
+            author: "Ana Lima".into(),
+            relative_time: "2 hours ago".into(),
+            subject: "Retry failed mail".into(),
+        };
+        let source = BranchSource {
+            list: std::sync::Arc::new(move |_| {
+                Ok(RepoBranches {
+                    base: "fix-checkout-page".into(),
+                    branches: vec![
+                        info("fix-checkout-page", false),
+                        info("main", false),
+                        info("ana/mail-retry", true),
+                    ],
+                })
+            }),
+            fetch: std::sync::Arc::new(|_| Ok(())),
+        };
+        let mut modal = UseBranchModal::new(
+            "worker",
+            "fix-checkout-page",
+            Some("fix-checkout-page"),
+            "workspace--fix-checkout-page",
+            source,
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while modal.busy() && std::time::Instant::now() < deadline {
+            modal.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        modal
+    }
+
+    fn submitted_branch(modal: &mut UseBranchModal) -> Option<UseBranch> {
+        match modal.take_result() {
+            Some(ModalResult::Submitted(value)) => value.downcast_ref::<UseBranch>().cloned(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn checks_out_the_branch_typed_for() {
+        let mut modal = use_branch_modal();
+        let painted = ui::render(
+            &modal.render(),
+            ui::Rect::new(0.0, 0.0, USE_BRANCH_WIDTH, 800.0, ui::Rgba::TRANSPARENT),
+        );
+        let text: String = painted.texts.iter().map(|t| t.text.clone()).collect();
+        assert!(
+            text.contains("Use another branch in worker")
+                && text.contains("Branches of worker")
+                && text.contains("origin/ana/mail-retry")
+                && text.contains("Fetched just now"),
+            "{text}"
+        );
+        modal.text("mail");
+        modal.key(EditKey::Enter, false);
+        assert_eq!(
+            submitted_branch(&mut modal),
+            Some(UseBranch {
+                repo: "worker".into(),
+                branch: "ana/mail-retry".into()
+            })
+        );
+    }
+
+    #[test]
+    fn the_workspace_branch_leads_and_escape_cancels() {
+        let mut modal = use_branch_modal();
+        modal.key(EditKey::Down, false);
+        modal.key(EditKey::Up, false);
+        modal.key(EditKey::Enter, false);
+        assert_eq!(
+            submitted_branch(&mut modal).map(|choice| choice.branch),
+            Some("fix-checkout-page".into())
+        );
+        modal.key(EditKey::Escape, false);
+        assert!(matches!(modal.take_result(), Some(ModalResult::Cancelled)));
     }
 }

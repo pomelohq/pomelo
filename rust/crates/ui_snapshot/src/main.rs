@@ -1050,6 +1050,79 @@ fn main() -> anyhow::Result<()> {
                 view.open_window_modal(Box::new(modal))
             });
         }
+        // usebranch: an existing workspace's worker picking another branch, after a fetch brought one in.
+        if mode == "usebranch" {
+            let info = |name: &str, remote: bool, author: &str, when: &str, subject: &str| {
+                pom_workspace::BranchInfo {
+                    name: name.into(),
+                    remote,
+                    author: author.into(),
+                    relative_time: when.into(),
+                    subject: subject.into(),
+                }
+            };
+            let before = vec![
+                info(
+                    "fix-checkout-page",
+                    false,
+                    "you",
+                    "5 minutes ago",
+                    "Checkout page layout",
+                ),
+                info("main", false, "you", "1 day ago", "Merge PROJ-98"),
+                info(
+                    "ana/mail-retry",
+                    true,
+                    "Ana Lima",
+                    "2 hours ago",
+                    "Retry failed mail with a much longer subject line than fits",
+                ),
+            ];
+            let mut after = before.clone();
+            after.push(info(
+                "ben/queue-metrics",
+                true,
+                "Ben Okafor",
+                "10 minutes ago",
+                "Queue depth metrics",
+            ));
+            let fetched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let listed = fetched.clone();
+            let source = workspaces_ui::BranchSource {
+                list: std::sync::Arc::new(move |_| {
+                    let branches = if listed.load(std::sync::atomic::Ordering::SeqCst) {
+                        after.clone()
+                    } else {
+                        before.clone()
+                    };
+                    Ok(workspaces_ui::RepoBranches {
+                        base: "fix-checkout-page".into(),
+                        branches,
+                    })
+                }),
+                fetch: std::sync::Arc::new(move |_| {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    fetched.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }),
+            };
+            let mut modal = workspaces_ui::UseBranchModal::new(
+                "worker",
+                "fix-checkout-page",
+                Some("fix-checkout-page"),
+                "workspace--fix-checkout-page",
+                source,
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while workspace::WindowModal::busy(&modal) && std::time::Instant::now() < deadline {
+                workspace::WindowModal::tick(&mut modal);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            workspace::WindowModal::key(&mut modal, workspace::EditKey::Down, false);
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
         if mode == "newproject" {
             let mut modal = workspaces_ui::NewProjectModal::new(
                 std::path::PathBuf::from("/Users/dev/pom"),

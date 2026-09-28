@@ -23,6 +23,7 @@ pub use ops::{apply_event, apply_repo_state, Finished, OpContext, OpKind, OpQueu
 pub use repo_branch_picker::{BranchSource, RepoBranches};
 pub use repo_edit::{
     PickReposModal, PickedRepos, RemoveRepo, RemoveRepoModal, RenameAlias, RenameAliasModal,
+    UseBranch, UseBranchModal,
 };
 pub use tickets::{TicketSource, TicketStatuses};
 

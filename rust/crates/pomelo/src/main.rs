@@ -109,7 +109,8 @@ fn git_panel(
                         |config| config.default_branch_for(&repo.name).to_string(),
                     ),
                     expected_branch: project.active_branch().to_string(),
-                    kept: false,
+                    // Kept means on its own branch on purpose, which the panel must not flag.
+                    kept: repo.expected != project.active_branch() && repo.branch == repo.expected,
                 })
                 .collect()
         })
@@ -500,6 +501,8 @@ struct MainWindow {
     pull_requests: Option<pull_request_ui::PullRequests>,
     doctor: Option<std::sync::mpsc::Receiver<Vec<pom_doctor::Finding>>>,
     doctor_findings: Vec<pom_doctor::Finding>,
+    /// The result line of a repo's branch checkout started from the Git panel.
+    use_branch: Option<std::sync::mpsc::Receiver<String>>,
     /// When the Services badge last checked the active workspace's services.
     services_checked: Option<Instant>,
     /// Refresh-main, auto-push and the port reaper, when this process holds the session's primary lock.
@@ -1229,6 +1232,7 @@ impl App {
                 pull_requests: None,
                 doctor: None,
                 doctor_findings: Vec::new(),
+                use_branch: None,
                 services_checked: None,
                 background: None,
             },
@@ -2504,24 +2508,35 @@ impl App {
 
     /// Carries out a repo branch change the Git panel's branch menu asked for.
     fn apply_branch_request(&mut self, id: WindowId, request: workspace::PanelRequest) {
-        let workspace = self
+        let Some((folder, workspace)) = self
             .mains
             .get(&id)
             .and_then(|main| main.project.as_ref())
-            .map(|project| project.active_branch().to_string())
-            .unwrap_or_default();
-        match request {
-            workspace::PanelRequest::KeepBranch { repo, branch } => {
-                eprintln!("git panel: keep {branch} for {repo} in {workspace}");
+            .and_then(|project| {
+                let active = project.active_workspace()?;
+                Some((active.path.clone(), project.active_branch().to_string()))
+            })
+        else {
+            return;
+        };
+        let outcome = match &request {
+            workspace::PanelRequest::KeepBranch { repo, .. } => {
+                pom_workspace::keep_repo_branch(&folder, &workspace, repo)
+                    .map(|branch| format!("{repo} stays on {branch} in this workspace"))
             }
             workspace::PanelRequest::SwitchBranch { repo } => {
-                eprintln!("git panel: switch {repo} to {workspace}");
+                pom_workspace::switch_repo_branch(&folder, &workspace, repo, &workspace)
+                    .map(|()| format!("Switched {repo} to {workspace}"))
             }
             workspace::PanelRequest::PickBranch { repo } => {
-                eprintln!("git panel: pick another branch for {repo} in {workspace}");
+                self.open_use_branch(id, repo);
+                return;
             }
-            _ => {}
-        }
+            _ => return,
+        };
+        let message = outcome.unwrap_or_else(|error| error);
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+        self.rescan_project(id);
     }
 
     /// Whether a given main window's session menu is open (drives caret blink + wheel routing).
