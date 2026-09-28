@@ -202,6 +202,36 @@ impl Keystroke {
     /// Shift-typed symbols (`?`) name themselves; the shift is implied, as keymap files write them.
     fn normalized(&self) -> Keystroke {
         let mut stroke = self.clone();
+        // With Command held, macOS reports the unshifted key (`/` for cmd-?), so a shifted US symbol is folded
+        // into the character it types, the form bindings are written in.
+        const SHIFTED: [(&str, &str); 21] = [
+            ("1", "!"),
+            ("2", "@"),
+            ("3", "#"),
+            ("4", "$"),
+            ("5", "%"),
+            ("6", "^"),
+            ("7", "&"),
+            ("8", "*"),
+            ("9", "("),
+            ("0", ")"),
+            ("-", "_"),
+            ("=", "+"),
+            ("[", "{"),
+            ("]", "}"),
+            ("\\", "|"),
+            (";", ":"),
+            ("'", "\""),
+            (",", "<"),
+            (".", ">"),
+            ("/", "?"),
+            ("`", "~"),
+        ];
+        if stroke.shift {
+            if let Some((_, typed)) = SHIFTED.iter().find(|(base, _)| *base == stroke.key) {
+                stroke.key = (*typed).to_string();
+            }
+        }
         let symbol = stroke.key.chars().count() == 1
             && stroke
                 .key
@@ -417,6 +447,15 @@ mod tests {
         assert_eq!(stroke("ctrl--").key, "-");
         assert_eq!(stroke("cmd-shift-p").text(), "cmd-shift-p");
         assert_eq!(stroke("enter").key, "enter");
+    }
+
+    #[test]
+    fn cmd_question_mark_matches_however_macos_reports_it() {
+        let keymap = Keymap::defaults();
+        let agent = KeyMatch::Action(Action::ToggleAgent);
+        assert_eq!(keymap.match_keys(&[], &stroke("cmd-shift-/")), agent);
+        assert_eq!(keymap.match_keys(&[], &stroke("cmd-shift-?")), agent);
+        assert_eq!(keymap.match_keys(&[], &stroke("cmd-?")), agent);
     }
 
     #[test]

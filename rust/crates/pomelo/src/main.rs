@@ -1819,6 +1819,11 @@ impl App {
             start_at_login: start_at_login(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             updates_apply: installed_app().is_some(),
+            update_note: auto_update::status().note(),
+            update_busy: matches!(
+                auto_update::status(),
+                auto_update::Status::Checking | auto_update::Status::UpdateAvailable(_)
+            ),
         };
         let keymap = settings_ui::KeymapPage {
             rows: workspace::keymap::Action::ALL
@@ -1961,6 +1966,9 @@ impl App {
         });
         if let Some(main) = self.mains.get_mut(&id) {
             main.window.set_title(&title);
+            // AppKit lays the title bar out again on a new title, putting the traffic lights back at the top.
+            #[cfg(target_os = "macos")]
+            center_traffic_lights(&main.window);
             main.dirty = true;
         }
         self.start_doctor(id);
@@ -2014,6 +2022,9 @@ impl App {
         let config_path = project.config_path.clone();
         let title = format!("{} - {} - Pomelo", project.session, project.active_branch());
         main.window.set_title(&title);
+        // AppKit lays the title bar out again on a new title, putting the traffic lights back at the top.
+        #[cfg(target_os = "macos")]
+        center_traffic_lights(&main.window);
         main.dirty = true;
         self.with_workspace_view(id, |view, _| {
             view.resume(info, parked);
@@ -3479,6 +3490,16 @@ impl ApplicationHandler for App {
             .get(&id)
             .map(|m| m.window.scale_factor() as f32)
             .unwrap_or(2.0);
+        // Becoming key, being uncovered or a new appearance re-lays the title bar out, like a new title does.
+        #[cfg(target_os = "macos")]
+        if matches!(
+            event,
+            WindowEvent::Focused(_) | WindowEvent::Occluded(_) | WindowEvent::ThemeChanged(_)
+        ) {
+            if let Some(m) = self.mains.get(&id) {
+                center_traffic_lights(&m.window);
+            }
+        }
         match event {
             WindowEvent::CloseRequested => {
                 self.with_workspace_view(id, |v, _| v.persist_panes(true));

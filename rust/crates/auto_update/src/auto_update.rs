@@ -14,7 +14,30 @@ use std::sync::{Mutex, OnceLock};
 pub enum Status {
     #[default]
     Idle,
+    Checking,
+    /// The newest release is the one running.
+    UpToDate,
     UpdateAvailable(String), // version string, e.g. "0.2.0"
+    /// Why the last check or install did not finish.
+    Failed(String),
+}
+
+impl Status {
+    /// What the Settings page says under Check Now; None when there is nothing to report.
+    pub fn note(&self) -> Option<String> {
+        match self {
+            Status::Idle => None,
+            Status::Checking => Some("Checking for a newer release...".into()),
+            Status::UpToDate => Some(format!(
+                "Up to date: {} is the newest release.",
+                env!("CARGO_PKG_VERSION")
+            )),
+            Status::UpdateAvailable(version) => Some(format!(
+                "Downloading {version}; Pomelo relaunches when it is installed."
+            )),
+            Status::Failed(why) => Some(format!("Could not update: {why}")),
+        }
+    }
 }
 
 fn status_cell() -> &'static Mutex<Status> {
@@ -78,9 +101,15 @@ mod macos {
         let Some(app_root) = production_app_root() else {
             return; // dev bundle or cargo run — never auto-replace
         };
+        // A check already running answers for this click too.
+        if crate::status() == crate::Status::Checking {
+            return;
+        }
+        crate::set_status(crate::Status::Checking);
         std::thread::spawn(move || {
             if let Err(e) = check_and_apply(&app_root) {
                 eprintln!("[update] {e}");
+                crate::set_status(crate::Status::Failed(e));
             }
         });
     }
@@ -126,11 +155,13 @@ mod macos {
         }
 
         let Some((latest, url, signature)) = best else {
-            return Ok(()); // no rust release yet
+            crate::set_status(crate::Status::UpToDate);
+            return Ok(());
         };
         let cur = parse_version(current).ok_or("bad current version")?;
         if latest <= cur {
-            return Ok(()); // up to date
+            crate::set_status(crate::Status::UpToDate);
+            return Ok(());
         }
         crate::set_status(crate::Status::UpdateAvailable(join_version(&latest)));
         eprintln!(
@@ -181,7 +212,16 @@ mod macos {
         // the running process keeps its open inode until it exits on the line below.
         let _ = std::fs::remove_dir_all(app_root);
         run(Command::new("ditto").arg(&new_app).arg(app_root))?;
-        let _ = Command::new("open").arg(app_root).spawn();
+        // `open` on a bundle that is still running only brings the running copy forward, so the relaunch waits
+        // in a detached shell until this process is gone.
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg("while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open \"$2\"")
+            .arg("relaunch")
+            .arg(std::process::id().to_string())
+            .arg(app_root)
+            .spawn()
+            .map_err(|e| format!("relaunch: {e}"))?;
         std::process::exit(0);
     }
 
