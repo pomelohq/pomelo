@@ -20,6 +20,9 @@ const CONTENT_MAX_W: f32 = 860.0;
 const PAD_X: f32 = 40.0;
 const TOP_SESSIONS: usize = 5;
 const CHART_H: f32 = 150.0;
+/// Groups drawn in their own color; the rest share one.
+const COLORED: usize = 5;
+const OTHER: &str = "\u{0}other";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AgentKind {
@@ -192,6 +195,39 @@ impl UsageState {
         groups.sort_by(|a, b| total(b).total_cmp(&total(a)));
         groups
     }
+}
+
+/// Lays `nodes` out left to right, starting a new line when the next would pass `width`.
+fn pack(nodes: Vec<Node>, width: f32, gap: f32, line_gap: f32) -> Node {
+    let mut column = div().col().gap(line_gap);
+    let mut line = div().row().gap(gap).items_center();
+    let mut used = 0.0;
+    for node in nodes {
+        let node_width = ui::measure(&node).0;
+        if used > 0.0 && used + gap + node_width > width {
+            column = column.child(line);
+            line = div().row().gap(gap).items_center();
+            used = 0.0;
+        }
+        used += if used > 0.0 {
+            gap + node_width
+        } else {
+            node_width
+        };
+        line = line.child(node);
+    }
+    if used > 0.0 {
+        column = column.child(line);
+    }
+    column.into()
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 fn model_family(model: &str) -> &'static str {
@@ -467,7 +503,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                             .color(colors.text),
                     )
                     .child(
-                        label(account.plan.clone())
+                        label(capitalized(&account.plan))
                             .size(12.0)
                             .color(colors.text_placeholder),
                     )
@@ -498,8 +534,29 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         groups
             .iter()
             .position(|group| group.key == key)
-            .map_or(colors.border, palette)
+            .filter(|index| *index < COLORED)
+            .map_or(colors.text_placeholder, palette)
     };
+    // The chart and its legend show the largest few; the rest are one gray "Other".
+    let mut shown: Vec<Summary> = groups
+        .iter()
+        .take(COLORED)
+        .map(|group| Summary {
+            key: group.key.clone(),
+            label: group.label.clone(),
+            turns: group.turns.clone(),
+        })
+        .collect();
+    if groups.len() > COLORED {
+        shown.push(Summary {
+            key: OTHER.into(),
+            label: format!("{} others", groups.len() - COLORED),
+            turns: groups[COLORED..]
+                .iter()
+                .flat_map(|group| group.turns.iter().copied())
+                .collect(),
+        });
+    }
     let group_index = match state.group {
         Group::Workspace => 0,
         Group::Agent => 1,
@@ -542,7 +599,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         for (index, day) in days.iter().enumerate() {
             let height = (totals[index] / max) as f32 * CHART_H;
             let mut bar = div().col().w_px(bar_w).h_px(height.max(1.0)).rounded(3.0);
-            for group in groups.iter().rev() {
+            for group in shown.iter().rev() {
                 let part: f64 = group
                     .turns
                     .iter()
@@ -586,9 +643,9 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .child(div().h_px(1.0).bg(colors.border_variant))
             .child(axis);
     }
-    let mut legend = div().row().gap(14.0);
-    for group in &groups {
-        legend = legend.child(
+    let mut legend: Vec<Node> = Vec::new();
+    for group in &shown {
+        legend.push(
             div()
                 .row()
                 .items_center()
@@ -604,10 +661,11 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     label(group.label.clone())
                         .size(12.0)
                         .color(colors.text_muted),
-                ),
+                )
+                .into(),
         );
     }
-    chart_body = chart_body.child(legend);
+    chart_body = chart_body.child(pack(legend, content_w, 14.0, 6.0));
     column = column.child(section(
         if state.period == 1 { "Today" } else { "By day" },
         Some(group_picker),

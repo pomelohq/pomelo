@@ -91,3 +91,37 @@ fn long_workspace_names_never_widen_the_page() {
         assert!(open <= width - margin + 0.5, "{width}: Open ends at {open}");
     }
 }
+
+#[test]
+fn many_workspaces_wrap_the_legend_and_fold_into_others() {
+    let shared = state();
+    {
+        let mut state = shared.borrow_mut();
+        state.turns = (0..8)
+            .map(|index| {
+                turn(
+                    &format!("crm-14{index}-a-rather-long-workspace-branch-name"),
+                    AgentKind::Main,
+                    100,
+                    &format!("s{index}"),
+                    10.0 - index as f64,
+                )
+            })
+            .collect();
+    }
+    let width = 960.0_f32;
+    let painted = ui::render(
+        &render(&shared.borrow(), width, None),
+        ui::Rect::new(0.0, 0.0, width, 3000.0, ui::Rgba::TRANSPARENT),
+    );
+    assert!(painted.texts.iter().any(|text| text.text == "3 others"));
+    for text in &painted.texts {
+        let text_w = ui::measure_text_width(&text.text, text.size, text.mono, text.weight);
+        assert!(
+            text.x + text_w <= width + 0.5,
+            "{} ends at {}",
+            text.text,
+            text.x + text_w
+        );
+    }
+}
