@@ -172,11 +172,19 @@ impl DatabasePanel {
     }
 
     fn load_consoles(&mut self) {
+        let databases: Vec<String> = self
+            .context
+            .databases()
+            .into_iter()
+            .map(|database| database.name)
+            .collect();
+        let branch = self.context.branch.clone();
         self.model.consoles = self
             .context
             .consoles()
             .into_iter()
             .filter(|console| console.kind == ConsoleKind::Query)
+            .filter(|console| belongs_to(console, &branch, &databases))
             .collect();
     }
 
@@ -217,7 +225,8 @@ impl DatabasePanel {
             return;
         };
         let mut saved = self.context.consoles();
-        let mut console = new_console(&saved, &database);
+        let mut console = new_console(&self.model.consoles, &database);
+        console.workspace = self.context.branch.clone();
         if let Some(title) = title {
             console.title = title;
         }
@@ -1561,6 +1570,16 @@ impl DatabasePanel {
     }
 }
 
+/// Whether `console` is one of this workspace's: saved for its branch, or, from before consoles were per
+/// workspace, on one of its databases.
+fn belongs_to(console: &Console, branch: &str, databases: &[String]) -> bool {
+    if console.workspace.is_empty() {
+        databases.contains(&console.database)
+    } else {
+        console.workspace == branch
+    }
+}
+
 /// `uploads/avatars/u1.jpg` -> `uploads/avatars/`, `uploads/avatars/` -> `uploads/`.
 fn parent_prefix(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
@@ -1849,6 +1868,24 @@ fn storage_failure(connector: &Connector<'_>, database: &Database, raw: String) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_console_shows_only_in_its_own_workspace() {
+        let console = |workspace: &str, database: &str| Console {
+            workspace: workspace.into(),
+            database: database.into(),
+            ..Console::default()
+        };
+        let here = vec!["demo_api_feat".to_string()];
+        assert!(belongs_to(&console("feat", "demo_api_feat"), "feat", &here));
+        assert!(!belongs_to(
+            &console("main", "demo_api_main"),
+            "feat",
+            &here
+        ));
+        assert!(belongs_to(&console("", "demo_api_feat"), "feat", &here));
+        assert!(!belongs_to(&console("", "demo_api_other"), "feat", &here));
+    }
     use crate::tree::tests::{column, users_schema};
     use pom_db::object_storage::ObjectEntry;
 

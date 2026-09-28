@@ -36,6 +36,9 @@ pub struct Console {
     pub order_by: String,
     #[serde(default)]
     pub limit: usize,
+    /// The workspace branch it belongs to; empty in files written before consoles were per workspace.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub workspace: String,
 }
 
 fn path(state: &StateDir, session: &str) -> std::path::PathBuf {
