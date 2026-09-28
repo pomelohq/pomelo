@@ -212,6 +212,7 @@ pub struct WorkspaceView {
     /// The failed operation shown in a popover beside its rail tile, and where that popover was drawn.
     rail_popover: Option<u64>,
     rail_popover_rect: Option<Rect>,
+    manual_menu_rect: Option<Rect>,
     /// The list grouped by ticket status, when that setting is on.
     grouping: Option<crate::Grouping>,
     group_drag: Option<GroupDrag>,
@@ -311,6 +312,7 @@ impl WorkspaceView {
             manual_menu: None,
             rail_popover: None,
             rail_popover_rect: None,
+            manual_menu_rect: None,
             grouping: None,
             group_drag: None,
             menu_workspace: None,
@@ -688,6 +690,60 @@ impl WorkspaceView {
             ui::theme().border_focused,
         ));
         Some(drop)
+    }
+
+    /// The open menu of manual fixes, dropped from its button (in the list or a rail popover), or lifted above
+    /// it when there is no room below.
+    fn manual_menu_painted(&self, hits: &[(Rect, u64)], w: f32, h: f32) -> Option<Painted> {
+        let op_id = self.manual_menu?;
+        let (position, op) = self
+            .workspace_ops
+            .iter()
+            .enumerate()
+            .find(|(_, op)| op.id == op_id)?;
+        let target = crate::WORKSPACE_OP_BASE
+            + position as u64 * crate::WORKSPACE_OP_STRIDE
+            + crate::WORKSPACE_OP_MANUAL;
+        let (button, _) = hits.iter().rev().find(|(_, id)| *id == target)?;
+        let scale = ui::ui_text_scale();
+        // As wide as the details it drops from: from the button to the card's right edge.
+        let right = match self
+            .rail_popover_rect
+            .filter(|_| self.rail_popover == Some(op_id))
+        {
+            Some(card) => card.x + card.w - 10.0 * scale,
+            None => {
+                let region = self.layout.left_region(w, h);
+                region.x + region.w - 18.0 * scale
+            }
+        };
+        let width = ((right - button.x) / scale).clamp(160.0, 280.0);
+        let node: ui::Node = ui::div()
+            .col()
+            .child(
+                ui::div()
+                    .row()
+                    .child(crate::panel::manual_menu(op, position, width)),
+            )
+            .into();
+        let place = |y: f32| {
+            ui::render(
+                &node,
+                Rect::new(button.x, y, w - button.x, h, Rgba::TRANSPARENT),
+            )
+        };
+        let below = button.y + button.h + 4.0 * scale;
+        let painted = place(below);
+        let bottom = painted
+            .rects
+            .iter()
+            .map(|r| r.y + r.h)
+            .fold(below, f32::max);
+        if bottom <= h - 8.0 * scale {
+            return Some(painted);
+        }
+        let height = bottom - below;
+        Some(place((button.y - 4.0 * scale - height).max(8.0 * scale)))
     }
 
     /// Opens a failure's menu of manual fixes (as its button does).
@@ -1951,28 +2007,11 @@ impl WorkspaceView {
                 clip: None,
             });
         }
-        self.rail_popover_rect = None;
-        if let Some(p) = rail_popover {
-            let left = p.rects.iter().map(|r| r.x).fold(f32::MAX, f32::min);
-            let top = p.rects.iter().map(|r| r.y).fold(f32::MAX, f32::min);
-            let right = p.rects.iter().map(|r| r.x + r.w).fold(left, f32::max);
-            let bottom = p.rects.iter().map(|r| r.y + r.h).fold(top, f32::max);
-            let rect = Rect::new(left, top, right - left, bottom - top, Rgba::TRANSPARENT);
-            header_hits.extend(p.hits.iter().copied());
-            let mut painted = Painted::default();
-            painted
-                .rects
-                .extend(elevation_shadow(rect, crate::Elevation::Elevated));
-            painted.rects.extend(p.rects);
-            painted.tris.extend(p.tris);
-            painted.texts.extend(p.texts);
-            painted.icons.extend(p.icons);
-            overlays.push(Overlay {
-                painted,
-                clip: None,
-            });
-            self.rail_popover_rect = Some(rect);
-        }
+        self.rail_popover_rect =
+            rail_popover.map(|p| push_card(p, &mut header_hits, &mut overlays));
+        self.manual_menu_rect = self
+            .manual_menu_painted(&header_hits, w, h)
+            .map(|p| push_card(p, &mut header_hits, &mut overlays));
 
         self.popover_rects.clear();
         self.popover_groups.clear();
@@ -3633,10 +3672,23 @@ impl WorkspaceView {
             }
             return;
         }
+        let within = |rect: Option<Rect>| {
+            rect.is_some_and(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+        };
+        let on_part = |part: u64| {
+            self.hit(x, y).is_some_and(|id| {
+                (crate::WORKSPACE_OP_BASE..crate::WORKSPACE_OP_END).contains(&id)
+                    && (id - crate::WORKSPACE_OP_BASE) % crate::WORKSPACE_OP_STRIDE == part
+            })
+        };
+        if self.manual_menu.is_some()
+            && !within(self.manual_menu_rect)
+            && !on_part(crate::WORKSPACE_OP_MANUAL)
+        {
+            self.manual_menu = None;
+        }
         if self.rail_popover.is_some() {
-            let inside = self
-                .rail_popover_rect
-                .is_some_and(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+            let inside = within(self.rail_popover_rect) || within(self.manual_menu_rect);
             let on_toggle = self.hit(x, y).is_some_and(|id| {
                 (crate::WORKSPACE_OP_BASE..crate::WORKSPACE_OP_END).contains(&id)
                     && (id - crate::WORKSPACE_OP_BASE) % crate::WORKSPACE_OP_STRIDE
@@ -5896,6 +5948,29 @@ fn session_index(id: u64, base: u64) -> Option<usize> {
     (base..base + 100)
         .contains(&id)
         .then(|| (id - base) as usize)
+}
+
+/// Draws a floating card (a popover or menu) with its shadow on top, clickable; returns where it landed.
+fn push_card(card: Painted, hits: &mut Vec<(Rect, u64)>, overlays: &mut Vec<Overlay>) -> Rect {
+    let left = card.rects.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+    let top = card.rects.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+    let right = card.rects.iter().map(|r| r.x + r.w).fold(left, f32::max);
+    let bottom = card.rects.iter().map(|r| r.y + r.h).fold(top, f32::max);
+    let rect = Rect::new(left, top, right - left, bottom - top, Rgba::TRANSPARENT);
+    hits.extend(card.hits.iter().copied());
+    let mut painted = Painted::default();
+    painted
+        .rects
+        .extend(elevation_shadow(rect, crate::Elevation::Elevated));
+    painted.rects.extend(card.rects);
+    painted.tris.extend(card.tris);
+    painted.texts.extend(card.texts);
+    painted.icons.extend(card.icons);
+    overlays.push(Overlay {
+        painted,
+        clip: None,
+    });
+    rect
 }
 
 #[cfg(test)]

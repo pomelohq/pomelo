@@ -1479,7 +1479,8 @@ fn op_details(
     }
     fixes = fixes.child(agent_button(base + crate::WORKSPACE_OP_AGENT));
     fixes_w += button_width(AGENT_LABEL, 15.0);
-    let manual: Node = div()
+    // Its menu floats over the list: the view drops it from this button.
+    let mut manual = div()
         .row()
         .items_center()
         .gap(3.0)
@@ -1493,8 +1494,11 @@ fn op_details(
             icon(IconKind::ChevronDown)
                 .size(8.0)
                 .color(colors.text_placeholder),
-        )
-        .into();
+        );
+    if manual_open {
+        manual = manual.bg(colors.element_selected);
+    }
+    let manual: Node = manual.into();
     let manual_w = button_width("Fix manually", 11.0);
     let mut icons = div()
         .row()
@@ -1531,16 +1535,13 @@ fn op_details(
             )
             .into()
     };
-    let mut body = div()
+    let body = div()
         .col()
         .gap(6.0)
         .pt(6.0)
         .child(stages)
         .child(error)
         .child(actions);
-    if manual_open {
-        body = body.child(manual_menu(op, base, width));
-    }
     body.into()
 }
 
@@ -1569,7 +1570,8 @@ fn agent_button(id: u64) -> Node {
 }
 
 /// The routes to fix a failure by hand: a terminal in the checkout it names, the config, or doing without the step.
-fn manual_menu(op: &crate::WorkspaceOp, base: u64, width: f32) -> Node {
+pub fn manual_menu(op: &crate::WorkspaceOp, position: usize, width: f32) -> Node {
+    let base = op_base(position);
     let colors = theme();
     let item = |title: String, note: String, id: u64| -> Node {
         div()
@@ -1591,6 +1593,7 @@ fn manual_menu(op: &crate::WorkspaceOp, base: u64, width: f32) -> Node {
     };
     let mut menu = div()
         .col()
+        .w_px(width)
         .p(4.0)
         .rounded(7.0)
         .bg(colors.elevated_surface_background)
@@ -1982,17 +1985,9 @@ mod tests {
             skip: "no databases until they start".into(),
             ..Default::default()
         };
-        let mut p = ProjectPanel::default();
-        let rows = [row(0, "main", None)];
-        let expanded = [op.id];
-        p.sync(&WorkspaceList {
-            expanded: &expanded,
-            manual: Some(op.id),
-            ..list(&rows, std::slice::from_ref(&op))
-        });
         let painted = ui::render(
-            &p.render(),
-            ui::Rect::new(0.0, 0.0, 272.0, 900.0, ui::Rgba::TRANSPARENT),
+            &manual_menu(&op, 0, 260.0),
+            ui::Rect::new(0.0, 0.0, 600.0, 900.0, ui::Rgba::TRANSPARENT),
         );
         let text: Vec<String> = painted.texts.iter().map(|t| t.text.clone()).collect();
         for expected in [
@@ -2004,12 +1999,7 @@ mod tests {
             assert!(text.iter().any(|t| t == expected), "{expected} in {text:?}");
         }
         let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
-        for part in [
-            crate::WORKSPACE_OP_TERMINAL,
-            crate::WORKSPACE_OP_SKIP,
-            crate::WORKSPACE_OP_AGENT,
-            crate::WORKSPACE_OP_COPY,
-        ] {
+        for part in [crate::WORKSPACE_OP_TERMINAL, crate::WORKSPACE_OP_SKIP] {
             assert!(ids.contains(&(crate::WORKSPACE_OP_BASE + part)), "{part}");
         }
     }
