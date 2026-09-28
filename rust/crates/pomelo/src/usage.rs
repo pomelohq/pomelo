@@ -71,6 +71,8 @@ fn start(sender: std::sync::mpsc::Sender<Snapshot>, now: Arc<AtomicBool>) {
             let projects = home.join(".claude/projects");
             let mut transcripts = agent_usage::Transcripts::default();
             let mut kept: Option<(Limits, u64)> = None;
+            // Between asks, what the last ask said still holds.
+            let mut last_error = LimitsError::SignedOut;
             let mut next_limits = 0_u64;
             loop {
                 let since = agent_usage::unix_now().saturating_sub(PERIOD_DAYS * 86_400);
@@ -84,7 +86,9 @@ fn start(sender: std::sync::mpsc::Sender<Snapshot>, now: Arc<AtomicBool>) {
                         kept = Some(reported);
                     }
                 }
-                let mut limits = kept.map(|(limits, _)| limits).ok_or(LimitsError::SignedOut);
+                let mut limits = kept
+                    .map(|(limits, _)| limits)
+                    .ok_or_else(|| last_error.clone());
                 let asked = now.swap(false, Ordering::Relaxed);
                 if account.is_some() && reported.is_none() && (at >= next_limits || asked) {
                     match agent_usage::fetch_limits(&home) {
@@ -93,14 +97,14 @@ fn start(sender: std::sync::mpsc::Sender<Snapshot>, now: Arc<AtomicBool>) {
                             limits = Ok(fresh);
                             next_limits = at + ASK_EVERY.as_secs();
                         }
-                        Err(LimitsError::RateLimited) => {
-                            next_limits = at + BACK_OFF.as_secs();
-                            if kept.is_none() {
-                                limits = Err(LimitsError::RateLimited);
-                            }
-                        }
                         Err(error) => {
-                            next_limits = at + ASK_EVERY.as_secs();
+                            next_limits = at
+                                + if error == LimitsError::RateLimited {
+                                    BACK_OFF.as_secs()
+                                } else {
+                                    ASK_EVERY.as_secs()
+                                };
+                            last_error = error.clone();
                             if kept.is_none() {
                                 limits = Err(error);
                             }

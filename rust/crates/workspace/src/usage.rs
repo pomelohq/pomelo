@@ -267,7 +267,8 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
             div().px(8.0).py(4.0).child(
                 label(info.note.clone())
                     .size(11.0)
-                    .color(colors.text_placeholder),
+                    .color(colors.text_placeholder)
+                    .wrap(CARD_WIDTH - 28.0),
             ),
         )
         .into()
