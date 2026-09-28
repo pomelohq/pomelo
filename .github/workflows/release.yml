@@ -32,9 +32,12 @@ jobs:
       - uses: actions/checkout@v4
       # Installs the toolchain rust/rust-toolchain.toml pins.
       - run: rustup show
+      # A tag's own cache is never seen by the next tag; this reads the one release-cache.yml keeps on main.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+          shared-key: release
+          save-if: false
 
       - name: Import Developer ID certificate
         env:
@@ -105,6 +108,11 @@ jobs:
           SIGN_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
           NOTARY_PROFILE: pomelo-notary
         run: scripts/make-dmg.sh
+
+      - name: Check the bundle keeps the update key
+        run: |
+          KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" target/Pomelo.app/Contents/Info.plist)
+          grep -q "UPDATE_PUBLIC_KEY: &str = \"$KEY\"" crates/auto_update/src/auto_update.rs
 
       - name: Update tarball, signatures and feed
         run: |
