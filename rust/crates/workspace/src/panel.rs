@@ -599,13 +599,12 @@ fn group_marker(
         .child(rule())
         .child(label(count.to_string()).size(9.5).weight(600).color(color))
         .child(rule());
-    if folded || hovered {
-        let bg = if hovered {
-            theme().element_hover
-        } else {
-            with_alpha(theme().text, 0.04)
-        };
-        marker = marker.py(3.0).rounded(6.0).bg(bg);
+    // The padding is always there so hovering or folding only changes the fill, never the rail's layout.
+    marker = marker.py(3.0).rounded(6.0);
+    if hovered {
+        marker = marker.bg(theme().element_hover);
+    } else if folded {
+        marker = marker.bg(with_alpha(theme().text, 0.04));
     }
     div()
         .row()
