@@ -1,0 +1,33 @@
+name: Release cache
+
+# Keeps an optimized build of the dependencies cached on main. Caches made on a tag are private to that tag,
+# so without this every release compiled everything from scratch; release.yml restores this one instead.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rust/**'
+      - '.github/workflows/release-cache.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cache
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15 # the runner release.yml uses, so the cache matches
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: release
+      - run: cargo build --release -p pomelo -p pom_cli
