@@ -312,6 +312,121 @@ pub struct WorkspaceOp {
     pub skip: String,
 }
 
+/// Where a workspace's ticket stands, for the list grouped by ticket status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TicketGroup {
+    InProgress,
+    InReview,
+    Backlog,
+    Done,
+    /// No ticket, or one we could not read.
+    Other,
+}
+
+impl TicketGroup {
+    pub const ALL: [TicketGroup; 5] = [
+        TicketGroup::InProgress,
+        TicketGroup::InReview,
+        TicketGroup::Backlog,
+        TicketGroup::Done,
+        TicketGroup::Other,
+    ];
+
+    /// The tracker files review under "in progress", so the status name tells review apart.
+    pub fn of(status: &str, category: &str) -> TicketGroup {
+        match category {
+            _ if status.is_empty() => TicketGroup::Other,
+            "done" => TicketGroup::Done,
+            "new" => TicketGroup::Backlog,
+            "indeterminate" if status.to_lowercase().contains("review") => TicketGroup::InReview,
+            "indeterminate" => TicketGroup::InProgress,
+            _ => TicketGroup::Other,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TicketGroup::InProgress => "In progress",
+            TicketGroup::InReview => "In review",
+            TicketGroup::Backlog => "Backlog",
+            TicketGroup::Done => "Done",
+            TicketGroup::Other => "Other",
+        }
+    }
+
+    /// The name it is saved under.
+    pub fn key(self) -> &'static str {
+        match self {
+            TicketGroup::InProgress => "in_progress",
+            TicketGroup::InReview => "in_review",
+            TicketGroup::Backlog => "backlog",
+            TicketGroup::Done => "done",
+            TicketGroup::Other => "other",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<TicketGroup> {
+        TicketGroup::ALL
+            .into_iter()
+            .find(|group| group.key() == key)
+    }
+
+    pub fn index(self) -> usize {
+        TicketGroup::ALL
+            .iter()
+            .position(|group| *group == self)
+            .unwrap_or(0)
+    }
+
+    pub fn color(self) -> Rgba {
+        let colors = theme();
+        match self {
+            TicketGroup::InProgress => colors.text_accent,
+            TicketGroup::InReview => colors.warning,
+            TicketGroup::Backlog => colors.text_placeholder,
+            TicketGroup::Done => colors.success,
+            TicketGroup::Other => colors.text_disabled,
+        }
+    }
+}
+
+/// How the grouped list is arranged: the groups in the user's order, and which are folded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Grouping {
+    pub order: Vec<TicketGroup>,
+    pub folded: Vec<TicketGroup>,
+}
+
+impl Grouping {
+    /// Groups from saved keys, unknown ones dropped and missing ones appended in their usual place.
+    pub fn from_keys(order: &[String], folded: &[String]) -> Grouping {
+        let mut groups: Vec<TicketGroup> = Vec::new();
+        for group in order.iter().filter_map(|key| TicketGroup::from_key(key)) {
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+        for group in TicketGroup::ALL {
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+        Grouping {
+            order: groups,
+            folded: folded
+                .iter()
+                .filter_map(|key| TicketGroup::from_key(key))
+                .collect(),
+        }
+    }
+
+    pub fn keys(&self) -> (Vec<String>, Vec<String>) {
+        let keys =
+            |groups: &[TicketGroup]| groups.iter().map(|group| group.key().to_string()).collect();
+        (keys(&self.order), keys(&self.folded))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpAction {
     Retry,
@@ -362,6 +477,9 @@ pub const WORKSPACE_PR_BASE: u64 = 4000;
 pub const WORKSPACE_PR_END: u64 = 5000;
 pub const WORKSPACE_TICKET_BASE: u64 = 5000;
 pub const WORKSPACE_TICKET_END: u64 = 6000;
+/// A group header in the WORKSPACES list (or its marker on the rail), by `TicketGroup::index`.
+pub const WORKSPACE_GROUP_BASE: u64 = 6000;
+pub const WORKSPACE_GROUP_END: u64 = 6010;
 /// The WORKSPACES header's new-workspace button.
 pub const WORKSPACE_NEW: u64 = 14;
 /// The status bar's button for the active workspace's Jira ticket.

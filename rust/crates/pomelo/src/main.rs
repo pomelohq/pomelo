@@ -1214,6 +1214,7 @@ impl App {
         );
         let bindings = self.keymap_bindings();
         self.with_workspace_view(id, |view, _| view.set_bindings(bindings));
+        self.apply_workspace_grouping();
         id
     }
 
@@ -2292,6 +2293,7 @@ impl App {
         let effects = entity.update(app.app_mut(), |v, _| v.take_side_effects());
         self.settings = entity.read(app.app()).settings().clone();
         self.apply_editor_defaults();
+        self.apply_workspace_grouping();
         if effects.toggle_login_item {
             if let Err(error) = set_start_at_login(!start_at_login()) {
                 eprintln!("start at login: {error}");

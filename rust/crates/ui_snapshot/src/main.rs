@@ -961,6 +961,15 @@ fn main() -> anyhow::Result<()> {
                 view.open_window_modal(Box::new(modal))
             });
         }
+        // MAINVIEW=sidebar GROUPED=1: the list grouped by ticket status, Done folded.
+        if sidebar && std::env::var("GROUPED").is_ok() {
+            entity.update(app.app_mut(), |view, _| {
+                view.set_workspace_grouping(Some(workspace::Grouping::from_keys(
+                    &[],
+                    &["done".to_string()],
+                )))
+            });
+        }
         // MAINVIEW=sidebar OPS=1: main's update failed (opened), one creation running, one queued, one failed.
         if sidebar && std::env::var("OPS").is_ok() {
             use workspace::{OpStatus, StageState, WorkspaceOp};

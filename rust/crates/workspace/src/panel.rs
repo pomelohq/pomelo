@@ -381,6 +381,8 @@ pub struct WorkspaceList<'a> {
     pub width: f32,
     /// The failed operation whose menu of manual fixes is open.
     pub manual: Option<u64>,
+    /// Grouped by ticket status, in this arrangement; flat when `None`.
+    pub grouping: Option<&'a crate::Grouping>,
 }
 
 /// A dockable piece of UI. Mirrors the framework's `Panel` (position + icon + render), trimmed to what we draw now.
@@ -405,6 +407,7 @@ pub struct ProjectPanel {
     upkeep_done: bool,
     width: f32,
     manual: Option<u64>,
+    grouping: Option<crate::Grouping>,
 }
 
 impl Panel for ProjectPanel {
@@ -429,6 +432,7 @@ impl Panel for ProjectPanel {
         self.upkeep_done = list.upkeep_done;
         self.width = list.width;
         self.manual = list.manual;
+        self.grouping = list.grouping.cloned();
     }
 
     fn render(&mut self) -> Node {
@@ -452,31 +456,157 @@ impl Panel for ProjectPanel {
         let upkeep = upkeep_of(&self.ops, &self.expanded, self.upkeep_done);
         // Panel padding and a row's own insets.
         let inner_w = (self.width - 20.0 - 26.0).max(120.0);
-        for row in &self.rows {
+        let row_node = |row: &WorkspaceRow, upkeep: Upkeep<'_>| {
             let id = crate::WORKSPACE_ROW_BASE + row.index as u64;
-            let state = if row.index == 0 { upkeep } else { Upkeep::None };
-            col = col.child(workspace_row(
+            workspace_row(
                 row,
                 row.index == self.current,
                 self.hovered == Some(id),
-                state,
+                upkeep,
                 inner_w,
                 self.manual,
-            ));
-            if row.index == 0 {
-                let mut ahead = 0;
-                for (position, op) in self.ops.iter().enumerate().filter(|(_, op)| !op.quiet) {
-                    let expanded = self.expanded.contains(&op.id);
-                    let manual_open = self.manual == Some(op.id);
-                    col = col.child(op_row(op, position, expanded, ahead, inner_w, manual_open));
-                    if op.status != crate::OpStatus::Failed {
-                        ahead += 1;
-                    }
+            )
+        };
+        if let Some(main) = self.rows.iter().find(|row| row.index == 0) {
+            col = col.child(row_node(main, upkeep));
+            let mut ahead = 0;
+            for (position, op) in self.ops.iter().enumerate().filter(|(_, op)| !op.quiet) {
+                let expanded = self.expanded.contains(&op.id);
+                let manual_open = self.manual == Some(op.id);
+                col = col.child(op_row(op, position, expanded, ahead, inner_w, manual_open));
+                if op.status != crate::OpStatus::Failed {
+                    ahead += 1;
                 }
             }
         }
+        for section in sections(&self.rows, self.grouping.as_ref()) {
+            col = col.child(match section {
+                Section::Row(row) => row_node(row, Upkeep::None),
+                Section::Header {
+                    group,
+                    count,
+                    folded,
+                } => group_header(group, count, folded, self.hovered),
+            });
+        }
         col.into()
     }
+}
+
+enum Section<'r> {
+    Header {
+        group: crate::TicketGroup,
+        count: usize,
+        folded: bool,
+    },
+    Row(&'r WorkspaceRow),
+}
+
+/// Every workspace but main, in the shared order: as is, or under a header per ticket status with a folded
+/// group's rows left out. Groups nothing falls into get no header.
+fn sections<'r>(rows: &'r [WorkspaceRow], grouping: Option<&crate::Grouping>) -> Vec<Section<'r>> {
+    let rest = rows.iter().filter(|row| row.index != 0);
+    let Some(grouping) = grouping else {
+        return rest.map(Section::Row).collect();
+    };
+    let mut out = Vec::new();
+    for group in &grouping.order {
+        let members: Vec<&WorkspaceRow> = rest
+            .clone()
+            .filter(|row| crate::TicketGroup::of(&row.ticket, &row.ticket_category) == *group)
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        let folded = grouping.folded.contains(group);
+        out.push(Section::Header {
+            group: *group,
+            count: members.len(),
+            folded,
+        });
+        if !folded {
+            out.extend(members.into_iter().map(Section::Row));
+        }
+    }
+    out
+}
+
+fn group_header(
+    group: crate::TicketGroup,
+    count: usize,
+    folded: bool,
+    hovered: Option<u64>,
+) -> Node {
+    let colors = theme();
+    let id = crate::WORKSPACE_GROUP_BASE + group.index() as u64;
+    let mut header = div()
+        .row()
+        .h_px(24.0)
+        .px(8.0)
+        .gap(6.0)
+        .items_center()
+        .rounded(5.0)
+        .on_click(id)
+        .child(
+            icon(if folded {
+                IconKind::ChevronRight
+            } else {
+                IconKind::ChevronDown
+            })
+            .size(10.0)
+            .color(colors.text_placeholder),
+        )
+        .child(
+            label(group.label())
+                .size(11.0)
+                .color(colors.text_placeholder),
+        )
+        .child(div().row().flex(1.0))
+        .child(
+            label(count.to_string())
+                .size(11.0)
+                .color(colors.text_placeholder),
+        );
+    if hovered == Some(id) {
+        header = header.bg(colors.element_hover);
+    }
+    div().col().pt(8.0).child(header).into()
+}
+
+/// A group on the rail: a rule in its colour either side of its count; dimmer and on a chip when folded.
+fn group_marker(group: crate::TicketGroup, count: usize, folded: bool, cell_w: f32) -> Node {
+    let color = group.color();
+    let rule_alpha = if folded { 0.35 } else { 0.7 };
+    let rule = || {
+        div()
+            .row()
+            .flex(1.0)
+            .h_px(2.0)
+            .rounded(1.0)
+            .bg(with_alpha(color, rule_alpha))
+    };
+    let mut marker = div()
+        .row()
+        .w_px(36.0)
+        .gap(4.0)
+        .items_center()
+        .child(rule())
+        .child(label(count.to_string()).size(9.5).weight(600).color(color))
+        .child(rule());
+    if folded {
+        marker = marker
+            .py(3.0)
+            .rounded(6.0)
+            .bg(with_alpha(theme().text, 0.04));
+    }
+    div()
+        .row()
+        .w_px(cell_w)
+        .pt(4.0)
+        .justify_center()
+        .on_click(crate::WORKSPACE_GROUP_BASE + group.index() as u64)
+        .child(marker)
+        .into()
 }
 
 /// What a rail cell calls a workspace, as two short lines. A workspace with a Jira ticket shows its project
@@ -540,22 +670,32 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
                 .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
         );
     let upkeep = upkeep_of(list.ops, list.expanded, list.upkeep_done);
-    for row in list.rows {
+    let cell = |row: &WorkspaceRow, upkeep: Upkeep<'_>| {
         let id = crate::WORKSPACE_ROW_BASE + row.index as u64;
-        let state = if row.index == 0 { upkeep } else { Upkeep::None };
-        column = column.child(rail_cell(
+        rail_cell(
             row,
             row.index == list.current,
             list.hovered == Some(id),
             cell_w,
-            state,
-        ));
-        if row.index == 0 {
-            for (position, op) in list.ops.iter().enumerate().filter(|(_, op)| !op.quiet) {
-                column = column.child(op_tile(op, position, cell_w));
-            }
-            column = column.child(div().w_px(20.0).h_px(1.0).bg(theme().border_variant));
+            upkeep,
+        )
+    };
+    if let Some(main) = list.rows.iter().find(|row| row.index == 0) {
+        column = column.child(cell(main, upkeep));
+        for (position, op) in list.ops.iter().enumerate().filter(|(_, op)| !op.quiet) {
+            column = column.child(op_tile(op, position, cell_w));
         }
+        column = column.child(div().w_px(20.0).h_px(1.0).bg(theme().border_variant));
+    }
+    for section in sections(list.rows, list.grouping) {
+        column = column.child(match section {
+            Section::Row(row) => cell(row, Upkeep::None),
+            Section::Header {
+                group,
+                count,
+                folded,
+            } => group_marker(group, count, folded, cell_w),
+        });
     }
     column.into()
 }
@@ -1709,6 +1849,7 @@ mod tests {
             upkeep_done: false,
             width: 272.0,
             manual: None,
+            grouping: None,
         }
     }
 
@@ -1756,6 +1897,76 @@ mod tests {
             "{text:?}"
         );
         assert!(ids.contains(&(crate::WORKSPACE_OP_BASE + crate::WORKSPACE_OP_TOGGLE)));
+    }
+
+    #[test]
+    fn review_is_told_apart_from_progress_by_the_status_name() {
+        use crate::TicketGroup;
+        assert_eq!(
+            TicketGroup::of("Code review", "indeterminate"),
+            TicketGroup::InReview
+        );
+        assert_eq!(
+            TicketGroup::of("QA In Progress", "indeterminate"),
+            TicketGroup::InProgress
+        );
+        assert_eq!(TicketGroup::of("To Do", "new"), TicketGroup::Backlog);
+        assert_eq!(TicketGroup::of("Closed", "done"), TicketGroup::Done);
+        assert_eq!(TicketGroup::of("", ""), TicketGroup::Other);
+        let grouping =
+            crate::Grouping::from_keys(&["done".into(), "bogus".into(), "done".into()], &[]);
+        assert_eq!(grouping.order[0], TicketGroup::Done);
+        assert_eq!(
+            grouping.order.len(),
+            TicketGroup::ALL.len(),
+            "missing groups come back"
+        );
+    }
+
+    #[test]
+    fn grouped_rows_sit_under_their_status_and_a_folded_group_keeps_only_its_header() {
+        let ticket = |index: usize, status: &str, category: &str| WorkspaceRow {
+            ticket: status.into(),
+            ticket_category: category.into(),
+            ..row(index, &format!("proj-{index}"), None)
+        };
+        let rows = [
+            row(0, "main", None),
+            ticket(1, "In Progress", "indeterminate"),
+            ticket(2, "Done", "done"),
+            ticket(3, "Code review", "indeterminate"),
+            row(4, "spike", None),
+            ticket(5, "In Progress", "indeterminate"),
+        ];
+        let grouping = crate::Grouping::from_keys(&["other".into()], &["done".into()]);
+        let shape: Vec<String> = sections(&rows, Some(&grouping))
+            .into_iter()
+            .map(|section| match section {
+                Section::Header { group, count, .. } => format!("{}:{count}", group.key()),
+                Section::Row(row) => row.index.to_string(),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                "other:1",
+                "4",
+                "in_progress:2",
+                "1",
+                "5",
+                "in_review:1",
+                "3",
+                "done:1"
+            ]
+        );
+        let flat: Vec<usize> = sections(&rows, None)
+            .into_iter()
+            .filter_map(|section| match section {
+                Section::Row(row) => Some(row.index),
+                Section::Header { .. } => None,
+            })
+            .collect();
+        assert_eq!(flat, [1, 2, 3, 4, 5], "one shared order, main apart");
     }
 
     #[test]

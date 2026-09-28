@@ -77,6 +77,8 @@ pub struct WorkspaceRequests {
     /// Move the workspace at the first index to the second.
     pub reorder: Option<(usize, usize)>,
     pub op: Option<(u64, crate::OpAction)>,
+    /// A group was folded, opened or moved; `workspace_grouping` has the new arrangement to save.
+    pub grouping_changed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,8 +166,18 @@ enum Drag {
     Tab,
     EditorSel(InputGroup),
     WorkspaceRow,
+    /// A group header of the WORKSPACES list, moving its whole group.
+    WorkspaceGroup,
     /// A tab of the agent dock, moved within that dock.
     AgentTab,
+}
+
+/// A group header pressed in the grouped list: a click folds it, a drag moves the group.
+#[derive(Clone, Copy)]
+struct GroupDrag {
+    from: crate::TicketGroup,
+    press: (f32, f32),
+    to: Option<crate::TicketGroup>,
 }
 
 /// A WORKSPACES row being dragged to a new place: its index, where the press was, and the row it would take.
@@ -200,6 +212,9 @@ pub struct WorkspaceView {
     /// The failed operation shown in a popover beside its rail tile, and where that popover was drawn.
     rail_popover: Option<u64>,
     rail_popover_rect: Option<Rect>,
+    /// The list grouped by ticket status, when that setting is on.
+    grouping: Option<crate::Grouping>,
+    group_drag: Option<GroupDrag>,
     /// The WORKSPACES row a context menu was opened on.
     menu_workspace: Option<usize>,
     workspace_requests: WorkspaceRequests,
@@ -296,6 +311,8 @@ impl WorkspaceView {
             manual_menu: None,
             rail_popover: None,
             rail_popover_rect: None,
+            grouping: None,
+            group_drag: None,
             menu_workspace: None,
             workspace_requests: WorkspaceRequests::default(),
             popover_rects: Vec::new(),
@@ -561,6 +578,116 @@ impl WorkspaceView {
         if self.window_modal.take().is_some() {
             self.modal_result = Some(crate::ModalResult::Cancelled);
         }
+    }
+
+    /// Groups the WORKSPACES list by ticket status in this arrangement, or lists it flat with `None`.
+    pub fn set_workspace_grouping(&mut self, grouping: Option<crate::Grouping>) {
+        self.grouping = grouping;
+    }
+
+    pub fn workspace_grouping(&self) -> Option<&crate::Grouping> {
+        self.grouping.as_ref()
+    }
+
+    /// The ticket group of the workspace at `index`.
+    fn row_group(&self, index: usize) -> crate::TicketGroup {
+        let project = self.layout.project.as_ref();
+        let field = |values: Option<&Vec<String>>| {
+            values
+                .and_then(|values| values.get(index))
+                .cloned()
+                .unwrap_or_default()
+        };
+        crate::TicketGroup::of(
+            &field(project.map(|project| &project.tickets)),
+            &field(project.map(|project| &project.ticket_categories)),
+        )
+    }
+
+    fn toggle_group_fold(&mut self, group: crate::TicketGroup) {
+        if let Some(grouping) = self.grouping.as_mut() {
+            match grouping.folded.iter().position(|folded| *folded == group) {
+                Some(at) => {
+                    grouping.folded.remove(at);
+                }
+                None => grouping.folded.push(group),
+            }
+            self.workspace_requests.grouping_changed = true;
+        }
+    }
+
+    fn move_group(&mut self, from: crate::TicketGroup, to: crate::TicketGroup) {
+        if let Some(grouping) = self.grouping.as_mut() {
+            let (Some(at), Some(target)) = (
+                grouping.order.iter().position(|group| *group == from),
+                grouping.order.iter().position(|group| *group == to),
+            ) else {
+                return;
+            };
+            let group = grouping.order.remove(at);
+            grouping.order.insert(target, group);
+            self.workspace_requests.grouping_changed = true;
+        }
+    }
+
+    fn update_group_drag(&mut self, x: f32, y: f32) -> bool {
+        let Some(mut drag) = self.group_drag else {
+            return false;
+        };
+        drag.to = self
+            .header_hits
+            .iter()
+            .filter(|(rect, id)| {
+                (crate::WORKSPACE_GROUP_BASE..crate::WORKSPACE_GROUP_END).contains(id)
+                    && x >= rect.x
+                    && x < rect.x + rect.w
+                    && y >= rect.y
+                    && y < rect.y + rect.h
+            })
+            .filter_map(|(_, id)| {
+                crate::TicketGroup::ALL
+                    .get((id - crate::WORKSPACE_GROUP_BASE) as usize)
+                    .copied()
+            })
+            .next_back()
+            .filter(|group| *group != drag.from);
+        self.group_drag = Some(drag);
+        true
+    }
+
+    /// The group header a dragged group would take, tinted with a bar on the side it lands.
+    fn group_drop_painted(&self, hits: &[(Rect, u64)]) -> Option<Painted> {
+        let drag = self
+            .group_drag
+            .filter(|_| self.dragging == Drag::WorkspaceGroup)?;
+        let to = drag.to?;
+        let order = &self.grouping.as_ref()?.order;
+        let before = order.iter().position(|group| *group == to)
+            < order.iter().position(|group| *group == drag.from);
+        let (rect, _) = hits
+            .iter()
+            .find(|(_, id)| *id == crate::WORKSPACE_GROUP_BASE + to.index() as u64)?;
+        let mut drop = Painted::default();
+        drop.rects.push(Rect::new(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            ui::theme().text_accent.alpha(0.22),
+        ));
+        let bar_y = if before {
+            rect.y
+        } else {
+            rect.y + rect.h - 2.0
+        };
+        drop.rects.push(Rect::new(
+            rect.x,
+            bar_y,
+            rect.w,
+            2.0,
+            ui::theme().border_focused,
+        ));
+        Some(drop)
     }
 
     /// Opens a failure's menu of manual fixes (as its button does).
@@ -1273,6 +1400,7 @@ impl WorkspaceView {
             upkeep_done: self.upkeep_done_at.is_some(),
             width: self.layout.left_region(w, h).w / ui::ui_text_scale(),
             manual: self.manual_menu,
+            grouping: self.grouping.as_ref(),
         };
         let mut rail_tip = None;
         let mut rail_popover = None;
@@ -1388,6 +1516,9 @@ impl WorkspaceView {
                 });
             }
             if let Some(drop) = self.row_drop_painted(&p.hits) {
+                p.rects.extend(drop.rects);
+            }
+            if let Some(drop) = self.group_drop_painted(&p.hits) {
                 p.rects.extend(drop.rects);
             }
             panel_hits.extend(clipped_hits(&p, visible));
@@ -2066,7 +2197,8 @@ impl WorkspaceView {
             | Drag::TerminalTab
             | Drag::AgentTab
             | Drag::ItemPointer(_)
-            | Drag::WorkspaceRow => return None,
+            | Drag::WorkspaceRow
+            | Drag::WorkspaceGroup => return None,
             Drag::None => {}
         }
         let (w, h) = self.viewport;
@@ -3385,7 +3517,14 @@ impl WorkspaceView {
                 .input(group)
                 .is_some_and(|input| input.editor_drag(x, y)),
             Drag::WorkspaceRow => self.update_row_drag(x, y),
+            Drag::WorkspaceGroup => self.update_group_drag(x, y),
             Drag::None => {
+                if let Some(drag) = self.group_drag {
+                    if (x - drag.press.0).abs() > 5.0 || (y - drag.press.1).abs() > 5.0 {
+                        self.dragging = Drag::WorkspaceGroup;
+                        return self.update_group_drag(x, y);
+                    }
+                }
                 if let Some(drag) = self.row_drag {
                     if (x - drag.press.0).abs() > 5.0 || (y - drag.press.1).abs() > 5.0 {
                         self.dragging = Drag::WorkspaceRow;
@@ -3634,6 +3773,19 @@ impl WorkspaceView {
                             && y < rect.y + rect.h
                     })
                     .map(|(rect, _)| *rect);
+                self.group_drag = (crate::WORKSPACE_GROUP_BASE..crate::WORKSPACE_GROUP_END)
+                    .contains(&id)
+                    .then(|| {
+                        crate::TicketGroup::ALL
+                            .get((id - crate::WORKSPACE_GROUP_BASE) as usize)
+                            .copied()
+                    })
+                    .flatten()
+                    .map(|from| GroupDrag {
+                        from,
+                        press: (x, y),
+                        to: None,
+                    });
                 self.row_drag = id
                     .checked_sub(crate::WORKSPACE_ROW_BASE)
                     .filter(|_| id < crate::WORKSPACE_ROW_END)
@@ -4007,6 +4159,15 @@ impl WorkspaceView {
             {
                 self.workspace_requests.reorder = Some((from, to));
             }
+        } else if self.dragging == Drag::WorkspaceGroup {
+            if let Some(GroupDrag {
+                from, to: Some(to), ..
+            }) = self.group_drag
+            {
+                self.move_group(from, to);
+            }
+        } else if let Some(drag) = self.group_drag.filter(|_| self.dragging == Drag::None) {
+            self.toggle_group_fold(drag.from);
         } else if self.dragging == Drag::Tab {
             self.finish_center_tab_drag();
         } else if self.dragging == Drag::AgentTab {
@@ -4027,6 +4188,7 @@ impl WorkspaceView {
         }
         self.pending_tab = None;
         self.row_drag = None;
+        self.group_drag = None;
         self.tab_ghost_at = None;
         self.dragging = Drag::None;
     }
@@ -4080,7 +4242,11 @@ impl WorkspaceView {
             })
             .map(|(_, id)| (id - crate::WORKSPACE_ROW_BASE) as usize)
             .next_back()
-            .filter(|index| *index > 0 && *index != drag.from);
+            .filter(|index| *index > 0 && *index != drag.from)
+            // Grouped, a row moves only among its own group; its place in the shared order follows.
+            .filter(|index| {
+                self.grouping.is_none() || self.row_group(*index) == self.row_group(drag.from)
+            });
         drag.to = to;
         drag.pointer = (x, y);
         self.row_drag = Some(drag);
@@ -5887,6 +6053,70 @@ mod tests {
             requests.reorder, None,
             "main neither moves nor is displaced"
         );
+    }
+
+    #[test]
+    fn grouped_rows_move_only_within_their_group_and_a_header_click_folds_it() {
+        let mut project = sample_project();
+        project.workspaces = vec![
+            "trunk".into(),
+            "proj-1-a".into(),
+            "proj-2-b".into(),
+            "proj-3-c".into(),
+        ];
+        project.tickets = vec![
+            String::new(),
+            "In Progress".into(),
+            "Done".into(),
+            "In Progress".into(),
+        ];
+        project.ticket_categories = vec![
+            String::new(),
+            "indeterminate".into(),
+            "done".into(),
+            "indeterminate".into(),
+        ];
+        let (mut app, h, e) = open_with(Some(project));
+        e.update(app.app_mut(), |v, _| {
+            v.set_workspace_grouping(Some(crate::Grouping::from_keys(&[], &[])))
+        });
+        app.draw(h);
+        let center = |app: &Application, id: u64| {
+            app.window(h)
+                .and_then(|w| w.center_of(id))
+                .expect("laid out")
+        };
+        let (first, other_group, same_group) = (
+            center(&app, crate::WORKSPACE_ROW_BASE + 1),
+            center(&app, crate::WORKSPACE_ROW_BASE + 2),
+            center(&app, crate::WORKSPACE_ROW_BASE + 3),
+        );
+        let across = e.update(app.app_mut(), |v, _| {
+            v.mouse_down(first.0, first.1);
+            v.mouse_move(other_group.0, other_group.1);
+            v.mouse_up();
+            v.take_workspace_requests().reorder
+        });
+        assert_eq!(across, None, "a Done row is another group");
+        let within = e.update(app.app_mut(), |v, _| {
+            v.mouse_down(first.0, first.1);
+            v.mouse_move(same_group.0, same_group.1);
+            v.mouse_up();
+            v.take_workspace_requests().reorder
+        });
+        assert_eq!(within, Some((1, 3)));
+
+        let header = center(
+            &app,
+            crate::WORKSPACE_GROUP_BASE + crate::TicketGroup::Done.index() as u64,
+        );
+        let folded = e.update(app.app_mut(), |v, _| {
+            v.mouse_down(header.0, header.1);
+            v.mouse_up();
+            let changed = v.take_workspace_requests().grouping_changed;
+            (changed, v.workspace_grouping().map(|g| g.folded.clone()))
+        });
+        assert_eq!(folded, (true, Some(vec![crate::TicketGroup::Done])));
     }
 
     #[test]

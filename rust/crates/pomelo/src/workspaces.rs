@@ -10,6 +10,36 @@ use workspaces_ui::{
 
 use crate::{project_info, App};
 
+/// Where the grouped WORKSPACES list keeps its group order and folded groups, as `order=` and `folded=` lines
+/// of group keys. Kept out of the settings file, which the settings window writes back from its own copy.
+const GROUPS_FILE: &str = "workspace_groups";
+
+fn load_grouping() -> workspace::Grouping {
+    let text = std::fs::read_to_string(pom_paths::StateDir::from_env().path(GROUPS_FILE))
+        .unwrap_or_default();
+    let keys = |name: &str| -> Vec<String> {
+        text.lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+            .map(|list| {
+                list.split(',')
+                    .filter(|key| !key.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    workspace::Grouping::from_keys(&keys("order"), &keys("folded"))
+}
+
+fn save_grouping(grouping: &workspace::Grouping) {
+    let (order, folded) = grouping.keys();
+    let text = format!("order={}\nfolded={}\n", order.join(","), folded.join(","));
+    let path = pom_paths::StateDir::from_env().path(GROUPS_FILE);
+    if let Err(error) = pom_paths::write_atomic(&path, text.as_bytes(), 0o644) {
+        eprintln!("workspaces: save the group layout: {error}");
+    }
+}
+
 /// Claude, found the way the agent launcher finds it, asked for a name.
 fn namer() -> workspaces_ui::Namer {
     let home = std::env::var_os("HOME")
@@ -23,6 +53,23 @@ fn namer() -> workspaces_ui::Namer {
 }
 
 impl App {
+    /// Groups every window's WORKSPACES list by ticket status, or lists it flat, as the setting says.
+    pub(crate) fn apply_workspace_grouping(&mut self) {
+        let grouping = self.settings.group_workspaces.then(load_grouping);
+        let ids: Vec<WindowId> = self.mains.keys().copied().collect();
+        for id in ids {
+            let grouping = grouping.clone();
+            self.with_workspace_view(id, |view, _| {
+                if view.workspace_grouping() != grouping.as_ref() {
+                    view.set_workspace_grouping(grouping);
+                }
+            });
+            if let Some(main) = self.mains.get_mut(&id) {
+                main.dirty = true;
+            }
+        }
+    }
+
     /// Acts on what the WORKSPACES panel asked for.
     pub(crate) fn handle_workspace_requests(&mut self, id: WindowId) {
         let Some(requests) = self.with_workspace_view(id, |view, _| view.take_workspace_requests())
@@ -37,6 +84,16 @@ impl App {
         }
         if let Some((from, to)) = requests.reorder {
             self.reorder_workspace(id, from, to);
+        }
+        if requests.grouping_changed {
+            let grouping = self
+                .with_workspace_view(id, |view, _| view.workspace_grouping().cloned())
+                .flatten();
+            if let Some(grouping) = grouping {
+                save_grouping(&grouping);
+                // Other windows show the same arrangement.
+                self.apply_workspace_grouping();
+            }
         }
         if let Some((op, action)) = requests.op {
             let failed = self

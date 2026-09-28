@@ -195,6 +195,7 @@ pub const CTRL_JIRA_TOKEN: u64 = 232;
 pub const CTRL_JIRA_RESET_TOKEN: u64 = 233;
 pub const CTRL_JIRA_TEST: u64 = 234;
 pub const CTRL_JIRA_ONLY_MINE: u64 = 235;
+pub const CTRL_GROUP_WORKSPACES: u64 = 242;
 pub const CTRL_REFRESH_MAIN: u64 = 236;
 pub const CTRL_REFRESH_DEC: u64 = 237;
 pub const CTRL_REFRESH_INC: u64 = 238;
@@ -444,6 +445,7 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_SHOW_BRANCH => s.show_branch == d.show_branch,
         CTRL_SHOW_SESSION => s.show_session_name == d.show_session_name,
         CTRL_JIRA_ONLY_MINE => s.jira_only_mine == d.jira_only_mine,
+        CTRL_GROUP_WORKSPACES => s.group_workspaces == d.group_workspaces,
         CTRL_WIN_W_EDIT => s.window_width == d.window_width,
         CTRL_WIN_H_EDIT => s.window_height == d.window_height,
         CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
@@ -482,6 +484,7 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_SHOW_BRANCH => s.show_branch = d.show_branch,
         CTRL_SHOW_SESSION => s.show_session_name = d.show_session_name,
         CTRL_JIRA_ONLY_MINE => s.jira_only_mine = d.jira_only_mine,
+        CTRL_GROUP_WORKSPACES => s.group_workspaces = d.group_workspaces,
         CTRL_WIN_W_EDIT => s.window_width = d.window_width,
         CTRL_WIN_H_EDIT => s.window_height = d.window_height,
         CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
@@ -551,6 +554,10 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         }
         CTRL_JIRA_ONLY_MINE => {
             s.jira_only_mine = !s.jira_only_mine;
+            true
+        }
+        CTRL_GROUP_WORKSPACES => {
+            s.group_workspaces = !s.group_workspaces;
             true
         }
         CTRL_NOTIFY => {
@@ -2281,6 +2288,15 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                     on: s.jira_only_mine,
                 },
                 reset: reset_if_changed(CTRL_JIRA_ONLY_MINE, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Group Workspaces by Ticket Status".into(),
+                description: "The WORKSPACES list is split into In progress, In review, Backlog, Done and Other. Click a group to fold it, drag it to move it.".into(),
+                control: Control::Toggle {
+                    id: CTRL_GROUP_WORKSPACES,
+                    on: s.group_workspaces,
+                },
+                reset: reset_if_changed(CTRL_GROUP_WORKSPACES, s),
             }),
             PageItem::Header("Main Workspace"),
             PageItem::Row(SettingRow {
