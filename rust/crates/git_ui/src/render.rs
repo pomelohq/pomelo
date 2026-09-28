@@ -512,7 +512,7 @@ impl GitPanel {
                             ),
                     )
             }
-            Row::Card { repo } => self.card_header(index, *repo, scan),
+            Row::Card { repo } => self.card_header(index, *repo, scan, width),
             Row::PullRequest { repo, pull_request } => {
                 self.pull_request_block(index, *repo, pull_request)
             }
@@ -857,7 +857,7 @@ impl GitPanel {
         row
     }
 
-    fn card_header(&self, index: usize, repo: usize, scan: &Scan) -> Div {
+    fn card_header(&self, index: usize, repo: usize, scan: &Scan, width: f32) -> Div {
         let colors = theme();
         let name = self.source_name_of(repo);
         let open = !self.is_folded(&format!("r:{name}"));
@@ -874,23 +874,16 @@ impl GitPanel {
             Some((_, false)) => colors.warning,
             _ => colors.text_placeholder,
         };
-        let mut header = self
-            .row_base(index, rows::CARD_HEADER_H)
-            .pl(8.0)
-            .pr(6.0)
-            .child(chevron(open))
-            .child(label(name).weight(600).color(colors.text))
-            .child(grow(
-                label(if local_only {
-                    format!("{branch} - local only")
-                } else {
-                    branch
-                })
-                .size(11.0)
-                .mono()
-                .color(branch_color)
-                .truncate(),
-            ));
+        let branch_label = label(if local_only {
+            format!("{branch} - local only")
+        } else {
+            branch
+        })
+        .size(11.0)
+        .mono()
+        .color(branch_color)
+        .truncate();
+        let mut trailing: Vec<Node> = Vec::new();
         if let Some(action) = state
             .and_then(|state| state.head.as_ref())
             .and_then(commit_area::remote_action)
@@ -918,19 +911,54 @@ impl GitPanel {
             }
             parts.push(chip_text(text.to_string(), tone));
             let button = div().child(chip(chip_id, tone, parts, self.hot(chip_id)));
-            header = header.child(if self.hot(chip_id) {
-                tooltip(button, tip, false)
-            } else {
-                button
-            });
+            trailing.push(
+                if self.hot(chip_id) {
+                    tooltip(button, tip, false)
+                } else {
+                    button
+                }
+                .into(),
+            );
         }
         let menu = self.id(index, Control::Menu);
-        header.child(icon_button(
-            menu,
-            IconKind::ChevronDown,
-            self.hot(menu),
-            true,
-        ))
+        trailing.push(icon_button(menu, IconKind::ChevronDown, self.hot(menu), true).into());
+        // A long repo name is cut to what the row leaves after the chevron, the action chip and the menu,
+        // keeping room for a little of the branch; the chip and the menu always fit.
+        const GAP: f32 = 6.0;
+        let fixed = 8.0
+            + 6.0
+            + 12.0
+            + GAP
+            + trailing
+                .iter()
+                .map(|node| ui::measure(node).0 + GAP)
+                .sum::<f32>();
+        let room = (width - fixed).max(40.0);
+        let name_w = ui::measure_text_width(&name, 13.0, false, 600) / ui::ui_text_scale();
+        let branch_room = 48.0;
+        let mut header = self
+            .row_base(index, rows::CARD_HEADER_H)
+            .pl(8.0)
+            .pr(6.0)
+            .child(chevron(open));
+        header = if name_w + GAP + branch_room <= room {
+            header
+                .child(label(name).weight(600).color(colors.text))
+                .child(grow(branch_label))
+        } else {
+            header
+                .child(
+                    div()
+                        .row()
+                        .w_px((room - GAP - branch_room).max(40.0).min(name_w))
+                        .child(label(name).weight(600).color(colors.text).truncate()),
+                )
+                .child(grow(branch_label))
+        };
+        for node in trailing {
+            header = header.child(node);
+        }
+        header
     }
 
     fn pull_request_block(&self, index: usize, _repo: usize, pr: &pom_forge::PullRequest) -> Div {
