@@ -308,10 +308,6 @@ pub trait SidePanelView: 'static {
     }
     fn run_palette_entry(&mut self, _id: u64) {}
     fn render(&mut self, width: f32, height: f32) -> Node;
-    /// The narrowest the dock may be while this panel shows; below it its content cannot fit.
-    fn min_width(&self) -> f32 {
-        0.0
-    }
     fn click(&mut self, id: u64);
     fn click_at(&mut self, id: u64, _x: f32, _y: f32) {
         self.click(id);

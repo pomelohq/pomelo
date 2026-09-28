@@ -2690,6 +2690,16 @@ impl FileItem {
         self.after_expansion_change();
     }
 
+    fn set_split(&mut self, split: bool) {
+        if self.split == split {
+            return;
+        }
+        self.split = split;
+        self.split_active = self.split && self.split_active;
+        self.rows = None;
+        self.after_expansion_change();
+    }
+
     fn after_expansion_change(&mut self) {
         // A branch diff exists to show its changes, so none of them may be folded away.
         if self.branch_diff {
@@ -3794,6 +3804,21 @@ impl Item for FileItem {
         markdown_preview::is_markdown(&self.path)
     }
 
+    fn diff_split(&self) -> Option<bool> {
+        self.branch_diff.then_some(self.split)
+    }
+
+    fn diff_stat(&self) -> Option<(usize, usize)> {
+        if !self.branch_diff || self.git.is_busy() {
+            return None;
+        }
+        let hunks = self.git.hunks();
+        Some((
+            hunks.iter().map(|hunk| hunk.rows.len()).sum(),
+            hunks.iter().map(|hunk| hunk.base_rows.len()).sum(),
+        ))
+    }
+
     fn is_editable(&self) -> bool {
         self.buffer.is_some()
     }
@@ -4037,10 +4062,7 @@ impl Item for FileItem {
             EditKey::ExpandAllDiffHunks => return self.expand_all_hunks(),
             EditKey::ToggleSplitDiff => {
                 if self.branch_diff {
-                    self.split = !self.split;
-                    self.split_active = self.split && self.split_active;
-                    self.rows = None;
-                    self.after_expansion_change();
+                    self.set_split(!self.split);
                 }
                 return;
             }
@@ -5001,6 +5023,14 @@ impl FilesView {
                     PaneButton {
                         icon: IconKind::Eye,
                         action: PaneButtonAction::Preview,
+                    },
+                    PaneButton {
+                        icon: IconKind::DiffUnified,
+                        action: PaneButtonAction::DiffUnified,
+                    },
+                    PaneButton {
+                        icon: IconKind::DiffSplit,
+                        action: PaneButtonAction::DiffSplit,
                     },
                     PaneButton {
                         icon: IconKind::PanelRight,
@@ -6603,6 +6633,20 @@ impl FunctionView for FilesView {
                     PaneButtonAction::Preview => {
                         self.panes.active = path;
                         self.open_markdown_preview(false);
+                    }
+                    PaneButtonAction::DiffUnified | PaneButtonAction::DiffSplit => {
+                        let split = action == PaneButtonAction::DiffSplit;
+                        // One choice for every diff, like the setting it stands for: open diffs follow, new ones start so.
+                        SPLIT_DIFF_DEFAULT.store(split, std::sync::atomic::Ordering::Relaxed);
+                        self.panes.for_each_item_mut(&mut |item| {
+                            if let Some(file) = item
+                                .as_any_mut()
+                                .and_then(|any| any.downcast_mut::<FileItem>())
+                                .filter(|file| file.branch_diff)
+                            {
+                                file.set_split(split);
+                            }
+                        });
                     }
                     PaneButtonAction::NewItem | PaneButtonAction::ToggleZoom => {}
                 }

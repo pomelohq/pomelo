@@ -78,7 +78,15 @@ impl Pane {
         if self.open.is_empty() {
             0.0
         } else {
-            (TAB_H + self.search.height()) * ui::ui_text_scale()
+            let toolbar = if self
+                .active_item()
+                .is_some_and(|item| item.diff_split().is_some())
+            {
+                TOOLBAR_H
+            } else {
+                0.0
+            };
+            (TAB_H + toolbar + self.search.height()) * ui::ui_text_scale()
         }
     }
 
@@ -283,6 +291,8 @@ impl Pane {
 pub struct TabBarButton {
     pub icon: IconKind,
     pub id: u64,
+    /// Drawn pressed, for a button that shows which of several modes is on.
+    pub selected: bool,
 }
 
 /// What a pane's tab bar shows besides its tabs.
@@ -291,7 +301,12 @@ pub struct TabBarConfig {
     /// Back/forward through the pane's history at the leading edge.
     pub show_nav: bool,
     pub buttons: Vec<TabBarButton>,
+    /// Buttons for the active item's own toolbar row under the tabs (a diff's layout choice).
+    pub toolbar: Vec<TabBarButton>,
 }
+
+/// The row under the tabs that a diff shows its layout buttons and totals in.
+pub const TOOLBAR_H: f32 = 32.0;
 
 /// Click ids for one pane's chrome: tab ids are these bases plus the tab index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,10 +351,16 @@ pub fn render_pane(pane: &Pane, config: &TabBarConfig, ids: PaneClickIds, width:
     if !config.buttons.is_empty() {
         tab_bar = tab_bar.child(div().w_px(1.0).h_px(TAB_H).bg(theme().border));
         for button in &config.buttons {
-            tab_bar = tab_bar.child(tab_bar_button(button.icon, button.id));
+            tab_bar = tab_bar.child(tab_bar_button(button));
         }
     }
     let mut chrome = div().col().flex(1.0).child(tab_bar);
+    if let Some(item) = pane
+        .active_item()
+        .filter(|item| item.diff_split().is_some())
+    {
+        chrome = chrome.child(diff_toolbar(&config.toolbar, item.diff_stat()));
+    }
     if !pane.search.dismissed {
         chrome = chrome.child(pane.search.render(ids.search, width));
     }
@@ -472,7 +493,65 @@ fn nav_button(kind: IconKind, id: u64, enabled: bool) -> Node {
         .into()
 }
 
-fn tab_bar_button(kind: IconKind, id: u64) -> Node {
+fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node {
+    let colors = theme();
+    let mut row = div()
+        .row()
+        .h_px(TOOLBAR_H - 1.0)
+        .px(8.0)
+        .gap(2.0)
+        .items_center()
+        .bg(colors.toolbar_background);
+    for button in buttons {
+        row = row.child(toolbar_button(button));
+    }
+    row = row.child(div().flex(1.0));
+    if let Some((added, removed)) = stat {
+        row = row
+            .child(
+                label(format!("+{added}"))
+                    .size(12.0)
+                    .mono()
+                    .color(colors.version_control_added),
+            )
+            .child(div().w_px(6.0))
+            .child(
+                label(format!("-{removed}"))
+                    .size(12.0)
+                    .mono()
+                    .color(colors.version_control_deleted),
+            );
+    }
+    div()
+        .col()
+        .child(row)
+        .child(div().h_px(1.0).bg(colors.border))
+        .into()
+}
+
+fn toolbar_button(button: &TabBarButton) -> Node {
+    let colors = theme();
+    let mut face = div()
+        .row()
+        .w_px(22.0)
+        .h_px(22.0)
+        .rounded(4.0)
+        .items_center()
+        .justify_center()
+        .on_click(button.id)
+        .child(icon(button.icon).size(14.0).color(if button.selected {
+            colors.icon_accent
+        } else {
+            colors.icon_muted
+        }));
+    if button.selected {
+        face = face.bg(colors.element_selected);
+    }
+    face.into()
+}
+
+fn tab_bar_button(button: &TabBarButton) -> Node {
+    let colors = theme();
     div()
         .col()
         .w_px(26.0)
@@ -483,8 +562,8 @@ fn tab_bar_button(kind: IconKind, id: u64) -> Node {
                 .flex(1.0)
                 .items_center()
                 .justify_center()
-                .on_click(id)
-                .child(icon(kind).size(13.0).color(theme().icon_muted)),
+                .on_click(button.id)
+                .child(icon(button.icon).size(13.0).color(colors.icon_muted)),
         )
         .child(div().h_px(1.0).bg(theme().border))
         .into()
@@ -581,7 +660,9 @@ mod tests {
             buttons: vec![TabBarButton {
                 icon: IconKind::Plus,
                 id: 500,
+                selected: false,
             }],
+            toolbar: Vec::new(),
         };
         let painted = ui::render(
             &render_pane(&pane, &full, ids(), 600.0),

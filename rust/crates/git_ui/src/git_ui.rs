@@ -1517,11 +1517,6 @@ impl SidePanelView for GitPanel {
         PaneKind::Git
     }
 
-    fn min_width(&self) -> f32 {
-        // Repo cards need their name, branch and action chip on one line.
-        320.0
-    }
-
     fn render(&mut self, width: f32, height: f32) -> ui::Node {
         if let Ok(mut drawn) = self.drawn_at.lock() {
             *drawn = Some(Instant::now());

@@ -92,9 +92,9 @@ pub fn is_agent_id(id: u64) -> bool {
     (AGENT_VIEW_BASE..AGENT_VIEW_BASE + pane_group_view::ID_SPAN).contains(&id)
 }
 pub const FILES_TREE_W: f32 = 260.0; // default width of the Files tree dock (left of the center editor)
-pub const FILES_TREE_MIN: f32 = 160.0;
-/// Every side panel (tree, agent, terminal, tool panels) keeps at least this width so its content fits.
-pub const SIDE_PANEL_MIN: f32 = 260.0;
+/// Every side panel (tree, agent, terminal, tool panels) keeps at least this width, wide enough for the
+/// widest of them (a Git repo card's name, branch and action chip on one line).
+pub const SIDE_PANEL_MIN: f32 = 320.0;
 pub const FILES_TREE_MAX: f32 = 560.0;
 pub const DOCK_MIN: f32 = 180.0; // narrowest expanded width
 pub const DOCK_MAX: f32 = 520.0;
@@ -849,6 +849,14 @@ pub trait Item: 'static {
     /// Has a rendered preview (a markdown file); its pane then shows a preview button.
     fn previewable(&self) -> bool {
         false
+    }
+    /// A diff's layout (`Some(true)` side by side, `Some(false)` unified); `None` for anything else.
+    fn diff_split(&self) -> Option<bool> {
+        None
+    }
+    /// Lines a diff adds and removes, for its toolbar.
+    fn diff_stat(&self) -> Option<(usize, usize)> {
+        None
     }
     fn set_focused(&mut self, _focused: bool) {}
     fn input_text(&mut self, _text: &str) {}
@@ -1661,7 +1669,7 @@ impl Layout {
         if width <= 0.0 {
             return width;
         }
-        width.max(self.panel_min(DockPosition::Right)).min(DOCK_MAX)
+        width.clamp(SIDE_PANEL_MIN, DOCK_MAX)
     }
     /// The bottom dock's current height (0 when collapsed).
     pub fn bottom_h(&self) -> f32 {
@@ -1673,12 +1681,27 @@ impl Layout {
         self.sidebar_side != DockPosition::Right
     }
 
+    /// Whether the function at `PaneKind::ALL` index `i` has a button and a panel: not hidden by the user, and
+    /// meaningful here (main is the base every branch compares against, so it has no Git panel).
+    pub fn func_offered(&self, i: usize) -> bool {
+        if self.func_hidden.get(i).copied().unwrap_or(false) {
+            return false;
+        }
+        let on_main = self.project.as_ref().is_some_and(|project| {
+            project
+                .workspaces
+                .first()
+                .is_some_and(|main| *main == project.active)
+        });
+        !(on_main && PaneKind::ALL.get(i) == Some(&PaneKind::Git))
+    }
+
     /// The panels assigned to `side`, in a stable order (functions first, then the terminal). These are the
     /// "tabs" of that dock; one of them is the active/visible panel.
     pub fn candidates_on(&self, side: DockPosition) -> Vec<Shown> {
         let mut v = Vec::new();
         for (i, kind) in PaneKind::ALL.iter().enumerate() {
-            if !self.func_hidden.get(i).copied().unwrap_or(false)
+            if self.func_offered(i)
                 && self.func_side.get(i).copied().unwrap_or(DockPosition::Left) == side
             {
                 v.push(Shown::Func(*kind));
@@ -1812,24 +1835,8 @@ impl Layout {
         }
     }
 
-    /// The left column's narrowest width: the tree's, or more when the panel shown there needs it.
     fn tree_min(&self) -> f32 {
-        FILES_TREE_MIN
-            .max(self.panel_min(DockPosition::Left))
-            .min(FILES_TREE_MAX)
-    }
-
-    /// The narrowest the panel shown on `side` may get: a shared floor, or more when the panel asks for it.
-    fn panel_min(&self, side: DockPosition) -> f32 {
-        let own = match self.shown_on(side) {
-            Some(Shown::Func(kind)) => self
-                .side_panels
-                .iter()
-                .find(|panel| panel.kind() == kind)
-                .map_or(0.0, |panel| panel.min_width()),
-            _ => 0.0,
-        };
-        own.max(SIDE_PANEL_MIN)
+        SIDE_PANEL_MIN.min(FILES_TREE_MAX)
     }
 
     /// Left edge of the editor area (right of the sidebar when docked left; 0 when the sidebar is on the right).
@@ -2589,7 +2596,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                 .is_some_and(|ticket| !ticket.is_empty())
         });
         for (i, kind) in PaneKind::ALL.iter().enumerate() {
-            if layout.func_hidden.get(i).copied().unwrap_or(false) {
+            if !layout.func_offered(i) {
                 continue;
             }
             if layout

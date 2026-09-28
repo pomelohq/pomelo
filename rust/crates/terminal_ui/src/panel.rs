@@ -335,7 +335,9 @@ impl TerminalPanelView for TerminalPanel {
                     }
                 }
                 PaneButtonAction::ToggleZoom => self.panes.toggle_zoom(),
-                PaneButtonAction::Preview => {}
+                PaneButtonAction::Preview
+                | PaneButtonAction::DiffUnified
+                | PaneButtonAction::DiffSplit => {}
             },
         }
         if self.panes.is_empty() {

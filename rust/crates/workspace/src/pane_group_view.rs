@@ -45,6 +45,9 @@ pub enum PaneButtonAction {
     ToggleZoom,
     /// Only shown while the pane's active item is previewable.
     Preview,
+    /// Only shown while the pane's active item is a diff; they pick its layout.
+    DiffUnified,
+    DiffSplit,
 }
 
 #[derive(Clone, Copy)]
@@ -510,20 +513,49 @@ impl PaneGroupView {
             .and_then(|path| self.group.leaf_at(path))
             .and_then(Pane::active_item)
             .is_some_and(|item| item.previewable());
+        let diff_split = self
+            .pane_order
+            .get(p)
+            .and_then(|path| self.group.leaf_at(path))
+            .and_then(Pane::active_item)
+            .and_then(|item| item.diff_split());
+        let is_diff_layout = |action: PaneButtonAction| {
+            matches!(
+                action,
+                PaneButtonAction::DiffUnified | PaneButtonAction::DiffSplit
+            )
+        };
         TabBarConfig {
             show_nav: self.config.show_nav,
+            toolbar: self
+                .config
+                .buttons
+                .iter()
+                .enumerate()
+                .filter(|(_, button)| diff_split.is_some() && is_diff_layout(button.action))
+                .map(|(index, button)| TabBarButton {
+                    icon: button.icon,
+                    id: base + index as u64,
+                    selected: (button.action == PaneButtonAction::DiffSplit)
+                        == (diff_split == Some(true)),
+                })
+                .collect(),
             buttons: self
                 .config
                 .buttons
                 .iter()
                 .enumerate()
-                .filter(|(_, button)| button.action != PaneButtonAction::Preview || previewable)
+                .filter(|(_, button)| match button.action {
+                    PaneButtonAction::Preview => previewable,
+                    action => !is_diff_layout(action),
+                })
                 .map(|(index, button)| TabBarButton {
                     icon: match button.action {
                         PaneButtonAction::ToggleZoom if self.zoomed.is_some() => IconKind::Minimize,
                         _ => button.icon,
                     },
                     id: base + index as u64,
+                    selected: false,
                 })
                 .collect(),
         }

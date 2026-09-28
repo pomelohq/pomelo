@@ -787,16 +787,9 @@ impl DatabasePanel {
     }
 }
 
-/// Wide enough for an error block's facts and its buttons two to a line.
-const MIN_WIDTH: f32 = 260.0;
-
 impl SidePanelView for DatabasePanel {
     fn kind(&self) -> PaneKind {
         PaneKind::Database
-    }
-
-    fn min_width(&self) -> f32 {
-        MIN_WIDTH
     }
 
     fn render(&mut self, width: f32, height: f32) -> Node {
