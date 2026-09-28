@@ -249,6 +249,11 @@ pub enum PanelRequest {
         id: String,
         open: Box<dyn FnOnce() -> Option<Box<dyn crate::Item>>>,
     },
+    /// Like `Reveal`, but a new tab opens as the preview tab, which the next preview replaces.
+    RevealPreview {
+        id: String,
+        open: Box<dyn FnOnce() -> Option<Box<dyn crate::Item>>>,
+    },
     OpenUrl(String),
     Copy(String),
     /// Start the coding agent in `cwd` on `prompt`.

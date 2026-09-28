@@ -70,9 +70,17 @@ fn main() -> anyhow::Result<()> {
         for name in ["postgres", "redis", "files"] {
             panel.show_shared_running(name);
         }
-        let (width, height) = (320.0_f32, 900.0_f32);
+        let tab = std::env::var("SERVICES").ok().filter(|which| which != "1");
+        let (width, height) = if tab.is_some() {
+            (860.0_f32, 300.0_f32)
+        } else {
+            (320.0_f32, 900.0_f32)
+        };
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
-        let node = panel.render(width, height);
+        let node = match tab.as_deref().and_then(|which| which.split_once('/')) {
+            Some((repo, service)) => panel.tab_toolbar(repo, service, width),
+            None => panel.render(width, height),
+        };
         let painted = ui::render(
             &ui::div()
                 .bg(ui::theme().panel_background)

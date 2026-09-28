@@ -3,6 +3,7 @@
 //! service opens its console as a center tab.
 
 mod model;
+mod tab;
 mod view;
 
 use std::collections::HashSet;
@@ -288,6 +289,17 @@ impl ServicesPanel {
                 None => shared.crashes.remove(&holder),
             };
         }
+    }
+
+    /// The header and facts of `repo`/`service`'s tab, `width` wide (snapshots).
+    pub fn tab_toolbar(&self, repo: &str, service: &str, width: f32) -> Node {
+        tab::toolbar_preview(
+            self.model.context.clone(),
+            self.model.shared.clone(),
+            self.model.context.target(repo, service),
+            self.root.clone(),
+            width,
+        )
     }
 
     /// Shows shared container `name` as running (snapshots, tests).
@@ -1234,74 +1246,21 @@ impl ServicesPanel {
             .unwrap_or_default()
     }
 
-    /// A running service's console, or the output a crashed one left.
-    fn open_console(&mut self, target: &ServiceTarget, holder: &str) {
-        let runner = &self.model.context.runner;
-        let holders = runner.holders().clone();
-        let title = if target.is_workspace_level() {
-            target.service.clone()
-        } else {
-            format!("{}/{}", target.repo, target.service)
-        };
-        let (root, waker) = (self.root.clone(), self.model.context.waker.clone());
-        let item_number = self.next_item;
+    /// The service's tab: as the preview tab from a row, kept open from an explicit "View logs".
+    fn open_tab(&mut self, target: &ServiceTarget, holder: &str, preview: bool) {
+        let context = self.model.context.clone();
+        let shared = self.model.shared.clone();
+        let (target, root) = (target.clone(), self.root.clone());
+        let number = self.next_item;
         self.next_item += 1;
-        let name = holder.to_string();
-        match self.model.status(holder) {
-            Status::Running => {
-                let binary = std::env::current_exe().unwrap_or_default();
-                self.requests.push(PanelRequest::Reveal {
-                    id: format!("service:{name}"),
-                    open: Box::new(move || {
-                        let options = terminal::HolderOptions {
-                            dir: holders,
-                            name,
-                            binary,
-                            attach_only: true,
-                        };
-                        let item_id = format!("service:{}", options.name);
-                        match TerminalItem::service_console(
-                            item_number,
-                            root,
-                            item_id,
-                            title,
-                            options,
-                            waker,
-                        ) {
-                            Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
-                            Err(error) => {
-                                eprintln!("services: console: {error}");
-                                None
-                            }
-                        }
-                    }),
-                });
-            }
-            Status::Crashed => {
-                let log = holders.crash_log(&name);
-                self.requests.push(PanelRequest::Reveal {
-                    id: format!("service-log:{name}"),
-                    open: Box::new(move || {
-                        let item_id = format!("service-log:{name}");
-                        match TerminalItem::service_log(
-                            item_number,
-                            root,
-                            item_id,
-                            format!("{title} (crashed)"),
-                            &log,
-                            waker,
-                        ) {
-                            Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
-                            Err(error) => {
-                                eprintln!("services: log: {error}");
-                                None
-                            }
-                        }
-                    }),
-                });
-            }
-            Status::Stopped => {}
-        }
+        let id = tab::tab_id(holder);
+        let open: Box<dyn FnOnce() -> Option<Box<dyn workspace::Item>>> =
+            Box::new(move || tab::open_tab(context, shared, target, root, number));
+        self.requests.push(if preview {
+            PanelRequest::RevealPreview { id, open }
+        } else {
+            PanelRequest::Reveal { id, open }
+        });
     }
 
     /// Stopping a shared container pulls it from under every workspace, so ask first while services of
@@ -1763,9 +1722,8 @@ impl SidePanelView for ServicesPanel {
                 return;
             };
             match action {
-                CardAction::Open | CardAction::Logs => {
-                    self.open_console(&card.target, &card.holder)
-                }
+                CardAction::Open => self.open_tab(&card.target, &card.holder, true),
+                CardAction::Logs => self.open_tab(&card.target, &card.holder, false),
                 CardAction::Fix => self.fix_with_agent(&card),
                 CardAction::Restart => self.model.run(Action::Restart, card.target),
                 CardAction::NewPort => self.model.run(Action::Relocate, card.target),
@@ -1801,7 +1759,9 @@ impl SidePanelView for ServicesPanel {
                     }
                 }
             }
-            (Row::Service { target, holder }, Control::Row) => self.open_console(&target, &holder),
+            (Row::Service { target, holder }, Control::Row) => {
+                self.open_tab(&target, &holder, true)
+            }
             (Row::Service { target, .. }, Control::Start) => self.model.run(Action::Start, target),
             (Row::Service { target, .. }, Control::Stop) => self.model.run(Action::Stop, target),
             (Row::Service { target, .. }, Control::Restart) => {
@@ -1953,6 +1913,24 @@ impl SidePanelView for ServicesPanel {
     }
 
     fn take_requests(&mut self) -> Vec<PanelRequest> {
+        for request in self.model.take_tab_requests() {
+            match request {
+                model::TabRequest::Fix(target) => {
+                    let holder = self.model.context.runner.holder_name(&target);
+                    let error = self.model.error(&holder);
+                    let card = Attention {
+                        crash: self.model.crash(&holder),
+                        port: error.as_deref().and_then(port_in),
+                        error,
+                        target,
+                        holder,
+                    };
+                    self.fix_with_agent(&card);
+                }
+                model::TabRequest::OpenUrl(url) => self.requests.push(PanelRequest::OpenUrl(url)),
+                model::TabRequest::Copy(text) => self.requests.push(PanelRequest::Copy(text)),
+            }
+        }
         let mut requests = std::mem::take(&mut self.requests);
         requests.extend(
             self.model
@@ -1970,7 +1948,7 @@ fn is_shared_row(row: &Row) -> bool {
 }
 
 /// "api > web", or just the name of a workspace-level service.
-fn service_title(target: &ServiceTarget) -> String {
+pub(crate) fn service_title(target: &ServiceTarget) -> String {
     if target.is_workspace_level() {
         target.service.clone()
     } else {
@@ -1983,7 +1961,7 @@ fn first_line(text: &str) -> String {
 }
 
 /// The port a start error is about ("port 6006 is in use", "address :6006 already in use").
-fn port_in(message: &str) -> Option<u16> {
+pub(crate) fn port_in(message: &str) -> Option<u16> {
     let lower = message.to_ascii_lowercase();
     if !lower.contains("port") && !lower.contains("in use") {
         return None;

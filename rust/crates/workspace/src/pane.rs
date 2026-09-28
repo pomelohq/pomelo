@@ -56,6 +56,8 @@ pub struct Pane {
     pub tab_scroll: f32,
     /// The active tab the strip last scrolled into view; wheeling the strip holds until another tab activates.
     pub tab_scroll_active: Option<usize>,
+    /// The id of the preview tab: the next preview opened replaces it, until it is kept.
+    pub preview: Option<String>,
 }
 
 impl PaneId for Pane {
@@ -74,20 +76,51 @@ impl Pane {
 
     /// Height of the tab bar plus find bar on screen (none for an empty pane); chrome sizes grow with the UI
     /// text scale.
-    pub fn header_h(&self) -> f32 {
+    pub fn header_h(&self, width: f32) -> f32 {
         if self.open.is_empty() {
             0.0
         } else {
-            let toolbar = if self
-                .active_item()
-                .is_some_and(|item| item.diff_split().is_some())
-            {
+            let scale = ui::ui_text_scale();
+            let item = self.active_item();
+            let diff = if item.is_some_and(|item| item.diff_split().is_some()) {
                 TOOLBAR_H
             } else {
                 0.0
             };
-            (TAB_H + toolbar + self.search.height()) * ui::ui_text_scale()
+            let own = item
+                .and_then(|item| item.toolbar(width / scale))
+                .map_or(0.0, |node| ui::measure(&node).1);
+            (TAB_H + diff + own + self.search.height()) * scale
         }
+    }
+
+    /// Opens `item` as the preview tab: in place of the current preview, else as a new tab.
+    pub fn add_preview_item(&mut self, item: Box<dyn Item>) {
+        let id = item.id();
+        let slot = self
+            .preview
+            .as_deref()
+            .and_then(|preview| self.index_of_id(preview));
+        match slot {
+            Some(index) => {
+                if let Some(old) = self.open.get_mut(index) {
+                    old.closed();
+                    *old = item;
+                }
+                self.activate_user(index);
+            }
+            None => self.add_item(item),
+        }
+        self.preview = id;
+    }
+
+    /// Keeps the preview tab open for good (the user worked in it).
+    pub fn keep_preview(&mut self) {
+        self.preview = None;
+    }
+
+    pub fn is_preview(&self, index: usize) -> bool {
+        self.preview.is_some() && self.open.get(index).and_then(|item| item.id()) == self.preview
     }
 
     /// The find bar with the active item it searches, when that item is searchable.
@@ -363,6 +396,9 @@ pub fn render_pane(pane: &Pane, config: &TabBarConfig, ids: PaneClickIds, width:
     {
         chrome = chrome.child(diff_toolbar(&config.toolbar, item.diff_stat()));
     }
+    if let Some(toolbar) = pane.active_item().and_then(|item| item.toolbar(width)) {
+        chrome = chrome.child(toolbar);
+    }
     if !pane.search.dismissed {
         chrome = chrome.child(pane.search.render(ids.search, width));
     }
@@ -421,11 +457,18 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
             .items_center()
             .child(dirty_slot)
             .child(glyph)
-            .child(label(item.title()).size(13.0).color(if is_active {
-                theme().text
-            } else {
-                theme().text_muted
-            }))
+            .child({
+                let title = label(item.title()).size(13.0).color(if is_active {
+                    theme().text
+                } else {
+                    theme().text_muted
+                });
+                if pane.is_preview(index) {
+                    title.italic()
+                } else {
+                    title
+                }
+            })
             .child(close_slot);
         let cell = div()
             .col()
@@ -595,6 +638,26 @@ mod tests {
         fn render(&mut self) -> Node {
             div().into()
         }
+    }
+
+    #[test]
+    fn a_preview_tab_is_replaced_by_the_next_preview_until_it_is_kept() {
+        let mut pane = Pane::new(1);
+        pane.add_item(Box::new(Plain("a")));
+        pane.add_preview_item(Box::new(Plain("b")));
+        pane.add_preview_item(Box::new(Plain("c")));
+        let titles = |pane: &Pane| {
+            pane.open
+                .iter()
+                .map(|item| item.title())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles(&pane), ["a", "c"]);
+        assert!(pane.is_preview(1));
+        pane.keep_preview();
+        pane.add_preview_item(Box::new(Plain("d")));
+        assert_eq!(titles(&pane), ["a", "c", "d"]);
+        assert!(!pane.is_preview(1) && pane.is_preview(2));
     }
 
     fn ids() -> PaneClickIds {

@@ -3052,12 +3052,31 @@ impl WorkspaceView {
                 let Some(files) = self.layout.files_view.as_mut() else {
                     return;
                 };
-                let revealed = files
-                    .pane_group_mut()
-                    .is_some_and(|group| group.reveal_item(&id));
+                let revealed = files.pane_group_mut().is_some_and(|group| {
+                    let found = group.reveal_item(&id);
+                    if found {
+                        group.keep_preview_of(&id);
+                    }
+                    found
+                });
                 if !revealed {
                     if let Some(item) = open() {
                         files.add_center_item(item);
+                    }
+                }
+                self.set_terminal_focus(false);
+                self.panes_input = true;
+            }
+            crate::PanelRequest::RevealPreview { id, open } => {
+                let Some(files) = self.layout.files_view.as_mut() else {
+                    return;
+                };
+                let Some(group) = files.pane_group_mut() else {
+                    return;
+                };
+                if !group.reveal_item(&id) {
+                    if let Some(item) = open() {
+                        group.add_preview_item(item);
                     }
                 }
                 self.set_terminal_focus(false);

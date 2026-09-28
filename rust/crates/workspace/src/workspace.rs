@@ -854,6 +854,15 @@ pub trait Item: 'static {
     fn diff_split(&self) -> Option<bool> {
         None
     }
+    /// A row the item draws under the tabs (a service's controls and facts), `width` wide; its click ids are the
+    /// item's own and come back through `toolbar_click`.
+    fn toolbar(&self, _width: f32) -> Option<ui::Node> {
+        None
+    }
+    /// A click on one of the item's toolbar ids; false when the id is not its own.
+    fn toolbar_click(&mut self, _id: u64) -> bool {
+        false
+    }
     /// Whether a diff has room to lay out side by side at its current width.
     fn diff_split_room(&self) -> bool {
         true

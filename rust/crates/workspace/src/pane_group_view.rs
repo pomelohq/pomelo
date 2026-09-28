@@ -279,6 +279,57 @@ impl PaneGroupView {
         false
     }
 
+    /// Every pane's path; before the first layout, just the active one.
+    fn paths(&self) -> Vec<Vec<usize>> {
+        if self.pane_order.is_empty() {
+            vec![self.active.clone()]
+        } else {
+            self.pane_order.clone()
+        }
+    }
+
+    /// Offers `id` to each pane's active item's own toolbar; working in a preview tab keeps it.
+    fn toolbar_click(&mut self, id: u64) -> GroupClick {
+        for path in self.paths() {
+            let Some(pane) = self.group.leaf_at_mut(&path) else {
+                continue;
+            };
+            let Some(index) = pane.active else {
+                continue;
+            };
+            if pane
+                .open
+                .get_mut(index)
+                .is_some_and(|item| item.toolbar_click(id))
+            {
+                if pane.is_preview(index) {
+                    pane.keep_preview();
+                }
+                self.active = path;
+                return GroupClick::Handled;
+            }
+        }
+        GroupClick::NotMine
+    }
+
+    /// Keeps the tab of `id` open for good when it is a pane's preview (it was opened on purpose).
+    pub fn keep_preview_of(&mut self, id: &str) {
+        for path in self.paths() {
+            if let Some(pane) = self.group.leaf_at_mut(&path) {
+                if pane.preview.as_deref() == Some(id) {
+                    pane.keep_preview();
+                }
+            }
+        }
+    }
+
+    /// Opens `item` as the active pane's preview tab (in place of its preview, else a new tab).
+    pub fn add_preview_item(&mut self, item: Box<dyn Item>) {
+        if let Some(pane) = self.group.leaf_at_mut(&self.active.clone()) {
+            pane.add_preview_item(item);
+        }
+    }
+
     pub fn active_item_mut(&mut self) -> Option<&mut dyn Item> {
         self.active_pane_mut()?.active_item_mut()
     }
@@ -305,7 +356,9 @@ impl PaneGroupView {
         let index = self.index_at(x, y)?;
         let rect = *self.pane_rects.get(index)?;
         let path = self.pane_order.get(index)?.clone();
-        let header = self.pane_at(&path).map_or(0.0, Pane::header_h);
+        let header = self
+            .pane_at(&path)
+            .map_or(0.0, |pane| pane.header_h(rect.w));
         let local_y = y - (rect.y + header);
         if local_y < 0.0 {
             return None;
@@ -714,7 +767,7 @@ impl PaneGroupView {
 
     pub fn click(&mut self, id: u64) -> GroupClick {
         let Some(offset) = self.offset(id) else {
-            return GroupClick::NotMine;
+            return self.toolbar_click(id);
         };
         let per_pane = |base: u64| {
             let n = offset - base;
@@ -993,7 +1046,7 @@ impl PaneGroupView {
     /// The body rect (below the chrome) of the pane at `path`, as last laid out.
     pub fn body_rect_of(&self, path: &[usize]) -> Option<Rect> {
         let rect = self.pane_rect_of(path)?;
-        let header = self.pane_at(path)?.header_h();
+        let header = self.pane_at(path)?.header_h(rect.w);
         Some(Rect::new(
             rect.x,
             rect.y + header,
@@ -2077,7 +2130,7 @@ fn layout_body(
     if let Some((bar, item)) = pane.search_target() {
         bar.refresh(item);
     }
-    let header = pane.header_h();
+    let header = pane.header_h(rect.w);
     let body_rect = Rect::new(
         rect.x,
         rect.y + header,

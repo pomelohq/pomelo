@@ -155,12 +155,16 @@ fn start_from_a_row_then_open_its_console_and_close_it_without_stopping() {
 
     fixture.panel.click(fixture.id(1, 0));
     let requests = fixture.panel.take_requests();
-    let Some(PanelRequest::Reveal { id, open }) = requests.into_iter().next() else {
-        panic!("clicking a running service opens its console");
+    let Some(PanelRequest::RevealPreview { id, open }) = requests.into_iter().next() else {
+        panic!("clicking a service opens its tab as the preview");
     };
     assert_eq!(id, "service:svc-demo-feat-api-web");
     let mut console = open().expect("console item");
-    assert_eq!(console.title(), "api/web");
+    assert_eq!(console.title(), "api > web");
+    assert!(
+        console.toolbar(600.0).is_some(),
+        "the tab shows the service's header and facts"
+    );
     assert_eq!(
         console.id().as_deref(),
         Some("service:svc-demo-feat-api-web")

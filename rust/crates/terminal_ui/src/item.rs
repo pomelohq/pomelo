@@ -46,6 +46,17 @@ pub struct TerminalItem {
     console: Option<Console>,
     /// A coding agent's tab, drawn at the agent text size.
     agent: bool,
+    toolbar: Option<Box<dyn ConsoleToolbar>>,
+}
+
+/// Controls a console tab shows above its output (a service's header and facts). It can hand the tab a new
+/// terminal to show instead, when what it follows starts over.
+pub trait ConsoleToolbar: 'static {
+    fn render(&self, width: f32) -> Node;
+    /// A click on one of its own ids; false when the id is not its own.
+    fn click(&mut self, id: u64) -> bool;
+    /// A terminal to show in place of the current one, once.
+    fn take_respawn(&mut self) -> Option<(TerminalOptions, Waker)>;
 }
 
 struct Console {
@@ -260,7 +271,24 @@ impl TerminalItem {
             open_request: None,
             console: None,
             agent: false,
+            toolbar: None,
         }
+    }
+
+    /// A read-only console tab identified by `item_id`; it stays open after its program ends.
+    pub fn into_console(mut self, item_id: String, title: String) -> Self {
+        self.console = Some(Console {
+            item_id,
+            title,
+            keep_after_exit: true,
+        });
+        self
+    }
+
+    /// Shows `toolbar` above the output.
+    pub fn with_toolbar(mut self, toolbar: Box<dyn ConsoleToolbar>) -> Self {
+        self.toolbar = Some(toolbar);
+        self
     }
 
     pub fn terminal(&self) -> &Terminal {
@@ -671,7 +699,27 @@ impl Item for TerminalItem {
         true
     }
 
+    fn toolbar(&self, width: f32) -> Option<Node> {
+        self.toolbar.as_ref().map(|toolbar| toolbar.render(width))
+    }
+
+    fn toolbar_click(&mut self, id: u64) -> bool {
+        self.toolbar
+            .as_mut()
+            .is_some_and(|toolbar| toolbar.click(id))
+    }
+
     fn tick(&mut self, clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
+        if let Some((options, waker)) = self
+            .toolbar
+            .as_mut()
+            .and_then(|toolbar| toolbar.take_respawn())
+        {
+            match Terminal::spawn(options, waker) {
+                Ok(terminal) => self.terminal = terminal,
+                Err(error) => eprintln!("terminal: console: {error}"),
+            }
+        }
         let host = Host {
             palette: crate::palette(&theme()),
             clipboard,
