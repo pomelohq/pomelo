@@ -242,6 +242,8 @@ pub struct WorkspaceView {
     agent_fix: Option<crate::AgentFix>,
     /// The side panel prompt waiting for an answer: its token, panel and the panel's tag.
     panel_prompt: Option<(u64, PaneKind, u64)>,
+    /// Branch changes the Git panel asked for, which the app carries out.
+    branch_requests: Vec<crate::PanelRequest>,
     /// A tab close waiting on the save prompt: its token, pane group and request.
     close_prompt: Option<(u64, InputGroup, crate::pane_group_view::CloseRequest)>,
     next_prompt_token: u64,
@@ -333,6 +335,7 @@ impl WorkspaceView {
             pending_prompt: None,
             agent_fix: None,
             panel_prompt: None,
+            branch_requests: Vec::new(),
             close_prompt: None,
             next_prompt_token: CLOSE_PROMPT_TOKENS,
             terminal_focused: false,
@@ -383,7 +386,13 @@ impl WorkspaceView {
         self.shown_problem = None;
     }
 
-    fn function_panel_painted(&mut self, side: DockPosition, region: Rect) -> Option<Painted> {
+    /// The side panel's base layer; its own overlays (tooltips) go to `overlays` so they draw above its text.
+    fn function_panel_painted(
+        &mut self,
+        side: DockPosition,
+        region: Rect,
+        overlays: &mut Vec<Overlay>,
+    ) -> Option<Painted> {
         let Some(Shown::Func(kind)) = self.layout.shown_on(side) else {
             return None;
         };
@@ -392,7 +401,15 @@ impl WorkspaceView {
             Some(panel) => panel.render(region.w / scale, region.h / scale),
             None => function_dock_body(kind),
         };
-        Some(ui::render(&node, region))
+        let frame = ui::paint_frame(&node, region);
+        overlays.extend(frame.overlays.into_iter().map(|overlay| Overlay {
+            painted: overlay.painted,
+            clip: Some(overlay.clip.unwrap_or(region)),
+        }));
+        Some(Painted {
+            hits: frame.hits,
+            ..frame.base
+        })
     }
 
     /// Take this workspace's live views and dock visibility out of the window, to bring back later with
@@ -774,6 +791,11 @@ impl WorkspaceView {
 
     pub fn take_workspace_requests(&mut self) -> WorkspaceRequests {
         std::mem::take(&mut self.workspace_requests)
+    }
+
+    /// The `KeepBranch`, `SwitchBranch` and `PickBranch` requests side panels made since the last call.
+    pub fn take_branch_requests(&mut self) -> Vec<crate::PanelRequest> {
+        std::mem::take(&mut self.branch_requests)
     }
 
     pub fn set_workspace_ops(&mut self, ops: Vec<crate::WorkspaceOp>) {
@@ -1333,13 +1355,18 @@ impl WorkspaceView {
                         let p = self.layout.right.render_panel(region);
                         panel_hits.extend(p.hits.iter().copied());
                         blit(p);
-                    } else if let Some(p) = self.function_panel_painted(DockPosition::Left, region)
-                    {
-                        panel_hits.extend(clipped_hits(&p, region));
-                        center_overlays.push(Overlay {
-                            painted: p,
-                            clip: Some(region),
-                        });
+                    } else {
+                        let mut above = Vec::new();
+                        if let Some(p) =
+                            self.function_panel_painted(DockPosition::Left, region, &mut above)
+                        {
+                            panel_hits.extend(clipped_hits(&p, region));
+                            center_overlays.push(Overlay {
+                                painted: p,
+                                clip: Some(region),
+                            });
+                            center_overlays.append(&mut above);
+                        }
                     }
                 }
                 match self.zoom {
@@ -1740,7 +1767,7 @@ impl WorkspaceView {
                 }
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
                 Some(Shown::Func(_)) => self
-                    .function_panel_painted(DockPosition::Right, region)
+                    .function_panel_painted(DockPosition::Right, region, &mut center_overlays)
                     .unwrap_or_default(),
                 Some(Shown::Agent) if self.layout.agent_visible() => {
                     self.agent_painted(region, true, &mut center_overlays, &mut panel_hits)
@@ -1760,7 +1787,7 @@ impl WorkspaceView {
                 }
                 Some(Shown::Func(PaneKind::Files)) => Painted::default(),
                 Some(Shown::Func(_)) => self
-                    .function_panel_painted(DockPosition::Bottom, region)
+                    .function_panel_painted(DockPosition::Bottom, region, &mut center_overlays)
                     .unwrap_or_default(),
                 _ => ui::render(&ui::div().bg(ui::theme().panel_background).into(), region),
             };
@@ -3053,6 +3080,9 @@ impl WorkspaceView {
                     None => self.show_toast("Could not start the command", None),
                 }
             }
+            request @ (crate::PanelRequest::KeepBranch { .. }
+            | crate::PanelRequest::SwitchBranch { .. }
+            | crate::PanelRequest::PickBranch { .. }) => self.branch_requests.push(request),
             crate::PanelRequest::OpenMenu => {
                 let (x, y) = self.press;
                 if let Some((_, rect)) = self.hit_with_rect(x, y) {

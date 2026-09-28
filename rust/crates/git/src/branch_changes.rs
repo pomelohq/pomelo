@@ -118,11 +118,30 @@ fn fill(root: &Path, default_branch: &str, changes: &mut RepoChanges) -> Result<
         (None, false) => String::new(),
     };
     changes.fork_point = fork_point.clone();
+    changes.files = files_against(root, &against)?;
+    Ok(())
+}
+
+/// The empty tree's id: what a repository with no commits yet is compared against.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// What is not committed yet, staged or not, new files included, against HEAD.
+pub fn uncommitted_changes(root: &Path) -> Result<Vec<FileChange>, String> {
+    let against = if resolves(root, "HEAD") {
+        "HEAD"
+    } else {
+        EMPTY_TREE
+    };
+    files_against(root, against)
+}
+
+/// Every file whose working copy differs from `against` (skipped when empty), plus untracked files.
+fn files_against(root: &Path, against: &str) -> Result<Vec<FileChange>, String> {
     let uncommitted = uncommitted_paths(root)?;
     let mut files = Vec::new();
     if !against.is_empty() {
-        let statuses = git(root, &["diff", "--name-status", "-z", "-M", &against])?;
-        let counts = numstat(&git(root, &["diff", "--numstat", "-z", "-M", &against])?);
+        let statuses = git(root, &["diff", "--name-status", "-z", "-M", against])?;
+        let counts = numstat(&git(root, &["diff", "--numstat", "-z", "-M", against])?);
         for (status, path, old_path) in parse_name_status(&statuses) {
             let (added, deleted) = counts
                 .iter()
@@ -150,8 +169,7 @@ fn fill(root: &Path, default_branch: &str, changes: &mut RepoChanges) -> Result<
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    changes.files = files;
-    Ok(())
+    Ok(files)
 }
 
 fn uncommitted_paths(root: &Path) -> Result<HashSet<String>, String> {
@@ -175,7 +193,7 @@ fn uncommitted_paths(root: &Path) -> Result<HashSet<String>, String> {
 }
 
 /// `(status, path, old path)` from `git diff --name-status -z`.
-fn parse_name_status(output: &str) -> Vec<(ChangeStatus, String, Option<String>)> {
+pub(crate) fn parse_name_status(output: &str) -> Vec<(ChangeStatus, String, Option<String>)> {
     let mut out = Vec::new();
     let mut fields = output.split('\0').filter(|field| !field.is_empty());
     while let Some(code) = fields.next() {
@@ -199,7 +217,7 @@ fn parse_name_status(output: &str) -> Vec<(ChangeStatus, String, Option<String>)
 }
 
 /// `(path, added, deleted)` from `git diff --numstat -z`; binary files have no counts.
-fn numstat(output: &str) -> Vec<(String, Option<u32>, Option<u32>)> {
+pub(crate) fn numstat(output: &str) -> Vec<(String, Option<u32>, Option<u32>)> {
     let mut out = Vec::new();
     let mut fields = output.split('\0');
     while let Some(field) = fields.next() {

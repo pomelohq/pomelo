@@ -452,6 +452,22 @@ pub fn text_tab(id: String, title: String, text: &str) -> Box<dyn Item> {
     Box::new(item)
 }
 
+/// A read-only diff of `path` as a commit left it (`text`) against its parent's version (`base`), as its own tab.
+pub fn revision_diff(
+    id: String,
+    title: String,
+    root: PathBuf,
+    path: &str,
+    text: Option<String>,
+    base: Option<String>,
+) -> Box<dyn Item> {
+    let mut item = FileItem::branch_diff(root, path, text, base);
+    item.saved_mtime = None;
+    item.scratch = Some((id, title));
+    item.read_only = true;
+    Box::new(item)
+}
+
 pub fn scratch_editor(
     id: String,
     title: String,

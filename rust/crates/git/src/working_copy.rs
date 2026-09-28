@@ -21,6 +21,8 @@ pub struct StatusEntry {
     pub worktree: char,
     pub untracked: bool,
     pub conflicted: bool,
+    /// Where a rename came from.
+    pub original_path: Option<String>,
 }
 
 impl StatusEntry {
@@ -94,7 +96,11 @@ pub struct CommandError {
     pub output: CommandOutput,
 }
 
-fn run(root: &Path, args: &[&str], timeout: Duration) -> Result<CommandOutput, CommandError> {
+pub(crate) fn run(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<CommandOutput, CommandError> {
     let failed = |message: String| CommandError {
         message,
         output: CommandOutput::default(),
@@ -182,7 +188,7 @@ fn first_error_line(stderr: &str) -> Option<String> {
         .map(|line| line.to_string())
 }
 
-fn read(root: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn read(root: &Path, args: &[&str]) -> Option<String> {
     run(root, args, LOCAL_TIMEOUT)
         .ok()
         .map(|output| output.stdout.trim().to_string())
@@ -211,6 +217,7 @@ fn parse_status(text: &str) -> Vec<StatusEntry> {
                 worktree: columns.next().unwrap_or('.'),
                 untracked: false,
                 conflicted,
+                original_path: None,
             }
         };
         let parts: Vec<&str> = record.splitn(2, ' ').collect();
@@ -223,11 +230,14 @@ fn parse_status(text: &str) -> Vec<StatusEntry> {
             }
             ["2", rest] => {
                 let columns: Vec<&str> = rest.splitn(9, ' ').collect();
-                if let (Some(xy), Some(path)) = (columns.first(), columns.get(8)) {
-                    entries.push(entry(xy, path, false));
-                }
                 // A rename's original path follows as its own field.
-                fields.next();
+                let original = fields.next().filter(|path| !path.is_empty());
+                if let (Some(xy), Some(path)) = (columns.first(), columns.get(8)) {
+                    entries.push(StatusEntry {
+                        original_path: original.map(str::to_string),
+                        ..entry(xy, path, false)
+                    });
+                }
             }
             ["u", rest] => {
                 let columns: Vec<&str> = rest.splitn(10, ' ').collect();
@@ -241,6 +251,7 @@ fn parse_status(text: &str) -> Vec<StatusEntry> {
                 worktree: '?',
                 untracked: true,
                 conflicted: false,
+                original_path: None,
             }),
             _ => {}
         }
@@ -261,9 +272,99 @@ pub fn unstage(root: &Path, paths: &[String]) -> Result<(), CommandError> {
     if paths.is_empty() {
         return Ok(());
     }
-    let mut args = vec!["reset", "--quiet", "--"];
+    let mut args = if has_head(root) {
+        vec!["reset", "--quiet", "--"]
+    } else {
+        // Before the first commit there is no HEAD to reset to; the index entries just go.
+        vec!["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--"]
+    };
     args.extend(paths.iter().map(String::as_str));
     run(root, &args, LOCAL_TIMEOUT).map(|_| ())
+}
+
+fn has_head(root: &Path) -> bool {
+    run(
+        root,
+        &["rev-parse", "--verify", "--quiet", "HEAD"],
+        LOCAL_TIMEOUT,
+    )
+    .is_ok()
+}
+
+fn invalid(message: &str) -> CommandError {
+    CommandError {
+        message: message.to_string(),
+        output: CommandOutput::default(),
+    }
+}
+
+/// A folder inside the repository, as git's pathspec takes it.
+fn checked_directory(directory: &str) -> Result<&str, CommandError> {
+    let directory = directory.trim_end_matches('/');
+    let escapes = std::path::Path::new(directory)
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)));
+    if directory.is_empty() || escapes {
+        return Err(invalid("not a folder inside the repository"));
+    }
+    Ok(directory)
+}
+
+/// Stages every change under `directory`, new files included.
+pub fn stage_directory(root: &Path, directory: &str) -> Result<(), CommandError> {
+    let directory = checked_directory(directory)?;
+    run(root, &["add", "--all", "--", directory], LOCAL_TIMEOUT).map(|_| ())
+}
+
+pub fn unstage_directory(root: &Path, directory: &str) -> Result<(), CommandError> {
+    let directory = checked_directory(directory)?;
+    unstage(root, &[directory.to_string()])
+}
+
+pub fn stage_all(root: &Path) -> Result<(), CommandError> {
+    run(root, &["add", "--all"], LOCAL_TIMEOUT).map(|_| ())
+}
+
+pub fn unstage_all(root: &Path) -> Result<(), CommandError> {
+    unstage(root, &[".".to_string()])
+}
+
+/// Undoes the last commit and keeps its changes staged.
+pub fn soft_reset(root: &Path) -> Result<(), CommandError> {
+    run(root, &["reset", "--soft", "HEAD^"], LOCAL_TIMEOUT).map(|_| ())
+}
+
+pub fn stash_all(root: &Path) -> Result<CommandOutput, CommandError> {
+    run(
+        root,
+        &["stash", "push", "--include-untracked", "--quiet"],
+        LOCAL_TIMEOUT,
+    )
+}
+
+pub fn stash_pop(root: &Path) -> Result<CommandOutput, CommandError> {
+    run(root, &["stash", "pop", "--quiet"], LOCAL_TIMEOUT)
+}
+
+pub fn has_stash(root: &Path) -> bool {
+    read(root, &["rev-parse", "--verify", "--quiet", "refs/stash"]).is_some()
+}
+
+/// Puts every tracked file back as HEAD has it; untracked files stay.
+pub fn discard_tracked(root: &Path) -> Result<(), CommandError> {
+    run(
+        root,
+        &[
+            "restore",
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "--",
+            ".",
+        ],
+        LOCAL_TIMEOUT,
+    )
+    .map(|_| ())
 }
 
 pub fn commit(root: &Path, message: &str, options: CommitOptions) -> Result<(), CommandError> {

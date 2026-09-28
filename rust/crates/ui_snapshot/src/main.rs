@@ -563,8 +563,8 @@ fn main() -> anyhow::Result<()> {
     // With GITPANEL=<repo dir>, render the Git panel for that repository (against `main`).
     if let Ok(repo) = std::env::var("GITPANEL") {
         use workspace::SidePanelView;
-        let (width, height) = (360.0_f32, 560.0_f32);
-        // GITPANEL=<repo>[,<repo>...]; SELECTOR=1 opens the repository selector.
+        let (width, height) = (330.0_f32, 820.0_f32);
+        // GITPANEL=<repo>[,<repo>...]; WSBRANCH names the workspace branch.
         let sources: Vec<git_ui::RepoSource> = repo
             .split(',')
             .map(|path| git_ui::RepoSource {
@@ -574,37 +574,53 @@ fn main() -> anyhow::Result<()> {
                     .unwrap_or_default(),
                 root: path.into(),
                 default_branch: "main".into(),
+                expected_branch: std::env::var("WSBRANCH").unwrap_or_else(|_| "feat-login".into()),
+                kept: false,
             })
             .collect();
         let mut panel = git_ui::GitPanel::new(sources, None, std::sync::Arc::new(|| {}));
         panel.render(width, height);
         panel.wait_for_scan();
-        if std::env::var("SELECTOR").is_ok() {
-            panel.click(workspace::side_panel_base(workspace::PaneKind::Git) + 9_001_006);
+        // TAB=remote|history picks the tab; HOVER=<offset> hovers a panel id (a row is row * 8 + control).
+        match std::env::var("TAB").as_deref() {
+            Ok("remote") => panel.set_tab(git_ui::Tab::Remote),
+            Ok("history") => panel.set_tab(git_ui::Tab::History),
+            _ => {}
         }
-        if let Ok(hover) = std::env::var("HOVERROW") {
-            if let Ok(row) = hover.parse::<u64>() {
+        panel.render(width, height);
+        if let Ok(hover) = std::env::var("HOVER") {
+            if let Ok(offset) = hover.parse::<u64>() {
                 panel.set_hover(Some(
-                    workspace::side_panel_base(workspace::PaneKind::Git) + row * 4,
+                    workspace::side_panel_base(workspace::PaneKind::Git) + offset,
                 ));
             }
         }
         let node = panel.render(width, height);
         let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
-        let painted = ui::render(
+        let frame = ui::paint_frame(
             &ui::div()
                 .bg(ui::theme().panel_background)
                 .child(node)
                 .into(),
             ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT),
         );
-        let layers: Vec<ui::Layer> = vec![(
-            painted.rects.as_slice(),
-            painted.tris.as_slice(),
-            painted.texts.as_slice(),
-            painted.icons.as_slice(),
-            None,
-        )];
+        let layers: Vec<ui::Layer> = std::iter::once((&frame.base, None))
+            .chain(
+                frame
+                    .overlays
+                    .iter()
+                    .map(|overlay| (&overlay.painted, overlay.clip.map(|r| (r.x, r.y, r.w, r.h)))),
+            )
+            .map(|(painted, clip)| {
+                (
+                    painted.rects.as_slice(),
+                    painted.tris.as_slice(),
+                    painted.texts.as_slice(),
+                    painted.icons.as_slice(),
+                    clip,
+                )
+            })
+            .collect();
         r.render_frame(ui::theme().panel_background, &layers)?;
         let (w, h, rgba) = r.read_rgba()?;
         let file = std::fs::File::create(&out)?;

@@ -108,6 +108,8 @@ fn git_panel(
                         || "main".to_string(),
                         |config| config.default_branch_for(&repo.name).to_string(),
                     ),
+                    expected_branch: project.active_branch().to_string(),
+                    kept: false,
                 })
                 .collect()
         })
@@ -2489,8 +2491,36 @@ impl App {
             self.run_app_action(id, action, event_loop);
         }
         self.handle_workspace_requests(id);
+        let branch_requests = self
+            .with_workspace_view(id, |view, _| view.take_branch_requests())
+            .unwrap_or_default();
+        for request in branch_requests {
+            self.apply_branch_request(id, request);
+        }
         if let Some(m) = self.mains.get_mut(&id) {
             m.dirty = true;
+        }
+    }
+
+    /// Carries out a repo branch change the Git panel's branch menu asked for.
+    fn apply_branch_request(&mut self, id: WindowId, request: workspace::PanelRequest) {
+        let workspace = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .map(|project| project.active_branch().to_string())
+            .unwrap_or_default();
+        match request {
+            workspace::PanelRequest::KeepBranch { repo, branch } => {
+                eprintln!("git panel: keep {branch} for {repo} in {workspace}");
+            }
+            workspace::PanelRequest::SwitchBranch { repo } => {
+                eprintln!("git panel: switch {repo} to {workspace}");
+            }
+            workspace::PanelRequest::PickBranch { repo } => {
+                eprintln!("git panel: pick another branch for {repo} in {workspace}");
+            }
+            _ => {}
         }
     }
 

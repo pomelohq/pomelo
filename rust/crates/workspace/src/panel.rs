@@ -273,6 +273,19 @@ pub enum PanelRequest {
         detail: Option<String>,
         buttons: Vec<String>,
     },
+    /// Keep `repo` on `branch` in this workspace instead of the workspace's branch.
+    KeepBranch {
+        repo: String,
+        branch: String,
+    },
+    /// Check the workspace's branch out again in `repo`.
+    SwitchBranch {
+        repo: String,
+    },
+    /// Choose another branch for `repo` in this workspace.
+    PickBranch {
+        repo: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

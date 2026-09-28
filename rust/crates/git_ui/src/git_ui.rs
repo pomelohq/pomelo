@@ -1,39 +1,55 @@
-//! The Git panel: for each repo of the active workspace, the files its branch changed since it left the
-//! default branch (committed or not), with a status icon, the path and line counts. Reading git runs on a
-//! background thread; the panel refreshes while it is shown.
+//! The Git panel: every repo of the active workspace at once, in three tabs. Changes stages and commits
+//! (one commit per repo, same message), Remote shows each branch against origin and main with its pull
+//! request and review marks, History lists the branch's commits. Reading git runs on a background thread;
+//! the panel refreshes while it is shown.
 
 mod commit_area;
+mod render;
+mod rows;
+mod scan;
+mod tree;
+mod widgets;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use commit_area::{CommitArea, RemoteRequest};
-use git::working_copy::{self, HeadState, Staging, StatusEntry, Upstream};
-use git::{ChangeStatus, FileChange, RepoChanges};
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use commit_area::{CommitArea, CommitTarget, RemoteJob, RemoteRequest};
+use git::history::{self, CommitSummary};
+use git::working_copy::{self, Staging, Upstream};
+use git::{ChangeStatus, FileChange};
+use rows::Row;
+use scan::{review_key, RepoScan, Scan, Scanner};
 use workspace::{EditKey, MenuItem, PaneKind, PanelRequest, SidePanelView};
 
-const ROW_H: f32 = 28.0;
-const HEADER_H: f32 = 28.0;
-const ROW_STRIDE: u64 = 4;
-const MENU_BASE: u64 = 9_000_000;
-const FOOTER: u64 = MENU_BASE + 1_000;
-const COMMIT_EDITOR: u64 = FOOTER + 1;
-const COMMIT: u64 = FOOTER + 2;
-const COMMIT_MENU: u64 = FOOTER + 3;
-const REMOTE: u64 = FOOTER + 4;
-const REMOTE_MENU: u64 = FOOTER + 5;
-const SWITCH_REPO: u64 = FOOTER + 6;
-const STAGE_ALL: u64 = FOOTER + 7;
-const SELECTOR_QUERY: u64 = FOOTER + 8;
-/// A repository in the selector: id = base + index into its filtered list.
-const SELECTOR_ITEM: u64 = FOOTER + 20;
-const SELECTOR_MAX: usize = 60;
-const SELECTOR_ROWS: usize = 10;
-const ALL_REMOTES: &str = "All";
+const ROW_STRIDE: u64 = 8;
+/// Ids of the tabs, toolbars and footers start here; rows take the ids below.
+const FIXED: u64 = 9_000_000;
+const MENU_BASE: u64 = 9_500_000;
+const TAB_CHANGES: u64 = FIXED;
+const TAB_REMOTE: u64 = FIXED + 1;
+const TAB_HISTORY: u64 = FIXED + 2;
+const VIEW_DIFF: u64 = FIXED + 3;
+const VIEW_OPTIONS: u64 = FIXED + 4;
+const STAGE_ALL: u64 = FIXED + 5;
+const STAGE_MENU: u64 = FIXED + 6;
+const FETCH_ALL: u64 = FIXED + 7;
+const OPEN_ALL_DIFFS: u64 = FIXED + 8;
+const BRANCH_MENU: u64 = FIXED + 9;
+const BRANCH_LINK: u64 = FIXED + 10;
+const COMMIT_EDITOR: u64 = FIXED + 11;
+const PLAN: u64 = FIXED + 12;
+const COMMIT: u64 = FIXED + 13;
+const COMMIT_MENU: u64 = FIXED + 14;
+const LAST_COMMIT: u64 = FIXED + 15;
+const UNCOMMIT: u64 = FIXED + 16;
+const SYNC: u64 = FIXED + 17;
+const SYNC_MENU: u64 = FIXED + 18;
+const BACK: u64 = FIXED + 19;
+const DRIFT_CHIP: u64 = FIXED + 20;
+const FIXED_END: u64 = FIXED + 100;
 /// While shown, the panel re-reads git this often (agents keep changing files).
 const REFRESH_EVERY: Duration = Duration::from_secs(4);
 
@@ -43,201 +59,133 @@ pub struct RepoSource {
     pub name: String,
     pub root: PathBuf,
     pub default_branch: String,
+    /// The workspace's branch, which every repo is expected to have checked out.
+    pub expected_branch: String,
+    /// This repo stays on another branch on purpose, so being off the workspace's branch is not drift.
+    pub kept: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Changes,
+    Remote,
+    History,
+}
+
+/// Which list a file row belongs to, which decides what its checkbox does and what its diff is against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Scope {
+    Staged,
+    Unstaged,
+    /// Uncommitted, not split by staging.
+    Working,
+    /// Everything the branch changed since it left the default branch.
+    Branch,
+    /// What one commit changed.
+    Commit,
+}
+
+impl Scope {
+    fn key(self) -> &'static str {
+        match self {
+            Scope::Staged => "staged",
+            Scope::Unstaged => "unstaged",
+            Scope::Working => "working",
+            Scope::Branch => "branch",
+            Scope::Commit => "commit",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileEntry {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: ChangeStatus,
+    pub added: Option<u32>,
+    pub deleted: Option<u32>,
+    pub staging: Option<Staging>,
+}
+
+impl FileEntry {
+    fn from_change(change: &FileChange) -> FileEntry {
+        FileEntry {
+            path: change.path.clone(),
+            old_path: change.old_path.clone(),
+            status: change.status,
+            added: change.added,
+            deleted: change.deleted,
+            staging: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
-    Row = 0,
-    Refresh = 1,
-    Stage = 3,
+    Main = 0,
+    Check = 1,
+    Eye = 2,
+    Action = 3,
+    Menu = 4,
+    External = 5,
 }
 
+/// A commit shown in place of the tab's list: its files, each opening its diff.
 #[derive(Clone, Debug)]
-enum Row {
-    /// Files not committed yet (staged or not), or files the branch committed since it left main.
-    Section {
-        uncommitted: bool,
-    },
-    File {
-        repo: usize,
-        file: usize,
-    },
-    Message(String),
-    /// The workspace's pull requests, one row per repo that has one.
-    PullRequests {
-        count: usize,
-    },
-    PullRequest {
-        repo: usize,
-    },
-    /// The active repo's branch has no pull request yet.
-    CreatePullRequest {
-        repo: usize,
-    },
+pub(crate) struct OpenedCommit {
+    pub repo: usize,
+    pub commit: CommitSummary,
+    pub files: Vec<FileChange>,
+    pub incoming: bool,
 }
 
-/// The repository picker opened from the footer: the typed filter and the highlighted match.
-#[derive(Default)]
-struct RepoSelector {
-    query: String,
-    highlight: usize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum MenuAction {
-    ToggleReviewed,
-    OpenDiff,
-    Open,
-    CopyPath,
-    CopyRelativePath,
-    Discard,
+    Header,
+    ViewTree,
+    ViewList,
+    GroupByStaging,
+    GroupNone,
+    HistoryByRepo,
+    HistoryTimeline,
+    StageAll,
+    UnstageAll,
+    StashAll,
+    StashPop,
+    DiscardTracked,
     Amend,
     Signoff,
     SkipHooks,
-    Fetch,
-    FetchFrom,
-    Pull,
-    PullRebase,
-    Push,
-    PushTo,
-    ForcePush,
+    ToggleTarget(String),
+    PickBranch(String),
+    KeepBranch(String, String),
+    SwitchBranch(String),
+    CopyBranch,
+    PullAll,
+    PushAll,
+    FetchAll,
+    Remote(usize, RemoteRequest),
+    OpenDiff,
+    OpenFile,
+    ToggleReviewed,
+    CopyPath,
+    CopyRelativePath,
+    Discard,
 }
 
 struct OpenMenu {
-    repo: usize,
-    file: usize,
+    file: Option<(usize, Scope, FileEntry)>,
     items: Vec<(MenuItem, MenuAction)>,
 }
 
-#[derive(Clone, Default)]
-struct Scan {
-    repos: Vec<RepoChanges>,
-    status: Vec<Vec<StatusEntry>>,
-    heads: Vec<HeadState>,
-    /// `repo/path` -> fingerprint of the file as it is now, to tell whether a review still holds.
-    fingerprints: HashMap<String, String>,
-    loaded: bool,
-}
-
-/// FNV-1a over the file's bytes: stable across runs, which a review mark must be.
-fn fingerprint(path: &std::path::Path) -> String {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
-                (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
-            });
-            format!("{hash:016x}")
-        }
-        Err(_) => "deleted".to_string(),
-    }
-}
-
-fn review_key(repo: &str, path: &str) -> String {
-    format!("{repo}/{path}")
-}
-
-/// The last read of each workspace (by its repo roots), so a panel rebuilt on switching back shows it at once
-/// and refreshes in the background instead of starting blank.
-fn last_scans() -> &'static Mutex<HashMap<Vec<PathBuf>, Scan>> {
-    static SCANS: std::sync::OnceLock<Mutex<HashMap<Vec<PathBuf>, Scan>>> =
-        std::sync::OnceLock::new();
-    SCANS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn scan_key(sources: &[RepoSource]) -> Vec<PathBuf> {
-    sources.iter().map(|source| source.root.clone()).collect()
-}
-
-/// Reads every repo and publishes the result; wakes the UI only when something changed.
-struct Scanner {
-    sources: Arc<Vec<RepoSource>>,
-    scan: Arc<Mutex<Scan>>,
-    scanning: Arc<AtomicBool>,
-    waker: Arc<dyn Fn() + Send + Sync>,
-}
-
-impl Scanner {
-    fn run(&self) {
-        // Repos are read side by side: one after another, a few of them keep the panel waiting over a second.
-        let read: Vec<(RepoChanges, Vec<StatusEntry>, HeadState)> = std::thread::scope(|threads| {
-            let handles: Vec<_> = self
-                .sources
-                .iter()
-                .map(|source| {
-                    threads.spawn(move || {
-                        (
-                            git::branch_changes(&source.root, &source.default_branch),
-                            working_copy::status(&source.root).unwrap_or_default(),
-                            working_copy::head_state(&source.root),
-                        )
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .zip(self.sources.iter())
-                .map(|(handle, source)| {
-                    handle.join().unwrap_or_else(|_| {
-                        (
-                            RepoChanges {
-                                root: source.root.clone(),
-                                error: Some("reading git failed".into()),
-                                ..RepoChanges::default()
-                            },
-                            Vec::new(),
-                            working_copy::head_state(&source.root),
-                        )
-                    })
-                })
-                .collect()
-        });
-        let mut repos = Vec::with_capacity(read.len());
-        let mut status = Vec::with_capacity(read.len());
-        let mut heads = Vec::with_capacity(read.len());
-        for (changes, entries, head) in read {
-            repos.push(changes);
-            status.push(entries);
-            heads.push(head);
-        }
-        let fingerprints: HashMap<String, String> = self
-            .sources
-            .iter()
-            .zip(&repos)
-            .flat_map(|(source, changes)| {
-                changes.files.iter().map(|file| {
-                    (
-                        review_key(&source.name, &file.path),
-                        fingerprint(&changes.root.join(&file.path)),
-                    )
-                })
-            })
-            .collect();
-        let changed = self.scan.lock().is_ok_and(|mut scan| {
-            let changed = !scan.loaded
-                || scan.repos != repos
-                || scan.fingerprints != fingerprints
-                || scan.status != status
-                || scan.heads != heads;
-            scan.repos = repos;
-            scan.fingerprints = fingerprints;
-            scan.status = status;
-            scan.heads = heads;
-            scan.loaded = true;
-            if let Ok(mut last) = last_scans().lock() {
-                last.insert(scan_key(&self.sources), scan.clone());
-            }
-            changed
-        });
-        self.scanning.store(false, Ordering::Release);
-        if changed {
-            (self.waker)();
-        }
-    }
+enum Confirm {
+    Discard { repo: usize, path: String },
+    DiscardTracked,
 }
 
 pub struct GitPanel {
     sources: Arc<Vec<RepoSource>>,
-    scan: Arc<Mutex<Scan>>,
+    scan: Arc<Mutex<Arc<Scan>>>,
     scanning: Arc<AtomicBool>,
     started: bool,
     drawn_at: Arc<Mutex<Option<Instant>>>,
@@ -252,18 +200,21 @@ pub struct GitPanel {
     /// Where review marks are kept, and the marks: `repo/path` -> fingerprint when marked.
     reviews_file: Option<PathBuf>,
     reviewed: HashMap<String, String>,
-    /// A discard waiting for confirmation: prompt tag, repo, file.
-    confirm: Option<(u64, usize, usize)>,
+    confirm: Option<(u64, Confirm)>,
     next_tag: u64,
     requests: Vec<PanelRequest>,
     commit: CommitArea,
-    active_repo: usize,
-    remote_prompt: Option<(u64, Vec<String>, RemoteRequest)>,
     pull_requests: Option<pull_request_ui::PullRequests>,
-    prs_collapsed: bool,
-    uncommitted_collapsed: bool,
-    committed_collapsed: bool,
-    selector: Option<RepoSelector>,
+    tab: Tab,
+    tree_view: bool,
+    group_by_staging: bool,
+    timeline: bool,
+    folded: HashSet<String>,
+    /// Repos left out of the next commit though they have staged files.
+    excluded: HashSet<String>,
+    /// Repos the user chose to keep on their own branch since the panel opened.
+    kept: HashSet<String>,
+    opened: Option<OpenedCommit>,
 }
 
 impl GitPanel {
@@ -281,13 +232,7 @@ impl GitPanel {
         GitPanel {
             reviews_file,
             reviewed,
-            scan: Arc::new(Mutex::new(
-                last_scans()
-                    .lock()
-                    .ok()
-                    .and_then(|last| last.get(&scan_key(&sources)).cloned())
-                    .unwrap_or_default(),
-            )),
+            scan: Arc::new(Mutex::new(scan::remembered_scan(&sources))),
             sources: Arc::new(sources),
             scanning: Arc::new(AtomicBool::new(false)),
             started: false,
@@ -303,13 +248,15 @@ impl GitPanel {
             next_tag: 1,
             requests: Vec::new(),
             commit: CommitArea::new(waker.clone()),
-            active_repo: 0,
-            remote_prompt: None,
             pull_requests: None,
-            prs_collapsed: false,
-            uncommitted_collapsed: false,
-            committed_collapsed: false,
-            selector: None,
+            tab: Tab::Changes,
+            tree_view: true,
+            group_by_staging: true,
+            timeline: false,
+            folded: HashSet::new(),
+            excluded: HashSet::new(),
+            kept: HashSet::new(),
+            opened: None,
             waker,
         }
     }
@@ -317,6 +264,16 @@ impl GitPanel {
     pub fn with_pull_requests(mut self, pull_requests: pull_request_ui::PullRequests) -> GitPanel {
         self.pull_requests = Some(pull_requests);
         self
+    }
+
+    pub fn tab(&self) -> Tab {
+        self.tab
+    }
+
+    pub fn set_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+        self.scroll = 0.0;
+        self.opened = None;
     }
 
     fn scanner(&self) -> Scanner {
@@ -379,542 +336,123 @@ impl GitPanel {
         }
     }
 
-    fn repos(&self) -> Vec<RepoChanges> {
+    fn current(&self) -> Arc<Scan> {
         self.scan
             .lock()
-            .map(|scan| scan.repos.clone())
+            .map(|scan| scan.clone())
             .unwrap_or_default()
     }
 
-    fn loaded(&self) -> bool {
-        self.scan.lock().is_ok_and(|scan| scan.loaded)
+    fn repo_scan(&self, repo: usize) -> Option<RepoScan> {
+        self.current().repos.get(repo).cloned()
     }
 
-    fn rebuild_rows(&mut self, repos: &[RepoChanges]) {
-        let mut rows = Vec::new();
-        if !self.loaded() {
-            rows.push(Row::Message("Reading git...".into()));
-        } else if self.sources.is_empty() {
-            rows.push(Row::Message("No repositories in this workspace".into()));
-        }
-        let with_prs = self.repos_with_pull_requests();
-        if !with_prs.is_empty() {
-            rows.push(Row::PullRequests {
-                count: with_prs.len(),
-            });
-            if !self.prs_collapsed {
-                rows.extend(with_prs.into_iter().map(|repo| Row::PullRequest { repo }));
-            }
-        }
-        let active = self.active_repo.min(repos.len().saturating_sub(1));
-        if self.needs_pull_request(active) {
-            rows.push(Row::CreatePullRequest { repo: active });
-        }
-        if let Some(repo) = repos.get(active) {
-            if let Some(error) = &repo.error {
-                rows.push(Row::Message(
-                    error.lines().next().unwrap_or_default().to_string(),
-                ));
-            } else if repo.files.is_empty() {
-                rows.push(Row::Message("No changes on this branch".into()));
-            }
-            for uncommitted in [true, false] {
-                let files: Vec<usize> = (0..repo.files.len())
-                    .filter(|file| repo.files[*file].uncommitted == uncommitted)
-                    .collect();
-                if files.is_empty() {
-                    continue;
-                }
-                rows.push(Row::Section { uncommitted });
-                let collapsed = if uncommitted {
-                    self.uncommitted_collapsed
-                } else {
-                    self.committed_collapsed
-                };
-                if !collapsed {
-                    rows.extend(
-                        files
-                            .into_iter()
-                            .map(|file| Row::File { repo: active, file }),
-                    );
-                }
-            }
-        }
-        self.rows = rows;
+    fn repo_index(&self, name: &str) -> Option<usize> {
+        self.sources.iter().position(|source| source.name == name)
     }
 
-    /// The repo's branch is not main and has no pull request.
-    fn needs_pull_request(&self, repo: usize) -> bool {
-        let (Some(prs), Some(source)) = (self.pull_requests.as_ref(), self.sources.get(repo))
-        else {
-            return false;
-        };
-        prs.for_checkout(&source.root)
-            .is_some_and(|(target, pr)| pr.is_none() && target.head != source.default_branch)
-    }
-
-    /// How much of the active repo's uncommitted work is staged, for the section's checkbox.
-    fn uncommitted_staging(&self) -> Staging {
-        let status = self.status_of(self.active_repo);
-        let staged = status
+    fn workspace_branch(&self, scan: &Scan) -> String {
+        if let Some(branch) = self
+            .sources
             .iter()
-            .filter(|entry| entry.staging() == Staging::Staged)
-            .count();
-        match staged {
-            0 => Staging::Unstaged,
-            count if count == status.len() => Staging::Staged,
-            _ => Staging::Partial,
+            .map(|source| source.expected_branch.as_str())
+            .find(|branch| !branch.is_empty())
+        {
+            return branch.to_string();
         }
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for repo in &scan.repos {
+            if let Some(branch) = repo.branch_name() {
+                *counts.entry(branch).or_default() += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .max_by_key(|(branch, count)| (*count, std::cmp::Reverse(*branch)))
+            .map(|(branch, _)| branch.to_string())
+            .unwrap_or_default()
     }
 
-    /// Repos (by index) whose checked-out branch has a pull request.
-    fn repos_with_pull_requests(&self) -> Vec<usize> {
-        let Some(prs) = self.pull_requests.as_ref() else {
-            return Vec::new();
+    fn is_kept(&self, repo: usize) -> bool {
+        self.sources
+            .get(repo)
+            .is_some_and(|source| source.kept || self.kept.contains(&source.name))
+    }
+
+    /// The repo's branch when it is not the workspace's, and whether that is on purpose.
+    fn other_branch(&self, scan: &Scan, repo: usize) -> Option<(String, bool)> {
+        let workspace_branch = self.workspace_branch(scan);
+        let state = scan.repos.get(repo)?;
+        let branch = match state.branch_name() {
+            Some(branch) => branch.to_string(),
+            None => state
+                .head
+                .as_ref()
+                .and_then(|head| head.short_sha.clone())
+                .map(|sha| format!("detached at {sha}"))?,
         };
-        (0..self.sources.len())
-            .filter(|repo| {
-                self.sources
-                    .get(*repo)
-                    .and_then(|source| prs.for_checkout(&source.root))
-                    .is_some_and(|(_, pr)| pr.is_some())
-            })
-            .collect()
-    }
-
-    /// The selector's matches: repo indices sorted by name, filtered by the typed text.
-    fn selector_matches(&self) -> Vec<usize> {
-        let query = self
-            .selector
-            .as_ref()
-            .map(|selector| selector.query.to_lowercase())
-            .unwrap_or_default();
-        let mut matches: Vec<usize> = (0..self.sources.len())
-            .filter(|index| self.sources[*index].name.to_lowercase().contains(&query))
-            .collect();
-        matches.sort_by_key(|index| self.sources[*index].name.to_lowercase());
-        matches.truncate(SELECTOR_MAX);
-        matches
-    }
-
-    fn open_selector(&mut self) {
-        if self.selector.take().is_some() {
-            return;
-        }
-        self.selector = Some(RepoSelector::default());
-        let highlight = self
-            .selector_matches()
-            .iter()
-            .position(|repo| *repo == self.active_repo)
-            .unwrap_or(0);
-        if let Some(selector) = self.selector.as_mut() {
-            selector.highlight = highlight;
-        }
-        self.commit.focused = false;
-    }
-
-    fn choose_repo(&mut self, repo: usize) {
-        if repo < self.sources.len() {
-            self.active_repo = repo;
-            self.scroll = 0.0;
-        }
-        self.selector = None;
-    }
-
-    /// The picker over the footer, after the reference's repository selector: each repo with a check on the
-    /// active one and its change status at the end, the filter below.
-    fn render_selector(&self, width: f32) -> Option<Node> {
-        let selector = self.selector.as_ref()?;
-        let colors = theme();
-        let matches = self.selector_matches();
-        let first = selector
-            .highlight
-            .saturating_sub(SELECTOR_ROWS.saturating_sub(1));
-        let mut list = div().col().p(4.0).gap(1.0);
-        if matches.is_empty() {
-            list = list.child(
-                div()
-                    .row()
-                    .h_px(26.0)
-                    .px(8.0)
-                    .items_center()
-                    .child(label("No matches").size(12.0).color(colors.text_muted)),
-            );
-        }
-        for (position, repo) in matches.iter().enumerate().skip(first).take(SELECTOR_ROWS) {
-            let Some(source) = self.sources.get(*repo) else {
-                continue;
-            };
-            let id = self.base + SELECTOR_ITEM + position as u64;
-            let highlighted = position == selector.highlight || self.hover == Some(id);
-            let mut name = div().row().flex(1.0).gap(4.0).items_center().child(
-                label(source.name.clone())
-                    .size(13.0)
-                    .color(colors.text)
-                    .truncate(),
-            );
-            if *repo == self.active_repo {
-                name = name.child(icon(IconKind::Check).size(12.0).color(colors.text_accent));
-            }
-            let mut row = div()
-                .row()
-                .h_px(26.0)
-                .px(8.0)
-                .gap(6.0)
-                .items_center()
-                .rounded(4.0)
-                .on_click(id)
-                .child(name);
-            if let Some(status) = worst_status(&self.status_of(*repo)) {
-                row = row.child(status_icon(status));
-            }
-            if highlighted {
-                row = row.bg(colors.element_selected);
-            }
-            list = list.child(row);
-        }
-        let query: Node = if selector.query.is_empty() {
-            label("Select a repository...")
-                .size(13.0)
-                .color(colors.text_placeholder)
-                .into()
-        } else {
-            label(selector.query.clone())
-                .size(13.0)
-                .color(colors.text)
-                .into()
-        };
-        Some(
-            div()
-                .col()
-                .w_px(width)
-                .px(6.0)
-                .pb(4.0)
-                .child(
-                    div()
-                        .col()
-                        .rounded(6.0)
-                        .bg(colors.elevated_surface_background)
-                        .border(1.0, colors.border_variant)
-                        .child(list)
-                        .child(div().h_px(1.0).bg(colors.border_variant))
-                        .child(
-                            div()
-                                .row()
-                                .h_px(32.0)
-                                .px(10.0)
-                                .items_center()
-                                .on_click(self.base + SELECTOR_QUERY)
-                                .child(query),
-                        ),
-                )
-                .into(),
-        )
-    }
-
-    fn selector_height(&self) -> f32 {
-        if self.selector.is_none() {
-            return 0.0;
-        }
-        let rows = self.selector_matches().len().clamp(1, SELECTOR_ROWS) as f32;
-        8.0 + rows * 27.0 + 1.0 + 32.0 + 2.0 + 4.0
+        (branch != workspace_branch && !workspace_branch.is_empty())
+            .then(|| (branch, self.is_kept(repo)))
     }
 
     fn id(&self, row: usize, control: Control) -> u64 {
         self.base + row as u64 * ROW_STRIDE + control as u64
     }
 
+    fn fixed(&self, offset: u64) -> u64 {
+        self.base + offset
+    }
+
     fn decode(&self, id: u64) -> Option<(usize, Control)> {
         let offset = id.checked_sub(self.base)?;
-        if offset >= MENU_BASE {
+        if offset >= FIXED {
             return None;
         }
         let control = match offset % ROW_STRIDE {
-            0 => Control::Row,
-            1 => Control::Refresh,
-            _ => Control::Stage,
+            0 => Control::Main,
+            1 => Control::Check,
+            2 => Control::Eye,
+            3 => Control::Action,
+            4 => Control::Menu,
+            _ => Control::External,
         };
         Some(((offset / ROW_STRIDE) as usize, control))
     }
 
-    fn refresh_id(&self) -> u64 {
-        self.base + MENU_BASE - ROW_STRIDE + Control::Refresh as u64
+    fn hot(&self, id: u64) -> bool {
+        self.hover == Some(id)
     }
 
-    fn hovered_row(&self) -> Option<usize> {
-        self.hover
-            .and_then(|id| self.decode(id))
-            .filter(|(_, control)| *control != Control::Refresh)
-            .map(|(row, _)| row)
-    }
-
-    fn render_row(&self, index: usize, row: &Row, repos: &[RepoChanges]) -> Node {
-        let hovered = self.hovered_row() == Some(index);
-        let mut body = div()
-            .row()
-            .h_px(ROW_H)
-            .pl(10.0)
-            .pr(4.0)
-            .gap(6.0)
-            .items_center()
-            .on_click(self.id(index, Control::Row));
-        if hovered {
-            body = body.bg(theme().ghost_element_hover);
-        }
-        match row {
-            Row::Message(text) => div()
-                .row()
-                .h_px(ROW_H)
-                .pl(28.0)
-                .items_center()
-                .child(
-                    label(text.clone())
-                        .size(12.0)
-                        .color(theme().text_muted)
-                        .truncate(),
-                )
-                .into(),
-            Row::PullRequests { count } => {
-                let chevron = if self.prs_collapsed {
-                    IconKind::ChevronRight
-                } else {
-                    IconKind::ChevronDown
-                };
-                body.child(icon(chevron).size(12.0).color(theme().icon_muted))
-                    .child(
-                        div()
-                            .row()
-                            .flex(1.0)
-                            .items_center()
-                            .child(label("Pull Requests").size(12.0).color(theme().text_muted)),
-                    )
-                    .child(
-                        label(count.to_string())
-                            .size(12.0)
-                            .color(theme().text_muted),
-                    )
-                    .into()
-            }
-            Row::PullRequest { repo } => {
-                let Some((source, pr)) = self.sources.get(*repo).and_then(|source| {
-                    let (_, pr) = self.pull_requests.as_ref()?.for_checkout(&source.root)?;
-                    Some((source, pr?))
-                }) else {
-                    return div().into();
-                };
-                let color = pr_color(&pr);
-                body.child(icon(IconKind::PullRequest).size(13.0).color(color))
-                    .child(
-                        div()
-                            .row()
-                            .items_center()
-                            .w_px(self.pr_number_width())
-                            .child(label(format!("#{}", pr.number)).size(12.0).color(color)),
-                    )
-                    .child(
-                        div().row().flex(1.0).items_center().child(
-                            label(pr.title.clone())
-                                .size(12.0)
-                                .color(theme().text)
-                                .truncate(),
-                        ),
-                    )
-                    .child(
-                        label(source.name.clone())
-                            .size(11.0)
-                            .color(theme().text_muted)
-                            .truncate(),
-                    )
-                    .into()
-            }
-            Row::CreatePullRequest { .. } => {
-                let colors = theme();
-                body.child(
-                    icon(IconKind::PullRequest)
-                        .size(13.0)
-                        .color(colors.text_accent),
-                )
-                .child(
-                    div().row().flex(1.0).items_center().child(
-                        label("Create Pull Request")
-                            .size(12.0)
-                            .color(colors.text_accent)
-                            .truncate(),
-                    ),
-                )
-                .into()
-            }
-            Row::Section { uncommitted } => {
-                let collapsed = if *uncommitted {
-                    self.uncommitted_collapsed
-                } else {
-                    self.committed_collapsed
-                };
-                let chevron = if collapsed {
-                    IconKind::ChevronRight
-                } else {
-                    IconKind::ChevronDown
-                };
-                let title = if *uncommitted {
-                    "Uncommitted"
-                } else {
-                    "Committed on this branch"
-                };
-                let mut header =
-                    body.child(icon(chevron).size(12.0).color(theme().icon_muted))
-                        .child(
-                            div().row().flex(1.0).items_center().child(
-                                label(title).size(12.0).color(theme().text_muted).truncate(),
-                            ),
-                        );
-                if *uncommitted {
-                    let stage = self.id(index, Control::Stage);
-                    header = header.child(commit_area::stage_checkbox(
-                        stage,
-                        self.uncommitted_staging(),
-                        self.hover == Some(stage),
-                    ));
-                }
-                header.into()
-            }
-            Row::File { repo, file } => {
-                let Some(change) = repos
-                    .get(*repo)
-                    .and_then(|changes| changes.files.get(*file))
-                else {
-                    return div().into();
-                };
-                let reviewed = self.is_reviewed(*repo, &change.path);
-                let stage = self.id(index, Control::Stage);
-                let trailing: Node = match self.staging_for(*repo, change) {
-                    Some(staging) => {
-                        commit_area::stage_checkbox(stage, staging, self.hover == Some(stage))
-                    }
-                    None => div().w_px(20.0).into(),
-                };
-                let mut row = body
-                    .pl(26.0)
-                    .child(status_icon(change.status))
-                    .child(path_label(change, reviewed));
-                if reviewed {
-                    row = row.child(icon(IconKind::Eye).size(12.0).color(theme().icon_muted));
-                }
-                row.child(diff_stat(change)).child(trailing).into()
-            }
+    fn toggle_fold(&mut self, key: String) {
+        if !self.folded.remove(&key) {
+            self.folded.insert(key);
         }
     }
 
-    /// Wide enough for the longest `#number` listed, so the titles after it start in one column.
-    fn pr_number_width(&self) -> f32 {
-        let Some(prs) = self.pull_requests.as_ref() else {
-            return 0.0;
-        };
-        self.sources
-            .iter()
-            .filter_map(|source| prs.for_checkout(&source.root)?.1)
-            .map(|pr| {
-                ui::measure_text_width(
-                    &format!("#{}", pr.number),
-                    12.0,
-                    false,
-                    ui::ui_font_weight(),
-                ) / ui::ui_text_scale()
-            })
-            .fold(0.0, f32::max)
-            .ceil()
-    }
-
-    fn open_pull_request(&mut self, repo: usize) {
-        let (Some(prs), Some(source)) =
-            (self.pull_requests.clone(), self.sources.get(repo).cloned())
-        else {
-            return;
-        };
-        let Some((target, pr)) = prs.for_checkout(&source.root) else {
-            return;
-        };
-        if pr.is_some() {
-            self.requests.push(PanelRequest::Reveal {
-                id: pull_request_ui::PullRequests::item_id(&target),
-                open: Box::new(move || Some(prs.item(target))),
-            });
-            return;
-        }
-        let url = working_copy::remote_url(&source.root, "origin")
-            .and_then(|remote| working_copy::create_pull_request_url(&remote, &target.head));
-        self.requests.push(match url {
-            Some(url) => PanelRequest::OpenUrl(url),
-            None => PanelRequest::Toast("Only GitHub remotes can start a pull request here".into()),
-        });
-    }
-
-    fn file(&self, repo: usize, file: usize) -> Option<(PathBuf, FileChange)> {
-        let repos = self.repos();
-        let change = repos.get(repo)?.files.get(file)?.clone();
-        Some((repos.get(repo)?.root.join(&change.path), change))
-    }
-
-    /// The file as a diff against where the branch started (HEAD when only uncommitted work counts).
-    fn open_diff(&mut self, repo: usize, file: usize) {
-        let repos = self.repos();
-        let Some(changes) = repos.get(repo) else {
-            return;
-        };
-        let Some(change) = changes.files.get(file) else {
-            return;
-        };
-        if change.status == ChangeStatus::Deleted {
-            self.requests.push(PanelRequest::Toast(format!(
-                "{} was deleted on this branch",
-                change.path
-            )));
-            return;
-        }
-        let base = match change.status {
-            ChangeStatus::Added => None,
-            _ => {
-                let revision = changes.fork_point.as_deref().unwrap_or("HEAD");
-                let earlier = change.old_path.as_deref().unwrap_or(&change.path);
-                git::file_at(&changes.root, revision, earlier)
-            }
-        };
-        self.requests.push(PanelRequest::OpenDiff {
-            path: changes.root.join(&change.path),
-            base,
-        });
+    fn is_folded(&self, key: &str) -> bool {
+        self.folded.contains(key)
     }
 
     /// Marked reviewed, and not changed since.
-    fn is_reviewed(&self, repo: usize, path: &str) -> bool {
+    fn is_reviewed(&self, scan: &Scan, repo: usize, path: &str) -> bool {
         let Some(source) = self.sources.get(repo) else {
             return false;
         };
         let key = review_key(&source.name, path);
-        let current = self
-            .scan
-            .lock()
-            .ok()
-            .and_then(|scan| scan.fingerprints.get(&key).cloned());
-        current.is_some() && self.reviewed.get(&key) == current.as_ref()
+        let current = scan.fingerprints.get(&key);
+        current.is_some() && self.reviewed.get(&key) == current
     }
 
-    fn toggle_reviewed(&mut self, repo: usize, file: usize) {
-        let (Some(source), Some((_, change))) = (self.sources.get(repo), self.file(repo, file))
-        else {
+    fn toggle_reviewed(&mut self, repo: usize, path: &str) {
+        let scan = self.current();
+        let Some(source) = self.sources.get(repo) else {
             return;
         };
-        let key = review_key(&source.name, &change.path);
-        if self.is_reviewed(repo, &change.path) {
+        let key = review_key(&source.name, path);
+        if self.is_reviewed(&scan, repo, path) {
             self.reviewed.remove(&key);
-        } else {
-            let current = self
-                .scan
-                .lock()
-                .ok()
-                .and_then(|scan| scan.fingerprints.get(&key).cloned());
-            if let Some(current) = current {
-                self.reviewed.insert(key, current);
-            }
+        } else if let Some(current) = scan.fingerprints.get(&key) {
+            self.reviewed.insert(key, current.clone());
         }
         self.save_reviews();
     }
@@ -936,35 +474,6 @@ impl GitPanel {
         }
     }
 
-    fn content_height(&self) -> f32 {
-        self.rows.len() as f32 * ROW_H + 8.0
-    }
-
-    fn status_of(&self, repo: usize) -> Vec<StatusEntry> {
-        self.scan
-            .lock()
-            .ok()
-            .and_then(|scan| scan.status.get(repo).cloned())
-            .unwrap_or_default()
-    }
-
-    fn head_of(&self, repo: usize) -> Option<HeadState> {
-        self.scan
-            .lock()
-            .ok()
-            .and_then(|scan| scan.heads.get(repo).cloned())
-    }
-
-    fn staging_for(&self, repo: usize, change: &FileChange) -> Option<Staging> {
-        self.scan.lock().ok().and_then(|scan| {
-            scan.status
-                .get(repo)?
-                .iter()
-                .find(|entry| entry.path == change.path)
-                .map(StatusEntry::staging)
-        })
-    }
-
     fn report(&mut self, result: Result<(), working_copy::CommandError>) {
         if let Err(error) = result {
             self.requests.push(PanelRequest::Toast(error.message));
@@ -972,138 +481,550 @@ impl GitPanel {
         self.refresh();
     }
 
-    fn toggle_stage(&mut self, repo: usize, file: usize) {
-        let (Some(source), Some((_, change))) =
-            (self.sources.get(repo).cloned(), self.file(repo, file))
-        else {
+    fn stage_file(&mut self, repo: usize, scope: Scope, entry: &FileEntry) {
+        let Some(source) = self.sources.get(repo).cloned() else {
             return;
         };
-        self.active_repo = repo;
-        let mut paths = vec![change.path.clone()];
-        paths.extend(change.old_path.clone());
-        let result = match self.staging_for(repo, &change) {
-            Some(Staging::Staged) => working_copy::unstage(&source.root, &paths),
-            _ => working_copy::stage(&source.root, &paths),
+        let mut paths = vec![entry.path.clone()];
+        paths.extend(entry.old_path.clone());
+        let unstage = match scope {
+            Scope::Staged => true,
+            Scope::Unstaged => false,
+            _ => entry.staging == Some(Staging::Staged),
         };
-        self.report(result);
-    }
-
-    fn stages_all(status: &[StatusEntry]) -> bool {
-        status.is_empty()
-            || status
-                .iter()
-                .any(|entry| entry.staging() != Staging::Staged)
-    }
-
-    fn stage_all(&mut self) {
-        let Some(source) = self.sources.get(self.active_repo).cloned() else {
-            return;
-        };
-        let status = self.status_of(self.active_repo);
-        let result = if Self::stages_all(&status) {
-            let paths: Vec<String> = status
-                .iter()
-                .filter(|entry| entry.staging() != Staging::Staged)
-                .map(|entry| entry.path.clone())
-                .collect();
-            working_copy::stage(&source.root, &paths)
-        } else {
-            let paths: Vec<String> = status.iter().map(|entry| entry.path.clone()).collect();
+        let result = if unstage {
             working_copy::unstage(&source.root, &paths)
+        } else {
+            working_copy::stage(&source.root, &paths)
         };
         self.report(result);
     }
 
-    fn commit_now(&mut self) {
-        let Some(source) = self.sources.get(self.active_repo).cloned() else {
+    fn stage_directory(&mut self, repo: usize, scope: Scope, path: &str, staging: Staging) {
+        let Some(source) = self.sources.get(repo).cloned() else {
             return;
         };
-        let status = self.status_of(self.active_repo);
-        if let Some(request) = self.commit.commit(source.root, &status) {
-            self.requests.push(request);
-        }
+        let unstage = match scope {
+            Scope::Staged => true,
+            Scope::Unstaged => false,
+            _ => staging == Staging::Staged,
+        };
+        let result = if unstage {
+            working_copy::unstage_directory(&source.root, path)
+        } else {
+            working_copy::stage_directory(&source.root, path)
+        };
+        self.report(result);
     }
 
-    fn remote(&mut self, request: RemoteRequest) {
-        if self.commit.busy() {
-            return;
-        }
-        let repo = self.active_repo;
-        let (Some(source), Some(head)) = (self.sources.get(repo).cloned(), self.head_of(repo))
-        else {
+    fn stage_repo(&mut self, repo: usize, stage: bool) {
+        let Some(source) = self.sources.get(repo).cloned() else {
             return;
         };
-        let choices = match &request {
-            RemoteRequest::Fetch(_) => {
-                self.commit
-                    .run_remote(source.root, head, request, String::new());
-                return;
+        let result = if stage {
+            working_copy::stage_all(&source.root)
+        } else {
+            working_copy::unstage_all(&source.root)
+        };
+        self.report(result);
+    }
+
+    fn stage_everything(&mut self, stage: bool) {
+        let scan = self.current();
+        let mut failures = Vec::new();
+        for (source, repo) in self.sources.iter().zip(&scan.repos) {
+            if repo.status.is_empty() {
+                continue;
             }
-            RemoteRequest::PushTo { remote, .. } => vec![remote.clone()],
-            RemoteRequest::Pull { .. } | RemoteRequest::Push { .. } => {
-                let Some(branch) = head.branch.clone() else {
-                    self.requests
-                        .push(PanelRequest::Toast("No branch is checked out".into()));
-                    return;
-                };
-                match head.upstream_ref.clone() {
-                    Some((remote, _)) if head.upstream != Upstream::Gone => vec![remote],
-                    _ => working_copy::push_remotes(&source.root, &branch),
+            let result = if stage {
+                working_copy::stage_all(&source.root)
+            } else {
+                working_copy::unstage_all(&source.root)
+            };
+            if let Err(error) = result {
+                failures.push(format!("{}: {}", source.name, error.message));
+            }
+        }
+        if !failures.is_empty() {
+            self.requests.push(PanelRequest::Toast(failures.join("; ")));
+        }
+        self.refresh();
+    }
+
+    fn everything_staged(scan: &Scan) -> bool {
+        let mut entries = scan
+            .repos
+            .iter()
+            .flat_map(|repo| repo.status.iter())
+            .peekable();
+        entries.peek().is_some() && entries.all(|entry| entry.staging() == Staging::Staged)
+    }
+
+    fn stash(&mut self, pop: bool) {
+        let scan = self.current();
+        let mut failures = Vec::new();
+        for (source, repo) in self.sources.iter().zip(&scan.repos) {
+            let result = if pop {
+                if !repo.has_stash {
+                    continue;
                 }
+                working_copy::stash_pop(&source.root)
+            } else {
+                if repo.status.is_empty() {
+                    continue;
+                }
+                working_copy::stash_all(&source.root)
+            };
+            if let Err(error) = result {
+                failures.push(format!("{}: {}", source.name, error.message));
             }
-        };
-        match choices.as_slice() {
-            [] => self.requests.push(PanelRequest::Toast(
-                "No remote available to push to. Add a remote to be able to publish changes."
-                    .into(),
-            )),
-            [remote] => {
-                let remote = remote.clone();
-                self.commit.run_remote(source.root, head, request, remote);
-            }
-            _ => self.pick_remote("Pick which remote to push to", choices, request),
         }
+        if !failures.is_empty() {
+            self.requests.push(PanelRequest::Toast(failures.join("; ")));
+        }
+        self.refresh();
     }
 
-    fn pick_remote(&mut self, message: &str, choices: Vec<String>, request: RemoteRequest) {
+    fn ask(&mut self, confirm: Confirm, message: String, detail: String, button: &str) {
         let tag = self.next_tag;
         self.next_tag += 1;
-        let mut buttons = choices.clone();
-        buttons.push("Cancel".into());
-        self.remote_prompt = Some((tag, choices, request));
+        self.confirm = Some((tag, confirm));
         self.requests.push(PanelRequest::Prompt {
             tag,
-            message: message.to_string(),
-            detail: None,
-            buttons,
+            message,
+            detail: Some(detail),
+            buttons: vec![button.into(), "Cancel".into()],
         });
     }
 
-    fn remote_choices(&self) -> Vec<String> {
-        self.sources
-            .get(self.active_repo)
-            .map(|source| working_copy::remotes(&source.root))
-            .unwrap_or_default()
-    }
-
-    fn primary_remote_action(&mut self) {
-        let Some(head) = self.head_of(self.active_repo) else {
+    /// The file as a diff: uncommitted work against HEAD, the branch's changes against where it left main.
+    fn open_file_diff(&mut self, repo: usize, scope: Scope, entry: &FileEntry) {
+        let Some(state) = self.repo_scan(repo) else {
             return;
         };
-        let request = match head.upstream {
-            Upstream::Tracked {
-                ahead: 0,
-                behind: 0,
-            } => RemoteRequest::Fetch(None),
-            Upstream::Tracked { behind: 0, .. } | Upstream::None | Upstream::Gone => {
-                RemoteRequest::Push { force: false }
+        if scope == Scope::Commit {
+            if let Some(opened) = self.opened.clone() {
+                self.open_commit_file(&opened, entry);
             }
-            Upstream::Tracked { .. } => RemoteRequest::Pull { rebase: false },
+            return;
+        }
+        if entry.status == ChangeStatus::Deleted {
+            self.requests
+                .push(PanelRequest::Toast(format!("{} was deleted", entry.path)));
+            return;
+        }
+        let root = state.branch.root.clone();
+        let base = match entry.status {
+            ChangeStatus::Added => None,
+            _ => {
+                let revision = match scope {
+                    Scope::Branch => state.branch.fork_point.as_deref().unwrap_or("HEAD"),
+                    _ => "HEAD",
+                };
+                let earlier = entry.old_path.as_deref().unwrap_or(&entry.path);
+                git::file_at(&root, revision, earlier)
+            }
         };
-        self.remote(request);
+        self.requests.push(PanelRequest::OpenDiff {
+            path: root.join(&entry.path),
+            base,
+        });
     }
 
-    fn open_footer_menu(&mut self, entries: Vec<(&'static str, MenuAction, bool, bool)>) {
+    fn open_commit(&mut self, repo: usize, commit: CommitSummary, incoming: bool) {
+        let Some(source) = self.sources.get(repo) else {
+            return;
+        };
+        let files = history::commit_files(&source.root, &commit.sha);
+        self.opened = Some(OpenedCommit {
+            repo,
+            commit,
+            files,
+            incoming,
+        });
+        self.scroll = 0.0;
+    }
+
+    /// A read-only tab: the file as the commit left it against its parent's version.
+    fn open_commit_file(&mut self, opened: &OpenedCommit, entry: &FileEntry) {
+        let Some(source) = self.sources.get(opened.repo) else {
+            return;
+        };
+        let sha = &opened.commit.sha;
+        let text = (entry.status != ChangeStatus::Deleted)
+            .then(|| git::file_at(&source.root, sha, &entry.path))
+            .flatten();
+        let base = history::parent_of(&source.root, sha).and_then(|parent| {
+            let earlier = entry.old_path.as_deref().unwrap_or(&entry.path);
+            git::file_at(&source.root, &parent, earlier)
+        });
+        let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+        self.requests
+            .push(PanelRequest::OpenItem(files_ui::revision_diff(
+                format!("git-commit:{}:{sha}:{}", source.name, entry.path),
+                format!("{name} @ {}", opened.commit.short_sha),
+                source.root.clone(),
+                &entry.path,
+                text,
+                base,
+            )));
+    }
+
+    /// One tab with every repo's patch: uncommitted work against HEAD, or the branch against main.
+    fn open_all_diffs(&mut self, uncommitted: bool) {
+        let scan = self.current();
+        let mut text = String::new();
+        for (source, repo) in self.sources.iter().zip(&scan.repos) {
+            let against = if uncommitted {
+                "HEAD"
+            } else {
+                match repo.branch.fork_point.as_deref() {
+                    Some(fork_point) => fork_point,
+                    None => continue,
+                }
+            };
+            let untracked: Vec<&str> = repo
+                .status
+                .iter()
+                .filter(|entry| entry.untracked)
+                .map(|entry| entry.path.as_str())
+                .collect();
+            let patch = history::patch(&source.root, against);
+            if patch.is_none() && untracked.is_empty() {
+                continue;
+            }
+            text.push_str(&format!("# {}\n", source.name));
+            if let Some(patch) = patch {
+                text.push_str(&patch);
+                text.push('\n');
+            }
+            for path in untracked {
+                text.push_str(&format!("new file, not added yet: {path}\n"));
+            }
+            text.push('\n');
+        }
+        if text.is_empty() {
+            self.requests
+                .push(PanelRequest::Toast("No changes to show".into()));
+            return;
+        }
+        let (id, title) = if uncommitted {
+            ("git-diff:uncommitted", "Uncommitted changes.diff")
+        } else {
+            ("git-diff:branch", "Branch changes.diff")
+        };
+        self.requests
+            .push(PanelRequest::OpenItem(files_ui::text_tab(
+                id.into(),
+                title.into(),
+                &text,
+            )));
+    }
+
+    fn commit_targets(&self, scan: &Scan) -> Vec<CommitTarget> {
+        self.sources
+            .iter()
+            .zip(&scan.repos)
+            .filter(|(_, repo)| repo.staged_count() > 0)
+            .map(|(source, repo)| CommitTarget {
+                repo: source.name.clone(),
+                root: source.root.clone(),
+                staged: repo.staged_count(),
+                conflicts: repo.unstaged_conflicts(),
+            })
+            .collect()
+    }
+
+    /// The newest commit at a repo's HEAD, preferring those the branch made itself: `(repo, commit)`.
+    fn last_commit(&self, scan: &Scan) -> Option<(usize, CommitSummary)> {
+        let heads = scan
+            .repos
+            .iter()
+            .enumerate()
+            .filter_map(|(index, repo)| Some((index, repo.head_commit.clone()?, repo)));
+        let own: Vec<(usize, CommitSummary)> = heads
+            .clone()
+            .filter(|(_, commit, repo)| repo.history.iter().any(|mine| mine.sha == commit.sha))
+            .map(|(index, commit, _)| (index, commit))
+            .collect();
+        let pool: Vec<(usize, CommitSummary)> = if own.is_empty() {
+            heads.map(|(index, commit, _)| (index, commit)).collect()
+        } else {
+            own
+        };
+        pool.into_iter().max_by_key(|(_, commit)| commit.timestamp)
+    }
+
+    fn can_uncommit(scan: &Scan, repo: usize, commit: &CommitSummary) -> bool {
+        scan.repos
+            .get(repo)
+            .is_some_and(|state| state.head_has_parent && state.is_unpushed(&commit.sha))
+    }
+
+    fn commit_message(&self, targets: &[CommitTarget], scan: &Scan) -> Option<String> {
+        let typed = self.commit.editor.text();
+        if !typed.trim().is_empty() {
+            return Some(typed);
+        }
+        self.suggestion(targets, scan)
+    }
+
+    /// Only a single repo's single staged file names its own commit.
+    fn suggestion(&self, targets: &[CommitTarget], scan: &Scan) -> Option<String> {
+        let [only] = targets else {
+            return None;
+        };
+        let repo = self.repo_index(&only.repo)?;
+        commit_area::suggested_message(&scan.repos.get(repo)?.status)
+    }
+
+    fn amend_target(&self, scan: &Scan) -> Option<CommitTarget> {
+        let (repo, _) = self.last_commit(scan)?;
+        let source = self.sources.get(repo)?;
+        Some(CommitTarget {
+            repo: source.name.clone(),
+            root: source.root.clone(),
+            staged: 0,
+            conflicts: false,
+        })
+    }
+
+    fn plan(&self, scan: &Scan) -> commit_area::CommitPlan {
+        let staged = self.commit_targets(scan);
+        let included: Vec<CommitTarget> = staged
+            .iter()
+            .filter(|target| !self.excluded.contains(&target.repo))
+            .cloned()
+            .collect();
+        let suggestion = self.suggestion(&included, scan).is_some();
+        self.commit.plan(
+            &staged,
+            &self.excluded,
+            suggestion,
+            self.amend_target(scan).as_ref(),
+        )
+    }
+
+    fn commit_now(&mut self) {
+        let scan = self.current();
+        let plan = self.plan(&scan);
+        if !plan.enabled {
+            self.requests.push(PanelRequest::Toast(plan.hint));
+            return;
+        }
+        let message = self
+            .commit_message(&plan.targets, &scan)
+            .or_else(|| (self.commit.amend).then(String::new));
+        let Some(message) = message else {
+            return;
+        };
+        self.commit.commit(plan.targets, message);
+    }
+
+    fn toggle_amend(&mut self) {
+        let scan = self.current();
+        if let Some(target) = self.amend_target(&scan) {
+            self.commit.toggle_amend(&target.root);
+        } else {
+            self.commit.amend = false;
+        }
+    }
+
+    /// Undoes the last commit, keeping its changes staged and its message in the editor.
+    fn uncommit(&mut self) {
+        let scan = self.current();
+        let Some((repo, commit)) = self.last_commit(&scan) else {
+            return;
+        };
+        if !Self::can_uncommit(&scan, repo, &commit) {
+            self.requests.push(PanelRequest::Toast(
+                "That commit is already pushed, so it stays".into(),
+            ));
+            return;
+        }
+        let Some(source) = self.sources.get(repo).cloned() else {
+            return;
+        };
+        let message = working_copy::head_message(&source.root);
+        match working_copy::soft_reset(&source.root) {
+            Ok(()) => {
+                if self.commit.editor.text().trim().is_empty() {
+                    if let Some(message) = message {
+                        self.commit.editor.set_text(&message);
+                    }
+                }
+                self.requests.push(PanelRequest::Toast(format!(
+                    "Uncommitted \"{}\" in {}: its changes are staged again",
+                    commit.subject, source.name
+                )));
+            }
+            Err(error) => self.requests.push(PanelRequest::Toast(error.message)),
+        }
+        self.refresh();
+    }
+
+    fn remote_job(&self, repo: usize, request: RemoteRequest) -> Result<RemoteJob, String> {
+        let source = self.sources.get(repo).ok_or("No such repository")?;
+        let head = self
+            .repo_scan(repo)
+            .and_then(|state| state.head)
+            .unwrap_or_else(|| working_copy::head_state(&source.root));
+        let remote = if matches!(request, RemoteRequest::Fetch(_)) {
+            String::new()
+        } else {
+            let branch = head
+                .branch
+                .clone()
+                .ok_or_else(|| format!("{}: no branch is checked out", source.name))?;
+            match head.upstream_ref.clone() {
+                Some((remote, _)) if head.upstream != Upstream::Gone => remote,
+                _ => {
+                    let remotes = working_copy::push_remotes(&source.root, &branch);
+                    remotes
+                        .iter()
+                        .find(|remote| remote.as_str() == "origin")
+                        .or(remotes.first())
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: no remote to push to. Add a remote to publish changes.",
+                                source.name
+                            )
+                        })?
+                }
+            }
+        };
+        Ok(RemoteJob {
+            repo: source.name.clone(),
+            root: source.root.clone(),
+            head,
+            request,
+            remote,
+        })
+    }
+
+    fn run_remote(&mut self, work: Vec<(usize, RemoteRequest)>) {
+        if self.commit.busy() {
+            return;
+        }
+        let mut jobs = Vec::new();
+        let mut problems = Vec::new();
+        for (repo, request) in work {
+            match self.remote_job(repo, request) {
+                Ok(job) => jobs.push(job),
+                Err(problem) => problems.push(problem),
+            }
+        }
+        if !problems.is_empty() {
+            self.requests.push(PanelRequest::Toast(problems.join("; ")));
+        }
+        self.commit.run_remote(jobs);
+    }
+
+    fn remote_primary(&mut self, repo: usize) {
+        let Some(head) = self.repo_scan(repo).and_then(|state| state.head) else {
+            return;
+        };
+        if let Some((_, request, _, _)) = commit_area::remote_action(&head) {
+            self.run_remote(vec![(repo, request)]);
+        }
+    }
+
+    fn fetch_all(&mut self) {
+        let work = (0..self.sources.len())
+            .map(|repo| (repo, RemoteRequest::Fetch(None)))
+            .collect();
+        self.run_remote(work);
+    }
+
+    /// Pull then push every repo that differs from origin (`pull`/`push` limit it to one direction).
+    fn sync_all(&mut self, pull: bool, push: bool) {
+        let scan = self.current();
+        let mut work = Vec::new();
+        for (index, repo) in scan.repos.iter().enumerate() {
+            let Some(head) = repo.head.as_ref() else {
+                continue;
+            };
+            let Some((_, request, ahead, behind)) = commit_area::remote_action(head) else {
+                continue;
+            };
+            let request = match (pull, push) {
+                (true, true) if matches!(request, RemoteRequest::Fetch(_)) => continue,
+                (true, true) => request,
+                (true, false) if behind > 0 => RemoteRequest::Pull { rebase: false },
+                (false, true)
+                    if ahead > 0 || !matches!(repo.upstream(), Upstream::Tracked { .. }) =>
+                {
+                    RemoteRequest::Push { force: false }
+                }
+                _ => continue,
+            };
+            work.push((index, request));
+        }
+        if work.is_empty() {
+            self.requests
+                .push(PanelRequest::Toast("Every repo matches origin".into()));
+            return;
+        }
+        self.run_remote(work);
+    }
+
+    fn open_pull_request(&mut self, repo: usize) {
+        let (Some(prs), Some(source)) =
+            (self.pull_requests.clone(), self.sources.get(repo).cloned())
+        else {
+            return;
+        };
+        let Some((target, Some(_))) = prs.for_checkout(&source.root) else {
+            return;
+        };
+        self.requests.push(PanelRequest::Reveal {
+            id: pull_request_ui::PullRequests::item_id(&target),
+            open: Box::new(move || Some(prs.item(target))),
+        });
+    }
+
+    fn pull_request_in_browser(&mut self, repo: usize) {
+        let url = self
+            .pull_requests
+            .as_ref()
+            .zip(self.sources.get(repo))
+            .and_then(|(prs, source)| prs.for_checkout(&source.root))
+            .and_then(|(_, pr)| pr)
+            .map(|pr| pr.url)
+            .filter(|url| !url.is_empty());
+        if let Some(url) = url {
+            self.requests.push(PanelRequest::OpenUrl(url));
+        }
+    }
+
+    fn create_pull_request(&mut self, repo: usize) {
+        let Some(source) = self.sources.get(repo) else {
+            return;
+        };
+        let branch = self
+            .repo_scan(repo)
+            .and_then(|state| state.branch_name().map(str::to_string));
+        let url = branch.and_then(|branch| {
+            working_copy::remote_url(&source.root, "origin")
+                .and_then(|remote| working_copy::create_pull_request_url(&remote, &branch))
+        });
+        self.requests.push(match url {
+            Some(url) => PanelRequest::OpenUrl(url),
+            None => PanelRequest::Toast("Only GitHub remotes can start a pull request here".into()),
+        });
+    }
+
+    fn open_menu_with(&mut self, entries: Vec<(String, MenuAction, bool, bool)>) {
+        self.open_menu_for(None, entries);
+        self.requests.push(PanelRequest::OpenMenu);
+    }
+
+    fn open_menu_for(
+        &mut self,
+        file: Option<(usize, Scope, FileEntry)>,
+        entries: Vec<(String, MenuAction, bool, bool)>,
+    ) {
         let items = entries
             .into_iter()
             .enumerate()
@@ -1114,366 +1035,475 @@ impl GitPanel {
                         label: text.into(),
                         checked,
                         sep,
-                        disabled: false,
+                        disabled: action == MenuAction::Header,
                     },
                     action,
                 )
             })
             .collect();
-        self.menu = Some(OpenMenu {
-            repo: self.active_repo,
-            file: 0,
-            items,
-        });
-        self.requests.push(PanelRequest::OpenMenu);
+        self.menu = Some(OpenMenu { file, items });
     }
 
-    fn footer_hot(&self, offset: u64) -> Option<u64> {
-        self.hover
-            .filter(|id| *id == self.base + offset)
-            .map(|id| id - self.base)
-    }
-
-    fn render_footer(&mut self, width: f32) -> Node {
-        let colors = theme();
-        let repo = self.active_repo.min(self.sources.len().saturating_sub(1));
-        self.active_repo = repo;
-        let head = self.head_of(repo);
-        let status = self.status_of(repo);
-        let several = self.sources.len() > 1;
-        let hot = |offset: u64| self.footer_hot(offset);
-        let mut left = div().row().flex(1.0).gap(2.0).items_center().child(
-            icon(IconKind::Branch).size(14.0).color(if several {
-                colors.icon_muted
-            } else {
-                colors.text_disabled
-            }),
-        );
-        if several {
-            let name = self
-                .sources
-                .get(repo)
-                .map_or_else(String::new, |source| source.name.clone());
-            left = left
-                .child(
-                    div()
-                        .row()
-                        .h_px(20.0)
-                        .px(4.0)
-                        .items_center()
-                        .rounded(4.0)
-                        .on_click(self.base + SWITCH_REPO)
-                        .bg(if hot(SWITCH_REPO).is_some() {
-                            colors.ghost_element_hover
-                        } else {
-                            Rgba::TRANSPARENT
-                        })
-                        .child(label(name).size(12.0).color(colors.text)),
-                )
-                .child(label("/").size(12.0).color(Rgba::new(
-                    colors.text_muted.r,
-                    colors.text_muted.g,
-                    colors.text_muted.b,
-                    colors.text_muted.a * 0.4,
-                )));
-        }
-        let branch = head
-            .as_ref()
-            .and_then(|head| head.branch.clone().or_else(|| head.short_sha.clone()))
-            .unwrap_or_else(|| " (no branch)".into());
-        left = left.child(
-            div()
-                .row()
-                .flex(1.0)
-                .px(4.0)
-                .items_center()
-                .child(label(branch).size(12.0).color(colors.text).truncate()),
-        );
-        let mut repo_row = div()
-            .row()
-            .h_px(commit_area::repo_row_height())
-            .px(8.0)
-            .gap(4.0)
-            .items_center()
-            .child(left);
-        if let Some((text, kind, ahead, behind)) =
-            head.as_ref().and_then(commit_area::remote_button_state)
-        {
-            let mut leading: Vec<Node> = Vec::new();
-            if self.commit.remote_running().is_some() {
-                leading.push(
-                    icon(IconKind::RotateCw)
-                        .size(12.0)
-                        .color(colors.icon_muted)
-                        .into(),
-                );
-            } else if let Some(kind) = kind {
-                leading.push(icon(kind).size(12.0).color(colors.icon_muted).into());
-            } else {
-                for (count, arrow) in [(behind, IconKind::ArrowDown), (ahead, IconKind::ArrowUp)] {
-                    if count > 0 {
-                        leading.push(icon(arrow).size(10.0).color(colors.icon_muted).into());
-                        leading.push(
-                            label(count.to_string())
-                                .size(10.0)
-                                .color(colors.text)
-                                .into(),
-                        );
-                    }
-                }
-            }
-            repo_row = repo_row.child(commit_area::split_button(
-                self.base + REMOTE,
-                self.base + REMOTE_MENU,
-                leading,
-                text,
-                !self.commit.busy(),
+    fn view_options_menu(&mut self) {
+        let mut entries = Vec::new();
+        if self.tab == Tab::History {
+            entries.push(("Show".to_string(), MenuAction::Header, false, false));
+            entries.push((
+                "By Repo".into(),
+                MenuAction::HistoryByRepo,
+                !self.timeline,
                 false,
-                self.hover,
+            ));
+            entries.push((
+                "One Timeline".into(),
+                MenuAction::HistoryTimeline,
+                self.timeline,
+                false,
+            ));
+        } else {
+            entries.push(("View".to_string(), MenuAction::Header, false, false));
+            entries.push(("Tree".into(), MenuAction::ViewTree, self.tree_view, false));
+            entries.push(("List".into(), MenuAction::ViewList, !self.tree_view, false));
+            if self.tab == Tab::Changes {
+                entries.push(("Group By".into(), MenuAction::Header, false, true));
+                entries.push((
+                    "Staged & Not Staged".into(),
+                    MenuAction::GroupByStaging,
+                    self.group_by_staging,
+                    false,
+                ));
+                entries.push((
+                    "None".into(),
+                    MenuAction::GroupNone,
+                    !self.group_by_staging,
+                    false,
+                ));
+            }
+        }
+        self.open_menu_with(entries);
+    }
+
+    fn branch_menu(&mut self) {
+        let scan = self.current();
+        let workspace_branch = self.workspace_branch(&scan);
+        let mut entries = vec![(
+            "Each repo's branch - click one to use another".to_string(),
+            MenuAction::Header,
+            false,
+            false,
+        )];
+        for (index, source) in self.sources.iter().enumerate() {
+            let state = scan.repos.get(index);
+            let branch = state
+                .and_then(|state| state.branch_name().map(str::to_string))
+                .unwrap_or_else(|| "(no branch)".into());
+            let status = state.map_or("not read yet".to_string(), origin_status);
+            entries.push((
+                format!("{}   {branch}   {status}", source.name),
+                MenuAction::PickBranch(source.name.clone()),
+                false,
+                false,
             ));
         }
-        let placeholder = commit_area::suggested_message(&status)
-            .unwrap_or_else(|| "Enter commit message".into());
-        let editor = self
-            .commit
-            .render_editor(width, &placeholder, self.base + COMMIT_EDITOR);
-        let has_head = head.as_ref().is_some_and(|head| head.short_sha.is_some());
-        let plan = self.commit.plan(&status, has_head);
-        let commit_row = div()
-            .row()
-            .h_px(commit_area::commit_row_height())
-            .px(6.0)
-            .items_center()
-            .bg(colors.editor_background)
-            .child(div().row().flex(1.0))
-            .child(commit_area::split_button(
-                self.base + COMMIT,
-                self.base + COMMIT_MENU,
-                Vec::new(),
-                plan.title,
-                plan.enabled,
+        for index in 0..self.sources.len() {
+            let Some((branch, false)) = self.other_branch(&scan, index) else {
+                continue;
+            };
+            let Some(source) = self.sources.get(index) else {
+                continue;
+            };
+            let name = source.name.clone();
+            entries.push((
+                format!("{name} is on {branch}, not {workspace_branch}"),
+                MenuAction::Header,
                 false,
-                self.hover,
+                true,
             ));
-        div()
-            .col()
-            .w_px(width)
-            .h_px(self.commit.height())
-            .child(repo_row)
-            .child(div().h_px(1.0).bg(colors.border))
-            .child(editor)
-            .child(div().h_px(1.0).bg(colors.border))
-            .child(commit_row)
-            .into()
+            if scan
+                .repos
+                .get(index)
+                .and_then(RepoScan::branch_name)
+                .is_some()
+            {
+                entries.push((
+                    format!("Keep {branch} for {name}"),
+                    MenuAction::KeepBranch(name.clone(), branch.clone()),
+                    false,
+                    false,
+                ));
+            }
+            entries.push((
+                format!("Switch {name} to {workspace_branch}"),
+                MenuAction::SwitchBranch(name),
+                false,
+                false,
+            ));
+        }
+        entries.push((
+            "Copy Branch Name".into(),
+            MenuAction::CopyBranch,
+            false,
+            true,
+        ));
+        self.open_menu_with(entries);
     }
 
-    fn apply_menu(&mut self, repo: usize, file: usize, action: MenuAction) {
-        let footer_request = match action {
-            MenuAction::Amend => {
-                if let Some(source) = self.sources.get(self.active_repo) {
-                    let root = source.root.clone();
-                    self.commit.toggle_amend(&root);
-                }
-                return;
-            }
-            MenuAction::Signoff => {
-                self.commit.signoff = !self.commit.signoff;
-                return;
-            }
-            MenuAction::SkipHooks => {
-                self.commit.skip_hooks = !self.commit.skip_hooks;
-                return;
-            }
-            MenuAction::Fetch => Some(RemoteRequest::Fetch(None)),
-            MenuAction::Pull => Some(RemoteRequest::Pull { rebase: false }),
-            MenuAction::PullRebase => Some(RemoteRequest::Pull { rebase: true }),
-            MenuAction::Push => Some(RemoteRequest::Push { force: false }),
-            MenuAction::ForcePush => Some(RemoteRequest::Push { force: true }),
-            MenuAction::FetchFrom => {
-                let mut remotes = self.remote_choices();
-                match remotes.len() {
-                    0 => self
-                        .requests
-                        .push(PanelRequest::Toast("No remotes to fetch from".into())),
-                    1 => self.remote(RemoteRequest::Fetch(remotes.pop())),
-                    _ => {
-                        remotes.push(ALL_REMOTES.into());
-                        self.pick_remote(
-                            "Fetch from which remote?",
-                            remotes,
-                            RemoteRequest::Fetch(None),
-                        );
-                    }
-                }
-                return;
-            }
-            MenuAction::PushTo => {
-                let remotes = self.remote_choices();
-                match remotes.as_slice() {
-                    [] => self.requests.push(PanelRequest::Toast(
-                        "No remote available to push to. Add a remote to be able to publish changes."
-                            .into(),
-                    )),
-                    [remote] => self.remote(RemoteRequest::PushTo {
-                        force: false,
-                        remote: remote.clone(),
-                    }),
-                    _ => self.pick_remote(
-                        "Pick which remote to push to",
-                        remotes,
-                        RemoteRequest::PushTo {
-                            force: false,
-                            remote: String::new(),
-                        },
-                    ),
-                }
-                return;
-            }
-            _ => None,
-        };
-        if let Some(request) = footer_request {
-            self.remote(request);
-            return;
+    fn targets_menu(&mut self) {
+        let scan = self.current();
+        let mut entries = vec![(
+            "One commit per repo, same message".to_string(),
+            MenuAction::Header,
+            false,
+            false,
+        )];
+        for target in self.commit_targets(&scan) {
+            entries.push((
+                format!("{} ({} staged)", target.repo, target.staged),
+                MenuAction::ToggleTarget(target.repo.clone()),
+                !self.excluded.contains(&target.repo),
+                false,
+            ));
         }
-        let Some((path, change)) = self.file(repo, file) else {
-            return;
-        };
+        self.open_menu_with(entries);
+    }
+
+    fn remote_menu(&mut self, repo: usize) {
+        let entries = vec![
+            (
+                "Fetch".to_string(),
+                MenuAction::Remote(repo, RemoteRequest::Fetch(None)),
+                false,
+                false,
+            ),
+            (
+                "Pull".into(),
+                MenuAction::Remote(repo, RemoteRequest::Pull { rebase: false }),
+                false,
+                false,
+            ),
+            (
+                "Pull (Rebase)".into(),
+                MenuAction::Remote(repo, RemoteRequest::Pull { rebase: true }),
+                false,
+                false,
+            ),
+            (
+                "Push".into(),
+                MenuAction::Remote(repo, RemoteRequest::Push { force: false }),
+                false,
+                true,
+            ),
+            (
+                "Force Push".into(),
+                MenuAction::Remote(repo, RemoteRequest::Push { force: true }),
+                false,
+                false,
+            ),
+        ];
+        self.open_menu_with(entries);
+    }
+
+    fn apply_menu(&mut self, file: Option<(usize, Scope, FileEntry)>, action: MenuAction) {
         match action {
-            MenuAction::ToggleReviewed => self.toggle_reviewed(repo, file),
-            MenuAction::OpenDiff => self.open_diff(repo, file),
-            MenuAction::Open => self.requests.push(PanelRequest::OpenFile(path)),
+            MenuAction::Header => {}
+            MenuAction::ViewTree => self.tree_view = true,
+            MenuAction::ViewList => self.tree_view = false,
+            MenuAction::GroupByStaging => self.group_by_staging = true,
+            MenuAction::GroupNone => self.group_by_staging = false,
+            MenuAction::HistoryByRepo => self.timeline = false,
+            MenuAction::HistoryTimeline => self.timeline = true,
+            MenuAction::StageAll => self.stage_everything(true),
+            MenuAction::UnstageAll => self.stage_everything(false),
+            MenuAction::StashAll => self.stash(false),
+            MenuAction::StashPop => self.stash(true),
+            MenuAction::DiscardTracked => self.ask(
+                Confirm::DiscardTracked,
+                "Discard every tracked change in every repo?".into(),
+                "Staged and unstaged changes to tracked files are lost; new files stay.".into(),
+                "Discard",
+            ),
+            MenuAction::Amend => self.toggle_amend(),
+            MenuAction::Signoff => self.commit.signoff = !self.commit.signoff,
+            MenuAction::SkipHooks => self.commit.skip_hooks = !self.commit.skip_hooks,
+            MenuAction::ToggleTarget(repo) => {
+                if !self.excluded.remove(&repo) {
+                    self.excluded.insert(repo);
+                }
+            }
+            MenuAction::PickBranch(repo) => self.requests.push(PanelRequest::PickBranch { repo }),
+            MenuAction::KeepBranch(repo, branch) => {
+                self.kept.insert(repo.clone());
+                self.requests
+                    .push(PanelRequest::KeepBranch { repo, branch });
+            }
+            MenuAction::SwitchBranch(repo) => {
+                self.requests.push(PanelRequest::SwitchBranch { repo })
+            }
+            MenuAction::CopyBranch => {
+                let branch = self.workspace_branch(&self.current());
+                self.requests.push(PanelRequest::Copy(branch));
+            }
+            MenuAction::PullAll => self.sync_all(true, false),
+            MenuAction::PushAll => self.sync_all(false, true),
+            MenuAction::FetchAll => self.fetch_all(),
+            MenuAction::Remote(repo, request) => self.run_remote(vec![(repo, request)]),
+            MenuAction::OpenDiff
+            | MenuAction::OpenFile
+            | MenuAction::ToggleReviewed
+            | MenuAction::CopyPath
+            | MenuAction::CopyRelativePath
+            | MenuAction::Discard => {
+                if let Some((repo, scope, entry)) = file {
+                    self.apply_file_action(repo, scope, &entry, action);
+                }
+            }
+        }
+    }
+
+    fn apply_file_action(
+        &mut self,
+        repo: usize,
+        scope: Scope,
+        entry: &FileEntry,
+        action: MenuAction,
+    ) {
+        let Some(source) = self.sources.get(repo).cloned() else {
+            return;
+        };
+        let path = source.root.join(&entry.path);
+        match action {
+            MenuAction::OpenDiff => self.open_file_diff(repo, scope, entry),
+            MenuAction::OpenFile => self.requests.push(PanelRequest::OpenFile(path)),
+            MenuAction::ToggleReviewed => self.toggle_reviewed(repo, &entry.path),
             MenuAction::CopyPath => self
                 .requests
                 .push(PanelRequest::Copy(path.to_string_lossy().into_owned())),
-            MenuAction::CopyRelativePath => self.requests.push(PanelRequest::Copy(change.path)),
-            MenuAction::Amend
-            | MenuAction::Signoff
-            | MenuAction::SkipHooks
-            | MenuAction::Fetch
-            | MenuAction::FetchFrom
-            | MenuAction::Pull
-            | MenuAction::PullRebase
-            | MenuAction::Push
-            | MenuAction::PushTo
-            | MenuAction::ForcePush => {}
+            MenuAction::CopyRelativePath => {
+                self.requests.push(PanelRequest::Copy(entry.path.clone()))
+            }
             MenuAction::Discard => {
-                let tag = self.next_tag;
-                self.next_tag += 1;
-                self.confirm = Some((tag, repo, file));
-                let detail = if change.status == ChangeStatus::Added {
-                    "The file is not committed, so it will be deleted.".to_string()
+                let detail = if entry.status == ChangeStatus::Added {
+                    "The file is not committed, so it will be deleted."
                 } else {
                     "Its staged and unstaged changes are lost; the branch's commits stay."
-                        .to_string()
                 };
-                self.requests.push(PanelRequest::Prompt {
-                    tag,
-                    message: format!("Discard uncommitted changes to {}?", change.path),
-                    detail: Some(detail),
-                    buttons: vec!["Discard".into(), "Cancel".into()],
-                });
+                self.ask(
+                    Confirm::Discard {
+                        repo,
+                        path: entry.path.clone(),
+                    },
+                    format!("Discard uncommitted changes to {}?", entry.path),
+                    detail.into(),
+                    "Discard",
+                );
             }
+            _ => {}
         }
     }
-}
 
-fn pr_color(pr: &pom_forge::PullRequest) -> Rgba {
-    let colors = theme();
-    match (pr.state.as_str(), pr.is_draft) {
-        ("MERGED", _) => workspace::PrSeverity::Merged.color(),
-        ("CLOSED", _) => colors.error,
-        (_, true) => colors.text_muted,
-        _ if pr.conflict || pr.checks == "fail" || pr.review == "changes" => colors.error,
-        _ if pr.checks == "pending" || pr.review == "review" => colors.warning,
-        _ => colors.success,
-    }
-}
-
-/// What a repo's uncommitted changes add up to, for its status icon: a conflict, else a deletion, else a
-/// modification, else an addition.
-fn worst_status(status: &[StatusEntry]) -> Option<ChangeStatus> {
-    if status.is_empty() {
-        return None;
-    }
-    let any = |test: &dyn Fn(&StatusEntry) -> bool| status.iter().any(test);
-    Some(if any(&|entry| entry.conflicted) {
-        ChangeStatus::Conflicted
-    } else if any(&|entry| entry.index == 'D' || entry.worktree == 'D') {
-        ChangeStatus::Deleted
-    } else if any(&|entry| !entry.untracked && (entry.index == 'M' || entry.worktree == 'M')) {
-        ChangeStatus::Modified
-    } else {
-        ChangeStatus::Added
-    })
-}
-
-fn status_icon(status: ChangeStatus) -> Node {
-    let (kind, color) = match status {
-        ChangeStatus::Conflicted => (IconKind::Warning, theme().warning),
-        ChangeStatus::Deleted => (IconKind::SquareMinus, theme().version_control_deleted),
-        ChangeStatus::Modified | ChangeStatus::Renamed => {
-            (IconKind::SquareDot, theme().version_control_modified)
+    fn click_row(&mut self, index: usize, control: Control) {
+        let Some(row) = self.rows.get(index).cloned() else {
+            return;
+        };
+        let scan = self.current();
+        match row {
+            Row::RepoHeader { repo, history } => {
+                let name = self
+                    .sources
+                    .get(repo)
+                    .map(|source| source.name.clone())
+                    .unwrap_or_default();
+                if control == Control::Check {
+                    let all_staged = scan.repos.get(repo).is_some_and(|state| {
+                        state
+                            .status
+                            .iter()
+                            .all(|entry| entry.staging() == Staging::Staged)
+                    });
+                    self.stage_repo(repo, !all_staged);
+                } else {
+                    self.toggle_fold(format!("{}:{name}", if history { "h" } else { "c" }));
+                }
+            }
+            Row::Section { repo, staged, .. } => {
+                if control == Control::Check {
+                    self.stage_repo(repo, !staged);
+                } else {
+                    let name = self
+                        .sources
+                        .get(repo)
+                        .map(|source| source.name.clone())
+                        .unwrap_or_default();
+                    self.toggle_fold(format!("s:{name}:{staged}"));
+                }
+            }
+            Row::Directory {
+                repo,
+                scope,
+                path,
+                staging,
+                ..
+            } => {
+                if control == Control::Check {
+                    if let Some(staging) = staging {
+                        self.stage_directory(repo, scope, &path, staging);
+                    }
+                } else {
+                    let name = self
+                        .sources
+                        .get(repo)
+                        .map(|source| source.name.clone())
+                        .unwrap_or_default();
+                    self.toggle_fold(format!("d:{}:{name}:{path}", scope.key()));
+                }
+            }
+            Row::File {
+                repo, scope, entry, ..
+            } => match control {
+                Control::Check => self.stage_file(repo, scope, &entry),
+                Control::Eye => self.toggle_reviewed(repo, &entry.path),
+                _ => self.open_file_diff(repo, scope, &entry),
+            },
+            Row::Card { repo } => match control {
+                Control::Action => self.remote_primary(repo),
+                Control::Menu => self.remote_menu(repo),
+                _ => {
+                    let name = self
+                        .sources
+                        .get(repo)
+                        .map(|source| source.name.clone())
+                        .unwrap_or_default();
+                    self.toggle_fold(format!("r:{name}"));
+                }
+            },
+            Row::PullRequest { repo, .. } => {
+                if control == Control::External {
+                    self.pull_request_in_browser(repo);
+                } else {
+                    self.open_pull_request(repo);
+                }
+            }
+            Row::CreatePullRequest { repo } => self.create_pull_request(repo),
+            Row::CommitGroup { repo, incoming, .. } => {
+                let name = self
+                    .sources
+                    .get(repo)
+                    .map(|source| source.name.clone())
+                    .unwrap_or_default();
+                self.toggle_fold(format!("{}:{name}", if incoming { "in" } else { "out" }));
+            }
+            Row::FilesHeader { repo, .. } => {
+                let name = self
+                    .sources
+                    .get(repo)
+                    .map(|source| source.name.clone())
+                    .unwrap_or_default();
+                self.toggle_fold(format!("rf:{name}"));
+            }
+            Row::Commit {
+                repo,
+                commit,
+                incoming,
+                ..
+            } => self.open_commit(repo, commit, incoming),
+            Row::Message { .. }
+            | Row::Progress { .. }
+            | Row::Gap
+            | Row::CardNote { .. }
+            | Row::Day(_)
+            | Row::CommitHeader => {}
         }
-        ChangeStatus::Added => (IconKind::SquarePlus, theme().version_control_added),
-    };
-    icon(kind).size(14.0).color(color).into()
-}
-
-/// The file name, then its folder muted and cut from the front when the row is narrow.
-fn path_label(change: &FileChange, reviewed: bool) -> Node {
-    let (folder, name) = match change.path.rsplit_once('/') {
-        Some((folder, name)) => (Some(folder.to_string()), name.to_string()),
-        None => (None, change.path.clone()),
-    };
-    let deleted = change.status == ChangeStatus::Deleted;
-    let name_color = if deleted {
-        theme().text_disabled
-    } else if reviewed {
-        theme().text_muted
-    } else {
-        theme().text
-    };
-    let folder_color = if deleted {
-        theme().text_disabled
-    } else {
-        theme().text_muted
-    };
-    let mut row = div()
-        .row()
-        .flex(1.0)
-        .gap(6.0)
-        .items_center()
-        .child(label(name).color(name_color).truncate());
-    if let Some(folder) = folder {
-        row = row.child(
-            label(folder)
-                .size(12.0)
-                .color(folder_color)
-                .truncate_start(),
-        );
     }
-    row.into()
+
+    fn click_fixed(&mut self, offset: u64) -> bool {
+        match offset {
+            TAB_CHANGES => self.set_tab(Tab::Changes),
+            TAB_REMOTE => self.set_tab(Tab::Remote),
+            TAB_HISTORY => self.set_tab(Tab::History),
+            VIEW_DIFF => self.open_all_diffs(true),
+            OPEN_ALL_DIFFS => self.open_all_diffs(false),
+            VIEW_OPTIONS => self.view_options_menu(),
+            STAGE_ALL => {
+                let everything = Self::everything_staged(&self.current());
+                self.stage_everything(!everything);
+            }
+            STAGE_MENU => self.open_menu_with(vec![
+                ("Stage All".into(), MenuAction::StageAll, false, false),
+                ("Unstage All".into(), MenuAction::UnstageAll, false, false),
+                ("Stash All".into(), MenuAction::StashAll, false, true),
+                ("Stash Pop".into(), MenuAction::StashPop, false, false),
+                (
+                    "Discard Tracked Changes".into(),
+                    MenuAction::DiscardTracked,
+                    false,
+                    true,
+                ),
+            ]),
+            FETCH_ALL => self.fetch_all(),
+            BRANCH_MENU | DRIFT_CHIP => self.branch_menu(),
+            BRANCH_LINK => self.set_tab(Tab::Remote),
+            COMMIT_EDITOR => self.commit.focused = true,
+            PLAN => self.targets_menu(),
+            COMMIT => self.commit_now(),
+            COMMIT_MENU => {
+                let has_commit = self.last_commit(&self.current()).is_some();
+                let mut entries = vec![(
+                    "Commit Options".to_string(),
+                    MenuAction::Header,
+                    false,
+                    false,
+                )];
+                if has_commit {
+                    entries.push(("Amend".into(), MenuAction::Amend, self.commit.amend, false));
+                }
+                entries.push((
+                    "Signoff".into(),
+                    MenuAction::Signoff,
+                    self.commit.signoff,
+                    false,
+                ));
+                entries.push((
+                    "Skip Hooks".into(),
+                    MenuAction::SkipHooks,
+                    self.commit.skip_hooks,
+                    false,
+                ));
+                self.open_menu_with(entries);
+            }
+            LAST_COMMIT => {
+                if let Some((repo, commit)) = self.last_commit(&self.current()) {
+                    self.open_commit(repo, commit, false);
+                }
+            }
+            UNCOMMIT => self.uncommit(),
+            SYNC => self.sync_all(true, true),
+            SYNC_MENU => self.open_menu_with(vec![
+                ("Pull All".into(), MenuAction::PullAll, false, false),
+                ("Push All".into(), MenuAction::PushAll, false, false),
+                ("Fetch All".into(), MenuAction::FetchAll, false, false),
+            ]),
+            BACK => {
+                self.opened = None;
+                self.scroll = 0.0;
+            }
+            _ => return false,
+        }
+        true
+    }
 }
 
-fn diff_stat(change: &FileChange) -> Node {
-    let (Some(added), Some(deleted)) = (change.added, change.deleted) else {
-        return label("binary").size(12.0).color(theme().text_muted).into();
-    };
-    div()
-        .row()
-        .gap(4.0)
-        .items_center()
-        .child(
-            label(format!("+{added}"))
-                .size(12.0)
-                .color(theme().version_control_added),
-        )
-        .child(
-            label(format!("-{deleted}"))
-                .size(12.0)
-                .color(theme().version_control_deleted),
-        )
-        .into()
+fn origin_status(repo: &RepoScan) -> String {
+    match repo.upstream() {
+        Upstream::None => "not published".into(),
+        Upstream::Gone => "gone from origin".into(),
+        Upstream::Tracked {
+            ahead: 0,
+            behind: 0,
+        } => "up to date".into(),
+        Upstream::Tracked { ahead, behind: 0 } => format!("{ahead} to push"),
+        Upstream::Tracked { ahead: 0, behind } => format!("{behind} to pull"),
+        Upstream::Tracked { ahead, behind } => format!("{ahead} to push, {behind} to pull"),
+    }
 }
 
 impl Drop for GitPanel {
@@ -1487,7 +1517,7 @@ impl SidePanelView for GitPanel {
         PaneKind::Git
     }
 
-    fn render(&mut self, width: f32, height: f32) -> Node {
+    fn render(&mut self, width: f32, height: f32) -> ui::Node {
         if let Ok(mut drawn) = self.drawn_at.lock() {
             *drawn = Some(Instant::now());
         }
@@ -1497,228 +1527,39 @@ impl SidePanelView for GitPanel {
             self.spawn_poller();
         }
         if let Some(outcome) = self.commit.poll() {
+            if matches!(outcome, commit_area::Outcome::Committed) {
+                self.excluded.clear();
+            }
             self.requests.extend(commit_area::outcome_requests(outcome));
             self.refresh();
         }
-        let footer_h = self.commit.height();
-        let selector_h = self.selector_height();
-        let list_h = (height - HEADER_H - footer_h - selector_h).max(0.0);
-        self.viewport_h = list_h;
-        let repos = self.repos();
-        self.rebuild_rows(&repos);
-        let max_scroll = (self.content_height() - height).max(0.0);
-        self.scroll = self.scroll.clamp(0.0, max_scroll);
-        let refresh_id = self.refresh_id();
-        let hot = self.hover == Some(refresh_id);
-        let active_changes = repos.get(self.active_repo.min(repos.len().saturating_sub(1)));
-        let total = active_changes.map_or(0, |changes| changes.files.len());
-        let reviewed = active_changes.map_or(0, |changes| {
-            changes
-                .files
-                .iter()
-                .filter(|file| self.is_reviewed(self.active_repo, &file.path))
-                .count()
-        });
-        let (added, deleted) = active_changes.map_or((0, 0), |changes| {
-            changes.files.iter().fold((0, 0), |(added, deleted), file| {
-                (
-                    added + file.added.unwrap_or(0),
-                    deleted + file.deleted.unwrap_or(0),
-                )
-            })
-        });
-        let status = self.status_of(self.active_repo);
-        let stage_all_label = if Self::stages_all(&status) {
-            "Stage All"
-        } else {
-            "Unstage All"
-        };
-        let stage_all_hot = self.footer_hot(STAGE_ALL).is_some();
-        let header = div()
-            .row()
-            .h_px(HEADER_H)
-            .px(10.0)
-            .gap(6.0)
-            .items_center()
-            .child(label("Changes").size(12.0).color(theme().text_muted))
-            .child(
-                div().row().flex(1.0).gap(6.0).items_center().child(
-                    label(match (total, reviewed) {
-                        (total, 0) => format!("({total})"),
-                        (total, reviewed) => format!("({reviewed} of {total} reviewed)"),
-                    })
-                    .size(11.0)
-                    .color(theme().text_placeholder)
-                    .truncate(),
-                ),
-            )
-            .child(
-                label(format!("+{added}"))
-                    .size(11.0)
-                    .color(theme().version_control_added),
-            )
-            .child(
-                label(format!("-{deleted}"))
-                    .size(11.0)
-                    .color(theme().version_control_deleted),
-            )
-            .child(
-                div()
-                    .row()
-                    .h_px(18.0)
-                    .px(6.0)
-                    .rounded(4.0)
-                    .items_center()
-                    .on_click(self.base + STAGE_ALL)
-                    .bg(if stage_all_hot {
-                        theme().element_hover
-                    } else {
-                        Rgba::TRANSPARENT
-                    })
-                    .child(label(stage_all_label).size(12.0).color(theme().text)),
-            )
-            .child(
-                div()
-                    .w_px(18.0)
-                    .h_px(18.0)
-                    .rounded(4.0)
-                    .items_center()
-                    .justify_center()
-                    .on_click(refresh_id)
-                    .bg(if hot {
-                        theme().element_hover
-                    } else {
-                        Rgba::TRANSPARENT
-                    })
-                    .child(
-                        icon(IconKind::RotateCw)
-                            .size(12.0)
-                            .color(theme().icon_muted),
-                    ),
-            );
-        let first = (self.scroll / ROW_H).floor() as usize;
-        let visible = (list_h / ROW_H).floor() as usize;
-        let mut list = div().col().h_px(list_h);
-        for (index, row) in self.rows.iter().enumerate().skip(first).take(visible) {
-            list = list.child(self.render_row(index, row, &repos));
-        }
-        let footer = self.render_footer(width);
-        let mut panel = div()
-            .col()
-            .w_px(width)
-            .h_px(height)
-            .child(header)
-            .child(list);
-        if let Some(selector) = self.render_selector(width) {
-            panel = panel.child(selector);
-        }
-        panel.child(footer).into()
+        self.render_panel(width, height)
     }
 
     fn click(&mut self, id: u64) {
         self.commit.focused = false;
-        if id == self.refresh_id() {
-            self.refresh();
-            return;
-        }
-        match id.checked_sub(self.base) {
-            Some(COMMIT_EDITOR) => {
-                self.commit.focused = true;
+        if let Some(offset) = id.checked_sub(self.base) {
+            if (FIXED..FIXED_END).contains(&offset) && self.click_fixed(offset) {
                 return;
             }
-            Some(COMMIT) => return self.commit_now(),
-            Some(COMMIT_MENU) => {
-                let has_head = self
-                    .head_of(self.active_repo)
-                    .is_some_and(|head| head.short_sha.is_some());
-                let mut entries = Vec::new();
-                if has_head {
-                    entries.push(("Amend", MenuAction::Amend, self.commit.amend, false));
-                }
-                entries.push(("Signoff", MenuAction::Signoff, self.commit.signoff, false));
-                entries.push((
-                    "Skip Hooks",
-                    MenuAction::SkipHooks,
-                    self.commit.skip_hooks,
-                    false,
-                ));
-                return self.open_footer_menu(entries);
-            }
-            Some(REMOTE) => return self.primary_remote_action(),
-            Some(REMOTE_MENU) => {
-                return self.open_footer_menu(vec![
-                    ("Fetch", MenuAction::Fetch, false, false),
-                    ("Fetch From", MenuAction::FetchFrom, false, false),
-                    ("Pull", MenuAction::Pull, false, false),
-                    ("Pull (Rebase)", MenuAction::PullRebase, false, false),
-                    ("Push", MenuAction::Push, false, true),
-                    ("Push To", MenuAction::PushTo, false, false),
-                    ("Force Push", MenuAction::ForcePush, false, false),
-                ])
-            }
-            Some(SWITCH_REPO) => return self.open_selector(),
-            Some(SELECTOR_QUERY) => return,
-            Some(offset)
-                if (SELECTOR_ITEM..SELECTOR_ITEM + SELECTOR_MAX as u64).contains(&offset) =>
-            {
-                let position = (offset - SELECTOR_ITEM) as usize;
-                if let Some(repo) = self.selector_matches().get(position).copied() {
-                    self.choose_repo(repo);
-                }
-                return;
-            }
-            Some(STAGE_ALL) => return self.stage_all(),
-            _ => {}
         }
-        let Some((index, control)) = self.decode(id) else {
-            return;
-        };
-        match self.rows.get(index).cloned() {
-            Some(Row::Section { uncommitted: true }) if control == Control::Stage => {
-                self.stage_all()
-            }
-            Some(Row::Section { uncommitted: true }) => {
-                self.uncommitted_collapsed = !self.uncommitted_collapsed
-            }
-            Some(Row::Section { uncommitted: false }) => {
-                self.committed_collapsed = !self.committed_collapsed
-            }
-            Some(Row::PullRequests { .. }) => self.prs_collapsed = !self.prs_collapsed,
-            Some(Row::PullRequest { repo }) | Some(Row::CreatePullRequest { repo }) => {
-                self.open_pull_request(repo)
-            }
-            Some(Row::File { repo, file }) if control == Control::Stage => {
-                self.toggle_stage(repo, file)
-            }
-            Some(Row::File { repo, file }) => {
-                self.active_repo = repo;
-                self.open_diff(repo, file)
-            }
-            _ => {}
+        if let Some((index, control)) = self.decode(id) {
+            self.click_row(index, control);
         }
     }
 
     fn click_at(&mut self, id: u64, x: f32, y: f32) {
         self.click(id);
-        if id == self.base + COMMIT_EDITOR {
+        if id == self.fixed(COMMIT_EDITOR) {
             self.commit.editor.click(x - 8.0, y - 8.0);
         }
     }
 
     fn text_focused(&self) -> bool {
-        self.commit.focused || self.selector.is_some()
+        self.commit.focused
     }
 
     fn text(&mut self, text: &str) -> bool {
-        if let Some(selector) = self.selector.as_mut() {
-            let typed: String = text.chars().filter(|c| !c.is_control()).collect();
-            if typed.is_empty() {
-                return false;
-            }
-            selector.query.push_str(&typed);
-            selector.highlight = 0;
-            return true;
-        }
         let typed: String = text
             .chars()
             .filter(|c| *c == '\n' || !c.is_control())
@@ -1731,38 +1572,8 @@ impl SidePanelView for GitPanel {
     }
 
     fn key(&mut self, key: EditKey, shift: bool) -> bool {
-        if self.selector.is_some() {
-            let count = self.selector_matches().len();
-            let Some(selector) = self.selector.as_mut() else {
-                return false;
-            };
-            match key {
-                EditKey::Escape => self.selector = None,
-                EditKey::Up => selector.highlight = selector.highlight.saturating_sub(1),
-                EditKey::Down => {
-                    selector.highlight = (selector.highlight + 1).min(count.saturating_sub(1))
-                }
-                EditKey::Backspace => {
-                    selector.query.pop();
-                    selector.highlight = 0;
-                }
-                EditKey::Enter => {
-                    let highlight = selector.highlight;
-                    if let Some(repo) = self.selector_matches().get(highlight).copied() {
-                        self.choose_repo(repo);
-                    }
-                }
-                _ => return false,
-            }
-            return true;
-        }
         match key {
-            EditKey::ReplaceAll if shift && !self.commit.amend => {
-                if let Some(source) = self.sources.get(self.active_repo) {
-                    let root = source.root.clone();
-                    self.commit.toggle_amend(&root);
-                }
-            }
+            EditKey::ReplaceAll if shift && !self.commit.amend => self.toggle_amend(),
             EditKey::ReplaceAll => self.commit_now(),
             EditKey::Escape => self.commit.focused = false,
             _ => return self.commit.editor.key(key, shift),
@@ -1772,16 +1583,14 @@ impl SidePanelView for GitPanel {
 
     fn blur(&mut self) {
         self.commit.focused = false;
-        self.selector = None;
     }
 
     fn set_hover(&mut self, id: Option<u64>) -> bool {
-        let footer = |id: u64| {
+        let ours = |id: u64| {
             id.checked_sub(self.base)
-                .is_some_and(|offset| (FOOTER..FOOTER + 100).contains(&offset))
+                .is_some_and(|offset| offset < FIXED_END)
         };
-        let id =
-            id.filter(|id| self.decode(*id).is_some() || *id == self.refresh_id() || footer(*id));
+        let id = id.filter(|id| ours(*id));
         if self.hover == id {
             return false;
         }
@@ -1790,7 +1599,7 @@ impl SidePanelView for GitPanel {
     }
 
     fn scroll(&mut self, dy: f32) -> bool {
-        let max_scroll = (self.content_height() - self.viewport_h).max(0.0);
+        let max_scroll = (rows::content_height(&self.rows) - self.viewport_h).max(0.0);
         let next = (self.scroll - dy).clamp(0.0, max_scroll);
         if (next - self.scroll).abs() < 0.01 {
             return false;
@@ -1803,42 +1612,55 @@ impl SidePanelView for GitPanel {
         let Some((index, _)) = self.decode(id) else {
             return false;
         };
-        let Some(Row::File { repo, file }) = self.rows.get(index).cloned() else {
+        let Some(Row::File {
+            repo, scope, entry, ..
+        }) = self.rows.get(index).cloned()
+        else {
             return false;
         };
-        let Some((_, change)) = self.file(repo, file) else {
-            return false;
-        };
-        let mut items = Vec::new();
-        let mut push = |text: &'static str, action: MenuAction, sep: bool| {
-            let id = self.base + MENU_BASE + items.len() as u64;
-            items.push((
-                MenuItem {
-                    id,
-                    label: text.into(),
-                    checked: false,
-                    sep,
-                    disabled: false,
-                },
-                action,
+        let scan = self.current();
+        let mut entries = Vec::new();
+        if entry.status != ChangeStatus::Deleted {
+            entries.push(("Open Diff".to_string(), MenuAction::OpenDiff, false, false));
+            if scope != Scope::Commit {
+                entries.push(("Open File".into(), MenuAction::OpenFile, false, false));
+            }
+        }
+        if scope == Scope::Branch {
+            let reviewed_label = if self.is_reviewed(&scan, repo, &entry.path) {
+                "Mark as Not Reviewed"
+            } else {
+                "Mark as Reviewed"
+            };
+            entries.push((
+                reviewed_label.into(),
+                MenuAction::ToggleReviewed,
+                false,
+                true,
             ));
-        };
-        if change.status != ChangeStatus::Deleted {
-            push("Open Diff", MenuAction::OpenDiff, false);
-            push("Open File", MenuAction::Open, false);
         }
-        let reviewed_label = if self.is_reviewed(repo, &change.path) {
-            "Mark as Not Reviewed"
-        } else {
-            "Mark as Reviewed"
-        };
-        push(reviewed_label, MenuAction::ToggleReviewed, true);
-        push("Copy Path", MenuAction::CopyPath, true);
-        push("Copy Relative Path", MenuAction::CopyRelativePath, false);
-        if change.uncommitted {
-            push("Discard Uncommitted Changes", MenuAction::Discard, true);
+        entries.push(("Copy Path".into(), MenuAction::CopyPath, false, true));
+        entries.push((
+            "Copy Relative Path".into(),
+            MenuAction::CopyRelativePath,
+            false,
+            false,
+        ));
+        let uncommitted = matches!(scope, Scope::Staged | Scope::Unstaged | Scope::Working)
+            || scan
+                .repos
+                .get(repo)
+                .and_then(|state| state.uncommitted_file(&entry.path))
+                .is_some();
+        if uncommitted && scope != Scope::Commit {
+            entries.push((
+                "Discard Uncommitted Changes".into(),
+                MenuAction::Discard,
+                false,
+                true,
+            ));
         }
-        self.menu = Some(OpenMenu { repo, file, items });
+        self.open_menu_for(Some((repo, scope, entry)), entries);
         true
     }
 
@@ -1857,9 +1679,9 @@ impl SidePanelView for GitPanel {
             .items
             .iter()
             .find(|(entry, _)| entry.id == item)
-            .map(|(_, action)| *action)
+            .map(|(_, action)| action.clone())
         {
-            self.apply_menu(menu.repo, menu.file, action);
+            self.apply_menu(menu.file, action);
         }
     }
 
@@ -1868,46 +1690,44 @@ impl SidePanelView for GitPanel {
     }
 
     fn prompt_answered(&mut self, tag: u64, answer: usize) {
-        if let Some((asked, choices, request)) = self.remote_prompt.take() {
-            if asked == tag {
-                let Some(chosen) = choices.get(answer).cloned() else {
+        let Some((asked, confirm)) = self.confirm.take() else {
+            return;
+        };
+        if asked != tag {
+            self.confirm = Some((asked, confirm));
+            return;
+        }
+        if answer != 0 {
+            return;
+        }
+        match confirm {
+            Confirm::Discard { repo, path } => {
+                let Some(source) = self.sources.get(repo).cloned() else {
                     return;
                 };
-                let request = match request {
-                    RemoteRequest::Fetch(_) if chosen == ALL_REMOTES => RemoteRequest::Fetch(None),
-                    RemoteRequest::Fetch(_) => RemoteRequest::Fetch(Some(chosen.clone())),
-                    RemoteRequest::PushTo { force, .. } => RemoteRequest::PushTo {
-                        force,
-                        remote: chosen.clone(),
-                    },
-                    other => other,
-                };
-                let repo = self.active_repo;
-                if let (Some(source), Some(head)) =
-                    (self.sources.get(repo).cloned(), self.head_of(repo))
-                {
-                    self.commit.run_remote(source.root, head, request, chosen);
+                if let Err(error) = git::discard_uncommitted(&source.root, &path) {
+                    self.requests.push(PanelRequest::Toast(format!(
+                        "Could not discard {path}: {error}"
+                    )));
                 }
-                return;
             }
-            self.remote_prompt = Some((asked, choices, request));
-        }
-        let Some((asked, repo, file)) = self.confirm.take() else {
-            return;
-        };
-        if asked != tag || answer != 0 {
-            return;
-        }
-        let repos = self.repos();
-        let Some((root, path)) = repos.get(repo).and_then(|changes| {
-            Some((changes.root.clone(), changes.files.get(file)?.path.clone()))
-        }) else {
-            return;
-        };
-        if let Err(error) = git::discard_uncommitted(&root, &path) {
-            self.requests.push(PanelRequest::Toast(format!(
-                "Could not discard {path}: {error}"
-            )));
+            Confirm::DiscardTracked => {
+                let sources = self.sources.clone();
+                let scan = self.current();
+                let failures: Vec<String> = sources
+                    .iter()
+                    .zip(&scan.repos)
+                    .filter(|(_, repo)| repo.head_commit.is_some() && !repo.status.is_empty())
+                    .filter_map(|(source, _)| {
+                        working_copy::discard_tracked(&source.root)
+                            .err()
+                            .map(|error| format!("{}: {}", source.name, error.message))
+                    })
+                    .collect();
+                if !failures.is_empty() {
+                    self.requests.push(PanelRequest::Toast(failures.join("; ")));
+                }
+            }
         }
         self.refresh();
     }
