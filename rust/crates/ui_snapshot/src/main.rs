@@ -15,6 +15,61 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(settings_ui::APPEARANCE);
 
+    if std::env::var("MENUKEYS").is_ok() {
+        let item = |id: u64, text: &'static str, sep: bool, disabled: bool| workspace::MenuItem {
+            id,
+            label: text.into(),
+            checked: false,
+            sep,
+            disabled,
+            danger: false,
+            icon: None,
+            hint: None,
+        };
+        let mut items = vec![
+            item(workspace::MENU_EDIT_CUT, "Cut", false, false),
+            item(workspace::MENU_EDIT_COPY, "Copy", false, false),
+            item(workspace::MENU_EDIT_PASTE, "Paste", false, false),
+            item(
+                workspace::MENU_COPY_REL_PATH,
+                "Copy Relative Path",
+                true,
+                false,
+            ),
+            item(workspace::MENU_REVEAL, "Reveal in Finder", false, false),
+            item(workspace::MENU_TREE_RENAME, "Rename", true, false),
+            item(workspace::MENU_TREE_DELETE, "Delete", false, false),
+            item(
+                workspace::MENU_EDIT_GO_TO_DECLARATION,
+                "Go to Declaration",
+                true,
+                false,
+            ),
+        ];
+        items[0].hint = None;
+        let painted = workspace::context_menu(40.0, 40.0, 40.0, 400.0, 400.0, &items, None, None);
+        let (width, height) = (400.0_f32, 400.0_f32);
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().editor_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(repos) = std::env::var("E2E_REPOS") {
         return e2e::run(out.trim_end_matches(".png"), &repos);
     }

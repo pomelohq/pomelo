@@ -706,26 +706,26 @@ pub fn is_submenu(id: u64) -> bool {
 
 pub fn menu_key(id: u64) -> &'static str {
     match id {
-        MENU_EDIT_CUT => "⌘X",
-        MENU_EDIT_COPY | MENU_COPY_PATH => "⌘C",
-        MENU_EDIT_PASTE => "⌘V",
-        MENU_EDIT_SELECT_ALL => "⌘A",
-        MENU_COPY_REL_PATH => "⌘⇧C",
-        MENU_REVEAL | MENU_EDIT_REVEAL => "⌘⌥R",
-        MENU_TREE_NEW_FILE => "⌘N",
-        MENU_TREE_NEW_DIR => "⌥⌘N",
-        MENU_TREE_OPEN_SYSTEM => "^⇧↩",
-        MENU_TREE_CUT => "⌘X",
-        MENU_TREE_COPY => "⌘C",
-        MENU_TREE_DUPLICATE => "⌘D",
-        MENU_TREE_PASTE => "⌘V",
-        MENU_TREE_RENAME => "↩",
-        MENU_TREE_TRASH => "⌫",
-        MENU_TREE_DELETE => "⌘⌦",
-        MENU_EDIT_GO_TO_DEFINITION => "F12",
-        MENU_EDIT_GO_TO_DECLARATION => "^F12",
-        MENU_EDIT_GO_TO_TYPE_DEFINITION => "⌘F12",
-        MENU_EDIT_GO_TO_IMPLEMENTATION => "⇧F12",
+        MENU_EDIT_CUT => "cmd-x",
+        MENU_EDIT_COPY | MENU_COPY_PATH => "cmd-c",
+        MENU_EDIT_PASTE => "cmd-v",
+        MENU_EDIT_SELECT_ALL => "cmd-a",
+        MENU_COPY_REL_PATH => "cmd-shift-c",
+        MENU_REVEAL | MENU_EDIT_REVEAL => "alt-cmd-r",
+        MENU_TREE_NEW_FILE => "cmd-n",
+        MENU_TREE_NEW_DIR => "alt-cmd-n",
+        MENU_TREE_OPEN_SYSTEM => "ctrl-shift-enter",
+        MENU_TREE_CUT => "cmd-x",
+        MENU_TREE_COPY => "cmd-c",
+        MENU_TREE_DUPLICATE => "cmd-d",
+        MENU_TREE_PASTE => "cmd-v",
+        MENU_TREE_RENAME => "enter",
+        MENU_TREE_TRASH => "backspace",
+        MENU_TREE_DELETE => "cmd-delete",
+        MENU_EDIT_GO_TO_DEFINITION => "f12",
+        MENU_EDIT_GO_TO_DECLARATION => "ctrl-f12",
+        MENU_EDIT_GO_TO_TYPE_DEFINITION => "cmd-f12",
+        MENU_EDIT_GO_TO_IMPLEMENTATION => "shift-f12",
         _ => "",
     }
 }
@@ -2955,7 +2955,7 @@ pub fn context_menu(
             if k.is_empty() {
                 0.0
             } else {
-                ui::measure_text_width(k, 12.0, false, wght) + 24.0
+                ui::measure(&crate::render_keystroke(k, 12.0)).0 + 24.0
             }
         } + if is_submenu(it.id) {
             it.hint.as_deref().map_or(0.0, |hint| {
@@ -3055,7 +3055,7 @@ pub fn context_menu(
             if !key.is_empty() {
                 row = row
                     .child(div().flex(1.0))
-                    .child(label(key).size(12.0).color(theme().text_muted));
+                    .child(crate::render_keystroke(key, 12.0));
             }
         }
         col = col.child(row);
