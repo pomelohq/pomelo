@@ -784,6 +784,9 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
     }
     match kind {
         IconKind::ChevronRight => svg!("chevron_right.svg"),
+        IconKind::BadgeClose => svg!("badge_close.svg"),
+        IconKind::BadgeAlert => svg!("badge_alert.svg"),
+        IconKind::BadgeCheck => svg!("badge_check.svg"),
         IconKind::ChevronDown => svg!("chevron_down.svg"),
         IconKind::ChevronUpDown => svg!("chevron_up_down.svg"),
         IconKind::Search => svg!("search.svg"),

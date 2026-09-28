@@ -3,7 +3,7 @@
 //! stays in `workspace`. This is the first slice of the structure-first workspace migration: the left dock's
 //! interior (the workspace list) now renders through `ProjectPanel` instead of hand-placed rects.
 
-use ui::{div, icon, label, theme, Corner, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, Corner, Div, IconKind, Node, Rgba};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DockPosition {
@@ -609,6 +609,14 @@ fn trouble_icon(trouble: crate::PrTrouble) -> IconKind {
     }
 }
 
+fn trouble_badge(trouble: crate::PrTrouble) -> IconKind {
+    match trouble {
+        crate::PrTrouble::ChecksFailed => IconKind::BadgeClose,
+        crate::PrTrouble::Conflict => IconKind::BadgeAlert,
+        other => trouble_icon(other),
+    }
+}
+
 /// A PR shown on the default branch says nothing (every PR targets it), so main never carries one.
 fn shown_pr(row: &WorkspaceRow) -> Option<crate::PrSummary> {
     row.pr.filter(|_| row.index != 0)
@@ -680,49 +688,20 @@ fn rail_cell(
     if let Some((pr, trouble)) =
         shown_pr(row).and_then(|pr| pr.trouble.map(|trouble| (pr, trouble)))
     {
-        let digits = pr.count.to_string();
-        let width = 13.0 + 6.0 * digits.len() as f32;
-        let pill = div()
-            .row()
-            .items_center()
-            .justify_center()
-            .gap(1.0)
-            .rounded(7.5)
-            .bg(trouble.color())
-            .border(2.0, colors.panel_background)
-            .child(
-                icon(trouble_icon(trouble))
-                    .size(8.0)
-                    .color(colors.editor_background),
-            )
-            .child(
-                label(digits)
-                    .size(9.0)
-                    .weight(600)
-                    .color(colors.editor_background),
-            );
-        tile = tile.pin(Corner::TopRight, 4.0, -6.0, width, 16.0, pill);
-    }
-    // Main never shows PRs, so its corner carries its background update instead.
-    let upkeep_pill = match upkeep {
-        Upkeep::Running(_) => Some((IconKind::RotateCw, colors.text_accent)),
-        Upkeep::Done => Some((IconKind::Check, colors.success)),
-        Upkeep::Failed { .. } => None,
-        Upkeep::None => None,
-    };
-    if matches!(upkeep, Upkeep::Failed { .. }) {
-        tile = tile.pin(Corner::TopRight, 4.0, -6.0, 16.0, 16.0, alert_pill());
-    }
-    if let Some((glyph, color)) = upkeep_pill {
-        tile = tile.pin(
-            Corner::TopRight,
-            4.0,
-            -6.0,
-            16.0,
-            16.0,
-            corner_pill(glyph, color),
+        tile = pin_pill(
+            tile,
+            Some(trouble_badge(trouble)),
+            Some(pr.count.to_string()),
+            trouble.color(),
         );
     }
+    // Main never shows PRs, so its corner carries its background update instead.
+    tile = match upkeep {
+        Upkeep::Running(_) => pin_pill(tile, Some(IconKind::RotateCw), None, colors.text_accent),
+        Upkeep::Done => pin_pill(tile, Some(IconKind::BadgeCheck), None, colors.success),
+        Upkeep::Failed { .. } => pin_pill(tile, Some(IconKind::BadgeAlert), None, colors.error),
+        Upkeep::None => tile,
+    };
     let mut cell = div()
         .row()
         .items_center()
@@ -734,7 +713,7 @@ fn rail_cell(
     if current {
         cell = cell.pin(
             Corner::TopLeft,
-            -4.0,
+            0.0,
             12.0,
             3.0,
             TILE - 18.0,
@@ -744,34 +723,39 @@ fn rail_cell(
     cell.into()
 }
 
-/// A failure's corner mark: a bold "!" on red, the glyph the warning triangle is too busy to read at this size.
-fn alert_pill() -> Node {
-    div()
+/// Hangs a pill off a tile's top-right corner: a glyph, a count, or both, on `bg` with a ring of the panel colour
+/// cutting it from the tile. A lone glyph makes a circle; a count stretches it into a capsule.
+fn pin_pill(tile: Div, glyph: Option<IconKind>, text: Option<String>, bg: Rgba) -> Div {
+    const INNER_H: f32 = 15.0;
+    const GLYPH: f32 = 9.0;
+    const RING: f32 = 2.0;
+    let colors = theme();
+    let ink = colors.editor_background;
+    let mut pill = div()
         .row()
         .items_center()
         .justify_center()
-        .rounded(8.0)
-        .bg(theme().error)
-        .border(2.0, theme().panel_background)
-        .child(
-            label("!")
-                .size(10.0)
-                .weight(700)
-                .color(theme().editor_background),
-        )
-        .into()
-}
-
-fn corner_pill(glyph: IconKind, color: Rgba) -> Node {
-    div()
-        .row()
-        .items_center()
-        .justify_center()
-        .rounded(8.0)
-        .bg(color)
-        .border(2.0, theme().panel_background)
-        .child(icon(glyph).size(8.0).color(theme().editor_background))
-        .into()
+        .gap(1.0)
+        .rounded(INNER_H / 2.0 + RING)
+        .bg(bg)
+        .border(RING, colors.panel_background);
+    let mut inner_w = 0.0;
+    if let Some(glyph) = glyph {
+        pill = pill.child(icon(glyph).size(GLYPH).color(ink));
+        inner_w += GLYPH;
+    }
+    if let Some(text) = text {
+        inner_w += ui::measure_text_width(&text, 9.5, false, 700)
+            + if glyph.is_some() { 1.0 } else { 0.0 };
+        pill = pill.child(label(text).size(9.5).weight(700).color(ink));
+    }
+    let inner_w = if glyph.is_some() && inner_w > GLYPH {
+        inner_w + 3.0 + 4.0
+    } else {
+        INNER_H
+    };
+    let (w, h) = (inner_w.max(INNER_H) + 2.0 * RING, INNER_H + 2.0 * RING);
+    tile.pin(Corner::TopRight, 8.0 + RING, -6.0 - RING, w, h, pill)
 }
 
 /// A workspace being created, folded into an ordinary tile with a dim name: a progress strip while it runs, a
@@ -828,17 +812,10 @@ fn op_tile(op: &crate::WorkspaceOp, position: usize, cell_w: f32) -> Node {
             tile = tile.pin(Corner::BottomLeft, 8.0, -3.0, TILE - 16.0, 2.0, strip);
         }
         OpStatus::Queued => {
-            tile = tile.pin(
-                Corner::TopRight,
-                4.0,
-                -6.0,
-                16.0,
-                16.0,
-                corner_pill(IconKind::Clock, colors.text_placeholder),
-            );
+            tile = pin_pill(tile, Some(IconKind::Clock), None, colors.text_placeholder);
         }
         OpStatus::Failed => {
-            tile = tile.pin(Corner::TopRight, 4.0, -6.0, 16.0, 16.0, alert_pill());
+            tile = pin_pill(tile, Some(IconKind::BadgeAlert), None, colors.error);
         }
         OpStatus::Done => {}
     }
@@ -1031,12 +1008,10 @@ fn workspace_row(
         item = item.pb(8.0).child(op_details(op, position, inner_w, false));
     }
     if current {
-        item = item.bg(colors.element_selected).pin(
-            Corner::TopLeft,
+        item = item.bg(colors.element_selected).pin_left_edge(
             0.0,
             9.0,
             2.0,
-            height - 18.0,
             div().rounded(1.0).bg(colors.text_accent),
         );
     } else if hovered {

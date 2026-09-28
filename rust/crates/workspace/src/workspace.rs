@@ -76,7 +76,7 @@ use ui::{div, folder_icon, label, render, theme, Node, Painted, Rect, Rgba, Text
 
 pub const TOP_BAR_H: f32 = 38.0;
 pub const STATUS_BAR_H: f32 = 24.0; // the thin status strip at the very bottom (a component, not a dock)
-pub const RAIL_W: f32 = 48.0; // collapsed dock width — the icon rail; the dock never goes narrower than this
+pub const RAIL_W: f32 = 56.0; // collapsed dock width — the icon rail; the dock never goes narrower than this
 pub const FUNC_BASE: u64 = 700; // function-nav click ids (bottom bar): FUNC_BASE + PaneKind index
 pub const FUNC_VIEW_BASE: u64 = 10000; // click ids owned by a feature's `FunctionView` (routed to it)
 /// Click ids owned by the terminal panel's pane group, above every other range.

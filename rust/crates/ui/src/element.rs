@@ -44,6 +44,10 @@ pub enum Node {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IconKind {
     ChevronRight,
+    /// Heavier glyphs for the small pills on rail tiles, where the regular strokes vanish.
+    BadgeClose,
+    BadgeAlert,
+    BadgeCheck,
     ChevronDown,
     ChevronUpDown,
     Search,
@@ -324,6 +328,8 @@ struct Pinned {
     corner: Corner,
     offset: (f32, f32),
     size: (f32, f32),
+    /// Stretched down the left edge, `size.1` being the inset at top and bottom.
+    edge: bool,
     node: Node,
 }
 
@@ -564,6 +570,18 @@ impl Div {
             corner,
             offset: (rem(dx), rem(dy)),
             size: (rem(w), rem(h)),
+            edge: false,
+            node: node.into(),
+        });
+        self
+    }
+    /// Pins `node` along the left edge at `dx`, `w` wide, running the div's full height less `inset` at each end.
+    pub fn pin_left_edge(mut self, dx: f32, inset: f32, w: f32, node: impl Into<Node>) -> Self {
+        self.pinned.push(Pinned {
+            corner: Corner::TopLeft,
+            offset: (rem(dx), rem(inset)),
+            size: (rem(w), rem(inset)),
+            edge: true,
             node: node.into(),
         });
         self
@@ -981,7 +999,11 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
             }
             layout_children(d, area, viewport, out, pending);
             for pinned in &d.pinned {
-                let (w, h) = pinned.size;
+                let (w, h) = if pinned.edge {
+                    (pinned.size.0, (area.h - 2.0 * pinned.size.1).max(0.0))
+                } else {
+                    pinned.size
+                };
                 let (dx, dy) = pinned.offset;
                 let x = match pinned.corner {
                     Corner::TopLeft | Corner::BottomLeft => area.x + dx,
@@ -1378,5 +1400,23 @@ mod tests {
             .find(|(_, id)| *id == 1)
             .map(|(area, _)| area.w);
         assert_eq!(flow, Some(rem(40.0)));
+    }
+
+    #[test]
+    fn an_edge_pin_runs_the_full_height_of_a_div_that_grew() {
+        let grown = div()
+            .col()
+            .w_px(40.0)
+            .child(div().w_px(40.0).h_px(60.0))
+            .pin_left_edge(0.0, 9.0, 2.0, div().on_click(1));
+        let tree: Node = div().col().child(grown).into();
+        let p = render(&tree, Rect::new(0.0, 0.0, 40.0, 200.0, Rgba::TRANSPARENT));
+        let bar = p
+            .hits
+            .iter()
+            .find(|(_, id)| *id == 1)
+            .map(|(area, _)| *area);
+        let bar = bar.expect("edge pin is hit-testable");
+        assert_eq!((bar.y, bar.h), (rem(9.0), rem(42.0)));
     }
 }
