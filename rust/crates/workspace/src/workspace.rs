@@ -4,7 +4,6 @@
 
 pub mod agent_popover;
 mod form;
-mod key_binding;
 pub mod keymap;
 pub mod pane;
 pub mod pane_group;
@@ -21,13 +20,13 @@ pub use form::{
     modal_section, outlined_button, progress_bar, status_line, toggle_button_group, InputField,
     ModalResult, WindowModal, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
 };
-pub use key_binding::render_keystroke;
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
     side_panel_kind, terminal_content, terminal_dock_body, AgentDot, AgentEmptyPanel, AgentFix,
     DockPosition, PaletteEntry, PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView,
     TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
+pub use ui::render_keystroke;
 pub use welcome::{
     is_welcome_id, MachineCheck, WELCOME_FIX_BASE, WELCOME_IMPORT_BUNDLE, WELCOME_NEW_PROJECT,
     WELCOME_NEW_PROJECT_CARD, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,

@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, Node};
+use crate::{div, icon, label, theme, IconKind, Node};
 
 /// Split `cmd-shift-k` into its modifiers and key; the key may itself be `-` (`ctrl--`).
 fn parse_keystroke(keystroke: &str) -> (Vec<&str>, &str) {

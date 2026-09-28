@@ -1447,6 +1447,10 @@ enum Control {
     Value {
         text: String,
     },
+    /// A key binding, drawn as key glyphs: `cmd-k cmd-s` is two keystrokes.
+    Keys {
+        binding: String,
+    },
 }
 
 struct SettingRow {
@@ -1961,12 +1965,14 @@ fn keymap_page(keymap: &KeymapPage) -> Page {
         items.push(PageItem::Row(SettingRow {
             title: label.clone().into(),
             description: name.clone().into(),
-            control: Control::Value {
-                text: if binding.is_empty() {
-                    "Unbound".to_string()
-                } else {
-                    binding.clone()
-                },
+            control: if binding.is_empty() {
+                Control::Value {
+                    text: "Unbound".to_string(),
+                }
+            } else {
+                Control::Keys {
+                    binding: binding.clone(),
+                }
             },
             reset: None,
         }));
@@ -2540,6 +2546,7 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
                         .into(),
                     Control::Status { running } => status_chip(*running),
                     Control::Value { text } => value_text(text),
+                    Control::Keys { binding } => keys(binding),
                 };
                 col = col.child(row_frame(
                     &row.title,
@@ -2553,6 +2560,14 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
         }
     }
     col.into()
+}
+
+fn keys(binding: &str) -> Node {
+    let mut row = div().row().items_center().gap(6.0);
+    for stroke in binding.split_whitespace() {
+        row = row.child(ui::render_keystroke(stroke, 13.0));
+    }
+    row.into()
 }
 
 fn section_header(name: &str, anchor: u64) -> Node {
