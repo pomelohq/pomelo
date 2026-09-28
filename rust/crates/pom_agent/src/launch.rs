@@ -28,7 +28,7 @@ pub fn system_prompt() -> String {
     )
 }
 
-const ONBOARD_FIRST_TURN: &str = "Onboard this session now: analyze every cloned repo and author a correct, complete pom.yml (frameworks, monorepo apps, all processes, setup, shared services from every compose incl. extends, and repo aliases). Loop config_doctor until zero errors. Then call config_normalize as the FINAL step (it strips removed keys, and migrates colon->dot), and confirm what you defined.";
+pub(crate) const ONBOARD_FIRST_TURN: &str = "Onboard this session now: analyze every cloned repo and author a correct, complete pom.yml (frameworks, monorepo apps, all processes, setup, shared services from every compose incl. extends, and repo aliases). Loop config_doctor until zero errors. Then call config_normalize as the FINAL step (it strips removed keys, and migrates colon->dot), and confirm what you defined.";
 
 pub fn onboard_system_prompt() -> String {
     format!(

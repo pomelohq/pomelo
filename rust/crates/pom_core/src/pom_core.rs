@@ -14,7 +14,10 @@ pub use add_repo::{
     add_repo, clone_into_main, guess_remote, remove_repo, repo_name, AddRepoRequest, AddedRepo,
     RemovedRepo,
 };
-pub use scaffold::{scaffold_session, RepoSpec, ScaffoldRequest};
+pub use scaffold::{
+    preview_repo, scaffold_session, scaffold_session_with, RepoScan, RepoSpec, ScaffoldEvent,
+    ScaffoldRequest, CANCELLED,
+};
 pub use watch::ConfigWatcher;
 
 /// The previous app remembers the last opened project here; kept so both can hand off to each other.

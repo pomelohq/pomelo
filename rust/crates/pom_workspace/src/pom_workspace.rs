@@ -314,7 +314,7 @@ impl Run<'_> {
 }
 
 /// Runs a shell command in `cwd` with the tool PATH and `env`; on failure, the tail of its output.
-pub(crate) fn run_shell(
+pub fn run_shell(
     login: bool,
     command: &str,
     cwd: &Path,

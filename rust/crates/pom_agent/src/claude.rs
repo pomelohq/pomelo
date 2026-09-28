@@ -136,34 +136,42 @@ pub fn install_mcp(
     Ok(true)
 }
 
+/// The command that runs pom's MCP server from `binary`, without spaces in its path.
+pub(crate) fn mcp_command(state: &StateDir, binary: &Path) -> PathBuf {
+    if !binary.to_string_lossy().contains(' ') {
+        return binary.to_path_buf();
+    }
+    let link = state.path(SPACELESS_LINK);
+    let current = std::fs::read_link(&link).ok();
+    let linked = current.as_deref() == Some(binary) || {
+        if link.symlink_metadata().is_ok() {
+            if let Err(error) = std::fs::remove_file(&link) {
+                eprintln!("agent: replace {}: {error}", link.display());
+            }
+        }
+        std::os::unix::fs::symlink(binary, &link).is_ok()
+    };
+    if linked {
+        link
+    } else {
+        binary.to_path_buf()
+    }
+}
+
 /// `--mcp-config` for an agent launched in `branch`'s workspace: the server pinned to that branch.
 pub fn mcp_config_json(state: &StateDir, binary: &Path, branch: &str) -> String {
-    let mut command = binary.to_path_buf();
-    if binary.to_string_lossy().contains(' ') {
-        let link = state.path(SPACELESS_LINK);
-        let current = std::fs::read_link(&link).ok();
-        let linked = current.as_deref() == Some(binary) || {
-            if link.symlink_metadata().is_ok() {
-                if let Err(error) = std::fs::remove_file(&link) {
-                    eprintln!("agent: replace {}: {error}", link.display());
-                }
-            }
-            std::os::unix::fs::symlink(binary, &link).is_ok()
-        };
-        if linked {
-            command = link;
-        }
-    }
     json!({
         "mcpServers": {
             SERVER_NAME: {
-                "command": command.to_string_lossy(),
+                "command": mcp_command(state, binary).to_string_lossy(),
                 "args": ["mcp", "--branch", branch],
             }
         }
     })
     .to_string()
 }
+
+pub(crate) const MCP_SERVER_NAME: &str = SERVER_NAME;
 
 #[cfg(test)]
 mod tests {

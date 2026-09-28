@@ -53,6 +53,7 @@ pub struct TerminalItem {
     outgoing: Vec<(String, String)>,
     /// Typed into the prompt once the program is up and quiet a moment, without sending.
     pending_input: Option<(String, std::time::Instant)>,
+    pending_return: Option<std::time::Instant>,
     tab_icon: IconKind,
     /// Closing the tab stops the program (a side agent), where a console otherwise keeps running.
     stop_on_close: bool,
@@ -312,6 +313,7 @@ impl TerminalItem {
             find_requested: false,
             outgoing: Vec::new(),
             pending_input: None,
+            pending_return: None,
             tab_icon: IconKind::Terminal,
             stop_on_close: false,
             close_requested: false,
@@ -365,6 +367,13 @@ impl TerminalItem {
     /// Types the pending input once the program has drawn and a few seconds went by (a compaction runs
     /// first; what is typed meanwhile waits in its prompt).
     pub fn flush_pending_input(&mut self) {
+        if self
+            .pending_return
+            .is_some_and(|since| since.elapsed() > std::time::Duration::from_millis(300))
+        {
+            self.pending_return = None;
+            self.terminal.input(&b"\r"[..]);
+        }
         let due = self
             .pending_input
             .as_ref()
@@ -552,6 +561,13 @@ impl TerminalItem {
 
     pub fn text(&mut self, text: &str) {
         self.terminal.input(text.as_bytes().to_vec());
+    }
+
+    /// Types `text` into the program's prompt, then presses return a moment later so a TUI takes the paste
+    /// before the key.
+    pub fn submit(&mut self, text: &str) {
+        self.terminal.paste(text);
+        self.pending_return = Some(std::time::Instant::now());
     }
 
     pub fn paste(&mut self, text: &str) {

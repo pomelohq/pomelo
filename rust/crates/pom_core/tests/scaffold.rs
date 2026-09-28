@@ -63,6 +63,7 @@ fn scaffold_clones_imports_env_and_registers() {
             path: source.to_string_lossy().into_owned(),
             alias: "fe".into(),
         }],
+        skip_secrets: false,
     };
     let session_dir = scaffold_session(&request, &state).expect("scaffold");
     let clone = session_dir.join("workspace--develop/web");
@@ -109,6 +110,7 @@ fn failed_scaffold_leaves_nothing_behind() {
             path: plain.to_string_lossy().into_owned(),
             alias: String::new(),
         }],
+        skip_secrets: false,
     };
     assert!(scaffold_session(&request, &state)
         .unwrap_err()
@@ -121,4 +123,64 @@ fn failed_scaffold_leaves_nothing_behind() {
         };
         assert!(scaffold_session(&request, &state).is_err());
     }
+}
+
+#[test]
+fn scaffold_reports_each_repo_and_what_the_scan_found() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = StateDir::new(temp.path().join("state"));
+    let source = source_repo(temp.path());
+    let preview = pom_core::preview_repo(&source).expect("a git repo");
+    assert_eq!(preview.name, "web");
+    assert_eq!(preview.stack, vec!["Node".to_string()]);
+    assert_eq!(preview.env_files, 1);
+    assert!(pom_core::preview_repo(temp.path()).is_none());
+
+    let request = ScaffoldRequest {
+        name: "demo".into(),
+        root: temp.path().join("sessions").to_string_lossy().into_owned(),
+        default_branch: "main".into(),
+        repos: vec![RepoSpec {
+            path: source.to_string_lossy().into_owned(),
+            alias: String::new(),
+        }],
+        skip_secrets: true,
+    };
+    let mut events = Vec::new();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    pom_core::scaffold_session_with(&request, &state, &mut |event| events.push(event), &cancel)
+        .expect("scaffold");
+    assert_eq!(
+        events[..2],
+        [
+            pom_core::ScaffoldEvent::Cloning {
+                repo: 0,
+                percent: 0
+            },
+            pom_core::ScaffoldEvent::Cloned {
+                repo: 0,
+                linked: true
+            },
+        ]
+    );
+    match events.last() {
+        Some(pom_core::ScaffoldEvent::Scanned(scans)) => {
+            assert_eq!(scans[0].stack, vec!["Node".to_string()]);
+            assert_eq!(scans[0].env_files, 0, "secrets were skipped");
+        }
+        other => panic!("no scan: {other:?}"),
+    }
+    let store = pom_secrets::SecretStore::new(state.clone(), "demo");
+    assert!(store.names().unwrap_or_default().is_empty());
+
+    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    let request = ScaffoldRequest {
+        name: "stopped".into(),
+        ..request
+    };
+    assert_eq!(
+        pom_core::scaffold_session_with(&request, &state, &mut |_| {}, &cancel),
+        Err(pom_core::CANCELLED.to_string())
+    );
+    assert!(!temp.path().join("sessions/stopped").exists());
 }

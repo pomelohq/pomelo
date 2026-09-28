@@ -387,8 +387,6 @@ impl App {
                 self.queue_create(id, create);
             } else if let Some(rename) = value.downcast_ref::<RenameWorkspace>() {
                 self.rename_workspace(id, rename);
-            } else if let Some(project) = value.downcast_ref::<workspaces_ui::NewProject>() {
-                self.start_scaffold(id, project);
             } else if let Some(request) = value.downcast_ref::<workspaces_ui::AddRepo>() {
                 self.start_add_repo(id, request);
             } else if let Some(clone) = value.downcast_ref::<workspaces_ui::CloneRepos>() {
@@ -499,7 +497,7 @@ impl App {
         }
     }
 
-    fn queue_create(&mut self, id: WindowId, create: &CreateWorkspace) {
+    pub(crate) fn queue_create(&mut self, id: WindowId, create: &CreateWorkspace) {
         if let Some(board) = create
             .board
             .filter(|board| *board != self.settings.jira_board)

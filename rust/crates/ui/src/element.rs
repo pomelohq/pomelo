@@ -125,6 +125,7 @@ pub enum IconKind {
     Messages,
     Wrench,
     Archive,
+    Package,
     Trash,
     Column,
     EnginePostgresql,

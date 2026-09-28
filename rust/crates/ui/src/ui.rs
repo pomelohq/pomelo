@@ -874,6 +874,7 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Messages => svg!("messages.svg"),
         IconKind::Wrench => svg!("wrench.svg"),
         IconKind::Archive => svg!("archive.svg"),
+        IconKind::Package => svg!("package.svg"),
         IconKind::RotateCw => svg!("rotate_cw.svg"),
         IconKind::SquarePlus => svg!("square_plus.svg"),
         IconKind::SquareDot => svg!("square_dot.svg"),

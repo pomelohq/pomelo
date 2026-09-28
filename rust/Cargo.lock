@@ -2864,6 +2864,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "onboarding"
+version = "0.6.1"
+dependencies = [
+ "pom_config",
+ "pom_doctor",
+ "pom_env",
+ "pom_layout",
+ "pom_paths",
+ "pom_ptyhost",
+ "pom_services",
+ "pom_workspace",
+ "tempfile",
+]
+
+[[package]]
+name = "onboarding_ui"
+version = "0.6.1"
+dependencies = [
+ "onboarding",
+ "pom_agent",
+ "pom_core",
+ "pom_workspace",
+ "tempfile",
+ "terminal",
+ "ui",
+ "workspace",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3444,6 +3473,8 @@ dependencies = [
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "objc2-user-notifications",
+ "onboarding",
+ "onboarding_ui",
  "pom_agent",
  "pom_bundle",
  "pom_config",
@@ -5397,6 +5428,7 @@ dependencies = [
  "files_ui",
  "git_ui",
  "jira_ui",
+ "onboarding_ui",
  "png 0.17.16",
  "pom_agent",
  "pom_config",

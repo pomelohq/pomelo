@@ -4,7 +4,8 @@ use workspace::{
     outlined_button, status_line, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
-use crate::new_project::FolderChooser;
+/// Opens the system folder picker; returns the folders chosen.
+pub type FolderChooser = Box<dyn Fn() -> Vec<std::path::PathBuf>>;
 
 const WIDTH: f32 = 520.0;
 

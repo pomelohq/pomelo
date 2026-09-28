@@ -483,6 +483,23 @@ impl TerminalPanelView for TerminalPanel {
         true
     }
 
+    fn submit_into(&mut self, id: &str, text: &str) -> bool {
+        let mut sent = false;
+        self.panes.for_each_item_mut(&mut |item| {
+            if sent || item.id().as_deref() != Some(id) {
+                return;
+            }
+            if let Some(terminal) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<TerminalItem>())
+            {
+                terminal.submit(text);
+                sent = true;
+            }
+        });
+        sent
+    }
+
     fn sync(&mut self, clipboard: &dyn Fn() -> Option<String>) -> TerminalSyncOutcome {
         let host = Host {
             palette: crate::palette(&theme()),

@@ -164,6 +164,7 @@ fn scaffold(
                 alias: String::new(),
             })
             .collect(),
+        skip_secrets: false,
     };
     let project = pom_core::scaffold_session(&request, state)?;
     say(out, &format!("wrote {}", project.join("pom.yml").display()))?;

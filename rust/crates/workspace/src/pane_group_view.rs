@@ -281,6 +281,29 @@ impl PaneGroupView {
         false
     }
 
+    /// Where item `id` is: its pane's path and its index there.
+    pub fn index_path_of(&self, id: &str) -> Option<(Vec<usize>, usize)> {
+        self.paths().into_iter().find_map(|path| {
+            let index = self.group.leaf_at(&path)?.index_of_id(id)?;
+            Some((path, index))
+        })
+    }
+
+    /// Closes the tab of item `id`, wherever it is; false when no pane has it.
+    pub fn close_item(&mut self, id: &str) -> bool {
+        for path in self.paths() {
+            let index = self
+                .group
+                .leaf_at(&path)
+                .and_then(|pane| pane.index_of_id(id));
+            if let Some(index) = index {
+                self.close_tab(&path, index);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Every pane's path; before the first layout, just the active one.
     fn paths(&self) -> Vec<Vec<usize>> {
         if self.pane_order.is_empty() {

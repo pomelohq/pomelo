@@ -28,6 +28,7 @@ pom_jira = { path = "../pom_jira" }
 jira_ui = { path = "../jira_ui" }
 database_ui = { path = "../database_ui" }
 services_ui = { path = "../services_ui" }
+onboarding_ui = { path = "../onboarding_ui" }
 pom_db = { path = "../pom_db" }
 pom_config = { path = "../pom_config" }
 pom_services = { path = "../pom_services" }

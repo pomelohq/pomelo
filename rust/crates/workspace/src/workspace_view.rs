@@ -40,6 +40,8 @@ const PREPARE_MAIN_PROMPT_TOKEN: u64 = 1 << 44;
 const ZOOM_PADDING: f32 = 8.0;
 /// Where tabs' own toolbar ids start (a service's header, a side agent's bar).
 const ITEM_TOOLBAR_IDS: u64 = 1 << 50;
+const PAGE_TAB: u64 = 1150;
+const PAGE_TAB_CLOSE: u64 = 1151;
 
 const TOAST_ANIM: Duration = Duration::from_millis(160);
 const MODAL_TOP: f32 = 80.0;
@@ -95,6 +97,10 @@ pub enum SessionRequest {
     Reveal(usize),
     ChooseFolder,
     NewProject,
+    ImportBundle,
+    CheckMachine,
+    /// The fix of the welcome page's machine check at this index (start Docker).
+    FixMachine(usize),
 }
 
 /// A workspace's views and dock visibility while another workspace has the window.
@@ -299,6 +305,10 @@ pub struct WorkspaceView {
     ai_available: bool,
     dismissed_setup: Option<String>,
     pending: WorkspaceEffects,
+    /// A page tab (onboarding) opened before this window had a pane group to hold it: drawn on its own in the
+    /// editor area while there is no project, moved into the panes once there are some.
+    page: Option<crate::pane::Pane>,
+    page_body: Option<Rect>,
 }
 
 impl WorkspaceView {
@@ -368,6 +378,8 @@ impl WorkspaceView {
             ai_available: true,
             dismissed_setup: None,
             pending: WorkspaceEffects::default(),
+            page: None,
+            page_body: None,
         }
     }
 
@@ -577,6 +589,72 @@ impl WorkspaceView {
     }
 
     /// Show a form over the window (replacing any open one).
+    /// Shows a page tab (by its id): brought forward when already open, else opened in the panes, or on its own
+    /// while the window has none.
+    pub fn open_page(&mut self, item: Box<dyn crate::Item>) {
+        let id = item.id().unwrap_or_default();
+        if self
+            .page
+            .as_ref()
+            .is_some_and(|page| page.index_of_id(&id).is_some())
+        {
+            return;
+        }
+        if self.panes_restored {
+            if let Some(files) = self.layout.files_view.as_mut() {
+                let revealed = files
+                    .pane_group_mut()
+                    .is_some_and(|group| group.reveal_item(&id));
+                if !revealed {
+                    files.add_center_item(item);
+                }
+                self.set_terminal_focus(false);
+                self.panes_input = true;
+                return;
+            }
+        }
+        let mut pane = crate::pane::Pane::new(0);
+        pane.add_item(item);
+        self.page = Some(pane);
+        self.set_terminal_focus(false);
+    }
+
+    pub fn close_page(&mut self, id: &str) {
+        if self
+            .page
+            .as_ref()
+            .is_some_and(|page| page.index_of_id(id).is_some())
+        {
+            if let Some(mut page) = self.page.take() {
+                page.close_tab(0);
+            }
+            return;
+        }
+        if let Some(group) = self
+            .layout
+            .files_view
+            .as_mut()
+            .and_then(|files| files.pane_group_mut())
+        {
+            group.close_item(id);
+        }
+    }
+
+    /// The page drawn on its own, when the window has no panes to hold it.
+    fn standalone_page(&mut self) -> Option<&mut Box<dyn crate::Item>> {
+        if self.layout.files_view.is_some() {
+            return None;
+        }
+        self.page.as_mut()?.open.first_mut()
+    }
+
+    fn page_body_at(&self, x: f32, y: f32) -> bool {
+        self.layout.files_view.is_none()
+            && self
+                .page_body
+                .is_some_and(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+    }
+
     pub fn open_window_modal(&mut self, modal: Box<dyn crate::WindowModal>) {
         self.menu = None;
         self.layout.session_menu = false;
@@ -887,6 +965,10 @@ impl WorkspaceView {
 
     pub fn update_project(&mut self, project: crate::ProjectInfo) {
         self.layout.project = Some(project);
+    }
+
+    pub fn set_machine_checks(&mut self, checks: Vec<crate::MachineCheck>) {
+        self.layout.machine = checks;
     }
 
     pub fn set_sessions(&mut self, sessions: Vec<crate::Session>, current: Option<usize>) {
@@ -1228,6 +1310,13 @@ impl WorkspaceView {
         let (w, h) = (window.width, window.height);
         self.viewport = (w, h);
         self.restore_saved_panes();
+        if self.layout.files_view.is_some() {
+            if let Some(mut page) = self.page.take() {
+                if let Some(item) = page.open.pop() {
+                    self.open_page(item);
+                }
+            }
+        }
         self.apply_panel_requests();
         // Comparing panes with what is saved serializes every tab, so it runs only after input (or while a
         // write is pending), never on frames that nothing but a timer asked for.
@@ -1424,9 +1513,64 @@ impl WorkspaceView {
                     });
                 }
             }
+        } else if self.page.is_some() {
+            let strip = self.page.as_ref().map(|page| {
+                crate::pane::render_tab_strip(
+                    page,
+                    crate::pane::PaneClickIds {
+                        tab_activate: PAGE_TAB,
+                        tab_close: PAGE_TAB_CLOSE,
+                        nav_back: PAGE_TAB,
+                        nav_forward: PAGE_TAB,
+                        search: PAGE_TAB,
+                    },
+                    self.session_menu_hover,
+                )
+            });
+            let scale = ui::ui_text_scale();
+            let bar_h = crate::pane::TAB_H * scale;
+            let bar = ui::div()
+                .row()
+                .w_px(cr.w / scale)
+                .bg(ui::theme().tab_bar_background)
+                .children(strip)
+                .child(
+                    ui::div()
+                        .col()
+                        .flex(1.0)
+                        .h_px(crate::pane::TAB_H)
+                        .child(ui::div().flex(1.0))
+                        .child(ui::div().h_px(1.0).bg(ui::theme().border)),
+                );
+            let p = ui::render(
+                &bar.into(),
+                Rect::new(cr.x, cr.y, cr.w, bar_h, Rgba::TRANSPARENT),
+            );
+            panel_hits.extend(p.hits.iter().copied());
+            blit(p);
+            let body = Rect::new(
+                cr.x,
+                cr.y + bar_h,
+                cr.w,
+                (cr.h - bar_h).max(0.0),
+                Rgba::TRANSPARENT,
+            );
+            self.page_body = Some(body);
+            let painted = self.page.as_mut().and_then(|page| {
+                let item = page.open.first_mut()?;
+                item.tick(&Self::clip_get);
+                item.paint_body(body, true)
+            });
+            if let Some(painted) = painted {
+                center_overlays.push(Overlay {
+                    painted,
+                    clip: Some(body),
+                });
+            }
         } else if self.layout.project.is_none() {
             let page = crate::welcome::welcome_page(
                 &self.layout.sessions,
+                &self.layout.machine,
                 cr.w / ui::ui_text_scale(),
                 self.session_menu_hover,
             );
@@ -3720,6 +3864,12 @@ impl WorkspaceView {
     /// Cursor move: drag a divider, or hover the header/menu. Returns true if a repaint is warranted.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
         self.pointer = (x, y);
+        if self.page_body_at(x, y) {
+            let modifiers = terminal_modifiers();
+            return self
+                .standalone_page()
+                .is_some_and(|page| page.pointer_move(x, y, modifiers, true));
+        }
         let hit = self.hit(x, y);
         let modifiers = terminal_modifiers();
         let mut repaint = self
@@ -4081,6 +4231,13 @@ impl WorkspaceView {
                 .filter(|index| *index < PROMPT_BUTTON_SPAN)
             {
                 self.answer_prompt(index as usize);
+            }
+            return;
+        }
+        if self.window_modal.is_none() && self.page_body_at(x, y) {
+            let count = self.click_count(x, y);
+            if let Some(page) = self.standalone_page() {
+                page.pointer_down(x, y, count, terminal_modifiers());
             }
             return;
         }
@@ -5079,6 +5236,9 @@ impl WorkspaceView {
         {
             return false;
         }
+        if self.layout.files_view.is_none() && self.page.is_some() {
+            return self.focused_group() == InputGroup::Center;
+        }
         self.input_ref(self.focused_group())
             .is_some_and(|input| input.active_wants_keystrokes())
     }
@@ -5156,6 +5316,26 @@ impl WorkspaceView {
     /// Returns whether the key was consumed; unconsumed keys arrive next as typed text.
     pub fn terminal_key(&mut self, keystroke: &terminal::Keystroke) -> bool {
         let group = self.focused_group();
+        if group == InputGroup::Center {
+            if let Some(page) = self.standalone_page() {
+                return match page.keystroke(keystroke) {
+                    crate::TerminalKeyOutcome::Ignored => false,
+                    crate::TerminalKeyOutcome::Handled => true,
+                    crate::TerminalKeyOutcome::Copy(text) => {
+                        Self::clip_set(&text);
+                        true
+                    }
+                    crate::TerminalKeyOutcome::Paste => {
+                        if let Some(text) = Self::clip_get() {
+                            if let Some(page) = self.standalone_page() {
+                                page.paste(&text, None);
+                            }
+                        }
+                        true
+                    }
+                };
+            }
+        }
         let Some(input) = self.input(group) else {
             return false;
         };
@@ -5177,6 +5357,12 @@ impl WorkspaceView {
 
     pub fn terminal_text(&mut self, text: &str) {
         let group = self.focused_group();
+        if group == InputGroup::Center {
+            if let Some(page) = self.standalone_page() {
+                page.input_text(text);
+                return;
+            }
+        }
         if let Some(input) = self.input(group) {
             input.item_text(text);
         }
@@ -5285,6 +5471,17 @@ impl WorkspaceView {
         self.panes_input = true;
     }
 
+    /// A new shell in `dir`, in the terminal panel.
+    pub fn open_terminal_in(&mut self, dir: std::path::PathBuf) {
+        let Some(view) = self.layout.terminal_view.as_mut() else {
+            return;
+        };
+        view.open(Some(dir));
+        self.show_terminal();
+        self.set_terminal_focus(true);
+        self.panes_input = true;
+    }
+
     /// Focus the agent session whose item has `id`, or add the one `make` builds; shows it in the agent dock.
     pub fn open_agent_item(
         &mut self,
@@ -5319,6 +5516,61 @@ impl WorkspaceView {
         self.focus_group(InputGroup::Agent);
         self.panes_input = true;
         self.pending.persist = true;
+    }
+
+    /// Whether the agent dock is showing its sessions right now.
+    pub fn agent_dock_visible(&self) -> bool {
+        self.layout.agent_visible()
+    }
+
+    pub fn hide_agent_dock(&mut self) {
+        if !self.layout.agent_visible() {
+            return;
+        }
+        match self.layout.agent_side {
+            DockPosition::Right => self.layout.right.collapsed = true,
+            side => self.layout.active_panels[side.index()] = None,
+        }
+        self.set_agent_focus(false);
+        self.pending.persist = true;
+    }
+
+    /// Whether an agent tab `id` is open (in the dock or moved next to the code).
+    pub fn agent_item_open(&mut self, id: &str) -> bool {
+        let in_dock = self
+            .layout
+            .agent_view
+            .as_mut()
+            .is_some_and(|view| view.panes().index_path_of(id).is_some());
+        in_dock
+            || self
+                .layout
+                .files_view
+                .as_mut()
+                .and_then(|files| files.pane_group_mut())
+                .is_some_and(|group| group.has_item(id))
+    }
+
+    /// Sends `text` to the agent tab `id` as a message; false when it is not open.
+    pub fn send_to_agent(&mut self, id: &str, text: &str) -> bool {
+        self.layout
+            .agent_view
+            .as_mut()
+            .is_some_and(|view| view.submit_into(id, text))
+    }
+
+    pub fn close_agent_item(&mut self, id: &str) {
+        if let Some(view) = self.layout.agent_view.as_mut() {
+            view.panes().close_item(id);
+        }
+        if let Some(group) = self
+            .layout
+            .files_view
+            .as_mut()
+            .and_then(|files| files.pane_group_mut())
+        {
+            group.close_item(id);
+        }
     }
 
     /// The terminal toggle: focus the terminal (showing it first), or hide it when it already has focus.
@@ -5516,6 +5768,12 @@ impl WorkspaceView {
     }
 
     pub fn scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        if self.window_modal.is_none() && self.page_body_at(x, y) {
+            let modifiers = terminal_modifiers();
+            return self
+                .standalone_page()
+                .is_some_and(|page| page.pointer_scroll(x, y, dy, modifiers));
+        }
         let over_popover = self
             .popover_rects
             .iter()
@@ -5856,10 +6114,24 @@ impl WorkspaceView {
             if openable && Some(index) != self.layout.current_session {
                 self.pending.session = Some(SessionRequest::Switch(index));
             }
+        } else if id == PAGE_TAB_CLOSE {
+            if let Some(mut page) = self.page.take() {
+                page.close_tab(0);
+            }
+        } else if id == PAGE_TAB {
         } else if id == crate::WELCOME_OPEN_PROJECT {
             self.pending.session = Some(SessionRequest::ChooseFolder);
-        } else if id == crate::WELCOME_NEW_PROJECT {
+        } else if id == crate::WELCOME_NEW_PROJECT || id == crate::WELCOME_NEW_PROJECT_CARD {
             self.pending.session = Some(SessionRequest::NewProject);
+        } else if id == crate::WELCOME_IMPORT_BUNDLE {
+            self.pending.session = Some(SessionRequest::ImportBundle);
+        } else if id == crate::WELCOME_RECHECK {
+            self.pending.session = Some(SessionRequest::CheckMachine);
+        } else if let Some(index) = id
+            .checked_sub(crate::WELCOME_FIX_BASE)
+            .filter(|index| *index < 10)
+        {
+            self.pending.session = Some(SessionRequest::FixMachine(index as usize));
         } else if id == crate::WELCOME_OPEN_SETTINGS {
             self.pending.open_settings = true;
         } else if crate::is_welcome_id(id) {
@@ -6937,8 +7209,8 @@ mod tests {
         for expected in [
             "Welcome to Pomelo",
             "GET STARTED",
-            "Open Project",
-            "RECENT SESSIONS",
+            "Open a project folder",
+            "RECENT",
             "alpha",
             "beta",
         ] {

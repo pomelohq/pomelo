@@ -41,6 +41,8 @@ pom_doctor = { path = "../pom_doctor" }
 environment_ui = { path = "../environment_ui" }
 pom_secrets = { path = "../pom_secrets" }
 pom_bundle = { path = "../pom_bundle" }
+onboarding = { path = "../onboarding" }
+onboarding_ui = { path = "../onboarding_ui" }
 winit.workspace = true
 anyhow.workspace = true
 

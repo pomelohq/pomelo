@@ -8,6 +8,7 @@
 mod add_repo;
 mod config_bundle;
 mod notifications;
+mod onboarding;
 mod workspaces;
 
 use std::sync::Arc;
@@ -604,12 +605,6 @@ impl ProjectServices {
 }
 
 /// A new project being cloned and detected off the main thread, and the window that asked for it.
-struct Scaffolding {
-    window: WindowId,
-    name: String,
-    use_ai: bool,
-    receiver: std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>,
-}
 
 #[derive(Default)]
 struct App {
@@ -637,7 +632,8 @@ struct App {
     ctrl_down: bool,
     agents: AgentTracker,
     next_agent_item: u64,
-    scaffolding: Option<Scaffolding>,
+    onboarding: Option<onboarding::OnboardingFlow>,
+    machine: onboarding::MachineChecks,
     adding_repo: Option<add_repo::AddingRepo>,
     cloning_repos: Option<add_repo::CloningRepos>,
     keymap: workspace::keymap::Keymap,
@@ -857,40 +853,6 @@ impl App {
             ui::wake();
         });
         self.with_workspace_view(id, |view, _| view.set_stale_services(&[]));
-    }
-
-    /// The manual path after a new project: show its services and say what was drafted and what to do next.
-    fn review_drafted_config(&mut self, id: WindowId) {
-        let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
-            return;
-        };
-        let (repos, services) = project.config.as_ref().map_or((0, 0), |config| {
-            let services: usize = config.repos.values().map(|repo| repo.services.len()).sum();
-            (config.repos.len(), services)
-        });
-        let plural = |count: usize, noun: &str| {
-            if count == 1 {
-                format!("1 {noun}")
-            } else {
-                format!("{count} {noun}s")
-            }
-        };
-        let message = format!(
-            "Drafted from what was detected ({}, {}). Review it, then start services.",
-            plural(repos, "repo"),
-            plural(services, "service")
-        );
-        let path = project.config_path.clone();
-        self.with_workspace_view(id, |view, _| {
-            view.run_action(workspace::keymap::Action::FocusServices);
-            view.notify_with_file(
-                "pom.yml is ready to review",
-                message,
-                "Open pom.yml",
-                path,
-                None,
-            );
-        });
     }
 
     /// Opens the project's `pom.yml` for editing in the active pane; it stays editable even from main.
@@ -2206,100 +2168,10 @@ impl App {
                     self.open_folder_in(id, &folder);
                 }
             }
-            workspace::SessionRequest::NewProject => {
-                let modal = workspaces_ui::NewProjectModal::new(
-                    pom_paths::sessions_root(),
-                    Box::new(|| choose_folders(true)),
-                )
-                .with_ai(claude_installed(), self.settings.onboard_with_ai);
-                self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
-            }
-        }
-    }
-
-    pub(crate) fn start_scaffold(&mut self, id: WindowId, project: &workspaces_ui::NewProject) {
-        if self.scaffolding.is_some() {
-            self.with_workspace_view(id, |view, _| {
-                view.show_toast("Another project is still being created", None)
-            });
-            return;
-        }
-        let request = pom_core::ScaffoldRequest {
-            name: project.name.clone(),
-            root: String::new(),
-            default_branch: project.default_branch.clone(),
-            repos: project
-                .repos
-                .iter()
-                .map(|(path, alias)| pom_core::RepoSpec {
-                    path: path.clone(),
-                    alias: alias.clone(),
-                })
-                .collect(),
-        };
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = pom_core::scaffold_session(&request, &pom_paths::StateDir::from_env());
-            if sender.send(result).is_err() {
-                eprintln!("scaffold: the app stopped waiting");
-            }
-            ui::wake();
-        });
-        let message = format!("Creating {}: cloning repositories...", project.name);
-        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
-        self.scaffolding = Some(Scaffolding {
-            window: id,
-            name: project.name.clone(),
-            use_ai: project.use_ai,
-            receiver,
-        });
-        if self.settings.onboard_with_ai != project.use_ai {
-            self.settings.onboard_with_ai = project.use_ai;
-            let use_ai = project.use_ai;
-            self.with_settings_view(|view, _| view.remember_onboard_with_ai(use_ai));
-            if let Err(error) = self.settings.save() {
-                eprintln!("could not save settings: {error}");
-            }
-        }
-    }
-
-    fn poll_scaffold(&mut self) {
-        let Some(scaffolding) = self.scaffolding.as_ref() else {
-            return;
-        };
-        let result = match scaffolding.receiver.try_recv() {
-            Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("stopped unexpectedly".into()),
-        };
-        let Some(Scaffolding {
-            window,
-            name,
-            use_ai,
-            ..
-        }) = self.scaffolding.take()
-        else {
-            return;
-        };
-        match result {
-            Ok(session_dir) => {
-                self.refresh_sessions();
-                self.open_folder_in(window, &session_dir);
-                // Either way the drafted config is in front: the agent's edits show up in it as it works.
-                self.open_project_config(window);
-                if use_ai {
-                    self.open_onboarder(window);
-                } else {
-                    self.review_drafted_config(window);
-                }
-            }
-            Err(error) => {
-                let message = format!("Failed to create {name}: {error}");
-                self.with_workspace_view(window, |view, _| view.show_toast(message, None));
-            }
-        }
-        if let Some(main) = self.mains.get_mut(&window) {
-            main.dirty = true;
+            workspace::SessionRequest::NewProject => self.open_onboarding(id),
+            workspace::SessionRequest::ImportBundle => self.open_import_config(id),
+            workspace::SessionRequest::CheckMachine => self.check_machine(true),
+            workspace::SessionRequest::FixMachine(index) => self.fix_machine(index),
         }
     }
 
@@ -2960,7 +2832,8 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.poll_scaffold();
+        self.poll_onboarding();
+        self.poll_machine();
         self.poll_add_repo();
         self.poll_clone_repos();
         self.reload_keymap_if_changed();

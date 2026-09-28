@@ -13,6 +13,33 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(settings_ui::APPEARANCE);
 
+    if let Ok(which) = std::env::var("ONBOARD") {
+        use workspace::Item;
+        let mut page = onboarding_ui::preview_page(&which);
+        let (width, height) = (1000.0_f32, 900.0_f32);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = page.paint_body(body, true).unwrap_or_default();
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().editor_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(which) = std::env::var("AGENTPOP") {
         let node = if which == "history" {
             workspace::agent_popover::history(&[], None)
@@ -926,7 +953,7 @@ fn main() -> anyhow::Result<()> {
                 missing: *name == "old",
             })
             .collect();
-        let project = (mode != "welcome").then(|| workspace::ProjectInfo {
+        let project = (mode != "welcome" && mode != "onboard").then(|| workspace::ProjectInfo {
             name: "myproject".into(),
             branch: "main".into(),
             config_path: "/projects/myproject/pom.yml".into(),
@@ -1407,26 +1434,10 @@ fn main() -> anyhow::Result<()> {
                 view.open_window_modal(Box::new(modal))
             });
         }
-        if mode == "newproject" {
-            let mut modal = workspaces_ui::NewProjectModal::new(
-                std::path::PathBuf::from("/Users/dev/pom"),
-                Box::new(|| {
-                    vec![
-                        std::path::PathBuf::from("/Users/dev/code/api"),
-                        std::path::PathBuf::from("/Users/dev/code/web"),
-                    ]
-                }),
-            );
-            workspace::WindowModal::text(&mut modal, "myproject");
-            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 6);
-            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 4);
-            workspace::WindowModal::text(&mut modal, "git@github.com:acme/worker.git");
-            workspace::WindowModal::key(&mut modal, workspace::EditKey::Enter, false);
-            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 201);
-            workspace::WindowModal::text(&mut modal, "fe");
-            entity.update(app.app_mut(), |view, _| {
-                view.open_window_modal(Box::new(modal))
-            });
+        if mode == "newproject" || mode == "onboard" {
+            let which = std::env::var("ONBOARDPAGE").unwrap_or_else(|_| "repos".into());
+            let page = onboarding_ui::preview_page(&which);
+            entity.update(app.app_mut(), |view, _| view.open_page(Box::new(page)));
         }
         if mode == "exportconfig" {
             let mut modal = workspaces_ui::ExportConfigModal::new(3);

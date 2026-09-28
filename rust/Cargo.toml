@@ -36,6 +36,8 @@ members = [
     "crates/environment_ui",
     "crates/pom_layout",
     "crates/pom_core",
+    "crates/onboarding",
+    "crates/onboarding_ui",
     "crates/pom_ptyhost",
     "crates/pom_ports",
     "crates/pom_proxy",

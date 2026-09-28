@@ -29,8 +29,9 @@ pub use panel::{
     TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use welcome::{
-    is_welcome_id, WELCOME_NEW_PROJECT, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS,
-    WELCOME_RECENT_BASE, WELCOME_RECENT_MAX,
+    is_welcome_id, MachineCheck, WELCOME_FIX_BASE, WELCOME_IMPORT_BUNDLE, WELCOME_NEW_PROJECT,
+    WELCOME_NEW_PROJECT_CARD, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,
+    WELCOME_RECHECK,
 };
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
@@ -769,6 +770,8 @@ pub struct Layout {
     /// Which content area each function's content renders in (its dock side), index = `PaneKind::ALL` index.
     pub func_side: Vec<DockPosition>,
     pub sessions: Vec<Session>,
+    /// What the welcome page reports about this Mac.
+    pub machine: Vec<MachineCheck>,
     pub current_session: Option<usize>,
     pub project: Option<ProjectInfo>,
     pub session_menu: bool,
@@ -1416,6 +1419,10 @@ pub trait TerminalPanelView: 'static {
     fn paste_into(&mut self, _id: &str, _text: &str) -> bool {
         false
     }
+    /// Types `text` into tab `id`'s prompt and sends it; false when there is no such tab.
+    fn submit_into(&mut self, _id: &str, _text: &str) -> bool {
+        false
+    }
     /// Start a shell in `cwd` (the project root when `None`) as a new active tab.
     fn open(&mut self, cwd: Option<std::path::PathBuf>);
     fn is_empty(&self) -> bool;
@@ -1734,6 +1741,7 @@ impl Default for Layout {
                 panel: Box::new(TerminalPanel),
             },
             sessions: Vec::new(),
+            machine: Vec::new(),
             project: None,
             sidebar_side: DockPosition::Left,
             agent_side: DockPosition::Right,
