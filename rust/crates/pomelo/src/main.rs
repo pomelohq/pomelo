@@ -592,6 +592,7 @@ impl ProjectServices {
                     runner: self.runner.clone(),
                     config: self.config.clone(),
                     branch: project.active_branch().to_string(),
+                    ticket: pom_jira::key_for_branch(project.active_branch()).unwrap_or_default(),
                     is_main,
                     waker: Arc::new(ui::wake),
                 },

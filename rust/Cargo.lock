@@ -4134,7 +4134,9 @@ dependencies = [
 name = "services_ui"
 version = "0.6.1"
 dependencies = [
+ "database_ui",
  "pom_config",
+ "pom_db",
  "pom_paths",
  "pom_ptyhost",
  "pom_services",
@@ -5405,6 +5407,7 @@ dependencies = [
  "pom_services",
  "pom_workspace",
  "pull_request_ui",
+ "services_ui",
  "settings",
  "settings_ui",
  "terminal",

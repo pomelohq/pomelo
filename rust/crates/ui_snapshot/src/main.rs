@@ -13,6 +13,97 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(settings_ui::APPEARANCE);
 
+    if std::env::var("SERVICES").is_ok() {
+        use workspace::SidePanelView;
+        let dir = std::env::temp_dir().join(format!("pom-snapshot-svc-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("workspace--feat-login"))?;
+        std::fs::write(
+            dir.join("pom.yml"),
+            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  mail:\n    image: axllent/mailpit\nworkspace_services:\n  gateway:\n    cmd: caddy run\n    port: 8080\nrepos:\n  api:\n    shared_services: [postgres, redis, files]\n    services:\n      server:\n        type: backend\n        mode: dev\n        modes:\n          dev: bin/rails s -p $PORT\n          prod: bin/rails s -e production -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n      mailer: bin/mailer\n  web:\n    services:\n      vite:\n        type: frontend\n        mode: dev\n        modes:\n          dev: npm run dev -- --port $PORT\n      storybook:\n        type: frontend\n        cmd: npm run storybook -- -p $PORT\n",
+        )?;
+        let config = pom_config::Config::load(&dir.join("pom.yml"))?;
+        let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
+            pom_services::RunnerOptions {
+                project_root: dir.clone(),
+                session: "myproject".into(),
+                state: pom_paths::StateDir::new(dir.join("state")),
+                holders: pom_ptyhost::SocketDir::new(dir.join("s")),
+                binary: "/nonexistent".into(),
+                docker: "/nonexistent".into(),
+            },
+        ));
+        let mut panel = services_ui::ServicesPanel::new(
+            services_ui::ServicesContext {
+                runner,
+                config: std::sync::Arc::new(std::sync::RwLock::new(Some(std::sync::Arc::new(
+                    config,
+                )))),
+                branch: "feat-login".into(),
+                ticket: "PROJ-101".into(),
+                is_main: false,
+                waker: std::sync::Arc::new(|| {}),
+            },
+            dir.join("workspace--feat-login"),
+        );
+        use services_ui::Status;
+        panel.show_status("_ws", "gateway", Status::Running, None, None);
+        panel.show_status("api", "server", Status::Running, None, None);
+        panel.show_status(
+            "api",
+            "jobs",
+            Status::Crashed,
+            None,
+            Some(services_ui::Crash {
+                line: Some("KeyError: key not found: \"REDIS_URL\"".into()),
+                exit: "exit 1".into(),
+                at: Some(std::time::SystemTime::now() - std::time::Duration::from_secs(130)),
+            }),
+        );
+        panel.show_status("web", "vite", Status::Running, None, None);
+        panel.show_status(
+            "web",
+            "storybook",
+            Status::Stopped,
+            Some("port 6006 is already in use by node (pid 48213)".into()),
+            None,
+        );
+        for name in ["postgres", "redis", "files"] {
+            panel.show_shared_running(name);
+        }
+        let (width, height) = (320.0_f32, 900.0_f32);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let node = panel.render(width, height);
+        let painted = ui::render(
+            &ui::div()
+                .bg(ui::theme().panel_background)
+                .child(node)
+                .into(),
+            body,
+        );
+        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        r.render_frame(
+            ui::theme().panel_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            eprintln!("remove {}: {error}", dir.display());
+        }
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(which) = std::env::var("DATABASE") {
         use workspace::{Item, SidePanelView};
         let dir = std::env::temp_dir().join(format!("pom-snapshot-db-{}", std::process::id()));

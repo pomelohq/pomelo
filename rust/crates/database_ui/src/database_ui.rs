@@ -23,6 +23,7 @@ pub use grid::{Grid, GridEvent, Region};
 pub use object_item::ObjectItem;
 pub use panel::DatabasePanel;
 pub use pom_db::object_storage::CurlTransport;
+pub use render::engine_logo;
 pub use table_item::TableItem;
 
 /// What the Database views need: the project's runner (ports, slots), its current config, the workspace's

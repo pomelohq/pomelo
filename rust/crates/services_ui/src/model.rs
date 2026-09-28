@@ -61,6 +61,8 @@ pub struct ServicesContext {
     pub runner: Arc<ServiceRunner>,
     pub config: SharedConfig,
     pub branch: String,
+    /// The ticket the workspace's branch names, empty when it names none.
+    pub ticket: String,
     pub is_main: bool,
     pub waker: Arc<dyn Fn() + Send + Sync>,
 }
@@ -115,7 +117,17 @@ pub struct Shared {
     pub errors: HashMap<String, String>,
     pub toasts: Vec<String>,
     pub shared_running: HashSet<String>,
+    /// What each crashed service left behind, read once when it is seen crashed.
+    pub crashes: HashMap<String, Crash>,
     drawn_at: Option<Instant>,
+}
+
+/// How a service died: the line of its output that most likely says why, how it exited, and when.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Crash {
+    pub line: Option<String>,
+    pub exit: String,
+    pub at: Option<std::time::SystemTime>,
 }
 
 impl Shared {
@@ -254,6 +266,13 @@ impl Model {
         }
     }
 
+    pub fn crash(&self, holder: &str) -> Option<Crash> {
+        self.shared
+            .lock()
+            .ok()
+            .and_then(|shared| shared.crashes.get(holder).cloned())
+    }
+
     pub fn shared_running(&self, name: &str) -> bool {
         self.shared
             .lock()
@@ -372,6 +391,93 @@ fn refresh(context: &ServicesContext, shared: &Mutex<Shared>) -> bool {
     shared
         .errors
         .retain(|holder, _| !recovered.contains(holder));
+    let crashed: Vec<String> = fresh
+        .iter()
+        .filter(|(_, status)| **status == Status::Crashed)
+        .map(|(holder, _)| holder.clone())
+        .collect();
+    shared.crashes.retain(|holder, _| crashed.contains(holder));
+    for holder in crashed {
+        if let std::collections::hash_map::Entry::Vacant(slot) = shared.crashes.entry(holder) {
+            if let Some(crash) = read_crash(context, slot.key()) {
+                slot.insert(crash);
+            }
+        }
+    }
     shared.status = fresh;
     true
+}
+
+fn read_crash(context: &ServicesContext, holder: &str) -> Option<Crash> {
+    let holders = context.runner.holders();
+    let info = holders.crash_info(holder).filter(|info| info.crashed)?;
+    let detail = info
+        .header
+        .split_once(" - ")
+        .map_or(info.header.as_str(), |(_, detail)| detail)
+        .trim();
+    let exit = match detail.rsplit_once("exit status: ") {
+        Some((_, code)) => format!("exit {}", code.trim()),
+        None => detail.trim_start_matches("exited: ").to_string(),
+    };
+    let at = std::fs::metadata(holders.crash_log(holder))
+        .and_then(|meta| meta.modified())
+        .ok();
+    Some(Crash {
+        line: telling_line(&strip_ansi(&String::from_utf8_lossy(&info.output))),
+        exit,
+        at,
+    })
+}
+
+/// The last output line that names an error, else the last line with anything on it.
+pub(crate) fn telling_line(output: &str) -> Option<String> {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let named = lines.iter().rev().find(|line| {
+        let lower = line.to_ascii_lowercase();
+        ["error", "exception", "panic", "fatal", "failed"]
+            .iter()
+            .any(|word| lower.contains(word))
+    });
+    named.or(lines.last()).map(|line| line.to_string())
+}
+
+/// Terminal output without its escape sequences (colors, cursor moves, titles).
+pub(crate) fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            if c != '\r' {
+                out.push(c);
+            }
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(next) = chars.next() {
+                    if next == '\u{7}' {
+                        break;
+                    }
+                    if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }

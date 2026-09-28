@@ -9,6 +9,8 @@ description = "Services panel: a workspace's services with live status, start/st
 path = "src/services_ui.rs"
 
 [dependencies]
+database_ui = { path = "../database_ui" }
+pom_db = { path = "../pom_db" }
 pom_config = { path = "../pom_config" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_services = { path = "../pom_services" }

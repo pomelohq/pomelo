@@ -22,7 +22,7 @@ const TOOLTIP_H: f32 = 24.0;
 const BUTTON: f32 = 24.0;
 
 /// The engine's logo and a brand color that reads on a dark panel.
-pub(crate) fn engine_logo(engine: Engine) -> (IconKind, Rgba) {
+pub fn engine_logo(engine: Engine) -> (IconKind, Rgba) {
     let (kind, color) = match engine {
         Engine::Postgres => (IconKind::EnginePostgresql, "#4169E1"),
         Engine::Mysql => (IconKind::EngineMysql, "#4479A1"),
