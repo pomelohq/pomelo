@@ -251,6 +251,8 @@ pub enum PanelRequest {
     },
     OpenUrl(String),
     Copy(String),
+    /// Start the coding agent in `cwd` on `prompt`.
+    FixWithAgent(AgentFix),
     Toast(String),
     ToastAction {
         message: String,
@@ -271,6 +273,12 @@ pub enum PanelRequest {
         detail: Option<String>,
         buttons: Vec<String>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentFix {
+    pub prompt: String,
+    pub cwd: std::path::PathBuf,
 }
 
 /// A command a side panel offers in the command palette; `id` comes back through `run_palette_entry`.

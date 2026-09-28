@@ -542,6 +542,8 @@ impl ProjectServices {
                 state: pom_paths::StateDir::from_env(),
                 config: Arc::new(move || config.read().ok().and_then(|config| config.clone())),
                 branch: project.active_branch().to_string(),
+                workspace_root: project.active_root(),
+                config_path: project.config_path.clone(),
                 waker: Arc::new(ui::wake),
             },
         ))
@@ -2442,7 +2444,8 @@ impl App {
         let Some(app) = self.main_app.as_mut() else {
             return;
         };
-        let effects = entity.update(app.app_mut(), |v, _| v.take_effects());
+        let (effects, agent_fix) =
+            entity.update(app.app_mut(), |v, _| (v.take_effects(), v.take_agent_fix()));
         if effects.persist {
             let view = entity.read(app.app());
             read_dock_settings(&mut self.settings, view.layout());
@@ -2473,6 +2476,11 @@ impl App {
         }
         if effects.fix_setup {
             self.open_fixer(id);
+        }
+        if let Some(fix) = agent_fix {
+            self.open_task_agent_in(id, Some(fix.cwd), |context| {
+                pom_agent::claude_task_launch(context, "fixer", &fix.prompt)
+            });
         }
         if effects.restart_stale {
             self.restart_stale(id);

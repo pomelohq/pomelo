@@ -2,6 +2,7 @@
 //! shared Redis instances (at the workspace's slot). Each call connects, works and disconnects, like the
 //! previous core; values keep NULL apart from the text "NULL".
 
+mod connect_error;
 mod consoles;
 mod postgres_driver;
 mod redis_driver;
@@ -14,11 +15,13 @@ use pom_config::Config;
 use pom_services::ServiceRunner;
 use serde::{Deserialize, Serialize};
 
+pub use connect_error::{classify, ConnectError, ConnectErrorKind};
 pub use consoles::{load_consoles, save_consoles, Console, ConsoleKind};
 pub use statements::{first_keyword, statement_at, statement_ranges};
 
 pub const DEFAULT_LIMIT: usize = 500;
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const MIGRATE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -148,6 +151,109 @@ impl Connector<'_> {
     fn postgres(&self, database: &str, timeout: Duration) -> Result<postgres::Client, String> {
         let endpoint = self.runner.postgres_endpoint(self.config);
         postgres_driver::connect(&endpoint, database, timeout)
+            .map_err(|error| format!("connect to {database}: {error}"))
+    }
+
+    /// The database's tables, or why it could not be opened: the cause, the login used and the full text.
+    pub fn open(&self, database: &Database) -> Result<Vec<Table>, Box<ConnectError>> {
+        match database.engine {
+            Engine::Postgres => {
+                let endpoint = self.runner.postgres_endpoint(self.config);
+                let failure = |raw: String| {
+                    ConnectError::new(
+                        Engine::Postgres,
+                        &database.name,
+                        &endpoint.host,
+                        endpoint.port,
+                        &endpoint.user,
+                        raw,
+                    )
+                };
+                let mut client = postgres_driver::connect(&endpoint, &database.name, LIST_TIMEOUT)
+                    .map_err(|raw| Box::new(self.explain(failure(raw))))?;
+                postgres_driver::tables(&mut client).map_err(|raw| {
+                    Box::new(ConnectError {
+                        kind: ConnectErrorKind::Other,
+                        ..failure(raw)
+                    })
+                })
+            }
+            Engine::Redis => {
+                let url = self.runner.redis_url(&database.name, self.branch);
+                let (host, port) = redis_address(&url);
+                let failure = |raw: String| {
+                    ConnectError::new(Engine::Redis, &database.name, &host, port, "", raw)
+                };
+                let mut connection =
+                    redis_driver::connect(&url).map_err(|raw| Box::new(failure(raw)))?;
+                redis_driver::keyspaces(&mut connection).map_err(|raw| {
+                    Box::new(ConnectError {
+                        kind: ConnectErrorKind::Other,
+                        ..failure(raw)
+                    })
+                })
+            }
+        }
+    }
+
+    fn explain(&self, error: ConnectError) -> ConnectError {
+        if !error.server_answered() {
+            return error;
+        }
+        match self.runner.port_owner(error.port) {
+            Some(owner) if !self.runner.owns(&owner) => error.on_foreign_server(owner.container),
+            _ => error,
+        }
+    }
+
+    /// Creates just this database in the shared Postgres.
+    pub fn create_database(&self, name: &str) -> Result<(), String> {
+        self.runner
+            .create_databases(self.config, &[name.to_string()])
+            .map_err(|error| error.to_string())
+    }
+
+    /// Replaces `target` with a copy of `template`.
+    pub fn copy_database(&self, template: &str, target: &str) -> Result<(), String> {
+        self.runner
+            .clone_database(self.config, template, target)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn start_shared(&self) -> Result<(), String> {
+        self.runner
+            .ensure_shared(self.config)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Runs `repo`'s migrate commands in `checkout` with the workspace's env for it.
+    pub fn migrate(&self, repo: &str, checkout: &Path) -> Result<(), String> {
+        let steps = self
+            .config
+            .repos
+            .get(repo)
+            .map(pom_config::Dir::effective_migrate)
+            .unwrap_or_default();
+        if steps.is_empty() {
+            return Err(format!("{repo} has no migrate command in pom.yml"));
+        }
+        let env = self.runner.workspace_env(self.config, self.branch);
+        env.write_env_files()
+            .map_err(|error| format!("write env files: {error}"))?;
+        let mut command = std::process::Command::new("zsh");
+        command
+            .args(["-lc", &steps.join(" && ")])
+            .current_dir(checkout)
+            .env("PATH", pom_services::tool_path())
+            .envs(env.repo_env(repo));
+        pom_services::run_within(&mut command, MIGRATE_TIMEOUT)
+            .map(|_| ())
+            .map_err(|error| format!("migrate: {error}"))
+    }
+
+    /// Whether the shared Postgres has a database of this name.
+    pub fn database_exists(&self, name: &str) -> Result<bool, String> {
+        postgres_driver::database_exists(&mut self.postgres("postgres", LIST_TIMEOUT)?, name)
     }
 
     fn redis(&self, name: &str) -> Result<redis::Connection, String> {
@@ -201,6 +307,51 @@ impl Connector<'_> {
             Engine::Redis => Err("CSV export is for Postgres only".into()),
         }
     }
+}
+
+/// `host` and `port` of a `redis://host:port/db` URL.
+fn redis_address(url: &str) -> (String, u16) {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or_default();
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    match authority.rsplit_once(':') {
+        Some((host, port)) => (host.to_string(), port.parse().unwrap_or(0)),
+        None => (authority.to_string(), 0),
+    }
+}
+
+/// The config entry of the repo a database belongs to: its key and its definition.
+pub fn repo_of<'a>(
+    config: &'a Config,
+    database: &Database,
+) -> Option<(&'a str, &'a pom_config::Dir)> {
+    config
+        .repos
+        .iter()
+        .find(|(key, dir)| {
+            let alias = if dir.alias.is_empty() {
+                key.as_str()
+            } else {
+                dir.alias.as_str()
+            };
+            alias == database.repo
+        })
+        .map(|(key, dir)| (key.as_str(), dir))
+}
+
+/// The same database in the main workspace (what a new workspace copies), when it is a different one.
+pub fn main_database(config: &Config, database: &Database) -> Option<String> {
+    if database.engine != Engine::Postgres {
+        return None;
+    }
+    let (key, dir) = repo_of(config, database)?;
+    let template = dir.databases.get(&database.label)?;
+    let main = format!(
+        "{}_{}",
+        config.session,
+        pom_env::resolve_branch_tokens(template, config.default_branch_for(key))
+    );
+    (main != database.name).then_some(main)
 }
 
 /// Every row of the table the filter keeps, in the typed order (what an export writes).
@@ -294,6 +445,27 @@ mod tests {
                     "redis".into()
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn a_database_knows_its_repo_and_its_main_copy() {
+        let config = config(
+            "session: demo\ndefault_branch: main\nrepos:\n  web:\n    alias: front\n    databases:\n      main: \"web_{{branch.safe}}\"\n      audit: audit\n",
+        );
+        let databases = list_databases(&config, "feat/x");
+        assert_eq!(
+            repo_of(&config, &databases[0]).map(|(key, _)| key),
+            Some("web")
+        );
+        assert_eq!(
+            main_database(&config, &databases[0]).as_deref(),
+            Some("demo_web_main")
+        );
+        assert_eq!(main_database(&config, &databases[1]), None);
+        assert_eq!(
+            redis_address("redis://localhost:6390/3"),
+            ("localhost".to_string(), 6390)
         );
     }
 

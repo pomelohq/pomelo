@@ -23,9 +23,9 @@ pub use form::{
 pub use key_binding::render_keystroke;
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
-    side_panel_kind, terminal_content, terminal_dock_body, AgentDot, AgentEmptyPanel, DockPosition,
-    PaletteEntry, PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView, TerminalPanel,
-    WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
+    side_panel_kind, terminal_content, terminal_dock_body, AgentDot, AgentEmptyPanel, AgentFix,
+    DockPosition, PaletteEntry, PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView,
+    TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use welcome::{
     is_welcome_id, WELCOME_NEW_PROJECT, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS,

@@ -239,6 +239,7 @@ pub struct WorkspaceView {
     /// The zoom showing this frame, for drawing and routing input.
     zoom: Option<Zoom>,
     pending_prompt: Option<crate::Prompt>,
+    agent_fix: Option<crate::AgentFix>,
     /// The side panel prompt waiting for an answer: its token, panel and the panel's tag.
     panel_prompt: Option<(u64, PaneKind, u64)>,
     /// A tab close waiting on the save prompt: its token, pane group and request.
@@ -330,6 +331,7 @@ impl WorkspaceView {
             panes_input: true,
             zoom: None,
             pending_prompt: None,
+            agent_fix: None,
             panel_prompt: None,
             close_prompt: None,
             next_prompt_token: CLOSE_PROMPT_TOKENS,
@@ -3024,6 +3026,7 @@ impl WorkspaceView {
                 }
             }
             crate::PanelRequest::Copy(text) => Self::clip_set(&text),
+            crate::PanelRequest::FixWithAgent(fix) => self.agent_fix = Some(fix),
             crate::PanelRequest::Toast(message) => {
                 self.toast_then = None;
                 self.show_toast(message, None);
@@ -4994,6 +4997,11 @@ impl WorkspaceView {
 
     pub fn take_prompt(&mut self) -> Option<crate::Prompt> {
         self.pending_prompt.take()
+    }
+
+    /// A panel's request to start the coding agent on a problem it found.
+    pub fn take_agent_fix(&mut self) -> Option<crate::AgentFix> {
+        self.agent_fix.take()
     }
 
     pub fn prompt_answered(&mut self, token: u64, answer: usize) {

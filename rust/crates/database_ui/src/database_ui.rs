@@ -1,8 +1,10 @@
 mod console;
+mod failure;
 mod grid;
 mod panel;
 mod table_item;
 
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
@@ -23,6 +25,9 @@ pub struct DatabaseContext {
     pub state: StateDir,
     pub config: Arc<dyn Fn() -> Option<Arc<Config>> + Send + Sync>,
     pub branch: String,
+    /// The active workspace's folder; a repo's checkout is the folder named for it inside.
+    pub workspace_root: PathBuf,
+    pub config_path: PathBuf,
     pub waker: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -114,7 +119,7 @@ pub(crate) mod tests {
             Err(error) => panic!("temp dir: {error}"),
         };
         let pom = dir.path().join("pom.yml");
-        let yaml = "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\nrepos:\n  api:\n    databases:\n      main: \"api_{{branch.safe}}\"\n";
+        let yaml = "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\nrepos:\n  api:\n    databases:\n      main: \"api_{{branch.safe}}\"\n  web:\n    commands:\n      migrate: npm run migrate\n    databases:\n      main: \"web_{{branch.safe}}\"\n";
         if let Err(error) = std::fs::write(&pom, yaml) {
             panic!("write pom.yml: {error}");
         }
@@ -139,6 +144,8 @@ pub(crate) mod tests {
                 state,
                 config: Arc::new(move || Some(config.clone())),
                 branch: "feat".into(),
+                workspace_root: dir.path().join("workspace--feat"),
+                config_path: pom,
                 waker: Arc::new(|| {}),
             },
             _dir: dir,

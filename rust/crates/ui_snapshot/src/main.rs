@@ -37,6 +37,8 @@ fn main() -> anyhow::Result<()> {
             state: pom_paths::StateDir::new(dir.join("state")),
             config: std::sync::Arc::new(move || Some(config.clone())),
             branch: "feat-login".into(),
+            workspace_root: dir.join("workspace--feat-login"),
+            config_path: dir.join("pom.yml"),
             waker: std::sync::Arc::new(|| {}),
         };
         let table = |schema: &str, name: &str, kind: pom_db::TableKind, count: Option<usize>| {
@@ -47,7 +49,9 @@ fn main() -> anyhow::Result<()> {
                 count,
             }
         };
-        let (width, height) = if which == "panel" {
+        let (width, height) = if which == "failures" {
+            (320.0_f32, 620.0_f32)
+        } else if which == "panel" {
             (320.0_f32, 420.0_f32)
         } else if which == "console" {
             (900.0_f32, 280.0_f32)
@@ -86,6 +90,45 @@ fn main() -> anyhow::Result<()> {
             footer
                 .paint(body)
                 .ok_or_else(|| anyhow::anyhow!("no footer"))?
+        } else if which == "failures" {
+            let mut panel = database_ui::DatabasePanel::new(context);
+            let missing = "myproject_api_feat-login-with-escalated-inbox-and-a-long-name";
+            panel.show_failure(
+                "myproject_api_feat-login",
+                pom_db::ConnectError::new(
+                    pom_db::Engine::Postgres,
+                    missing,
+                    "localhost",
+                    5434,
+                    "postgres",
+                    format!("db error: FATAL: database \"{missing}\" does not exist"),
+                ),
+                true,
+                Some("myproject_api_main".into()),
+            );
+            panel.toggle_full_error("myproject_api_feat-login");
+            panel.show_failure(
+                "myproject_web_feat-login",
+                pom_db::ConnectError::new(
+                    pom_db::Engine::Postgres,
+                    "myproject_web_feat-login",
+                    "localhost",
+                    5434,
+                    "postgres",
+                    "error connecting to server: Connection refused (os error 61)".into(),
+                ),
+                false,
+                None,
+            );
+            panel.fold("myproject_web_feat-login");
+            let node = panel.render(width, height);
+            ui::render(
+                &ui::div()
+                    .bg(ui::theme().panel_background)
+                    .child(node)
+                    .into(),
+                body,
+            )
         } else if which == "panel" {
             let mut panel = database_ui::DatabasePanel::new(context);
             panel.set_filter("e");

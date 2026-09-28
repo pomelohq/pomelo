@@ -1,12 +1,20 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-use pom_db::{Console, ConsoleKind, Database, Engine, Table, TableKind};
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use pom_db::{
+    ConnectError, ConnectErrorKind, Connector, Console, ConsoleKind, Database, Engine, Table,
+    TableKind,
+};
+use ui::{div, icon, label, measure, theme, IconKind, Node, Rgba};
 use workspace::persistence::SerializedItem;
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{side_panel_base, EditKey, Item, MenuItem, PaneKind, PanelRequest, SidePanelView};
+use workspace::{
+    side_panel_base, AgentFix, EditKey, Item, MenuItem, PaneKind, PanelRequest, SidePanelView,
+};
 
 use crate::console::{console_item, console_item_id, new_console, restore_console};
+use crate::failure::{Failure, FailureAction, ACTION_STRIDE};
 use crate::{DatabaseContext, Pending, TableItem};
 
 const ROW_H: f32 = 22.0;
@@ -19,12 +27,23 @@ const REFRESH: u64 = 9_000_000;
 const NEW_CONSOLE: u64 = REFRESH + 1;
 const FILTER: u64 = REFRESH + 2;
 const DELETE_CONSOLE: u64 = REFRESH + 3;
+const FAILURE: u64 = REFRESH + 16;
+const FAILURE_BLOCK_LEFT: f32 = 36.0;
+const FAILURE_BLOCK_RIGHT: f32 = 4.0;
+const FAILURE_BLOCK_TOP: f32 = 2.0;
+const FAILURE_BLOCK_BOTTOM: f32 = 6.0;
+const SERVER_START_WAIT: Duration = Duration::from_secs(30);
 const DELETE_PROMPT: u64 = 1;
 
 enum Tables {
-    Loading(Pending<Vec<Table>>),
+    Loading(Pending<Opened>),
     Loaded(Vec<Table>),
-    Failed(String),
+    Failed(Box<Failure>),
+}
+
+enum Opened {
+    Tables(Vec<Table>),
+    Failed(Box<Failure>),
 }
 
 #[derive(Clone)]
@@ -50,6 +69,9 @@ enum Row {
         text: String,
         error: bool,
     },
+    Failure {
+        index: usize,
+    },
 }
 
 pub struct DatabasePanel {
@@ -68,6 +90,9 @@ pub struct DatabasePanel {
     filter: TextField,
     filter_focused: bool,
     menu_console: Option<String>,
+    /// Fixes running for a failed database, by its name; each answers with what to tell the person.
+    fixes: HashMap<String, Pending<String>>,
+    width: f32,
 }
 
 impl DatabasePanel {
@@ -93,6 +118,8 @@ impl DatabasePanel {
             },
             filter_focused: false,
             menu_console: None,
+            fixes: HashMap::new(),
+            width: 320.0,
         };
         panel.load_consoles();
         if let Some(first) = panel.databases.first().map(|db| db.name.clone()) {
@@ -175,7 +202,7 @@ impl DatabasePanel {
         };
         let pending = self
             .context
-            .run(move |connector| connector.tables(&database));
+            .run(move |connector| Ok(open_database(connector, &database)));
         self.tables
             .insert(name.to_string(), Tables::Loading(pending));
     }
@@ -185,6 +212,176 @@ impl DatabasePanel {
         self.open.insert(database.to_string());
         self.tables
             .insert(database.to_string(), Tables::Loaded(tables));
+    }
+
+    /// Shows this failure for a database as if opening it had failed (previews and tests).
+    pub fn show_failure(
+        &mut self,
+        database: &str,
+        error: ConnectError,
+        has_migrate: bool,
+        main_copy: Option<String>,
+    ) {
+        let repo = self.repo_key(database);
+        let mut failure = Failure::new(error, repo);
+        failure.has_migrate = has_migrate;
+        failure.main_copy = main_copy;
+        self.open.insert(database.to_string());
+        self.tables
+            .insert(database.to_string(), Tables::Failed(Box::new(failure)));
+    }
+
+    pub fn toggle_full_error(&mut self, database: &str) {
+        if let Some(failure) = self.failure_mut(database) {
+            failure.raw_open = !failure.raw_open;
+        }
+    }
+
+    /// Folds a database row without dropping what it loaded.
+    pub fn fold(&mut self, database: &str) {
+        self.open.remove(database);
+    }
+
+    fn repo_key(&self, name: &str) -> String {
+        let config = (self.context.config)();
+        match (config, self.database(name)) {
+            (Some(config), Some(database)) => pom_db::repo_of(&config, database)
+                .map(|(key, _)| key.to_string())
+                .unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    fn failure(&self, name: &str) -> Option<&Failure> {
+        match self.tables.get(name) {
+            Some(Tables::Failed(failure)) => Some(failure),
+            _ => None,
+        }
+    }
+
+    fn failure_mut(&mut self, name: &str) -> Option<&mut Failure> {
+        match self.tables.get_mut(name) {
+            Some(Tables::Failed(failure)) => Some(failure),
+            _ => None,
+        }
+    }
+
+    fn failure_id(index: usize, action: FailureAction) -> u64 {
+        Self::base() + FAILURE + index as u64 * ACTION_STRIDE + action.offset()
+    }
+
+    fn decode_failure(id: u64) -> Option<(usize, FailureAction)> {
+        let offset = id.checked_sub(Self::base() + FAILURE)?;
+        let action = FailureAction::from_offset(offset % ACTION_STRIDE)?;
+        Some(((offset / ACTION_STRIDE) as usize, action))
+    }
+
+    fn checkout(&self, repo: &str) -> PathBuf {
+        let checkout = self.context.workspace_root.join(repo);
+        if !repo.is_empty() && checkout.is_dir() {
+            checkout
+        } else {
+            self.context.workspace_root.clone()
+        }
+    }
+
+    fn failure_action(&mut self, index: usize, action: FailureAction) {
+        let Some(database) = self.databases.get(index).cloned() else {
+            return;
+        };
+        let name = database.name.clone();
+        let Some(failure) = self.failure(&name) else {
+            return;
+        };
+        let (repo, main_copy, report, prompt) = (
+            failure.repo.clone(),
+            failure.main_copy.clone(),
+            failure.report(),
+            failure.agent_prompt(),
+        );
+        match action {
+            FailureAction::ToggleRaw => self.toggle_full_error(&name),
+            FailureAction::CopyError => {
+                self.requests.push(PanelRequest::Copy(report));
+                self.requests
+                    .push(PanelRequest::Toast("Copied the error".into()));
+            }
+            FailureAction::FixWithAgent => {
+                self.requests.push(PanelRequest::FixWithAgent(AgentFix {
+                    prompt,
+                    cwd: self.checkout(&repo),
+                }));
+            }
+            FailureAction::EditConfig => self
+                .requests
+                .push(PanelRequest::OpenFile(self.context.config_path.clone())),
+            FailureAction::Retry => self.load_tables(&name),
+            FailureAction::CreateDatabase => {
+                self.start_fix(&name, "Creating database...", move |connector| {
+                    connector.create_database(&database.name)?;
+                    Ok(format!("Created {} (empty)", database.name))
+                })
+            }
+            FailureAction::CreateAndMigrate => {
+                let checkout = self.checkout(&repo);
+                self.start_fix(
+                    &name,
+                    "Creating database and migrating...",
+                    move |connector| {
+                        connector.create_database(&database.name)?;
+                        connector.migrate(&repo, &checkout)?;
+                        Ok(format!(
+                            "Created {} and ran {repo}'s migrate",
+                            database.name
+                        ))
+                    },
+                )
+            }
+            FailureAction::CopyFromMain => {
+                let Some(main) = main_copy else {
+                    return;
+                };
+                self.start_fix(&name, "Copying from main...", move |connector| {
+                    connector.copy_database(&main, &database.name)?;
+                    Ok(format!("Copied {main} into {}", database.name))
+                })
+            }
+            FailureAction::StartShared => {
+                self.start_fix(&name, "Starting shared services...", move |connector| {
+                    connector.start_shared()?;
+                    let deadline = Instant::now() + SERVER_START_WAIT;
+                    while Instant::now() < deadline {
+                        match connector.open(&database) {
+                            Err(error)
+                                if !error.server_answered()
+                                    || error.raw.contains("starting up") =>
+                            {
+                                std::thread::sleep(Duration::from_millis(500))
+                            }
+                            _ => break,
+                        }
+                    }
+                    Ok("Started shared services".to_string())
+                })
+            }
+        }
+    }
+
+    fn start_fix(
+        &mut self,
+        name: &str,
+        busy: &str,
+        work: impl FnOnce(&Connector<'_>) -> Result<String, String> + Send + 'static,
+    ) {
+        if self.fixes.contains_key(name) {
+            return;
+        }
+        if let Some(failure) = self.failure_mut(name) {
+            failure.busy = Some(busy.to_string());
+            failure.action_error = None;
+        }
+        let pending = self.context.run(work);
+        self.fixes.insert(name.to_string(), pending);
     }
 
     fn toggle_database(&mut self, name: &str) {
@@ -207,12 +404,51 @@ impl DatabasePanel {
     }
 
     fn poll(&mut self) {
-        for tables in self.tables.values_mut() {
+        let engines: HashMap<String, Engine> = self
+            .databases
+            .iter()
+            .map(|database| (database.name.clone(), database.engine))
+            .collect();
+        for (name, tables) in self.tables.iter_mut() {
             if let Tables::Loading(pending) = tables {
                 match pending.poll() {
-                    Some(Ok(loaded)) => *tables = Tables::Loaded(loaded),
-                    Some(Err(error)) => *tables = Tables::Failed(error),
+                    Some(Ok(Opened::Tables(loaded))) => *tables = Tables::Loaded(loaded),
+                    Some(Ok(Opened::Failed(failure))) => *tables = Tables::Failed(failure),
+                    Some(Err(error)) => {
+                        let error = ConnectError {
+                            kind: ConnectErrorKind::Other,
+                            engine: engines.get(name).copied().unwrap_or(Engine::Postgres),
+                            database: name.clone(),
+                            host: String::new(),
+                            port: 0,
+                            user: String::new(),
+                            raw: error,
+                            container: None,
+                        };
+                        *tables = Tables::Failed(Box::new(Failure::new(error, String::new())));
+                    }
                     None => {}
+                }
+            }
+        }
+        let mut finished = Vec::new();
+        for (name, pending) in self.fixes.iter_mut() {
+            if let Some(answer) = pending.poll() {
+                finished.push((name.clone(), answer));
+            }
+        }
+        for (name, answer) in finished {
+            self.fixes.remove(&name);
+            match answer {
+                Ok(message) => {
+                    self.requests.push(PanelRequest::Toast(message));
+                    self.load_tables(&name);
+                }
+                Err(error) => {
+                    if let Some(failure) = self.failure_mut(&name) {
+                        failure.busy = None;
+                        failure.action_error = Some(error);
+                    }
                 }
             }
         }
@@ -287,11 +523,7 @@ impl DatabasePanel {
                             });
                         }
                     }
-                    Some(Tables::Failed(error)) => rows.push(Row::Note {
-                        depth: 2,
-                        text: error.lines().next().unwrap_or_default().to_string(),
-                        error: true,
-                    }),
+                    Some(Tables::Failed(_)) => rows.push(Row::Failure { index }),
                     Some(Tables::Loading(_)) | None => rows.push(Row::Note {
                         depth: 2,
                         text: "Loading...".into(),
@@ -392,6 +624,7 @@ impl DatabasePanel {
                     colors.icon_muted,
                 ))
                 .child(name(repo.clone(), colors.text))
+                .children(self.repo_dot(repo).map(dot))
                 .child(label(engine).size(11.0).color(colors.text_placeholder))
                 .into()
             }
@@ -412,6 +645,13 @@ impl DatabasePanel {
                     ))
                     .child(self.slot(IconKind::Cylinder, colors.icon_muted))
                     .child(name(database.label.clone(), colors.text))
+                    .children(self.failure(&database.name).map(|failure| {
+                        dot(if failure.is_warning() {
+                            colors.warning
+                        } else {
+                            colors.error
+                        })
+                    }))
                     .child(label(count).size(11.0).color(colors.text_placeholder))
                     .into()
             }
@@ -430,6 +670,29 @@ impl DatabasePanel {
                     .child(self.slot(kind, colors.icon_muted))
                     .child(name(table.qualified(), colors.text_muted))
                     .child(label(trailing).size(11.0).color(colors.text_placeholder))
+                    .into()
+            }
+            Row::Failure { index } => {
+                let Some(failure) = self
+                    .databases
+                    .get(*index)
+                    .and_then(|database| self.failure(&database.name))
+                else {
+                    return div().into();
+                };
+                let block_width = self.width - 8.0 - FAILURE_BLOCK_LEFT - FAILURE_BLOCK_RIGHT;
+                let row = *index;
+                div()
+                    .row()
+                    .pl(FAILURE_BLOCK_LEFT)
+                    .pr(FAILURE_BLOCK_RIGHT)
+                    .pt(FAILURE_BLOCK_TOP)
+                    .pb(FAILURE_BLOCK_BOTTOM)
+                    .child(failure.render(
+                        block_width,
+                        |action| Self::failure_id(row, action),
+                        self.hover,
+                    ))
                     .into()
             }
             Row::Note { depth, text, error } => {
@@ -453,8 +716,40 @@ impl DatabasePanel {
         }
     }
 
+    /// The color of the dot on a repo's header: red when one of its databases failed, yellow for a warning only.
+    fn repo_dot(&self, repo: &str) -> Option<Rgba> {
+        let colors = theme();
+        let failures: Vec<&Failure> = self
+            .databases
+            .iter()
+            .filter(|database| database.repo == repo)
+            .filter_map(|database| self.failure(&database.name))
+            .collect();
+        if failures.is_empty() {
+            None
+        } else if failures.iter().all(|failure| failure.is_warning()) {
+            Some(colors.warning)
+        } else {
+            Some(colors.error)
+        }
+    }
+
+    fn row_height(&self, index: usize, row: &Row) -> f32 {
+        match row {
+            Row::Failure { .. } => measure(&self.render_row(index, row)).1,
+            _ => ROW_H,
+        }
+    }
+
     fn content_height(&self) -> f32 {
-        HEADER_H + FILTER_H + self.rows.len() as f32 * ROW_H
+        HEADER_H
+            + FILTER_H
+            + self
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| self.row_height(index, row))
+                .sum::<f32>()
     }
 
     fn header_button(&self, offset: u64, kind: IconKind) -> Node {
@@ -515,6 +810,7 @@ impl SidePanelView for DatabasePanel {
 
     fn render(&mut self, width: f32, height: f32) -> Node {
         self.poll();
+        self.width = width;
         self.viewport_h = height;
         self.rebuild_rows();
         let max_scroll = (self.content_height() - height).max(0.0);
@@ -547,10 +843,14 @@ impl SidePanelView for DatabasePanel {
                 ),
             );
         }
-        let first = (self.scroll / ROW_H).floor() as usize;
-        let visible = (height / ROW_H).ceil() as usize + 2;
-        for (index, row) in self.rows.iter().enumerate().skip(first).take(visible) {
-            list = list.child(self.render_row(index, row));
+        let mut top = 0.0;
+        for (index, row) in self.rows.iter().enumerate() {
+            let row_height = self.row_height(index, row);
+            let bottom = top + row_height;
+            if bottom > self.scroll && top < self.scroll + height {
+                list = list.child(self.render_row(index, row));
+            }
+            top = bottom;
         }
         div()
             .col()
@@ -570,6 +870,9 @@ impl SidePanelView for DatabasePanel {
             Some(NEW_CONSOLE) => return self.create_console(),
             Some(FILTER) => return,
             _ => {}
+        }
+        if let Some((index, action)) = Self::decode_failure(id) {
+            return self.failure_action(index, action);
         }
         let Some(row) = Self::decode(id).and_then(|index| self.rows.get(index).cloned()) else {
             return;
@@ -596,7 +899,7 @@ impl SidePanelView for DatabasePanel {
                     }),
                 });
             }
-            Row::Note { .. } => {}
+            Row::Note { .. } | Row::Failure { .. } => {}
         }
     }
 
@@ -706,6 +1009,36 @@ impl SidePanelView for DatabasePanel {
     }
 }
 
+fn dot(color: Rgba) -> Node {
+    div()
+        .row()
+        .w_px(11.0)
+        .h_px(ROW_H)
+        .items_center()
+        .justify_center()
+        .child(div().w_px(7.0).h_px(7.0).rounded(3.5).bg(color))
+        .into()
+}
+
+/// The database's tables, or why it failed with the fixes that apply to it.
+fn open_database(connector: &Connector<'_>, database: &Database) -> Opened {
+    let error = match connector.open(database) {
+        Ok(tables) => return Opened::Tables(tables),
+        Err(error) => error,
+    };
+    let repo = pom_db::repo_of(connector.config, database);
+    let mut failure = Failure::new(
+        *error,
+        repo.map(|(key, _)| key.to_string()).unwrap_or_default(),
+    );
+    failure.has_migrate = repo.is_some_and(|(_, dir)| !dir.effective_migrate().is_empty());
+    if failure.error.kind == ConnectErrorKind::DatabaseMissing {
+        failure.main_copy = pom_db::main_database(connector.config, database)
+            .filter(|main| connector.database_exists(main).unwrap_or(false));
+    }
+    Opened::Failed(Box::new(failure))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,5 +1131,95 @@ mod tests {
         panel.click(DatabasePanel::base() + FILTER);
         panel.blur();
         assert!(!panel.text_focused());
+    }
+
+    fn show_missing(panel: &mut DatabasePanel, name: &str) {
+        panel.show_failure(
+            name,
+            ConnectError::new(
+                Engine::Postgres,
+                name,
+                "localhost",
+                5434,
+                "postgres",
+                format!("database \"{name}\" does not exist"),
+            ),
+            false,
+            None,
+        );
+    }
+
+    #[test]
+    fn a_failed_database_shows_its_block_and_marks_its_rows() {
+        let context = crate::tests::context();
+        let mut panel = DatabasePanel::new(context.context.clone());
+        let name = context.context.databases()[0].name.clone();
+        show_missing(&mut panel, &name);
+        panel.render(320.0, 600.0);
+        assert!(panel
+            .rows
+            .iter()
+            .any(|row| matches!(row, Row::Failure { index: 0 })));
+        assert_eq!(panel.repo_dot("api"), Some(theme().error));
+        assert_eq!(panel.repo_dot("web"), None);
+        panel.fold(&name);
+        panel.render(320.0, 600.0);
+        assert!(!panel
+            .rows
+            .iter()
+            .any(|row| matches!(row, Row::Failure { .. })));
+        assert_eq!(panel.repo_dot("api"), Some(theme().error));
+    }
+
+    #[test]
+    fn failure_controls_ask_the_app() {
+        let context = crate::tests::context();
+        let mut panel = DatabasePanel::new(context.context.clone());
+        let name = context.context.databases()[0].name.clone();
+        show_missing(&mut panel, &name);
+        panel.render(320.0, 600.0);
+        panel.take_requests();
+        panel.click(DatabasePanel::failure_id(0, FailureAction::CopyError));
+        match panel.take_requests().as_slice() {
+            [PanelRequest::Copy(text), PanelRequest::Toast(_)] => {
+                assert!(text.contains("does not exist"), "{text}")
+            }
+            _ => panic!("copy the error"),
+        }
+        panel.click(DatabasePanel::failure_id(0, FailureAction::FixWithAgent));
+        match panel.take_requests().as_slice() {
+            [PanelRequest::FixWithAgent(fix)] => {
+                assert!(fix.prompt.contains(&name), "{}", fix.prompt);
+                assert_eq!(fix.cwd, context.context.workspace_root);
+            }
+            _ => panic!("start the agent"),
+        }
+        panel.click(DatabasePanel::failure_id(0, FailureAction::EditConfig));
+        assert!(matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::OpenFile(path)] if *path == context.context.config_path
+        ));
+        panel.click(DatabasePanel::failure_id(0, FailureAction::ToggleRaw));
+        assert!(panel.failure(&name).is_some_and(|failure| failure.raw_open));
+    }
+
+    #[test]
+    fn a_fix_runs_off_the_ui_thread_and_reports_its_error() {
+        let context = crate::tests::context();
+        let mut panel = DatabasePanel::new(context.context.clone());
+        let name = context.context.databases()[0].name.clone();
+        show_missing(&mut panel, &name);
+        panel.click(DatabasePanel::failure_id(0, FailureAction::CreateDatabase));
+        assert!(panel
+            .failure(&name)
+            .is_some_and(|failure| failure.busy.is_some()));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while panel.fixes.contains_key(&name) && Instant::now() < deadline {
+            panel.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let failure = panel.failure(&name);
+        assert!(failure.is_some_and(|failure| failure.busy.is_none()));
+        assert!(failure.is_some_and(|failure| failure.action_error.is_some()));
     }
 }

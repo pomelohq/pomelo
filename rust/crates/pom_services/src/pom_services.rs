@@ -10,7 +10,8 @@ pub use control::{
 };
 pub use env_files::{EnvLine, ServiceExplain, WorkspaceEnv};
 pub use shared::{
-    database_names, database_names_where, Endpoint, SharedAction, COMPOSE_FILE, SHARED_NETWORK,
+    database_names, database_names_where, run_within, Endpoint, PortOwner, SharedAction,
+    COMPOSE_FILE, SHARED_NETWORK,
 };
 pub use slots::SlotStore;
 pub use tool_path::tool_path;

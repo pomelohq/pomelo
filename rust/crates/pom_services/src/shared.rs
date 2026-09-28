@@ -3,8 +3,10 @@
 //! the same file and names the previous core used so either can manage the running stack.
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use pom_config::{Config, SharedServiceDef};
 
@@ -37,6 +39,97 @@ fn composed_port(text: &str, service: &str, index: usize) -> Option<u16> {
         .filter_map(|mapping| mapping.trim_end_matches('"').split_once(':'))
         .nth(index)
         .and_then(|(host, _)| host.parse().ok())
+}
+
+/// A running container publishing a host port, and the compose project it belongs to (empty outside compose).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortOwner {
+    pub container: String,
+    pub project: String,
+}
+
+/// The first `name\tproject` line of `docker ps --format`.
+fn parse_port_owner(stdout: &str) -> Option<PortOwner> {
+    let line = stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let (container, project) = line.split_once('\t').unwrap_or((line, ""));
+    Some(PortOwner {
+        container: container.trim().to_string(),
+        project: project.trim().to_string(),
+    })
+}
+
+const PORT_OWNER_TIMEOUT: Duration = Duration::from_secs(5);
+
+const OUTPUT_TAIL_LINES: usize = 20;
+
+/// Runs `command` without stdin, killing it past `timeout`; its stdout, or why it failed with the tail of its
+/// output.
+pub fn run_within(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("start: {error}"))?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if let Some(mut pipe) = pipe {
+                if let Err(error) = pipe.read_to_string(&mut text) {
+                    eprintln!("services: read output: {error}");
+                }
+            }
+            text
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                if let Err(error) = child.kill() {
+                    eprintln!("services: stop a command past its deadline: {error}");
+                }
+                if let Err(error) = child.wait() {
+                    eprintln!("services: reap a command: {error}");
+                }
+                break Err(format!("gave no answer within {}s", timeout.as_secs()));
+            }
+            Err(error) => break Err(error.to_string()),
+        }
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    let status = status?;
+    if status.success() {
+        return Ok(stdout);
+    }
+    let combined = stdout + &stderr;
+    let lines: Vec<&str> = combined
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let tail = lines[lines.len().saturating_sub(OUTPUT_TAIL_LINES)..].join("\n");
+    Err(match status.code() {
+        Some(code) => format!("exit {code}\n{tail}"),
+        None => format!("killed\n{tail}"),
+    })
 }
 
 /// Used to reach a Postgres not published by one of our containers.
@@ -456,6 +549,40 @@ impl ServiceRunner {
             .map(str::to_string)
     }
 
+    /// The running container publishing host `port`, if Docker answers within a few seconds.
+    pub fn port_owner(&self, port: u16) -> Option<PortOwner> {
+        let args = [
+            "ps".to_string(),
+            "--filter".into(),
+            format!("publish={port}"),
+            "--filter".into(),
+            "status=running".into(),
+            "--format".into(),
+            "{{.Names}}\t{{.Label \"com.docker.compose.project\"}}".into(),
+        ];
+        match self.docker_within(&args, PORT_OWNER_TIMEOUT) {
+            Ok(stdout) => parse_port_owner(&stdout),
+            Err(error) => {
+                eprintln!("services: who publishes {port}: {error}");
+                None
+            }
+        }
+    }
+
+    /// Whether `owner` is a container of this project's shared stack.
+    pub fn owns(&self, owner: &PortOwner) -> bool {
+        owner.project == self.compose_project()
+    }
+
+    fn docker_within(&self, args: &[String], timeout: Duration) -> Result<String, String> {
+        let mut command = Command::new(&self.docker);
+        command
+            .args(args)
+            .current_dir(&self.project_root)
+            .env("PATH", crate::tool_path());
+        run_within(&mut command, timeout)
+    }
+
     fn psql(&self, postgres: &Postgres, database: &str, sql: &str) -> Result<Output, ServiceError> {
         self.docker(&postgres.psql_args(database, &["-c", sql]))
     }
@@ -618,6 +745,25 @@ mod tests {
         assert_eq!(composed_port(text, "minio", 1), Some(9001));
         assert_eq!(composed_port(text, "postgres", 1), None);
         assert_eq!(composed_port(text, "redis", 0), None);
+    }
+
+    #[test]
+    fn the_port_owner_is_the_first_container_listed() {
+        assert_eq!(
+            parse_port_owner("other-shared-postgres-1\tother-shared\nsecond\tx\n"),
+            Some(PortOwner {
+                container: "other-shared-postgres-1".into(),
+                project: "other-shared".into(),
+            })
+        );
+        assert_eq!(
+            parse_port_owner("loose\n"),
+            Some(PortOwner {
+                container: "loose".into(),
+                project: String::new(),
+            })
+        );
+        assert_eq!(parse_port_owner("\n"), None);
     }
 
     #[test]

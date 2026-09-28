@@ -28,9 +28,15 @@ pub(crate) fn connect(
         .dbname(database)
         .connect_timeout(Duration::from_secs(10))
         .options(&format!("-c statement_timeout={}", timeout.as_millis()));
-    config
-        .connect(NoTls)
-        .map_err(|error| format!("connect to {database}: {}", describe(&error)))
+    config.connect(NoTls).map_err(|error| describe(&error))
+}
+
+pub(crate) fn database_exists(client: &mut Client, name: &str) -> Result<bool, String> {
+    let sql = format!(
+        "SELECT 1 FROM pg_database WHERE datname = '{}'",
+        name.replace('\'', "''")
+    );
+    Ok(!rows(client, &sql)?.is_empty())
 }
 
 fn describe(error: &postgres::Error) -> String {

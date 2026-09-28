@@ -712,6 +712,13 @@ impl From<Anchored> for Node {
     }
 }
 
+/// The size a node takes before flex growth, in design px (what `w_px`/`h_px` take).
+pub fn measure(node: &Node) -> (f32, f32) {
+    let (w, h) = intrinsic(node);
+    let scale = crate::ui_text_scale();
+    (w / scale, h / scale)
+}
+
 fn intrinsic(node: &Node) -> (f32, f32) {
     match node {
         Node::Anchored(_) => (0.0, 0.0),

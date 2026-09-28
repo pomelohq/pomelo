@@ -103,6 +103,8 @@ fn a_table_tab_pages_sorts_and_filters() {
         state: pom_paths::StateDir::new(temp.path().join("state")),
         config: Arc::new(move || Some(config_for_context.clone())),
         branch: "feat".into(),
+        workspace_root: temp.path().join("workspace--feat"),
+        config_path: temp.path().join("pom.yml"),
         waker: Arc::new(|| {}),
     };
     let table = pom_db::Table {
