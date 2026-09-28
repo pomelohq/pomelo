@@ -798,6 +798,42 @@ impl Terminal {
         .collect()
     }
 
+    /// Every line of output, scrollback first, with rows the terminal wrapped joined back into one line.
+    pub fn output_lines(&self) -> Vec<String> {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let columns = grid.columns();
+        let mut lines = Vec::new();
+        let mut current = String::new();
+        let top = term.topmost_line().0;
+        let bottom = term.bottommost_line().0;
+        for line in top..=bottom {
+            let row = &grid[Line(line)];
+            let mut wrapped = false;
+            for column in 0..columns {
+                let cell = &row[Column(column)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                if column + 1 == columns && cell.flags.contains(Flags::WRAPLINE) {
+                    wrapped = true;
+                }
+                current.push(cell.c);
+            }
+            if !wrapped {
+                lines.push(current.trim_end().to_string());
+                current.clear();
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current.trim_end().to_string());
+        }
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        lines
+    }
+
     /// Select `start..=end` and scroll it into view.
     pub fn select_range(&mut self, start: GridPoint, end: GridPoint) {
         let mut term = self.term.lock();

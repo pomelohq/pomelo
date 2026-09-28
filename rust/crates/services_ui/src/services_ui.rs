@@ -396,14 +396,26 @@ impl ServicesPanel {
         }
     }
 
-    /// The header and facts of `repo`/`service`'s tab, `width` wide (snapshots).
-    pub fn tab_toolbar(&self, repo: &str, service: &str, width: f32) -> Node {
-        tab::toolbar_preview(
+    /// `repo`/`service`'s tab with `lines` of output and `filter` typed, `width` x `height` (snapshots).
+    #[allow(clippy::too_many_arguments)]
+    pub fn tab_preview(
+        &self,
+        repo: &str,
+        service: &str,
+        lines: &[&str],
+        filter: &str,
+        width: f32,
+        height: f32,
+    ) -> Node {
+        tab::preview(
             self.model.context.clone(),
             self.model.shared.clone(),
             self.model.context.target(repo, service),
             self.root.clone(),
+            lines,
+            filter,
             width,
+            height,
         )
     }
 
@@ -2460,6 +2472,11 @@ impl SidePanelView for ServicesPanel {
                 model::TabRequest::Copy(text) => self.requests.push(PanelRequest::Copy(text)),
                 model::TabRequest::OpenFile(path) => {
                     self.requests.push(PanelRequest::OpenFile(path))
+                }
+                model::TabRequest::Menu(target) => {
+                    let holder = self.model.context.runner.holder_name(&target);
+                    self.menu = Some(self.service_menu(&target, &holder));
+                    self.requests.push(PanelRequest::OpenMenu);
                 }
             }
         }

@@ -913,6 +913,14 @@ pub trait Item: 'static {
     fn diff_split(&self) -> Option<bool> {
         None
     }
+    /// Muted text after the title on its tab (a service's repo).
+    fn tab_detail(&self) -> Option<String> {
+        None
+    }
+    /// A status dot drawn before the title on its tab, in this color.
+    fn tab_dot(&self) -> Option<ui::Rgba> {
+        None
+    }
     /// A row the item draws under the tabs (a service's controls and facts), `width` wide; its click ids are the
     /// item's own and come back through `toolbar_click`.
     fn toolbar(&self, _width: f32) -> Option<ui::Node> {

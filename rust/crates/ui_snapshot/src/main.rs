@@ -72,13 +72,27 @@ fn main() -> anyhow::Result<()> {
         }
         let tab = std::env::var("SERVICES").ok().filter(|which| which != "1");
         let (width, height) = if tab.is_some() {
-            (860.0_f32, 300.0_f32)
+            (1000.0_f32, 520.0_f32)
         } else {
             (320.0_f32, 900.0_f32)
         };
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
         let node = match tab.as_deref().and_then(|which| which.split_once('/')) {
-            Some((repo, service)) => panel.tab_toolbar(repo, service, width),
+            Some((repo, service)) => panel.tab_preview(
+                repo,
+                service,
+                &[
+                    "[vite] hmr update /src/pages/Login.tsx",
+                    "[vite] page reload src/main.tsx",
+                    "Warning: something is deprecated",
+                    "[vite] page reload src/main.tsx",
+                    "Error: could not resolve 'vite-plugin-svgr'",
+                    "[vite] hmr update /src/components/Button.tsx",
+                ],
+                &std::env::var("FILTER").unwrap_or_default(),
+                width,
+                height,
+            ),
             None => panel.render(width, height),
         };
         let painted = ui::render(

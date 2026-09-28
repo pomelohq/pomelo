@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use pom_services::ServiceTarget;
-use terminal::{HolderOptions, TerminalOptions, Waker};
-use terminal_ui::{ConsoleAction, ConsoleToolbar, TerminalItem};
-use ui::{div, icon, label, theme, IconKind, Node};
+use terminal::{HolderOptions, Keystroke, Modifiers, TerminalOptions, Waker};
+use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use workspace::text_field::{FieldFont, TextField};
+use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 use crate::model::{run_action, Action, Crash, ServicesContext, Shared, Status, TabRequest};
 use crate::view::{self, action_button, State, Tone};
@@ -22,9 +23,15 @@ const NEW_PORT: u64 = 5;
 const COPY_URL: u64 = 6;
 const COPY_COMMAND: u64 = 7;
 const OPEN_ENV: u64 = 8;
-const FIND: u64 = 9;
+const FILTER: u64 = 9;
 const CLEAR: u64 = 10;
 const FOLLOW: u64 = 11;
+const PAUSE: u64 = 12;
+const WRAP: u64 = 13;
+const CLEAR_FILTER: u64 = 14;
+const MORE: u64 = 15;
+const LOG_ROW_H: f32 = 20.0;
+const TIME_W: f32 = 64.0;
 const MODE_BASE: u64 = 16;
 const PROFILE_BASE: u64 = 32;
 const IDS_PER_TAB: u64 = 64;
@@ -38,7 +45,7 @@ enum Showing {
     Leftover,
 }
 
-pub(crate) struct ServiceTab {
+pub(crate) struct ServiceItem {
     context: Arc<ServicesContext>,
     shared: Arc<Mutex<Shared>>,
     target: ServiceTarget,
@@ -46,15 +53,33 @@ pub(crate) struct ServiceTab {
     root: PathBuf,
     base: u64,
     showing: Showing,
+    /// Follows the service's output off screen; its lines are what the tab lists.
+    terminal: Option<terminal::Terminal>,
+    lines: Vec<LogLine>,
+    /// Lines shown while paused (the rest wait).
+    paused_at: Option<usize>,
     follow: bool,
-    action: Option<ConsoleAction>,
+    wrap: bool,
+    filter: TextField,
+    filter_focused: bool,
+    /// The first line listed when not following (an index into the filtered lines).
+    top: usize,
+    visible_rows: usize,
+    hits: Vec<(Rect, u64)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LogLine {
+    /// When the tab saw it arrive; lines that were there before it opened have none.
+    time: Option<String>,
+    text: String,
 }
 
 pub(crate) fn tab_id(holder: &str) -> String {
     format!("service:{holder}")
 }
 
-/// The service's tab, its console showing what the service is doing now.
+/// The service's tab, following what the service is doing now.
 pub(crate) fn open_tab(
     context: Arc<ServicesContext>,
     shared: Arc<Mutex<Shared>>,
@@ -62,60 +87,223 @@ pub(crate) fn open_tab(
     root: PathBuf,
     number: u64,
 ) -> Option<Box<dyn workspace::Item>> {
-    let holder = context.runner.holder_name(&target);
-    let running = context.status_of(&target) == Status::Running;
-    let tab = ServiceTab {
-        base: TOOLBAR_IDS + number * IDS_PER_TAB,
-        showing: if running {
-            Showing::Live
-        } else {
-            Showing::Leftover
-        },
-        follow: true,
-        action: None,
-        context,
-        shared,
-        target,
-        holder,
-        root,
-    };
-    let (options, waker) = tab.console(tab.showing);
-    let terminal = match terminal::Terminal::spawn(options, waker) {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            eprintln!("services: console: {error}");
-            return None;
-        }
-    };
-    let item = TerminalItem::with_terminal(number, tab.root.clone(), terminal)
-        .into_console(tab_id(&tab.holder), crate::service_title(&tab.target));
-    Some(Box::new(item.with_toolbar(Box::new(tab))))
+    let mut item = ServiceItem::new(context, shared, target, root, number);
+    item.respawn();
+    Some(Box::new(item))
 }
 
-/// The header and facts a service's tab would show, without its console (snapshots).
-pub(crate) fn toolbar_preview(
+/// The tab as it draws with `lines` of output, `width` x `height` (snapshots).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn preview(
     context: Arc<ServicesContext>,
     shared: Arc<Mutex<Shared>>,
     target: ServiceTarget,
     root: PathBuf,
+    lines: &[&str],
+    filter: &str,
     width: f32,
+    height: f32,
 ) -> Node {
-    let holder = context.runner.holder_name(&target);
-    ServiceTab {
-        context,
-        shared,
-        target,
-        holder,
-        root,
-        base: TOOLBAR_IDS,
-        showing: Showing::Leftover,
-        follow: true,
-        action: None,
-    }
-    .render(width, 0)
+    let mut item = ServiceItem::new(context, shared, target, root, 0);
+    item.lines = lines
+        .iter()
+        .enumerate()
+        .map(|(index, text)| LogLine {
+            time: Some(format!("15:4{}:{:02}", index / 10, (index * 7) % 60)),
+            text: text.to_string(),
+        })
+        .collect();
+    item.filter.set_text(filter);
+    item.tree(width, height)
 }
 
-impl ServiceTab {
+impl ServiceItem {
+    fn new(
+        context: Arc<ServicesContext>,
+        shared: Arc<Mutex<Shared>>,
+        target: ServiceTarget,
+        root: PathBuf,
+        number: u64,
+    ) -> ServiceItem {
+        let holder = context.runner.holder_name(&target);
+        ServiceItem {
+            base: TOOLBAR_IDS + number * IDS_PER_TAB,
+            showing: Showing::Leftover,
+            terminal: None,
+            lines: Vec::new(),
+            paused_at: None,
+            follow: true,
+            wrap: false,
+            filter: {
+                let mut field = TextField::default();
+                field.set_font_size(12.0);
+                field
+            },
+            filter_focused: false,
+            top: 0,
+            visible_rows: 0,
+            hits: Vec::new(),
+            context,
+            shared,
+            target,
+            holder,
+            root,
+        }
+    }
+
+    /// Follows the live output while the service runs, what it left once it stops.
+    fn respawn(&mut self) {
+        let wanted = match self.state().0 {
+            State::Running => Showing::Live,
+            State::Busy(_) if self.terminal.is_some() => return,
+            _ => Showing::Leftover,
+        };
+        if self.terminal.is_some() && wanted == self.showing {
+            return;
+        }
+        self.showing = wanted;
+        let (options, waker) = self.console(wanted);
+        match terminal::Terminal::spawn(options, waker) {
+            Ok(mut terminal) => {
+                terminal.set_size(terminal::TerminalBounds {
+                    cell_width: 8.0,
+                    line_height: 16.0,
+                    width: 8.0 * 240.0,
+                    height: 16.0 * 60.0,
+                });
+                self.terminal = Some(terminal);
+                self.lines.clear();
+                self.top = 0;
+            }
+            Err(error) => eprintln!("services: console: {error}"),
+        }
+    }
+
+    /// Reads the output again: lines past the ones already listed are stamped with the time they came in.
+    fn refresh_lines(&mut self) -> bool {
+        let Some(terminal) = self.terminal.as_ref() else {
+            return false;
+        };
+        let output = terminal.output_lines();
+        let known = self.lines.len();
+        let fresh_start = known > 0;
+        if output.len() < known
+            || output
+                .iter()
+                .zip(&self.lines)
+                .take(known.min(output.len()).saturating_sub(1))
+                .any(|(text, line)| *text != line.text)
+        {
+            self.lines = output
+                .into_iter()
+                .map(|text| LogLine { time: None, text })
+                .collect();
+            return true;
+        }
+        if output.len() == known && output.last() == self.lines.last().map(|line| &line.text) {
+            return false;
+        }
+        let now = clock_now();
+        if let (Some(last), Some(text)) =
+            (self.lines.last_mut(), output.get(known.saturating_sub(1)))
+        {
+            last.text = text.clone();
+        }
+        for text in output.into_iter().skip(known) {
+            self.lines.push(LogLine {
+                time: fresh_start.then(|| now.clone()),
+                text,
+            });
+        }
+        true
+    }
+
+    /// The lines the list shows, as indices: all of them up to the pause, matching the filter.
+    fn shown(&self) -> Vec<usize> {
+        let end = self
+            .paused_at
+            .unwrap_or(self.lines.len())
+            .min(self.lines.len());
+        let query = self.filter.text().to_lowercase();
+        (0..end)
+            .filter(|index| {
+                query.is_empty() || self.lines[*index].text.to_lowercase().contains(&query)
+            })
+            .collect()
+    }
+
+    fn tree(&mut self, width: f32, height: f32) -> Node {
+        let colors = theme();
+        let (state, crash, error) = self.state();
+        let mut top = div()
+            .col()
+            .w_px(width)
+            .child(self.header(&state))
+            .child(div().h_px(1.0).bg(colors.border_variant));
+        if let Some(trouble) = self.trouble(&state, crash.as_ref(), error.as_deref(), width) {
+            top = top.child(trouble);
+        }
+        let shown = self.shown();
+        let top = top
+            .child(self.facts(&state, crash.as_ref(), width))
+            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(self.logs_bar(&state, shown.len()))
+            .child(div().h_px(1.0).bg(colors.border_variant));
+        let top: Node = top.into();
+        let used = ui::measure(&top).1;
+        let list_h = (height - used).max(0.0);
+        div()
+            .col()
+            .w_px(width)
+            .h_px(height)
+            .bg(colors.editor_background)
+            .child(top)
+            .child(self.log_list(&shown, width, list_h))
+            .into()
+    }
+
+    fn log_list(&mut self, shown: &[usize], width: f32, height: f32) -> Node {
+        let colors = theme();
+        let rows = ((height - 8.0) / LOG_ROW_H).floor().max(1.0) as usize;
+        self.visible_rows = rows;
+        if self.follow || self.top + rows > shown.len() {
+            self.top = shown.len().saturating_sub(rows);
+        }
+        let query = self.filter.text().to_lowercase();
+        let text_w = width - 28.0 - TIME_W;
+        let mut list = div().col().h_px(height).px(14.0).pt(4.0);
+        if shown.is_empty() {
+            let note = if !query.is_empty() {
+                "No lines match"
+            } else if self.state().0 == State::Running {
+                "Waiting for output..."
+            } else {
+                "Not running. Start it to follow its output here."
+            };
+            return list
+                .child(label(note).size(12.5).color(colors.text_placeholder))
+                .into();
+        }
+        let mut used = 0.0;
+        for index in shown.iter().skip(self.top) {
+            let line = &self.lines[*index];
+            let row = log_row(line, &query, text_w, self.wrap);
+            let row_h = if self.wrap {
+                ui::measure(&row).1.max(LOG_ROW_H)
+            } else {
+                LOG_ROW_H
+            };
+            if used + row_h > height - 4.0 {
+                break;
+            }
+            used += row_h;
+            list = list.child(row);
+        }
+        list.into()
+    }
+}
+
+impl ServiceItem {
     fn console(&self, showing: Showing) -> (TerminalOptions, Waker) {
         let runner = &self.context.runner;
         let holders = runner.holders().clone();
@@ -367,7 +555,22 @@ impl ServiceTab {
         for button in buttons {
             row = row.child(button);
         }
-        row.into()
+        row.child(
+            div()
+                .row()
+                .w_px(24.0)
+                .h_px(24.0)
+                .items_center()
+                .justify_center()
+                .rounded(4.0)
+                .on_click(self.base + MORE)
+                .child(
+                    icon(IconKind::Ellipsis)
+                        .size(14.0)
+                        .color(theme().icon_muted),
+                ),
+        )
+        .into()
     }
 
     fn trouble(
@@ -615,34 +818,15 @@ impl ServiceTab {
     }
 }
 
-impl ConsoleToolbar for ServiceTab {
-    fn render(&self, width: f32, lines: usize) -> Node {
-        let colors = theme();
-        let (state, crash, error) = self.state();
-        let mut column = div()
-            .col()
-            .w_px(width)
-            .bg(colors.editor_background)
-            .child(self.header(&state))
-            .child(div().h_px(1.0).bg(colors.border_variant));
-        if let Some(trouble) = self.trouble(&state, crash.as_ref(), error.as_deref(), width) {
-            column = column.child(trouble);
-        }
-        column
-            .child(self.facts(&state, crash.as_ref(), width))
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(self.logs_bar(&state, lines))
-            .child(div().h_px(1.0).bg(colors.border))
-            .into()
-    }
-
-    fn click(&mut self, id: u64) -> bool {
+impl ServiceItem {
+    fn click(&mut self, id: u64) {
         let Some(offset) = id
             .checked_sub(self.base)
             .filter(|offset| *offset < IDS_PER_TAB)
         else {
-            return false;
+            return;
         };
+        self.filter_focused = offset == FILTER;
         match offset {
             START => self.run(Action::Start),
             STOP => self.run(Action::Stop),
@@ -670,14 +854,24 @@ impl ConsoleToolbar for ServiceTab {
                 }
             }
             FIX => self.ask(TabRequest::Fix(self.target.clone())),
-            FIND => self.action = Some(ConsoleAction::Find),
-            CLEAR => self.action = Some(ConsoleAction::Clear),
-            FOLLOW => {
-                self.follow = !self.follow;
-                if self.follow {
-                    self.action = Some(ConsoleAction::ScrollToBottom);
+            MORE => self.ask(TabRequest::Menu(self.target.clone())),
+            CLEAR => {
+                if let Some(terminal) = self.terminal.as_mut() {
+                    terminal.clear();
                 }
+                self.lines.clear();
+                self.paused_at = None;
+                self.top = 0;
             }
+            CLEAR_FILTER => self.filter.set_text(""),
+            PAUSE => {
+                self.paused_at = match self.paused_at {
+                    Some(_) => None,
+                    None => Some(self.lines.len()),
+                };
+            }
+            FOLLOW => self.follow = !self.follow,
+            WRAP => self.wrap = !self.wrap,
             OPEN_ENV => {
                 let file = self.context.config().and_then(|config| {
                     let dir = config.repos.get(&self.target.repo)?;
@@ -697,37 +891,188 @@ impl ConsoleToolbar for ServiceTab {
             offset if offset >= PROFILE_BASE => self.pick_profile((offset - PROFILE_BASE) as usize),
             _ => {}
         }
-        true
     }
 
-    fn take_action(&mut self) -> Option<ConsoleAction> {
-        self.action.take()
-    }
-
-    fn follows(&self) -> bool {
-        self.follow
-    }
-
-    fn take_respawn(&mut self) -> Option<(TerminalOptions, Waker)> {
-        let (state, _, _) = self.state();
-        let wanted = match state {
-            State::Running => Showing::Live,
-            State::Crashed | State::Failed { .. } | State::Stopped => Showing::Leftover,
-            State::Busy(_) => return None,
+    fn edit_key(keystroke: &Keystroke) -> Option<(EditKey, bool)> {
+        let Modifiers {
+            shift, alt, cmd, ..
+        } = keystroke.modifiers;
+        let key = match keystroke.key.as_str() {
+            "left" if cmd => EditKey::Home,
+            "right" if cmd => EditKey::End,
+            "left" if alt => EditKey::WordLeft,
+            "right" if alt => EditKey::WordRight,
+            "left" => EditKey::Left,
+            "right" => EditKey::Right,
+            "home" => EditKey::Home,
+            "end" => EditKey::End,
+            "backspace" if cmd => EditKey::DeleteToLineStart,
+            "backspace" if alt => EditKey::DeleteWordLeft,
+            "backspace" => EditKey::Backspace,
+            "delete" => EditKey::Delete,
+            "a" if cmd => EditKey::SelectAll,
+            _ => return None,
         };
-        if wanted == self.showing {
-            return None;
-        }
-        self.showing = wanted;
-        Some(self.console(wanted))
+        Some((key, shift))
     }
 }
 
-impl ServiceTab {
-    /// The bar over the output: whether it is live, find, clear, follow, and how many lines there are.
-    fn logs_bar(&self, state: &State, lines: usize) -> Node {
+impl Item for ServiceItem {
+    fn id(&self) -> Option<String> {
+        Some(tab_id(&self.holder))
+    }
+
+    fn title(&self) -> String {
+        self.target.service.clone()
+    }
+
+    fn tab_detail(&self) -> Option<String> {
+        (!self.target.is_workspace_level()).then(|| self.target.repo.clone())
+    }
+
+    fn tab_dot(&self) -> Option<Rgba> {
+        Some(view::state_color(&self.state().0))
+    }
+
+    fn tab_icon(&self) -> Option<IconKind> {
+        Some(IconKind::Server)
+    }
+
+    /// The body is painted by `paint_body`.
+    fn render(&mut self) -> Node {
+        div().into()
+    }
+
+    fn paint_body(&mut self, body: Rect, _focused: bool) -> Option<ui::Painted> {
+        let scale = ui::ui_text_scale();
+        let tree = self.tree(body.w / scale, body.h / scale);
+        let painted = ui::render(&tree, body);
+        self.hits = painted.hits.clone();
+        Some(painted)
+    }
+
+    fn wants_keystrokes(&self) -> bool {
+        true
+    }
+
+    fn keystroke(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
+        let cmd = keystroke.modifiers.cmd;
+        if cmd && keystroke.key == "f" {
+            self.filter_focused = true;
+            return TerminalKeyOutcome::Handled;
+        }
+        if !self.filter_focused {
+            return match keystroke.key.as_str() {
+                "c" if cmd => self
+                    .lines
+                    .last()
+                    .map_or(TerminalKeyOutcome::Ignored, |line| {
+                        TerminalKeyOutcome::Copy(line.text.clone())
+                    }),
+                _ => TerminalKeyOutcome::Ignored,
+            };
+        }
+        match keystroke.key.as_str() {
+            "escape" if self.filter.text().is_empty() => self.filter_focused = false,
+            "escape" => self.filter.set_text(""),
+            "enter" => self.filter_focused = false,
+            "v" if cmd => return TerminalKeyOutcome::Paste,
+            _ => match Self::edit_key(keystroke) {
+                Some((key, shift)) => {
+                    self.filter.key(key, shift);
+                }
+                None => return TerminalKeyOutcome::Ignored,
+            },
+        }
+        TerminalKeyOutcome::Handled
+    }
+
+    fn input_text(&mut self, text: &str) {
+        if !self.filter_focused {
+            return;
+        }
+        let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+        self.filter.insert(&typed);
+    }
+
+    fn paste(&mut self, text: &str, _slices: Option<&[workspace::ClipboardSlice]>) {
+        if self.filter_focused {
+            let line: String = text.chars().filter(|c| !c.is_control()).collect();
+            self.filter.insert(&line);
+        }
+    }
+
+    fn pointer_down(&mut self, x: f32, y: f32, _click_count: u32, _modifiers: Modifiers) -> bool {
+        let hit = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(rect, _)| {
+                x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
+            })
+            .map(|(_, id)| *id);
+        match hit {
+            Some(id) => self.click(id),
+            None => self.filter_focused = false,
+        }
+        true
+    }
+
+    fn pointer_scroll(&mut self, _x: f32, _y: f32, delta_y: f32, _modifiers: Modifiers) -> bool {
+        let rows = (delta_y / LOG_ROW_H).round() as isize;
+        if rows == 0 {
+            return false;
+        }
+        let shown = self.shown().len();
+        let last = shown.saturating_sub(self.visible_rows);
+        let top = (self.top as isize - rows).clamp(0, last as isize) as usize;
+        // Scrolling up leaves the newest lines; reaching the bottom again follows them.
+        self.follow = top >= last;
+        let moved = top != self.top;
+        self.top = top;
+        moved
+    }
+
+    fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
+        self.respawn();
+        let host = LogHost {
+            palette: terminal_ui::palette(&theme()),
+        };
+        let synced = self.terminal.as_mut().is_some_and(|terminal| {
+            let outcome = terminal.sync(&host);
+            outcome.changed || outcome.title_changed
+        });
+        let changed = synced && self.refresh_lines();
+        ItemTick {
+            changed: changed || self.state().0 == State::Running,
+            ..ItemTick::default()
+        }
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+struct LogHost {
+    palette: terminal::Palette,
+}
+
+impl terminal::TerminalHost for LogHost {
+    fn palette(&self) -> &terminal::Palette {
+        &self.palette
+    }
+
+    fn clipboard_text(&self) -> Option<String> {
+        None
+    }
+}
+
+impl ServiceItem {
+    /// The bar over the output: whether it is live, a filter, pause, clear, follow, wrap, and the count.
+    fn logs_bar(&self, state: &State, shown: usize) -> Node {
         let colors = theme();
-        let live = *state == State::Running;
+        let live = *state == State::Running && self.paused_at.is_none();
         let mut title = div().row().gap(6.0).items_center().child(
             label("LOGS")
                 .size(11.0)
@@ -739,31 +1084,53 @@ impl ServiceTab {
                 .child(view::dot(colors.success, 6.0))
                 .child(label("live").size(11.5).color(colors.success));
         }
-        let find = div()
+        let mut field = div()
             .row()
-            .w_px(220.0)
-            .h_px(24.0)
+            .w_px(280.0)
+            .h_px(26.0)
             .px(8.0)
             .gap(6.0)
             .items_center()
             .rounded(5.0)
-            .border(1.0, colors.border_variant)
+            .border(
+                1.0,
+                if self.filter_focused {
+                    colors.border_focused
+                } else {
+                    colors.border_variant
+                },
+            )
             .bg(colors.editor_background)
-            .on_click(self.base + FIND)
+            .on_click(self.base + FILTER)
             .child(
                 icon(IconKind::Search)
                     .size(12.0)
                     .color(colors.text_placeholder),
             )
             .child(
-                label("Filter lines")
-                    .size(12.0)
-                    .color(colors.text_placeholder),
+                div()
+                    .row()
+                    .flex(1.0)
+                    .items_center()
+                    .child(self.filter.render(
+                        "Filter lines",
+                        self.filter_focused,
+                        colors.text,
+                        20.0,
+                        FieldFont::Ui,
+                    )),
             );
-        let toggle = |id: u64, kind: IconKind, text: &str, on: bool| -> Node {
+        if !self.filter.text().is_empty() {
+            field = field.child(
+                div()
+                    .on_click(self.base + CLEAR_FILTER)
+                    .child(icon(IconKind::Close).size(11.0).color(colors.icon_muted)),
+            );
+        }
+        let toggle = |id: u64, kind: IconKind, text: String, on: bool| -> Node {
             div()
                 .row()
-                .h_px(24.0)
+                .h_px(26.0)
                 .px(8.0)
                 .gap(5.0)
                 .items_center()
@@ -772,37 +1139,65 @@ impl ServiceTab {
                 .bg(if on {
                     colors.element_selected
                 } else {
-                    ui::Rgba::TRANSPARENT
+                    Rgba::TRANSPARENT
                 })
                 .child(icon(kind).size(12.0).color(if on {
                     colors.icon
                 } else {
                     colors.icon_muted
                 }))
-                .child(label(text.to_string()).size(12.0).color(if on {
+                .child(label(text).size(12.5).color(if on {
                     colors.text
                 } else {
                     colors.text_muted
                 }))
                 .into()
         };
+        let pause = match self.paused_at {
+            Some(at) => {
+                let waiting = self.lines.len().saturating_sub(at);
+                if waiting > 0 {
+                    format!("Resume ({waiting} new)")
+                } else {
+                    "Resume".to_string()
+                }
+            }
+            None => "Pause".to_string(),
+        };
+        let count = if self.filter.text().is_empty() {
+            format!("{shown} lines")
+        } else {
+            format!("{shown} matching")
+        };
         div()
             .row()
-            .h_px(38.0)
+            .h_px(40.0)
             .px(14.0)
-            .gap(10.0)
+            .gap(8.0)
             .items_center()
-            .bg(colors.editor_background)
             .child(title)
-            .child(find)
-            .child(toggle(CLEAR, IconKind::Trash, "Clear", false))
-            .child(toggle(FOLLOW, IconKind::ArrowDown, "Follow", self.follow))
+            .child(div().w_px(4.0))
+            .child(field)
+            .child(toggle(
+                PAUSE,
+                if self.paused_at.is_some() {
+                    IconKind::Play
+                } else {
+                    IconKind::Pause
+                },
+                pause,
+                self.paused_at.is_some(),
+            ))
+            .child(toggle(CLEAR, IconKind::Trash, "Clear".into(), false))
+            .child(toggle(
+                FOLLOW,
+                IconKind::ArrowDown,
+                "Follow".into(),
+                self.follow,
+            ))
+            .child(toggle(WRAP, IconKind::Return, "Wrap".into(), self.wrap))
             .child(div().flex(1.0))
-            .child(
-                label(format!("{lines} lines above"))
-                    .size(11.5)
-                    .color(colors.text_placeholder),
-            )
+            .child(label(count).size(11.5).color(colors.text_placeholder))
             .into()
     }
 
@@ -854,4 +1249,86 @@ impl ServiceTab {
             shared.toasts.push(text);
         }
     }
+}
+
+/// One listed line: the time it came in, then its text with what the filter matched highlighted. Errors
+/// and warnings keep their color.
+fn log_row(line: &LogLine, query: &str, width: f32, wrap: bool) -> Node {
+    let colors = theme();
+    let lower = line.text.to_lowercase();
+    let tint = if ["error", "exception", "fatal", "panic"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        colors.error
+    } else if lower.contains("warn") || lower.contains("deprecat") || lower.contains("slow") {
+        colors.warning
+    } else {
+        colors.text
+    };
+    let mut text = div().row().items_center();
+    let mut rest = line.text.as_str();
+    let mut rest_lower = lower.as_str();
+    while !query.is_empty() {
+        let Some(at) = rest_lower.find(query) else {
+            break;
+        };
+        let (before, matched) = (&rest[..at], &rest[at..at + query.len()]);
+        if !before.is_empty() {
+            text = text.child(label(before.to_string()).size(12.5).mono().color(tint));
+        }
+        text = text.child(
+            div().rounded(2.0).bg(colors.warning.alpha(0.3)).child(
+                label(matched.to_string())
+                    .size(12.5)
+                    .mono()
+                    .color(colors.text),
+            ),
+        );
+        rest = &rest[at + query.len()..];
+        rest_lower = &rest_lower[at + query.len()..];
+    }
+    let tail = label(rest.to_string()).size(12.5).mono().color(tint);
+    let body: Node = if query.is_empty() {
+        let whole = label(line.text.clone()).size(12.5).mono().color(tint);
+        if wrap {
+            whole.wrap(width).into()
+        } else {
+            whole.truncate().into()
+        }
+    } else {
+        text.child(tail).into()
+    };
+    div()
+        .row()
+        .gap(0.0)
+        .child(
+            div()
+                .row()
+                .w_px(TIME_W)
+                .h_px(LOG_ROW_H)
+                .items_center()
+                .child(
+                    label(line.time.clone().unwrap_or_default())
+                        .size(12.5)
+                        .mono()
+                        .color(colors.text_placeholder),
+                ),
+        )
+        .child(div().row().w_px(width).items_center().child(body))
+        .into()
+}
+
+/// The local wall clock as "15:41:44".
+fn clock_now() -> String {
+    let now: libc::time_t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as libc::time_t);
+    // SAFETY: localtime_r only writes the tm we own; a zeroed tm is a valid initial value.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let converted = unsafe { libc::localtime_r(&now, &mut tm) };
+    if converted.is_null() {
+        return String::new();
+    }
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }

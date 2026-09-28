@@ -443,9 +443,17 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
             };
             dirty_slot = dirty_slot.child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(color));
         }
-        let glyph: Node = match item.tab_icon() {
-            Some(kind) => icon(kind).size(14.0).color(theme().icon_muted).into(),
-            None => material_icon(item.icon().unwrap_or(MaterialIcon::Document))
+        let glyph: Node = match (item.tab_dot(), item.tab_icon()) {
+            (Some(color), _) => div()
+                .row()
+                .w_px(14.0)
+                .h_px(14.0)
+                .items_center()
+                .justify_center()
+                .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(color))
+                .into(),
+            (None, Some(kind)) => icon(kind).size(14.0).color(theme().icon_muted).into(),
+            (None, None) => material_icon(item.icon().unwrap_or(MaterialIcon::Document))
                 .size(14.0)
                 .into(),
         };
@@ -468,6 +476,13 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                 } else {
                     title
                 }
+            })
+            .child(match item.tab_detail() {
+                Some(detail) => label(detail)
+                    .size(13.0)
+                    .color(theme().text_placeholder)
+                    .into(),
+                None => Node::from(div()),
             })
             .child(close_slot);
         let cell = div()

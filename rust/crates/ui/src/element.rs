@@ -120,6 +120,7 @@ pub enum IconKind {
     Filter,
     Copy,
     Ellipsis,
+    Pause,
     Trash,
     Column,
     EnginePostgresql,

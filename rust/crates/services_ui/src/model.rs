@@ -130,6 +130,8 @@ pub enum TabRequest {
     OpenUrl(String),
     Copy(String),
     OpenFile(std::path::PathBuf),
+    /// The service's menu, under the tab's "..." button.
+    Menu(ServiceTarget),
 }
 
 /// How a service died: the line of its output that most likely says why, how it exited, and when.

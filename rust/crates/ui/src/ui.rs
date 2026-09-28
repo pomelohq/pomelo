@@ -869,6 +869,7 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Play => svg!("play.svg"),
         IconKind::Stop => svg!("stop.svg"),
         IconKind::Ellipsis => svg!("ellipsis.svg"),
+        IconKind::Pause => svg!("pause.svg"),
         IconKind::RotateCw => svg!("rotate_cw.svg"),
         IconKind::SquarePlus => svg!("square_plus.svg"),
         IconKind::SquareDot => svg!("square_dot.svg"),

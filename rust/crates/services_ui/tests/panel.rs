@@ -160,10 +160,11 @@ fn start_from_a_row_then_open_its_console_and_close_it_without_stopping() {
     };
     assert_eq!(id, "service:svc-demo-feat-api-web");
     let mut console = open().expect("console item");
-    assert_eq!(console.title(), "api > web");
+    assert_eq!(console.title(), "web");
+    assert_eq!(console.tab_detail().as_deref(), Some("api"));
     assert!(
-        console.toolbar(600.0).is_some(),
-        "the tab shows the service's header and facts"
+        console.tab_dot().is_some(),
+        "the tab shows the service's status"
     );
     assert_eq!(
         console.id().as_deref(),
