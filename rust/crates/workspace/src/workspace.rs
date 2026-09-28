@@ -171,6 +171,11 @@ impl Dock {
         render(&self.body(list), region)
     }
 
+    /// The dock's own panel as it last synced, for a panel that needs no list (the agent's empty state).
+    pub fn render_panel(&mut self, region: Rect) -> Painted {
+        render(&self.panel.render(), region)
+    }
+
     pub fn body(&mut self, list: &crate::panel::WorkspaceList<'_>) -> ui::Node {
         self.panel.sync(list);
         self.panel.render()
@@ -667,8 +672,8 @@ pub struct Layout {
     pub bottom: Dock,
     /// Which side the WORKSPACES sidebar docks on (Left/Right), changed via its status-bar right-click menu.
     pub sidebar_side: DockPosition,
-    /// Which side of the editor area the right (agent) dock renders on — changed via its status-bar right-click
-    /// menu (Dock Left / Dock Right).
+    /// Which dock the agent panel belongs to (Left or Right), changed via its status-bar right-click menu. It is
+    /// one of that dock's panels; the docks themselves never move.
     pub agent_side: DockPosition,
     /// Whether the agent's status-bar toggle button is hidden ("Hide Button").
     pub agent_hidden: bool,
@@ -1662,8 +1667,8 @@ impl Layout {
         if !self.terminal_hidden && self.terminal_side == side {
             v.push(Shown::Terminal);
         }
-        // The agent is the right dock's default panel (listed last so functions/terminal take priority).
-        if !self.agent_hidden && side == DockPosition::Right {
+        // Listed last so functions and the terminal take priority when the agent is not the active panel.
+        if !self.agent_hidden && side == self.agent_side {
             v.push(Shown::Agent);
         }
         v
@@ -1699,8 +1704,7 @@ impl Layout {
     /// Whether the terminal is currently the visible panel of its (open) side.
     /// The agent dock shows its agent sessions (not the empty placeholder).
     pub fn agent_visible(&self) -> bool {
-        self.dock_open(DockPosition::Right)
-            && self.shown_on(DockPosition::Right) == Some(Shown::Agent)
+        self.agent_shown()
             && self
                 .agent_view
                 .as_ref()
@@ -1717,6 +1721,10 @@ impl Layout {
     pub fn sync_docks(&mut self) {
         if self.candidates_on(DockPosition::Bottom).is_empty() {
             self.bottom.collapsed = true;
+        }
+        // Likewise the right dock once its last panel (often the agent) has moved away.
+        if self.candidates_on(DockPosition::Right).is_empty() {
+            self.right.collapsed = true;
         }
     }
 
@@ -1737,7 +1745,28 @@ impl Layout {
 
     pub fn left_column_active(&self) -> bool {
         self.files_view.is_some()
-            && matches!(self.shown_on(DockPosition::Left), Some(Shown::Func(_)))
+            && matches!(
+                self.shown_on(DockPosition::Left),
+                Some(Shown::Func(_) | Shown::Agent)
+            )
+    }
+
+    /// Whether the agent is the visible panel of its (open) dock, sessions or not.
+    pub fn agent_shown(&self) -> bool {
+        let side = self.agent_side;
+        let open = match side {
+            DockPosition::Left => self.left_column_active(),
+            _ => self.dock_open(side),
+        };
+        open && self.shown_on(side) == Some(Shown::Agent)
+    }
+
+    /// Where the agent panel draws: the left column or the right dock.
+    pub fn agent_region(&self, w: f32, h: f32) -> Rect {
+        match self.agent_side {
+            DockPosition::Left => self.tree_region(w, h),
+            _ => self.right_region(w, h),
+        }
     }
 
     pub fn side_panel_mut(&mut self, kind: PaneKind) -> Option<&mut Box<dyn SidePanelView>> {
@@ -1809,11 +1838,7 @@ impl Layout {
 
     /// Drag the agent divider; width from the window edge on its side (right: `w - x`, left: `x - left_w`).
     pub fn set_right_divider(&mut self, x: f32, w: f32) {
-        let rw = if self.agent_left() {
-            x - self.block_l()
-        } else {
-            self.editor_r(w) - x
-        };
+        let rw = self.editor_r(w) - x;
         if rw < DOCK_MIN - 20.0 {
             self.right.collapsed = true;
         } else {
@@ -1845,11 +1870,7 @@ impl Layout {
         if self.right_w() <= 0.0 {
             return false;
         }
-        let edge = if self.agent_left() {
-            self.block_l() + self.right_w()
-        } else {
-            self.editor_r(w) - self.right_w()
-        };
+        let edge = self.editor_r(w) - self.right_w();
         y > TOP_BAR_H && (x - edge).abs() <= DIVIDER_HIT
     }
 
@@ -1918,10 +1939,8 @@ impl Layout {
                 Rect::new(zl, by, tw, editor_h, Rgba::TRANSPARENT),
             );
         }
-        let bl = zl + tw;
-
         if rw > 0.0 {
-            let ax = if self.agent_left() { bl } else { zr - rw };
+            let ax = zr - rw;
             band(
                 div().bg(dock_c()).into(),
                 Rect::new(ax, by, rw, editor_h, Rgba::TRANSPARENT),
@@ -1968,7 +1987,7 @@ impl Layout {
             v.push(Rect::new(bl - 1.0, by, 1.0, editor_h, c));
         }
         if rw > 0.0 {
-            let edge = if self.agent_left() { bl + rw } else { zr - rw };
+            let edge = zr - rw;
             v.push(Rect::new(edge - 1.0, by, 1.0, editor_h, c));
         }
         let bd_h = self.bottom_h();
@@ -1985,27 +2004,13 @@ impl Layout {
         h - STATUS_BAR_H
     }
 
-    fn agent_left(&self) -> bool {
-        self.agent_side == DockPosition::Left
-    }
-
     fn center_l(&self) -> f32 {
         self.block_l()
-            + if self.agent_left() {
-                self.right_w()
-            } else {
-                0.0
-            }
     }
 
-    /// Right edge of the center: the editor-area right, minus the agent dock if it's docked at that edge.
+    /// Right edge of the center: the editor-area right, minus the right dock.
     fn center_r(&self, w: f32) -> f32 {
-        self.editor_r(w)
-            - if self.agent_left() {
-                0.0
-            } else {
-                self.right_w()
-            }
+        self.editor_r(w) - self.right_w()
     }
 
     /// The WORKSPACES sidebar region — full height on its docked side; the status strip never covers it.
@@ -2019,15 +2024,11 @@ impl Layout {
         Rect::new(x, TOP_BAR_H, self.left_w(), ch, Rgba::TRANSPARENT)
     }
 
-    /// The agent dock's interior region (editor area, above the status strip; left or right per `agent_side`).
+    /// The right dock's interior region (editor area, above the status strip).
     pub fn right_region(&self, w: f32, h: f32) -> Rect {
         let rw = self.right_w();
         let ch = (self.content_bottom(h) - TOP_BAR_H).max(0.0);
-        let x = if self.agent_left() {
-            self.block_l()
-        } else {
-            self.editor_r(w) - rw
-        };
+        let x = self.editor_r(w) - rw;
         Rect::new(x, TOP_BAR_H, rw, ch, Rgba::TRANSPARENT)
     }
 
@@ -2532,7 +2533,6 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
     let toggle = |kind: ui::IconKind, id: u64, active: bool| badged(kind, id, active, false);
     // A small vertical divider between groups (a thin), 1px on the theme border color.
     let vsep = || div().w_px(1.0).h_px(14.0).bg(theme().border);
-    let agent_left = layout.agent_side == DockPosition::Left;
 
     // One dock's panel buttons (editor's `PanelButtons`): a row of icon buttons — the functions on this side,
     // the terminal if it lives here, and the agent (right dock's default). No dividers between the buttons;
@@ -2581,11 +2581,8 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             ));
             has = true;
         }
-        let agent_here = (agent_left && side == DockPosition::Left)
-            || (!agent_left && side == DockPosition::Right);
-        if !layout.agent_hidden && agent_here {
-            let active = layout.dock_open(DockPosition::Right)
-                && layout.shown_on(DockPosition::Right) == Some(Shown::Agent);
+        if !layout.agent_hidden && side == layout.agent_side {
+            let active = layout.agent_shown();
             row = row.child(toggle(ui::IconKind::Sparkle, AGENT_TOGGLE, active));
             has = true;
         }

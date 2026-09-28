@@ -1319,7 +1319,18 @@ impl WorkspaceView {
                             Rgba::TRANSPARENT,
                         ),
                     ));
-                    if let Some(p) = self.function_panel_painted(DockPosition::Left, region) {
+                    let agent_here = self.layout.shown_on(DockPosition::Left) == Some(Shown::Agent);
+                    if agent_here && self.layout.agent_visible() {
+                        let p =
+                            self.agent_painted(region, true, &mut center_overlays, &mut panel_hits);
+                        panel_hits.extend(p.hits.iter().copied());
+                        blit(p);
+                    } else if agent_here {
+                        let p = self.layout.right.render_panel(region);
+                        panel_hits.extend(p.hits.iter().copied());
+                        blit(p);
+                    } else if let Some(p) = self.function_panel_painted(DockPosition::Left, region)
+                    {
                         panel_hits.extend(clipped_hits(&p, region));
                         center_overlays.push(Overlay {
                             painted: p,
@@ -2857,6 +2868,24 @@ impl WorkspaceView {
         }
     }
 
+    /// The agent joins `side`'s dock as its active panel; the dock it left keeps its other panels.
+    fn move_agent_to(&mut self, side: DockPosition) {
+        let from = self.layout.agent_side;
+        self.layout.agent_side = side;
+        if from != side && self.layout.active_panels[from.index()] == Some(Shown::Agent) {
+            self.layout.active_panels[from.index()] = None;
+        }
+        self.show_agent_panel();
+    }
+
+    fn show_agent_panel(&mut self) {
+        let side = self.layout.agent_side;
+        self.layout.active_panels[side.index()] = Some(Shown::Agent);
+        if side == DockPosition::Right {
+            self.layout.right.collapsed = false;
+        }
+    }
+
     fn toggle_side(&mut self, side: DockPosition, was_visible: bool) {
         match side {
             DockPosition::Right => self.layout.right.collapsed = was_visible,
@@ -3219,9 +3248,7 @@ impl WorkspaceView {
         if target == AGENT_TOGGLE {
             match item {
                 MENU_DOCK_LEFT | MENU_DOCK_RIGHT => {
-                    self.layout.agent_side = Self::dock_item_side(item);
-                    self.layout.active_panels[DockPosition::Right.index()] = Some(Shown::Agent);
-                    self.layout.right.collapsed = false;
+                    self.move_agent_to(Self::dock_item_side(item));
                 }
                 MENU_HIDE => self.layout.agent_hidden = true,
                 _ => {}
@@ -4886,8 +4913,7 @@ impl WorkspaceView {
             view.accept_foreign_item(item);
         }
         self.layout.agent_hidden = false;
-        self.layout.active_panels[DockPosition::Right.index()] = Some(Shown::Agent);
-        self.layout.right.collapsed = false;
+        self.show_agent_panel();
         self.focus_group(InputGroup::Agent);
         self.panes_input = true;
         self.pending.persist = true;
@@ -5334,7 +5360,11 @@ impl WorkspaceView {
             self.pending.persist = true;
         } else if id == AGENT_TOGGLE {
             if self.layout.agent_visible() && self.agent_focused {
-                self.layout.right.collapsed = true;
+                // The right dock closes; the left column has no closed state, so it goes back to its other panels.
+                match self.layout.agent_side {
+                    DockPosition::Right => self.layout.right.collapsed = true,
+                    side => self.layout.active_panels[side.index()] = None,
+                }
                 self.set_agent_focus(false);
                 self.pending.persist = true;
             } else {
@@ -6244,6 +6274,36 @@ mod tests {
             (changed, v.workspace_grouping().map(|g| g.folded.clone()))
         });
         assert_eq!(folded, (true, Some(vec![crate::TicketGroup::Done])));
+    }
+
+    #[test]
+    fn docking_the_agent_left_moves_only_the_agent() {
+        let (mut app, _h, e) = open();
+        let (left, right, region, right_x) = e.update(app.app_mut(), |v, _| {
+            let git = PaneKind::ALL
+                .iter()
+                .position(|kind| *kind == PaneKind::Git)
+                .expect("git panel");
+            v.layout.func_side[git] = DockPosition::Right;
+            v.move_agent_to(DockPosition::Left);
+            let (w, h) = (1200.0, 800.0);
+            (
+                v.layout.candidates_on(DockPosition::Left),
+                v.layout.candidates_on(DockPosition::Right),
+                v.layout.agent_region(w, h),
+                v.layout.right_region(w, h).x,
+            )
+        });
+        assert!(left.contains(&Shown::Agent), "a panel of the left dock");
+        assert!(!right.contains(&Shown::Agent));
+        assert!(
+            right.contains(&Shown::Func(PaneKind::Git)),
+            "the right dock keeps its panels"
+        );
+        assert!(
+            region.x < right_x,
+            "drawn in the left column, not over the right dock"
+        );
     }
 
     #[test]
