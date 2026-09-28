@@ -819,6 +819,8 @@ pub struct Layout {
     /// A repo service of the active workspace is running (shared services don't count).
     pub services_running: bool,
     pub files_tree_w: f32,
+    /// The left panel column (Files, Services, ...) is closed: its active button was clicked again.
+    pub panels_collapsed: bool,
 }
 
 pub struct TreePanel {
@@ -1822,6 +1824,7 @@ impl Default for Layout {
             side_panels: Vec::new(),
             agent_states: std::collections::HashMap::new(),
             files_tree_w: FILES_TREE_W,
+            panels_collapsed: false,
         }
     }
 }
@@ -1907,7 +1910,7 @@ impl Layout {
     /// Whether the content area on `side` is currently visible (the center is always open; docks obey collapse).
     pub fn dock_open(&self, side: DockPosition) -> bool {
         match side {
-            DockPosition::Left => true,
+            DockPosition::Left => !self.panels_collapsed,
             DockPosition::Right => !self.right.collapsed,
             DockPosition::Bottom => !self.bottom.collapsed,
         }
@@ -1962,7 +1965,8 @@ impl Layout {
     }
 
     pub fn left_column_active(&self) -> bool {
-        self.files_view.is_some()
+        !self.panels_collapsed
+            && self.files_view.is_some()
             && matches!(
                 self.shown_on(DockPosition::Left),
                 Some(Shown::Func(_) | Shown::Agent)

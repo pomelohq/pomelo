@@ -3378,7 +3378,7 @@ impl WorkspaceView {
         match side {
             DockPosition::Right => self.layout.right.collapsed = false,
             DockPosition::Bottom => self.layout.bottom.collapsed = false,
-            DockPosition::Left => {}
+            DockPosition::Left => self.layout.panels_collapsed = false,
         }
     }
 
@@ -3395,8 +3395,10 @@ impl WorkspaceView {
     fn show_agent_panel(&mut self) {
         let side = self.layout.agent_side;
         self.layout.active_panels[side.index()] = Some(Shown::Agent);
-        if side == DockPosition::Right {
-            self.layout.right.collapsed = false;
+        match side {
+            DockPosition::Right => self.layout.right.collapsed = false,
+            DockPosition::Left => self.layout.panels_collapsed = false,
+            DockPosition::Bottom => {}
         }
     }
 
@@ -3404,7 +3406,7 @@ impl WorkspaceView {
         match side {
             DockPosition::Right => self.layout.right.collapsed = was_visible,
             DockPosition::Bottom => self.layout.bottom.collapsed = was_visible,
-            DockPosition::Left => {}
+            DockPosition::Left => self.layout.panels_collapsed = was_visible,
         }
     }
 
@@ -5838,7 +5840,7 @@ impl WorkspaceView {
         match side {
             DockPosition::Right => self.layout.right.collapsed = false,
             DockPosition::Bottom => self.layout.bottom.collapsed = false,
-            DockPosition::Left => {}
+            DockPosition::Left => self.layout.panels_collapsed = false,
         }
         self.pending.persist = true;
     }
@@ -5849,7 +5851,7 @@ impl WorkspaceView {
         match side {
             DockPosition::Right => self.layout.right.collapsed = false,
             DockPosition::Bottom => self.layout.bottom.collapsed = false,
-            DockPosition::Left => {}
+            DockPosition::Left => self.layout.panels_collapsed = false,
         }
         self.pending.persist = true;
     }
@@ -6962,6 +6964,14 @@ fn push_pane_group(
                 let mut sp = Painted::default();
                 sp.rects.extend(pane.back.iter().copied());
                 sp.tris.extend(pane.back_tris.iter().copied());
+                // The same layer again under the line numbers: change strips and the caret's line reach into
+                // the gutter, which the text clip leaves out.
+                let mut gutter_back = Painted::default();
+                gutter_back.rects.extend(pane.back.iter().copied());
+                overlays.push(Overlay {
+                    painted: gutter_back,
+                    clip: Some(b.gutter_clip),
+                });
                 overlays.push(Overlay {
                     painted: sp,
                     clip: Some(text_clip),
@@ -7877,6 +7887,40 @@ mod tests {
             v.take_effects().session
         });
         assert_eq!(moved, None, "Down moves the highlight to Cancel");
+    }
+
+    #[test]
+    fn clicking_the_open_panels_button_again_closes_the_column() {
+        let (mut app, h, e) = open();
+        let services = FUNC_BASE + 1;
+        let open_now = |app: &mut Application| {
+            e.update(app.app_mut(), |v, _| {
+                (
+                    v.layout.dock_open(DockPosition::Left),
+                    v.layout.func_active(1),
+                )
+            })
+        };
+        e.update(app.app_mut(), |v, _| v.header_click(services));
+        app.draw(h);
+        assert_eq!(open_now(&mut app), (true, true));
+        e.update(app.app_mut(), |v, _| v.header_click(services));
+        app.draw(h);
+        assert_eq!(
+            open_now(&mut app),
+            (false, false),
+            "a second click closes it"
+        );
+        e.update(app.app_mut(), |v, _| v.header_click(FUNC_BASE));
+        app.draw(h);
+        assert_eq!(
+            e.update(app.app_mut(), |v, _| (
+                v.layout.dock_open(DockPosition::Left),
+                v.layout.func_active(0)
+            )),
+            (true, true),
+            "another panel's button opens the column again"
+        );
     }
 
     #[test]

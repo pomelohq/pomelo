@@ -19,6 +19,8 @@ pub struct Settings {
     pub left_dock_collapsed: bool,
     pub right_dock_collapsed: bool,
     pub bottom_dock_collapsed: bool,
+    /// The left panel column (Files, Services, ...) is closed.
+    pub panels_collapsed: bool,
     pub window_width: f32,
     pub window_height: f32,
     /// Dock layout ("left"/"right"/"bottom"): where the sidebar/agent/terminal and each function button live,
@@ -81,6 +83,7 @@ impl Default for Settings {
             left_dock_width: 260.0,
             right_dock_width: 300.0,
             left_dock_collapsed: false,
+            panels_collapsed: false,
             right_dock_collapsed: true,
             bottom_dock_collapsed: false,
             window_width: 1280.0,
