@@ -177,7 +177,10 @@ enum Drag {
 struct GroupDrag {
     from: crate::TicketGroup,
     press: (f32, f32),
+    /// The pressed header's rect, so the lifted group keeps the grab point under the pointer.
+    source: Rect,
     to: Option<crate::TicketGroup>,
+    pointer: (f32, f32),
 }
 
 /// A WORKSPACES row being dragged to a new place: its index, where the press was, and the row it would take.
@@ -653,6 +656,7 @@ impl WorkspaceView {
             })
             .next_back()
             .filter(|group| *group != drag.from);
+        drag.pointer = (x, y);
         self.group_drag = Some(drag);
         true
     }
@@ -1437,7 +1441,30 @@ impl WorkspaceView {
                     drag.source.h,
                     Rgba::TRANSPARENT,
                 );
-                Some(ui::render(&crate::panel::workspace_row_ghost(row), area))
+                Some(lifted(&crate::panel::workspace_row_ghost(row), area))
+            })
+            .or_else(|| {
+                let drag = self
+                    .group_drag
+                    .filter(|_| self.dragging == Drag::WorkspaceGroup)?;
+                let count = workspaces
+                    .iter()
+                    .filter(|row| row.index != 0 && self.row_group(row.index) == drag.from)
+                    .count();
+                let scale = ui::ui_text_scale();
+                let width = if self.layout.left.collapsed {
+                    160.0 * scale
+                } else {
+                    drag.source.w
+                };
+                let area = Rect::new(
+                    drag.source.x + drag.pointer.0 - drag.press.0,
+                    drag.source.y + drag.pointer.1 - drag.press.1,
+                    width,
+                    30.0 * scale,
+                    Rgba::TRANSPARENT,
+                );
+                Some(lifted(&crate::panel::group_ghost(drag.from, count), area))
             });
         if self
             .upkeep_done_at
@@ -3833,10 +3860,13 @@ impl WorkspaceView {
                             .copied()
                     })
                     .flatten()
-                    .map(|from| GroupDrag {
+                    .zip(source)
+                    .map(|(from, source)| GroupDrag {
                         from,
                         press: (x, y),
+                        source,
                         to: None,
+                        pointer: (x, y),
                     });
                 self.row_drag = id
                     .checked_sub(crate::WORKSPACE_ROW_BASE)
@@ -5948,6 +5978,28 @@ fn session_index(id: u64, base: u64) -> Option<usize> {
     (base..base + 100)
         .contains(&id)
         .then(|| (id - base) as usize)
+}
+
+/// Something picked up and carried by the pointer: the card with a shadow under it.
+fn lifted(node: &ui::Node, area: Rect) -> Painted {
+    let card = ui::render(node, area);
+    let right = card.rects.iter().map(|r| r.x + r.w).fold(area.x, f32::max);
+    let bottom = card.rects.iter().map(|r| r.y + r.h).fold(area.y, f32::max);
+    let bounds = Rect::new(
+        area.x,
+        area.y,
+        right - area.x,
+        bottom - area.y,
+        Rgba::TRANSPARENT,
+    );
+    let mut painted = Painted::default();
+    painted
+        .rects
+        .extend(elevation_shadow(bounds, crate::Elevation::Elevated));
+    painted.rects.extend(card.rects);
+    painted.texts.extend(card.texts);
+    painted.icons.extend(card.icons);
+    painted
 }
 
 /// Draws a floating card (a popover or menu) with its shadow on top, clickable; returns where it landed.

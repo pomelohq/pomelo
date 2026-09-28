@@ -109,7 +109,7 @@ struct OpenMenu {
     items: Vec<(MenuItem, MenuAction)>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Scan {
     repos: Vec<RepoChanges>,
     status: Vec<Vec<StatusEntry>>,
@@ -136,6 +136,18 @@ fn review_key(repo: &str, path: &str) -> String {
     format!("{repo}/{path}")
 }
 
+/// The last read of each workspace (by its repo roots), so a panel rebuilt on switching back shows it at once
+/// and refreshes in the background instead of starting blank.
+fn last_scans() -> &'static Mutex<HashMap<Vec<PathBuf>, Scan>> {
+    static SCANS: std::sync::OnceLock<Mutex<HashMap<Vec<PathBuf>, Scan>>> =
+        std::sync::OnceLock::new();
+    SCANS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn scan_key(sources: &[RepoSource]) -> Vec<PathBuf> {
+    sources.iter().map(|source| source.root.clone()).collect()
+}
+
 /// Reads every repo and publishes the result; wakes the UI only when something changed.
 struct Scanner {
     sources: Arc<Vec<RepoSource>>,
@@ -146,11 +158,47 @@ struct Scanner {
 
 impl Scanner {
     fn run(&self) {
-        let repos: Vec<RepoChanges> = self
-            .sources
-            .iter()
-            .map(|source| git::branch_changes(&source.root, &source.default_branch))
-            .collect();
+        // Repos are read side by side: one after another, a few of them keep the panel waiting over a second.
+        let read: Vec<(RepoChanges, Vec<StatusEntry>, HeadState)> = std::thread::scope(|threads| {
+            let handles: Vec<_> = self
+                .sources
+                .iter()
+                .map(|source| {
+                    threads.spawn(move || {
+                        (
+                            git::branch_changes(&source.root, &source.default_branch),
+                            working_copy::status(&source.root).unwrap_or_default(),
+                            working_copy::head_state(&source.root),
+                        )
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .zip(self.sources.iter())
+                .map(|(handle, source)| {
+                    handle.join().unwrap_or_else(|_| {
+                        (
+                            RepoChanges {
+                                root: source.root.clone(),
+                                error: Some("reading git failed".into()),
+                                ..RepoChanges::default()
+                            },
+                            Vec::new(),
+                            working_copy::head_state(&source.root),
+                        )
+                    })
+                })
+                .collect()
+        });
+        let mut repos = Vec::with_capacity(read.len());
+        let mut status = Vec::with_capacity(read.len());
+        let mut heads = Vec::with_capacity(read.len());
+        for (changes, entries, head) in read {
+            repos.push(changes);
+            status.push(entries);
+            heads.push(head);
+        }
         let fingerprints: HashMap<String, String> = self
             .sources
             .iter()
@@ -164,16 +212,6 @@ impl Scanner {
                 })
             })
             .collect();
-        let status: Vec<Vec<StatusEntry>> = self
-            .sources
-            .iter()
-            .map(|source| working_copy::status(&source.root).unwrap_or_default())
-            .collect();
-        let heads: Vec<HeadState> = self
-            .sources
-            .iter()
-            .map(|source| working_copy::head_state(&source.root))
-            .collect();
         let changed = self.scan.lock().is_ok_and(|mut scan| {
             let changed = !scan.loaded
                 || scan.repos != repos
@@ -185,6 +223,9 @@ impl Scanner {
             scan.status = status;
             scan.heads = heads;
             scan.loaded = true;
+            if let Ok(mut last) = last_scans().lock() {
+                last.insert(scan_key(&self.sources), scan.clone());
+            }
             changed
         });
         self.scanning.store(false, Ordering::Release);
@@ -240,8 +281,14 @@ impl GitPanel {
         GitPanel {
             reviews_file,
             reviewed,
+            scan: Arc::new(Mutex::new(
+                last_scans()
+                    .lock()
+                    .ok()
+                    .and_then(|last| last.get(&scan_key(&sources)).cloned())
+                    .unwrap_or_default(),
+            )),
             sources: Arc::new(sources),
-            scan: Arc::new(Mutex::new(Scan::default())),
             scanning: Arc::new(AtomicBool::new(false)),
             started: false,
             drawn_at: Arc::new(Mutex::new(None)),
