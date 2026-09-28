@@ -41,6 +41,7 @@ fn apply_dock_settings(s: &Settings, layout: &mut Layout) {
     layout.right.width = s.right_dock_width;
     layout.right.collapsed = s.right_dock_collapsed;
     layout.bottom.collapsed = s.bottom_dock_collapsed;
+    layout.panels_collapsed = s.panels_collapsed;
     layout.sidebar_side = DockPosition::from_side(&s.sidebar_side);
     layout.agent_side = DockPosition::from_side(&s.agent_side);
     layout.terminal_side = DockPosition::from_side(&s.terminal_side);
@@ -466,6 +467,7 @@ fn read_dock_settings(s: &mut Settings, layout: &Layout) {
     s.left_dock_collapsed = layout.left.collapsed;
     s.right_dock_collapsed = layout.right.collapsed;
     s.bottom_dock_collapsed = layout.bottom.collapsed;
+    s.panels_collapsed = layout.panels_collapsed;
     s.sidebar_side = layout.sidebar_side.as_str().into();
     s.agent_side = layout.agent_side.as_str().into();
     s.terminal_side = layout.terminal_side.as_str().into();

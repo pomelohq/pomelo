@@ -81,17 +81,22 @@ impl ConsoleToolbar for SideAgentBar {
             .border(1.0, colors.border_variant)
             .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
             .child(label(self.context.clone()).size(12.5).color(colors.text));
-        let send = div()
-            .row()
-            .h_px(26.0)
-            .px(10.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(5.0)
-            .border(1.0, colors.border_variant)
-            .on_click(self.base + SEND)
-            .child(icon(IconKind::Return).size(12.0).color(colors.icon_muted))
-            .child(label("Send to main").size(12.5).color(colors.text));
+        let send = |label_too: bool| {
+            let mut send = div()
+                .row()
+                .h_px(26.0)
+                .px(if label_too { 10.0 } else { 7.0 })
+                .gap(6.0)
+                .items_center()
+                .rounded(5.0)
+                .border(1.0, colors.border_variant)
+                .on_click(self.base + SEND)
+                .child(icon(IconKind::Return).size(12.0).color(colors.icon_muted));
+            if label_too {
+                send = send.child(label("Send to main").size(12.5).color(colors.text));
+            }
+            send
+        };
         let archive = div()
             .row()
             .w_px(26.0)
@@ -101,25 +106,49 @@ impl ConsoleToolbar for SideAgentBar {
             .rounded(4.0)
             .on_click(self.base + ARCHIVE)
             .child(icon(IconKind::Archive).size(14.0).color(colors.icon_muted));
+        // A narrow dock drops the least needed first: the send button's label, then what it started with,
+        // then the access tag. Send and Archive always stay.
+        let row = |tag: Option<&ui::Div>, context: Option<&ui::Div>, send_label: bool| {
+            let mut row = div()
+                .row()
+                .h_px(38.0)
+                .px(10.0)
+                .gap(8.0)
+                .items_center()
+                .bg(colors.toolbar_background)
+                .child(icon(self.role_icon).size(13.0).color(colors.icon_muted))
+                .child(label(self.role.clone()).size(13.0).color(colors.text));
+            if let Some(tag) = tag {
+                row = row.child(tag.clone());
+            }
+            if let Some(context) = context {
+                row = row.child(context.clone());
+            }
+            row.child(div().flex(1.0))
+                .child(send(send_label))
+                .child(archive.clone())
+        };
+        let fits = |row: &ui::Div| ui::measure(&row.clone().into()).0 <= width;
+        let bar = [
+            (true, true, true),
+            (true, true, false),
+            (true, false, false),
+            (false, false, false),
+        ]
+        .into_iter()
+        .map(|(tag_on, context_on, send_label)| {
+            row(
+                tag_on.then_some(&tag),
+                context_on.then_some(&context),
+                send_label,
+            )
+        })
+        .find(fits)
+        .unwrap_or_else(|| row(None, None, false));
         div()
             .col()
             .w_px(width)
-            .child(
-                div()
-                    .row()
-                    .h_px(38.0)
-                    .px(10.0)
-                    .gap(8.0)
-                    .items_center()
-                    .bg(colors.toolbar_background)
-                    .child(icon(self.role_icon).size(13.0).color(colors.icon_muted))
-                    .child(label(self.role.clone()).size(13.0).color(colors.text))
-                    .child(tag)
-                    .child(context)
-                    .child(div().flex(1.0))
-                    .child(send)
-                    .child(archive),
-            )
+            .child(bar)
             .child(div().h_px(1.0).bg(colors.border))
             .into()
     }
@@ -146,5 +175,55 @@ impl ConsoleToolbar for SideAgentBar {
 
     fn send_target(&self) -> Option<(String, Option<String>)> {
         Some((self.main_item.clone(), (self.last_answer)()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bar() -> SideAgentBar {
+        SideAgentBar::new(
+            0,
+            IconKind::Wrench,
+            "Fix",
+            false,
+            "Auto: fork + compact - 59k".into(),
+            "main".into(),
+            Box::new(|| None),
+        )
+    }
+
+    fn texts(width: f32) -> Vec<String> {
+        let node = bar().render(width, 0);
+        let painted = ui::render(
+            &node,
+            ui::Rect::new(0.0, 0.0, width, 40.0, ui::Rgba::TRANSPARENT),
+        );
+        painted.texts.iter().map(|text| text.text.clone()).collect()
+    }
+
+    #[test]
+    fn a_narrow_bar_drops_labels_but_keeps_send_and_archive_inside() {
+        let wide = texts(900.0);
+        assert!(wide.iter().any(|t| t == "Send to main") && wide.iter().any(|t| t.contains("59k")));
+        let narrow = texts(330.0);
+        assert!(!narrow.iter().any(|t| t == "Send to main"), "{narrow:?}");
+        let width = 330.0;
+        let node = bar().render(width, 0);
+        let painted = ui::render(
+            &node,
+            ui::Rect::new(0.0, 0.0, width, 40.0, ui::Rgba::TRANSPARENT),
+        );
+        let archive = painted
+            .hits
+            .iter()
+            .find(|(_, id)| *id == IDS + ARCHIVE)
+            .expect("archive");
+        assert!(
+            archive.0.x + archive.0.w <= width,
+            "archive ends at {}",
+            archive.0.x + archive.0.w
+        );
     }
 }
