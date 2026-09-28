@@ -210,6 +210,20 @@ pub struct ProjectInfo {
     pub prs: Vec<Option<PrSummary>>,
     /// Repos of the config main has no clone of (other workspaces pick their repos on purpose: empty).
     pub missing: Vec<Vec<String>>,
+    /// Repos whose checked-out branch is not the workspace branch, by workspace (same order).
+    pub repo_branches: Vec<Vec<RepoBranch>>,
+}
+
+/// A repo of a workspace on a branch other than the workspace's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepoBranch {
+    pub repo: String,
+    /// The branch checked out now.
+    pub actual: String,
+    /// The branch the workspace means it to be on: its recorded choice, else the workspace branch.
+    pub expected: String,
+    /// The other branch was chosen on purpose (recorded, and still checked out).
+    pub kept: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

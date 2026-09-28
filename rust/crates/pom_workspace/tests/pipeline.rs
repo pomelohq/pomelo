@@ -14,6 +14,52 @@ use pom_workspace::{
     CREATE_STAGES,
 };
 
+/// Gives `repo` an `origin` where someone else pushed `branch` with one commit.
+fn origin_with_branch(fixture: &Fixture, repo: &Path, branch: &str) -> PathBuf {
+    let origin = fixture.temp.path().join(format!(
+        "{}-origin.git",
+        repo.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    ));
+    git(
+        fixture.temp.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            &repo.to_string_lossy(),
+            &origin.to_string_lossy(),
+        ],
+    );
+    let other = fixture.temp.path().join("someone-else");
+    git(
+        fixture.temp.path(),
+        &[
+            "clone",
+            "-q",
+            &origin.to_string_lossy(),
+            &other.to_string_lossy(),
+        ],
+    );
+    git(&other, &["checkout", "-q", "-b", branch]);
+    std::fs::write(other.join("theirs.txt"), "t\n").expect("file");
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-q", "-m", "their work"]);
+    git(&other, &["push", "-q", "origin", branch]);
+    std::fs::remove_dir_all(&other).expect("remove clone");
+    git(
+        repo,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    );
+    git(repo, &["fetch", "-q", "origin"]);
+    origin
+}
+
+fn head(dir: &Path) -> String {
+    git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
 const CONFIG: &str = r#"session: demo
 shared_services:
   postgres:
@@ -290,8 +336,8 @@ fn delete_keeps_a_branch_with_unpushed_commits() {
     let (result, _) = fixture.delete("wip");
     let outcome = result.expect("delete");
     assert_eq!(outcome.warnings.len(), 1);
-    assert!(
-        outcome.warnings[0].contains("kept local branch wip"),
+    assert_eq!(
+        outcome.warnings[0], "web has 1 commit not on origin; its branch wip stays on this machine",
         "{:?}",
         outcome.warnings
     );
@@ -320,9 +366,19 @@ fn a_failed_worktree_rolls_back_and_the_run_resumes() {
     let (result, events) = fixture.create(&request("feat-y"));
     let error = result.expect_err("web's branch is checked out elsewhere");
     assert_eq!(error.stage, 3);
+    let first_line = error.message.lines().next().unwrap_or_default();
     assert!(
-        error.message.starts_with("web: git worktree add"),
+        first_line.starts_with("web: feat-y is checked out in /"),
         "{error}"
+    );
+    assert!(
+        error.message.contains("already used by worktree"),
+        "{error}"
+    );
+    let named = pom_workspace::checked_out_elsewhere(&error.message).expect("the other checkout");
+    assert_eq!(
+        std::fs::canonicalize(named).expect("canonical"),
+        std::fs::canonicalize(&elsewhere).expect("canonical")
     );
     assert!(matches!(
         events.last(),
@@ -405,4 +461,202 @@ fn create_rejects_bad_requests_before_touching_anything() {
         .0
         .expect_err("already there");
     assert!(error.message.contains("already exists"), "{error}");
+}
+
+#[test]
+fn a_repo_takes_over_another_branch_and_delete_keeps_it_on_origin() {
+    let fixture = Fixture::new();
+    let main_web = fixture.root.join("workspace--main/web");
+    let origin = origin_with_branch(&fixture, &main_web, "ana/mail-retry");
+    let with_web_taken_over = CreateRequest {
+        skip_seed: true,
+        repo_branches: [("web".to_string(), "ana/mail-retry".to_string())]
+            .into_iter()
+            .collect(),
+        ..request("feat-login")
+    };
+    fixture.create(&with_web_taken_over).0.expect("create");
+    let workspace = fixture.workspace("feat-login");
+    assert_eq!(head(&workspace.join("api")), "feat-login");
+    assert_eq!(head(&workspace.join("web")), "ana/mail-retry");
+    assert_eq!(
+        git(
+            &workspace.join("web"),
+            &["rev-parse", "--abbrev-ref", "@{upstream}"]
+        ),
+        "origin/ana/mail-retry"
+    );
+    assert!(workspace.join("web/theirs.txt").is_file());
+    let state = pom_layout::WorkspaceState::load(&workspace);
+    assert_eq!(state.repo_branch("web", "feat-login"), "ana/mail-retry");
+    assert_eq!(state.repo_branch("api", "feat-login"), "feat-login");
+    let env_file = std::fs::read_to_string(workspace.join("api/.env.local")).expect(".env.local");
+    assert!(
+        env_file.contains("DATABASE=demo_api_feat-login"),
+        "identity keeps the workspace branch"
+    );
+    let scanned = pom_layout::scan(&fixture.root, "main", None);
+    let web = scanned
+        .iter()
+        .find(|ws| ws.branch == "feat-login")
+        .and_then(|ws| ws.repos.iter().find(|repo| repo.name == "web"))
+        .expect("web in the workspace");
+    assert_eq!(
+        (web.branch.as_str(), web.expected.as_str()),
+        ("ana/mail-retry", "ana/mail-retry")
+    );
+
+    std::fs::write(workspace.join("web/mine.txt"), "m\n").expect("file");
+    git(&workspace.join("web"), &["add", "."]);
+    git(
+        &workspace.join("web"),
+        &["commit", "-q", "-m", "my fix on their branch"],
+    );
+    let (result, _) = fixture.delete("feat-login");
+    let outcome = result.expect("delete");
+    assert_eq!(
+        outcome.warnings,
+        ["web has 1 commit not on origin; its branch ana/mail-retry stays on this machine"]
+    );
+    assert_eq!(branches(&main_web), ["ana/mail-retry", "main"]);
+    assert_eq!(
+        branches(&fixture.root.join("workspace--main/api")),
+        ["main"],
+        "api's merged workspace branch goes"
+    );
+    assert_eq!(
+        branches(&origin),
+        ["ana/mail-retry", "main"],
+        "origin is never touched"
+    );
+}
+
+#[test]
+fn a_taken_over_branch_that_is_all_on_origin_goes_locally_only() {
+    let fixture = Fixture::new();
+    let main_web = fixture.root.join("workspace--main/web");
+    let origin = origin_with_branch(&fixture, &main_web, "ana/mail-retry");
+    let taken_over = CreateRequest {
+        repos: vec!["web".into()],
+        skip_seed: true,
+        repo_branches: [("web".to_string(), "ana/mail-retry".to_string())]
+            .into_iter()
+            .collect(),
+        ..request("feat-login")
+    };
+    fixture.create(&taken_over).0.expect("create");
+    let outcome = fixture.delete("feat-login").0.expect("delete");
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(branches(&main_web), ["main"]);
+    assert_eq!(branches(&origin), ["ana/mail-retry", "main"]);
+}
+
+#[test]
+fn rollback_leaves_a_branch_it_did_not_create() {
+    let fixture = Fixture::new();
+    let main_web = fixture.root.join("workspace--main/web");
+    let main_api = fixture.root.join("workspace--main/api");
+    git(&main_web, &["branch", "ana/local-work"]);
+    let elsewhere = fixture.temp.path().join("elsewhere");
+    git(
+        &main_api,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat-z",
+            &elsewhere.to_string_lossy(),
+        ],
+    );
+    let request = CreateRequest {
+        repo_branches: [("web".to_string(), "ana/local-work".to_string())]
+            .into_iter()
+            .collect(),
+        ..request("feat-z")
+    };
+    let error = fixture
+        .create(&request)
+        .0
+        .expect_err("api's branch is busy");
+    assert!(
+        error.message.starts_with("api: feat-z is checked out in "),
+        "{error}"
+    );
+    assert!(
+        !fixture.workspace("feat-z").join("web").exists(),
+        "web is rolled back"
+    );
+    assert_eq!(
+        branches(&main_web),
+        ["ana/local-work", "main"],
+        "the taken-over branch stays"
+    );
+}
+
+#[test]
+fn switching_a_repo_refuses_uncommitted_changes_and_remembers_the_branch() {
+    let fixture = Fixture::new();
+    let only_web = CreateRequest {
+        repos: vec!["web".into()],
+        skip_seed: true,
+        ..request("feat-login")
+    };
+    fixture.create(&only_web).0.expect("create");
+    let workspace = fixture.workspace("feat-login");
+    let web = workspace.join("web");
+    git(
+        &fixture.root.join("workspace--main/web"),
+        &["branch", "ana/checkout-ui"],
+    );
+
+    std::fs::write(web.join("README"), "changed\n").expect("edit");
+    let error =
+        pom_workspace::switch_repo_branch(&workspace, "feat-login", "web", "ana/checkout-ui")
+            .expect_err("dirty");
+    assert!(error.contains("uncommitted changes"), "{error}");
+    git(&web, &["checkout", "--", "README"]);
+
+    pom_workspace::switch_repo_branch(&workspace, "feat-login", "web", "ana/checkout-ui")
+        .expect("switch");
+    assert_eq!(head(&web), "ana/checkout-ui");
+    let state = pom_layout::WorkspaceState::load(&workspace);
+    assert_eq!(state.repo_branch("web", "feat-login"), "ana/checkout-ui");
+
+    pom_workspace::use_another_branch(&workspace, "feat-login", "web", "feat-login")
+        .expect("back to the workspace branch without an origin");
+    assert!(pom_layout::WorkspaceState::load(&workspace)
+        .repo_branches
+        .is_empty());
+
+    git(&web, &["checkout", "-q", "-b", "by-hand"]);
+    assert_eq!(
+        pom_workspace::keep_repo_branch(&workspace, "feat-login", "web"),
+        Ok("by-hand".to_string())
+    );
+    assert_eq!(
+        pom_layout::WorkspaceState::load(&workspace).repo_branch("web", "feat-login"),
+        "by-hand"
+    );
+
+    let error = pom_workspace::switch_repo_branch(&workspace, "feat-login", "web", "main")
+        .expect_err("main is checked out in main");
+    assert!(
+        error.starts_with("web: main is checked out in main/web"),
+        "{error}"
+    );
+
+    let listed =
+        pom_workspace::list_branches(&fixture.root.join("workspace--main/web")).expect("branches");
+    let names: Vec<&str> = listed.iter().map(|branch| branch.name.as_str()).collect();
+    assert!(
+        names.contains(&"ana/checkout-ui") && names.contains(&"by-hand"),
+        "{names:?}"
+    );
+    assert!(listed
+        .iter()
+        .all(|branch| !branch.remote && branch.subject == "init"));
+    assert!(listed
+        .iter()
+        .all(|branch| !branch.author.is_empty() && !branch.relative_time.is_empty()));
 }

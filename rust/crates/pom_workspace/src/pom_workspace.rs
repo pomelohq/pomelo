@@ -7,6 +7,7 @@ mod delete;
 mod git;
 mod node_modules;
 mod prepare;
+mod repo_branch;
 
 use std::path::Path;
 use std::process::Command;
@@ -19,8 +20,12 @@ use serde::{Deserialize, Serialize};
 
 pub use create::{create, validate_branch_name, CreateRequest, CREATE_STAGES};
 pub use delete::{delete, DeleteRequest, DELETE_STAGES};
-pub use git::branch_is_safe_to_delete;
+pub use git::{branch_is_safe_to_delete, unpushed_commits};
 pub use prepare::{prepare_main, PrepareRequest};
+pub use repo_branch::{
+    checked_out_elsewhere, checkout_label, fetch_origin, keep_repo_branch, list_branches,
+    switch_repo_branch, use_another_branch, BranchInfo,
+};
 
 /// Lines of a failed command's output kept in its warning.
 const OUTPUT_TAIL_LINES: usize = 20;

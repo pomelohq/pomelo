@@ -289,6 +289,7 @@ impl App {
                 environment: String::new(),
                 skip_seed: false,
                 from_stage: 0,
+                repo_branches: Default::default(),
             }),
             title,
             context,

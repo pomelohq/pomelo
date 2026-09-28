@@ -626,6 +626,7 @@ fn main() -> anyhow::Result<()> {
                 }),
             ],
             missing: Vec::new(),
+            repo_branches: Vec::new(),
         });
         // MAINVIEW=sidebar: a project in every state the WORKSPACES list shows (RAIL=1 folds it to the rail).
         let sidebar = mode == "sidebar";
@@ -742,6 +743,7 @@ fn main() -> anyhow::Result<()> {
                 ticket_categories: rows.iter().map(|row| row.3.to_string()).collect(),
                 prs: rows.iter().map(|row| row.5).collect(),
                 missing: Vec::new(),
+                repo_branches: Vec::new(),
             })
         } else {
             project
@@ -890,6 +892,103 @@ fn main() -> anyhow::Result<()> {
                 workspace::WindowModal::text(&mut modal, "Fix checkout page");
                 workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 101);
             }
+            entity.update(app.app_mut(), |view, _| {
+                view.open_window_modal(Box::new(modal))
+            });
+        }
+        // wsbranches: the create form with web on a taken-over branch and the api picker open (PICKROW=2 opens
+        // the last row's, which flips above near the bottom).
+        if mode == "wsbranches" {
+            let info = |name: &str, remote: bool, author: &str, when: &str, subject: &str| {
+                pom_workspace::BranchInfo {
+                    name: name.into(),
+                    remote,
+                    author: author.into(),
+                    relative_time: when.into(),
+                    subject: subject.into(),
+                }
+            };
+            let before = vec![
+                info("main", false, "you", "1 day ago", "Merge PROJ-98"),
+                info(
+                    "ana/checkout-api",
+                    true,
+                    "Ana Lima",
+                    "2 hours ago",
+                    "Validate cart totals",
+                ),
+                info(
+                    "ana/checkout-ui",
+                    true,
+                    "Ana Lima",
+                    "40 minutes ago",
+                    "New checkout summary card",
+                ),
+                info(
+                    "ben/payments",
+                    true,
+                    "Ben Okafor",
+                    "3 days ago",
+                    "Stripe webhook retries with a much longer subject line",
+                ),
+            ];
+            let mut after = before.clone();
+            after.insert(
+                1,
+                info(
+                    "ben/checkout-copy",
+                    true,
+                    "Ben Okafor",
+                    "10 minutes ago",
+                    "Checkout copy tweaks",
+                ),
+            );
+            let fetched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let listed = fetched.clone();
+            let source = workspaces_ui::BranchSource {
+                list: std::sync::Arc::new(move |_| {
+                    let branches = if listed.load(std::sync::atomic::Ordering::SeqCst) {
+                        after.clone()
+                    } else {
+                        before.clone()
+                    };
+                    Ok(workspaces_ui::RepoBranches {
+                        base: "main".into(),
+                        branches,
+                    })
+                }),
+                fetch: std::sync::Arc::new(move |_| {
+                    fetched.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }),
+            };
+            let mut modal = workspaces_ui::CreateWorkspaceModal::new(
+                vec!["api".into(), "web".into(), "mobile".into()],
+                vec!["main".into()],
+                namer.clone(),
+            )
+            .with_branches(source);
+            let settle = |modal: &mut workspaces_ui::CreateWorkspaceModal| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while workspace::WindowModal::busy(modal) && std::time::Instant::now() < deadline {
+                    workspace::WindowModal::tick(modal);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            };
+            workspace::WindowModal::text(&mut modal, "Fix checkout page");
+            settle(&mut modal);
+            let branch_box = workspace::WINDOW_MODAL_BASE + 300;
+            workspace::WindowModal::click(&mut modal, branch_box + 1);
+            workspace::WindowModal::text(&mut modal, "checkout-ui");
+            workspace::WindowModal::key(&mut modal, workspace::EditKey::Enter, false);
+            workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 102);
+            settle(&mut modal);
+            let row: u64 = std::env::var("PICKROW")
+                .ok()
+                .and_then(|row| row.parse().ok())
+                .unwrap_or(0);
+            workspace::WindowModal::click(&mut modal, branch_box + row);
+            settle(&mut modal);
             entity.update(app.app_mut(), |view, _| {
                 view.open_window_modal(Box::new(modal))
             });

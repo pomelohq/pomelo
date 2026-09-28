@@ -9,6 +9,8 @@ description = "Creating, renaming and deleting workspaces from the app: the form
 path = "src/workspaces_ui.rs"
 
 [dependencies]
+indexmap = "2"
+nucleo-matcher = "0.3.1"
 pom_agent = { path = "../pom_agent" }
 pom_bundle = { path = "../pom_bundle" }
 pom_config = { path = "../pom_config" }

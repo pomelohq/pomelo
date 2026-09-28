@@ -102,6 +102,7 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
                 environment: value("env").unwrap_or("").to_string(),
                 skip_seed: has("no-seed"),
                 from_stage: from_stage()?,
+                repo_branches: Default::default(),
             }))
         }
         ("delete", [branch]) => {
@@ -382,6 +383,7 @@ mod tests {
                 environment: "staging".into(),
                 skip_seed: true,
                 from_stage: 3,
+                repo_branches: Default::default(),
             }))
         );
         assert_eq!(

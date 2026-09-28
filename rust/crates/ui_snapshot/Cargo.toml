@@ -23,6 +23,7 @@ files = { path = "../files" }
 files_ui = { path = "../files_ui" }
 workspaces_ui = { path = "../workspaces_ui" }
 pom_agent = { path = "../pom_agent" }
+pom_workspace = { path = "../pom_workspace" }
 pom_jira = { path = "../pom_jira" }
 jira_ui = { path = "../jira_ui" }
 database_ui = { path = "../database_ui" }

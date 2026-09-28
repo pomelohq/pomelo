@@ -2146,23 +2146,32 @@ impl WorkspaceView {
             let x = ((w - modal_w) / 2.0).max(8.0);
             let area = Rect::new(x, MODAL_TOP, modal_w, h - MODAL_TOP, Rgba::TRANSPARENT);
             // Wrapped in a column so the modal keeps its content height instead of filling the area.
-            let p = ui::render(&ui::div().col().child(modal.node).into(), area);
-            let bottom = p.rects.iter().map(|r| r.y + r.h).fold(MODAL_TOP, f32::max);
+            let frame = ui::paint_frame(&ui::div().col().child(modal.node).into(), area);
+            let bottom = frame
+                .base
+                .rects
+                .iter()
+                .map(|r| r.y + r.h)
+                .fold(MODAL_TOP, f32::max);
             let rect = Rect::new(x, MODAL_TOP, modal_w, bottom - MODAL_TOP, Rgba::TRANSPARENT);
-            self.modal_rect = Some(rect);
-            header_hits.extend(p.hits.iter().copied());
+            self.modal_rect = Some(frame.overlays.iter().fold(rect, |rect, overlay| {
+                overlay.painted.rects.iter().fold(rect, union_rect)
+            }));
+            header_hits.extend(frame.hits.iter().copied());
             let mut painted = Painted::default();
             painted
                 .rects
                 .extend(elevation_shadow(rect, modal.elevation));
-            painted.rects.extend(p.rects);
-            painted.tris.extend(p.tris);
-            painted.texts.extend(p.texts);
-            painted.icons.extend(p.icons);
+            painted.rects.extend(frame.base.rects);
+            painted.tris.extend(frame.base.tris);
+            painted.texts.extend(frame.base.texts);
+            painted.icons.extend(frame.base.icons);
             overlays.push(Overlay {
                 painted,
                 clip: None,
             });
+            // A popover inside the modal is its own layer, so the form's text never shows through it.
+            overlays.extend(frame.overlays);
         }
 
         // The right-click context menu (topmost overlay; its hits win in `hit`).
@@ -6091,6 +6100,12 @@ fn push_card(card: Painted, hits: &mut Vec<(Rect, u64)>, overlays: &mut Vec<Over
         clip: None,
     });
     rect
+}
+
+fn union_rect(a: Rect, b: &Rect) -> Rect {
+    let (left, top) = (a.x.min(b.x), a.y.min(b.y));
+    let (right, bottom) = ((a.x + a.w).max(b.x + b.w), (a.y + a.h).max(b.y + b.h));
+    Rect::new(left, top, right - left, bottom - top, Rgba::TRANSPARENT)
 }
 
 #[cfg(test)]

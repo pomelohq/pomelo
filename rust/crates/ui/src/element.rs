@@ -636,6 +636,9 @@ pub struct Anchored {
     clip: bool,
     clip_rect: Option<Rect>,
     snap: bool,
+    /// (trigger height, gap) in design px: drop below the flow position, or above the trigger when that runs
+    /// past the viewport's bottom and the top has room.
+    flip: Option<(f32, f32)>,
 }
 
 /// An overlay anchored at an explicit window position (top-left). Chain `.position`, `.size`, `.priority`,
@@ -649,6 +652,7 @@ pub fn anchored() -> Anchored {
         clip: false,
         clip_rect: None,
         snap: false,
+        flip: None,
     }
 }
 
@@ -692,6 +696,12 @@ impl Anchored {
     /// Keep the child inside the window bounds instead of overflowing off-screen.
     pub fn snap_to_window(mut self) -> Self {
         self.snap = true;
+        self
+    }
+    /// For a popover placed in flow right under its trigger: `gap` below it, or `gap` above the trigger (of
+    /// `trigger_height`) when there is no room below. Both in design px.
+    pub fn below_or_above(mut self, trigger_height: f32, gap: f32) -> Self {
+        self.flip = Some((trigger_height, gap));
         self
     }
 }
@@ -909,6 +919,16 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
         Node::Anchored(a) => {
             let (iw, ih) = a.size.unwrap_or_else(|| intrinsic(&a.child));
             let (mut x, mut y) = a.position.unwrap_or((area.x, area.y));
+            if let Some((trigger, gap)) = a.flip {
+                let below = y + rem(gap);
+                let above = y - rem(trigger) - rem(gap) - ih;
+                let fits_below = below + ih <= viewport.y + viewport.h;
+                y = if fits_below || above < viewport.y {
+                    below
+                } else {
+                    above
+                };
+            }
             if a.snap {
                 x = x.min(viewport.x + viewport.w - iw).max(viewport.x);
                 y = y.min(viewport.y + viewport.h - ih).max(viewport.y);
@@ -1242,6 +1262,35 @@ impl Painted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_popover_drops_below_its_trigger_or_flips_above_it() {
+        let popover_top = |height: f32| {
+            let tree: Node = div()
+                .col()
+                .child(div().h_px(60.0))
+                .child(
+                    div().col().child(div().h_px(20.0)).child(
+                        deferred(
+                            div()
+                                .w_px(50.0)
+                                .h_px(40.0)
+                                .bg(Rgba::new(1.0, 1.0, 1.0, 1.0)),
+                        )
+                        .below_or_above(20.0, 4.0),
+                    ),
+                )
+                .into();
+            let painted = render(&tree, Rect::new(0.0, 0.0, 100.0, height, Rgba::TRANSPARENT));
+            painted
+                .rects
+                .iter()
+                .find(|rect| (rect.w - 50.0).abs() < 0.5)
+                .map(|rect| rect.y)
+        };
+        assert_eq!(popover_top(200.0), Some(84.0));
+        assert_eq!(popover_top(110.0), Some(16.0));
+    }
 
     #[test]
     fn truncating_label_shrinks_to_fit_its_row() {

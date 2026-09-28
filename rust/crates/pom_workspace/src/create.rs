@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use indexmap::IndexMap;
 use pom_layout::WorkspaceState;
 
+use crate::repo_branch::checked_out_message;
 use crate::{
     git, node_modules, repo_alias, run_shell, EventSink, Operation, Outcome, PipelineError, Run,
     StageResult, StageScope, WorkspaceContext,
@@ -38,6 +40,9 @@ pub struct CreateRequest {
     pub skip_seed: bool,
     /// 0-based stage to start from when resuming a failed run.
     pub from_stage: usize,
+    /// Repo -> the branch it checks out instead of `branch`. The workspace keeps `branch` for its folder,
+    /// ports and databases.
+    pub repo_branches: IndexMap<String, String>,
 }
 
 struct RepoPlan {
@@ -45,6 +50,8 @@ struct RepoPlan {
     main: PathBuf,
     worktree: PathBuf,
     base: String,
+    /// The branch this repo checks out.
+    branch: String,
 }
 
 struct Creation<'a> {
@@ -74,6 +81,9 @@ pub fn create(
     };
     let default_branch = context.config.global_default_branch();
     let planned = plan_repos(context, request, default_branch);
+    // A resumed run may not carry the choices again; the ones saved by its first run still hold.
+    let mut repo_branches = WorkspaceState::load(&folder).repo_branches;
+    repo_branches.extend(request.repo_branches.clone());
     let creation = planned.as_ref().ok().map(|repos| Creation {
         context,
         request,
@@ -86,6 +96,11 @@ pub fn create(
                 worktree: folder.join(name),
                 base: git::current_branch(main),
                 main: main.clone(),
+                branch: repo_branches
+                    .get(name)
+                    .filter(|branch| !branch.trim().is_empty())
+                    .unwrap_or(&request.branch)
+                    .clone(),
             })
             .collect(),
     });
@@ -181,6 +196,14 @@ impl Creation<'_> {
                 self.default_branch
             ));
         }
+        for repo in self
+            .repos
+            .iter()
+            .filter(|repo| repo.branch != self.branch())
+        {
+            validate_branch_name(&repo.branch)
+                .map_err(|error| format!("{}: {error}", repo.name))?;
+        }
         if let Some(repo) = self.repos.iter().find(|repo| repo.worktree.exists()) {
             return Err(format!(
                 "{} already exists; delete the workspace first or resume its failed run",
@@ -198,14 +221,18 @@ impl Creation<'_> {
             .allocate_slots(self.context.config, &self.ws_key())
             .map_err(|error| format!("shared-service slots: {error}"))?;
         runner.acquire_workspace_ports(self.context.config, &self.ws_key());
-        if !self.request.environment.is_empty() {
-            let mut state = WorkspaceState::load(&self.folder);
-            for repo in &self.repos {
+        let before = WorkspaceState::load(&self.folder);
+        let mut state = before.clone();
+        for repo in &self.repos {
+            if !self.request.environment.is_empty() {
                 state.service_envs.insert(
                     repo_alias(&repo.name, self.context.config).to_string(),
                     self.request.environment.clone(),
                 );
             }
+            state.set_repo_branch(&repo.name, &repo.branch, self.branch());
+        }
+        if state != before {
             state
                 .save(&self.folder)
                 .map_err(|error| format!("save workspace state: {error}"))?;
@@ -293,7 +320,8 @@ impl Creation<'_> {
     }
 
     fn source(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
-        let created: Mutex<Vec<&RepoPlan>> = Mutex::new(Vec::new());
+        let created: Mutex<Vec<(&RepoPlan, git::BranchOrigin)>> = Mutex::new(Vec::new());
+        let project_root = self.context.runner.project_root();
         let errors: Mutex<Vec<String>> = Mutex::new(Vec::new());
         std::thread::scope(|threads| {
             for repo in &self.repos {
@@ -303,7 +331,11 @@ impl Creation<'_> {
                         scope.progress(format!("{}: worktree already there", repo.name));
                         return;
                     }
-                    scope.progress(format!("worktree: {}", repo.name));
+                    if repo.branch == self.branch() {
+                        scope.progress(format!("worktree: {}", repo.name));
+                    } else {
+                        scope.progress(format!("worktree: {} on {}", repo.name, repo.branch));
+                    }
                     let copy = self
                         .context
                         .config
@@ -314,13 +346,25 @@ impl Creation<'_> {
                     let added = git::add_worktree(
                         &repo.main,
                         &repo.worktree,
-                        self.branch(),
+                        &repo.branch,
                         &repo.base,
                         copy,
                     );
                     match added {
-                        Ok(()) => push(created, repo),
-                        Err(error) => push(errors, format!("{}: {error}", repo.name)),
+                        Ok(origin) => push(created, (repo, origin)),
+                        Err(git::AddError::CheckedOutElsewhere { path, output }) => push(
+                            errors,
+                            checked_out_message(
+                                &repo.name,
+                                &repo.branch,
+                                project_root,
+                                &path,
+                                &output,
+                            ),
+                        ),
+                        Err(git::AddError::Other(error)) => {
+                            push(errors, format!("{}: {error}", repo.name))
+                        }
                     }
                 });
             }
@@ -329,12 +373,18 @@ impl Creation<'_> {
         let Some(first) = errors.into_iter().next() else {
             return Ok(StageResult::Done);
         };
-        for repo in created.into_inner().unwrap_or_default() {
-            let default = self.context.config.default_branch_for(&repo.name);
-            if let Err(error) =
-                git::remove_worktree(&repo.main, &repo.worktree, self.branch(), default)
-            {
+        for (repo, origin) in created.into_inner().unwrap_or_default() {
+            if let Err(error) = git::remove_worktree(&repo.main, &repo.worktree) {
                 scope.warn(format!("{}: roll back worktree: {error}", repo.name));
+                continue;
+            }
+            // A branch that was there before this run, locally or on origin, is someone's work: it stays.
+            if origin != git::BranchOrigin::Created {
+                continue;
+            }
+            let default = self.context.config.default_branch_for(&repo.name);
+            if let Err(error) = git::delete_branch_if_safe(&repo.main, &repo.branch, default) {
+                scope.warn(format!("{}: roll back branch: {error}", repo.name));
             }
         }
         Err(first)

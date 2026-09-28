@@ -421,6 +421,7 @@ impl Session {
                 environment: String::new(),
                 skip_seed: false,
                 from_stage: 0,
+                repo_branches: Default::default(),
             };
             crate::workspaces::stream(out, |sink| pom_workspace::create(&context, &request, sink))?
                 .map_err(|error| format!("{}: {}", status.branch, error.message))?;

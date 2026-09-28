@@ -141,8 +141,12 @@ fn skip_note(kind: &OpKind, stage: usize) -> &'static str {
     }
 }
 
-/// The checkout a failure names (`web: ...`), in the workspace when it has one there, else main's.
+/// The checkout a failure names (`web: ...`), in the workspace when it has one there, else main's; for a
+/// branch checked out elsewhere, that other checkout.
 fn fix_dir(kind: &OpKind, context: &OpContext, error: &str) -> String {
+    if let Some(elsewhere) = pom_workspace::checked_out_elsewhere(error) {
+        return elsewhere.to_string_lossy().into_owned();
+    }
     let Some(repo) = error
         .split(':')
         .next()

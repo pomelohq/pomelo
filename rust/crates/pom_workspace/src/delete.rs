@@ -191,16 +191,27 @@ impl Deletion<'_> {
 
     fn remove(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
         let config = self.context.config;
+        let state = pom_layout::WorkspaceState::load(&self.folder);
         for repo in &self.repos {
             scope.progress(format!("worktree: {}", repo.name));
             let default = config.default_branch_for(&repo.name);
-            match git::remove_worktree(&repo.main, &repo.worktree, self.branch, default) {
-                Ok(true) => scope.warn(format!(
-                    "{}: kept local branch {} - it has commits that are not pushed or merged",
-                    repo.name, self.branch
-                )),
+            // The branch the repo really uses, which may not be the workspace's; detached means none.
+            let branch = match pom_layout::read_head(&repo.worktree) {
+                Some(pom_layout::Head::Branch(branch)) => Some(branch),
+                Some(pom_layout::Head::Detached(_)) => None,
+                None => Some(state.repo_branch(&repo.name, self.branch).to_string()),
+            };
+            if let Err(error) = git::remove_worktree(&repo.main, &repo.worktree) {
+                scope.warn(format!("{}: remove worktree: {error}", repo.name));
+                continue;
+            }
+            let Some(branch) = branch else {
+                continue;
+            };
+            match git::delete_branch_if_safe(&repo.main, &branch, default) {
+                Ok(true) => scope.warn(kept_branch_note(&repo.name, &branch, &repo.main, default)),
                 Ok(false) => {}
-                Err(error) => scope.warn(format!("{}: remove worktree: {error}", repo.name)),
+                Err(error) => scope.warn(format!("{}: delete branch {branch}: {error}", repo.name)),
             }
         }
         if !config.shared_services.is_empty() {
@@ -272,5 +283,19 @@ impl Deletion<'_> {
             }
         }
         Ok(StageResult::Done)
+    }
+}
+
+fn kept_branch_note(repo: &str, branch: &str, main: &std::path::Path, default: &str) -> String {
+    match git::unpushed_commits(main, branch, default) {
+        0 => format!(
+            "{repo}: kept local branch {branch} - it has commits that are not pushed or merged"
+        ),
+        1 => {
+            format!("{repo} has 1 commit not on origin; its branch {branch} stays on this machine")
+        }
+        count => format!(
+            "{repo} has {count} commits not on origin; its branch {branch} stays on this machine"
+        ),
     }
 }

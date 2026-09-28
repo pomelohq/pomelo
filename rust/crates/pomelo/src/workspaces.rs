@@ -156,7 +156,28 @@ impl App {
             .iter()
             .map(|workspace| workspace.branch.clone())
             .collect();
-        let mut modal = CreateWorkspaceModal::new(repos, existing, namer());
+        let main_checkouts: std::collections::HashMap<String, std::path::PathBuf> = repos
+            .iter()
+            .map(|repo| {
+                let checkout = project
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.is_main)
+                    .and_then(|main| main.repos.iter().find(|found| &found.name == repo))
+                    .map(|found| found.path.clone())
+                    .unwrap_or_else(|| {
+                        pom_layout::repo_worktree(
+                            &project.root,
+                            repo,
+                            config.global_default_branch(),
+                            true,
+                        )
+                    });
+                (repo.clone(), checkout)
+            })
+            .collect();
+        let mut modal = CreateWorkspaceModal::new(repos, existing, namer())
+            .with_branches(branch_source(Arc::new(main_checkouts)));
         let board = (self.settings.jira_board != 0).then_some(self.settings.jira_board);
         if let Some(source) = workspaces_ui::TicketSource::for_session(
             &pom_paths::StateDir::from_env(),
@@ -500,6 +521,7 @@ impl App {
                     request: pom_workspace::CreateRequest {
                         branch: create.branch.clone(),
                         repos: create.repos.clone(),
+                        repo_branches: create.repo_branches.clone(),
                         ..pom_workspace::CreateRequest::default()
                     },
                     display_name: create.display_name.clone(),
@@ -579,5 +601,35 @@ impl App {
         if let Some(main) = self.mains.get_mut(&id) {
             main.dirty = true;
         }
+    }
+}
+
+/// Branches come from each repo's main checkout, the one every worktree of it branches off.
+fn branch_source(
+    main_checkouts: Arc<std::collections::HashMap<String, std::path::PathBuf>>,
+) -> workspaces_ui::BranchSource {
+    let checkout_of = |checkouts: &std::collections::HashMap<String, std::path::PathBuf>,
+                       repo: &str| {
+        checkouts
+            .get(repo)
+            .cloned()
+            .ok_or_else(|| format!("{repo} has no checkout in main"))
+    };
+    let listed = main_checkouts.clone();
+    workspaces_ui::BranchSource {
+        list: Arc::new(move |repo| {
+            let checkout = checkout_of(&listed, repo)?;
+            let base = match pom_layout::read_head(&checkout) {
+                Some(pom_layout::Head::Branch(branch)) => branch,
+                _ => String::new(),
+            };
+            Ok(workspaces_ui::RepoBranches {
+                base,
+                branches: pom_workspace::list_branches(&checkout)?,
+            })
+        }),
+        fetch: Arc::new(move |repo| {
+            pom_workspace::fetch_origin(&checkout_of(&main_checkouts, repo)?)
+        }),
     }
 }

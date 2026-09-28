@@ -7,6 +7,7 @@ mod bundle;
 mod forms;
 mod new_project;
 mod ops;
+mod repo_branch_picker;
 mod repo_edit;
 mod ticket_picker;
 mod tickets;
@@ -19,6 +20,7 @@ pub use bundle::{ExportConfig, ExportConfigModal, FileChooser, ImportConfig, Imp
 pub use forms::{CreateWorkspace, CreateWorkspaceModal, RenameWorkspace, RenameWorkspaceModal};
 pub use new_project::{FolderChooser, NewProject, NewProjectModal};
 pub use ops::{apply_event, apply_repo_state, Finished, OpContext, OpKind, OpQueue};
+pub use repo_branch_picker::{BranchSource, RepoBranches};
 pub use repo_edit::{
     PickReposModal, PickedRepos, RemoveRepo, RemoveRepoModal, RenameAlias, RenameAliasModal,
 };

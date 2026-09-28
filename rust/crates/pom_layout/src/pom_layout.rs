@@ -11,6 +11,64 @@ const WORKSPACE_STATE_FILE: &str = ".pom-workspace.json";
 pub struct Repo {
     pub name: String,
     pub path: PathBuf,
+    /// The branch checked out right now (a short sha when detached, empty when unreadable).
+    pub branch: String,
+    /// The branch the workspace means it to use: its override, else the workspace branch.
+    pub expected: String,
+}
+
+/// What a checkout's HEAD points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Head {
+    Branch(String),
+    /// A commit, as a short sha.
+    Detached(String),
+}
+
+impl Head {
+    pub fn name(&self) -> &str {
+        match self {
+            Head::Branch(name) | Head::Detached(name) => name,
+        }
+    }
+}
+
+/// Reads HEAD straight from disk, without running git: `.git/HEAD` for a clone, `<gitdir>/HEAD` for a
+/// worktree whose `.git` file says `gitdir: <path>`.
+pub fn read_head(checkout: &Path) -> Option<Head> {
+    let dot_git = checkout.join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let text = std::fs::read_to_string(&dot_git).ok()?;
+        let pointer = text.lines().find_map(|line| line.strip_prefix("gitdir:"))?;
+        checkout.join(pointer.trim())
+    };
+    parse_head(&std::fs::read_to_string(git_dir.join("HEAD")).ok()?)
+}
+
+fn parse_head(text: &str) -> Option<Head> {
+    let text = text.trim();
+    if let Some(reference) = text.strip_prefix("ref:") {
+        let reference = reference.trim();
+        let name = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+        return (!name.is_empty()).then(|| Head::Branch(name.to_string()));
+    }
+    let is_sha = text.len() >= 7 && text.chars().all(|c| c.is_ascii_hexdigit());
+    is_sha.then(|| Head::Detached(text[..7].to_string()))
+}
+
+fn repo_at(name: String, path: PathBuf, state: &WorkspaceState, workspace_branch: &str) -> Repo {
+    let branch = read_head(&path)
+        .map(|head| head.name().to_string())
+        .unwrap_or_default();
+    let expected = state.repo_branch(&name, workspace_branch).to_string();
+    Repo {
+        name,
+        path,
+        branch,
+        expected,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,10 +134,11 @@ pub fn scan(
         path: project_root.to_path_buf(),
         repos: Vec::new(),
     };
+    let main_state = WorkspaceState::load(project_root);
     let mut branches: BTreeMap<String, Workspace> = BTreeMap::new();
     for (name, path) in directories {
         if let Some(branch) = name.strip_prefix(WORKSPACE_PREFIX) {
-            let repos = git_repos_in(&path);
+            let repos = git_repos_in(&path, branch);
             if branch == default_branch {
                 main.path = path;
                 main.repos.extend(repos);
@@ -98,7 +157,8 @@ pub fn scan(
         }
         let known = known_repos.is_none_or(|known| known.contains(&name));
         if !migrated_main && known && is_git_repo(&path) {
-            main.repos.push(Repo { name, path });
+            main.repos
+                .push(repo_at(name, path, &main_state, default_branch));
         }
     }
 
@@ -111,17 +171,22 @@ pub fn scan(
     out
 }
 
-fn git_repos_in(folder: &Path) -> Vec<Repo> {
+fn git_repos_in(folder: &Path, workspace_branch: &str) -> Vec<Repo> {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Vec::new();
     };
+    let state = WorkspaceState::load(folder);
     let mut repos: Vec<Repo> = entries
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .filter(|entry| is_git_repo(&entry.path()))
-        .map(|entry| Repo {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            path: entry.path(),
+        .map(|entry| {
+            repo_at(
+                entry.file_name().to_string_lossy().into_owned(),
+                entry.path(),
+                &state,
+                workspace_branch,
+            )
         })
         .collect();
     repos.sort_by(|a, b| a.name.cmp(&b.name));
@@ -136,6 +201,9 @@ pub struct WorkspaceState {
     pub service_envs: IndexMap<String, String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub display_name: String,
+    /// Repo -> the branch it uses when that is not the workspace branch.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub repo_branches: IndexMap<String, String>,
 }
 
 impl WorkspaceState {
@@ -150,6 +218,23 @@ impl WorkspaceState {
         let mut text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         text.push('\n');
         std::fs::write(workspace_folder.join(WORKSPACE_STATE_FILE), text)
+    }
+
+    /// The branch a repo is meant to be on: its override, else the workspace branch.
+    pub fn repo_branch<'a>(&'a self, repo: &str, workspace_branch: &'a str) -> &'a str {
+        self.repo_branches
+            .get(repo)
+            .map_or(workspace_branch, String::as_str)
+    }
+
+    /// Records the branch a repo uses; the workspace branch itself needs no entry.
+    pub fn set_repo_branch(&mut self, repo: &str, branch: &str, workspace_branch: &str) {
+        if branch == workspace_branch || branch.is_empty() {
+            self.repo_branches.shift_remove(repo);
+        } else {
+            self.repo_branches
+                .insert(repo.to_string(), branch.to_string());
+        }
     }
 
     /// Profile for a service, falling back to its repo's entry.
@@ -251,6 +336,73 @@ mod tests {
             repo_worktree(root, "api", "main", true),
             root.join("workspace--main/api")
         );
+    }
+
+    #[test]
+    fn head_parses_branches_and_detached_commits() {
+        assert_eq!(
+            parse_head("ref: refs/heads/ana/mail-retry\n"),
+            Some(Head::Branch("ana/mail-retry".into()))
+        );
+        assert_eq!(
+            parse_head("4f9c2e1d0b7a8c6e5f4d3c2b1a0f9e8d7c6b5a49\n"),
+            Some(Head::Detached("4f9c2e1".into()))
+        );
+        assert_eq!(parse_head("ref: refs/heads/"), None);
+        assert_eq!(parse_head("garbage"), None);
+    }
+
+    #[test]
+    fn scan_reads_each_repos_branch_and_its_override() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        let clone = root.join("workspace--main/api");
+        std::fs::create_dir_all(clone.join(".git"))?;
+        std::fs::write(clone.join(".git/HEAD"), "ref: refs/heads/main\n")?;
+        let git_dir = clone.join(".git/worktrees/api");
+        std::fs::create_dir_all(&git_dir)?;
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/ana/mail-retry\n")?;
+        let worktree = root.join("workspace--feat-login/api");
+        std::fs::create_dir_all(&worktree)?;
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", git_dir.display()),
+        )?;
+        let relative = root.join("workspace--feat-login/web");
+        std::fs::create_dir_all(relative.join("../.gitdirs/web"))?;
+        std::fs::write(relative.join(".git"), "gitdir: ../.gitdirs/web\n")?;
+        std::fs::write(
+            relative.join("../.gitdirs/web/HEAD"),
+            "ref: refs/heads/feat-login\n",
+        )?;
+
+        let mut state = WorkspaceState::default();
+        state.set_repo_branch("api", "ana/mail-retry", "feat-login");
+        state.set_repo_branch("web", "feat-login", "feat-login");
+        state.save(&root.join("workspace--feat-login"))?;
+
+        let workspaces = scan(root, "main", None);
+        let feat = &workspaces[1];
+        let repo = |name: &str| feat.repos.iter().find(|repo| repo.name == name).cloned();
+        let api = repo("api").expect("api");
+        assert_eq!(
+            (api.branch.as_str(), api.expected.as_str()),
+            ("ana/mail-retry", "ana/mail-retry")
+        );
+        let web = repo("web").expect("web");
+        assert_eq!(
+            (web.branch.as_str(), web.expected.as_str()),
+            ("feat-login", "feat-login")
+        );
+        assert_eq!(workspaces[0].repos[0].branch, "main");
+
+        let loaded = WorkspaceState::load(&root.join("workspace--feat-login"));
+        assert_eq!(
+            loaded.repo_branches.into_iter().collect::<Vec<_>>(),
+            [("api".to_string(), "ana/mail-retry".to_string())],
+            "the workspace branch itself is never recorded"
+        );
+        Ok(())
     }
 
     #[test]

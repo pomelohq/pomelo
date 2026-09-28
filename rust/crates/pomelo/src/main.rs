@@ -212,6 +212,23 @@ fn project_info(
                 }
             })
             .collect(),
+        repo_branches: project
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                workspace
+                    .repos
+                    .iter()
+                    .filter(|repo| !repo.branch.is_empty() && repo.branch != workspace.branch)
+                    .map(|repo| workspace::RepoBranch {
+                        repo: repo.name.clone(),
+                        actual: repo.branch.clone(),
+                        expected: repo.expected.clone(),
+                        kept: repo.expected != workspace.branch && repo.branch == repo.expected,
+                    })
+                    .collect()
+            })
+            .collect(),
     }
 }
 

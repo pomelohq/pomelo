@@ -3411,6 +3411,7 @@ dependencies = [
 name = "pom_workspace"
 version = "0.6.1"
 dependencies = [
+ "indexmap",
  "pom_config",
  "pom_env",
  "pom_layout",
@@ -5400,6 +5401,7 @@ dependencies = [
  "pom_ptyhost",
  "pom_secrets",
  "pom_services",
+ "pom_workspace",
  "pull_request_ui",
  "settings",
  "settings_ui",
@@ -6347,6 +6349,8 @@ dependencies = [
 name = "workspaces_ui"
 version = "0.6.1"
 dependencies = [
+ "indexmap",
+ "nucleo-matcher",
  "pom_agent",
  "pom_bundle",
  "pom_config",
