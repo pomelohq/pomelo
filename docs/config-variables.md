@@ -13,10 +13,10 @@ alias fails loudly).
 
 | Token | Resolves to |
 |---|---|
-| `{{shared.<name>.url}}` | Shared service connection `user:pass@host:port` |
+| `{{shared.<name>.url}}` | Shared service connection `user:pass@host:port`; just `host:port` for a service with no login (e.g. Redis) |
 | `{{shared.<name>.host}}` | Host — always `127.0.0.1` (explicit IPv4: `localhost` may resolve to `::1`, which Docker's publish misses) |
 | `{{shared.<name>.port}}` | Allocated port for the shared service |
-| `{{shared.<name>.user}}` / `.pass` | Credentials from `shared_services.<name>` |
+| `{{shared.<name>.user}}` / `.pass` | Credentials from `shared_services.<name>` (`postgres` for a Postgres that sets none, empty otherwise) |
 | `{{shared.<name>.slot}}` | Capacity slot index (e.g. Redis DB number) |
 | `{{db.<name>}}` | Named per-branch database name (session-prefixed, branch-resolved) |
 | `{{db.<name>.url}}` | Full `postgres://…/<db>` URL via the shared postgres |

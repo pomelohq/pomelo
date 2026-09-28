@@ -131,12 +131,46 @@ fn leased_ports_slots_instances_and_secrets() {
             "22001",
             "3",
             "3",
-            "postgres:postgres@127.0.0.1:22001",
+            "127.0.0.1:22001",
             "postgres",
             "postgres://postgres:postgres@127.0.0.1:21000/acme_feat",
             "s3cret",
             "{{secret.MISSING}}",
         ]
+    );
+}
+
+#[test]
+fn shared_login_comes_from_the_service_or_postgres_defaults() {
+    let mut config = config();
+    config.shared_services.insert(
+        "db".into(),
+        SharedServiceDef {
+            image: "postgres:16-alpine".into(),
+            ..SharedServiceDef::default()
+        },
+    );
+    config.shared_services.insert(
+        "cache".into(),
+        SharedServiceDef {
+            db_user: "app".into(),
+            db_password: "secret".into(),
+            ..SharedServiceDef::default()
+        },
+    );
+    let empty = FakeState::default();
+    let db_names = IndexMap::new();
+    let context = ResolveContext {
+        config: &config,
+        branch: "feat",
+        ws_key: WS,
+        env_name: "",
+        db_names: &db_names,
+        sources: &empty,
+    };
+    assert_eq!(
+        context.resolve("{{shared.db.url}} {{shared.cache.url}} [{{shared.redis.user}}]"),
+        "postgres:postgres@127.0.0.1:5432 app:secret@127.0.0.1:5432 []"
     );
 }
 

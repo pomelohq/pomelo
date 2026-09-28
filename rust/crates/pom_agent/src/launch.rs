@@ -12,7 +12,7 @@ use crate::claude::mcp_config_json;
 const CLAUDE_HOLDER: &str = "claude-raw";
 
 const CONFIG_VARIABLES: &str = "POM CONFIG VARIABLES - dot-notation ONLY. NEVER write colon forms ({{var:...}} {{host:...}} {{port:...}} {{conn:...}} {{db:...}} {{user:...}} {{pass:...}} {{slot:...}} {{url:...}} {{ws:...}}); config load REJECTS them. Migrate any you find:
-- {{shared.<name>.url}} - shared service conn (user:pass@host:port); also .host .port .user .pass .slot (redis DB index)
+- {{shared.<name>.url}} - shared service conn (user:pass@host:port, or host:port when it has no login, e.g. redis); also .host .port .user .pass .slot (redis DB index)
 - {{db.<name>}} - named per-branch database (session-prefixed); {{db.<name>.url}} full postgres URL. Declare the repo's `databases:` map to create them.
 - {{<repo>.<service>.url}} / .path / .host / .port / .ws - another repo service's address (.path = same-origin /_pom_dev/<repo>/<svc>); switch local/remote by listing it under an `environments` profile
 - {{secret.<NAME>}} - stored secret (never inline secrets); {{slot.<name>}}; {{branch.safe}} / {{branch.host}} / {{branch.hash}}; {{bind_ip}}

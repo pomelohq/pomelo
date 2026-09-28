@@ -93,7 +93,7 @@
     "bss_send_confirm",
     "-weird-/",
     "proj-1147-add-log",
-    "Feature/\u00dcBER-cool",
+    "Feature/ÜBER-cool",
     "a/b/c",
     "x-",
     "proj-1069-rent-manager-let-partners-map-their-own-custom-fields-udfs-to-acme-fields"
@@ -112,7 +112,7 @@
       "postgres#1"
     ],
     [
-      "\u00fc",
+      "ü",
       "x"
     ]
   ],
@@ -136,6 +136,16 @@
       "context": 1,
       "input": "{{api.server.port}}",
       "value": "9000"
+    },
+    {
+      "context": 0,
+      "input": "{{shared.cache.url}}",
+      "value": "127.0.0.1:24986"
+    },
+    {
+      "context": 0,
+      "input": "{{shared.search.user}}",
+      "value": ""
     }
   ]
 }

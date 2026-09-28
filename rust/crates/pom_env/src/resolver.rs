@@ -1,5 +1,5 @@
 use indexmap::IndexMap;
-use pom_config::{Config, Dir};
+use pom_config::{Config, Dir, SharedServiceDef};
 
 use crate::branch::{branch_hash, branch_host, branch_safe, workspace_label};
 use crate::template;
@@ -99,15 +99,7 @@ impl ResolveContext<'_> {
 
     fn resolve_shared(&self, name: &str, field: &str) -> Option<String> {
         let def = self.config.shared_services.get(name)?;
-        let or_default = |value: &str| {
-            if value.is_empty() {
-                "postgres".to_string()
-            } else {
-                value.to_string()
-            }
-        };
-        let user = or_default(&def.db_user);
-        let pass = or_default(&def.db_password);
+        let login = shared_login(name, def);
         // A capacity > 1 service runs one container per instance at base + instance.
         let instance = self
             .sources
@@ -123,12 +115,15 @@ impl ResolveContext<'_> {
         match field {
             "host" => Some(host.to_string()),
             "port" => Some(port.to_string()),
-            "user" => Some(user),
-            "pass" => Some(pass),
+            "user" => Some(login.map(|(user, _)| user).unwrap_or_default()),
+            "pass" => Some(login.map(|(_, pass)| pass).unwrap_or_default()),
             "slot" => Some(self.slot_index(name)),
             "url" | "" => {
                 let port = if port == 0 { 5432 } else { port };
-                Some(format!("{user}:{pass}@{host}:{port}"))
+                Some(match login {
+                    Some((user, pass)) => format!("{user}:{pass}@{host}:{port}"),
+                    None => format!("{host}:{port}"),
+                })
             }
             _ => None,
         }
@@ -216,6 +211,24 @@ impl ResolveContext<'_> {
             })
             .map(|(name, _)| name.as_str())
     }
+}
+
+/// The login a shared service's url carries: its own, Postgres' stock login for a Postgres, else none
+/// (a password-less Redis rejects a url that names a user).
+fn shared_login(name: &str, def: &SharedServiceDef) -> Option<(String, String)> {
+    let is_postgres =
+        def.kind == "postgres" || name == "postgres" || def.image.starts_with("postgres");
+    if def.db_user.is_empty() && !is_postgres {
+        return None;
+    }
+    let or_postgres = |value: &str| {
+        if value.is_empty() {
+            "postgres".to_string()
+        } else {
+            value.to_string()
+        }
+    };
+    Some((or_postgres(&def.db_user), or_postgres(&def.db_password)))
 }
 
 /// Host and effective port of an absolute URL; the port falls back to the scheme default and is
