@@ -1201,7 +1201,18 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             },
             move |_| {
-                // With DIFFFILE=<file> (and DIFFBASE=<file with its old text>), show that file's diff.
+                // With DIFFFILE=<file> (and DIFFBASE=<file with its old text>), show that file's diff;
+                // SPLITDIFF=1 opens it side by side.
+                if std::env::var("SPLITDIFF").is_ok() {
+                    let font_changed = files_ui::set_editor_defaults(
+                        files_ui::default_buffer_font_size(),
+                        false,
+                        true,
+                    );
+                    if font_changed {
+                        eprintln!("snapshot: buffer font reset to its default");
+                    }
+                }
                 let files_view = std::env::var("DIFFFILE").ok().map(|file| {
                     let path = std::path::PathBuf::from(&file);
                     let root = path

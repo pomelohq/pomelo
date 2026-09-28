@@ -60,6 +60,21 @@ impl Rect {
         }
     }
 
+    /// Diagonal stripes `period` apart, as on the side of a split diff that has no line for a row.
+    pub fn slash_pattern(x: f32, y: f32, w: f32, h: f32, color: Rgba, period: f32) -> Self {
+        Rect {
+            x,
+            y,
+            w,
+            h,
+            color,
+            radius: 0.0,
+            // A negative border tells the shader to draw stripes this far apart instead of a border.
+            border: -period,
+            border_color: Rgba::TRANSPARENT,
+        }
+    }
+
     pub fn new(x: f32, y: f32, w: f32, h: f32, color: Rgba) -> Self {
         Self {
             x,
@@ -1071,9 +1086,22 @@ impl UiRenderer {
                         let alpha = clamp(0.5 - max(-(distance + half), distance - half), 0.0, 1.0);
                         return vec4<f32>(in.color.rgb, in.color.a * alpha);
                     }
+                    if (in.bwidth < 0.0) {
+                        // 45 degree stripes, two device pixels wide; the period divides the line height so
+                        // stacked rows join without a seam.
+                        let period = -in.bwidth * 0.70710678;
+                        let p = in.local + in.hsize;
+                        let along = (p.x + p.y) * 0.70710678;
+                        let phase = along - floor(along / period) * period;
+                        let half_stripe = 2.0 * 0.70710678 / 2.0;
+                        let distance = min(phase, period - phase) - half_stripe;
+                        return vec4<f32>(in.color.rgb, in.color.a * clamp(0.5 - distance, 0.0, 1.0));
+                    }
                     let d = sd_round_box(in.local, in.hsize, in.radius);
                     let aa = fwidth(d);
-                    let cov = 1.0 - smoothstep(0.0, aa, d);
+                    // Coverage centred on the edge: an AA band laid wholly outside thickens small shapes
+                    // and flattens a 6px dot into a rounded square.
+                    let cov = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, d);
                     // Border ring: pixels within `bwidth` of the edge use the border color. The inner AA
                     // straddles the -bwidth boundary (not spilling fully inward), so a 1px border reads as a
                     // crisp hairline instead of a ~2px fuzzy band.

@@ -823,6 +823,22 @@ impl FileItem {
 
 /// Buffer `line` as colored runs (tabs expanded onto the grid), highlighted from `syntax` when there is one.
 /// `segments` with their first `columns` characters removed, dropping segments that end up empty.
+/// The stripe period for spacer rows: an even division of the line height near 16px, so two spacer runs
+/// stacked back to back keep one unbroken pattern.
+fn spacer_period(line_h: f32) -> f32 {
+    const TARGET: f32 = 16.0;
+    let approx = line_h / (2.0 * TARGET);
+    let floor = (approx.floor() as u32).max(1);
+    let ceil = (approx.ceil() as u32).max(1);
+    let below = line_h / (2 * floor) as f32;
+    let above = line_h / (2 * ceil) as f32;
+    if (below - TARGET).abs() <= (above - TARGET).abs() {
+        below
+    } else {
+        above
+    }
+}
+
 fn skip_columns(segments: Vec<(String, Rgba)>, columns: usize) -> Vec<(String, Rgba)> {
     let mut remaining = columns;
     segments
@@ -1143,7 +1159,11 @@ impl FileItem {
             }
             let Some(base_line) = side.base else {
                 numbers = numbers.child(div().h_px(edit_line_h()));
-                text = text.child(div().h_px(edit_line_h()));
+                text = text.child(if side.changed {
+                    Self::spacer_row()
+                } else {
+                    div().h_px(edit_line_h()).into()
+                });
                 continue;
             };
             numbers = numbers.child(
@@ -1199,6 +1219,14 @@ impl FileItem {
         painted
     }
 
+    /// A spacer row: the split diff's side that has no line here, striped.
+    fn spacer_row() -> Node {
+        div()
+            .h_px(edit_line_h())
+            .slash_pattern(theme().panel_background, spacer_period(edit_line_h()))
+            .into()
+    }
+
     /// Levels a split diff: after each change whose old side is longer, blank rows fill the new side,
     /// and every row records the old line shown beside it. Returns the rows and each line's first row.
     fn split_rows(
@@ -1208,6 +1236,14 @@ impl FileItem {
     ) -> (Vec<DisplayRow>, Vec<usize>) {
         let mut hunks: Vec<git::DiffHunk> = self.git.hunks().to_vec();
         hunks.sort_by_key(|hunk| hunk.rows.start);
+        // A new file has no old lines at all, not the one empty line an empty buffer reports.
+        let base_lines = self.base.as_ref().map_or(usize::MAX, |base| {
+            if base.buffer.rope.len_chars() == 0 {
+                0
+            } else {
+                base.buffer.rope.len_lines()
+            }
+        });
         let mut out = Vec::with_capacity(rows.len());
         let mut left = Vec::with_capacity(rows.len());
         let mut delta: isize = 0;
@@ -1266,7 +1302,9 @@ impl FileItem {
                 }
             } else {
                 SplitLeft {
-                    base: usize::try_from(row.line as isize + delta).ok(),
+                    base: usize::try_from(row.line as isize + delta)
+                        .ok()
+                        .filter(|line| *line < base_lines),
                     changed: false,
                 }
             };
@@ -3341,7 +3379,7 @@ impl Item for FileItem {
                 break;
             };
             if row.spacer {
-                body = body.child(div().h_px(edit_line_h()));
+                body = body.child(Self::spacer_row());
                 continue;
             }
             if let Some(index) = row.block {
@@ -8242,6 +8280,45 @@ mod hunk_action_tests {
             texts.contains(&"b") && texts.contains(&"c") && texts.contains(&"e"),
             "{texts:?}"
         );
+    }
+
+    #[test]
+    fn a_split_diff_stripes_the_side_with_no_line() {
+        let mut item = split_diff("a\nX\nd\nf\ng\n", "a\nb\nc\nd\ne\n");
+        let stripes = |painted: &ui::Painted| {
+            painted
+                .rects
+                .iter()
+                .filter(|rect| rect.border < 0.0)
+                .count()
+        };
+        let old = item.paint_old_side(Rect::new(0.0, 0.0, 300.0, 400.0, Rgba::TRANSPARENT));
+        assert_eq!(
+            stripes(&old),
+            1,
+            "g has no old line (f pairs with the removed e)"
+        );
+        let new = ui::render(
+            &item.render(),
+            Rect::new(0.0, 0.0, 300.0, 400.0, Rgba::TRANSPARENT),
+        );
+        assert_eq!(stripes(&new), 1, "c has no new line");
+    }
+
+    #[test]
+    fn a_new_file_split_diff_shows_no_old_line() {
+        let item = split_diff("a\nb\nc\n", "");
+        assert!(
+            split_layout(&item).iter().all(|(_, old)| old == "-"),
+            "{:?}",
+            split_layout(&item)
+        );
+    }
+
+    #[test]
+    fn spacer_stripes_divide_the_line_height() {
+        assert_eq!(spacer_period(24.0), 12.0);
+        assert_eq!(spacer_period(64.0), 16.0);
     }
 
     #[test]

@@ -324,6 +324,7 @@ pub struct Div {
     radius: f32,
     border: f32,
     border_color: Rgba,
+    slash: Option<(Rgba, f32)>,
     click: Option<u64>,
     debug: Option<&'static str>,
     image: Option<u64>,
@@ -384,6 +385,7 @@ pub fn div() -> Div {
         radius: 0.0,
         border: 0.0,
         border_color: Rgba::TRANSPARENT,
+        slash: None,
         click: None,
         debug: None,
         image: None,
@@ -557,6 +559,11 @@ impl Div {
     }
     pub fn rounded(mut self, r: f32) -> Self {
         self.radius = rem(r);
+        self
+    }
+    /// Fills the div with diagonal stripes `period` apart (see `Rect::slash_pattern`).
+    pub fn slash_pattern(mut self, color: Rgba, period: f32) -> Self {
+        self.slash = Some((color, period));
         self
     }
     pub fn border(mut self, width: f32, color: Rgba) -> Self {
@@ -1024,6 +1031,11 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                     border: d.border,
                     border_color: d.border_color,
                 });
+            }
+            if let Some((color, period)) = d.slash {
+                out.rects.push(Rect::slash_pattern(
+                    area.x, area.y, area.w, area.h, color, period,
+                ));
             }
             if let Some(id) = d.click {
                 out.hits.push((area, id));
