@@ -3,6 +3,7 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use pom_config::Config;
@@ -11,6 +12,9 @@ use pom_ptyhost::SocketDir;
 use pom_services::{RunnerOptions, ServiceRunner, ServiceTarget};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
+
+// Every fixture leases from a fresh state, so parallel tests would all get the same first port.
+static SERIAL: Mutex<()> = Mutex::new(());
 
 /// Stands in for the app binary's `pty run`: the wrapper script below re-enters this test binary here.
 #[test]
@@ -33,10 +37,12 @@ struct Fixture {
     runner: ServiceRunner,
     config: Config,
     target: ServiceTarget,
+    _serial: MutexGuard<'static, ()>,
 }
 
 impl Fixture {
     fn new() -> Fixture {
+        let serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         // Short path: Unix socket paths are limited to 104 bytes.
         let temp = tempfile::Builder::new()
             .prefix("svc")
@@ -81,6 +87,7 @@ repos:
                 repo: "api".into(),
                 service: "web".into(),
             },
+            _serial: serial,
         }
     }
 }
