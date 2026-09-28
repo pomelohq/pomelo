@@ -93,6 +93,8 @@ pub fn is_agent_id(id: u64) -> bool {
 }
 pub const FILES_TREE_W: f32 = 260.0; // default width of the Files tree dock (left of the center editor)
 pub const FILES_TREE_MIN: f32 = 160.0;
+/// Every side panel (tree, agent, terminal, tool panels) keeps at least this width so its content fits.
+pub const SIDE_PANEL_MIN: f32 = 260.0;
 pub const FILES_TREE_MAX: f32 = 560.0;
 pub const DOCK_MIN: f32 = 180.0; // narrowest expanded width
 pub const DOCK_MAX: f32 = 520.0;
@@ -1817,16 +1819,17 @@ impl Layout {
             .min(FILES_TREE_MAX)
     }
 
-    /// The minimum width the panel shown on `side` asks for (0 for the tree, terminal and agent).
+    /// The narrowest the panel shown on `side` may get: a shared floor, or more when the panel asks for it.
     fn panel_min(&self, side: DockPosition) -> f32 {
-        match self.shown_on(side) {
+        let own = match self.shown_on(side) {
             Some(Shown::Func(kind)) => self
                 .side_panels
                 .iter()
                 .find(|panel| panel.kind() == kind)
                 .map_or(0.0, |panel| panel.min_width()),
             _ => 0.0,
-        }
+        };
+        own.max(SIDE_PANEL_MIN)
     }
 
     /// Left edge of the editor area (right of the sidebar when docked left; 0 when the sidebar is on the right).

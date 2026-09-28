@@ -191,7 +191,7 @@ fn ticking_in_not_staged_stages_and_unticking_in_staged_unstages() {
     let mut panel = panel(vec![source("api", &root, "feat")]);
     let shown = texts(&mut panel);
     assert!(shown.contains("Changes|(2)"), "{shown}");
-    assert!(shown.contains("API"), "{shown}");
+    assert!(shown.contains("|api|"), "{shown}");
     assert!(
         shown.contains("Staged|0|Nothing staged yet - tick a file below|Not staged|2"),
         "{shown}"
@@ -383,17 +383,17 @@ fn history_groups_by_repo_or_runs_as_one_timeline() {
         shown.contains("3 commits since the branch left main"),
         "{shown}"
     );
-    let api_at = shown.find("API").expect("api group");
-    let web_at = shown.find("WEB").expect("web group");
+    let api_at = shown.find("|api|").expect("api group");
+    let web_at = shown.find("|web|").expect("web group");
     assert!(api_at < shown.find("Api two").expect("api commit"));
     assert!(shown.find("Api one") < Some(web_at), "{shown}");
     assert!(web_at < shown.find("Web one").expect("web commit"));
 
-    click(&mut panel, "API");
+    click(&mut panel, "api");
     let shown = texts(&mut panel);
     assert!(!shown.contains("Api two"), "the group folds: {shown}");
 
-    click(&mut panel, "API");
+    click(&mut panel, "api");
     let options = painted(&mut panel)
         .hits
         .iter()
@@ -404,7 +404,6 @@ fn history_groups_by_repo_or_runs_as_one_timeline() {
     menu_pick(&mut panel, "One Timeline");
     let shown = texts(&mut panel);
     assert!(shown.contains("Today"), "{shown}");
-    assert!(!shown.contains("API"), "{shown}");
     assert_eq!(
         shown.matches("|api|").count(),
         2,

@@ -313,6 +313,8 @@ struct FileItem {
     /// The diff shows two columns when it is wide enough; `split_active` is whether it does now.
     split: bool,
     split_active: bool,
+    /// How far the old side of a split diff needs to scroll to reach the end of its widest line.
+    old_side_max_scroll_x: f32,
     /// Per display row, what the old side shows (split diffs only).
     split_left: Vec<SplitLeft>,
     /// Changes shown expanded, as char ranges carried through edits.
@@ -617,6 +619,7 @@ impl FileItem {
             branch_diff: false,
             split: SPLIT_DIFF_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
             split_active: false,
+            old_side_max_scroll_x: 0.0,
             split_left: Vec::new(),
             expanded: Vec::new(),
             base: None,
@@ -816,6 +819,24 @@ impl FileItem {
 }
 
 /// Buffer `line` as colored runs (tabs expanded onto the grid), highlighted from `syntax` when there is one.
+/// `segments` with their first `columns` characters removed, dropping segments that end up empty.
+fn skip_columns(segments: Vec<(String, Rgba)>, columns: usize) -> Vec<(String, Rgba)> {
+    let mut remaining = columns;
+    segments
+        .into_iter()
+        .filter_map(|(segment, color)| {
+            let length = segment.chars().count();
+            if remaining >= length {
+                remaining -= length;
+                return None;
+            }
+            let kept: String = segment.chars().skip(remaining).collect();
+            remaining = 0;
+            Some((kept, color))
+        })
+        .collect()
+}
+
 fn segments_of(
     b: &EditorBuffer,
     syntax: Option<&Syntax>,
@@ -1086,8 +1107,22 @@ impl FileItem {
             .map_or(1, |base| base.buffer.rope.len_lines());
         let gutter = gutter_width(base_lines);
         let offset = first as f32 * edit_line_h() - self.scroll_y;
+        let widest = self.base.as_ref().map_or(0, |base| {
+            (0..base.buffer.rope.len_lines())
+                .map(|line| base.buffer.rope.line(line).len_chars())
+                .max()
+                .unwrap_or(0)
+        });
+        let advance = char_advance();
+        self.old_side_max_scroll_x =
+            ((widest + 2) as f32 * advance - (area.w - gutter - SCROLLBAR_WIDTH)).max(0.0);
+        // Both sides share one horizontal offset; the old side drops whole columns (monospace) so its text
+        // never slides under the line numbers, and pads by the leftover fraction.
+        let scroll_x = self.scroll_x.min(self.old_side_max_scroll_x);
+        let skipped_columns = (scroll_x / advance).floor() as usize;
+        let leftover = scroll_x - skipped_columns as f32 * advance;
         let mut numbers = div().col().w_px(gutter);
-        let mut text = div().col().flex(1.0).pl(char_advance());
+        let mut text = div().col().flex(1.0).pl(advance - leftover);
         let mut bands = Vec::new();
         let light = ui_colors.appearance == ui::Appearance::Light;
         let fill = if light { 0.16 } else { 0.12 };
@@ -1123,7 +1158,8 @@ impl FileItem {
                     ),
             );
             let mut row = div().row().h_px(edit_line_h()).items_center();
-            let segments = self.base_line_segments(base_line, &colors);
+            let segments =
+                skip_columns(self.base_line_segments(base_line, &colors), skipped_columns);
             if segments.is_empty() {
                 row = row.child(label(" ").size(edit_font()).mono());
             }
@@ -1624,7 +1660,12 @@ impl FileItem {
 
     /// The largest valid horizontal scroll (so the widest line's end can reach the right edge).
     fn max_scroll_x(&self) -> f32 {
-        (self.content_w() - self.text_viewport_w()).max(0.0)
+        let own = (self.content_w() - self.text_viewport_w()).max(0.0);
+        if self.split_active {
+            own.max(self.old_side_max_scroll_x)
+        } else {
+            own
+        }
     }
 
     /// First visible line index, and the sub-line offset the shell shifts the body up by (in `(-line_h, 0]`).
@@ -2650,6 +2691,15 @@ impl FileItem {
     }
 
     fn after_expansion_change(&mut self) {
+        // A branch diff exists to show its changes, so none of them may be folded away.
+        if self.branch_diff {
+            self.expanded = self
+                .git
+                .hunks()
+                .iter()
+                .map(|hunk| self.hunk_char_range(hunk))
+                .collect();
+        }
         self.sync_base_text();
         self.rows = None;
         self.ensure_visible();
@@ -3978,7 +4028,7 @@ impl Item for FileItem {
             self.toggle_soft_wrap();
             return;
         }
-        if key == EditKey::Escape && !self.expanded.is_empty() {
+        if key == EditKey::Escape && !self.expanded.is_empty() && !self.branch_diff {
             self.expanded.clear();
             return self.after_expansion_change();
         }
@@ -8141,6 +8191,21 @@ mod hunk_action_tests {
             texts.contains(&"b") && texts.contains(&"c") && texts.contains(&"e"),
             "{texts:?}"
         );
+    }
+
+    #[test]
+    fn a_branch_diff_keeps_its_changes_shown_after_escape() {
+        let mut item = split_diff("a\nX\nc\n", "a\nb\nc\n");
+        assert!(!item.expanded.is_empty());
+        item.input_key(EditKey::Escape, false);
+        assert!(!item.expanded.is_empty());
+    }
+
+    #[test]
+    fn a_split_diff_old_side_drops_the_columns_scrolled_past() {
+        let red = Rgba::TRANSPARENT;
+        let kept = skip_columns(vec![("abc".into(), red), ("def".into(), red)], 4);
+        assert_eq!(kept, vec![("ef".to_string(), red)]);
     }
 
     #[test]

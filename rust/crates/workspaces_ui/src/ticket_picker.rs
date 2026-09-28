@@ -4,14 +4,18 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use pom_jira::{Board, SprintIssue};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::{status_line, InputField, WINDOW_MODAL_BASE};
 
 use crate::TicketSource;
 
 pub(crate) const TICKET_FIELD: u64 = WINDOW_MODAL_BASE + 7;
 pub(crate) const BOARD: u64 = WINDOW_MODAL_BASE + 8;
+pub(crate) const BOARD_MENU_SURFACE: u64 = WINDOW_MODAL_BASE + 13;
 pub(crate) const SUGGESTION_BASE: u64 = WINDOW_MODAL_BASE + 200;
+pub(crate) const BOARD_OPTION_BASE: u64 = WINDOW_MODAL_BASE + 1000;
+pub(crate) const BOARD_OPTION_END: u64 = WINDOW_MODAL_BASE + 1100;
+const MENU_WIDTH: f32 = 240.0;
 const SUGGESTIONS_SHOWN: usize = 8;
 
 enum Loaded {
@@ -30,6 +34,7 @@ pub(crate) struct TicketPicker {
     loading: Option<Receiver<Loaded>>,
     error: Option<String>,
     highlighted: usize,
+    board_menu_open: bool,
 }
 
 impl TicketPicker {
@@ -47,6 +52,7 @@ impl TicketPicker {
             loading: None,
             error: None,
             highlighted: 0,
+            board_menu_open: false,
         };
         let boards = picker.source.boards.clone();
         picker.load(move || Loaded::Boards(boards()));
@@ -113,16 +119,31 @@ impl TicketPicker {
         self.board
     }
 
-    pub fn next_board(&mut self) {
-        if self.boards.len() < 2 || self.loading.is_some() {
+    pub fn toggle_board_menu(&mut self) {
+        self.board_menu_open = !self.board_menu_open && self.can_switch_board();
+    }
+
+    pub fn close_board_menu(&mut self) {
+        self.board_menu_open = false;
+    }
+
+    pub fn board_menu_open(&self) -> bool {
+        self.board_menu_open
+    }
+
+    fn can_switch_board(&self) -> bool {
+        self.boards.len() > 1 && self.loading.is_none()
+    }
+
+    pub fn pick_board(&mut self, index: usize) {
+        self.board_menu_open = false;
+        let Some(board) = self.boards.get(index) else {
+            return;
+        };
+        if Some(board.id) == self.board || self.loading.is_some() {
             return;
         }
-        let at = self
-            .boards
-            .iter()
-            .position(|board| Some(board.id) == self.board)
-            .map_or(0, |at| (at + 1) % self.boards.len());
-        self.board = Some(self.boards[at].id);
+        self.board = Some(board.id);
         self.issues.clear();
         self.load_sprint();
     }
@@ -195,10 +216,13 @@ impl TicketPicker {
             .iter()
             .find(|board| Some(board.id) == self.board)
         {
-            header = header.child(board_chip(
-                &board.name,
-                self.boards.len() > 1 && self.loading.is_none(),
-            ));
+            let mut chip = div()
+                .col()
+                .child(board_chip(&board.name, self.can_switch_board()));
+            if self.board_menu_open {
+                chip = chip.child(self.board_menu());
+            }
+            header = header.child(chip);
         }
         let mut column = div()
             .col()
@@ -239,7 +263,53 @@ impl TicketPicker {
     }
 }
 
-/// The board the sprint comes from, cycled by clicking when there are several.
+impl TicketPicker {
+    /// The boards to take the sprint from, dropped under the chip; the current one is checked.
+    fn board_menu(&self) -> Node {
+        let colors = theme();
+        let mut list = div()
+            .col()
+            .w_px(MENU_WIDTH)
+            .p(4.0)
+            .rounded(8.0)
+            .border(1.0, colors.border)
+            .bg(colors.elevated_surface_background)
+            .on_click(BOARD_MENU_SURFACE);
+        for (index, board) in self.boards.iter().enumerate() {
+            let current = Some(board.id) == self.board;
+            let mut row = div()
+                .row()
+                .h_px(26.0)
+                .px(8.0)
+                .gap(6.0)
+                .items_center()
+                .rounded(4.0)
+                .on_click(BOARD_OPTION_BASE + index as u64);
+            row = row.child(div().row().w_px(14.0).items_center().child(if current {
+                icon(IconKind::Check).size(14.0).color(colors.text).into()
+            } else {
+                Node::from(div())
+            }));
+            list = list.child(
+                row.child(
+                    div().row().flex(1.0).items_center().child(
+                        label(board.name.clone())
+                            .label_size(LabelSize::Default)
+                            .color(colors.text)
+                            .truncate(),
+                    ),
+                ),
+            );
+        }
+        deferred(list)
+            .below_or_above(20.0, 4.0)
+            .snap_to_window()
+            .priority(1)
+            .into()
+    }
+}
+
+/// The board the sprint comes from; clicking opens the list of boards when there are several.
 fn board_chip(name: &str, enabled: bool) -> Node {
     let colors = theme();
     let mut chip = div()

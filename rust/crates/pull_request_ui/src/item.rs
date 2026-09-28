@@ -465,7 +465,21 @@ impl PrItem {
 
     fn overview(pr: &PullRequest, description: Option<Node>, conversation: Option<Node>) -> Node {
         let colors = theme();
-        let mut column = div().col().gap(8.0).child(Self::section("REVIEWERS"));
+        let mut column = div().col().gap(8.0);
+        if let Some((kind, color, text)) = merge_status(pr) {
+            column = column
+                .child(Self::section("MERGE"))
+                .child(
+                    div()
+                        .row()
+                        .gap(8.0)
+                        .items_center()
+                        .child(icon(kind).size(14.0).color(color))
+                        .child(label(text).size(13.0).color(colors.text)),
+                )
+                .child(div().h_px(8.0));
+        }
+        column = column.child(Self::section("REVIEWERS"));
         if pr.reviewers.is_empty() {
             column = column.child(label("No reviewers").size(13.0).color(colors.text_muted));
         }
@@ -777,6 +791,35 @@ impl Item for PrItem {
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
+    }
+}
+
+/// Whether the PR can merge into its base, as the forge reports it; `None` while that is still unknown.
+fn merge_status(pr: &PullRequest) -> Option<(IconKind, Rgba, String)> {
+    if pr.state != "OPEN" {
+        return None;
+    }
+    let colors = theme();
+    let base = &pr.base_ref_name;
+    if pr.conflict {
+        return Some((
+            IconKind::Warning,
+            colors.error,
+            format!("This branch has conflicts with {base} that must be resolved"),
+        ));
+    }
+    match pr.merge_state_status.to_ascii_uppercase().as_str() {
+        "BEHIND" => Some((
+            IconKind::Warning,
+            colors.warning,
+            format!("This branch is out of date with {base}"),
+        )),
+        _ if pr.mergeable.eq_ignore_ascii_case("MERGEABLE") => Some((
+            IconKind::Check,
+            colors.success,
+            format!("No conflicts with {base}"),
+        )),
+        _ => None,
     }
 }
 

@@ -16,10 +16,15 @@ use crate::repo_branch_picker::{
     BranchPicker, BranchSource, Entry, RepoBranches, ENTRY_BASE, ENTRY_END, PICKER_QUERY,
     PICKER_REFRESH, PICKER_SURFACE, TRIGGER_HEIGHT,
 };
-use crate::ticket_picker::{TicketPicker, BOARD, SUGGESTION_BASE, TICKET_FIELD};
+use crate::ticket_picker::{
+    TicketPicker, BOARD, BOARD_MENU_SURFACE, BOARD_OPTION_BASE, BOARD_OPTION_END, SUGGESTION_BASE,
+    TICKET_FIELD,
+};
 use crate::{humanize_branch, slugify, Namer, TicketSource};
 
 /// The reference's form modals are 34rem wide.
+/// The repo name column of the create form's repo rows.
+const REPO_NAME_W: f32 = 168.0;
 const WIDTH: f32 = 544.0;
 
 const CLOSE: u64 = WINDOW_MODAL_BASE + 1;
@@ -546,11 +551,27 @@ impl CreateWorkspaceModal {
             .h_px(36.0)
             .pl(6.0)
             .pr(8.0)
-            .child(div().row().w_px(106.0).child(checkbox(
-                REPO_BASE + index as u64,
-                row.picked,
-                &row.name,
-            )))
+            .child(
+                // A long repo name ends in an ellipsis instead of running under the branch box.
+                div()
+                    .row()
+                    .w_px(REPO_NAME_W)
+                    .items_center()
+                    .on_click(REPO_BASE + index as u64)
+                    .child(checkbox(REPO_BASE + index as u64, row.picked, ""))
+                    .child(
+                        div().row().flex(1.0).items_center().child(
+                            label(row.name.clone())
+                                .label_size(LabelSize::Default)
+                                .color(if row.picked {
+                                    colors.text
+                                } else {
+                                    colors.text_muted
+                                })
+                                .truncate(),
+                        ),
+                    ),
+            )
             .child(anchor);
         if row.choice.is_some() && !workspace_branch.is_empty() {
             let text = format!("use {workspace_branch}");
@@ -655,6 +676,14 @@ impl WindowModal for CreateWorkspaceModal {
             }
             _ => self.picker = None,
         }
+        let on_board_menu = id == BOARD
+            || id == BOARD_MENU_SURFACE
+            || (BOARD_OPTION_BASE..BOARD_OPTION_END).contains(&id);
+        if !on_board_menu {
+            if let Some(tickets) = self.tickets.as_mut() {
+                tickets.close_board_menu();
+            }
+        }
         match id {
             CLOSE | CANCEL => self.result = Some(ModalResult::Cancelled),
             NAME_FIELD => self.focus = CreateFocus::Name,
@@ -662,7 +691,13 @@ impl WindowModal for CreateWorkspaceModal {
             TICKET_FIELD => self.focus = CreateFocus::Ticket,
             BOARD => {
                 if let Some(tickets) = self.tickets.as_mut() {
-                    tickets.next_board();
+                    tickets.toggle_board_menu();
+                }
+            }
+            BOARD_MENU_SURFACE => {}
+            id if (BOARD_OPTION_BASE..BOARD_OPTION_END).contains(&id) => {
+                if let Some(tickets) = self.tickets.as_mut() {
+                    tickets.pick_board((id - BOARD_OPTION_BASE) as usize);
                 }
             }
             id if (SUGGESTION_BASE..SUGGESTION_BASE + 100).contains(&id) => {
@@ -694,6 +729,16 @@ impl WindowModal for CreateWorkspaceModal {
         if self.picker.is_some() {
             self.picker_key(key, shift);
             return true;
+        }
+        if let Some(tickets) = self
+            .tickets
+            .as_mut()
+            .filter(|tickets| tickets.board_menu_open())
+        {
+            if key == EditKey::Escape {
+                tickets.close_board_menu();
+                return true;
+            }
         }
         match key {
             EditKey::Escape => self.result = Some(ModalResult::Cancelled),

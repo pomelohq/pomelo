@@ -703,10 +703,10 @@ impl GitPanel {
         let name = self.source_name_of(repo);
         let open = !self.is_folded(&format!("{}:{name}", if history { "h" } else { "c" }));
         let mut header = self.row_base(index, ROW_H).child(chevron(open)).child(
-            label(name.to_uppercase())
-                .size(11.0)
+            label(name)
+                .size(13.0)
                 .weight(600)
-                .color(colors.text_placeholder)
+                .color(colors.text)
                 .truncate(),
         );
         let mut middle = div().row().flex(1.0).items_center();
@@ -879,7 +879,7 @@ impl GitPanel {
             .pl(8.0)
             .pr(6.0)
             .child(chevron(open))
-            .child(label(name).medium().color(colors.text))
+            .child(label(name).weight(600).color(colors.text))
             .child(grow(
                 label(if local_only {
                     format!("{branch} - local only")
@@ -977,12 +977,11 @@ impl GitPanel {
             "changes" => ("Changes requested", colors.error),
             _ => ("Review pending", colors.text_placeholder),
         };
-        let mut second = div()
-            .row()
-            .h_px(20.0)
-            .pl(26.0)
-            .gap(8.0)
-            .items_center()
+        let mut second = div().row().h_px(20.0).pl(26.0).gap(8.0).items_center();
+        if pr.conflict {
+            second = second.child(label("Merge conflict").size(12.0).color(colors.error));
+        }
+        second = second
             .child(label(checks).size(12.0).color(checks_color))
             .child(label(review).size(12.0).color(review_color));
         if pr.is_draft {

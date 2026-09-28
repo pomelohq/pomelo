@@ -901,7 +901,11 @@ fn main() -> anyhow::Result<()> {
         });
         if mode == "wscreate" || mode == "wsticket" {
             let mut modal = workspaces_ui::CreateWorkspaceModal::new(
-                vec!["api".into(), "web".into(), "mobile".into()],
+                vec![
+                    "api".into(),
+                    "web".into(),
+                    "notifications-service-worker".into(),
+                ],
                 vec!["main".into(), "feat-login".into()],
                 namer.clone(),
             );
@@ -931,10 +935,16 @@ fn main() -> anyhow::Result<()> {
                 ];
                 modal = modal.with_tickets(workspaces_ui::TicketSource {
                     boards: std::sync::Arc::new(|| {
-                        Ok(vec![pom_jira::Board {
-                            id: 1,
-                            name: "Team board".into(),
-                        }])
+                        Ok(vec![
+                            pom_jira::Board {
+                                id: 1,
+                                name: "Team board".into(),
+                            },
+                            pom_jira::Board {
+                                id: 2,
+                                name: "Platform board".into(),
+                            },
+                        ])
                     }),
                     sprint: std::sync::Arc::new(move |_| Ok(issues.clone())),
                     board: None,
@@ -944,6 +954,9 @@ fn main() -> anyhow::Result<()> {
                 while workspace::WindowModal::busy(&modal) && std::time::Instant::now() < deadline {
                     workspace::WindowModal::tick(&mut modal);
                     std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                if std::env::var_os("BOARDMENU").is_some() {
+                    workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 8);
                 }
             } else {
                 workspace::WindowModal::text(&mut modal, "Fix checkout page");
