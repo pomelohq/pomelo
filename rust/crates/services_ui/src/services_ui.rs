@@ -58,6 +58,8 @@ enum Control {
     OpenUrl = 4,
     StartAll = 5,
     StopAll = 6,
+    Logs = 7,
+    More = 8,
 }
 
 impl Control {
@@ -70,6 +72,8 @@ impl Control {
             Control::OpenUrl,
             Control::StartAll,
             Control::StopAll,
+            Control::Logs,
+            Control::More,
         ]
         .get(offset as usize)
         .copied()
@@ -179,18 +183,122 @@ struct Counts {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MenuAction {
+    Nothing,
     Run(Action),
+    OpenTab,
+    ViewLogs,
+    Fix,
+    Ask,
+    CopyCommand,
     Mode(usize),
     Profile(usize),
     OpenUrl,
     CopyUrl,
+    RepoAll(Action),
+    RunCommand(usize),
+    Environment,
+    Fold,
+    Shared(Action),
+    SharedLogs,
+}
+
+/// What a right-click (or "...") opened on: a service, a repo, or a shared container.
+#[derive(Clone, Debug)]
+enum MenuSubject {
+    Service {
+        target: ServiceTarget,
+        holder: String,
+    },
+    Repo {
+        key: String,
+        row: usize,
+    },
+    Shared {
+        name: String,
+    },
 }
 
 struct OpenMenu {
-    target: ServiceTarget,
+    subject: MenuSubject,
     items: Vec<(MenuItem, MenuAction)>,
+    submenus: Vec<(u64, Vec<(MenuItem, MenuAction)>)>,
     modes: Vec<String>,
     profiles: Vec<String>,
+    commands: Vec<RepoCommand>,
+}
+
+/// Builds a menu's items with ids from `base` upward.
+struct MenuBuilder {
+    base: u64,
+    next: u64,
+    items: Vec<(MenuItem, MenuAction)>,
+    separate: bool,
+}
+
+impl MenuBuilder {
+    fn new(base: u64) -> MenuBuilder {
+        MenuBuilder {
+            base,
+            next: 0,
+            items: Vec::new(),
+            separate: false,
+        }
+    }
+
+    fn push(
+        &mut self,
+        label: String,
+        action: MenuAction,
+        icon: Option<IconKind>,
+        hint: Option<&str>,
+        disabled: bool,
+    ) -> &mut MenuItem {
+        let sep = std::mem::take(&mut self.separate) && !self.items.is_empty();
+        let item = MenuItem {
+            id: self.base + self.next,
+            label: label.into(),
+            checked: false,
+            sep,
+            disabled,
+            danger: false,
+            icon,
+            hint: hint.map(|hint| hint.to_string().into()),
+        };
+        self.next += 1;
+        self.items.push((item, action));
+        let last = self.items.len() - 1;
+        &mut self.items[last].0
+    }
+
+    fn header(&mut self, text: String) {
+        self.push(text, MenuAction::Nothing, None, None, true);
+    }
+
+    fn item(&mut self, label: &str, action: MenuAction, icon: IconKind, hint: Option<&str>) {
+        self.push(label.to_string(), action, Some(icon), hint, false);
+    }
+
+    fn sep(&mut self) {
+        self.separate = true;
+    }
+
+    /// An item opening submenu `id`, with `hint` telling what it is set to.
+    fn submenu(&mut self, id: u64, label: &str, icon: IconKind, hint: &str) {
+        let sep = std::mem::take(&mut self.separate) && !self.items.is_empty();
+        self.items.push((
+            MenuItem {
+                id,
+                label: label.to_string().into(),
+                checked: false,
+                sep,
+                disabled: false,
+                danger: false,
+                icon: Some(icon),
+                hint: (!hint.is_empty()).then(|| hint.to_string().into()),
+            },
+            MenuAction::Nothing,
+        ));
+    }
 }
 
 pub struct ServicesPanel {
@@ -215,8 +323,6 @@ pub struct ServicesPanel {
     next_item: u64,
     /// A shared stop waiting for the user to confirm, with its prompt tag.
     confirm: Option<(u64, SharedRun)>,
-    /// A repo's right-click menu: its commands.
-    repo_menu: Option<Vec<(MenuItem, RepoCommand)>>,
 }
 
 /// One of a repo's pre-written commands (the config's `shortcuts`).
@@ -253,7 +359,6 @@ impl ServicesPanel {
             tab_buttons: Vec::new(),
             next_item: 1 << 40,
             confirm: None,
-            repo_menu: None,
         }
     }
 
@@ -546,6 +651,72 @@ impl ServicesPanel {
             .into()
     }
 
+    fn more_button(&self, index: usize) -> Node {
+        self.button(self.id(index, Control::More), IconKind::Ellipsis)
+    }
+
+    /// The rows the hovered row is tied to: the shared containers a repo or service uses, or the repos (and
+    /// their services) that use a hovered container.
+    fn related_rows(&self) -> HashSet<usize> {
+        let mut related = HashSet::new();
+        let Some(hovered) = self.hovered_row() else {
+            return related;
+        };
+        let Some(config) = self.model.context.config() else {
+            return related;
+        };
+        let alias_of = |key: &str| {
+            config
+                .repos
+                .get(key)
+                .map(|dir| {
+                    if dir.alias.is_empty() {
+                        key.to_string()
+                    } else {
+                        dir.alias.clone()
+                    }
+                })
+                .unwrap_or_else(|| key.to_string())
+        };
+        match self.rows.get(hovered) {
+            Some(Row::Group { key, .. }) if key != SHARED_GROUP && key != WORKSPACE_GROUP => {
+                let alias = alias_of(key);
+                for (index, row) in self.rows.iter().enumerate() {
+                    if let Row::Shared { name } = row {
+                        if pom_db::service_users(&config, name).contains(&alias) {
+                            related.insert(index);
+                        }
+                    }
+                }
+            }
+            Some(Row::Service { target, .. }) if !target.is_workspace_level() => {
+                let alias = alias_of(&target.repo);
+                for (index, row) in self.rows.iter().enumerate() {
+                    if let Row::Shared { name } = row {
+                        if pom_db::service_users(&config, name).contains(&alias) {
+                            related.insert(index);
+                        }
+                    }
+                }
+            }
+            Some(Row::Shared { name }) => {
+                let users = pom_db::service_users(&config, name);
+                for (index, row) in self.rows.iter().enumerate() {
+                    let repo = match row {
+                        Row::Group { key, .. } if key != SHARED_GROUP => key,
+                        Row::Service { target, .. } => &target.repo,
+                        _ => continue,
+                    };
+                    if users.contains(&alias_of(repo)) {
+                        related.insert(index);
+                    }
+                }
+            }
+            _ => {}
+        }
+        related
+    }
+
     fn guide_column(&self) -> Node {
         div()
             .row()
@@ -559,6 +730,7 @@ impl ServicesPanel {
     fn render_row(&self, index: usize, row: &Row) -> Node {
         let colors = theme();
         let hovered = self.hovered_row() == Some(index);
+        let related = self.related_rows().contains(&index);
         let mut body = div()
             .row()
             .h_px(ROW_H)
@@ -569,6 +741,13 @@ impl ServicesPanel {
             .on_click(self.id(index, Control::Row));
         if hovered {
             body = body.bg(colors.ghost_element_hover);
+        } else if related {
+            body = body.bg(colors.text_accent.alpha(0.08)).pin_left_edge(
+                0.0,
+                0.0,
+                2.0,
+                div().bg(colors.text_accent),
+            );
         }
         match row {
             Row::Group {
@@ -610,6 +789,7 @@ impl ServicesPanel {
                             .gap(2.0)
                             .child(self.button(self.id(index, Control::StartAll), IconKind::Play))
                             .child(self.button(self.id(index, Control::StopAll), IconKind::Stop))
+                            .child(self.more_button(index))
                             .into()
                     } else {
                         let failed = states.iter().any(State::needs_attention);
@@ -662,10 +842,18 @@ impl ServicesPanel {
                                 ));
                         }
                         buttons
+                            .child(self.button(self.id(index, Control::Logs), IconKind::Terminal))
                             .child(self.button(self.id(index, Control::Stop), IconKind::Stop))
+                            .child(self.more_button(index))
                             .into()
                     }
-                    (_, true) => self.button(self.id(index, Control::Start), IconKind::Play),
+                    (_, true) => div()
+                        .row()
+                        .gap(2.0)
+                        .child(self.button(self.id(index, Control::Start), IconKind::Play))
+                        .child(self.button(self.id(index, Control::Logs), IconKind::Terminal))
+                        .child(self.more_button(index))
+                        .into(),
                     (State::Crashed, false) => {
                         label("crashed").size(11.0).color(colors.error).into()
                     }
@@ -683,6 +871,16 @@ impl ServicesPanel {
                             .mono()
                             .color(colors.text_placeholder)
                             .into(),
+                        None if state == State::Running => {
+                            let pidfile = self.model.context.runner.holders().pidfile(holder);
+                            match view::uptime(&pidfile) {
+                                Some(uptime) => label(format!("up {uptime}"))
+                                    .size(11.0)
+                                    .color(colors.text_placeholder)
+                                    .into(),
+                                None => div().into(),
+                            }
+                        }
                         None => div().into(),
                     },
                 };
@@ -737,9 +935,16 @@ impl ServicesPanel {
                         .row()
                         .gap(2.0)
                         .child(self.button(self.id(index, Control::Restart), IconKind::RotateCw))
+                        .child(self.button(self.id(index, Control::Logs), IconKind::Terminal))
                         .child(self.button(self.id(index, Control::Stop), IconKind::Stop))
+                        .child(self.more_button(index))
                         .into(),
-                    (_, true) => self.button(self.id(index, Control::Start), IconKind::Play),
+                    (_, true) => div()
+                        .row()
+                        .gap(2.0)
+                        .child(self.button(self.id(index, Control::Start), IconKind::Play))
+                        .child(self.more_button(index))
+                        .into(),
                     (_, false) if used_by.is_empty() => label("not used here")
                         .size(11.0)
                         .color(colors.text_placeholder)
@@ -780,25 +985,34 @@ impl ServicesPanel {
         let colors = theme();
         let counts = self.counts;
         let inner = width - 16.0 - 20.0 - 2.0;
-        let mut title = div().row().gap(6.0).items_center().child(
-            label(self.model.context.branch.clone())
-                .medium()
-                .color(colors.text)
-                .truncate(),
-        );
-        if !self.model.context.ticket.is_empty() {
-            title = title.child(view::tag(&self.model.context.ticket));
-        }
         let status = if counts.busy > 0 {
             format!("{} busy", counts.busy)
         } else {
             format!("{} of {} running", counts.running, counts.total)
         };
+        let status = label(status).size(11.5).color(colors.text_muted);
+        let status_w = ui::measure(&status.clone().into()).0;
+        let ticket =
+            (!self.model.context.ticket.is_empty()).then(|| view::tag(&self.model.context.ticket));
+        let ticket_w = ticket.as_ref().map_or(0.0, |tag| ui::measure(tag).0 + 6.0);
+        let name = label(self.model.context.branch.clone())
+            .medium()
+            .color(colors.text);
+        let natural = ui::measure(&name.clone().into()).0;
+        let name_w = natural.min((inner - status_w - ticket_w - 8.0).max(40.0));
+        let mut title = div()
+            .row()
+            .gap(6.0)
+            .items_center()
+            .child(div().row().w_px(name_w).child(name.truncate()));
+        if let Some(ticket) = ticket {
+            title = title.child(ticket);
+        }
         let title = div()
             .row()
             .items_center()
             .child(div().row().flex(1.0).items_center().child(title))
-            .child(label(status).size(11.5).color(colors.text_muted));
+            .child(status);
         let total = counts.total.max(1) as f32;
         let segment = |count: usize, color: Rgba| -> Option<Node> {
             (count > 0).then(|| {
@@ -1225,7 +1439,7 @@ impl ServicesPanel {
 
     fn url(&self, target: &ServiceTarget) -> Option<String> {
         let config = self.model.context.config()?;
-        self.model.context.runner.url(&config, target)
+        self.model.context.runner.proxy_url(&config, target)
     }
 
     fn row_targets(&self, row: usize) -> Vec<ServiceTarget> {
@@ -1357,38 +1571,60 @@ impl ServicesPanel {
         });
     }
 
-    fn build_menu(&self, target: &ServiceTarget, holder: &str) -> OpenMenu {
+    fn service_menu(&self, target: &ServiceTarget, holder: &str) -> OpenMenu {
         let context = &self.model.context;
         let config = context.config();
-        let status = self.model.status(holder);
-        let mut items: Vec<(MenuItem, MenuAction)> = Vec::new();
-        let mut push = |label: String, action: MenuAction, checked: bool, sep: bool| {
-            let id = self.base + MENU_BASE + items.len() as u64;
-            items.push((
-                MenuItem {
-                    id,
-                    label: label.into(),
-                    checked,
-                    sep,
-                    disabled: false,
-                    danger: false,
-                    icon: None,
-                },
-                action,
-            ));
-        };
-        if status == Status::Running {
-            push(
-                "Restart".into(),
-                MenuAction::Run(Action::Restart),
-                false,
-                false,
-            );
-            push("Stop".into(), MenuAction::Run(Action::Stop), false, false);
-        } else {
-            push("Start".into(), MenuAction::Run(Action::Start), false, false);
+        let state = self.state(holder);
+        let running = state == State::Running;
+        let mut menu = MenuBuilder::new(self.base + MENU_BASE);
+        let mut header = service_title(target);
+        if running {
+            if let Some(pid) = context.runner.holders().holder_pid(holder) {
+                header.push_str(&format!(" - pid {pid}"));
+            }
         }
-        let port = self.port(target);
+        menu.header(header);
+        if running {
+            menu.item(
+                "Stop",
+                MenuAction::Run(Action::Stop),
+                IconKind::Stop,
+                Some("S"),
+            );
+            menu.item(
+                "Restart",
+                MenuAction::Run(Action::Restart),
+                IconKind::RotateCw,
+                Some("R"),
+            );
+        } else if state.needs_attention() {
+            menu.item(
+                "Restart",
+                MenuAction::Run(Action::Restart),
+                IconKind::RotateCw,
+                Some("R"),
+            );
+        } else {
+            menu.push(
+                "Start".into(),
+                MenuAction::Run(Action::Start),
+                Some(IconKind::Play),
+                Some("S"),
+                matches!(state, State::Busy(_)),
+            );
+        }
+        menu.item(
+            "Open in Tab",
+            MenuAction::OpenTab,
+            IconKind::File,
+            Some("Enter"),
+        );
+        menu.item(
+            "View Logs",
+            MenuAction::ViewLogs,
+            IconKind::Terminal,
+            Some("L"),
+        );
         let service = config
             .as_ref()
             .and_then(|config| config.repos.get(&target.repo))
@@ -1398,57 +1634,335 @@ impl ServicesPanel {
                     .map(|service| (dir, service))
             });
         if service.is_some_and(|(_, service)| service.has_port()) {
-            push(
-                "Use a New Port".into(),
+            menu.item(
+                "Use a New Port...",
                 MenuAction::Run(Action::Relocate),
-                false,
-                false,
+                IconKind::Server,
+                None,
             );
         }
         let mut modes = Vec::new();
         let mut profiles = Vec::new();
+        let mut submenus = Vec::new();
+        let mut command = String::new();
         if let (Some((dir, service)), Some(config)) = (service, config.as_ref()) {
             modes = service.mode_names();
             let current_mode = context.runner.mode(&target.repo, &target.service, service);
-            for (index, mode) in modes.iter().enumerate() {
-                push(
-                    format!("Mode: {mode}"),
-                    MenuAction::Mode(index),
-                    *mode == current_mode,
-                    index == 0,
-                );
-            }
+            command = service.active_cmd(&current_mode).trim().to_string();
             profiles = dir.env_profiles(Some(service));
-            if profiles.len() > 1 {
-                let current = context.runner.env_profile(config, target);
-                for (index, profile) in profiles.iter().enumerate() {
-                    push(
-                        format!("Env: {profile}"),
-                        MenuAction::Profile(index),
-                        *profile == current,
-                        index == 0,
-                    );
+            let current_profile = context.runner.env_profile(config, target);
+            menu.sep();
+            if modes.len() > 1 {
+                let mut sub = MenuBuilder::new(self.base + MENU_BASE + 100);
+                for (index, mode) in modes.iter().enumerate() {
+                    let item = sub.push(mode.clone(), MenuAction::Mode(index), None, None, false);
+                    item.checked = *mode == current_mode;
+                    let words: Vec<&str> = service
+                        .active_cmd(mode)
+                        .split_whitespace()
+                        .take(2)
+                        .collect();
+                    item.hint = Some(words.join(" ").into());
                 }
+                menu.submenu(
+                    workspace::MENU_SUBMENU_BASE,
+                    "Mode",
+                    IconKind::Grid,
+                    &current_mode,
+                );
+                submenus.push((workspace::MENU_SUBMENU_BASE, sub.items));
+            }
+            if profiles.len() > 1 {
+                let mut sub = MenuBuilder::new(self.base + MENU_BASE + 200);
+                for (index, profile) in profiles.iter().enumerate() {
+                    let item = sub.push(
+                        profile.clone(),
+                        MenuAction::Profile(index),
+                        None,
+                        None,
+                        false,
+                    );
+                    item.checked = *profile == current_profile;
+                }
+                menu.submenu(
+                    workspace::MENU_SUBMENU_BASE + 1,
+                    "Env",
+                    IconKind::Key,
+                    &current_profile,
+                );
+                submenus.push((workspace::MENU_SUBMENU_BASE + 1, sub.items));
             }
         }
-        if port.is_some() {
-            push("Open in Browser".into(), MenuAction::OpenUrl, false, true);
-            push("Copy URL".into(), MenuAction::CopyUrl, false, false);
+        if self.port(target).is_some() {
+            menu.sep();
+            menu.push(
+                "Open in Browser".into(),
+                MenuAction::OpenUrl,
+                Some(IconKind::ArrowUpRight),
+                None,
+                !running,
+            );
+            menu.item("Copy URL", MenuAction::CopyUrl, IconKind::Copy, None);
+        }
+        if !command.is_empty() {
+            menu.item(
+                "Copy Command",
+                MenuAction::CopyCommand,
+                IconKind::Copy,
+                None,
+            );
+        }
+        menu.sep();
+        if state.needs_attention() {
+            menu.item("Fix with Claude", MenuAction::Fix, IconKind::Sparkle, None);
+        } else {
+            menu.item(
+                "Ask Claude About This Service",
+                MenuAction::Ask,
+                IconKind::Sparkle,
+                None,
+            );
         }
         OpenMenu {
-            target: target.clone(),
-            items,
+            subject: MenuSubject::Service {
+                target: target.clone(),
+                holder: holder.to_string(),
+            },
+            items: menu.items,
+            submenus,
             modes,
             profiles,
+            commands: Vec::new(),
         }
+    }
+
+    fn repo_menu(&self, key: &str, row: usize) -> OpenMenu {
+        let targets = self.row_targets(row);
+        let states: Vec<State> = targets
+            .iter()
+            .map(|target| self.state(&self.model.context.runner.holder_name(target)))
+            .collect();
+        let label = if key == WORKSPACE_GROUP {
+            "Workspace".to_string()
+        } else {
+            key.to_string()
+        };
+        let noun = if targets.len() == 1 {
+            "service"
+        } else {
+            "services"
+        };
+        let mut menu = MenuBuilder::new(self.base + MENU_BASE);
+        menu.header(format!("{label} - {} {noun}", targets.len()));
+        menu.push(
+            "Start All".into(),
+            MenuAction::RepoAll(Action::Start),
+            Some(IconKind::Play),
+            Some("S"),
+            states.iter().all(|state| *state == State::Running),
+        );
+        menu.push(
+            "Stop All".into(),
+            MenuAction::RepoAll(Action::Stop),
+            Some(IconKind::Stop),
+            None,
+            !states.contains(&State::Running),
+        );
+        menu.item(
+            "Restart All",
+            MenuAction::RepoAll(Action::Restart),
+            IconKind::RotateCw,
+            Some("R"),
+        );
+        let commands = if key == WORKSPACE_GROUP {
+            Vec::new()
+        } else {
+            self.repo_commands(Some(key))
+        };
+        let mut submenus = Vec::new();
+        if !commands.is_empty() {
+            let mut sub = MenuBuilder::new(self.base + MENU_BASE + 100);
+            for (index, command) in commands.iter().enumerate() {
+                sub.push(
+                    command.label.clone(),
+                    MenuAction::RunCommand(index),
+                    Some(IconKind::Terminal),
+                    None,
+                    false,
+                );
+            }
+            menu.sep();
+            menu.submenu(
+                workspace::MENU_SUBMENU_BASE,
+                "Run Task",
+                IconKind::Terminal,
+                "",
+            );
+            submenus.push((workspace::MENU_SUBMENU_BASE, sub.items));
+        }
+        menu.sep();
+        if self.environment_button().is_some() {
+            menu.item(
+                "Environment...",
+                MenuAction::Environment,
+                IconKind::Key,
+                None,
+            );
+        }
+        let open = !self.collapsed.contains(key);
+        menu.item(
+            if open { "Collapse" } else { "Expand" },
+            MenuAction::Fold,
+            if open {
+                IconKind::ChevronUp
+            } else {
+                IconKind::ChevronDown
+            },
+            Some(if open { "Left" } else { "Right" }),
+        );
+        OpenMenu {
+            subject: MenuSubject::Repo {
+                key: key.to_string(),
+                row,
+            },
+            items: menu.items,
+            submenus,
+            modes: Vec::new(),
+            profiles: Vec::new(),
+            commands,
+        }
+    }
+
+    fn shared_menu(&self, name: &str) -> OpenMenu {
+        let config = self.model.context.config();
+        let image = config
+            .as_ref()
+            .and_then(|config| config.shared_services.get(name))
+            .map(|def| def.image.clone())
+            .unwrap_or_default();
+        let running = self.model.shared_running(name);
+        let mut menu = MenuBuilder::new(self.base + MENU_BASE);
+        menu.header(if image.is_empty() {
+            format!("{name} - shared")
+        } else {
+            format!("{name} - {image} - shared")
+        });
+        menu.item(
+            "Open in Tab",
+            MenuAction::SharedLogs,
+            IconKind::File,
+            Some("Enter"),
+        );
+        if running {
+            menu.item(
+                "Restart",
+                MenuAction::Shared(Action::Restart),
+                IconKind::RotateCw,
+                Some("R"),
+            );
+        } else {
+            menu.item(
+                "Start",
+                MenuAction::Shared(Action::Start),
+                IconKind::Play,
+                Some("S"),
+            );
+        }
+        let stop = menu.push(
+            "Stop...".into(),
+            MenuAction::Shared(Action::Stop),
+            Some(IconKind::Stop),
+            Some("S"),
+            !running,
+        );
+        stop.danger = true;
+        menu.item(
+            "View Logs",
+            MenuAction::SharedLogs,
+            IconKind::Terminal,
+            Some("L"),
+        );
+        menu.sep();
+        menu.push(
+            "One container for every workspace: stopping it affects all of them.".into(),
+            MenuAction::Nothing,
+            None,
+            None,
+            true,
+        );
+        OpenMenu {
+            subject: MenuSubject::Shared {
+                name: name.to_string(),
+            },
+            items: menu.items,
+            submenus: Vec::new(),
+            modes: Vec::new(),
+            profiles: Vec::new(),
+            commands: Vec::new(),
+        }
+    }
+
+    /// The header's Environment button, which the repo menu's "Environment..." opens.
+    fn environment_button(&self) -> Option<usize> {
+        self.tab_buttons
+            .iter()
+            .position(|button| button.icon == IconKind::Key)
     }
 
     fn apply_menu(&mut self, menu: OpenMenu, action: MenuAction) {
         let context = self.model.context.clone();
-        let target = menu.target;
-        match action {
-            MenuAction::Run(run) => self.model.run(run, target),
-            MenuAction::Mode(index) => {
+        match (&menu.subject, action) {
+            (_, MenuAction::Nothing) => {}
+            (MenuSubject::Service { target, .. }, MenuAction::Run(run)) => {
+                self.model.run(run, target.clone())
+            }
+            (MenuSubject::Service { target, holder }, MenuAction::OpenTab) => {
+                self.open_tab(target, holder, false)
+            }
+            (MenuSubject::Service { target, holder }, MenuAction::ViewLogs) => {
+                self.open_tab(target, holder, false)
+            }
+            (MenuSubject::Service { target, holder }, MenuAction::Fix) => {
+                let error = self.model.error(holder);
+                let card = Attention {
+                    crash: self.model.crash(holder),
+                    port: error.as_deref().and_then(port_in),
+                    error,
+                    target: target.clone(),
+                    holder: holder.clone(),
+                };
+                self.fix_with_agent(&card);
+            }
+            (MenuSubject::Service { target, .. }, MenuAction::Ask) => {
+                let cwd = if target.is_workspace_level() {
+                    self.root.clone()
+                } else {
+                    self.root.join(&target.repo)
+                };
+                self.requests.push(PanelRequest::FixWithAgent(AgentFix {
+                    prompt: format!(
+                        "Explain the service {} in this workspace: what it runs, how it is configured in \
+                         pom.yml, what it depends on, and anything that looks off.",
+                        service_title(target)
+                    ),
+                    cwd,
+                }));
+            }
+            (MenuSubject::Service { target, .. }, MenuAction::CopyCommand) => {
+                let command = context.config().and_then(|config| {
+                    let service = config
+                        .repos
+                        .get(&target.repo)?
+                        .services
+                        .get(&target.service)?;
+                    let mode = context.runner.mode(&target.repo, &target.service, service);
+                    Some(service.active_cmd(&mode).trim().to_string())
+                });
+                if let Some(command) = command {
+                    self.requests.push(PanelRequest::Copy(command));
+                }
+            }
+            (MenuSubject::Service { target, .. }, MenuAction::Mode(index)) => {
                 let (Some(config), Some(mode)) = (context.config(), menu.modes.get(index)) else {
                     return;
                 };
@@ -1456,31 +1970,75 @@ impl ServicesPanel {
                     .runner
                     .set_mode(&config, &target.repo, &target.service, mode)
                 {
-                    Ok(()) => self.restart_if_running(target),
+                    Ok(()) => self.restart_if_running(target.clone()),
                     Err(error) => self.requests.push(PanelRequest::Toast(error.to_string())),
                 }
             }
-            MenuAction::Profile(index) => {
+            (MenuSubject::Service { target, .. }, MenuAction::Profile(index)) => {
                 let (Some(config), Some(profile)) = (context.config(), menu.profiles.get(index))
                 else {
                     return;
                 };
-                match context.runner.set_env_profile(&config, &target, profile) {
-                    Ok(()) => self.restart_if_running(target),
+                match context.runner.set_env_profile(&config, target, profile) {
+                    Ok(()) => self.restart_if_running(target.clone()),
                     Err(error) => self.requests.push(PanelRequest::Toast(error.to_string())),
                 }
             }
-            MenuAction::OpenUrl => {
-                if let Some(url) = self.url(&target) {
+            (MenuSubject::Service { target, .. }, MenuAction::OpenUrl) => {
+                if let Some(url) = self.url(target) {
                     self.requests.push(PanelRequest::OpenUrl(url));
                 }
             }
-            MenuAction::CopyUrl => {
-                if let Some(url) = self.url(&target) {
+            (MenuSubject::Service { target, .. }, MenuAction::CopyUrl) => {
+                if let Some(url) = self.url(target) {
                     self.requests.push(PanelRequest::Copy(url));
                 }
             }
+            (MenuSubject::Repo { row, .. }, MenuAction::RepoAll(run)) => {
+                for target in self.row_targets(*row) {
+                    let holder = context.runner.holder_name(&target);
+                    let running = self.model.status(&holder) == Status::Running;
+                    let applies = match run {
+                        Action::Start => !running,
+                        _ => running,
+                    };
+                    if applies {
+                        self.model.run(run, target);
+                    }
+                }
+            }
+            (MenuSubject::Repo { .. }, MenuAction::RunCommand(index)) => {
+                if let Some(command) = menu.commands.get(index).cloned() {
+                    self.run_command(&command);
+                }
+            }
+            (MenuSubject::Repo { .. }, MenuAction::Environment) => {
+                if let Some(index) = self.environment_button() {
+                    self.click(self.base + TAB_BUTTON_BASE + index as u64);
+                }
+            }
+            (MenuSubject::Repo { key, .. }, MenuAction::Fold) => self.toggle_group(key.clone()),
+            (MenuSubject::Shared { name }, MenuAction::Shared(run)) => self.run_shared(SharedRun {
+                name: name.clone(),
+                action: run,
+            }),
+            (MenuSubject::Shared { name }, MenuAction::SharedLogs) => {
+                self.open_shared_logs(&name.clone())
+            }
+            _ => {}
         }
+    }
+
+    fn open_menu_for(&mut self, index: usize) -> bool {
+        self.menu = match self.rows.get(index).cloned() {
+            Some(Row::Service { target, holder }) => Some(self.service_menu(&target, &holder)),
+            Some(Row::Group { key, .. }) if key != SHARED_GROUP => {
+                Some(self.repo_menu(&key, index))
+            }
+            Some(Row::Shared { name }) => Some(self.shared_menu(&name)),
+            _ => None,
+        };
+        self.menu.is_some()
     }
 
     /// Each repo's pre-written commands, for repos checked out in this workspace.
@@ -1767,6 +2325,12 @@ impl SidePanelView for ServicesPanel {
             (Row::Service { target, .. }, Control::Restart) => {
                 self.model.run(Action::Restart, target)
             }
+            (Row::Service { target, holder }, Control::Logs) => {
+                self.open_tab(&target, &holder, false)
+            }
+            (_, Control::More) if self.open_menu_for(index) => {
+                self.requests.push(PanelRequest::OpenMenu);
+            }
             (Row::Service { target, .. }, Control::OpenUrl) => {
                 if let Some(url) = self.url(&target) {
                     self.requests.push(PanelRequest::OpenUrl(url));
@@ -1836,67 +2400,32 @@ impl SidePanelView for ServicesPanel {
         let Some((index, _)) = self.decode(id) else {
             return false;
         };
-        self.menu = None;
-        self.repo_menu = None;
-        match self.rows.get(index).cloned() {
-            Some(Row::Service { target, holder }) => {
-                self.menu = Some(self.build_menu(&target, &holder));
-                true
-            }
-            Some(Row::Group { key, .. }) if key != WORKSPACE_GROUP && key != SHARED_GROUP => {
-                let commands = self.repo_commands(Some(&key));
-                if commands.is_empty() {
-                    return false;
-                }
-                self.repo_menu = Some(
-                    commands
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, command)| {
-                            (
-                                MenuItem {
-                                    id: self.base + MENU_BASE + index as u64,
-                                    label: format!("Run: {}", command.label).into(),
-                                    checked: false,
-                                    sep: false,
-                                    disabled: false,
-                                    danger: false,
-                                    icon: None,
-                                },
-                                command,
-                            )
-                        })
-                        .collect(),
-                );
-                true
-            }
-            _ => false,
-        }
+        self.open_menu_for(index)
     }
 
     fn menu_items(&self) -> Vec<MenuItem> {
-        if let Some(items) = &self.repo_menu {
-            return items.iter().map(|(item, _)| item.clone()).collect();
-        }
         self.menu
             .as_ref()
             .map(|menu| menu.items.iter().map(|(item, _)| item.clone()).collect())
             .unwrap_or_default()
     }
 
+    fn submenu_items(&self, id: u64) -> Vec<MenuItem> {
+        self.menu
+            .as_ref()
+            .and_then(|menu| menu.submenus.iter().find(|(parent, _)| *parent == id))
+            .map(|(_, items)| items.iter().map(|(item, _)| item.clone()).collect())
+            .unwrap_or_default()
+    }
+
     fn menu_action(&mut self, item: u64) {
-        if let Some(items) = self.repo_menu.take() {
-            if let Some((_, command)) = items.into_iter().find(|(entry, _)| entry.id == item) {
-                self.run_command(&command);
-            }
-            return;
-        }
         let Some(menu) = self.menu.take() else {
             return;
         };
         let action = menu
             .items
             .iter()
+            .chain(menu.submenus.iter().flat_map(|(_, items)| items.iter()))
             .find(|(entry, _)| entry.id == item)
             .map(|(_, action)| *action);
         if let Some(action) = action {

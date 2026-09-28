@@ -374,6 +374,17 @@ impl ServiceRunner {
             .map(|port| format!("http://{BIND_IP}:{port}"))
     }
 
+    /// The service's dev-proxy address, which forwards to its leased port.
+    pub fn proxy_url(&self, config: &Config, target: &ServiceTarget) -> Option<String> {
+        self.port(config, target)?;
+        let dir = config.repos.get(&target.repo)?;
+        Some(format!(
+            "http://{}:{}",
+            pom_env::service_host(&target.service, alias(&target.repo, dir), &target.branch),
+            pom_env::DEFAULT_PROXY_PORT
+        ))
+    }
+
     fn lease_key(&self, config: &Config, target: &ServiceTarget) -> Option<String> {
         let dir = config.repos.get(&target.repo)?;
         dir.services

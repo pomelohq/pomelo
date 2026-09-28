@@ -1736,6 +1736,7 @@ impl SidePanelView for DatabasePanel {
                 disabled: entry.disabled,
                 danger: entry.danger,
                 icon: menu::icon(&entry.action),
+                hint: None,
             })
             .collect()
     }

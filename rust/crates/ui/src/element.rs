@@ -119,6 +119,7 @@ pub enum IconKind {
     Clock,
     Filter,
     Copy,
+    Ellipsis,
     Trash,
     Column,
     EnginePostgresql,

@@ -198,6 +198,20 @@ pub(crate) fn section(title: &str, count: Option<usize>) -> Node {
     row.into()
 }
 
+/// How long the holder whose pidfile is `pidfile` has been running: "41m 58s", "2h 5m".
+pub(crate) fn uptime(pidfile: &std::path::Path) -> Option<String> {
+    let started = std::fs::metadata(pidfile)
+        .and_then(|meta| meta.modified())
+        .ok()?;
+    let seconds = started.elapsed().ok()?.as_secs();
+    Some(match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86_399 => format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60),
+        _ => format!("{}d {}h", seconds / 86_400, (seconds % 86_400) / 3600),
+    })
+}
+
 /// `node` with the panel's side margin and a gap below it.
 pub(crate) fn inset(node: Node) -> Node {
     div().row().px(8.0).pb(6.0).child(node).into()

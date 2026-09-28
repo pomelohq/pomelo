@@ -322,6 +322,10 @@ pub trait SidePanelView: 'static {
     fn scroll(&mut self, dy: f32) -> bool;
     fn open_menu(&mut self, id: u64) -> bool;
     fn menu_items(&self) -> Vec<crate::MenuItem>;
+    /// The items of submenu `id` (an `is_submenu` id among this panel's open menu's items).
+    fn submenu_items(&self, _id: u64) -> Vec<crate::MenuItem> {
+        Vec::new()
+    }
     fn menu_action(&mut self, item: u64);
     fn take_requests(&mut self) -> Vec<PanelRequest>;
     /// The button (index into the prompt's buttons) picked for the prompt asked with `tag`.

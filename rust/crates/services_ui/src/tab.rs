@@ -189,7 +189,7 @@ impl ServiceTab {
 
     fn url(&self) -> Option<String> {
         let config = self.context.config()?;
-        self.context.runner.url(&config, &self.target)
+        self.context.runner.proxy_url(&config, &self.target)
     }
 
     fn run(&self, action: Action) {

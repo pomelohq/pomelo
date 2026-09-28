@@ -206,56 +206,63 @@ fn the_context_menu_offers_modes_and_profiles_with_the_current_ones_checked() {
     let mut fixture = Fixture::new();
     fixture.panel.render(300.0, 400.0);
     assert!(fixture.panel.open_menu(fixture.id(1, 0)));
-    let items: Vec<(String, bool)> = fixture
+    let labels: Vec<String> = fixture
         .panel
         .menu_items()
         .into_iter()
-        .map(|item| (item.label.to_string(), item.checked))
+        .map(|item| item.label.to_string())
         .collect();
-    let labels: Vec<&str> = items.iter().map(|(label, _)| label.as_str()).collect();
     assert_eq!(
         labels,
         [
+            "api > web",
             "Start",
-            "Use a New Port",
-            "Mode: dev",
-            "Mode: prod",
-            "Env: local",
-            "Env: staging"
+            "Open in Tab",
+            "View Logs",
+            "Use a New Port...",
+            "Mode",
+            "Env",
+            "Copy Command",
+            "Ask Claude About This Service"
         ]
     );
-    let checked: Vec<&str> = items
-        .iter()
-        .filter(|(_, checked)| *checked)
-        .map(|(label, _)| label.as_str())
-        .collect();
-    assert_eq!(checked, ["Mode: dev", "Env: local"]);
+    let submenu = |panel: &ServicesPanel, offset: u64| -> Vec<(String, bool, u64)> {
+        panel
+            .submenu_items(workspace::MENU_SUBMENU_BASE + offset)
+            .into_iter()
+            .map(|item| (item.label.to_string(), item.checked, item.id))
+            .collect()
+    };
+    let checked = |items: &[(String, bool, u64)]| -> Vec<String> {
+        items
+            .iter()
+            .filter(|(_, checked, _)| *checked)
+            .map(|(label, _, _)| label.clone())
+            .collect()
+    };
+    assert_eq!(checked(&submenu(&fixture.panel, 0)), ["dev"]);
+    let envs = submenu(&fixture.panel, 1);
+    assert_eq!(checked(&envs), ["local"]);
 
-    let staging = fixture
-        .panel
-        .menu_items()
-        .into_iter()
-        .find(|item| item.label == "Env: staging")
+    let staging = envs
+        .iter()
+        .find(|(label, _, _)| label == "staging")
         .expect("staging item");
-    fixture.panel.menu_action(staging.id);
+    fixture.panel.menu_action(staging.2);
     assert!(fixture.panel.open_menu(fixture.id(1, 0)));
-    let now_checked: Vec<String> = fixture
-        .panel
-        .menu_items()
-        .into_iter()
-        .filter(|item| item.checked)
-        .map(|item| item.label.to_string())
-        .collect();
-    assert_eq!(now_checked, ["Mode: dev", "Env: staging"]);
+    assert_eq!(checked(&submenu(&fixture.panel, 1)), ["staging"]);
     assert!(
         fixture.panel.open_menu(fixture.id(0, 0)),
-        "a repo row's menu runs its commands"
+        "a repo row has a menu"
     );
-    assert!(fixture
-        .panel
-        .menu_items()
-        .iter()
-        .all(|item| item.label.starts_with("Run: ")));
+    let tasks = submenu(&fixture.panel, 0);
+    assert_eq!(
+        tasks
+            .iter()
+            .map(|(label, _, _)| label.as_str())
+            .collect::<Vec<_>>(),
+        ["Run migrations"]
+    );
 }
 
 #[test]
@@ -454,11 +461,11 @@ fn offers_services_and_repo_commands_in_the_palette_and_the_repo_menu() {
         fixture.panel.open_menu(fixture.id(0, 0)),
         "the repo row has a menu"
     );
-    let items = fixture.panel.menu_items();
+    let items = fixture.panel.submenu_items(workspace::MENU_SUBMENU_BASE);
     let run = items
         .iter()
-        .find(|item| item.label == "Run: Run migrations")
-        .expect("listed");
+        .find(|item| item.label == "Run migrations")
+        .expect("listed under Run Task");
     fixture.panel.menu_action(run.id);
     assert!(matches!(
         fixture.panel.take_requests().first(),

@@ -2437,6 +2437,7 @@ impl WorkspaceView {
             disabled,
             danger: false,
             icon: None,
+            hint: None,
         };
         let mut items = vec![
             entry(crate::MENU_TAB_CLOSE, "Close", false, false),
@@ -2593,6 +2594,7 @@ impl WorkspaceView {
             disabled: false,
             danger: false,
             icon: None,
+            hint: None,
         };
         let mut items = vec![item(crate::MENU_WS_RENAME, "Rename...", false)];
         if project
@@ -2711,6 +2713,17 @@ impl WorkspaceView {
         if target == crate::TAB_MENU_TARGET {
             return self.tab_menu_items();
         }
+        if is_submenu(target) {
+            if let Some(items) = self
+                .layout
+                .side_panels
+                .iter()
+                .map(|panel| panel.submenu_items(target))
+                .find(|items| !items.is_empty())
+            {
+                return items;
+            }
+        }
         if let Some(kind) = Self::side_menu_kind(target) {
             return self
                 .layout
@@ -2728,6 +2741,7 @@ impl WorkspaceView {
             disabled: false,
             danger: false,
             icon: None,
+            hint: None,
         };
         let item = |id: u64, label: &'static str, sep: bool| MenuItem {
             id,
@@ -2737,6 +2751,7 @@ impl WorkspaceView {
             disabled: false,
             danger: false,
             icon: None,
+            hint: None,
         };
         let disabled = |id: u64, label: &'static str, sep: bool, disabled: bool| MenuItem {
             id,
@@ -2746,6 +2761,7 @@ impl WorkspaceView {
             disabled,
             danger: false,
             icon: None,
+            hint: None,
         };
         if target == MENU_SUBMENU_COPY {
             return vec![
@@ -2842,6 +2858,7 @@ impl WorkspaceView {
                         disabled: false,
                         danger: false,
                         icon: None,
+                        hint: None,
                     }),
             )
             .collect();
@@ -2858,6 +2875,7 @@ impl WorkspaceView {
                     disabled: false,
                     danger: false,
                     icon: None,
+                    hint: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2867,6 +2885,7 @@ impl WorkspaceView {
                     disabled: false,
                     danger: false,
                     icon: None,
+                    hint: None,
                 },
             ]
         } else if target == AGENT_TOGGLE {
@@ -2880,6 +2899,7 @@ impl WorkspaceView {
                     disabled: false,
                     danger: false,
                     icon: None,
+                    hint: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2889,6 +2909,7 @@ impl WorkspaceView {
                     disabled: false,
                     danger: false,
                     icon: None,
+                    hint: None,
                 },
                 hide,
             ]
@@ -2903,6 +2924,7 @@ impl WorkspaceView {
                     disabled: false,
                     danger: false,
                     icon: None,
+                    hint: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2912,6 +2934,7 @@ impl WorkspaceView {
                     disabled: false,
                     danger: false,
                     icon: None,
+                    hint: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_BOTTOM,
@@ -2921,6 +2944,7 @@ impl WorkspaceView {
                     disabled: false,
                     danger: false,
                     icon: None,
+                    hint: None,
                 },
                 hide,
             ]
@@ -2940,6 +2964,7 @@ impl WorkspaceView {
                     disabled: false,
                     danger: false,
                     icon: None,
+                    hint: None,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -2949,6 +2974,7 @@ impl WorkspaceView {
                     disabled: false,
                     danger: false,
                     icon: None,
+                    hint: None,
                 },
                 hide,
             ]

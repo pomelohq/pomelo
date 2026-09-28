@@ -7,6 +7,6 @@ pub use branch::{
     workspace_label, ws_key,
 };
 pub use resolver::{
-    http_to_ws, EnvSources, ResolveContext, SlotAllocation, BIND_IP, DEFAULT_PROXY_PORT,
-    DEV_PROXY_PREFIX,
+    http_to_ws, service_host, EnvSources, ResolveContext, SlotAllocation, BIND_IP,
+    DEFAULT_PROXY_PORT, DEV_PROXY_PREFIX,
 };

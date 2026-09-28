@@ -8,6 +8,14 @@ pub const BIND_IP: &str = "127.0.0.1";
 pub const DEFAULT_PROXY_PORT: u16 = 8767;
 pub const DEV_PROXY_PREFIX: &str = "/_pom_dev";
 const LOCAL_DOMAIN: &str = "localhost";
+
+/// The dev proxy's host for `service` of repo `alias` in the workspace on `branch`.
+pub fn service_host(service: &str, alias: &str, branch: &str) -> String {
+    format!(
+        "{service}.{alias}.{}.{LOCAL_DOMAIN}",
+        workspace_label(branch)
+    )
+}
 const LOCAL_PROFILE: &str = "local";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -144,10 +152,7 @@ impl ResolveContext<'_> {
                 _ => None,
             };
         }
-        let host = format!(
-            "{service}.{alias}.{}.{LOCAL_DOMAIN}",
-            workspace_label(self.branch)
-        );
+        let host = service_host(service, &alias, self.branch);
         match field {
             "port" => Some(self.service_port(dir, &alias, service).to_string()),
             "host" => Some(host),
