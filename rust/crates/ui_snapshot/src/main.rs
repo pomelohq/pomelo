@@ -1564,7 +1564,6 @@ fn main() -> anyhow::Result<()> {
                         ("main".into(), "$6.23".into()),
                     ],
                 }),
-                updating_to: None,
             };
             let (w, h) = (lw * 2.0, lh * 2.0);
             entity.update(app.app_mut(), |view, _| {
@@ -1800,6 +1799,25 @@ fn main() -> anyhow::Result<()> {
                 view.toggle_workspace_op(1);
             });
         }
+        if let Ok(which) = std::env::var("UPDATESTATE") {
+            let snapshot = update_snapshot(&which);
+            entity.update(app.app_mut(), |view, _| {
+                view.set_update(auto_update_ui::update_info(&snapshot));
+                if which == "updated" {
+                    let (title, message, button) = auto_update_ui::updated_notification("0.7.4");
+                    view.notify_release_notes(title, message, button);
+                }
+            });
+            if std::env::var("UPDATEHOVER").is_ok() {
+                app.draw(handle).expect("frame");
+                if let Some((x, y)) = app
+                    .window(handle)
+                    .and_then(|window| window.center_of(workspace::UPDATE_BUTTON))
+                {
+                    entity.update(app.app_mut(), |view, _| view.mouse_move(x, y));
+                }
+            }
+        }
         // Background work (the diff's hunks) settles over a few frames.
         for _ in 0..40 {
             app.draw(handle).expect("frame");
@@ -2008,12 +2026,23 @@ fn main() -> anyhow::Result<()> {
                 Vec::new()
             },
         },
-        general: settings_ui::GeneralPage {
-            start_at_login: false,
-            version: env!("CARGO_PKG_VERSION").into(),
-            updates_apply: live,
-            update_note: std::env::var("UPDATENOTE").ok(),
-            update_busy: false,
+        general: {
+            let row = std::env::var("UPDATESTATE").ok().map(|which| {
+                auto_update_ui::settings_row(
+                    &update_snapshot(&which),
+                    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(12 * 60),
+                )
+            });
+            settings_ui::GeneralPage {
+                start_at_login: false,
+                version: env!("CARGO_PKG_VERSION").into(),
+                updates_apply: live || row.is_some(),
+                update_note: row
+                    .as_ref()
+                    .map(|row| row.note.clone())
+                    .or_else(|| std::env::var("UPDATENOTE").ok()),
+                update_button: row.map(|row| (row.button, row.enabled)),
+            }
         },
         keymap: settings_ui::KeymapPage {
             rows: workspace::keymap::Action::ALL
@@ -2154,5 +2183,29 @@ impl pom_db::object_storage::HttpTransport for SnapshotStorage {
             ],
             body: b"[\n  { \"id\": 5120, \"status\": \"paid\", \"total_cents\": 4900 },\n  { \"id\": 5119, \"status\": \"refunded\", \"total_cents\": 1200 }\n]\n".to_vec(),
         })
+    }
+}
+
+fn update_snapshot(which: &str) -> auto_update::Snapshot {
+    use auto_update::Status;
+    let version = || "0.7.4".to_string();
+    let status = match which {
+        "checking" => Status::Checking,
+        "uptodate" => Status::UpToDate,
+        "downloading" => Status::Downloading {
+            version: version(),
+            progress: Some(0.45),
+        },
+        "verifying" => Status::Verifying { version: version() },
+        "ready" | "dismissed" => Status::Ready { version: version() },
+        "failed" => Status::Failed("the download's signature did not verify".into()),
+        _ => Status::Idle,
+    };
+    auto_update::Snapshot {
+        status,
+        manual: true,
+        dismissed: which == "dismissed",
+        supported: true,
+        last_checked: Some(std::time::SystemTime::UNIX_EPOCH),
     }
 }

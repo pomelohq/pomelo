@@ -1763,8 +1763,7 @@ pub struct GeneralPage {
     pub updates_apply: bool,
     /// What the last check found (checking, up to date, downloading, or why it failed).
     pub update_note: Option<String>,
-    /// A check or a download is under way, so the button waits.
-    pub update_busy: bool,
+    pub update_button: Option<(&'static str, bool)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1811,17 +1810,8 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
             }),
             PageItem::Header("Updates"),
             PageItem::Row(SettingRow {
-                title: "Version".into(),
-                description: "The build you are running.".into(),
-                control: Control::Value {
-                    text: general.version.clone(),
-                },
-                reset: None,
-            }),
-            PageItem::Row(SettingRow {
                 title: "Check for Updates Automatically".into(),
-                description: "On launch, download and install a newer release, then relaunch."
-                    .into(),
+                description: "Every hour, quietly. Nothing installs until you restart.".into(),
                 control: Control::Toggle {
                     id: CTRL_AUTO_UPDATE,
                     on: s.auto_update,
@@ -1829,7 +1819,7 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
                 reset: reset_if_changed(CTRL_AUTO_UPDATE, s),
             }),
             PageItem::Row(SettingRow {
-                title: "Check Now".into(),
+                title: format!("Pomelo {}", general.version).into(),
                 description: match (&general.update_note, general.updates_apply) {
                     (Some(note), true) => note.clone().into(),
                     (None, true) => "Looks for a newer release right away.".into(),
@@ -1839,8 +1829,11 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
                 },
                 control: Control::Button {
                     id: CTRL_CHECK_UPDATES,
-                    label: "Check for Updates",
-                    enabled: general.updates_apply && !general.update_busy,
+                    label: general
+                        .update_button
+                        .map_or("Check Now", |(label, _)| label),
+                    enabled: general.updates_apply
+                        && general.update_button.is_none_or(|(_, enabled)| enabled),
                 },
                 reset: None,
             }),
@@ -3233,7 +3226,7 @@ mod tests {
                 version: "0.9.0".into(),
                 updates_apply: false,
                 update_note: None,
-                update_busy: false,
+                update_button: None,
             },
             keymap: KeymapPage {
                 rows: vec![(
@@ -3246,7 +3239,11 @@ mod tests {
             ..PageState::default()
         };
         let general = texts_of(GENERAL, &state, &settings);
-        for expected in ["Start at Login", "0.9.0", "Check for Updates Automatically"] {
+        for expected in [
+            "Start at Login",
+            "Pomelo 0.9.0",
+            "Check for Updates Automatically",
+        ] {
             assert!(general.iter().any(|t| t.text == expected), "{expected}");
         }
         let editor = texts_of(EDITOR, &state, &settings);

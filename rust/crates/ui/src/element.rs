@@ -105,6 +105,8 @@ pub enum IconKind {
     Play,
     Stop,
     RotateCw,
+    Download,
+    LoadCircle,
     SquarePlus,
     SquareDot,
     SquareMinus,

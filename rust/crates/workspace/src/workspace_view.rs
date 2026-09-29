@@ -77,6 +77,7 @@ pub struct WorkspaceEffects {
     pub action: Option<crate::keymap::Action>,
     /// The usage card's Refresh Now.
     pub refresh_usage: bool,
+    pub update: Option<crate::UpdateAction>,
 }
 
 /// What the WORKSPACES panel asked for: the new-workspace form, an action on a row (an index into
@@ -146,6 +147,7 @@ enum NotificationAction {
     OpenFile(std::path::PathBuf, Option<u32>),
     FixSetup,
     RestartStale,
+    ReleaseNotes,
 }
 
 /// A zoomed group drawn over the workspace: its frame (with the border on `sides`) and the content inside it.
@@ -1042,6 +1044,26 @@ impl WorkspaceView {
             primary: Some("Restart".into()),
             action: Some(NotificationAction::RestartStale),
         });
+    }
+
+    pub fn notify_release_notes(&mut self, title: String, message: String, button: &str) {
+        self.notification = Some(Notification {
+            title,
+            message,
+            primary: Some(button.into()),
+            action: Some(NotificationAction::ReleaseNotes),
+        });
+    }
+
+    pub fn open_markdown_preview(&mut self, path: &std::path::Path) -> bool {
+        if self.layout.files_view.is_none() {
+            return false;
+        }
+        self.open_file(path);
+        self.layout
+            .files_view
+            .as_mut()
+            .is_some_and(|files| files.editor_key(EditKey::OpenMarkdownPreview, false))
     }
 
     pub fn set_ai_available(&mut self, available: bool) {
@@ -2004,6 +2026,11 @@ impl WorkspaceView {
         });
 
         let header = self.layout.header(w, self.session_menu_hover);
+        let update_tip = self.session_menu_hover.and_then(|hovered| {
+            let text = crate::update::tooltip(self.layout.update.button.as_ref()?, hovered)?;
+            let (rect, _) = header.hits.iter().find(|(_, id)| *id == hovered)?;
+            Some(tooltip(*rect, text, w))
+        });
         let mut header_hits = header.hits.clone();
         header_hits.extend(panel_hits);
         header_hits.extend(status_hits);
@@ -2300,7 +2327,7 @@ impl WorkspaceView {
             }
         }
 
-        for t in [status_tip, rail_tip].into_iter().flatten() {
+        for t in [status_tip, rail_tip, update_tip].into_iter().flatten() {
             overlays.push(Overlay {
                 painted: t,
                 clip: None,
@@ -3743,6 +3770,14 @@ impl WorkspaceView {
         ));
     }
 
+    pub fn set_update(&mut self, update: crate::UpdateInfo) -> bool {
+        if self.layout.update == update {
+            return false;
+        }
+        self.layout.update = update;
+        true
+    }
+
     pub fn set_usage(&mut self, usage: crate::UsageInfo) -> bool {
         if self.layout.usage == usage {
             return false;
@@ -3819,14 +3854,14 @@ impl WorkspaceView {
             });
             items.push(item);
         }
-        if let Some(version) = &self.layout.usage.updating_to {
+        if let Some(update) = &self.layout.update.menu {
             let mut item = entry(
-                crate::MENU_APP_UPDATING,
-                format!("Updating to {version}..."),
+                crate::MENU_APP_UPDATE,
+                update.label.clone(),
                 !items.is_empty(),
                 None,
             );
-            item.disabled = true;
+            item.disabled = !update.enabled;
             items.push(item);
         }
         let first = !items.is_empty();
@@ -3858,6 +3893,12 @@ impl WorkspaceView {
             crate::MENU_SUBMENU_LAYOUT,
             "Panel Layout".into(),
             false,
+            None,
+        ));
+        items.push(entry(
+            crate::MENU_APP_RELEASE_NOTES,
+            "Release Notes".into(),
+            true,
             None,
         ));
         items
@@ -3893,6 +3934,18 @@ impl WorkspaceView {
                 }
                 crate::MENU_APP_THEME => {
                     self.pending.action = Some(crate::keymap::Action::CycleTheme)
+                }
+                crate::MENU_APP_UPDATE => {
+                    self.pending.update = self
+                        .layout
+                        .update
+                        .menu
+                        .as_ref()
+                        .filter(|item| item.enabled)
+                        .map(|item| item.action)
+                }
+                crate::MENU_APP_RELEASE_NOTES => {
+                    self.pending.update = Some(crate::UpdateAction::ReleaseNotes)
                 }
                 _ => {}
             }
@@ -6522,6 +6575,15 @@ impl WorkspaceView {
             if openable && Some(index) != self.layout.current_session {
                 self.pending.session = Some(SessionRequest::Switch(index));
             }
+        } else if id == crate::UPDATE_BUTTON {
+            self.pending.update = self
+                .layout
+                .update
+                .button
+                .as_ref()
+                .and_then(|button| button.click);
+        } else if id == crate::UPDATE_DISMISS {
+            self.pending.update = Some(crate::UpdateAction::Dismiss);
         } else if id == crate::USAGE_CHIP {
             self.toggle_usage_popover(false);
         } else if id == crate::USAGE_STATUS {
@@ -6696,6 +6758,9 @@ impl WorkspaceView {
                 }
                 Some(NotificationAction::FixSetup) => self.pending.fix_setup = true,
                 Some(NotificationAction::RestartStale) => self.pending.restart_stale = true,
+                Some(NotificationAction::ReleaseNotes) => {
+                    self.pending.update = Some(crate::UpdateAction::ReleaseNotes)
+                }
                 None => {}
             }
         }

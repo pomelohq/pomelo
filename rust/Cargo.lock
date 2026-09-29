@@ -270,6 +270,7 @@ version = "0.7.3"
 dependencies = [
  "auto_update",
  "ui",
+ "workspace",
 ]
 
 [[package]]
@@ -3483,6 +3484,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "auto_update",
+ "auto_update_ui",
  "block2",
  "database_ui",
  "environment_ui",
@@ -5445,6 +5447,8 @@ version = "0.7.3"
 dependencies = [
  "agent_usage_ui",
  "anyhow",
+ "auto_update",
+ "auto_update_ui",
  "database_ui",
  "environment_ui",
  "files",

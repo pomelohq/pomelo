@@ -17,6 +17,8 @@ pull_request_ui = { path = "../pull_request_ui" }
 ui = { path = "../ui" }
 settings = { path = "../settings" }
 settings_ui = { path = "../settings_ui" }
+auto_update = { path = "../auto_update" }
+auto_update_ui = { path = "../auto_update_ui" }
 workspace = { path = "../workspace" }
 git_ui = { path = "../git_ui" }
 files = { path = "../files" }

@@ -3,7 +3,7 @@ name = "auto_update"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Self-update for the release bundle: check GitHub Releases, download, swap, relaunch."
+description = "Self-update for the release bundle: check GitHub Releases, download and stage, install on restart or quit."
 
 [lib]
 path = "src/auto_update.rs"
