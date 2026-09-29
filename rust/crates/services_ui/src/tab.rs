@@ -31,9 +31,11 @@ const WRAP: u64 = 13;
 const CLEAR_FILTER: u64 = 14;
 const MORE: u64 = 15;
 const LOG_ROW_H: f32 = 20.0;
-const TIME_W: f32 = 64.0;
+const TIME_W: f32 = 76.0;
+const LINE_H: f32 = 17.5;
 const MODE_BASE: u64 = 16;
 const PROFILE_BASE: u64 = 32;
+const CONSOLE: u64 = 63;
 const IDS_PER_TAB: u64 = 64;
 /// Toolbar ids sit far above every panel's and pane group's ids.
 const TOOLBAR_IDS: u64 = 1 << 50;
@@ -55,11 +57,17 @@ pub(crate) struct ServiceItem {
     showing: Showing,
     /// Follows the service's output off screen; its lines are what the tab lists.
     terminal: Option<terminal::Terminal>,
+    console: Option<terminal_ui::TerminalItem>,
+    console_top: f32,
+    focused: bool,
     lines: Vec<LogLine>,
     /// Lines shown while paused (the rest wait).
     paused_at: Option<usize>,
     follow: bool,
     wrap: bool,
+    scroll_x: f32,
+    widest: f32,
+    text_w: f32,
     filter: TextField,
     filter_focused: bool,
     /// The first line listed when not following (an index into the filtered lines).
@@ -130,10 +138,16 @@ impl ServiceItem {
             base: TOOLBAR_IDS + number * IDS_PER_TAB,
             showing: Showing::Leftover,
             terminal: None,
+            console: None,
+            console_top: 0.0,
+            focused: false,
             lines: Vec::new(),
             paused_at: None,
             follow: true,
             wrap: false,
+            scroll_x: 0.0,
+            widest: 0.0,
+            text_w: 0.0,
             filter: {
                 let mut field = TextField::default();
                 field.set_font_size(12.0);
@@ -163,6 +177,19 @@ impl ServiceItem {
         }
         self.showing = wanted;
         let (options, waker) = self.console(wanted);
+        self.console = match (&wanted, &options.holder) {
+            (Showing::Live, Some(holder)) => terminal_ui::TerminalItem::service_console(
+                self.base + CONSOLE,
+                self.root.clone(),
+                self.holder.clone(),
+                self.target.service.clone(),
+                holder.clone(),
+                waker.clone(),
+            )
+            .map_err(|error| eprintln!("services: console: {error}"))
+            .ok(),
+            _ => None,
+        };
         match terminal::Terminal::spawn(options, waker) {
             Ok(mut terminal) => {
                 terminal.set_size(terminal::TerminalBounds {
@@ -258,8 +285,17 @@ impl ServiceItem {
             .h_px(height)
             .bg(colors.editor_background)
             .child(top)
-            .child(self.log_list(&shown, width, list_h))
+            .child(if self.console_shown() {
+                self.console_top = used;
+                div().h_px(list_h).into()
+            } else {
+                self.log_list(&shown, width, list_h)
+            })
             .into()
+    }
+
+    fn console_shown(&self) -> bool {
+        self.console.is_some() && self.filter.text().is_empty()
     }
 
     fn log_list(&mut self, shown: &[usize], width: f32, height: f32) -> Node {
@@ -284,15 +320,14 @@ impl ServiceItem {
                 .child(label(note).size(12.5).color(colors.text_placeholder))
                 .into();
         }
+        if !self.wrap {
+            return self.unwrapped_list(shown, &query, text_w, height);
+        }
         let mut used = 0.0;
         for index in shown.iter().skip(self.top) {
             let line = &self.lines[*index];
-            let row = log_row(line, &query, text_w, self.wrap);
-            let row_h = if self.wrap {
-                ui::measure(&row).1.max(LOG_ROW_H)
-            } else {
-                LOG_ROW_H
-            };
+            let row = log_row(line, &query, text_w);
+            let row_h = ui::measure(&row).1;
             if used + row_h > height - 4.0 {
                 break;
             }
@@ -300,6 +335,82 @@ impl ServiceItem {
             list = list.child(row);
         }
         list.into()
+    }
+
+    fn unwrapped_list(&mut self, shown: &[usize], query: &str, text_w: f32, height: f32) -> Node {
+        let colors = theme();
+        let rows: Vec<usize> = shown
+            .iter()
+            .skip(self.top)
+            .take(self.visible_rows)
+            .copied()
+            .collect();
+        let scale = ui::ui_text_scale();
+        self.widest = rows
+            .iter()
+            .map(|index| ui::measure_text_width(&self.lines[*index].text, 12.5, true, 400) / scale)
+            .fold(0.0, f32::max);
+        self.text_w = text_w;
+        self.scroll_x = self
+            .scroll_x
+            .clamp(0.0, (self.widest - text_w).max(0.0))
+            .round();
+        let mut times = div().col().w_px(TIME_W);
+        let mut texts = div().col().w_px(self.widest.max(text_w));
+        for index in &rows {
+            let line = &self.lines[*index];
+            times = times.child(
+                div().row().h_px(LOG_ROW_H).items_center().child(
+                    label(line.time.clone().unwrap_or_default())
+                        .size(12.5)
+                        .mono()
+                        .color(colors.text_placeholder),
+                ),
+            );
+            texts = texts.child(
+                div()
+                    .row()
+                    .h_px(LOG_ROW_H)
+                    .items_center()
+                    .child(log_text(line, query, None)),
+            );
+        }
+        let rows_h = rows.len() as f32 * LOG_ROW_H;
+        let content_w = self.widest.max(text_w);
+        let viewport = div().col().w_px(text_w).h_px(rows_h).pin(
+            ui::Corner::TopLeft,
+            -self.scroll_x,
+            0.0,
+            content_w,
+            rows_h,
+            texts,
+        );
+        let clipped = div().col().w_px(text_w).h_px(rows_h).pin(
+            ui::Corner::TopLeft,
+            0.0,
+            0.0,
+            text_w,
+            rows_h,
+            ui::deferred(viewport).clip(),
+        );
+        div()
+            .col()
+            .h_px(height)
+            .px(14.0)
+            .pt(4.0)
+            .child(div().row().child(times).child(clipped))
+            .into()
+    }
+
+    fn scroll_sideways(&mut self, delta_x: f32) -> bool {
+        if self.wrap {
+            return false;
+        }
+        let max = (self.widest - self.text_w).max(0.0);
+        let left = (self.scroll_x - delta_x).clamp(0.0, max).round();
+        let moved = left != self.scroll_x;
+        self.scroll_x = left;
+        moved
     }
 }
 
@@ -871,7 +982,10 @@ impl ServiceItem {
                 };
             }
             FOLLOW => self.follow = !self.follow,
-            WRAP => self.wrap = !self.wrap,
+            WRAP => {
+                self.wrap = !self.wrap;
+                self.scroll_x = 0.0;
+            }
             OPEN_ENV => {
                 let file = self.context.config().and_then(|config| {
                     let dir = config.repos.get(&self.target.repo)?;
@@ -943,12 +1057,38 @@ impl Item for ServiceItem {
         div().into()
     }
 
-    fn paint_body(&mut self, body: Rect, _focused: bool) -> Option<ui::Painted> {
+    fn paint_body(&mut self, body: Rect, focused: bool) -> Option<ui::Painted> {
         let scale = ui::ui_text_scale();
         let tree = self.tree(body.w / scale, body.h / scale);
-        let painted = ui::render(&tree, body);
+        let mut painted = ui::render(&tree, body);
         self.hits = painted.hits.clone();
+        if self.console_shown() {
+            let top = self.console_top * scale;
+            let area = Rect::new(
+                body.x,
+                body.y + top,
+                body.w,
+                (body.h - top).max(0.0),
+                Rgba::TRANSPARENT,
+            );
+            if let Some(console) = self.console.as_mut() {
+                if let Some(shell) = console.paint_body(area, focused && !self.filter_focused) {
+                    painted.rects.extend(shell.rects);
+                    painted.tris.extend(shell.tris);
+                    painted.texts.extend(shell.texts);
+                    painted.icons.extend(shell.icons);
+                    painted.hits.extend(shell.hits);
+                }
+            }
+        }
         Some(painted)
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+        if let Some(console) = self.console.as_mut() {
+            console.set_focused(focused);
+        }
     }
 
     fn wants_keystrokes(&self) -> bool {
@@ -960,6 +1100,11 @@ impl Item for ServiceItem {
         if cmd && keystroke.key == "f" {
             self.filter_focused = true;
             return TerminalKeyOutcome::Handled;
+        }
+        if !self.filter_focused && self.console_shown() {
+            if let Some(console) = self.console.as_mut() {
+                return console.keystroke(keystroke);
+            }
         }
         if !self.filter_focused {
             return match keystroke.key.as_str() {
@@ -989,13 +1134,24 @@ impl Item for ServiceItem {
 
     fn input_text(&mut self, text: &str) {
         if !self.filter_focused {
+            if self.console_shown() {
+                if let Some(console) = self.console.as_mut() {
+                    console.input_text(text);
+                }
+            }
             return;
         }
         let typed: String = text.chars().filter(|c| !c.is_control()).collect();
         self.filter.insert(&typed);
     }
 
-    fn paste(&mut self, text: &str, _slices: Option<&[workspace::ClipboardSlice]>) {
+    fn paste(&mut self, text: &str, slices: Option<&[workspace::ClipboardSlice]>) {
+        if !self.filter_focused && self.console_shown() {
+            if let Some(console) = self.console.as_mut() {
+                workspace::Item::paste(console, text, slices);
+            }
+            return;
+        }
         if self.filter_focused {
             let line: String = text.chars().filter(|c| !c.is_control()).collect();
             self.filter.insert(&line);
@@ -1013,7 +1169,7 @@ impl Item for ServiceItem {
         ours
     }
 
-    fn pointer_down(&mut self, x: f32, y: f32, _click_count: u32, _modifiers: Modifiers) -> bool {
+    fn pointer_down(&mut self, x: f32, y: f32, click_count: u32, modifiers: Modifiers) -> bool {
         let hit = self
             .hits
             .iter()
@@ -1024,12 +1180,54 @@ impl Item for ServiceItem {
             .map(|(_, id)| *id);
         match hit {
             Some(id) => self.click(id),
-            None => self.filter_focused = false,
+            None => {
+                self.filter_focused = false;
+                if self.console_shown() {
+                    if let Some(console) = self.console.as_mut() {
+                        console.pointer_down(x, y, click_count, modifiers);
+                    }
+                }
+            }
         }
         true
     }
 
-    fn pointer_scroll(&mut self, _x: f32, _y: f32, delta_y: f32, _modifiers: Modifiers) -> bool {
+    fn pointer_drag(&mut self, x: f32, y: f32, modifiers: Modifiers) -> bool {
+        match self.console.as_mut() {
+            Some(console) if self.filter.text().is_empty() => console.pointer_drag(x, y, modifiers),
+            _ => false,
+        }
+    }
+
+    fn pointer_move(&mut self, x: f32, y: f32, modifiers: Modifiers, focused: bool) -> bool {
+        match self.console.as_mut() {
+            Some(console) if self.filter.text().is_empty() => {
+                console.pointer_move(x, y, modifiers, focused)
+            }
+            _ => false,
+        }
+    }
+
+    fn pointer_up(&mut self, x: f32, y: f32, modifiers: Modifiers) {
+        if let Some(console) = self.console.as_mut() {
+            console.pointer_up(x, y, modifiers);
+        }
+    }
+
+    fn pointer_scroll_x(&mut self, _x: f32, _y: f32, delta_x: f32) -> bool {
+        self.scroll_sideways(delta_x)
+    }
+
+    fn pointer_scroll(&mut self, x: f32, y: f32, delta_y: f32, modifiers: Modifiers) -> bool {
+        if self.console_shown() {
+            return self
+                .console
+                .as_mut()
+                .is_some_and(|console| console.pointer_scroll(x, y, delta_y, modifiers));
+        }
+        if modifiers.shift {
+            return self.scroll_sideways(delta_y);
+        }
         let rows = (delta_y / LOG_ROW_H).round() as isize;
         if rows == 0 {
             return false;
@@ -1044,8 +1242,12 @@ impl Item for ServiceItem {
         moved
     }
 
-    fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
+    fn tick(&mut self, clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
         self.respawn();
+        let shell_changed = self
+            .console
+            .as_mut()
+            .is_some_and(|console| console.tick(clipboard).changed);
         let host = LogHost {
             palette: terminal_ui::palette(&theme()),
         };
@@ -1055,7 +1257,7 @@ impl Item for ServiceItem {
         });
         let changed = synced && self.refresh_lines();
         ItemTick {
-            changed: changed || self.state().0 == State::Running,
+            changed: changed || shell_changed || self.state().0 == State::Running,
             ..ItemTick::default()
         }
     }
@@ -1180,7 +1382,7 @@ impl ServiceItem {
         } else {
             format!("{shown} matching")
         };
-        div()
+        let mut bar = div()
             .row()
             .h_px(40.0)
             .px(14.0)
@@ -1188,7 +1390,18 @@ impl ServiceItem {
             .items_center()
             .child(title)
             .child(div().w_px(4.0))
-            .child(field)
+            .child(field);
+        if self.console_shown() {
+            return bar
+                .child(div().flex(1.0))
+                .child(
+                    label("type to use the console")
+                        .size(11.5)
+                        .color(colors.text_placeholder),
+                )
+                .into();
+        }
+        bar = bar
             .child(toggle(
                 PAUSE,
                 if self.paused_at.is_some() {
@@ -1206,8 +1419,8 @@ impl ServiceItem {
                 "Follow".into(),
                 self.follow,
             ))
-            .child(toggle(WRAP, IconKind::Return, "Wrap".into(), self.wrap))
-            .child(div().flex(1.0))
+            .child(toggle(WRAP, IconKind::Return, "Wrap".into(), self.wrap));
+        bar.child(div().flex(1.0))
             .child(label(count).size(11.5).color(colors.text_placeholder))
             .into()
     }
@@ -1262,9 +1475,26 @@ impl ServiceItem {
     }
 }
 
-/// One listed line: the time it came in, then its text with what the filter matched highlighted. Errors
-/// and warnings keep their color.
-fn log_row(line: &LogLine, query: &str, width: f32, wrap: bool) -> Node {
+fn log_row(line: &LogLine, query: &str, width: f32) -> Node {
+    let colors = theme();
+    let body = log_text(line, query, Some(width));
+    div()
+        .row()
+        .gap(0.0)
+        .pb(LOG_ROW_H - LINE_H)
+        .child(
+            div().row().w_px(TIME_W).h_px(LINE_H).items_center().child(
+                label(line.time.clone().unwrap_or_default())
+                    .size(12.5)
+                    .mono()
+                    .color(colors.text_placeholder),
+            ),
+        )
+        .child(div().col().w_px(width).child(body))
+        .into()
+}
+
+fn log_text(line: &LogLine, query: &str, wrap: Option<f32>) -> Node {
     let colors = theme();
     let lower = line.text.to_lowercase();
     let tint = if ["error", "exception", "fatal", "panic"]
@@ -1300,34 +1530,14 @@ fn log_row(line: &LogLine, query: &str, width: f32, wrap: bool) -> Node {
         rest_lower = &rest_lower[at + query.len()..];
     }
     let tail = label(rest.to_string()).size(12.5).mono().color(tint);
-    let body: Node = if query.is_empty() {
-        let whole = label(line.text.clone()).size(12.5).mono().color(tint);
-        if wrap {
-            whole.wrap(width).into()
-        } else {
-            whole.truncate().into()
-        }
-    } else {
-        text.child(tail).into()
-    };
-    div()
-        .row()
-        .gap(0.0)
-        .child(
-            div()
-                .row()
-                .w_px(TIME_W)
-                .h_px(LOG_ROW_H)
-                .items_center()
-                .child(
-                    label(line.time.clone().unwrap_or_default())
-                        .size(12.5)
-                        .mono()
-                        .color(colors.text_placeholder),
-                ),
-        )
-        .child(div().row().w_px(width).items_center().child(body))
-        .into()
+    if !query.is_empty() {
+        return text.child(tail).into();
+    }
+    let whole = label(line.text.clone()).size(12.5).mono().color(tint);
+    match wrap {
+        Some(width) => whole.wrap(width).into(),
+        None => whole.into(),
+    }
 }
 
 /// The local wall clock as "15:41:44".
