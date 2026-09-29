@@ -1356,7 +1356,10 @@ fn main() -> anyhow::Result<()> {
                     workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 8);
                 }
             } else {
-                workspace::WindowModal::text(&mut modal, "Fix checkout page");
+                workspace::WindowModal::text(
+                    &mut modal,
+                    &std::env::var("SNAPNAME").unwrap_or_else(|_| "Fix checkout page".into()),
+                );
                 workspace::WindowModal::click(&mut modal, workspace::WINDOW_MODAL_BASE + 101);
             }
             entity.update(app.app_mut(), |view, _| {
@@ -1442,7 +1445,10 @@ fn main() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
             };
-            workspace::WindowModal::text(&mut modal, "Fix checkout page");
+            workspace::WindowModal::text(
+                &mut modal,
+                &std::env::var("SNAPNAME").unwrap_or_else(|_| "Fix checkout page".into()),
+            );
             settle(&mut modal);
             let branch_box = workspace::WINDOW_MODAL_BASE + 300;
             workspace::WindowModal::click(&mut modal, branch_box + 1);

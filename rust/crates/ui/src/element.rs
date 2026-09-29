@@ -665,6 +665,7 @@ pub struct Anchored {
     /// (trigger height, gap) in design px: drop below the flow position, or above the trigger when that runs
     /// past the viewport's bottom and the top has room.
     flip: Option<(f32, f32)>,
+    keep_x_visible: Option<f32>,
 }
 
 /// An overlay anchored at an explicit window position (top-left). Chain `.position`, `.size`, `.priority`,
@@ -679,6 +680,7 @@ pub fn anchored() -> Anchored {
         clip_rect: None,
         snap: false,
         flip: None,
+        keep_x_visible: None,
     }
 }
 
@@ -717,6 +719,11 @@ impl Anchored {
     /// the full content height, but clip to the visible band.
     pub fn clip_rect(mut self, x: f32, y: f32, w: f32, h: f32) -> Self {
         self.clip_rect = Some(Rect::new(x, y, w, h, Rgba::TRANSPARENT));
+        self
+    }
+    pub fn keep_x_visible(mut self, x: f32) -> Self {
+        self.keep_x_visible = Some(x);
+        self.clip = true;
         self
     }
     /// Keep the child inside the window bounds instead of overflowing off-screen.
@@ -767,6 +774,7 @@ fn intrinsic(node: &Node) -> (f32, f32) {
 fn child_main(node: &Node, parent: Axis) -> (Len, f32) {
     match node {
         Node::Div(d) => (if parent == Axis::Row { d.w } else { d.h }, d.grow),
+        Node::Anchored(a) if a.keep_x_visible.is_some() && parent == Axis::Row => (Len::Auto, 1.0),
         Node::Label(_) | Node::Icon(_) | Node::Anchored(_) => (Len::Auto, 0.0),
     }
 }
@@ -787,7 +795,10 @@ fn child_cross_len(node: &Node, parent: Axis) -> Len {
 /// Leaf content (label/icon) aligns within its slot; containers stretch to fill. An anchored overlay takes no
 /// space in flow and is collected separately, so it counts as a leaf here.
 fn is_leaf(node: &Node) -> bool {
-    matches!(node, Node::Label(_) | Node::Icon(_) | Node::Anchored(_))
+    if let Node::Anchored(a) = node {
+        return a.keep_x_visible.is_none();
+    }
+    matches!(node, Node::Label(_) | Node::Icon(_))
 }
 
 impl From<Div> for Node {
@@ -966,8 +977,21 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                 x = x.min(viewport.x + viewport.w - iw).max(viewport.x);
                 y = y.min(viewport.y + viewport.h - ih).max(viewport.y);
             }
-            let child_area = Rect::new(x, y, iw, ih, Rgba::TRANSPARENT);
-            let clip = a.clip_rect.or(if a.clip { Some(child_area) } else { None });
+            let mut child_area = Rect::new(x, y, iw, ih, Rgba::TRANSPARENT);
+            let mut clip = a.clip_rect.or(if a.clip { Some(child_area) } else { None });
+            if let Some(keep) = a.keep_x_visible {
+                let slot = Rect::new(area.x, area.y, area.w, area.h, Rgba::TRANSPARENT);
+                let margin = rem(4.0);
+                let shift = (rem(keep) + margin - slot.w).clamp(0.0, (iw - slot.w).max(0.0));
+                child_area = Rect::new(
+                    slot.x - shift.round(),
+                    slot.y,
+                    iw.max(slot.w),
+                    slot.h,
+                    Rgba::TRANSPARENT,
+                );
+                clip = Some(slot);
+            }
             pending.push(Pending {
                 node: (*a.child).clone(),
                 area: child_area,
