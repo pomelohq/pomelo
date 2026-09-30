@@ -23,9 +23,10 @@ struct SavedFile {
     selections: Vec<(usize, usize)>,
     scroll: SavedScroll,
     folds: Vec<SavedFold>,
-    /// The whole text when the tab had unsaved changes, brought back unsaved.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     contents: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contents_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -49,12 +50,163 @@ struct SavedImage {
     path: String,
 }
 
+enum UnsavedJob {
+    Write(PathBuf, ropey::Rope),
+    Remove(PathBuf),
+}
+
+impl UnsavedJob {
+    fn target(&self) -> &PathBuf {
+        match self {
+            UnsavedJob::Write(target, _) | UnsavedJob::Remove(target) => target,
+        }
+    }
+
+    fn run(self) {
+        let result = match self {
+            UnsavedJob::Write(target, rope) => write_unsaved(&target, &rope),
+            UnsavedJob::Remove(target) => match std::fs::remove_file(&target) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            },
+        };
+        if let Err(error) = result {
+            eprintln!("unsaved text: {error}");
+        }
+    }
+}
+
+fn write_unsaved(target: &std::path::Path, rope: &ropey::Rope) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = target.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let partial = target.with_extension("partial");
+    let mut out = std::io::BufWriter::new(std::fs::File::create(&partial)?);
+    for chunk in rope.chunks() {
+        out.write_all(chunk.as_bytes())?;
+    }
+    out.into_inner()
+        .map_err(|error| error.into_error())?
+        .sync_all()?;
+    std::fs::rename(&partial, target)
+}
+
+fn unsaved_path(root: &std::path::Path, path: &str) -> Option<PathBuf> {
+    let full = root.join(path);
+    let hash = full
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    Some(unsaved_dir()?.join(format!("{hash:016x}.txt")))
+}
+
+fn unsaved_dir() -> Option<PathBuf> {
+    if cfg!(test) {
+        return Some(std::env::temp_dir().join(format!("pomelo-unsaved-{}", std::process::id())));
+    }
+    Some(pom_paths::config_dir()?.join("unsaved"))
+}
+
+#[derive(Default)]
+struct UnsavedQueue {
+    jobs: Vec<UnsavedJob>,
+    busy: bool,
+}
+
+fn unsaved_queue() -> &'static (std::sync::Mutex<UnsavedQueue>, std::sync::Condvar) {
+    static QUEUE: std::sync::OnceLock<(std::sync::Mutex<UnsavedQueue>, std::sync::Condvar)> =
+        std::sync::OnceLock::new();
+    QUEUE.get_or_init(|| {
+        let spawned = std::thread::Builder::new()
+            .name("unsaved-writer".into())
+            .spawn(run_unsaved_writer);
+        if let Err(error) = spawned {
+            eprintln!("unsaved text writer: {error}");
+        }
+        Default::default()
+    })
+}
+
+fn queue_unsaved(job: UnsavedJob) {
+    let (queue, ready) = unsaved_queue();
+    let Ok(mut queue) = queue.lock() else {
+        return;
+    };
+    queue
+        .jobs
+        .retain(|waiting| waiting.target() != job.target());
+    queue.jobs.push(job);
+    ready.notify_all();
+}
+
+fn run_unsaved_writer() {
+    let (queue, ready) = unsaved_queue();
+    loop {
+        let job = {
+            let Ok(mut state) = queue.lock() else {
+                return;
+            };
+            state.busy = false;
+            ready.notify_all();
+            loop {
+                if !state.jobs.is_empty() {
+                    break;
+                }
+                state = match ready.wait(state) {
+                    Ok(state) => state,
+                    Err(_) => return,
+                };
+            }
+            state.busy = true;
+            state.jobs.remove(0)
+        };
+        job.run();
+    }
+}
+
+pub fn flush_unsaved_writes(timeout: std::time::Duration) {
+    let (queue, ready) = unsaved_queue();
+    let deadline = std::time::Instant::now() + timeout;
+    let Ok(mut state) = queue.lock() else {
+        return;
+    };
+    while !state.jobs.is_empty() || state.busy {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        state = match ready.wait_timeout(state, left) {
+            Ok((state, _)) => state,
+            Err(_) => return,
+        };
+    }
+}
+
 fn epoch(time: std::time::SystemTime) -> Option<(u64, u32)> {
     let since = time.duration_since(std::time::UNIX_EPOCH).ok()?;
     Some((since.as_secs(), since.subsec_nanos()))
 }
 
 impl FileItem {
+    fn queue_unsaved_contents(&self) -> Option<PathBuf> {
+        let buffer = self.buffer.as_ref()?;
+        let target = unsaved_path(&self.root, &self.path)?;
+        let version = buffer.is_dirty().then(|| buffer.version());
+        if self.unsaved_queued.get() != version {
+            self.unsaved_queued.set(version);
+            let job = match version {
+                Some(_) => UnsavedJob::Write(target.clone(), buffer.rope.clone()),
+                None => UnsavedJob::Remove(target.clone()),
+            };
+            queue_unsaved(job);
+        }
+        version.map(|_| target)
+    }
+
     pub(crate) fn saved_state(&self) -> Option<SerializedItem> {
         let buffer = self.buffer.as_ref()?;
         let rope = &buffer.rope;
@@ -91,7 +243,8 @@ impl FileItem {
                 x: self.scroll_x,
             },
             folds,
-            contents: buffer.is_dirty().then(|| rope.to_string()),
+            contents: None,
+            contents_file: self.queue_unsaved_contents(),
         };
         Some(SerializedItem {
             kind: FILE_KIND.into(),
@@ -110,7 +263,15 @@ impl FileItem {
             scroll,
             folds,
             contents,
+            contents_file,
         } = saved;
+        let contents = contents.or_else(|| {
+            contents_file.and_then(|file| {
+                std::fs::read_to_string(&file)
+                    .map_err(|error| eprintln!("unsaved text {}: {error}", file.display()))
+                    .ok()
+            })
+        });
         let on_disk = root.join(&path).is_file();
         if !on_disk && contents.is_none() {
             return None;
@@ -158,7 +319,11 @@ impl FileItem {
         if !ranges.is_empty() {
             buffer.select_ranges(&ranges);
         }
-        let text = buffer.rope.to_string();
+        let text = if folds.is_empty() {
+            String::new()
+        } else {
+            buffer.rope.to_string()
+        };
         let mut search_from = 0;
         let mut found = Vec::new();
         for fold in folds {
@@ -365,7 +530,9 @@ mod tests {
         if let Some(buffer) = file.buffer.as_mut() {
             buffer.edit(vec![(0..0, "// draft\n".into())]);
         }
-        file.saved_state().unwrap()
+        let saved = file.saved_state().unwrap();
+        flush_unsaved_writes(std::time::Duration::from_secs(5));
+        saved
     }
 
     fn text_of(file: &FileItem) -> String {

@@ -2837,6 +2837,7 @@ impl ApplicationHandler for App {
         for id in windows {
             self.with_workspace_view(id, |v, _| v.persist_panes(true));
         }
+        files_ui::flush_unsaved_writes(Duration::from_secs(5));
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {

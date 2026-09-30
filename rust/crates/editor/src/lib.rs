@@ -6,6 +6,7 @@ pub mod highlight;
 pub mod indent;
 mod injection;
 pub mod language;
+pub mod line_widths;
 pub mod movement;
 pub mod outline;
 pub mod search;
