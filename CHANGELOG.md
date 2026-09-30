@@ -4,6 +4,22 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.7] - 2026-09-30
+
+### Added
+- Table tabs edit data: double-click a cell, Review SQL, then Apply runs it all in one transaction. (#132)
+- A Details side shows the whole value (JSON as a tree) or the whole row and what points at it. (#132)
+- Foreign keys open the row they point at; Structure and DDL views, column filters; tabs reopen next session. (#132)
+- Redis keyspaces open as a tab: keys by prefix, values by type, TTL editing and deletes. (#132)
+- Buckets and folders open as a folder tab with find, Upload here and a preview side. (#132)
+- Settings > Dev Services toggles the proxy and webhook relay and sets their ports; a Dev Requests tab lists their traffic. (#127)
+- The shared node_modules store works on macOS and Linux, with a store tab and size and age limits. (#128)
+- Create Workspace picks tickets from a sprint, the backlog or your own, and chooses environment and data. (#130)
+
+### Changed
+- Windows reopen where you left them, and status bar and title bar toggles apply right away. (#126)
+- JSON request and response bodies in Dev Requests are colored like the editor colors JSON. (#131)
+
 ## [0.7.6] - 2026-09-30
 
 ### Added
