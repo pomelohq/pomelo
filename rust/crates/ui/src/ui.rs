@@ -1681,6 +1681,11 @@ impl UiRenderer {
         );
     }
 
+    /// A window moved to a display with another backing scale (Retina to a 1x monitor).
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale.max(0.5);
+    }
+
     pub fn size(&self) -> (f32, f32) {
         (
             self.config.width as f32 / self.scale,
