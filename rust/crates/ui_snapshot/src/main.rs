@@ -92,7 +92,13 @@ fn main() -> anyhow::Result<()> {
         let mut page: Box<dyn Item> = if usage_page {
             Box::new(agent_usage_ui::preview_page())
         } else if store_page {
-            Box::new(module_store_ui::preview_page())
+            Box::new({
+                let mut page = module_store_ui::preview_page();
+                if std::env::var("OPTIMIZE").is_ok() {
+                    page.click(5);
+                }
+                page
+            })
         } else {
             Box::new(dev_services_ui::preview_page())
         };

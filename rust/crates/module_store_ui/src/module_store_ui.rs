@@ -14,6 +14,9 @@ const REFRESH: u64 = 1;
 const FREE_UNUSED: u64 = 2;
 const CONFIRM_SWAP: u64 = 3;
 const CANCEL_SWAP: u64 = 4;
+const OPTIMIZE: u64 = 5;
+const CONFIRM_OPTIMIZE: u64 = 6;
+const CANCEL_OPTIMIZE: u64 = 7;
 const ACTION_BASE: u64 = 1_000;
 const LINE_BASE: u64 = 50_000;
 const MORE_BASE: u64 = 100_000;
@@ -67,6 +70,8 @@ pub enum Request {
         repo: String,
         path: PathBuf,
     },
+    /// Everything `plan` lists, one after another.
+    Optimize,
 }
 
 impl Request {
@@ -79,6 +84,7 @@ impl Request {
             Request::FreeOthers => "Removing other projects' copies".into(),
             Request::Relink { workspace, .. } => format!("Swapping {workspace} to the shared copy"),
             Request::Keep { repo, .. } => format!("Keeping {repo}'s install"),
+            Request::Optimize => "Optimizing".into(),
         }
     }
 }
@@ -100,6 +106,10 @@ pub struct StoreState {
     pub flash: Option<(String, f32)>,
     /// A swap waiting for confirmation, shown under its row.
     pub confirm: Option<Request>,
+    /// Optimize's plan is shown, waiting for confirmation.
+    pub confirm_optimize: bool,
+    /// Optimize's step running now and how many there are.
+    pub progress: Option<(usize, usize)>,
     /// Workspaces whose services run, as (repo, workspace).
     pub running: Vec<(String, String)>,
     /// Seconds since the epoch, for "changed 2 days ago".
@@ -213,6 +223,187 @@ fn actions(state: &StoreState) -> Vec<Request> {
         out.push(Request::FreeOthers);
     }
     out
+}
+
+/// What Optimize does, in order: keep an install for each lockfile with no stored copy, move every
+/// workspace's own install onto the shared copy, then free the copies no workspace uses.
+pub fn plan(overview: &Overview) -> Vec<Request> {
+    let mut keeps = Vec::new();
+    let mut relinks = Vec::new();
+    for repo in &overview.repos {
+        let RepoState::Versions { versions, .. } = &repo.state else {
+            continue;
+        };
+        for version in versions {
+            let keep = keep_request(&repo.repo, version);
+            let source = match &keep {
+                Some(Request::Keep { path, .. }) => Some(path.clone()),
+                _ => None,
+            };
+            if version.stored.is_none() && keep.is_none() {
+                continue;
+            }
+            keeps.extend(keep);
+            for user in own_users(version) {
+                if source.as_ref() != Some(&user.path) {
+                    relinks.push(Request::Relink {
+                        repo: repo.repo.clone(),
+                        workspace: user.workspace.clone(),
+                        path: user.path.clone(),
+                    });
+                }
+            }
+        }
+    }
+    let mut steps = keeps;
+    steps.extend(relinks);
+    if !overview.unused().is_empty() {
+        steps.push(Request::FreeUnused);
+    }
+    steps
+}
+
+/// Bytes Optimize frees at most: the swapped installs and the unused copies.
+fn plan_frees(overview: &Overview, steps: &[Request]) -> u64 {
+    let mut total: u64 = 0;
+    for step in steps {
+        match step {
+            Request::FreeUnused => {
+                total += overview
+                    .unused()
+                    .iter()
+                    .map(|entry| entry.size)
+                    .sum::<u64>();
+            }
+            Request::Relink { path, .. } => {
+                for repo in &overview.repos {
+                    if let RepoState::Versions { versions, .. } = &repo.state {
+                        for user in versions.iter().flat_map(|version| &version.users) {
+                            if user.path == *path {
+                                if let Holding::Own { size: Some(size) } = user.holding {
+                                    total += size;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    total
+}
+
+fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>) -> Node {
+    let colors = theme();
+    let steps = plan(overview);
+    let count = |kind: fn(&Request) -> bool| steps.iter().filter(|step| kind(step)).count();
+    let keeps = count(|step| matches!(step, Request::Keep { .. }));
+    let relinks = count(|step| matches!(step, Request::Relink { .. }));
+    let mut parts = Vec::new();
+    if keeps > 0 {
+        parts.push(plural(
+            keeps,
+            "install kept as the shared copy",
+            "installs kept as the shared copy",
+        ));
+    }
+    if relinks > 0 {
+        parts.push(plural(
+            relinks,
+            "workspace moved onto the shared copy",
+            "workspaces moved onto the shared copy",
+        ));
+    }
+    if steps.contains(&Request::FreeUnused) {
+        parts.push(plural(
+            overview.unused().len(),
+            "unused copy removed",
+            "unused copies removed",
+        ));
+    }
+    let restarted: Vec<&str> = steps
+        .iter()
+        .filter_map(|step| match step {
+            Request::Relink {
+                repo, workspace, ..
+            } if state
+                .running
+                .iter()
+                .any(|(running_repo, running)| running_repo == repo && running == workspace) =>
+            {
+                Some(workspace.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut column = div()
+        .col()
+        .gap(6.0)
+        .p(12.0)
+        .rounded(8.0)
+        .border(1.0, colors.border_variant)
+        .bg(colors.surface_background)
+        .child(
+            label(format!("Optimize: {}", parts.join(", ")))
+                .size(13.0)
+                .color(colors.text),
+        )
+        .child(small(
+            format!(
+                "Frees up to {}. Each workspace keeps a working node_modules the whole time.",
+                format_size(plan_frees(overview, &steps))
+            ),
+            colors.text_muted,
+        ));
+    if !restarted.is_empty() {
+        column = column.child(
+            div().row().child(
+                small(
+                    format!(
+                        "Services are stopped and started again in {}.",
+                        restarted.join(", ")
+                    ),
+                    colors.warning,
+                )
+                .truncate(),
+            ),
+        );
+    }
+    let choice = |id: u64, text: &str, primary: bool| {
+        let color = if primary {
+            colors.text_accent
+        } else {
+            colors.text_muted
+        };
+        let mut part = div()
+            .row()
+            .items_center()
+            .px(10.0)
+            .h_px(24.0)
+            .rounded(5.0)
+            .on_click(id)
+            .child(small(text.to_string(), color));
+        if primary {
+            let mut border = colors.text_accent;
+            border.a *= 0.5;
+            part = part.border(1.0, border);
+        }
+        if hovered == Some(id) {
+            part = part.bg(colors.ghost_element_hover);
+        }
+        part
+    };
+    column
+        .child(
+            div()
+                .row()
+                .gap(8.0)
+                .child(div().flex(1.0))
+                .child(choice(CANCEL_OPTIMIZE, "Cancel", false))
+                .child(choice(CONFIRM_OPTIMIZE, "Optimize", true)),
+        )
+        .into()
 }
 
 /// The version a "+N more" chip belongs to, walking versions in render order (each version's own-copy
@@ -900,7 +1091,15 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
                 .items_center()
                 .gap(6.0)
                 .child(pulse(state.clock))
-                .child(small(request.working(), colors.text_accent)),
+                .child(small(
+                    match state.progress {
+                        Some((step, steps)) => {
+                            format!("Optimizing {step} of {steps} - {}", request.working())
+                        }
+                        None => request.working(),
+                    },
+                    colors.text_accent,
+                )),
         );
     } else if let Some((text, failed, at)) = &state.note {
         let fade = (1.0 - (state.clock - at - (NOTE_FOR - 0.6)) / 0.6).clamp(0.0, 1.0);
@@ -950,8 +1149,37 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
         head = head.child(top_button(
             FREE_UNUSED,
             format!("Free {} unused", format_size(unused)),
-            true,
+            false,
         ));
+    }
+    let can_optimize = state.measuring == 0
+        && state
+            .overview
+            .as_ref()
+            .is_some_and(|overview| !plan(overview).is_empty());
+    if can_optimize {
+        let color = if idle {
+            colors.text_accent
+        } else {
+            colors.text_disabled
+        };
+        let mut border = color;
+        border.a *= 0.5;
+        let mut part = div()
+            .row()
+            .items_center()
+            .px(10.0)
+            .h_px(24.0)
+            .rounded(5.0)
+            .border(1.0, border)
+            .child(small("Optimize", color));
+        if idle {
+            part = part.on_click(OPTIMIZE);
+            if hovered == Some(OPTIMIZE) {
+                part = part.bg(colors.ghost_element_hover);
+            }
+        }
+        head = head.child(part);
     }
     head.into()
 }
@@ -966,6 +1194,9 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
         .w_px(content_w)
         .gap(14.0)
         .child(header(state, hovered));
+    if let Some(overview) = state.overview.as_ref().filter(|_| state.confirm_optimize) {
+        column = column.child(optimize_strip(state, overview, hovered));
+    }
     let Some(overview) = &state.overview else {
         return frame(column);
     };
@@ -1077,6 +1308,15 @@ fn click(state: &mut StoreState, id: u64) {
         REFRESH if idle => state.requests.push(Request::Refresh),
         FREE_UNUSED if idle => state.requests.push(Request::FreeUnused),
         CANCEL_SWAP => state.confirm = None,
+        OPTIMIZE if idle => {
+            state.confirm = None;
+            state.confirm_optimize = !state.confirm_optimize;
+        }
+        CANCEL_OPTIMIZE => state.confirm_optimize = false,
+        CONFIRM_OPTIMIZE if idle => {
+            state.confirm_optimize = false;
+            state.requests.push(Request::Optimize);
+        }
         CONFIRM_SWAP if idle => {
             if let Some(request) = state.confirm.take() {
                 state.requests.push(request);

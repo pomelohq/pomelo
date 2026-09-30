@@ -145,3 +145,42 @@ fn unmeasured_sizes_shimmer_and_the_header_counts_them() {
         .iter()
         .any(|text| text == "Freed 2.1 GB"));
 }
+
+#[test]
+fn optimize_keeps_then_moves_then_frees_and_asks_first() {
+    let page = preview_page();
+    let mut state = page.shared.borrow_mut();
+    let steps = plan(state.overview.as_ref().unwrap());
+    assert_eq!(
+        steps,
+        [
+            Request::Keep {
+                repo: "admin".into(),
+                path: PathBuf::from("/work/main/api"),
+            },
+            Request::Relink {
+                repo: "web".into(),
+                workspace: "feat-pay".into(),
+                path: PathBuf::from("/work/feat-pay/api"),
+            },
+            Request::FreeUnused,
+        ]
+    );
+    click(&mut state, OPTIMIZE);
+    assert!(state.requests.is_empty(), "optimize shows its plan first");
+    let shown = texts(&state, 1200.0);
+    assert!(shown
+        .iter()
+        .any(|text| text.starts_with("Optimize: 1 install kept")));
+    assert!(shown
+        .iter()
+        .any(|text| text.starts_with("Services are stopped and started again in feat-pay")));
+    click(&mut state, CONFIRM_OPTIMIZE);
+    assert_eq!(state.requests, [Request::Optimize]);
+    state.requests.clear();
+    state.busy = Some(steps[1].clone());
+    state.progress = Some((2, 3));
+    assert!(texts(&state, 1200.0)
+        .iter()
+        .any(|text| text == "Optimizing 2 of 3 - Swapping feat-pay to the shared copy"));
+}

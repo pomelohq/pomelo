@@ -39,6 +39,12 @@ enum Update {
         flash: Option<String>,
     },
     Measured(Measure, u64),
+    /// Optimize started its `index`-th step (from 1) of `total`.
+    Step {
+        request: Request,
+        index: usize,
+        total: usize,
+    },
 }
 
 /// What the worker needs from the window's project.
@@ -231,21 +237,23 @@ fn relink(
     result
 }
 
-fn run(job: Job, sizes: SizeCache, sender: Sender<Update>) {
-    let store = store();
-    let repos = with_node_versions(job.repos.clone());
-    let job = Job { repos, ..job };
+/// One request; returns its result line and the row to highlight.
+fn perform(
+    store: &Store,
+    job: &Job,
+    request: &Request,
+) -> (std::io::Result<Option<String>>, Option<String>) {
     let mut flash = None;
-    let done: std::io::Result<Option<String>> = match &job.request {
+    let done = match request {
         Request::Refresh => Ok(None),
         Request::FreeUnused | Request::FreeOld { .. } | Request::FreeOthers => store
-            .delete_all(&unused_copies(job.previous.as_ref(), &job.request))
+            .delete_all(&unused_copies(job.previous.as_ref(), request))
             .map(|freed| Some(format!("Freed {}", format_size(freed)))),
         Request::Relink {
             repo,
             workspace,
             path,
-        } => relink(&store, &job, repo, workspace, path).map(|freed| {
+        } => relink(store, job, repo, workspace, path).map(|freed| {
             flash = Some(workspace.clone());
             Some(format!(
                 "{workspace} now uses the shared copy; freed up to {}",
@@ -255,6 +263,72 @@ fn run(job: Job, sizes: SizeCache, sender: Sender<Update>) {
         Request::Keep { repo, path } => store
             .keep(repo, path, node_for(&job.repos, repo).as_deref())
             .map(|()| Some(format!("Kept {repo}'s install; new workspaces get it now"))),
+        Request::Optimize => Ok(None),
+    };
+    (done, flash)
+}
+
+/// Every step of the plan, reporting each as it starts; failures do not stop the rest.
+fn optimize(store: &Store, job: &Job, sender: &Sender<Update>) -> std::io::Result<Option<String>> {
+    let steps = job
+        .previous
+        .as_ref()
+        .map_or_else(Vec::new, module_store_ui::plan);
+    let total = steps.len();
+    let (mut kept, mut moved, mut freed, mut failed) = (0, 0, 0u64, Vec::new());
+    for (index, step) in steps.iter().enumerate() {
+        let started = Update::Step {
+            request: step.clone(),
+            index: index + 1,
+            total,
+        };
+        if sender.send(started).is_err() {
+            break;
+        }
+        ui::wake();
+        let result = match step {
+            Request::Relink {
+                repo,
+                workspace,
+                path,
+            } => relink(store, job, repo, workspace, path).map(|bytes| {
+                moved += 1;
+                freed += bytes;
+            }),
+            Request::Keep { repo, path } => store
+                .keep(repo, path, node_for(&job.repos, repo).as_deref())
+                .map(|()| kept += 1),
+            Request::FreeUnused => store
+                .delete_all(&unused_copies(job.previous.as_ref(), step))
+                .map(|bytes| freed += bytes),
+            _ => Ok(()),
+        };
+        if let Err(error) = result {
+            failed.push(format!("{}: {error}", step.working()));
+        }
+    }
+    let mut summary = format!(
+        "Optimized: {kept} kept, {moved} moved onto the shared copy, freed up to {}",
+        format_size(freed)
+    );
+    if !failed.is_empty() {
+        summary.push_str(&format!(
+            "; {} failed ({})",
+            failed.len(),
+            failed.join("; ")
+        ));
+    }
+    Ok(Some(summary))
+}
+
+fn run(job: Job, sizes: SizeCache, sender: Sender<Update>) {
+    let store = store();
+    let repos = with_node_versions(job.repos.clone());
+    let job = Job { repos, ..job };
+    let (done, mut flash) = if job.request == Request::Optimize {
+        (optimize(&store, &job, &sender), None)
+    } else {
+        perform(&store, &job, &job.request)
     };
     let overview = store.overview(&job.repos);
     if let (Request::Keep { path, .. }, Ok(overview)) = (&job.request, &overview) {
@@ -424,8 +498,17 @@ impl App {
                         state.running = running;
                         state.measuring = pending;
                         state.measure_total = pending;
+                        state.progress = None;
                         state.now = now();
                         state.finish(message, failed, flash);
+                    }),
+                    Ok(Update::Step {
+                        request,
+                        index,
+                        total,
+                    }) => self.with_store_state(id, |state| {
+                        state.busy = Some(request);
+                        state.progress = Some((index, total));
                     }),
                     Ok(Update::Measured(what, size)) => self.with_store_state(id, |state| {
                         if let Some(overview) = state.overview.as_mut() {
