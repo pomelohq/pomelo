@@ -183,7 +183,15 @@ impl TextField {
             row = row.child(caret(show_caret));
         }
         row = push(row, end..chars.len(), false);
-        row.into()
+        let before: String = chars[..head.min(chars.len())].iter().collect();
+        let caret_x = ui::measure_text_width(&before, size, font == FieldFont::Mono, 400)
+            / ui::ui_text_scale();
+        div()
+            .row()
+            .flex(1.0)
+            .h_px(height)
+            .child(ui::deferred(row.flex(0.0)).keep_x_visible(caret_x))
+            .into()
     }
 }
 
