@@ -116,6 +116,23 @@ impl App {
         self.dev_requests
             .pages
             .retain(|(_, shared)| Rc::strong_count(shared) > 1);
+        if let Some(proxy) = &self.dev_proxy {
+            for (id, shared) in &self.dev_requests.pages {
+                let wanted = shared.borrow().wants_payloads();
+                let Some((request, response)) = wanted.and_then(|seq| proxy.payloads(seq)) else {
+                    continue;
+                };
+                if let Some(seq) = wanted {
+                    let before = shared.borrow().version;
+                    shared.borrow_mut().set_payloads(seq, request, response);
+                    if shared.borrow().version != before {
+                        if let Some(main) = self.mains.get_mut(id) {
+                            main.dirty = true;
+                        }
+                    }
+                }
+            }
+        }
         if self.dev_requests.pages.is_empty()
             || self
                 .dev_requests

@@ -12,6 +12,8 @@ pub use routing::{
 };
 
 const LOG_CAPACITY: usize = 300;
+pub const BODY_CAP: usize = 256 * 1024;
+const BODY_BUDGET: usize = 64 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ports {
@@ -68,6 +70,51 @@ pub struct Delivery {
     pub port: u16,
     pub status: Option<u16>,
     pub error: String,
+    pub ms: u64,
+}
+
+/// A body as it passed through: its first `BODY_CAP` bytes, how long it was, and whether it ended.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Payload {
+    pub bytes: Vec<u8>,
+    pub total: u64,
+    pub complete: bool,
+    /// Dropped to stay under the log's memory budget.
+    pub evicted: bool,
+}
+
+impl Payload {
+    pub fn truncated(&self) -> bool {
+        self.total > self.bytes.len() as u64
+    }
+}
+
+/// A body being captured while it streams.
+pub type Capture = Arc<Mutex<Payload>>;
+
+pub fn capture_of(bytes: &[u8]) -> Capture {
+    let capture = Capture::default();
+    record(&capture, bytes);
+    finish(&capture);
+    capture
+}
+
+pub(crate) fn record(capture: &Capture, bytes: &[u8]) {
+    if let Ok(mut payload) = capture.lock() {
+        payload.total += bytes.len() as u64;
+        let room = BODY_CAP.saturating_sub(payload.bytes.len());
+        if room > 0 && !payload.evicted {
+            payload
+                .bytes
+                .extend_from_slice(&bytes[..bytes.len().min(room)]);
+        }
+    }
+}
+
+pub(crate) fn finish(capture: &Capture) {
+    if let Ok(mut payload) = capture.lock() {
+        payload.complete = true;
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -85,32 +132,95 @@ pub struct ProxyLogEntry {
     pub status: u16,
     pub ms: u64,
     pub deliveries: Vec<Delivery>,
+    pub request_headers: Vec<(String, String)>,
+    pub response_headers: Vec<(String, String)>,
+    /// Body lengths so far (a streamed response keeps growing after the entry is logged).
+    pub request_bytes: u64,
+    pub response_bytes: u64,
+}
+
+struct Stored {
+    entry: ProxyLogEntry,
+    request: Capture,
+    response: Capture,
 }
 
 #[derive(Default)]
 pub struct ProxyLog {
-    entries: Mutex<(u64, VecDeque<ProxyLogEntry>)>,
+    entries: Mutex<(u64, VecDeque<Stored>)>,
 }
 
 impl ProxyLog {
-    pub fn add(&self, mut entry: ProxyLogEntry) {
+    pub fn add(&self, mut entry: ProxyLogEntry, request: Capture, response: Capture) {
         if let Ok(mut guard) = self.entries.lock() {
             let (next, entries) = &mut *guard;
             *next += 1;
             entry.seq = *next;
-            entries.push_back(entry);
+            entries.push_back(Stored {
+                entry,
+                request,
+                response,
+            });
             while entries.len() > LOG_CAPACITY {
                 entries.pop_front();
             }
+            evict_over_budget(entries, BODY_BUDGET);
         }
     }
 
-    /// Newest first.
+    /// Newest first, without bodies (see `payloads`).
     pub fn snapshot(&self, limit: usize) -> Vec<ProxyLogEntry> {
+        let size = |capture: &Capture| capture.lock().map_or(0, |payload| payload.total);
         self.entries
             .lock()
-            .map(|guard| guard.1.iter().rev().take(limit).cloned().collect())
+            .map(|guard| {
+                guard
+                    .1
+                    .iter()
+                    .rev()
+                    .take(limit)
+                    .map(|stored| ProxyLogEntry {
+                        request_bytes: size(&stored.request),
+                        response_bytes: size(&stored.response),
+                        ..stored.entry.clone()
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
+    }
+
+    /// The request and response bodies of entry `seq`, while it is still in the log.
+    pub fn payloads(&self, seq: u64) -> Option<(Payload, Payload)> {
+        let guard = self.entries.lock().ok()?;
+        let stored = guard.1.iter().find(|stored| stored.entry.seq == seq)?;
+        let copy = |capture: &Capture| {
+            capture
+                .lock()
+                .map(|payload| payload.clone())
+                .unwrap_or_default()
+        };
+        Some((copy(&stored.request), copy(&stored.response)))
+    }
+}
+
+/// Oldest bodies go first once the log holds more than `BODY_BUDGET` bytes of them.
+fn evict_over_budget(entries: &mut VecDeque<Stored>, budget: usize) {
+    let held = |capture: &Capture| capture.lock().map_or(0, |payload| payload.bytes.len());
+    let mut total: usize = entries
+        .iter()
+        .map(|stored| held(&stored.request) + held(&stored.response))
+        .sum();
+    for stored in entries.iter() {
+        if total <= budget {
+            break;
+        }
+        for capture in [&stored.request, &stored.response] {
+            if let Ok(mut payload) = capture.lock() {
+                total -= payload.bytes.len();
+                payload.bytes = Vec::new();
+                payload.evicted = true;
+            }
+        }
     }
 }
 
@@ -211,6 +321,10 @@ impl DevProxy {
         self.log.snapshot(limit)
     }
 
+    pub fn payloads(&self, seq: u64) -> Option<(Payload, Payload)> {
+        self.log.payloads(seq)
+    }
+
     pub fn ports(&self) -> Ports {
         self.ports
     }
@@ -241,4 +355,36 @@ fn bind(address: &str) -> std::io::Result<tokio::net::TcpListener> {
     let listener = std::net::TcpListener::bind(address)?;
     listener.set_nonblocking(true)?;
     tokio::net::TcpListener::from_std(listener)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bodies_are_capped_and_the_oldest_are_dropped_over_budget() {
+        let big = vec![b'x'; BODY_CAP + 10];
+        let capture = capture_of(&big);
+        let payload = capture.lock().unwrap().clone();
+        assert_eq!(payload.bytes.len(), BODY_CAP);
+        assert_eq!(payload.total, (BODY_CAP + 10) as u64);
+        assert!(payload.truncated() && payload.complete);
+
+        let mut entries: VecDeque<Stored> = (0..3)
+            .map(|seq| Stored {
+                entry: ProxyLogEntry {
+                    seq,
+                    ..ProxyLogEntry::default()
+                },
+                request: capture_of(&[b'r'; 100]),
+                response: capture_of(&[b's'; 100]),
+            })
+            .collect();
+        evict_over_budget(&mut entries, 400);
+        let evicted: Vec<bool> = entries
+            .iter()
+            .map(|stored| stored.request.lock().unwrap().evicted)
+            .collect();
+        assert_eq!(evicted, [true, false, false]);
+    }
 }

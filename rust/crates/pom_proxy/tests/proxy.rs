@@ -208,6 +208,17 @@ fn routes_hosts_and_dev_paths_rewriting_cookies_and_logging() {
     assert_eq!(log[0].path, "/_pom_dev/api/server/v1/me");
     assert_eq!((log[0].profile.as_str(), log[0].status), ("local", 200));
     assert_eq!(log[0].target, format!("127.0.0.1:{backend}"));
+    assert!(log[0]
+        .request_headers
+        .iter()
+        .any(|(name, value)| name == "host" && value.starts_with("web.web.feat-login")));
+    let (sent, answered) = proxy.payloads(log[0].seq).expect("payloads");
+    assert!(sent.complete && sent.bytes.is_empty());
+    assert!(
+        String::from_utf8_lossy(&answered.bytes).contains("GET /v1/me HTTP/1.1"),
+        "{answered:?}"
+    );
+    assert_eq!(answered.total, answered.bytes.len() as u64);
 
     let response = request(
         ports.proxy,
@@ -341,6 +352,9 @@ fn webhooks_fan_out_to_every_running_workspace() {
         .expect("the webhook is logged with both deliveries");
     assert_eq!(logged.path, "/hooks/stripe?id=7");
     assert_eq!(logged.status, 200);
+    let (sent, acked) = proxy.payloads(logged.seq).expect("payloads");
+    assert_eq!(sent.bytes, b"{\"a\":1}");
+    assert!(String::from_utf8_lossy(&acked.bytes).contains("\"fanout\":2"));
     let mut workspaces: Vec<&str> = logged
         .deliveries
         .iter()
