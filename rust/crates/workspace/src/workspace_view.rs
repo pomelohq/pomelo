@@ -595,6 +595,19 @@ impl WorkspaceView {
                     .as_mut()
                     .is_some_and(|files| files.editor_key(key, false));
             }
+            Action::ActivateTab(index) => {
+                return self
+                    .pane_command(crate::pane::PaneCommand::ActivateItem(usize::from(index)))
+            }
+            Action::ActivateLastTab => {
+                return self.pane_command(crate::pane::PaneCommand::ActivateLastItem)
+            }
+            Action::ActivatePreviousTab => {
+                return self.pane_command(crate::pane::PaneCommand::ActivatePreviousItem)
+            }
+            Action::ActivateNextTab => {
+                return self.pane_command(crate::pane::PaneCommand::ActivateNextItem)
+            }
             _ => return false,
         }
         true

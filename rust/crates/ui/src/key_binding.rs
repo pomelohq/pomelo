@@ -40,8 +40,44 @@ fn key_label(key: &str) -> String {
     }
 }
 
-/// One keystroke as modifier glyphs (control, option, command, shift, in that order) then the key.
+/// How Linux and Windows spell a keystroke: `Ctrl+Shift+K`.
+pub fn keystroke_words(keystroke: &str) -> String {
+    let (modifiers, key) = parse_keystroke(keystroke);
+    let mut parts: Vec<String> = ["ctrl", "alt", "shift", "cmd"]
+        .into_iter()
+        .filter(|name| modifiers.contains(name))
+        .map(|name| {
+            match name {
+                "ctrl" => "Ctrl",
+                "alt" => "Alt",
+                "shift" => "Shift",
+                _ => "Super",
+            }
+            .to_string()
+        })
+        .collect();
+    parts.push(match key {
+        "left" => "Left".into(),
+        "right" => "Right".into(),
+        "up" => "Up".into(),
+        "down" => "Down".into(),
+        "enter" => "Enter".into(),
+        "backspace" | "delete" => "Backspace".into(),
+        key => key_label(key),
+    });
+    parts.join("+")
+}
+
+/// One keystroke as modifier glyphs (control, option, command, shift, in that order) then the key; Linux and
+/// Windows spell it out instead.
 pub fn render_keystroke(keystroke: &str, size: f32) -> Node {
+    if !cfg!(target_os = "macos") {
+        let words: Vec<String> = keystroke.split_whitespace().map(keystroke_words).collect();
+        return label(words.join(", "))
+            .size(size)
+            .color(theme().text_muted)
+            .into();
+    }
     if keystroke.trim().contains(' ') {
         let mut chord = div().row().items_center().gap(size * 0.4);
         for stroke in keystroke.split_whitespace() {
@@ -101,5 +137,12 @@ mod tests {
             (vec!["ctrl", "shift"], "-")
         );
         assert_eq!(parse_keystroke("pageup"), (vec![], "pageup"));
+    }
+
+    #[test]
+    fn linux_and_windows_spell_keys_out() {
+        assert_eq!(keystroke_words("ctrl-shift-c"), "Ctrl+Shift+C");
+        assert_eq!(keystroke_words("ctrl-alt-left"), "Ctrl+Alt+Left");
+        assert_eq!(keystroke_words("ctrl-pageup"), "Ctrl+PageUp");
     }
 }

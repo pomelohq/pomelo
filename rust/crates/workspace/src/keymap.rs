@@ -37,10 +37,15 @@ pub enum Action {
     AddRepository,
     CloneMissingRepos,
     OpenAgentUsage,
+    /// The tab at this 0-based position in the focused pane.
+    ActivateTab(u8),
+    ActivateLastTab,
+    ActivatePreviousTab,
+    ActivateNextTab,
 }
 
 impl Action {
-    pub const ALL: [Action; 34] = [
+    pub const ALL: [Action; 46] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -75,6 +80,18 @@ impl Action {
         Action::AddRepository,
         Action::CloneMissingRepos,
         Action::OpenAgentUsage,
+        Action::ActivateTab(0),
+        Action::ActivateTab(1),
+        Action::ActivateTab(2),
+        Action::ActivateTab(3),
+        Action::ActivateTab(4),
+        Action::ActivateTab(5),
+        Action::ActivateTab(6),
+        Action::ActivateTab(7),
+        Action::ActivateTab(8),
+        Action::ActivateLastTab,
+        Action::ActivatePreviousTab,
+        Action::ActivateNextTab,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -114,6 +131,10 @@ impl Action {
             Action::AddRepository => "pomelo::AddRepository",
             Action::CloneMissingRepos => "pomelo::CloneMissingRepos",
             Action::OpenAgentUsage => "pomelo::OpenAgentUsage",
+            Action::ActivateTab(_) => "pane::ActivateItem",
+            Action::ActivateLastTab => "pane::ActivateLastItem",
+            Action::ActivatePreviousTab => "pane::ActivatePreviousItem",
+            Action::ActivateNextTab => "pane::ActivateNextItem",
         }
     }
 
@@ -154,11 +175,54 @@ impl Action {
             Action::AddRepository => "Add Repository",
             Action::CloneMissingRepos => "Clone Missing Repos into Main",
             Action::OpenAgentUsage => "Agent Usage",
+            Action::ActivateTab(index) => match index {
+                0 => "Go to Tab 1",
+                1 => "Go to Tab 2",
+                2 => "Go to Tab 3",
+                3 => "Go to Tab 4",
+                4 => "Go to Tab 5",
+                5 => "Go to Tab 6",
+                6 => "Go to Tab 7",
+                7 => "Go to Tab 8",
+                _ => "Go to Tab 9",
+            },
+            Action::ActivateLastTab => "Go to Last Tab",
+            Action::ActivatePreviousTab => "Previous Tab",
+            Action::ActivateNextTab => "Next Tab",
         }
     }
 
+    /// Actions bound by name alone; `pane::ActivateItem` also needs its index (`["pane::ActivateItem", 0]`).
     pub fn from_name(name: &str) -> Option<Action> {
-        Action::ALL.into_iter().find(|action| action.name() == name)
+        Action::ALL
+            .into_iter()
+            .filter(|action| !matches!(action, Action::ActivateTab(_)))
+            .find(|action| action.name() == name)
+    }
+
+    fn from_target(target: &serde_json::Value) -> Result<Option<Action>, String> {
+        match target {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::String(name) => Action::from_name(name)
+                .map(Some)
+                .ok_or_else(|| format!("unknown action \"{name}\"")),
+            serde_json::Value::Array(parts) => match (parts.first(), parts.get(1)) {
+                (Some(serde_json::Value::String(name)), Some(index))
+                    if name == "pane::ActivateItem" =>
+                {
+                    index
+                        .as_u64()
+                        .filter(|index| *index < 9)
+                        .map(|index| Some(Action::ActivateTab(index as u8)))
+                        .ok_or_else(|| format!("\"{name}\" takes a tab index from 0 to 8"))
+                }
+                (Some(serde_json::Value::String(name)), _) => {
+                    Err(format!("unknown action \"{name}\""))
+                }
+                _ => Err("needs an action name".into()),
+            },
+            _ => Err("needs an action name".into()),
+        }
     }
 }
 
@@ -188,6 +252,8 @@ impl Keystroke {
             }
             match modifier {
                 "cmd" | "super" | "command" => stroke.cmd = true,
+                "secondary" if cfg!(target_os = "macos") => stroke.cmd = true,
+                "secondary" => stroke.ctrl = true,
                 "ctrl" | "control" => stroke.ctrl = true,
                 "alt" | "option" => stroke.alt = true,
                 "shift" => stroke.shift = true,
@@ -278,7 +344,8 @@ pub struct Keymap {
     bindings: Vec<(Vec<Keystroke>, Option<Action>)>,
 }
 
-const DEFAULTS: &[(&str, Action)] = &[
+/// macOS binds window commands on Command; `ctrl-`` stays because `cmd-`` cycles the app's windows.
+const MACOS_DEFAULTS: &[(&str, Action)] = &[
     ("cmd-shift-p", Action::CommandPalette),
     ("cmd-p", Action::FileFinder),
     ("cmd-shift-f", Action::ProjectSearch),
@@ -287,16 +354,16 @@ const DEFAULTS: &[(&str, Action)] = &[
     ("cmd-o", Action::OpenProject),
     ("cmd-n", Action::NewWorkspace),
     ("cmd-shift-n", Action::NewProject),
-    ("ctrl-shift-w", Action::SwitchWorkspace),
+    ("cmd-alt-o", Action::SwitchWorkspace),
     ("cmd-k cmd-t", Action::CycleTheme),
     ("cmd-b", Action::ToggleLeftDock),
     ("cmd-r", Action::ToggleRightDock),
     ("cmd-j", Action::ToggleBottomDock),
     ("cmd-shift-e", Action::FocusFiles),
-    ("ctrl-shift-g", Action::FocusGit),
-    ("ctrl-shift-s", Action::FocusServices),
-    ("ctrl-shift-d", Action::FocusDatabase),
-    ("ctrl-shift-p", Action::FocusPullRequests),
+    ("cmd-shift-c", Action::FocusGit),
+    ("cmd-shift-s", Action::FocusServices),
+    ("cmd-shift-d", Action::FocusDatabase),
+    ("cmd-shift-r", Action::FocusPullRequests),
     ("cmd-?", Action::ToggleAgent),
     ("ctrl-`", Action::ToggleTerminal),
     ("cmd-t", Action::NewTerminal),
@@ -305,7 +372,73 @@ const DEFAULTS: &[(&str, Action)] = &[
     ("cmd-shift-v", Action::MarkdownPreview),
     ("cmd-k v", Action::MarkdownPreviewToTheSide),
     ("cmd-shift-u", Action::OpenAgentUsage),
+    ("cmd-1", Action::ActivateTab(0)),
+    ("cmd-2", Action::ActivateTab(1)),
+    ("cmd-3", Action::ActivateTab(2)),
+    ("cmd-4", Action::ActivateTab(3)),
+    ("cmd-5", Action::ActivateTab(4)),
+    ("cmd-6", Action::ActivateTab(5)),
+    ("cmd-7", Action::ActivateTab(6)),
+    ("cmd-8", Action::ActivateTab(7)),
+    ("cmd-9", Action::ActivateTab(8)),
+    ("cmd-0", Action::ActivateLastTab),
+    ("cmd-alt-left", Action::ActivatePreviousTab),
+    ("cmd-alt-right", Action::ActivateNextTab),
+    ("cmd-shift-[", Action::ActivatePreviousTab),
+    ("cmd-shift-]", Action::ActivateNextTab),
 ];
+
+/// Linux and Windows: the same commands on Control, with those platforms' tab keys.
+const OTHER_DEFAULTS: &[(&str, Action)] = &[
+    ("ctrl-shift-p", Action::CommandPalette),
+    ("ctrl-p", Action::FileFinder),
+    ("ctrl-shift-f", Action::ProjectSearch),
+    ("ctrl-,", Action::OpenSettings),
+    ("ctrl-k ctrl-s", Action::OpenKeymap),
+    ("ctrl-o", Action::OpenProject),
+    ("ctrl-n", Action::NewWorkspace),
+    ("ctrl-shift-n", Action::NewProject),
+    ("ctrl-alt-o", Action::SwitchWorkspace),
+    ("ctrl-k ctrl-t", Action::CycleTheme),
+    ("ctrl-b", Action::ToggleLeftDock),
+    ("ctrl-r", Action::ToggleRightDock),
+    ("ctrl-j", Action::ToggleBottomDock),
+    ("ctrl-shift-e", Action::FocusFiles),
+    ("ctrl-shift-c", Action::FocusGit),
+    ("ctrl-shift-s", Action::FocusServices),
+    ("ctrl-shift-d", Action::FocusDatabase),
+    ("ctrl-shift-r", Action::FocusPullRequests),
+    ("ctrl-?", Action::ToggleAgent),
+    ("ctrl-`", Action::ToggleTerminal),
+    ("ctrl-t", Action::NewTerminal),
+    ("ctrl-w", Action::CloseActiveItem),
+    ("ctrl-alt-w", Action::CloseAllItems),
+    ("ctrl-shift-v", Action::MarkdownPreview),
+    ("ctrl-k v", Action::MarkdownPreviewToTheSide),
+    ("ctrl-shift-u", Action::OpenAgentUsage),
+    ("ctrl-1", Action::ActivateTab(0)),
+    ("ctrl-2", Action::ActivateTab(1)),
+    ("ctrl-3", Action::ActivateTab(2)),
+    ("ctrl-4", Action::ActivateTab(3)),
+    ("ctrl-5", Action::ActivateTab(4)),
+    ("ctrl-6", Action::ActivateTab(5)),
+    ("ctrl-7", Action::ActivateTab(6)),
+    ("ctrl-8", Action::ActivateTab(7)),
+    ("ctrl-9", Action::ActivateTab(8)),
+    ("ctrl-0", Action::ActivateLastTab),
+    ("ctrl-pageup", Action::ActivatePreviousTab),
+    ("ctrl-pagedown", Action::ActivateNextTab),
+    ("ctrl-shift-[", Action::ActivatePreviousTab),
+    ("ctrl-shift-]", Action::ActivateNextTab),
+];
+
+fn platform_defaults() -> &'static [(&'static str, Action)] {
+    if cfg!(target_os = "macos") {
+        MACOS_DEFAULTS
+    } else {
+        OTHER_DEFAULTS
+    }
+}
 
 fn sequence(text: &str) -> Option<Vec<Keystroke>> {
     let strokes: Option<Vec<Keystroke>> = text
@@ -318,7 +451,7 @@ fn sequence(text: &str) -> Option<Vec<Keystroke>> {
 impl Keymap {
     pub fn defaults() -> Keymap {
         Keymap {
-            bindings: DEFAULTS
+            bindings: platform_defaults()
                 .iter()
                 .filter_map(|(keys, action)| Some((sequence(keys)?, Some(*action))))
                 .collect(),
@@ -367,17 +500,10 @@ impl Keymap {
                     problems.push(format!("keymap.json: cannot read the keys \"{keys}\""));
                     continue;
                 };
-                let action = match target {
-                    serde_json::Value::Null => None,
-                    serde_json::Value::String(name) => match Action::from_name(name) {
-                        Some(action) => Some(action),
-                        None => {
-                            problems.push(format!("keymap.json: unknown action \"{name}\""));
-                            continue;
-                        }
-                    },
-                    _ => {
-                        problems.push(format!("keymap.json: \"{keys}\" needs an action name"));
+                let action = match Action::from_target(target) {
+                    Ok(action) => action,
+                    Err(problem) => {
+                        problems.push(format!("keymap.json: \"{keys}\": {problem}"));
                         continue;
                     }
                 };
@@ -488,7 +614,8 @@ mod tests {
         let problems = keymap.apply_user(
             r#"[
                 {"bindings": {"cmd-shift-g": "git_panel::ToggleFocus", "cmd-b": null,
-                              "cmd-y": "nope::Nothing"}},
+                              "cmd-y": "nope::Nothing", "cmd-alt-3": ["pane::ActivateItem", 2],
+                              "secondary-shift-x": "workspace::NewTerminal"}},
                 {"context": "Editor", "bindings": {"cmd-j": "workspace::NewTerminal"}}
             ]"#,
         );
@@ -498,6 +625,19 @@ mod tests {
             KeyMatch::Action(Action::FocusGit)
         );
         assert_eq!(keymap.match_keys(&[], &stroke("cmd-b")), KeyMatch::None);
+        assert_eq!(
+            keymap.match_keys(&[], &stroke("cmd-alt-3")),
+            KeyMatch::Action(Action::ActivateTab(2))
+        );
+        let secondary = if cfg!(target_os = "macos") {
+            "cmd-shift-x"
+        } else {
+            "ctrl-shift-x"
+        };
+        assert_eq!(
+            keymap.match_keys(&[], &stroke(secondary)),
+            KeyMatch::Action(Action::NewTerminal)
+        );
         assert_eq!(keymap.binding_for(Action::ToggleLeftDock), None);
         assert_eq!(
             keymap.match_keys(&[], &stroke("cmd-j")),
@@ -505,5 +645,48 @@ mod tests {
             "other contexts are not the window's"
         );
         assert!(!Keymap::defaults().apply_user("{").is_empty());
+    }
+
+    #[test]
+    fn every_platform_binds_every_default_action_once() {
+        for table in [MACOS_DEFAULTS, OTHER_DEFAULTS] {
+            let mut keys: Vec<&str> = table.iter().map(|(keys, _)| *keys).collect();
+            let before = keys.len();
+            keys.sort();
+            keys.dedup();
+            assert_eq!(keys.len(), before, "a key is bound twice");
+            assert!(table.iter().all(|(keys, _)| sequence(keys).is_some()));
+        }
+        let actions = |table: &[(&str, Action)]| {
+            let mut actions: Vec<&str> = table.iter().map(|(_, action)| action.label()).collect();
+            actions.sort();
+            actions.dedup();
+            actions
+        };
+        assert_eq!(actions(MACOS_DEFAULTS), actions(OTHER_DEFAULTS));
+    }
+
+    #[test]
+    fn mac_defaults_put_window_commands_on_command() {
+        let keymap = Keymap::defaults();
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        for (keys, action) in [
+            ("cmd-shift-c", Action::FocusGit),
+            ("cmd-shift-s", Action::FocusServices),
+            ("cmd-shift-d", Action::FocusDatabase),
+            ("cmd-shift-r", Action::FocusPullRequests),
+            ("cmd-alt-o", Action::SwitchWorkspace),
+            ("cmd-1", Action::ActivateTab(0)),
+            ("cmd-9", Action::ActivateTab(8)),
+            ("cmd-0", Action::ActivateLastTab),
+        ] {
+            assert_eq!(
+                keymap.match_keys(&[], &stroke(keys)),
+                KeyMatch::Action(action),
+                "{keys}"
+            );
+        }
     }
 }
