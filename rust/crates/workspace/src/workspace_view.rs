@@ -7186,11 +7186,9 @@ fn push_pane_group(
                     clip: Some(b.gutter_clip),
                 });
             }
-            if !pane.carets.is_empty() {
-                let mut cp = Painted::default();
-                cp.rects.extend(pane.carets.iter().copied());
+            if !pane.carets.rects.is_empty() || !pane.carets.tris.is_empty() {
                 overlays.push(Overlay {
-                    painted: cp,
+                    painted: pane.carets.clone(),
                     clip: Some(text_clip),
                 });
             }

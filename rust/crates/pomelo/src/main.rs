@@ -1707,6 +1707,23 @@ impl App {
             (terminal_ui::agent_font_size() - self.settings.agent_font_size).abs() > f32::EPSILON;
         terminal_ui::set_agent_font_size(self.settings.agent_font_size);
         terminal_ui::set_stop_agent_on_close(self.settings.agent_tab_close == "stop");
+        let caret = ui::CaretStyle {
+            shape: match self.settings.cursor_shape.as_str() {
+                "block" => ui::CaretShape::Block,
+                "underline" => ui::CaretShape::Underline,
+                "hollow" => ui::CaretShape::Hollow,
+                _ => ui::CaretShape::Bar,
+            },
+            blink: self.settings.cursor_blink,
+            animate: self.settings.cursor_animation.enabled,
+            add_with_cmd: self.settings.multi_cursor_modifier == "cmd_or_ctrl",
+        };
+        let reduce_motion = self.settings.reduce_motion == "on";
+        if caret != ui::caret_style() || reduce_motion != ui::reduce_motion() {
+            ui::set_caret_style(caret);
+            ui::set_reduce_motion(reduce_motion);
+            self.mark_all_mains_dirty();
+        }
         if agent_font_changed {
             self.mark_all_mains_dirty();
         }

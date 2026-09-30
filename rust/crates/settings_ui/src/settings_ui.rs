@@ -237,6 +237,11 @@ pub const CTRL_MODULES_DAYS_EDIT: u64 = 327;
 pub const CTRL_OPEN_STORE: u64 = 328;
 pub const CTRL_HIDE_MOUSE: u64 = 330;
 pub const CTRL_AGENT_TAB_CLOSE: u64 = 331;
+pub const CTRL_MULTI_CURSOR_MODIFIER: u64 = 332;
+pub const CTRL_CURSOR_BLINK: u64 = 333;
+pub const CTRL_CURSOR_ANIMATION: u64 = 334;
+pub const CTRL_CURSOR_SHAPE: u64 = 335;
+pub const CTRL_REDUCE_MOTION: u64 = 336;
 pub const CTRL_START_AT_LOGIN: u64 = 260;
 pub const CTRL_AUTO_UPDATE: u64 = 261;
 pub const CTRL_CHECK_UPDATES: u64 = 262;
@@ -287,6 +292,28 @@ pub const MODULES_DAYS_MAX: u64 = 365;
 /// What closing an agent's tab does, as (setting value, label).
 const AGENT_TAB_CLOSE: [(&str, &str); 2] =
     [("hide", "Keep It Running"), ("stop", "Stop the Agent")];
+const MULTI_CURSOR_MODIFIERS: [(&str, &str); 2] = [("alt", "Alt"), ("cmd_or_ctrl", "Cmd Or Ctrl")];
+const CURSOR_SHAPES: [(&str, &str); 4] = [
+    ("bar", "Bar"),
+    ("block", "Block"),
+    ("underline", "Underline"),
+    ("hollow", "Hollow"),
+];
+const REDUCE_MOTION: [(&str, &str); 2] = [("off", "Off"), ("on", "On")];
+
+fn labels(choices: &[(&str, &str)]) -> Vec<String> {
+    choices.iter().map(|(_, label)| label.to_string()).collect()
+}
+
+/// The label of the choice `value` is, or the first one's for a value the list does not know.
+fn label_of(choices: &[(&str, &str)], value: &str) -> String {
+    choices
+        .iter()
+        .find(|(choice, _)| *choice == value)
+        .map_or(choices[0].1, |(_, label)| label)
+        .to_string()
+}
+
 const HIDE_MOUSE: [(&str, &str); 3] = [
     ("never", "Never"),
     ("on_typing", "On Typing"),
@@ -408,6 +435,9 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_MODULES_FALLBACK
             | CTRL_HIDE_MOUSE
             | CTRL_AGENT_TAB_CLOSE
+            | CTRL_MULTI_CURSOR_MODIFIER
+            | CTRL_CURSOR_SHAPE
+            | CTRL_REDUCE_MOTION
     ) || sound_event(id).is_some()
 }
 
@@ -454,6 +484,9 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
             .iter()
             .map(|(_, label)| label.to_string())
             .collect(),
+        CTRL_MULTI_CURSOR_MODIFIER => labels(&MULTI_CURSOR_MODIFIERS),
+        CTRL_CURSOR_SHAPE => labels(&CURSOR_SHAPES),
+        CTRL_REDUCE_MOTION => labels(&REDUCE_MOTION),
         CTRL_EXTERNAL_EDITOR => std::iter::once("Auto")
             .chain(EXTERNAL_EDITORS)
             .map(str::to_string)
@@ -494,6 +527,9 @@ pub fn control_value(id: u64, s: &Settings) -> String {
             .find(|(value, _)| *value == s.agent_tab_close)
             .map_or(AGENT_TAB_CLOSE[0].1, |(_, label)| label)
             .to_string(),
+        CTRL_MULTI_CURSOR_MODIFIER => label_of(&MULTI_CURSOR_MODIFIERS, &s.multi_cursor_modifier),
+        CTRL_CURSOR_SHAPE => label_of(&CURSOR_SHAPES, &s.cursor_shape),
+        CTRL_REDUCE_MOTION => label_of(&REDUCE_MOTION, &s.reduce_motion),
         CTRL_MODULES_FALLBACK => MODULES_FALLBACKS
             .iter()
             .find(|(value, _)| *value == s.modules_fallback)
@@ -544,6 +580,19 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
                 return false;
             };
             s.agent_tab_close = value.to_string();
+        }
+        CTRL_MULTI_CURSOR_MODIFIER | CTRL_CURSOR_SHAPE | CTRL_REDUCE_MOTION => {
+            let (choices, slot) = match id {
+                CTRL_MULTI_CURSOR_MODIFIER => {
+                    (&MULTI_CURSOR_MODIFIERS[..], &mut s.multi_cursor_modifier)
+                }
+                CTRL_CURSOR_SHAPE => (&CURSOR_SHAPES[..], &mut s.cursor_shape),
+                _ => (&REDUCE_MOTION[..], &mut s.reduce_motion),
+            };
+            let Some((value, _)) = choices.iter().find(|(_, label)| label == val) else {
+                return false;
+            };
+            *slot = value.to_string();
         }
         CTRL_MODULES_FALLBACK => {
             let Some((value, _)) = MODULES_FALLBACKS.iter().find(|(_, label)| label == val) else {
@@ -625,6 +674,11 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_MODULES_FALLBACK => s.modules_fallback == d.modules_fallback,
         CTRL_HIDE_MOUSE => s.hide_mouse == d.hide_mouse,
         CTRL_AGENT_TAB_CLOSE => s.agent_tab_close == d.agent_tab_close,
+        CTRL_MULTI_CURSOR_MODIFIER => s.multi_cursor_modifier == d.multi_cursor_modifier,
+        CTRL_CURSOR_BLINK => s.cursor_blink == d.cursor_blink,
+        CTRL_CURSOR_ANIMATION => s.cursor_animation == d.cursor_animation,
+        CTRL_CURSOR_SHAPE => s.cursor_shape == d.cursor_shape,
+        CTRL_REDUCE_MOTION => s.reduce_motion == d.reduce_motion,
         CTRL_MODULES_LIMIT_EDIT => s.modules_size_limit_gb == d.modules_size_limit_gb,
         CTRL_MODULES_DAYS_EDIT => s.modules_unused_days == d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
@@ -681,6 +735,11 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_MODULES_FALLBACK => s.modules_fallback = d.modules_fallback.clone(),
         CTRL_HIDE_MOUSE => s.hide_mouse = d.hide_mouse.clone(),
         CTRL_AGENT_TAB_CLOSE => s.agent_tab_close = d.agent_tab_close.clone(),
+        CTRL_MULTI_CURSOR_MODIFIER => s.multi_cursor_modifier = d.multi_cursor_modifier.clone(),
+        CTRL_CURSOR_BLINK => s.cursor_blink = d.cursor_blink,
+        CTRL_CURSOR_ANIMATION => s.cursor_animation = d.cursor_animation.clone(),
+        CTRL_CURSOR_SHAPE => s.cursor_shape = d.cursor_shape.clone(),
+        CTRL_REDUCE_MOTION => s.reduce_motion = d.reduce_motion.clone(),
         CTRL_MODULES_LIMIT_EDIT => s.modules_size_limit_gb = d.modules_size_limit_gb,
         CTRL_MODULES_DAYS_EDIT => s.modules_unused_days = d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
@@ -726,6 +785,14 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         }
         CTRL_SHOW_DIAGNOSTICS => {
             s.show_diagnostics = !s.show_diagnostics;
+            true
+        }
+        CTRL_CURSOR_BLINK => {
+            s.cursor_blink = !s.cursor_blink;
+            true
+        }
+        CTRL_CURSOR_ANIMATION => {
+            s.cursor_animation.enabled = !s.cursor_animation.enabled;
             true
         }
         CTRL_SHOW_CURSOR => {
@@ -1943,6 +2010,42 @@ fn appearance_page(s: &Settings) -> Page {
         }),
         PageItem::Header("Cursor"),
         PageItem::Row(SettingRow {
+            title: "Multi Cursor Modifier".into(),
+            description: "Modifier key for adding multiple cursors.".into(),
+            control: Control::Dropdown {
+                id: CTRL_MULTI_CURSOR_MODIFIER,
+                value: control_value(CTRL_MULTI_CURSOR_MODIFIER, s),
+            },
+            reset: reset_if_changed(CTRL_MULTI_CURSOR_MODIFIER, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Cursor Blink".into(),
+            description: "Whether the cursor blinks in the editor.".into(),
+            control: Control::Toggle {
+                id: CTRL_CURSOR_BLINK,
+                on: s.cursor_blink,
+            },
+            reset: reset_if_changed(CTRL_CURSOR_BLINK, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Cursor Animation".into(),
+            description: "Whether the cursor smoothly animates when moving around the editor.".into(),
+            control: Control::Toggle {
+                id: CTRL_CURSOR_ANIMATION,
+                on: s.cursor_animation.enabled,
+            },
+            reset: reset_if_changed(CTRL_CURSOR_ANIMATION, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Cursor Shape".into(),
+            description: "Cursor shape for the editor.".into(),
+            control: Control::Dropdown {
+                id: CTRL_CURSOR_SHAPE,
+                value: control_value(CTRL_CURSOR_SHAPE, s),
+            },
+            reset: reset_if_changed(CTRL_CURSOR_SHAPE, s),
+        }),
+        PageItem::Row(SettingRow {
             title: "Hide Mouse".into(),
             description: "When to hide the mouse cursor.".into(),
             control: Control::Dropdown {
@@ -1950,6 +2053,15 @@ fn appearance_page(s: &Settings) -> Page {
                 value: control_value(CTRL_HIDE_MOUSE, s),
             },
             reset: reset_if_changed(CTRL_HIDE_MOUSE, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Reduce Motion".into(),
+            description: "Whether to reduce non-essential motion, such as loading spinners, by rendering them in a static state.".into(),
+            control: Control::Dropdown {
+                id: CTRL_REDUCE_MOTION,
+                value: control_value(CTRL_REDUCE_MOTION, s),
+            },
+            reset: reset_if_changed(CTRL_REDUCE_MOTION, s),
         }),
     ]);
     Page {
@@ -3699,6 +3811,35 @@ mod tests {
         assert!(!handle_control(CTRL_WEBHOOK_PORT_DEC, &mut s));
         assert!(handle_control(CTRL_WEBHOOK_ENABLED, &mut s));
         assert!(!s.webhook_enabled);
+    }
+
+    #[test]
+    fn the_cursor_rows_edit_their_settings() {
+        let mut s = Settings::default();
+        assert_eq!(control_value(CTRL_CURSOR_SHAPE, &s), "Bar");
+        assert!(apply_choice(CTRL_CURSOR_SHAPE, 3, &[], &mut s));
+        assert_eq!(s.cursor_shape, "hollow");
+        assert!(apply_choice(CTRL_MULTI_CURSOR_MODIFIER, 1, &[], &mut s));
+        assert_eq!(s.multi_cursor_modifier, "cmd_or_ctrl");
+        assert!(apply_choice(CTRL_REDUCE_MOTION, 1, &[], &mut s));
+        assert_eq!(s.reduce_motion, "on");
+        assert!(handle_control(CTRL_CURSOR_BLINK, &mut s));
+        assert!(!s.cursor_blink);
+        assert!(handle_control(CTRL_CURSOR_ANIMATION, &mut s));
+        assert!(s.cursor_animation.enabled);
+        for id in [
+            CTRL_CURSOR_SHAPE,
+            CTRL_MULTI_CURSOR_MODIFIER,
+            CTRL_REDUCE_MOTION,
+            CTRL_CURSOR_BLINK,
+            CTRL_CURSOR_ANIMATION,
+        ] {
+            assert!(reset_to_default(id, &mut s));
+        }
+        assert_eq!(s, Settings::default());
+        let saved: Settings =
+            serde_json::from_str(r#"{"cursor_animation": {"enabled": true}}"#).expect("json");
+        assert!(saved.cursor_animation.enabled);
     }
 
     #[test]
