@@ -123,6 +123,9 @@ pub fn apply_drop(
     new_pane: impl FnOnce() -> Pane,
 ) -> Option<Vec<usize>> {
     let source_path = group.path_of(drag.source)?;
+    if let Some(pane) = group.leaf_at_mut(&source_path) {
+        pane.keep_if_preview(drag.index);
+    }
     let same_pane = drop.pane == drag.source;
     if same_pane && drop.target == DropTarget::Append {
         return Some(source_path);
@@ -163,6 +166,7 @@ pub fn apply_drop(
 fn detach(group: &mut Member<Pane>, drag: &TabDrag) -> Option<Box<dyn Item>> {
     let source_path = group.path_of(drag.source)?;
     let pane = group.leaf_at_mut(&source_path)?;
+    pane.keep_if_preview(drag.index);
     if drag.index >= pane.open.len() {
         return None;
     }

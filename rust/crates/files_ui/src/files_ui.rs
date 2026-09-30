@@ -281,6 +281,7 @@ fn next_toolbar_ids() -> u64 {
 }
 
 const TOOLBAR_IDS_PER_EDITOR: u64 = 64;
+const TREE_DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 const TOOLBAR_CRUMBS: u64 = 0;
 const TOOLBAR_SEARCH: u64 = 1;
 const TOOLBAR_SELECTIONS: u64 = 2;
@@ -6043,6 +6044,7 @@ struct PendingOpen {
     root: PathBuf,
     path: String,
     pane: u64,
+    how: OpenAs,
     receiver: std::sync::mpsc::Receiver<LoadedFile>,
 }
 
@@ -6297,30 +6299,58 @@ impl Item for ImageItem {
 }
 
 /// Opening files is the files view's business, so it extends the shared pane rather than living in it.
+/// How a file opens: as a tab of its own, as the preview tab (a single click in the tree), or as the preview
+/// from code navigation, which also keeps the preview it navigated away from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenAs {
+    Tab,
+    Preview,
+    Navigation,
+}
+
 trait OpenFile {
-    fn open_file(&mut self, root: &std::path::Path, path: &str);
+    fn open_file(&mut self, root: &std::path::Path, path: &str) {
+        self.open_file_as(root, path, OpenAs::Tab);
+    }
+    fn open_file_as(&mut self, root: &std::path::Path, path: &str, how: OpenAs);
+    fn place_opened(&mut self, item: Box<dyn Item>, how: OpenAs);
 }
 
 impl OpenFile for Pane {
-    fn open_file(&mut self, root: &std::path::Path, path: &str) {
-        if let Some(i) = self
+    fn open_file_as(&mut self, root: &std::path::Path, path: &str, how: OpenAs) {
+        let existing = self
             .open
             .iter()
-            .position(|o| o.id().as_deref() == Some(path))
-        {
+            .position(|o| o.id().as_deref() == Some(path));
+        if how == OpenAs::Navigation {
+            if let Some(active) = self.active.filter(|active| Some(*active) != existing) {
+                self.keep_if_preview(active);
+            }
+        }
+        if let Some(i) = existing {
+            if how == OpenAs::Tab {
+                self.keep_if_preview(i);
+            }
             self.activate_user(i);
             return;
         }
         let ext = path.rsplit('.').next().unwrap_or("");
-        if is_image_ext(ext) {
-            self.open.push(Box::new(ImageItem::new(root, path)));
+        let item: Box<dyn Item> = if is_image_ext(ext) {
+            Box::new(ImageItem::new(root, path))
+        } else {
+            let text = files::read(root, path).ok().and_then(|c| c.text);
+            Box::new(FileItem::new(root.to_path_buf(), path, text))
+        };
+        self.place_opened(item, how);
+    }
+
+    fn place_opened(&mut self, item: Box<dyn Item>, how: OpenAs) {
+        if how == OpenAs::Tab {
+            self.open.push(item);
             self.activate_user(self.open.len() - 1);
-            return;
+        } else {
+            self.add_preview_item(item);
         }
-        let text = files::read(root, path).ok().and_then(|c| c.text);
-        self.open
-            .push(Box::new(FileItem::new(root.to_path_buf(), path, text)));
-        self.activate_user(self.open.len() - 1);
     }
 }
 
@@ -6378,6 +6408,8 @@ pub struct FilesView {
     finder_candidates: std::sync::Arc<file_finder::Candidates>,
     finder_loading: Option<std::sync::mpsc::Receiver<file_finder::Candidates>>,
     pending_opens: Vec<PendingOpen>,
+    /// The file last clicked in the tree and when: a second click on it opens it for good.
+    last_tree_click: Option<(std::time::Instant, String)>,
     recent_files: Vec<String>,
     palette_memory: command_palette::PaletteMemory,
     server_notices: ServerNotices,
@@ -6533,6 +6565,7 @@ impl FilesView {
             finder_candidates: Default::default(),
             finder_loading: None,
             pending_opens: Vec::new(),
+            last_tree_click: None,
             recent_files: Vec::new(),
             palette_memory: command_palette::PaletteMemory::default(),
             server_notices: ServerNotices::default(),
@@ -6576,6 +6609,10 @@ impl FilesView {
     }
 
     fn open_file(&mut self, path: &str) {
+        self.open_file_as(path, OpenAs::Tab);
+    }
+
+    fn open_file_as(&mut self, path: &str, how: OpenAs) {
         let root = self.root.clone();
         let Some(pane) = self.panes.active_pane_mut() else {
             return;
@@ -6588,7 +6625,7 @@ impl FilesView {
             .is_ok_and(|meta| meta.len() >= BACKGROUND_OPEN_BYTES);
         let ext = path.rsplit('.').next().unwrap_or("");
         if already_open || !large || is_image_ext(ext) {
-            pane.open_file(&root, path);
+            pane.open_file_as(&root, path, how);
             return;
         }
         if self
@@ -6611,12 +6648,13 @@ impl FilesView {
                 root,
                 path: path.to_string(),
                 pane,
+                how,
                 receiver,
             }),
             Err(error) => {
                 eprintln!("open {path} in the background: {error}");
                 if let Some(pane) = self.panes.active_pane_mut() {
-                    pane.open_file(&self.root.clone(), path);
+                    pane.open_file_as(&self.root.clone(), path, how);
                 }
             }
         }
@@ -6644,15 +6682,13 @@ impl FilesView {
             self.panes.group.for_each_pane_mut(&mut |pane| {
                 if pane.id == pending.pane {
                     if let Some(item) = item.take() {
-                        pane.open.push(item);
-                        pane.activate_user(pane.open.len() - 1);
+                        pane.place_opened(item, pending.how);
                     }
                 }
             });
             if let Some(item) = item {
                 if let Some(pane) = self.panes.active_pane_mut() {
-                    pane.open.push(item);
-                    pane.activate_user(pane.open.len() - 1);
+                    pane.place_opened(item, pending.how);
                 }
             }
             opened = true;
@@ -7694,7 +7730,7 @@ fn open_definition(
         ),
     };
     if let Some(pane) = group.active_pane_mut() {
-        pane.open_file(&file_root, &relative);
+        pane.open_file_as(&file_root, &relative, OpenAs::Navigation);
     }
     if let Some(file) = group
         .active_item_mut()
@@ -8432,7 +8468,13 @@ impl FunctionView for FilesView {
             }
             self.flat_dirty = true;
         } else {
-            self.open_file(&path);
+            let now = std::time::Instant::now();
+            let second = self.last_tree_click.as_ref().is_some_and(|(at, clicked)| {
+                *clicked == path && now.duration_since(*at) < TREE_DOUBLE_CLICK
+            });
+            self.last_tree_click = (!second).then(|| (now, path.clone()));
+            let how = if second { OpenAs::Tab } else { OpenAs::Preview };
+            self.open_file_as(&path, how);
         }
         true
     }
@@ -8722,6 +8764,7 @@ impl FunctionView for FilesView {
 
     fn tick_items(&mut self, clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
         let mut outcome = workspace::ItemTick::default();
+        self.panes.keep_edited_previews();
         outcome.changed |= self.poll_finder_candidates();
         outcome.changed |= self.poll_pending_opens();
         outcome.changed |= self.apply_disk_changes();
@@ -11089,6 +11132,37 @@ mod markdown_preview_tests {
         });
         assert!(texts.iter().any(|text| text == "Title"), "{texts:?}");
         assert!(texts.iter().any(|text| text.contains("more")), "{texts:?}");
+    }
+}
+
+#[cfg(test)]
+mod preview_tab_tests {
+    use super::*;
+
+    #[test]
+    fn tree_clicks_preview_and_navigation_keeps_the_preview_it_leaves() {
+        let temp = tempfile::tempdir().expect("temp");
+        for name in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+            std::fs::write(temp.path().join(name), "fn main() {}\n").expect("write");
+        }
+        let root = temp.path().to_path_buf();
+        let mut pane = Pane::new(1);
+        let titles = |pane: &Pane| {
+            pane.open
+                .iter()
+                .filter_map(|item| item.id())
+                .collect::<Vec<_>>()
+        };
+        pane.open_file_as(&root, "a.rs", OpenAs::Preview);
+        pane.open_file_as(&root, "b.rs", OpenAs::Preview);
+        assert_eq!(titles(&pane), ["b.rs"]);
+        assert!(pane.is_preview(0));
+        pane.open_file_as(&root, "b.rs", OpenAs::Tab);
+        assert!(!pane.is_preview(0), "opening it for good keeps it");
+        pane.open_file_as(&root, "c.rs", OpenAs::Preview);
+        pane.open_file_as(&root, "d.rs", OpenAs::Navigation);
+        assert_eq!(titles(&pane), ["b.rs", "c.rs", "d.rs"]);
+        assert!(pane.is_preview(2) && !pane.is_preview(1));
     }
 }
 

@@ -1180,14 +1180,17 @@ fn workspace_row(
             .on_click(crate::WORKSPACE_TICKET_BASE + row.index as u64)
             .child(square);
         if trouble.is_none() {
-            status = status.flex(1.0).child(
+            status = status.child(
                 label(row.ticket.clone())
                     .size(11.0)
                     .color(colors.text_muted)
                     .truncate(),
             );
+            // Only the status itself opens the ticket; the rest of the line selects the workspace.
+            details = details.child(div().row().flex(1.0).items_center().child(status));
+        } else {
+            details = details.child(status);
         }
-        details = details.child(status);
         has_details = true;
     } else if matches!(upkeep, Upkeep::None) && row.branch != row.label && row.running > 0 {
         details = details.child(
@@ -2259,6 +2262,17 @@ mod tests {
         let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
         assert!(ids.contains(&(crate::WORKSPACE_TICKET_BASE + 1)));
         assert!(!ids.contains(&crate::WORKSPACE_TICKET_BASE));
+        let status = painted
+            .hits
+            .iter()
+            .find(|(_, id)| *id == crate::WORKSPACE_TICKET_BASE + 1)
+            .map(|(rect, _)| *rect)
+            .expect("status hit");
+        assert!(
+            status.w < 120.0,
+            "only the status opens the ticket: {}",
+            status.w
+        );
     }
 
     #[test]

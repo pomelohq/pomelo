@@ -100,7 +100,8 @@ impl Pane {
         let slot = self
             .preview
             .as_deref()
-            .and_then(|preview| self.index_of_id(preview));
+            .and_then(|preview| self.index_of_id(preview))
+            .filter(|index| self.open.get(*index).is_some_and(|old| !old.is_dirty()));
         match slot {
             Some(index) => {
                 if let Some(old) = self.open.get_mut(index) {
@@ -117,6 +118,26 @@ impl Pane {
     /// Keeps the preview tab open for good (the user worked in it).
     pub fn keep_preview(&mut self) {
         self.preview = None;
+    }
+
+    /// Keeps tab `index` open for good when it is the preview.
+    pub fn keep_if_preview(&mut self, index: usize) {
+        if self.is_preview(index) {
+            self.keep_preview();
+        }
+    }
+
+    /// A preview the user edited stays open.
+    pub fn keep_edited_preview(&mut self) {
+        let edited = self
+            .preview
+            .as_deref()
+            .and_then(|preview| self.index_of_id(preview))
+            .and_then(|index| self.open.get(index))
+            .is_some_and(|item| item.is_dirty());
+        if edited {
+            self.keep_preview();
+        }
     }
 
     pub fn is_preview(&self, index: usize) -> bool {
@@ -250,6 +271,7 @@ impl Pane {
         if index >= self.open.len() {
             return;
         }
+        self.keep_if_preview(index);
         let destination = if self.is_pinned(index) {
             self.pinned -= 1;
             self.pinned
@@ -414,6 +436,17 @@ pub fn render_pane(pane: &Pane, config: &TabBarConfig, ids: PaneClickIds, width:
 
 /// The tabs themselves, laid out at their natural widths; the owner draws them over the tab bar's middle,
 /// scrolled and clipped to it.
+const MAX_TAB_TITLE_CHARS: usize = 24;
+
+/// `text` cut to `max` characters with `...` after, as tab titles are.
+fn trail_off(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max).collect();
+    format!("{kept}...")
+}
+
 pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> Node {
     let mut strip = div().row().h_px(TAB_H);
     for (index, item) in pane.open.iter().enumerate() {
@@ -483,11 +516,13 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                 .child(dirty_slot)
                 .child(glyph)
                 .child({
-                    let title = label(item.title()).size(13.0).color(if is_active {
-                        theme().text
-                    } else {
-                        theme().text_muted
-                    });
+                    let title = label(trail_off(&item.title(), MAX_TAB_TITLE_CHARS))
+                        .size(13.0)
+                        .color(if is_active {
+                            theme().text
+                        } else {
+                            theme().text_muted
+                        });
                     if pane.is_preview(index) {
                         title.italic()
                     } else {
@@ -495,7 +530,7 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                     }
                 })
                 .child(match item.tab_detail() {
-                    Some(detail) => label(detail)
+                    Some(detail) => label(trail_off(&detail, MAX_TAB_TITLE_CHARS))
                         .size(13.0)
                         .color(theme().text_placeholder)
                         .into(),
@@ -674,6 +709,18 @@ mod tests {
     }
 
     #[test]
+    fn long_tab_titles_trail_off() {
+        assert_eq!(trail_off("delete.rb", MAX_TAB_TITLE_CHARS), "delete.rb");
+        assert_eq!(
+            trail_off(
+                "PROJ-101 Let people leave one mailing list and keep the rest",
+                MAX_TAB_TITLE_CHARS
+            ),
+            "PROJ-101 Let people leav..."
+        );
+    }
+
+    #[test]
     fn a_preview_tab_is_replaced_by_the_next_preview_until_it_is_kept() {
         let mut pane = Pane::new(1);
         pane.add_item(Box::new(Plain("a")));
@@ -691,6 +738,36 @@ mod tests {
         pane.add_preview_item(Box::new(Plain("d")));
         assert_eq!(titles(&pane), ["a", "c", "d"]);
         assert!(!pane.is_preview(1) && pane.is_preview(2));
+    }
+
+    struct Edited(&'static str);
+
+    impl Item for Edited {
+        fn id(&self) -> Option<String> {
+            Some(self.0.to_string())
+        }
+        fn title(&self) -> String {
+            self.0.to_string()
+        }
+        fn render(&mut self) -> Node {
+            div().into()
+        }
+        fn is_dirty(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn an_edited_or_pinned_preview_stays_open() {
+        let mut pane = Pane::new(1);
+        pane.add_preview_item(Box::new(Edited("a")));
+        pane.keep_edited_preview();
+        assert!(!pane.is_preview(0));
+        pane.add_preview_item(Box::new(Plain("b")));
+        pane.toggle_pin(1);
+        assert!(pane.preview.is_none());
+        pane.add_preview_item(Box::new(Plain("c")));
+        assert_eq!(pane.open.len(), 3);
     }
 
     fn ids() -> PaneClickIds {
