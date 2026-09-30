@@ -5495,6 +5495,11 @@ impl WorkspaceView {
 
     pub fn mouse_up(&mut self) {
         self.titlebar_press = false;
+        if let Drag::EditorSel(group) = self.dragging {
+            if let Some(input) = self.input(group) {
+                input.editor_release();
+            }
+        }
         if let Drag::ItemPointer(group) = self.dragging {
             let (x, y) = self.pointer;
             if let Some(input) = self.input(group) {

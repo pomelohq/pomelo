@@ -138,6 +138,8 @@ pub struct PaneGroupView {
     divider_order: Vec<DividerRef>,
     hover: Option<u64>,
     tab_drag: Option<TabDrag>,
+    /// A press with the go-to-definition modifier, followed on release unless it became a selection.
+    pending_link_click: Option<(Vec<usize>, f32, f32)>,
     foreign_drop: Option<(TabDrop, Rect)>,
     /// The focused pane's content area as last laid out, for placing popovers at its caret.
     focused_content: Option<Rect>,
@@ -176,6 +178,7 @@ impl PaneGroupView {
             divider_order: Vec::new(),
             hover: None,
             tab_drag: None,
+            pending_link_click: None,
             foreign_drop: None,
             focused_content: None,
             focused: true,
@@ -1727,15 +1730,9 @@ impl ItemInput for PaneGroupView {
             } else {
                 (modifiers.cmd, modifiers.alt)
             };
-            if to_definition && !extend {
-                group.active = path.clone();
-                if group
-                    .active_item_mut()
-                    .is_some_and(|item| item.cmd_click(local_x, local_y))
-                {
-                    return true;
-                }
-            }
+            // The reference follows a link on release, not press, so dragging from it still selects.
+            group.pending_link_click =
+                (to_definition && !extend).then(|| (path.clone(), local_x, local_y));
             if !extend {
                 group.active = path;
             }
@@ -1777,6 +1774,18 @@ impl ItemInput for PaneGroupView {
                 None => false,
             }
         })
+    }
+
+    fn editor_release(&mut self) {
+        let Some((path, local_x, local_y)) = self.pending_link_click.take() else {
+            return;
+        };
+        self.track_nav(|group| {
+            group.active = path;
+            if let Some(item) = group.active_item_mut() {
+                item.cmd_click(local_x, local_y);
+            }
+        });
     }
 
     fn editor_drag(&mut self, x: f32, y: f32) -> bool {
@@ -2512,6 +2521,7 @@ mod tests {
     struct Doc {
         cursor: Option<(f32, f32, bool)>,
         typed: String,
+        followed: Vec<(f32, f32)>,
     }
 
     impl Item for Doc {
@@ -2529,6 +2539,10 @@ mod tests {
         }
         fn input_text(&mut self, text: &str) {
             self.typed.push_str(text);
+        }
+        fn cmd_click(&mut self, local_x: f32, local_y: f32) -> bool {
+            self.followed.push((local_x, local_y));
+            true
         }
         fn as_any(&self) -> Option<&dyn std::any::Any> {
             Some(self)
@@ -2624,6 +2638,26 @@ mod tests {
         );
         view.item_text("ls");
         assert!(view.pane_at(&[]).is_some_and(|pane| pane.search.dismissed));
+    }
+
+    #[test]
+    fn a_link_press_is_followed_once_on_release() {
+        let mut view = view();
+        if let Some(pane) = view.active_pane_mut() {
+            pane.add_item(Box::new(Doc::default()));
+        }
+        view.layout(area());
+        view.pending_link_click = Some((Vec::new(), 40.0, 30.0));
+        assert!(
+            doc(&view).is_some_and(|doc| doc.followed.is_empty()),
+            "not on press"
+        );
+        view.editor_release();
+        view.editor_release();
+        assert_eq!(
+            doc(&view).map(|doc| doc.followed.clone()),
+            Some(vec![(40.0, 30.0)])
+        );
     }
 
     #[test]

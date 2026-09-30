@@ -1837,6 +1837,8 @@ pub trait ItemInput {
     fn editor_double_click(&mut self, x: f32, y: f32) -> bool;
     /// Extend the selection to a drag point, which may lie outside the pane.
     fn editor_drag(&mut self, x: f32, y: f32) -> bool;
+    /// The button went up after an `editor_click`.
+    fn editor_release(&mut self) {}
     /// The pointer moved (no button held); returns whether anything hover-dependent changed.
     fn editor_hover(&mut self, x: f32, y: f32) -> bool;
     fn editor_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool;
