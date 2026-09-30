@@ -299,6 +299,42 @@ const MINIMAP_PADDING: f32 = 4.0;
 const MINIMAP_CACHED_LINES: usize = 20_000;
 
 /// The minimap's colored runs by line, and the (buffer version, tree still parsing) they were read at.
+
+#[derive(Default)]
+struct ServerNotices {
+    shown: Vec<workspace::ServerNotice>,
+    /// The questions servers wait on, by notice token: the server, its request and the actions offered.
+    requests: HashMap<u64, (lsp::ServerId, serde_json::Value, Vec<String>)>,
+    next: u64,
+}
+
+impl ServerNotices {
+    fn receive(&mut self, message: lsp::ServerMessage) {
+        let token = self.next;
+        self.next += 1;
+        if let Some(request) = message.request {
+            self.requests
+                .insert(token, (message.server, request, message.actions.clone()));
+        }
+        self.shown.push(workspace::ServerNotice {
+            token,
+            server: message.name.to_string(),
+            level: match message.level {
+                lsp::MessageLevel::Error => workspace::NoticeLevel::Error,
+                lsp::MessageLevel::Warning => workspace::NoticeLevel::Warning,
+                lsp::MessageLevel::Info => workspace::NoticeLevel::Info,
+            },
+            message: message.message,
+            actions: message.actions,
+            switch: message.switch.map(|switch| workspace::ServerSwitch {
+                language: switch.language,
+                from: switch.from,
+                to: switch.to,
+            }),
+        });
+    }
+}
+
 type MinimapLines = (Option<(u64, bool)>, HashMap<usize, Vec<(String, Rgba)>>);
 
 /// Where the minimap sat last frame, in body-local px, and how its lines map onto the text.
@@ -6344,6 +6380,7 @@ pub struct FilesView {
     pending_opens: Vec<PendingOpen>,
     recent_files: Vec<String>,
     palette_memory: command_palette::PaletteMemory,
+    server_notices: ServerNotices,
     extra_commands: Vec<workspace::ExtraCommand>,
     picked_command: Option<u64>,
     /// The open symbol outline and the pane it navigates.
@@ -6498,6 +6535,7 @@ impl FilesView {
             pending_opens: Vec::new(),
             recent_files: Vec::new(),
             palette_memory: command_palette::PaletteMemory::default(),
+            server_notices: ServerNotices::default(),
             extra_commands: Vec::new(),
             picked_command: None,
             outline: None,
@@ -6777,6 +6815,7 @@ impl FilesView {
         let mut definition_answers = Vec::new();
         for event in events {
             match event {
+                lsp::StoreEvent::Message(message) => self.server_notices.receive(message),
                 lsp::StoreEvent::Diagnostics(update) => updates.push(update),
                 lsp::StoreEvent::Hover(response) => hovers.push(response),
                 lsp::StoreEvent::Completions(response) => completion_answers.push(response),
@@ -8650,6 +8689,22 @@ impl FunctionView for FilesView {
 
     fn take_request(&mut self) -> Option<workspace::ViewRequest> {
         self.request.take()
+    }
+
+    fn take_server_notices(&mut self) -> Vec<workspace::ServerNotice> {
+        std::mem::take(&mut self.server_notices.shown)
+    }
+
+    fn answer_server_notice(&mut self, token: u64, action: Option<usize>) {
+        let Some((server, request, actions)) = self.server_notices.requests.remove(&token) else {
+            return;
+        };
+        let title = action
+            .and_then(|index| actions.get(index))
+            .map(String::as_str);
+        if let Some(lsp) = self.lsp.as_mut() {
+            lsp.answer_message(server, request, title);
+        }
     }
 
     fn add_center_item(&mut self, item: Box<dyn Item>) {

@@ -501,6 +501,10 @@ pub const TOAST_ACTION: u64 = 9;
 pub const TOAST_CLOSE: u64 = 10;
 pub const NOTIFICATION_PRIMARY: u64 = 620;
 pub const NOTIFICATION_CLOSE: u64 = 621;
+pub const NOTIFICATION_COPY: u64 = 622;
+/// A notification's own buttons: id = base + index.
+pub const NOTIFICATION_BUTTON_BASE: u64 = 630;
+pub const NOTIFICATION_BUTTON_END: u64 = 650;
 /// A row of the WORKSPACES panel: id = base + index into `ProjectInfo::workspaces`.
 pub const SIDE_PANEL_MENU_TARGET: u64 = 1500;
 
@@ -1748,6 +1752,32 @@ pub enum ViewRequest {
     NewCenterTerminal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeLevel {
+    Error,
+    Warning,
+    Info,
+}
+
+/// Run `to` for `language` in place of `from`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServerSwitch {
+    pub language: &'static str,
+    pub from: &'static str,
+    pub to: &'static str,
+}
+
+/// A language server's message, and the answers it waits for when it asked a question.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerNotice {
+    pub token: u64,
+    pub server: String,
+    pub level: NoticeLevel,
+    pub message: String,
+    pub actions: Vec<String>,
+    pub switch: Option<ServerSwitch>,
+}
+
 /// A cmd-clicked link from the terminal: a URL for the browser, or an existing file (1-based position).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalOpenTarget {
@@ -1965,6 +1995,11 @@ pub trait FunctionView: ItemInput + 'static {
     fn take_request(&mut self) -> Option<ViewRequest> {
         None
     }
+    fn take_server_notices(&mut self) -> Vec<ServerNotice> {
+        Vec::new()
+    }
+    /// The action picked on a notice (`None` when it was closed).
+    fn answer_server_notice(&mut self, _token: u64, _action: Option<usize>) {}
     /// A menu an item's toolbar asked to open, once.
     fn take_menu_request(&mut self) -> Option<Vec<MenuItem>> {
         None

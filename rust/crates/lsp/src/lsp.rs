@@ -31,7 +31,8 @@ pub use position::{char_to_position, diagnostic_char_range, position_to_char};
 pub use shell_env::capture_login_env;
 pub use store::{
     DefinitionKind, DefinitionTarget, DefinitionsResponse, DiagnosticsUpdate, HoverResponse,
-    LspStore, ServerId, ServerStatus, ServerSummary, ServerWork, StoreEvent, SyncedText,
+    LspStore, MessageLevel, ServerId, ServerMessage, ServerStatus, ServerSummary, ServerSwitch,
+    ServerWork, StoreEvent, SyncedText,
 };
 
 const CONTENT_LENGTH: &str = "Content-Length: ";
@@ -80,6 +81,11 @@ pub enum ServerEvent {
     /// The server will report progress under this token (`window/workDoneProgress/create`).
     ProgressCreated {
         token: String,
+    },
+    /// `window/showMessageRequest`: the server waits for `reply` under `id` with the action picked.
+    MessageRequest {
+        id: Value,
+        params: Value,
     },
     /// The server's output closed: it exited or crashed.
     Exited,
@@ -183,6 +189,10 @@ impl LanguageServer {
         self.send(json!({"jsonrpc": "2.0", "method": method, "params": params}));
     }
 
+    pub fn reply(&mut self, id: Value, result: Value) {
+        self.respond(id, Ok(result));
+    }
+
     fn respond(&mut self, id: Value, result: Result<Value, ResponseError>) {
         let message = match result {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
@@ -207,6 +217,11 @@ impl LanguageServer {
                 }
                 Ok(Incoming::Notification { method, params }) => {
                     events.push(ServerEvent::Notification { method, params });
+                }
+                Ok(Incoming::Request { id, method, params })
+                    if method == "window/showMessageRequest" =>
+                {
+                    events.push(ServerEvent::MessageRequest { id, params });
                 }
                 Ok(Incoming::Request { id, method, params }) => {
                     if method == "window/workDoneProgress/create" {
@@ -444,7 +459,9 @@ fn parse_incoming(body: &[u8]) -> Option<Incoming> {
 /// indexing) waits for the next frame instead of forcing one.
 fn needs_ui(message: &Incoming) -> bool {
     match message {
-        Incoming::Notification { method, .. } => method == "textDocument/publishDiagnostics",
+        Incoming::Notification { method, .. } => {
+            method == "textDocument/publishDiagnostics" || method == "window/showMessage"
+        }
         Incoming::Response { .. } | Incoming::Request { .. } => true,
     }
 }
@@ -482,6 +499,7 @@ mod tests {
         assert!(needs_ui(&notification("textDocument/publishDiagnostics")));
         assert!(!needs_ui(&notification("$/progress")));
         assert!(!needs_ui(&notification("window/logMessage")));
+        assert!(needs_ui(&notification("window/showMessage")));
         assert!(needs_ui(&Incoming::Response {
             id: 1,
             result: Ok(Value::Null),

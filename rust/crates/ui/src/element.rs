@@ -129,6 +129,7 @@ pub enum IconKind {
     Ellipsis,
     Pause,
     HelpCircle,
+    Info,
     Messages,
     Wrench,
     Archive,
