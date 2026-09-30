@@ -113,6 +113,8 @@ pub struct Text {
     pub italic: bool,
     /// Wrap width in logical (design) px; `0` = single line. Used for wrapping setting descriptions.
     pub wrap: f32,
+    /// The UI text scale it was laid out at, which it is drawn at too.
+    pub scale: f32,
 }
 
 /// A scissor rectangle `(x, y, w, h)` in physical pixels; `None` means draw unclipped.
@@ -1775,9 +1777,9 @@ impl UiRenderer {
                 &self.sans_family,
                 &self.mono_family,
             );
-            let sz = t.size * theme::ui_text_scale();
+            let sz = t.size * t.scale;
             let wrap_w = if t.wrap > 0.0 {
-                t.wrap * theme::ui_text_scale()
+                t.wrap * t.scale
             } else {
                 vw / self.scale
             };
@@ -2267,8 +2269,6 @@ impl UiRenderer {
             right: self.config.width as i32,
             bottom: self.config.height as i32,
         };
-        let scale_ui = theme::ui_text_scale();
-
         if self.shaped_cache.len() > 20_000 {
             self.shaped_cache.clear();
         }
@@ -2282,10 +2282,10 @@ impl UiRenderer {
                 &self.sans_family,
                 &self.mono_family,
             );
-            let sz = t.size * scale_ui;
+            let sz = t.size * t.scale;
             let weight = effective_weight(t.font, fam.as_deref(), t.weight);
             let wrap_w = if t.wrap > 0.0 {
-                Some(t.wrap * scale_ui)
+                Some(t.wrap * t.scale)
             } else {
                 None
             };

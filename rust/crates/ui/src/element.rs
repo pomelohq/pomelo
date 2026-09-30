@@ -1051,6 +1051,7 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                 weight: l.weight,
                 italic: l.italic,
                 wrap: l.wrap,
+                scale: crate::ui_text_scale(),
             });
         }
         Node::Div(d) => {
