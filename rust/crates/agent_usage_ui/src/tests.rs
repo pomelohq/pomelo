@@ -72,7 +72,7 @@ fn long_workspace_names_never_widen_the_page() {
     {
         let mut state = shared.borrow_mut();
         for turn in &mut state.turns {
-            turn.workspace = "crm-1439-ai-email-parser-evals-and-a-much-longer-branch-name".into();
+            turn.workspace = "proj-101-login-form-validation-and-a-much-longer-branch-name".into();
         }
     }
     for width in [700.0_f32, 960.0, 1400.0] {
@@ -100,7 +100,7 @@ fn many_workspaces_wrap_the_legend_and_fold_into_others() {
         state.turns = (0..8)
             .map(|index| {
                 turn(
-                    &format!("crm-14{index}-a-rather-long-workspace-branch-name"),
+                    &format!("proj-10{index}-a-rather-long-workspace-branch-name"),
                     AgentKind::Main,
                     100,
                     &format!("s{index}"),

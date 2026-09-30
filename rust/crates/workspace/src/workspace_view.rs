@@ -8283,7 +8283,7 @@ mod tests {
         assert_eq!(fix.cwd, std::path::PathBuf::from("/work/web"));
 
         let (items, fix) = e.update(app.app_mut(), |view, _| {
-            view.menu_terminal = Some((InputGroup::Panel, vec![], context(Some("panic: boom"))));
+            view.menu_terminal = Some((InputGroup::Panel, vec![], context(Some("panic: failed"))));
             let items = view.terminal_menu_items();
             view.terminal_menu_click(crate::MENU_TERM_ASK_AGENT);
             (items, view.take_agent_fix())
@@ -8293,7 +8293,7 @@ mod tests {
             .any(|item| item.label == "Ask Agent about Selection" && !item.disabled));
         let prompt = fix.map(|(fix, _)| fix.prompt).unwrap_or_default();
         assert!(
-            prompt.contains("panic: boom") && !prompt.contains("npm ERR!"),
+            prompt.contains("panic: failed") && !prompt.contains("npm ERR!"),
             "{prompt}"
         );
 

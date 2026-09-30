@@ -160,7 +160,7 @@ fn a_failed_command_leaves_a_crash_log_and_cleans_up() {
     let holders = Holders::new();
     holders.spawn(
         "svc-demo-main-api-broken",
-        &["sh", "-c", "sleep 0.3; printf boom; exit 3"],
+        &["sh", "-c", "sleep 0.3; printf failed; exit 3"],
     );
     let deadline = Instant::now() + TIMEOUT;
     while holders.dir.holder_alive("svc-demo-main-api-broken") && Instant::now() < deadline {
@@ -172,7 +172,7 @@ fn a_failed_command_leaves_a_crash_log_and_cleans_up() {
         .crash_info("svc-demo-main-api-broken")
         .expect("crash log");
     assert!(info.crashed, "{}", info.header);
-    assert!(String::from_utf8_lossy(&info.output).contains("boom"));
+    assert!(String::from_utf8_lossy(&info.output).contains("failed"));
     assert!(!holders.dir.socket("svc-demo-main-api-broken").exists());
     assert!(!holders.dir.pidfile("svc-demo-main-api-broken").exists());
 }

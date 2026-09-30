@@ -193,7 +193,7 @@ mod tests {
                     max_result_chars: 0,
                     run: Box::new(|args| {
                         args.get("fail")
-                            .map_or(Ok("ok".to_string()), |_| Err("boom".to_string()))
+                            .map_or(Ok("ok".to_string()), |_| Err("failed".to_string()))
                     }),
                 },
                 Tool {
@@ -258,7 +258,7 @@ mod tests {
         );
         assert_eq!(replies[2]["error"]["code"], -32601);
         assert_eq!(replies[3]["result"]["isError"], true);
-        assert_eq!(replies[3]["result"]["content"][0]["text"], "boom");
+        assert_eq!(replies[3]["result"]["content"][0]["text"], "failed");
         assert_eq!(
             replies[4]["result"]["content"][0]["text"],
             "unknown tool: ghost"
