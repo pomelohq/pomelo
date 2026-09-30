@@ -598,6 +598,7 @@ impl WorkspaceView {
             }
             Action::FileFinder => self.open_file_finder(),
             Action::ProjectSearch => self.deploy_project_search(),
+            Action::ProjectDiagnostics => self.deploy_project_diagnostics(false),
             Action::MarkdownPreview | Action::MarkdownPreviewToTheSide => {
                 let key = if action == Action::MarkdownPreview {
                     EditKey::OpenMarkdownPreview
@@ -5466,6 +5467,23 @@ impl WorkspaceView {
         }
     }
 
+    /// Open the project diagnostics tab; `from_status` is the status bar's click, which shows warnings when
+    /// there are no errors.
+    pub fn deploy_project_diagnostics(&mut self, from_status: bool) {
+        if self.window_modal.is_some() {
+            return;
+        }
+        self.set_terminal_focus(false);
+        if let Some(files) = self.layout.files_view.as_mut() {
+            let key = if from_status {
+                EditKey::DeployDiagnosticsFromStatus
+            } else {
+                EditKey::DeployDiagnostics
+            };
+            files.editor_key(key, false);
+        }
+    }
+
     pub fn deploy_project_search(&mut self) {
         if self.window_modal.is_some() {
             return;
@@ -6864,6 +6882,8 @@ impl WorkspaceView {
             self.toggle_usage_popover(false);
         } else if id == crate::USAGE_STATUS {
             self.toggle_usage_popover(true);
+        } else if id == crate::DIAGNOSTICS_BUTTON {
+            self.deploy_project_diagnostics(true);
         } else if id == crate::LANGUAGE_SERVERS_BUTTON {
             self.toggle_status_menu(crate::LANGUAGE_SERVERS_MENU_TARGET);
         } else if id == crate::LANGUAGE_ACTIVITY {

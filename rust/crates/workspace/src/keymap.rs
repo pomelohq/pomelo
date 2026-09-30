@@ -6,6 +6,7 @@ pub enum Action {
     CommandPalette,
     FileFinder,
     ProjectSearch,
+    ProjectDiagnostics,
     OpenSettings,
     OpenKeymap,
     OpenProject,
@@ -47,10 +48,11 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 48] = [
+    pub const ALL: [Action; 49] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
+        Action::ProjectDiagnostics,
         Action::OpenSettings,
         Action::OpenKeymap,
         Action::OpenProject,
@@ -104,6 +106,7 @@ impl Action {
             Action::CommandPalette => "command_palette::Toggle",
             Action::FileFinder => "file_finder::Toggle",
             Action::ProjectSearch => "project_search::Deploy",
+            Action::ProjectDiagnostics => "diagnostics::Deploy",
             Action::OpenSettings => "pomelo::OpenSettings",
             Action::OpenKeymap => "pomelo::OpenKeymap",
             Action::OpenProject => "workspace::Open",
@@ -150,6 +153,7 @@ impl Action {
             Action::CommandPalette => "Command Palette",
             Action::FileFinder => "Go to File",
             Action::ProjectSearch => "Find in Project",
+            Action::ProjectDiagnostics => "Project Diagnostics",
             Action::OpenSettings => "Open Settings",
             Action::OpenKeymap => "Open Keymap",
             Action::OpenProject => "Open Project",
@@ -357,6 +361,7 @@ const MACOS_DEFAULTS: &[(&str, Action)] = &[
     ("cmd-shift-p", Action::CommandPalette),
     ("cmd-p", Action::FileFinder),
     ("cmd-shift-f", Action::ProjectSearch),
+    ("cmd-shift-m", Action::ProjectDiagnostics),
     ("cmd-,", Action::OpenSettings),
     ("cmd-k cmd-s", Action::OpenKeymap),
     ("cmd-o", Action::OpenProject),
@@ -401,6 +406,7 @@ const OTHER_DEFAULTS: &[(&str, Action)] = &[
     ("ctrl-shift-p", Action::CommandPalette),
     ("ctrl-p", Action::FileFinder),
     ("ctrl-shift-f", Action::ProjectSearch),
+    ("ctrl-shift-m", Action::ProjectDiagnostics),
     ("ctrl-,", Action::OpenSettings),
     ("ctrl-k ctrl-s", Action::OpenKeymap),
     ("ctrl-o", Action::OpenProject),

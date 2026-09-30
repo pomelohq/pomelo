@@ -464,34 +464,45 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                 .size(14.0)
                 .into(),
         };
-        let content = div()
-            .row()
-            .flex(1.0)
-            .px(10.0)
-            .gap(6.0)
-            .items_center()
-            .child(dirty_slot)
-            .child(glyph)
-            .child({
-                let title = label(item.title()).size(13.0).color(if is_active {
-                    theme().text
-                } else {
-                    theme().text_muted
-                });
-                if pane.is_preview(index) {
-                    title.italic()
-                } else {
-                    title
-                }
-            })
-            .child(match item.tab_detail() {
-                Some(detail) => label(detail)
-                    .size(13.0)
-                    .color(theme().text_placeholder)
-                    .into(),
-                None => Node::from(div()),
-            })
-            .child(close_slot);
+        let content = match item.tab_content(is_active) {
+            Some(custom) => div()
+                .row()
+                .flex(1.0)
+                .px(10.0)
+                .gap(6.0)
+                .items_center()
+                .child(dirty_slot)
+                .child(custom)
+                .child(close_slot),
+            None => div()
+                .row()
+                .flex(1.0)
+                .px(10.0)
+                .gap(6.0)
+                .items_center()
+                .child(dirty_slot)
+                .child(glyph)
+                .child({
+                    let title = label(item.title()).size(13.0).color(if is_active {
+                        theme().text
+                    } else {
+                        theme().text_muted
+                    });
+                    if pane.is_preview(index) {
+                        title.italic()
+                    } else {
+                        title
+                    }
+                })
+                .child(match item.tab_detail() {
+                    Some(detail) => label(detail)
+                        .size(13.0)
+                        .color(theme().text_placeholder)
+                        .into(),
+                    None => Node::from(div()),
+                })
+                .child(close_slot),
+        };
         let cell = div()
             .col()
             .h_px(TAB_H)
