@@ -770,11 +770,19 @@ fn wrap_spans(spans: &[Span], width: f32, font: Font) -> Vec<Runs> {
 }
 
 fn syntax_theme() -> editor::Theme {
-    if theme().appearance == ui::Appearance::Light {
+    let colors = theme();
+    let mut syntax = if colors.appearance == ui::Appearance::Light {
         editor::Theme::one_light()
     } else {
         editor::Theme::one_dark()
+    };
+    for (capture, color) in ui::theme_file::syntax_colors() {
+        let [r, g, b, _] = color.to_u8();
+        syntax
+            .syntax
+            .insert(capture, editor::theme::Color::rgb(r, g, b));
     }
+    syntax
 }
 
 fn capture_color(colors: &editor::Theme, capture: &str) -> Rgba {

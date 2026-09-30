@@ -729,8 +729,11 @@ pub fn set_theme(colors: ThemeColors) {
     }
 }
 
-/// Resolve a theme by name; unknown names fall back to One Dark.
+/// Resolve a theme by name, the user's themes first; unknown names fall back to One Dark.
 pub fn by_name(name: &str) -> ThemeColors {
+    if let Some(theme) = crate::theme_file::user_theme(name) {
+        return theme.colors;
+    }
     match name {
         "One Light" => one_light(),
         "Ayu Mirage" => ayu_mirage(),

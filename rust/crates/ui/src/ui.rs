@@ -6,6 +6,7 @@ mod components;
 mod element;
 mod key_binding;
 mod theme;
+pub mod theme_file;
 pub use app::*;
 pub use components::*;
 pub use element::*;

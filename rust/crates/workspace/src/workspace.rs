@@ -3325,9 +3325,19 @@ fn icon_button(icon: Node, id: u64, hovered: Option<u64>) -> Node {
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting (and selection
 /// tints in text fields) stay in sync with the app theme.
 pub fn syntax_theme() -> editor::Theme {
-    if ui::theme().appearance == ui::Appearance::Light {
+    let colors = ui::theme();
+    let mut theme = if colors.appearance == ui::Appearance::Light {
         editor::Theme::one_light()
     } else {
         editor::Theme::one_dark()
+    };
+    let rgb = |rgba: ui::Rgba| {
+        let [r, g, b, _] = rgba.to_u8();
+        editor::theme::Color::rgb(r, g, b)
+    };
+    theme.foreground = rgb(colors.editor_foreground);
+    for (capture, color) in ui::theme_file::syntax_colors() {
+        theme.syntax.insert(capture, rgb(color));
     }
+    theme
 }

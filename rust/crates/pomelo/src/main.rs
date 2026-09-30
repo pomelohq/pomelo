@@ -628,6 +628,10 @@ struct App {
     keymap_problems: Vec<String>,
     /// When the user's keymap file was last read, to pick up edits.
     keymap_read: Option<std::time::SystemTime>,
+    /// The theme files last read, with their modification times, to notice edits.
+    theme_files: Option<Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>>,
+    theme_file_problems: Vec<String>,
+    themes_checked_at: Option<Instant>,
     keymap_checked: Option<Instant>,
     dev_proxy: Option<pom_proxy::DevProxy>,
     agent_registration: Arc<std::sync::Mutex<settings_ui::AgentPage>>,
@@ -2405,14 +2409,15 @@ impl App {
             }
             Action::NewWorkspace => self.open_create_workspace(id),
             Action::CycleTheme => {
-                self.settings.theme = settings_ui::next_theme(&self.settings.theme).to_string();
+                let system_dark = self.system_dark();
+                let next = settings_ui::next_theme(self.settings.active_theme(system_dark));
+                self.settings.set_active_theme(next.clone(), system_dark);
                 self.apply_theme();
                 if let Err(error) = self.settings.save() {
                     eprintln!("settings: save: {error}");
                 }
-                let theme = self.settings.theme.clone();
                 if self
-                    .with_settings_view(|view, _| view.set_theme(&theme))
+                    .with_settings_view(|view, _| view.set_theme(&next, system_dark))
                     .is_some()
                 {
                     self.settings_dirty = true;
@@ -2521,8 +2526,115 @@ impl App {
     }
 
     /// Apply the configured theme to the global palette the whole UI reads (selected by name).
+    /// Whether the OS is in dark mode, read from a main window (dark when there is none yet).
+    fn system_dark(&self) -> bool {
+        self.mains
+            .values()
+            .next()
+            .and_then(|main| main.window.theme())
+            .is_none_or(|theme| theme == winit::window::Theme::Dark)
+    }
+
+    /// The theme the settings select, with its `theme_overrides`, as the UI colors and the syntax palette.
     fn apply_theme(&self) {
-        ui::set_theme(ui::by_name(&self.settings.theme));
+        let name = self.settings.active_theme(self.system_dark()).to_string();
+        let mut colors = ui::by_name(&name);
+        let mut syntax = ui::theme_file::user_theme(&name)
+            .map(|theme| theme.syntax)
+            .unwrap_or_default();
+        let mut problems = self.theme_file_problems.clone();
+        if let Some(overrides) = self
+            .settings
+            .theme_overrides
+            .get(&name)
+            .and_then(|overrides| overrides.as_object())
+        {
+            problems.extend(ui::theme_file::apply_style(
+                &mut colors,
+                &mut syntax,
+                overrides,
+                &format!("settings.json theme_overrides \"{name}\""),
+            ));
+        }
+        ui::theme_file::set_theme_problems(problems);
+        ui::set_theme(colors);
+        ui::theme_file::set_syntax_colors(syntax);
+    }
+
+    fn themes_dir() -> Option<std::path::PathBuf> {
+        Some(pom_paths::config_dir()?.join("themes"))
+    }
+
+    /// Read every theme file again when the themes folder changed since the last look.
+    fn reload_themes_if_changed(&mut self) {
+        if self
+            .themes_checked_at
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.themes_checked_at = Some(Instant::now());
+        let Some(dir) = Self::themes_dir() else {
+            return;
+        };
+        let mut files: Vec<(std::path::PathBuf, Option<std::time::SystemTime>)> =
+            std::fs::read_dir(&dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                        .map(|path| {
+                            let modified = std::fs::metadata(&path)
+                                .and_then(|meta| meta.modified())
+                                .ok();
+                            (path, modified)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        files.sort();
+        if self.theme_files.as_ref() == Some(&files) {
+            return;
+        }
+        let mut themes = Vec::new();
+        let mut problems = Vec::new();
+        for (path, _) in &files {
+            let origin = path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+            match std::fs::read_to_string(path) {
+                Ok(text) => {
+                    let (loaded, found) = ui::theme_file::parse_family(&text, &origin);
+                    themes.extend(loaded);
+                    problems.extend(found);
+                }
+                Err(error) => problems.push(format!("{origin}: {error}")),
+            }
+        }
+        let first_look = self.theme_files.is_none();
+        self.theme_files = Some(files);
+        ui::theme_file::set_user_themes(themes);
+        self.theme_file_problems = problems;
+        self.apply_theme();
+        if !first_look {
+            self.settings_pages_at = None;
+            self.settings_dirty = true;
+            self.mark_all_mains_dirty();
+        }
+    }
+
+    fn open_themes_folder(&self) {
+        let Some(dir) = Self::themes_dir() else {
+            return;
+        };
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            eprintln!("themes: create {}: {error}", dir.display());
+            return;
+        }
+        if let Err(error) = std::process::Command::new("open").arg(&dir).spawn() {
+            eprintln!("themes: open {}: {error}", dir.display());
+        }
     }
 
     /// Force the caret visible and restart its blink cycle (called on keystrokes so it doesn't blink off mid-type).
@@ -2566,6 +2678,15 @@ impl App {
         }
         if effects.edit_keymap {
             self.edit_keymap();
+        }
+        if effects.open_themes {
+            self.open_themes_folder();
+        }
+        if effects.apply_theme {
+            self.apply_theme();
+            self.settings_pages_at = None;
+            self.settings_dirty = true;
+            self.mark_all_mains_dirty();
         }
         if let Some(id) = self.bundle_window() {
             let asked = effects.add_repo
@@ -2888,6 +3009,7 @@ impl ApplicationHandler for App {
         self.poll_add_repo();
         self.poll_clone_repos();
         self.reload_keymap_if_changed();
+        self.reload_themes_if_changed();
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {
             self.poll_workspaces(id);
@@ -3003,7 +3125,7 @@ impl ApplicationHandler for App {
             return;
         }
         self.settings = Settings::load();
-        self.apply_theme();
+        self.reload_themes_if_changed();
         self.apply_font_scale();
         self.apply_font_weight();
         ui::set_chrome(settings_ui::chrome_flags(&self.settings));
@@ -3640,6 +3762,11 @@ impl ApplicationHandler for App {
                         m.dirty = true;
                     }
                 }
+            }
+            WindowEvent::ThemeChanged(_) if self.settings.theme_selection == "dynamic" => {
+                self.apply_theme();
+                self.mark_all_mains_dirty();
+                self.settings_dirty = true;
             }
             WindowEvent::Focused(true) => {
                 self.focused_main = Some(id);

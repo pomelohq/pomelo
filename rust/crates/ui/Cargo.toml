@@ -17,3 +17,4 @@ glyphon.workspace = true
 resvg.workspace = true
 pollster.workspace = true
 bytemuck.workspace = true
+serde_json.workspace = true

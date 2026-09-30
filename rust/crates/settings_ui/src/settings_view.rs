@@ -45,6 +45,9 @@ pub struct SideEffects {
     pub toggle_login_item: bool,
     pub check_updates: bool,
     pub edit_keymap: bool,
+    pub open_themes: bool,
+    /// A theme choice changed: the app resolves and applies the theme (mode, overrides, syntax).
+    pub apply_theme: bool,
     pub export_config: bool,
     pub import_config: bool,
     pub edit_project_config: bool,
@@ -137,8 +140,9 @@ impl SettingsView {
     }
 
     /// The app changed the theme (from a key binding); the page shows it and later saves keep it.
-    pub fn set_theme(&mut self, theme: &str) {
-        self.settings.theme = theme.to_string();
+    pub fn set_theme(&mut self, theme: &str, system_dark: bool) {
+        self.settings
+            .set_active_theme(theme.to_string(), system_dark);
     }
 
     pub fn set_agent_page(&mut self, agent: settings_ui::AgentPage) -> bool {
@@ -813,8 +817,12 @@ impl SettingsView {
             if settings_ui::reset_to_default(base, &mut self.settings) {
                 let _ = self.settings.save();
                 match base {
-                    settings_ui::CTRL_THEME => {
-                        ui::set_theme(ui::by_name(&self.settings.theme));
+                    settings_ui::CTRL_THEME
+                    | settings_ui::CTRL_THEME_SELECTION
+                    | settings_ui::CTRL_MODE
+                    | settings_ui::CTRL_THEME_LIGHT
+                    | settings_ui::CTRL_THEME_DARK => {
+                        self.pending.apply_theme = true;
                         self.pending.redraw_others = true;
                     }
                     settings_ui::CTRL_FONT_FAMILY => self.pending.reapply_font = true,
@@ -861,8 +869,15 @@ impl SettingsView {
                     if cid == settings_ui::CTRL_FONT_FAMILY {
                         self.pending.reapply_font = true;
                     }
-                    if cid == settings_ui::CTRL_THEME {
-                        ui::set_theme(ui::by_name(&self.settings.theme));
+                    if matches!(
+                        cid,
+                        settings_ui::CTRL_THEME
+                            | settings_ui::CTRL_THEME_SELECTION
+                            | settings_ui::CTRL_MODE
+                            | settings_ui::CTRL_THEME_LIGHT
+                            | settings_ui::CTRL_THEME_DARK
+                    ) {
+                        self.pending.apply_theme = true;
                         self.pending.redraw_others = true;
                     }
                 }
@@ -936,6 +951,9 @@ impl SettingsView {
         } else if id == settings_ui::CTRL_EDIT_KEYMAP {
             self.commit_edit();
             self.pending.edit_keymap = true;
+        } else if id == settings_ui::CTRL_OPEN_THEMES {
+            self.commit_edit();
+            self.pending.open_themes = true;
         } else if id == settings_ui::CTRL_EXPORT_CONFIG {
             self.commit_edit();
             self.pending.export_config = true;
