@@ -48,6 +48,8 @@ pub struct Settings {
     pub show_session_name: bool,
     /// The AI CLI the Agent button opens in a workspace; `claude` also gets pom's MCP server and prompt.
     pub agent_command: String,
+    /// Closing an agent's tab: "hide" leaves the agent running, "stop" ends it.
+    pub agent_tab_close: String,
     /// The new-workspace ticket picker lists only Jira tickets assigned to you.
     pub jira_only_mine: bool,
     /// The Jira board the ticket picker opened on last (0: none yet).
@@ -138,6 +140,7 @@ impl Default for Settings {
             show_branch: true,
             show_session_name: true,
             agent_command: "claude".into(),
+            agent_tab_close: "hide".into(),
             jira_only_mine: false,
             jira_board: 0,
             group_workspaces: false,

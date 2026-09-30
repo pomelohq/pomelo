@@ -2961,6 +2961,12 @@ impl WorkspaceView {
         } else {
             items.push(pin);
         }
+        if let Some(stop) = state.stop_label {
+            items.push(MenuItem {
+                danger: true,
+                ..entry(crate::MENU_TAB_STOP, stop, true, false)
+            });
+        }
         items
     }
 
@@ -2990,6 +2996,12 @@ impl WorkspaceView {
         if item == crate::MENU_TAB_TOGGLE_PIN {
             if let Some(panes) = self.group_view_mut(group) {
                 panes.toggle_pin(pane, index);
+            }
+            return;
+        }
+        if item == crate::MENU_TAB_STOP {
+            if let Some(panes) = self.group_view_mut(group) {
+                panes.stop_tab(pane, index);
             }
             return;
         }

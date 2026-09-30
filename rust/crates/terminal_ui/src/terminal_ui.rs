@@ -35,6 +35,18 @@ pub fn agent_font_size() -> f32 {
     AGENT_FONT_HUNDREDTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }
 
+static STOP_AGENT_ON_CLOSE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Closing an agent's tab ends the agent too (else it keeps running, hidden).
+pub fn stop_agent_on_close() -> bool {
+    STOP_AGENT_ON_CLOSE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_stop_agent_on_close(stop: bool) {
+    STOP_AGENT_ON_CLOSE.store(stop, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn set_agent_font_size(size: f32) {
     AGENT_FONT_HUNDREDTHS.store(
         (size.clamp(6.0, 72.0) * 100.0).round() as u32,

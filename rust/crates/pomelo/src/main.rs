@@ -1706,6 +1706,7 @@ impl App {
         let agent_font_changed =
             (terminal_ui::agent_font_size() - self.settings.agent_font_size).abs() > f32::EPSILON;
         terminal_ui::set_agent_font_size(self.settings.agent_font_size);
+        terminal_ui::set_stop_agent_on_close(self.settings.agent_tab_close == "stop");
         if agent_font_changed {
             self.mark_all_mains_dirty();
         }

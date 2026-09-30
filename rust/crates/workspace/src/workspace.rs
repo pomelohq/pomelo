@@ -683,6 +683,7 @@ pub const MENU_TAB_COPY_REL_PATH: u64 = 907;
 pub const MENU_TAB_REVEAL: u64 = 908;
 pub const MENU_TAB_REVEAL_IN_TREE: u64 = 909;
 pub const MENU_TAB_OPEN_TERMINAL: u64 = 910;
+pub const MENU_TAB_STOP: u64 = 911;
 pub const MENU_TAB_TOGGLE_PIN: u64 = 911;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1120,6 +1121,11 @@ pub trait Item: 'static {
     fn is_dirty(&self) -> bool {
         false
     }
+    /// What the tab's menu calls ending the program behind it, when closing the tab only hides it.
+    fn stop_label(&self) -> Option<&'static str> {
+        None
+    }
+    fn stop(&mut self) {}
     fn has_conflict(&self) -> bool {
         false
     }
