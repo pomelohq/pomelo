@@ -6935,6 +6935,13 @@ impl FilesView {
         self.go_to_line = Some((path, modal));
     }
 
+    fn modal_open(&self) -> bool {
+        self.outline.is_some()
+            || self.palette.is_some()
+            || self.finder.is_some()
+            || self.go_to_line.is_some()
+    }
+
     fn close_go_to_line(&mut self, confirm: bool) {
         let Some((path, modal)) = self.go_to_line.take() else {
             return;
@@ -7920,7 +7927,7 @@ impl ItemInput for FilesView {
     }
 
     fn active_wants_keystrokes(&self) -> bool {
-        self.panes.active_wants_keystrokes()
+        !self.modal_open() && self.panes.active_wants_keystrokes()
     }
 
     fn item_keystroke(&mut self, keystroke: &terminal::Keystroke) -> workspace::TerminalKeyOutcome {
@@ -10795,6 +10802,15 @@ mod self_painted_item_tests {
             workspace::TerminalKeyOutcome::Handled
         );
         assert_eq!(keys.get(), 1);
+        view.set_extra_commands(vec![workspace::ExtraCommand {
+            name: "services: start api/server".into(),
+            keys: Vec::new(),
+            id: 1,
+        }]);
+        view.editor_key(EditKey::ToggleCommandPalette, false);
+        assert!(!view.active_wants_keystrokes());
+        view.editor_key(EditKey::Escape, false);
+        assert!(view.active_wants_keystrokes());
         let layout = view.editor_layout(Rect::new(0.0, 0.0, 600.0, 400.0, Rgba::TRANSPARENT));
         let painted = layout.panes[0].painted.as_ref().map(|(_, clip)| *clip);
         assert!(painted.is_some_and(|clip| clip.y > 0.0 && clip.h < 400.0));
