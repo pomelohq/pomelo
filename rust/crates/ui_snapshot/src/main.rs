@@ -1533,6 +1533,16 @@ fn main() -> anyhow::Result<()> {
                             files.editor_key(workspace::EditKey::Down, true);
                         }
                     }
+                    // MINIMAP=1: turn the minimap on through the first editor's Editor Controls menu.
+                    if std::env::var("MINIMAP").is_ok() {
+                        use workspace::FunctionView;
+                        files.on_click((1 << 51) + 3);
+                        if let Some(menu) = files.take_menu_request() {
+                            if let Some(entry) = menu.first() {
+                                files.menu_pick(entry.id);
+                            }
+                        }
+                    }
                     // MDPREVIEW=1: preview the last (markdown) file beside its editor.
                     if std::env::var("MDPREVIEW").is_ok() {
                         workspace::ItemInput::editor_key(

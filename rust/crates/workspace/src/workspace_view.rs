@@ -7244,6 +7244,12 @@ fn push_pane_group(
                     clip: Some(text_clip),
                 });
             }
+            if let Some(minimap) = pane.minimap.take() {
+                overlays.push(Overlay {
+                    painted: minimap,
+                    clip: Some(b.rect),
+                });
+            }
             for bar in [&pane.scrollbar, &pane.h_scrollbar] {
                 if bar.is_empty() {
                     continue;

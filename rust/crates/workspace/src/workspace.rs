@@ -1061,6 +1061,14 @@ pub trait Item: 'static {
     fn scroll_by(&mut self, _dy: f32) -> bool {
         false
     }
+    /// A small overview of the whole text beside the scrollbar, drawn over the body.
+    fn minimap(&mut self, _content: ui::Rect) -> Option<ui::Painted> {
+        None
+    }
+    /// A press at a body point on the minimap: it scrolls there and starts a drag; false off the minimap.
+    fn minimap_press(&mut self, _local_x: f32, _local_y: f32) -> bool {
+        false
+    }
     /// The carets over the body: bars or boxes, a gliding caret's trail, a block caret's letter.
     fn carets(&mut self, _content: ui::Rect) -> ui::Painted {
         ui::Painted::default()
@@ -1357,6 +1365,7 @@ pub struct PanePlacement {
     pub back: Vec<ui::Rect>,
     pub back_tris: Vec<ui::Tri>,
     pub carets: ui::Painted,
+    pub minimap: Option<ui::Painted>,
     pub scrollbar: Vec<ui::Rect>,
     pub h_scrollbar: Vec<ui::Rect>,
 }
