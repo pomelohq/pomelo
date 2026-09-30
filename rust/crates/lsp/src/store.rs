@@ -820,6 +820,12 @@ impl LspStore {
                             serde_json::from_value::<lsp_types::Documentation>(value.clone()).ok()
                         })
                         .map(crate::CompletionDocumentation::from);
+                    let detail = result
+                        .as_ref()
+                        .and_then(|value| value.get("detail"))
+                        .and_then(Value::as_str)
+                        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+                        .filter(|text| !text.is_empty());
                     let additional_edits = result
                         .and_then(|value| {
                             serde_json::from_value::<Vec<lsp_types::TextEdit>>(
@@ -834,6 +840,7 @@ impl LspStore {
                             request,
                             additional_edits,
                             documentation,
+                            detail,
                             synced,
                         }));
                     return;

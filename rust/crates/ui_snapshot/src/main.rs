@@ -2167,6 +2167,59 @@ fn main() -> anyhow::Result<()> {
             app.draw(handle).expect("frame");
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
+        // UNDOBENCH=<n>: type n characters, then undo them one frame each, timing the undo frames.
+        if let Some(count) = std::env::var("UNDOBENCH")
+            .ok()
+            .and_then(|n| n.parse::<u32>().ok())
+        {
+            for _ in 0..count {
+                entity.update(app.app_mut(), |view, _| view.editor_text("x"));
+                app.draw(handle).expect("frame");
+                std::thread::sleep(std::time::Duration::from_millis(600));
+            }
+            let (mut layout_total, mut render_total, mut worst) = (
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO,
+            );
+            for _ in 0..count {
+                let started = std::time::Instant::now();
+                entity.update(app.app_mut(), |view, _| {
+                    view.editor_key(workspace::EditKey::Undo, false)
+                });
+                let frame = app.draw(handle).expect("frame");
+                let laid_out = started.elapsed();
+                let mut layers: Vec<ui::Layer> = vec![(
+                    frame.base.rects.as_slice(),
+                    frame.base.tris.as_slice(),
+                    frame.base.texts.as_slice(),
+                    frame.base.icons.as_slice(),
+                    None,
+                )];
+                for overlay in &frame.overlays {
+                    layers.push((
+                        overlay.painted.rects.as_slice(),
+                        overlay.painted.tris.as_slice(),
+                        overlay.painted.texts.as_slice(),
+                        overlay.painted.icons.as_slice(),
+                        overlay.clip.map(|c| (c.x, c.y, c.w, c.h)),
+                    ));
+                }
+                let rendering = std::time::Instant::now();
+                r.render_frame(ui::theme().background, &layers)?;
+                layout_total += laid_out;
+                render_total += rendering.elapsed();
+                worst = worst.max(started.elapsed());
+                if std::env::var("BENCHEACH").is_ok() {
+                    println!("  undo {laid_out:?} + {:?}", rendering.elapsed());
+                }
+            }
+            println!(
+                "undo frames: layout {:?}/frame, render {:?}/frame, worst {worst:?}",
+                layout_total / count,
+                render_total / count
+            );
+        }
         // DRAGBENCH=<x>: press the editor at x (a scrollbar or the minimap) and drag it down, timing each frame.
         if let Some(bench_x) = std::env::var("DRAGBENCH")
             .ok()
