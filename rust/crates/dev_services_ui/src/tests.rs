@@ -28,9 +28,7 @@ fn filters_narrow_the_list() {
 fn the_side_shows_the_body_and_hides_credentials_until_shown() {
     let mut page = preview_page();
     let shown = texts(&mut page);
-    assert!(shown
-        .iter()
-        .any(|text| text.contains("\"type\": \"invoice.paid\"")));
+    assert!(shown.concat().contains("\"type\": \"invoice.paid\""));
     assert!(shown.iter().any(|text| text == MASK));
     assert!(!shown.iter().any(|text| text.contains("sk_test_secret")));
     page.click(REVEAL);
@@ -122,4 +120,45 @@ fn restart_is_handed_to_the_app_unless_a_terminal_serves_the_ports() {
     assert!(texts(&mut page).iter().any(|text| text == "Restart"));
     page.shared.borrow_mut().served_elsewhere = true;
     assert!(!texts(&mut page).iter().any(|text| text == "Restart"));
+}
+
+#[test]
+fn json_lines_split_into_the_editors_captures() {
+    let captures = |line: &str| -> Vec<(String, &'static str)> {
+        json_runs(line)
+            .into_iter()
+            .map(|(text, capture)| (text.to_string(), capture))
+            .filter(|(_, capture)| !capture.is_empty())
+            .collect()
+    };
+    assert_eq!(
+        captures(r#"  "id": "evt_\"1\"","#),
+        [
+            (r#""id""#.to_string(), "property.json_key"),
+            (":".into(), "punctuation.delimiter"),
+            (r#""evt_\"1\"""#.into(), "string"),
+            (",".into(), "punctuation.delimiter"),
+        ]
+    );
+    assert_eq!(
+        captures(r#"  "n": -4.5e3, "ok": true, "x": null }"#)
+            .into_iter()
+            .map(|(_, capture)| capture)
+            .collect::<Vec<_>>(),
+        [
+            "property.json_key",
+            "punctuation.delimiter",
+            "number",
+            "punctuation.delimiter",
+            "property.json_key",
+            "punctuation.delimiter",
+            "boolean",
+            "punctuation.delimiter",
+            "property.json_key",
+            "punctuation.delimiter",
+            "constant.builtin",
+            "punctuation.bracket",
+        ]
+    );
+    assert_eq!(json_runs("    ").len(), 1, "indent is one uncolored run");
 }
