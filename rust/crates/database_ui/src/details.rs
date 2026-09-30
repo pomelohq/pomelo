@@ -119,7 +119,26 @@ pub(crate) fn clip_right(painted: &mut ui::Painted, right: f32) {
         rect.w = rect.w.min(right - rect.x);
         true
     });
-    painted.texts.retain(|text| text.x < right - 4.0);
+    painted.texts.retain_mut(|text| {
+        if text.x >= right - 4.0 {
+            return false;
+        }
+        let mono = text.font != ui::TextFont::Ui;
+        let width = |part: &str| ui::measure_text_width(part, text.size, mono, text.weight);
+        if text.x + width(&text.text) > right {
+            let room = right - text.x - width("...");
+            let mut kept = String::new();
+            for c in text.text.chars() {
+                kept.push(c);
+                if width(&kept) > room {
+                    kept.pop();
+                    break;
+                }
+            }
+            text.text = format!("{kept}...");
+        }
+        true
+    });
     painted.icons.retain(|quad| quad.x + quad.w <= right + 1.0);
     painted.hits.retain_mut(|(rect, _)| {
         if rect.x >= right {

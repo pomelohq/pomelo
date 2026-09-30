@@ -28,6 +28,10 @@ use crate::{DatabaseContext, Pending};
 
 const TOOLBAR_H: f32 = 36.0;
 const QUERY_H: f32 = 32.0;
+/// Narrower than this (design px), the tab gives the whole width to the grid and hides the Details side.
+const SIDE_NEEDS: f32 = 620.0;
+/// Narrower than this, WHERE and ORDER BY take a row each.
+const QUERY_STACK_BELOW: f32 = 520.0;
 const STATUS_H: f32 = 28.0;
 const PENDING_H: f32 = 34.0;
 const FIELD_H: f32 = 24.0;
@@ -177,6 +181,8 @@ pub struct TableItem {
     files_checked: Instant,
     requests: Vec<PanelRequest>,
     clipboard: Option<String>,
+    /// The tab was wide enough for the Details side when last painted.
+    side_fits: bool,
 }
 
 impl TableItem {
@@ -244,6 +250,7 @@ impl TableItem {
             files_checked: Instant::now(),
             requests: Vec::new(),
             clipboard: None,
+            side_fits: true,
         };
         if !filter.is_empty() {
             item.filter.set_text(filter);
@@ -1222,7 +1229,11 @@ impl TableItem {
         let text_w =
             |text: &str, size: f32, mono: bool| ui::measure_text_width(text, size, mono, 400);
         let controls = if self.is_redis() { 0.0 } else { 196.0 }
-            + if self.view == View::Data { 130.0 } else { 0.0 }
+            + if self.view == View::Data && self.side_fits {
+                130.0
+            } else {
+                0.0
+            }
             + 22.0
             + 44.0;
         let mut room = width - controls - 20.0 - text_w(&self.table.qualified(), 12.5, false);
@@ -1297,7 +1308,7 @@ impl TableItem {
             };
             bar = bar.child(segmented(&views, selected, self.hovered));
         }
-        if self.view == View::Data {
+        if self.view == View::Data && self.side_fits {
             bar = bar.child(self.keyed_button(DETAILS, "Details", "shift-enter", self.details));
         }
         bar.child(self.icon_button(REFRESH, IconKind::RotateCw, true))
@@ -1305,29 +1316,39 @@ impl TableItem {
     }
 
     /// The typed WHERE and ORDER BY, and how many rows a page holds.
-    fn query_bar(&self) -> Node {
-        div()
-            .row()
-            .h_px(QUERY_H)
-            .px(8.0)
-            .gap(8.0)
-            .items_center()
-            .child(self.input(
-                WHERE_FIELD,
-                "WHERE",
-                &self.filter,
-                "id > 10",
-                self.focus == Focus::Where,
-            ))
-            .child(self.input(
-                ORDER_FIELD,
-                "ORDER BY",
-                &self.order,
-                "id DESC",
-                self.focus == Focus::Order,
-            ))
-            .child(self.text_button(PAGE_SIZE, format!("{} rows", self.page_size), false))
-            .into()
+    fn query_bar(&self, width: f32) -> Node {
+        let filter = self.input(
+            WHERE_FIELD,
+            "WHERE",
+            &self.filter,
+            "id > 10",
+            self.focus == Focus::Where,
+        );
+        let order = self.input(
+            ORDER_FIELD,
+            "ORDER BY",
+            &self.order,
+            "id",
+            self.focus == Focus::Order,
+        );
+        let rows = self.text_button(PAGE_SIZE, format!("{} rows", self.page_size), false);
+        let line = || div().row().h_px(QUERY_H).px(8.0).gap(8.0).items_center();
+        if width < QUERY_STACK_BELOW {
+            return div()
+                .col()
+                .child(line().child(filter))
+                .child(line().child(order).child(rows))
+                .into();
+        }
+        line().child(filter).child(order).child(rows).into()
+    }
+
+    fn query_height(width: f32) -> f32 {
+        if width < QUERY_STACK_BELOW {
+            2.0 * QUERY_H
+        } else {
+            QUERY_H
+        }
     }
 
     /// A filter box under each visible column, lined up with the grid below.
@@ -2053,7 +2074,8 @@ impl Item for TableItem {
         let scale = ui::ui_text_scale();
         let colors = theme();
         self.follow_selection();
-        let side_open = self.view == View::Data && self.details;
+        self.side_fits = body.w / scale >= SIDE_NEEDS;
+        let side_open = self.view == View::Data && self.details && self.side_fits;
         let side_w = if side_open {
             (SIDE_W * scale).min(body.w * 0.5)
         } else {
@@ -2066,7 +2088,11 @@ impl Item for TableItem {
             PENDING_H
         };
         let querying = self.view == View::Data && !self.is_redis();
-        let query_h = if querying { QUERY_H + 1.0 } else { 0.0 };
+        let query_h = if querying {
+            Self::query_height(main.w / scale) + 1.0
+        } else {
+            0.0
+        };
         self.grid.below_header = if querying { FILTER_H + 1.0 } else { 0.0 };
         let review_h = self.review_height();
         let above = TOOLBAR_H + 1.0 + query_h;
@@ -2087,7 +2113,7 @@ impl Item for TableItem {
             .child(div().h_px(1.0).bg(colors.border_variant));
         if querying {
             tree = tree
-                .child(self.query_bar())
+                .child(self.query_bar(main.w / scale))
                 .child(div().h_px(1.0).bg(colors.border_variant));
         }
         let middle: Node = match self.view {
@@ -2200,7 +2226,8 @@ impl Item for TableItem {
                 side.h - head_h,
                 Rgba::TRANSPARENT,
             );
-            let content = self.side_pane.paint(&content, body_area);
+            let mut content = self.side_pane.paint(&content, body_area);
+            details::clip_right(&mut content, side.x + side.w - 2.0);
             details::merge(&mut painted, content);
         }
         self.hits = painted.hits.clone();
