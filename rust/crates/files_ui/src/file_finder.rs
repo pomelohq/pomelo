@@ -351,19 +351,20 @@ impl FileFinder {
         } else if self.hovered == Some(id_base + row as u64) {
             item = item.bg(colors.ghost_element_hover);
         }
+        let name_label = highlighted(name, &name_positions, colors.text, LabelSize::Default);
+        let folder_budget = WIDTH - ROW_CHROME - ui::measure(&name_label).0;
+        let (folder, folder_positions) = elide_folder(folder, &folder_positions, |text| {
+            ui::measure(&label(text.to_string()).label_size(LabelSize::Small).into()).0
+                <= folder_budget
+        });
         let path_labels = div()
             .row()
             .flex(1.0)
             .gap(6.0)
             .items_center()
-            .child(highlighted(
-                name,
-                &name_positions,
-                colors.text,
-                LabelSize::Default,
-            ))
+            .child(name_label)
             .child(div().row().flex(1.0).items_center().child(highlighted(
-                folder,
+                &folder,
                 &folder_positions,
                 colors.text_muted,
                 LabelSize::Small,
@@ -386,6 +387,102 @@ impl FileFinder {
             )
             .into()
     }
+}
+
+/// A row's padding, icons and gaps around the two labels: outer and item padding, the file icon, the recent
+/// clock and the gaps between them.
+const ROW_CHROME: f32 = 4.0 * 2.0 + 6.0 * 2.0 + 14.0 + 12.0 + 6.0 * 3.0;
+const ELISION: &str = "...";
+
+/// `folder` shortened until `fits`: first a run of middle folders without a match becomes `...` (the first and
+/// last folders stay), then, if that is not enough, the front is cut. Match positions follow the new text.
+fn elide_folder(
+    folder: &str,
+    positions: &[usize],
+    fits: impl Fn(&str) -> bool,
+) -> (String, Vec<usize>) {
+    if fits(folder) {
+        return (folder.to_string(), positions.to_vec());
+    }
+    let chars: Vec<char> = folder.chars().collect();
+    let mut components: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut start = 0;
+    for (index, c) in chars.iter().enumerate() {
+        if *c == '/' {
+            components.push(start..index);
+            start = index + 1;
+        }
+    }
+    components.push(start..chars.len());
+    let has_match =
+        |range: &std::ops::Range<usize>| positions.iter().any(|position| range.contains(position));
+    let mut longest: Option<std::ops::Range<usize>> = None;
+    let mut run = 0..0;
+    for (index, range) in components.iter().enumerate() {
+        let kept = index == 0 || index == components.len() - 1 || has_match(range);
+        if kept {
+            if longest.as_ref().is_none_or(|old| old.len() <= run.len()) {
+                longest = Some(run.clone());
+            }
+            run = index + 1..index + 1;
+        } else {
+            run.end = index + 1;
+        }
+    }
+    let replaced = |cut: std::ops::Range<usize>| -> (String, Vec<usize>) {
+        let text: String = chars[..cut.start]
+            .iter()
+            .chain(ELISION.chars().collect::<Vec<_>>().iter())
+            .chain(chars[cut.end..].iter())
+            .collect();
+        let shift = cut.len() as isize - ELISION.len() as isize;
+        let moved = positions
+            .iter()
+            .filter(|position| !cut.contains(*position))
+            .map(|&position| {
+                if position >= cut.end {
+                    (position as isize - shift) as usize
+                } else {
+                    position
+                }
+            })
+            .collect();
+        (text, moved)
+    };
+    let mut best = (folder.to_string(), positions.to_vec());
+    if let Some(eligible) = longest.filter(|range| !range.is_empty()) {
+        let middle = chars.len() / 2;
+        let first = components[eligible.start].start;
+        let last = components[eligible.end - 1].end;
+        let from_end = first.abs_diff(middle) > last.abs_diff(middle);
+        for count in 1..=eligible.len() {
+            let dropped = if from_end {
+                eligible.end - count..eligible.end
+            } else {
+                eligible.start..eligible.start + count
+            };
+            let cut = components[dropped.start].start..components[dropped.end - 1].end;
+            best = replaced(cut);
+            if fits(&best.0) {
+                return best;
+            }
+        }
+    }
+    let (text, moved) = best;
+    let kept: Vec<char> = text.chars().collect();
+    for skip in 1..kept.len() {
+        let tail: String = kept[skip..].iter().collect();
+        let candidate = format!("{ELISION}{tail}");
+        if fits(&candidate) || skip + 1 == kept.len() {
+            let shifted = moved
+                .iter()
+                .filter(|position| **position >= skip)
+                .map(|position| position - skip + ELISION.len())
+                .collect();
+            return (candidate, shifted);
+        }
+    }
+    (text, moved)
 }
 
 fn row_height() -> f32 {
@@ -431,6 +528,23 @@ fn highlighted(text: &str, positions: &[usize], color: ui::Rgba, size: LabelSize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_folder_loses_its_middle_folders_before_its_front() {
+        let fits = |limit: usize| move |text: &str| text.chars().count() <= limit;
+        let folder = "api/spec/interactors/billing/invoice_form";
+        assert_eq!(elide_folder(folder, &[], fits(100)).0, folder);
+        let matched = folder.find("invoice").unwrap();
+        let (text, positions) = elide_folder(folder, &[matched], fits(28));
+        assert_eq!(text, "api/spec/.../invoice_form");
+        assert_eq!(positions, [text.find("invoice").unwrap()]);
+        let (text, positions) = elide_folder(folder, &[matched], fits(16));
+        assert!(
+            text.starts_with("...") && text.chars().count() <= 20,
+            "{text}"
+        );
+        assert_eq!(positions, [text.find("invoice").unwrap()]);
+    }
 
     #[test]
     fn queries_carry_a_line_and_column() {

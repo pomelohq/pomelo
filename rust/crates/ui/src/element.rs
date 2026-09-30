@@ -164,6 +164,8 @@ pub enum MaterialIcon {
     Css,
     Sass,
     Python,
+    Ruby,
+    Gemfile,
     Lock,
     Console,
     Document,

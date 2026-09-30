@@ -7716,6 +7716,9 @@ fn file_icon(name: &str) -> MaterialIcon {
         }
         "package.json" => return MaterialIcon::NodeJs,
         ".gitignore" | ".gitattributes" | ".gitmodules" => return MaterialIcon::Git,
+        "gemfile" => return MaterialIcon::Gemfile,
+        ".ruby-version" | "rakefile" | "podfile" | "brewfile" | "guardfile" | "capfile"
+        | "berksfile" | "dangerfile" | "thorfile" => return MaterialIcon::Ruby,
         _ => {}
     }
     let ext = lower.rsplit('.').next().unwrap_or("");
@@ -7733,6 +7736,9 @@ fn file_icon(name: &str) -> MaterialIcon {
         "css" => MaterialIcon::Css,
         "scss" | "sass" => MaterialIcon::Sass,
         "py" | "pyi" => MaterialIcon::Python,
+        "rb" | "erb" | "rbs" | "rbi" | "rbx" | "rjs" | "rake" | "ru" | "gemspec" | "podspec" => {
+            MaterialIcon::Ruby
+        }
         "lock" => MaterialIcon::Lock,
         "sh" | "bash" | "zsh" | "fish" => MaterialIcon::Console,
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" => MaterialIcon::Image,
