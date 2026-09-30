@@ -512,12 +512,15 @@ impl Syntax {
             }
             while let Some(capture) = pending.next_if(|(start, _, _, _)| *start <= pos) {
                 let (start, end, _, depth) = capture;
-                // Several patterns can capture the same node; the bundled queries list the most specific one
-                // first, so the first capture for a node keeps it.
+                // Several patterns can capture the same node; as in tree-sitter's own highlighter the later
+                // pattern wins, which is how the bundled queries order a catch-all before the specific ones.
                 let same_node = stack
                     .last()
                     .is_some_and(|(s, e, _, d)| *s == start && *e == end && *d == depth);
-                if end > pos && !same_node {
+                if same_node {
+                    stack.pop();
+                }
+                if end > pos {
                     stack.push(capture);
                 }
             }
@@ -777,13 +780,6 @@ mod tests {
     }
 
     #[test]
-    fn first_pattern_wins_for_same_node() {
-        // `(use_list (self) @keyword)` precedes the generic `(self) @variable.builtin` in the query.
-        let runs = highlighted("use std::io::{self};");
-        assert!(runs.contains(&("self".to_string(), Some("keyword"))));
-    }
-
-    #[test]
     fn edits_reparse_incrementally() {
         let mut buffer = EditorBuffer::from_text("fn a() {}");
         let mut syntax = Syntax::new(Lang::Rust).unwrap();
@@ -998,6 +994,60 @@ mod scope_tests {
     fn quotes_do_not_autoclose_inside_comments() {
         assert_eq!(typed_quote("x; // it|\n"), "x; // it'\n");
         assert_eq!(typed_quote("x = |;\n"), "x = '';\n");
+    }
+
+    fn captures(lang: Lang, text: &str) -> Vec<(String, &'static str)> {
+        let buffer = EditorBuffer::from_text(text);
+        let mut syntax = Syntax::new(lang).unwrap();
+        syntax.sync(&buffer);
+        while syntax.is_parsing() {
+            std::thread::sleep(Duration::from_millis(1));
+            syntax.sync(&buffer);
+        }
+        let rope = buffer.rope.clone();
+        syntax
+            .highlight(&rope, 0..rope.len_bytes())
+            .into_iter()
+            .filter_map(|run| Some((rope.byte_slice(run.range).to_string(), run.capture?)))
+            .collect()
+    }
+
+    #[test]
+    fn the_later_pattern_wins_for_the_same_node() {
+        // Python's query opens with the catch-all `(identifier) @variable`; the call pattern comes after it.
+        let found = captures(Lang::Python, "print(len(x))\n");
+        assert!(
+            found.contains(&("print".to_string(), "function.builtin"))
+                || found.contains(&("print".to_string(), "function")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn typescript_highlights_what_it_shares_with_javascript() {
+        let text = "const [a, setA] = useState(\"\");\nref.current?.focus({ scroll: true });\n";
+        for lang in [Lang::TypeScript, Lang::Tsx] {
+            let found = captures(lang, text);
+            let capture_of = |word: &str| {
+                found
+                    .iter()
+                    .find(|(text, _)| text == word)
+                    .map(|(_, capture)| *capture)
+            };
+            assert_eq!(
+                capture_of("useState"),
+                Some("function"),
+                "{lang:?}: {found:?}"
+            );
+            assert_eq!(capture_of("focus"), Some("function.method"), "{lang:?}");
+            assert_eq!(capture_of("current"), Some("property"), "{lang:?}");
+        }
+        let jsx = captures(Lang::Tsx, "const x = <Pad onClose={close} />;\n");
+        assert!(
+            jsx.iter()
+                .any(|(text, capture)| text == "onClose" && capture.starts_with("attribute")),
+            "{jsx:?}"
+        );
     }
 
     #[test]
