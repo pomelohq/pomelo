@@ -1042,6 +1042,24 @@ impl WorkspaceView {
 
     /// Running services started with the previous config: offer to restart them (none clears the offer).
     /// Returns whether the header has to move.
+    /// Which status bar buttons show; answers whether any changed.
+    pub fn set_buttons_hidden(
+        &mut self,
+        agent_hidden: bool,
+        terminal_hidden: bool,
+        func_hidden: &[bool],
+    ) -> bool {
+        let mut changed = self.layout.agent_hidden != agent_hidden
+            || self.layout.terminal_hidden != terminal_hidden;
+        self.layout.agent_hidden = agent_hidden;
+        self.layout.terminal_hidden = terminal_hidden;
+        for (slot, hidden) in self.layout.func_hidden.iter_mut().zip(func_hidden) {
+            changed |= *slot != *hidden;
+            *slot = *hidden;
+        }
+        changed
+    }
+
     pub fn set_fullscreen(&mut self, fullscreen: bool) -> bool {
         let changed = self.layout.fullscreen != fullscreen;
         self.layout.fullscreen = fullscreen;

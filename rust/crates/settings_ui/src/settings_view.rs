@@ -373,6 +373,18 @@ impl SettingsView {
         &self.settings
     }
 
+    /// Takes the buttons and dock places a window changed (hidden or moved from a button's menu), so this
+    /// view's copy never puts them back.
+    pub fn sync_placement(&mut self, from: &Settings) {
+        self.settings.agent_hidden = from.agent_hidden;
+        self.settings.terminal_hidden = from.terminal_hidden;
+        self.settings.func_hidden = from.func_hidden.clone();
+        self.settings.sidebar_side = from.sidebar_side.clone();
+        self.settings.agent_side = from.agent_side.clone();
+        self.settings.terminal_side = from.terminal_side.clone();
+        self.settings.func_sides = from.func_sides.clone();
+    }
+
     /// The shell drains this after routing an input to learn what other windows need.
     pub fn take_side_effects(&mut self) -> SideEffects {
         std::mem::take(&mut self.pending)
