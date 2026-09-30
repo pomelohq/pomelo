@@ -28,7 +28,7 @@ fn versions_read_as_what_a_new_workspace_gets() {
     }
     assert!(shown
         .iter()
-        .any(|text| text.starts_with("Free ") && text.ends_with(" Unused")));
+        .any(|text| text.starts_with("Free ") && text.ends_with(" unused")));
 }
 
 #[test]
@@ -90,10 +90,21 @@ fn buttons_hand_their_request_to_the_app_and_wait_while_busy() {
         ]
     );
     click(&mut state, ACTION_BASE + 1);
+    assert!(state.requests.is_empty(), "a swap asks first");
+    assert_eq!(state.confirm, Some(requests[1].clone()));
+    let shown = texts(&state, 1200.0);
+    assert!(shown
+        .iter()
+        .any(|text| text == "Use the shared copy in feat-pay?"));
+    assert!(shown
+        .iter()
+        .any(|text| text.starts_with("Its services are running")));
+    click(&mut state, CONFIRM_SWAP);
     click(&mut state, FREE_UNUSED);
     assert_eq!(state.requests, [requests[1].clone(), Request::FreeUnused]);
+    assert_eq!(state.confirm, None);
     state.requests.clear();
-    state.busy = Some("Working...".into());
+    state.busy = Some(Request::Refresh);
     click(&mut state, ACTION_BASE);
     click(&mut state, REFRESH);
     assert!(state.requests.is_empty());
@@ -106,4 +117,31 @@ fn ages_read_naturally() {
     assert_eq!(ago(100_000, 100_000 - 7200), "2 h ago");
     assert_eq!(ago(300_000, 300_000 - 100_000), "yesterday");
     assert_eq!(ago(1_000_000, 1_000_000 - 5 * 86_400), "5 days ago");
+}
+
+#[test]
+fn unmeasured_sizes_shimmer_and_the_header_counts_them() {
+    let page = preview_page();
+    let mut state = page.shared.borrow_mut();
+    state.measuring = 2;
+    state.measure_total = 5;
+    let shown = texts(&state, 1200.0);
+    assert!(shown
+        .iter()
+        .any(|text| text.starts_with("measuring 3 of 5")));
+    assert!(
+        !shown.iter().any(|text| text.ends_with(" unused")),
+        "Free waits for the sizes"
+    );
+    assert!(state.animating());
+    state.measuring = 0;
+    state.finish(Some("Freed 2.1 GB".into()), false, Some("k1".into()));
+    assert!(texts(&state, 1200.0)
+        .iter()
+        .any(|text| text == "Freed 2.1 GB"));
+    state.clock += NOTE_FOR + 1.0;
+    assert!(!state.animating());
+    assert!(!texts(&state, 1200.0)
+        .iter()
+        .any(|text| text == "Freed 2.1 GB"));
 }

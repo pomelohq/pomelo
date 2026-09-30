@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 pub use detect::{detect, key, node_major, Detection, Manager};
 pub use import::{probe, tree_size, Method};
 pub use overview::{
-    Holding, Overview, RepoOverview, RepoState, RepoWorktrees, User, Version, Worktree,
+    Holding, Measure, Overview, RepoOverview, RepoState, RepoWorktrees, User, Version, Worktree,
 };
 
 const STORE_DIR: &str = "nm-store";
@@ -473,6 +473,27 @@ impl Store {
     }
 
     /// Every stored copy, most recently used first, measuring any not measured yet.
+    /// Every stored copy as recorded, most recently used first; a copy not measured yet has size 0.
+    pub fn list_recorded(&self) -> io::Result<Vec<Entry>> {
+        let _lock = Lock::acquire(&self.root)?;
+        let mut entries = self.load().entries;
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_used));
+        Ok(entries)
+    }
+
+    /// Records a measured size so later listings need not walk the copy again.
+    pub fn record_size(&self, repo: &str, key: &str, size: u64) -> io::Result<()> {
+        self.update(|index| {
+            if let Some(entry) = index
+                .entries
+                .iter_mut()
+                .find(|entry| entry.repo == repo && entry.key == key)
+            {
+                entry.size = size;
+            }
+        })
+    }
+
     pub fn list(&self) -> io::Result<Vec<Entry>> {
         let _lock = Lock::acquire(&self.root)?;
         let mut index = self.load();

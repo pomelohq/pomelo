@@ -4,7 +4,56 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use crate::{detect, import, key, node_major, Detection, Entry, Manager, Method, Store, MODULES};
+use crate::{
+    detect, import, key, node_major, tree_size, Detection, Entry, Manager, Method, Store, MODULES,
+};
+
+/// Something whose size is not known yet.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Measure {
+    Stored {
+        repo: String,
+        key: String,
+    },
+    /// A workspace's own node_modules folder.
+    Own {
+        path: PathBuf,
+    },
+}
+
+impl Overview {
+    /// Fills in a size `measure` found.
+    pub fn apply(&mut self, what: &Measure, size: u64) {
+        let mut stored = |entry: &mut Entry| {
+            if let Measure::Stored { repo, key } = what {
+                if entry.repo == *repo && entry.key == *key {
+                    entry.size = size;
+                }
+            }
+        };
+        self.others.iter_mut().for_each(&mut stored);
+        for repo in &mut self.repos {
+            let RepoState::Versions { versions, old, .. } = &mut repo.state else {
+                continue;
+            };
+            old.iter_mut().for_each(&mut stored);
+            for version in versions {
+                if let Some(entry) = version.stored.as_mut() {
+                    stored(entry);
+                }
+                for user in &mut version.users {
+                    if let (Measure::Own { path }, Holding::Own { size: known }) =
+                        (what, &mut user.holding)
+                    {
+                        if user.path.join(MODULES) == *path {
+                            *known = Some(size);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// A repo's worktree in one workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,9 +75,9 @@ pub struct RepoWorktrees {
 pub enum Holding {
     /// Its node_modules came from (or went into) the store.
     Shared,
-    /// Installed on its own: a full copy of its own.
+    /// Installed on its own: a copy of its own, `None` until measured.
     Own {
-        size: u64,
+        size: Option<u64>,
     },
     NotInstalled,
 }
@@ -130,9 +179,10 @@ fn worktree_key(path: &Path, node: Option<&str>) -> Option<(Manager, String, Pat
 }
 
 impl Store {
-    /// How each repo's worktrees relate to the stored copies.
+    /// How each repo's worktrees relate to the stored copies, from lockfiles and the index alone: sizes
+    /// not measured yet are left for `to_measure`.
     pub fn overview(&self, repos: &[RepoWorktrees]) -> io::Result<Overview> {
-        let entries = self.list()?;
+        let entries = self.list_recorded()?;
         let mut overview = Overview::default();
         for input in repos {
             overview.repos.push(RepoOverview {
@@ -175,9 +225,7 @@ impl Store {
                 // Main is where a copy is first taken from, so it shares with the store already.
                 Holding::Shared
             } else {
-                Holding::Own {
-                    size: import::tree_size(&worktree.path.join(MODULES)),
-                }
+                Holding::Own { size: None }
             };
             let version = versions.entry(key.clone()).or_insert_with(|| Version {
                 key,
@@ -274,6 +322,56 @@ impl Store {
         self.touch(repo, &key, worktree)
     }
 
+    /// Everything in `overview` still without a size: stored copies and workspaces' own installs.
+    pub fn to_measure(&self, overview: &Overview) -> Vec<Measure> {
+        let mut out = Vec::new();
+        let mut entry = |entry: &Entry| {
+            if entry.size == 0 {
+                out.push(Measure::Stored {
+                    repo: entry.repo.clone(),
+                    key: entry.key.clone(),
+                });
+            }
+        };
+        for repo in &overview.repos {
+            if let RepoState::Versions { versions, old, .. } = &repo.state {
+                old.iter().for_each(&mut entry);
+                for version in versions {
+                    if let Some(stored) = &version.stored {
+                        entry(stored);
+                    }
+                }
+            }
+        }
+        overview.others.iter().for_each(&mut entry);
+        for repo in &overview.repos {
+            if let RepoState::Versions { versions, .. } = &repo.state {
+                for version in versions {
+                    for user in &version.users {
+                        if matches!(user.holding, Holding::Own { size: None }) {
+                            out.push(Measure::Own {
+                                path: user.path.join(MODULES),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Walks one thing to measure; a stored copy's size is kept in the index.
+    pub fn measure(&self, what: &Measure) -> io::Result<u64> {
+        match what {
+            Measure::Stored { repo, key } => {
+                let size = tree_size(&self.entry_dir(repo, key));
+                self.record_size(repo, key, size)?;
+                Ok(size)
+            }
+            Measure::Own { path } => Ok(tree_size(path)),
+        }
+    }
+
     /// Removes the given copies; returns how many bytes they held.
     pub fn delete_all(&self, copies: &[(String, String)]) -> io::Result<u64> {
         let mut freed = 0;
@@ -350,7 +448,26 @@ mod tests {
         };
         assert_eq!(holding("main"), Some(Holding::Shared));
         assert_eq!(holding("feat-login"), Some(Holding::Shared));
-        assert_eq!(holding("feat-pay"), Some(Holding::Own { size: 3 }));
+        assert_eq!(holding("feat-pay"), Some(Holding::Own { size: None }));
+        let mut measured = overview.clone();
+        let pending = store.to_measure(&measured);
+        assert_eq!(
+            pending.len(),
+            1,
+            "stored copies were measured when kept: {pending:?}"
+        );
+        let size = store.measure(&pending[0]).unwrap();
+        measured.apply(&pending[0], size);
+        let RepoState::Versions {
+            versions: after, ..
+        } = &measured.repos[0].state
+        else {
+            panic!();
+        };
+        assert!(after[0]
+            .users
+            .iter()
+            .any(|user| user.holding == Holding::Own { size: Some(3) }));
         assert_eq!(versions[1].users[0].holding, Holding::NotInstalled);
         assert!(versions[1].stored.is_none());
         assert_eq!(old.len(), 1);
