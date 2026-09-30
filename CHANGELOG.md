@@ -4,6 +4,20 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] - 2026-09-30
+
+### Added
+- Your own themes: theme files in ~/.config/pomelo/themes join the built-in ones, name only the colors they change, and apply as soon as you save them. theme_overrides in settings.json adjusts any theme. (#122)
+- Theme Mode Dynamic picks a light and a dark theme, and System follows macOS as it switches. (#122)
+- The editor and terminal fonts have a family, weight and line height, and every font takes OpenType features and fallback families. (#124)
+
+### Changed
+- The renderer moves to wgpu 30 and a newer text engine; live resize stays smooth. (#123)
+
+### Fixed
+- Double-clicking anywhere on the title bar zooms the window as System Settings says, and dragging there moves it. (#121)
+- Edit in settings.json on the font rows opens the settings file. (#124)
+
 ## [0.7.5] - 2026-09-30
 
 ### Added
