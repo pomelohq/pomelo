@@ -91,6 +91,7 @@ pub struct TabMenuState {
     pub has_right: bool,
     pub has_clean: bool,
     pub path: Option<std::path::PathBuf>,
+    pub stop_label: Option<&'static str>,
 }
 
 /// Tabs a close is waiting to close until the user decides whether to save the dirty ones.
@@ -1229,7 +1230,21 @@ impl PaneGroupView {
             has_right: index + 1 < pane.open.len(),
             has_clean: pane.open.iter().any(|item| !item.is_dirty()),
             path: item.abs_path(),
+            stop_label: item.stop_label(),
         })
+    }
+
+    pub fn stop_tab(&mut self, pane_id: u64, index: usize) {
+        let Some(path) = self.group.path_of(pane_id) else {
+            return;
+        };
+        if let Some(item) = self
+            .group
+            .leaf_at_mut(&path)
+            .and_then(|pane| pane.open.get_mut(index))
+        {
+            item.stop();
+        }
     }
 
     /// Close tabs of the pane `pane_id` relative to its tab `index`. Tabs with unsaved changes (not open in

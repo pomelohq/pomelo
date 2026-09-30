@@ -236,6 +236,7 @@ pub const CTRL_MODULES_DAYS_INC: u64 = 326;
 pub const CTRL_MODULES_DAYS_EDIT: u64 = 327;
 pub const CTRL_OPEN_STORE: u64 = 328;
 pub const CTRL_HIDE_MOUSE: u64 = 330;
+pub const CTRL_AGENT_TAB_CLOSE: u64 = 331;
 pub const CTRL_START_AT_LOGIN: u64 = 260;
 pub const CTRL_AUTO_UPDATE: u64 = 261;
 pub const CTRL_CHECK_UPDATES: u64 = 262;
@@ -283,6 +284,9 @@ pub const PORT_MIN: u16 = 1024;
 pub const MODULES_LIMIT_MAX_GB: u64 = 1024;
 pub const MODULES_DAYS_MAX: u64 = 365;
 /// When the pointer hides until the mouse moves, as (setting value, label).
+/// What closing an agent's tab does, as (setting value, label).
+const AGENT_TAB_CLOSE: [(&str, &str); 2] =
+    [("hide", "Keep It Running"), ("stop", "Stop the Agent")];
 const HIDE_MOUSE: [(&str, &str); 3] = [
     ("never", "Never"),
     ("on_typing", "On Typing"),
@@ -403,6 +407,7 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_EXTERNAL_EDITOR
             | CTRL_MODULES_FALLBACK
             | CTRL_HIDE_MOUSE
+            | CTRL_AGENT_TAB_CLOSE
     ) || sound_event(id).is_some()
 }
 
@@ -445,6 +450,10 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
             .iter()
             .map(|(_, label)| label.to_string())
             .collect(),
+        CTRL_AGENT_TAB_CLOSE => AGENT_TAB_CLOSE
+            .iter()
+            .map(|(_, label)| label.to_string())
+            .collect(),
         CTRL_EXTERNAL_EDITOR => std::iter::once("Auto")
             .chain(EXTERNAL_EDITORS)
             .map(str::to_string)
@@ -479,6 +488,11 @@ pub fn control_value(id: u64, s: &Settings) -> String {
             .iter()
             .find(|(value, _)| *value == s.hide_mouse)
             .map_or(HIDE_MOUSE[2].1, |(_, label)| label)
+            .to_string(),
+        CTRL_AGENT_TAB_CLOSE => AGENT_TAB_CLOSE
+            .iter()
+            .find(|(value, _)| *value == s.agent_tab_close)
+            .map_or(AGENT_TAB_CLOSE[0].1, |(_, label)| label)
             .to_string(),
         CTRL_MODULES_FALLBACK => MODULES_FALLBACKS
             .iter()
@@ -524,6 +538,12 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
                 return false;
             };
             s.hide_mouse = value.to_string();
+        }
+        CTRL_AGENT_TAB_CLOSE => {
+            let Some((value, _)) = AGENT_TAB_CLOSE.iter().find(|(_, label)| label == val) else {
+                return false;
+            };
+            s.agent_tab_close = value.to_string();
         }
         CTRL_MODULES_FALLBACK => {
             let Some((value, _)) = MODULES_FALLBACKS.iter().find(|(_, label)| label == val) else {
@@ -604,6 +624,7 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_MODULES_ENABLED => s.modules_store_enabled == d.modules_store_enabled,
         CTRL_MODULES_FALLBACK => s.modules_fallback == d.modules_fallback,
         CTRL_HIDE_MOUSE => s.hide_mouse == d.hide_mouse,
+        CTRL_AGENT_TAB_CLOSE => s.agent_tab_close == d.agent_tab_close,
         CTRL_MODULES_LIMIT_EDIT => s.modules_size_limit_gb == d.modules_size_limit_gb,
         CTRL_MODULES_DAYS_EDIT => s.modules_unused_days == d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
@@ -659,6 +680,7 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_MODULES_ENABLED => s.modules_store_enabled = d.modules_store_enabled,
         CTRL_MODULES_FALLBACK => s.modules_fallback = d.modules_fallback.clone(),
         CTRL_HIDE_MOUSE => s.hide_mouse = d.hide_mouse.clone(),
+        CTRL_AGENT_TAB_CLOSE => s.agent_tab_close = d.agent_tab_close.clone(),
         CTRL_MODULES_LIMIT_EDIT => s.modules_size_limit_gb = d.modules_size_limit_gb,
         CTRL_MODULES_DAYS_EDIT => s.modules_unused_days = d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
@@ -2406,6 +2428,15 @@ fn agent_page(s: &Settings, agent: &AgentPage) -> Page {
                 },
                 reset: reset_if_changed(CTRL_AGENT_FONT_EDIT, s),
             }),
+            PageItem::Row(SettingRow {
+                title: "Closing an Agent Tab".into(),
+                description: "Keep the agent running in the background, or stop it. Stop Agent in a tab's right-click menu always stops it.".into(),
+                control: Control::Dropdown {
+                    id: CTRL_AGENT_TAB_CLOSE,
+                    value: control_value(CTRL_AGENT_TAB_CLOSE, s),
+                },
+                reset: reset_if_changed(CTRL_AGENT_TAB_CLOSE, s),
+            }),
             PageItem::Header("Claude Code"),
             PageItem::Row(SettingRow {
                 title: "MCP Server".into(),
@@ -3678,6 +3709,16 @@ mod tests {
         assert_eq!(s.hide_mouse, "never");
         assert!(reset_to_default(CTRL_HIDE_MOUSE, &mut s));
         assert_eq!(s.hide_mouse, "on_typing_and_action");
+    }
+
+    #[test]
+    fn closing_an_agent_tab_keeps_it_running_unless_set_to_stop() {
+        let mut s = Settings::default();
+        assert_eq!(control_value(CTRL_AGENT_TAB_CLOSE, &s), "Keep It Running");
+        assert!(apply_choice(CTRL_AGENT_TAB_CLOSE, 1, &[], &mut s));
+        assert_eq!(s.agent_tab_close, "stop");
+        assert!(reset_to_default(CTRL_AGENT_TAB_CLOSE, &mut s));
+        assert_eq!(s.agent_tab_close, "hide");
     }
 
     #[test]

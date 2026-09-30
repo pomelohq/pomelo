@@ -215,7 +215,8 @@ impl TerminalItem {
     }
 
     /// A coding agent running `argv` in its own holder, started when not running yet. Closing the tab
-    /// leaves the agent running; the tab closes when the agent exits.
+    /// leaves the agent running unless the settings say to stop it (Stop Agent in the tab's menu always does);
+    /// the tab closes when the agent exits.
     pub fn agent(
         id: u64,
         root: PathBuf,
@@ -745,8 +746,20 @@ impl Item for TerminalItem {
         })
     }
 
+    fn stop_label(&self) -> Option<&'static str> {
+        self.agent.then_some("Stop Agent")
+    }
+
+    fn stop(&mut self) {
+        self.terminal.terminate();
+        self.close_requested = true;
+    }
+
     fn closed(&mut self) {
-        if self.console.is_none() || self.stop_on_close {
+        if self.console.is_none()
+            || self.stop_on_close
+            || (self.agent && crate::stop_agent_on_close())
+        {
             self.terminal.terminate();
         }
     }
