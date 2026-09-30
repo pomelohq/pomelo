@@ -148,6 +148,13 @@ impl SettingsView {
         }
     }
 
+    /// The settings file was edited by hand; the pages show the new values.
+    pub fn replace_settings(&mut self, settings: Settings) {
+        self.editing = None;
+        self.popover = None;
+        self.settings = settings;
+    }
+
     /// The app changed the theme (from a key binding); the page shows it and later saves keep it.
     pub fn set_theme(&mut self, theme: &str, system_dark: bool) {
         self.settings
