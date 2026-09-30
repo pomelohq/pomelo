@@ -431,8 +431,12 @@ fn cache_root() -> PathBuf {
     }
 }
 
+/// Not under Caches: macOS may empty that while a staged update waits for a restart.
 fn staging_root() -> PathBuf {
-    cache_root().join("update")
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join("Library/Application Support/Pomelo/update"),
+        None => cache_root().join("update"),
+    }
 }
 
 fn marker_path() -> PathBuf {
@@ -544,12 +548,17 @@ fn download(url: &str, size: Option<u64>, to: &Path, version: &str) -> Result<()
 fn install_staged() -> Result<PathBuf, String> {
     let app_root = production_app_root().ok_or("only the installed Pomelo updates itself")?;
     let staged = state().staged.clone().ok_or("no update is ready")?;
+    // macOS may purge ~/Library/Caches while the update waits there.
+    if !staged.app.join("Contents/MacOS").is_dir() {
+        state().staged = None;
+        return Err("the downloaded update was removed; Try Again downloads it again".into());
+    }
     let parked = app_root.with_file_name(".Pomelo.app.previous");
     if parked.exists() {
         std::fs::remove_dir_all(&parked).map_err(|e| format!("clear {}: {e}", parked.display()))?;
     }
     std::fs::rename(&app_root, &parked).map_err(|e| format!("move the old app aside: {e}"))?;
-    if let Err(error) = run(Command::new("ditto").arg(&staged.app).arg(&app_root)) {
+    if let Err(error) = move_into_place(&staged.app, &app_root) {
         if let Err(cleanup) = std::fs::remove_dir_all(&app_root) {
             eprintln!("[update] remove partial install: {cleanup}");
         }
@@ -571,6 +580,31 @@ fn install_staged() -> Result<PathBuf, String> {
     }
     state().staged = None;
     Ok(app_root)
+}
+
+/// A rename when both sit on one volume (atomic, nothing copied), else a copy.
+fn move_into_place(staged: &Path, app_root: &Path) -> Result<(), String> {
+    match std::fs::rename(staged, app_root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            run(Command::new("ditto").arg(staged).arg(app_root)).map_err(explain_denied)
+        }
+        Err(error) => Err(explain_denied(format!(
+            "move {} to {}: {error}",
+            staged.display(),
+            app_root.display()
+        ))),
+    }
+}
+
+fn explain_denied(error: String) -> String {
+    if error.contains("Operation not permitted") || error.contains("os error 1)") {
+        format!(
+            "{error}. macOS blocked it: allow Pomelo in System Settings > Privacy & Security > App Management, then Try Again"
+        )
+    } else {
+        error
+    }
 }
 
 fn relaunch(app_root: &Path) -> Result<(), String> {
@@ -608,11 +642,14 @@ fn curl(url: &str) -> Result<String, String> {
 }
 
 fn run(cmd: &mut Command) -> Result<(), String> {
-    let status = cmd.status().map_err(|e| format!("spawn {cmd:?}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{cmd:?}: {status}"))
+    let output = cmd.output().map_err(|e| format!("spawn {cmd:?}: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    match stderr.trim().lines().last() {
+        Some(reason) => Err(format!("{cmd:?}: {reason}")),
+        None => Err(format!("{cmd:?}: {}", output.status)),
     }
 }
 
@@ -621,6 +658,25 @@ mod tests {
     use super::*;
     use base64::Engine;
     use ed25519_dalek::Signer;
+
+    #[test]
+    fn the_update_moves_into_place_and_a_failure_says_why() {
+        let dir = std::env::temp_dir().join(format!("pomelo-update-{}", std::process::id()));
+        let staged = dir.join("staged/Pomelo.app");
+        std::fs::create_dir_all(staged.join("Contents/MacOS")).expect("staged");
+        let target = dir.join("Applications/Pomelo.app");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("applications");
+        move_into_place(&staged, &target).expect("moved");
+        assert!(target.join("Contents/MacOS").is_dir());
+        assert!(!staged.exists());
+        let error = run(Command::new("ditto").arg(&staged).arg(dir.join("copy"))).unwrap_err();
+        assert!(error.contains("real path"), "{error}");
+        assert!(
+            explain_denied("rename: Operation not permitted (os error 1)".into())
+                .contains("App Management")
+        );
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
 
     #[test]
     fn only_an_update_signed_by_the_release_key_passes() {
