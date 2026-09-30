@@ -25,6 +25,8 @@ pub struct Candidate {
     pub probe: Option<&'static [&'static str]>,
     /// The npm package it is downloaded from when it isn't on the PATH.
     pub npm: Option<NpmPackage>,
+    /// Left out of `...`: runs only when `language_servers` names it.
+    pub opt_in: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +47,19 @@ const fn candidate(
         args,
         probe: None,
         npm: None,
+        opt_in: false,
+    }
+}
+
+/// A server that runs only when the settings name it.
+const fn opt_in(
+    name: &'static str,
+    binary: &'static str,
+    args: &'static [&'static str],
+) -> Candidate {
+    Candidate {
+        opt_in: true,
+        ..candidate(name, binary, args)
     }
 }
 
@@ -72,6 +87,7 @@ const RUST: Adapter = Adapter {
         args: &[],
         probe: Some(&["--help"]),
         npm: None,
+        opt_in: false,
     }]),
 };
 const CLANGD: Adapter = Adapter {
@@ -100,6 +116,13 @@ const PYTHON: Adapter = Adapter {
             "node_modules/pyright/langserver.index.js",
         ),
         candidate("ty", "ty", &["server"]),
+    ]),
+};
+const RUBY: Adapter = Adapter {
+    name: "ruby",
+    candidates: std::borrow::Cow::Borrowed(&[
+        candidate("solargraph", "solargraph", &["stdio"]),
+        opt_in("ruby-lsp", "ruby-lsp", &[]),
     ]),
 };
 const TYPESCRIPT: Adapter = Adapter {
@@ -172,7 +195,7 @@ fn chosen(defaults: &[Candidate], servers: &[String]) -> Vec<Candidate> {
             out.extend(
                 defaults
                     .iter()
-                    .filter(|candidate| !named(candidate.name))
+                    .filter(|candidate| !named(candidate.name) && !candidate.opt_in)
                     .cloned(),
             );
         } else if !entry.starts_with('!') {
@@ -236,6 +259,7 @@ fn default_adapter_for(lang: Lang) -> Option<(Adapter, &'static str)> {
         Lang::Cpp => (CLANGD, "cpp"),
         Lang::Go => (GOPLS, "go"),
         Lang::Python => (PYTHON, "python"),
+        Lang::Ruby => (RUBY, "ruby"),
         Lang::TypeScript => (TYPESCRIPT, "typescript"),
         Lang::Tsx => (TYPESCRIPT, "typescriptreact"),
         Lang::JavaScript => (TYPESCRIPT, "javascript"),
@@ -274,5 +298,21 @@ mod tests {
         assert_eq!(ts.name, tsx.name);
         assert_eq!((ts_id, tsx_id), ("typescript", "typescriptreact"));
         assert!(adapter_for(Lang::Markdown).is_none());
+    }
+
+    #[test]
+    fn ruby_runs_solargraph_and_ruby_lsp_only_when_named() {
+        let defaults = &RUBY.candidates;
+        let names = |servers: &[&str]| -> Vec<&str> {
+            let servers: Vec<String> = servers.iter().map(|name| name.to_string()).collect();
+            chosen(defaults, &servers)
+                .iter()
+                .map(|candidate| candidate.name)
+                .collect()
+        };
+        assert_eq!(names(&["..."]), ["solargraph"]);
+        assert_eq!(names(&["ruby-lsp", "..."]), ["ruby-lsp", "solargraph"]);
+        let (_, language_id) = adapter_for(Lang::Ruby).unwrap();
+        assert_eq!(language_id, "ruby");
     }
 }
