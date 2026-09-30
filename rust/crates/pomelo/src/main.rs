@@ -475,6 +475,8 @@ struct MainWindow {
     cursor: (f64, f64),
     dirty: bool,
     last_drawn: Instant,
+    /// Frames present within the resize transaction until this long after the last resize.
+    resizing_until: Option<Instant>,
     project: Option<pom_core::Project>,
     watcher: Option<pom_core::ConfigWatcher>,
     /// The project's other workspaces, keyed by folder, kept alive while this one has the window.
@@ -1531,6 +1533,7 @@ impl App {
         {
             center_traffic_lights(&window);
             pin_layer_top_left(&window);
+            app_menu::route_edit_keys_to_window(&window);
         }
         let app = self.main_app.get_or_insert_with(ui::Application::new);
         let (handle, entity) = app.open_raw_window::<workspace::WorkspaceView>(
@@ -1552,6 +1555,7 @@ impl App {
                 cursor: (0.0, 0.0),
                 dirty: false,
                 last_drawn: Instant::now(),
+                resizing_until: None,
                 project: None,
                 watcher: None,
                 parked: std::collections::HashMap::new(),
@@ -2635,7 +2639,9 @@ impl App {
                 .with_title_hidden(true);
         }
         let win = Arc::new(event_loop.create_window(attrs).expect("settings window"));
-        let renderer = UiRenderer::new(win.clone()).expect("settings ui");
+        let mut renderer = UiRenderer::new(win.clone()).expect("settings ui");
+        // The settings window draws rarely, so it always presents within the transaction and resizes cleanly.
+        renderer.set_resizing(true);
         #[cfg(target_os = "macos")]
         pin_layer_top_left(&win);
         let (w, h) = renderer.size();
@@ -3180,6 +3186,8 @@ impl App {
 
 const CARET_BLINK: Duration = Duration::from_millis(500);
 const FRAME_INTERVAL: Duration = Duration::from_micros(8_333);
+/// A resize is taken as over once no resize event came for this long.
+const RESIZE_SETTLE: Duration = Duration::from_millis(150);
 
 impl ApplicationHandler for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
@@ -3259,9 +3267,36 @@ impl ApplicationHandler for App {
         if self.with_settings_view(|view, _| view.tick()) == Some(true) {
             self.draw_settings();
         }
+        let ticking: Vec<WindowId> = match self.main_app.as_ref() {
+            Some(a) => self
+                .mains
+                .iter()
+                .filter(|(_, m)| m.entity.read(a.app()).ticking())
+                .map(|(id, _)| *id)
+                .collect(),
+            None => Vec::new(),
+        };
+        // An animating window draws through the same paced path as a changed one, so it never draws twice in an
+        // iteration: each draw waits for a free drawable, and two in a row hold input behind them.
+        for id in &ticking {
+            if let Some(m) = self.mains.get_mut(id) {
+                m.dirty = true;
+            }
+        }
         // Coalesce per-window redraws (scroll/hover bursts) into one per iteration.
         let now = Instant::now();
-        let mut next_frame: Option<Instant> = None;
+        let mut resize_wake: Option<Instant> = None;
+        for m in self.mains.values_mut() {
+            match m.resizing_until {
+                Some(until) if now >= until => {
+                    m.resizing_until = None;
+                    m.ui.set_resizing(false);
+                }
+                Some(until) => resize_wake = Some(resize_wake.map_or(until, |at| at.min(until))),
+                None => {}
+            }
+        }
+        let mut next_frame: Option<Instant> = resize_wake;
         let dirty: Vec<WindowId> = self
             .mains
             .iter()
@@ -3280,18 +3315,6 @@ impl ApplicationHandler for App {
                 m.dirty = false;
             }
             self.draw_main(id);
-        }
-        let ticking: Vec<WindowId> = match self.main_app.as_ref() {
-            Some(a) => self
-                .mains
-                .iter()
-                .filter(|(_, m)| m.entity.read(a.app()).ticking())
-                .map(|(id, _)| *id)
-                .collect(),
-            None => Vec::new(),
-        };
-        for id in &ticking {
-            self.draw_main(*id);
         }
         let editor_windows: Vec<WindowId> = match self.main_app.as_ref() {
             Some(a) => self
@@ -3944,6 +3967,10 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => {
                 if let Some(m) = self.mains.get_mut(&id) {
+                    if m.resizing_until.is_none() {
+                        m.ui.set_resizing(true);
+                    }
+                    m.resizing_until = Some(Instant::now() + RESIZE_SETTLE);
                     m.ui.resize(size.width, size.height);
                     #[cfg(target_os = "macos")]
                     {

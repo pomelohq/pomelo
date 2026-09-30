@@ -52,9 +52,11 @@ Our crates must be warning-clean.
 
 ## Smooth resize
 
-- The window's CAMetalLayer presents inside the Core Animation transaction (`presentsWithTransaction`), so
-  live-resize frames swap atomically with the window. `ui::present_with_transaction` sets it on the layer
-  right after the surface is configured; wgpu reads it from the layer, so keep it after any wgpu upgrade.
+- While a window is being resized its CAMetalLayer presents inside the Core Animation transaction
+  (`presentsWithTransaction`), so live-resize frames swap atomically with the window; `UiRenderer::set_resizing`
+  turns it on at a resize event and off once resizing settles. Outside a resize it stays off: presenting in the
+  transaction holds the main thread every frame, which makes typing and key repeat stutter. wgpu reads the
+  flag from the layer at each frame, so keep that after any wgpu upgrade.
 
 ## Assets
 
