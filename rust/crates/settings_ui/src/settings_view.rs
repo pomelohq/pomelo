@@ -53,6 +53,7 @@ pub struct SideEffects {
     pub toggle_login_item: bool,
     pub check_updates: bool,
     pub edit_keymap: bool,
+    pub edit_settings_json: bool,
     pub open_themes: bool,
     /// A theme choice changed: the app resolves and applies the theme (mode, overrides, syntax).
     pub apply_theme: bool,
@@ -908,9 +909,7 @@ impl SettingsView {
         if id == settings_ui::CTRL_OPEN_JSON || settings_ui::is_edit_in_json(id) {
             self.commit_edit();
             self.close_popover();
-            if let Some(path) = settings::Settings::path() {
-                let _ = std::process::Command::new("open").arg(path).spawn();
-            }
+            self.pending.edit_settings_json = true;
             return;
         }
         if let Some(language) = settings_ui::language_to_open(id) {
@@ -1403,11 +1402,13 @@ mod tests {
         view.click(settings_ui::CTRL_START_AT_LOGIN);
         view.click(settings_ui::CTRL_CHECK_UPDATES);
         view.click(settings_ui::CTRL_EDIT_KEYMAP);
+        view.click(settings_ui::CTRL_OPEN_JSON);
         view.click(settings_ui::CTRL_EXPORT_CONFIG);
         view.click(settings_ui::CTRL_IMPORT_CONFIG);
         let effects = view.take_side_effects();
         assert!(effects.export_config && effects.import_config);
         assert!(effects.toggle_login_item && effects.check_updates && effects.edit_keymap);
+        assert!(effects.edit_settings_json);
         view.click(settings_ui::CTRL_TERM_SHELL);
         assert!(view.key_text("/bin/bash -l"));
         assert_eq!(

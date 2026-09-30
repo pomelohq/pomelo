@@ -1817,13 +1817,30 @@ impl App {
                 return;
             }
         }
+        self.open_in_editor(&path);
+    }
+
+    fn edit_settings_json(&mut self) {
+        let Some(path) = settings::Settings::path() else {
+            return;
+        };
+        if !path.exists() {
+            if let Err(error) = self.settings.save() {
+                eprintln!("settings: create {}: {error}", path.display());
+                return;
+            }
+        }
+        self.open_in_editor(&path);
+    }
+
+    fn open_in_editor(&mut self, path: &std::path::Path) {
         let Some(id) = self
             .focused_main
             .or_else(|| self.mains.keys().next().copied())
         else {
             return;
         };
-        self.with_workspace_view(id, |view, _| view.open_file(&path));
+        self.with_workspace_view(id, |view, _| view.open_file(path));
         if let Some(main) = self.mains.get(&id) {
             main.window.focus_window();
         }
@@ -2853,6 +2870,9 @@ impl App {
         }
         if effects.edit_keymap {
             self.edit_keymap();
+        }
+        if effects.edit_settings_json {
+            self.edit_settings_json();
         }
         if effects.open_themes {
             self.open_themes_folder();
