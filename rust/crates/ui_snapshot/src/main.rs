@@ -85,9 +85,14 @@ fn main() -> anyhow::Result<()> {
         return e2e::run(out.trim_end_matches(".png"), &repos);
     }
 
-    if std::env::var("USAGEPAGE").is_ok() {
+    let usage_page = std::env::var("USAGEPAGE").is_ok();
+    if usage_page || std::env::var("DEVREQUESTS").is_ok() {
         use workspace::Item;
-        let mut page = agent_usage_ui::preview_page();
+        let mut page: Box<dyn Item> = if usage_page {
+            Box::new(agent_usage_ui::preview_page())
+        } else {
+            Box::new(dev_services_ui::preview_page())
+        };
         let (width, height) = (1000.0_f32, 1500.0_f32);
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
         let painted = page.paint_body(body, true).unwrap_or_default();
@@ -2016,36 +2021,12 @@ fn main() -> anyhow::Result<()> {
         } else {
             settings_ui::AgentPage::default()
         },
-        network: settings_ui::NetworkPage {
+        dev_services: settings_ui::DevServicesPage {
             proxy_running: live,
             webhook_running: live,
             proxy_port: 8767,
             webhook_port: 8766,
-            served_elsewhere: false,
-            requests: if live {
-                vec![
-                    settings_ui::RequestRow {
-                        time: "10:42:07".into(),
-                        method: "GET".into(),
-                        path: "/_pom_dev/api/server/v1/me".into(),
-                        profile: "local".into(),
-                        target: "127.0.0.1:41822".into(),
-                        status: 200,
-                        ms: 12,
-                    },
-                    settings_ui::RequestRow {
-                        time: "10:42:05".into(),
-                        method: "POST".into(),
-                        path: "/_pom_dev/api/server/v1/login".into(),
-                        profile: "staging".into(),
-                        target: "https://api.staging.example.com".into(),
-                        status: 401,
-                        ms: 184,
-                    },
-                ]
-            } else {
-                Vec::new()
-            },
+            ..settings_ui::DevServicesPage::default()
         },
         general: {
             let row = std::env::var("UPDATESTATE").ok().map(|which| {

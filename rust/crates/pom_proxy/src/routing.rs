@@ -334,7 +334,8 @@ impl Router {
     }
 
     /// Every listening-capable port the service has across the session's workspaces.
-    pub fn service_ports_everywhere(&self, target: &str) -> Option<(String, Vec<u16>)> {
+    /// Each workspace running `target` (repo/service), as its branch label and leased port.
+    pub fn service_ports_everywhere(&self, target: &str) -> Option<(String, Vec<(String, u16)>)> {
         for (_, config) in self.projects() {
             let Some(service_key) = resolve_service_key(&config, target) else {
                 continue;
@@ -344,7 +345,12 @@ impl Router {
                 .session_leases(&config.session)
                 .into_iter()
                 .filter(|lease| lease.key.ends_with(&suffix) && lease.port > 0)
-                .map(|lease| lease.port)
+                .map(|lease| {
+                    let workspace = lease.key[..lease.key.len() - suffix.len()]
+                        .trim_start_matches("ws-")
+                        .to_string();
+                    (workspace, lease.port)
+                })
                 .collect();
             return Some((service_key, ports));
         }

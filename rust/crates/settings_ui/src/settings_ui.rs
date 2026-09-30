@@ -107,7 +107,7 @@ const TERMINAL_SECTIONS: [&str; 2] = ["Font", "Shell"];
 const KEYMAP_SECTIONS: [&str; 1] = ["Bindings"];
 const AGENT_SECTIONS: [&str; 2] = ["Command", "Claude Code"];
 const NOTIFICATIONS_SECTIONS: [&str; 2] = ["Delivery", "Alert Sounds"];
-const NETWORK_SECTIONS: [&str; 3] = ["Reverse Proxy", "Webhook Fan-out", "Recent Requests"];
+const DEV_SERVICES_SECTIONS: [&str; 3] = ["Reverse Proxy", "Webhook Fan-out", "Servers"];
 const PROJECT_SECTIONS: [&str; 3] = ["Repositories", "Config", "Config Bundle"];
 
 const CATEGORIES: [(&str, &[&str]); 11] = [
@@ -119,7 +119,7 @@ const CATEGORIES: [(&str, &[&str]); 11] = [
     ("Keymap", &KEYMAP_SECTIONS),
     ("Agent", &AGENT_SECTIONS),
     ("Notifications", &NOTIFICATIONS_SECTIONS),
-    ("Network", &NETWORK_SECTIONS),
+    ("Dev Services", &DEV_SERVICES_SECTIONS),
     ("Integrations", &INTEGRATIONS_SECTIONS),
     ("Project", &PROJECT_SECTIONS),
 ];
@@ -131,7 +131,7 @@ pub const TERMINAL: usize = 4;
 pub const KEYMAP: usize = 5;
 pub const AGENT: usize = 6;
 pub const NOTIFICATIONS: usize = 7;
-pub const NETWORK: usize = 8;
+pub const DEV_SERVICES: usize = 8;
 pub const INTEGRATIONS: usize = 9;
 pub const PROJECT: usize = 10;
 
@@ -212,6 +212,15 @@ pub const CTRL_TEST_NOTIFICATION: u64 = 245;
 /// A sound dropdown per agent event: id = base + index into `settings::AGENT_EVENTS`.
 pub const CTRL_SOUND_BASE: u64 = 246;
 pub const CTRL_START_SERVERS: u64 = 250;
+pub const CTRL_PROXY_ENABLED: u64 = 310;
+pub const CTRL_PROXY_PORT_DEC: u64 = 311;
+pub const CTRL_PROXY_PORT_INC: u64 = 312;
+pub const CTRL_PROXY_PORT_EDIT: u64 = 313;
+pub const CTRL_WEBHOOK_ENABLED: u64 = 314;
+pub const CTRL_WEBHOOK_PORT_DEC: u64 = 315;
+pub const CTRL_WEBHOOK_PORT_INC: u64 = 316;
+pub const CTRL_WEBHOOK_PORT_EDIT: u64 = 317;
+pub const CTRL_OPEN_REQUESTS: u64 = 318;
 pub const CTRL_START_AT_LOGIN: u64 = 260;
 pub const CTRL_AUTO_UPDATE: u64 = 261;
 pub const CTRL_CHECK_UPDATES: u64 = 262;
@@ -255,6 +264,7 @@ pub const CTRL_APPLY_CONFIG: u64 = 281;
 pub const CTRL_REPO_RENAME_BASE: u64 = 20_000;
 pub const CTRL_REPO_REMOVE_BASE: u64 = 21_000;
 pub const CTRL_REPO_LIMIT: u64 = 1_000;
+pub const PORT_MIN: u16 = 1024;
 pub const SCROLLBACK_MIN: u32 = 1_000;
 pub const SCROLLBACK_MAX: u32 = 100_000;
 
@@ -277,6 +287,12 @@ pub const FONT_SIZE_MAX: f32 = 72.0;
 /// Font-weight bounds, matching the reference's `FontWeight` stepper (CSS weights 100-900).
 pub const FONT_WEIGHT_MIN: f32 = 100.0;
 pub const FONT_WEIGHT_MAX: f32 = 900.0;
+
+/// Step or set a listening port, kept out of the privileged range; returns true if it changed.
+pub fn set_port(port: &mut u16, step: i32) -> bool {
+    let next = (i32::from(*port) + step).clamp(i32::from(PORT_MIN), i32::from(u16::MAX)) as u16;
+    std::mem::replace(port, next) != next
+}
 
 /// Commit a typed font size (clamped); returns true if it changed.
 pub fn set_font_size(s: &mut Settings, value: f32) -> bool {
@@ -514,6 +530,10 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_SHOW_SESSION => s.show_session_name == d.show_session_name,
         CTRL_JIRA_ONLY_MINE => s.jira_only_mine == d.jira_only_mine,
         CTRL_GROUP_WORKSPACES => s.group_workspaces == d.group_workspaces,
+        CTRL_PROXY_ENABLED => s.dev_proxy_enabled == d.dev_proxy_enabled,
+        CTRL_WEBHOOK_ENABLED => s.webhook_enabled == d.webhook_enabled,
+        CTRL_PROXY_PORT_EDIT => s.dev_proxy_port == d.dev_proxy_port,
+        CTRL_WEBHOOK_PORT_EDIT => s.webhook_port == d.webhook_port,
         CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
         CTRL_AUTO_UPDATE => s.auto_update == d.auto_update,
         CTRL_BUFFER_FONT_EDIT => s.buffer_font_size == d.buffer_font_size,
@@ -560,6 +580,10 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_SHOW_SESSION => s.show_session_name = d.show_session_name,
         CTRL_JIRA_ONLY_MINE => s.jira_only_mine = d.jira_only_mine,
         CTRL_GROUP_WORKSPACES => s.group_workspaces = d.group_workspaces,
+        CTRL_PROXY_ENABLED => s.dev_proxy_enabled = d.dev_proxy_enabled,
+        CTRL_WEBHOOK_ENABLED => s.webhook_enabled = d.webhook_enabled,
+        CTRL_PROXY_PORT_EDIT => s.dev_proxy_port = d.dev_proxy_port,
+        CTRL_WEBHOOK_PORT_EDIT => s.webhook_port = d.webhook_port,
         CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
         CTRL_AUTO_UPDATE => s.auto_update = d.auto_update,
         CTRL_BUFFER_FONT_EDIT => s.buffer_font_size = d.buffer_font_size,
@@ -629,6 +653,18 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
             s.group_workspaces = !s.group_workspaces;
             true
         }
+        CTRL_PROXY_ENABLED => {
+            s.dev_proxy_enabled = !s.dev_proxy_enabled;
+            true
+        }
+        CTRL_WEBHOOK_ENABLED => {
+            s.webhook_enabled = !s.webhook_enabled;
+            true
+        }
+        CTRL_PROXY_PORT_DEC => set_port(&mut s.dev_proxy_port, -1),
+        CTRL_PROXY_PORT_INC => set_port(&mut s.dev_proxy_port, 1),
+        CTRL_WEBHOOK_PORT_DEC => set_port(&mut s.webhook_port, -1),
+        CTRL_WEBHOOK_PORT_INC => set_port(&mut s.webhook_port, 1),
         CTRL_NOTIFY => {
             s.notify_claude = !s.notify_claude;
             true
@@ -1243,8 +1279,13 @@ pub fn page(
         render_page(&agent_page(s, &state.agent), search, editing, w)
     } else if selected == NOTIFICATIONS {
         render_page(&notifications_page(s), search, editing, w)
-    } else if selected == NETWORK {
-        render_page(&network_page(&state.network), search, editing, w)
+    } else if selected == DEV_SERVICES {
+        render_page(
+            &dev_services_page(s, &state.dev_services),
+            search,
+            editing,
+            w,
+        )
     } else if selected == PROJECT && !state.project.session.is_empty() {
         render_page(&project_page(&state.project), search, editing, w)
     } else if selected == PROJECT {
@@ -1472,7 +1513,10 @@ fn page_for(cat: usize) -> Option<Page> {
         TERMINAL => Some(terminal_page(&Settings::default())),
         KEYMAP => Some(keymap_page(&KeymapPage::default())),
         NOTIFICATIONS => Some(notifications_page(&Settings::default())),
-        NETWORK => Some(network_page(&NetworkPage::default())),
+        DEV_SERVICES => Some(dev_services_page(
+            &Settings::default(),
+            &DevServicesPage::default(),
+        )),
         PROJECT => Some(project_page(&ProjectPage::default())),
         _ => None,
     }
@@ -1962,26 +2006,15 @@ pub struct AgentPage {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RequestRow {
-    pub time: String,
-    pub method: String,
-    pub path: String,
-    pub profile: String,
-    pub target: String,
-    pub status: u16,
-    pub ms: u64,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct NetworkPage {
+pub struct DevServicesPage {
     pub proxy_running: bool,
     pub webhook_running: bool,
     pub proxy_port: u16,
     pub webhook_port: u16,
     /// The app could not bind, but `pom proxy` in a terminal answers on the port.
     pub served_elsewhere: bool,
-    /// Newest first.
-    pub requests: Vec<RequestRow>,
+    /// `POM_WEB_PORT` overrides the configured ports.
+    pub port_from_env: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2009,7 +2042,7 @@ pub struct PageState {
     pub jira: IntegrationsPage,
     pub project: ProjectPage,
     pub agent: AgentPage,
-    pub network: NetworkPage,
+    pub dev_services: DevServicesPage,
     pub general: GeneralPage,
     pub keymap: KeymapPage,
 }
@@ -2354,39 +2387,64 @@ fn notifications_page(s: &Settings) -> Page {
     }
 }
 
-fn network_page(network: &NetworkPage) -> Page {
-    let status_description = if network.served_elsewhere && !network.proxy_running {
-        "Served by `pom proxy` in a terminal; its requests are not listed here."
+fn dev_services_page(s: &Settings, services: &DevServicesPage) -> Page {
+    let status = |enabled: bool, running: bool| {
+        if enabled {
+            Control::Status {
+                running: running || services.served_elsewhere,
+            }
+        } else {
+            Control::Value { text: "Off".into() }
+        }
+    };
+    let env_note = if services.port_from_env {
+        " POM_WEB_PORT is set, so the ports below are ignored."
     } else {
-        "Serves every workspace's services behind one port."
+        ""
+    };
+    let proxy_status = if services.served_elsewhere && !services.proxy_running {
+        "Served by `pom proxy` in a terminal; its requests are not listed in Dev Requests."
+            .to_string()
+    } else {
+        format!("Serves every workspace's services behind one port.{env_note}")
     };
     let mut items = vec![
         PageItem::Header("Reverse Proxy"),
         PageItem::Row(SettingRow {
-            title: "Status".into(),
-            description: status_description.into(),
-            control: Control::Status {
-                running: network.proxy_running || network.served_elsewhere,
+            title: "Enabled".into(),
+            description: "Run the reverse proxy while a project is open.".into(),
+            control: Control::Toggle {
+                id: CTRL_PROXY_ENABLED,
+                on: s.dev_proxy_enabled,
             },
+            reset: reset_if_changed(CTRL_PROXY_ENABLED, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Status".into(),
+            description: proxy_status.into(),
+            control: status(s.dev_proxy_enabled, services.proxy_running),
             reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "Port".into(),
+            description: format!(
+                "Open a service at <service>.<repo>.<ticket or branch>.localhost:{}. Service URLs in env files use it too; restart running services after changing it.",
+                services.proxy_port
+            )
+            .into(),
+            control: Control::Stepper {
+                dec: CTRL_PROXY_PORT_DEC,
+                inc: CTRL_PROXY_PORT_INC,
+                edit: CTRL_PROXY_PORT_EDIT,
+                value: s.dev_proxy_port.to_string(),
+            },
+            reset: reset_if_changed(CTRL_PROXY_PORT_EDIT, s),
         }),
         PageItem::Row(SettingRow {
             title: "From the Frontend".into(),
             description: "Point the frontend's backend base URL here: same origin, cookies like production, retargeted when the environment switches.".into(),
             control: Control::Value {
                 text: "/_pom_dev/<repo>/<service>".into(),
-            },
-            reset: None,
-        }),
-        PageItem::Row(SettingRow {
-            title: "Proxy Port".into(),
-            description: format!(
-                "Open a service directly at <service>.<repo>.<ticket or branch>.localhost:{}. Set POM_WEB_PORT to move it (the proxy takes that port + 2).",
-                network.proxy_port
-            )
-            .into(),
-            control: Control::Value {
-                text: network.proxy_port.to_string(),
             },
             reset: None,
         }),
@@ -2400,66 +2458,55 @@ fn network_page(network: &NetworkPage) -> Page {
         }),
         PageItem::Header("Webhook Fan-out"),
         PageItem::Row(SettingRow {
+            title: "Enabled".into(),
+            description: "Run the webhook relay while a project is open.".into(),
+            control: Control::Toggle {
+                id: CTRL_WEBHOOK_ENABLED,
+                on: s.webhook_enabled,
+            },
+            reset: reset_if_changed(CTRL_WEBHOOK_ENABLED, s),
+        }),
+        PageItem::Row(SettingRow {
             title: "Status".into(),
             description: "Hands each incoming webhook to every workspace running the service.".into(),
-            control: Control::Status {
-                running: network.webhook_running || network.served_elsewhere,
-            },
+            control: status(s.webhook_enabled, services.webhook_running),
             reset: None,
         }),
         PageItem::Row(SettingRow {
-            title: "Listen Port".into(),
+            title: "Port".into(),
             description: format!(
                 "Point an external webhook (Stripe, GitHub...) at localhost:{}/<repo>/<service>.",
-                network.webhook_port
+                services.webhook_port
             )
             .into(),
-            control: Control::Value {
-                text: network.webhook_port.to_string(),
+            control: Control::Stepper {
+                dec: CTRL_WEBHOOK_PORT_DEC,
+                inc: CTRL_WEBHOOK_PORT_INC,
+                edit: CTRL_WEBHOOK_PORT_EDIT,
+                value: s.webhook_port.to_string(),
             },
-            reset: None,
+            reset: reset_if_changed(CTRL_WEBHOOK_PORT_EDIT, s),
         }),
+        PageItem::Header("Servers"),
     ];
-    if !network.served_elsewhere && (!network.proxy_running || !network.webhook_running) {
-        items.push(PageItem::Row(SettingRow {
-            title: "Servers".into(),
-            description: "A port was taken, likely by another Pomelo. Free it, then start again."
-                .into(),
-            control: Control::Button {
-                id: CTRL_START_SERVERS,
-                label: "Start Servers",
-                enabled: true,
-            },
-            reset: None,
-        }));
+    let mut actions = Vec::new();
+    if !services.served_elsewhere {
+        actions.push((CTRL_START_SERVERS, "Restart"));
     }
-    items.push(PageItem::Header("Recent Requests"));
-    if network.requests.is_empty() {
-        items.push(PageItem::Row(SettingRow {
-            title: "No Requests Yet".into(),
-            description: "Requests the frontend sends through /_pom_dev/ show up here.".into(),
-            control: Control::Value {
-                text: String::new(),
-            },
-            reset: None,
-        }));
-    }
-    for request in &network.requests {
-        items.push(PageItem::Row(SettingRow {
-            title: format!("{} {}", request.method, request.path).into(),
-            description: format!(
-                "{} - {} - {} - {} ms",
-                request.time, request.profile, request.target, request.ms
-            )
-            .into(),
-            control: Control::Value {
-                text: request.status.to_string(),
-            },
-            reset: None,
-        }));
-    }
+    actions.push((CTRL_OPEN_REQUESTS, "Open Requests"));
+    let description = if services.served_elsewhere {
+        "See each request and webhook delivery in a tab."
+    } else {
+        "Restart binds both ports again (after freeing one another app held). Open Requests lists each request and webhook delivery in a tab."
+    };
+    items.push(PageItem::Row(SettingRow {
+        title: "Servers".into(),
+        description: description.into(),
+        control: Control::Buttons(actions),
+        reset: None,
+    }));
     Page {
-        title: "Network",
+        title: "Dev Services",
         items,
     }
 }
@@ -3377,77 +3424,90 @@ mod tests {
         assert!(!s.notify_claude);
     }
 
-    #[test]
-    fn network_page_shows_status_ports_and_recent_requests() {
+    fn dev_services_panel(settings: &Settings, services: DevServicesPage) -> ui::Painted {
         let state = PageState {
-            network: NetworkPage {
-                proxy_running: true,
-                webhook_running: false,
-                proxy_port: 8767,
-                webhook_port: 8766,
-                requests: vec![RequestRow {
-                    time: "10:00:00".into(),
-                    method: "GET".into(),
-                    path: "/_pom_dev/api/server/v1".into(),
-                    profile: "local".into(),
-                    target: "127.0.0.1:4000".into(),
-                    status: 200,
-                    ms: 7,
-                }],
-                ..NetworkPage::default()
-            },
+            dev_services: services,
             ..PageState::default()
         };
-        let p = panel(
-            NETWORK,
+        panel(
+            DEV_SERVICES,
             None,
             &[false; CATEGORY_COUNT],
-            &Settings::default(),
+            settings,
             &state,
             1400.0,
             2400.0,
             None,
             "",
             false,
+        )
+    }
+
+    #[test]
+    fn dev_services_shows_status_ports_and_the_server_actions() {
+        let p = dev_services_panel(
+            &Settings::default(),
+            DevServicesPage {
+                proxy_running: true,
+                webhook_running: false,
+                proxy_port: 8767,
+                webhook_port: 8766,
+                ..DevServicesPage::default()
+            },
         );
         for expected in [
             "Running",
             "Stopped",
             "8767",
             "8766",
-            "GET /_pom_dev/api/server/v1",
-            "200",
+            "Restart",
+            "Open Requests",
         ] {
             assert!(p.texts.iter().any(|t| t.text == expected), "{expected}");
         }
-        assert!(p.hits.iter().any(|(_, id)| *id == CTRL_START_SERVERS));
+        for id in [
+            CTRL_START_SERVERS,
+            CTRL_OPEN_REQUESTS,
+            CTRL_PROXY_ENABLED,
+            CTRL_WEBHOOK_PORT_INC,
+        ] {
+            assert!(p.hits.iter().any(|(_, hit)| *hit == id), "{id}");
+        }
     }
 
     #[test]
-    fn a_terminal_proxy_counts_as_running_and_needs_no_restart_button() {
-        let state = PageState {
-            network: NetworkPage {
+    fn a_turned_off_server_reads_off_and_a_terminal_proxy_needs_no_restart() {
+        let settings = Settings {
+            webhook_enabled: false,
+            ..Settings::default()
+        };
+        let p = dev_services_panel(
+            &settings,
+            DevServicesPage {
                 served_elsewhere: true,
                 proxy_port: 8767,
                 webhook_port: 8766,
-                ..NetworkPage::default()
+                ..DevServicesPage::default()
             },
-            ..PageState::default()
-        };
-        let p = panel(
-            NETWORK,
-            None,
-            &[false; CATEGORY_COUNT],
-            &Settings::default(),
-            &state,
-            1400.0,
-            2400.0,
-            None,
-            "",
-            false,
         );
+        assert!(p.texts.iter().any(|t| t.text == "Off"));
         assert!(!p.texts.iter().any(|t| t.text == "Stopped"));
         assert!(!p.hits.iter().any(|(_, id)| *id == CTRL_START_SERVERS));
+        assert!(p.hits.iter().any(|(_, id)| *id == CTRL_OPEN_REQUESTS));
+    }
+
+    #[test]
+    fn ports_step_toggle_and_reset() {
+        let mut s = Settings::default();
+        assert!(handle_control(CTRL_PROXY_PORT_INC, &mut s));
+        assert_eq!(s.dev_proxy_port, 8768);
+        assert!(!is_default(CTRL_PROXY_PORT_EDIT, &s));
+        assert!(reset_to_default(CTRL_PROXY_PORT_EDIT, &mut s));
+        assert_eq!(s.dev_proxy_port, 8767);
+        s.webhook_port = PORT_MIN;
+        assert!(!handle_control(CTRL_WEBHOOK_PORT_DEC, &mut s));
+        assert!(handle_control(CTRL_WEBHOOK_ENABLED, &mut s));
+        assert!(!s.webhook_enabled);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::routing::{rewrite_external_cookie, rewrite_local_cookie, Route, Router};
-use crate::{clock, ProxyLog, ProxyLogEntry};
+use crate::{clock, Delivery, ProxyLog, ProxyLogEntry, RequestKind};
 
 pub(crate) type Body = BoxBody<Bytes, hyper::Error>;
 
@@ -237,6 +237,7 @@ async fn handle_proxy(
     };
     if let Some(logged) = decision.logged {
         shared.log.add(ProxyLogEntry {
+            kind: RequestKind::Proxy,
             time: clock(),
             method,
             path,
@@ -246,6 +247,8 @@ async fn handle_proxy(
             target: logged.target,
             status: response.status().as_u16(),
             ms: started.elapsed().as_millis() as u64,
+            deliveries: Vec::new(),
+            seq: 0,
         });
     }
     response
@@ -454,10 +457,12 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
             Bytes::new()
         }
     };
+    let started = Instant::now();
+    let time = clock();
     let mut live = Vec::new();
-    for port in ports {
+    for (workspace, port) in ports {
         if listening(port).await {
-            live.push(port);
+            live.push((workspace, port));
         }
     }
     let mut response = Response::new(full(format!(
@@ -469,14 +474,17 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     let client = shared.local.clone();
+    let log = shared.log.clone();
     let mut headers = parts.headers;
     headers.remove(HOST);
+    let logged_path = match &query {
+        Some(query) => format!("{forward_path}?{query}"),
+        None => forward_path.clone(),
+    };
     tokio::spawn(async move {
-        for port in live {
-            let url = match &query {
-                Some(query) => format!("http://127.0.0.1:{port}{forward_path}?{query}"),
-                None => format!("http://127.0.0.1:{port}{forward_path}"),
-            };
+        let mut deliveries = Vec::new();
+        for (workspace, port) in live {
+            let url = format!("http://127.0.0.1:{port}{logged_path}");
             let Ok(uri) = url.parse::<Uri>() else {
                 continue;
             };
@@ -484,12 +492,41 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
             *outgoing.method_mut() = method.clone();
             *outgoing.uri_mut() = uri;
             *outgoing.headers_mut() = headers.clone();
+            let mut delivery = Delivery {
+                workspace,
+                port,
+                ..Delivery::default()
+            };
             match tokio::time::timeout(WEBHOOK_FORWARD_TIMEOUT, client.request(outgoing)).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => eprintln!("webhook fanout > :{port} {forward_path}: {error}"),
-                Err(_) => eprintln!("webhook fanout > :{port} {forward_path}: timed out"),
+                Ok(Ok(answer)) => delivery.status = Some(answer.status().as_u16()),
+                Ok(Err(error)) => delivery.error = error.to_string(),
+                Err(_) => delivery.error = "timed out".into(),
             }
+            deliveries.push(delivery);
         }
+        let failed = deliveries
+            .iter()
+            .any(|delivery| delivery.status.is_none_or(|status| status >= 400));
+        log.add(ProxyLogEntry {
+            kind: RequestKind::Webhook,
+            time,
+            method: method.to_string(),
+            path: logged_path,
+            repo,
+            service,
+            profile: String::new(),
+            target: format!("{} workspaces", deliveries.len()),
+            status: if deliveries.is_empty() {
+                404
+            } else if failed {
+                502
+            } else {
+                200
+            },
+            ms: started.elapsed().as_millis() as u64,
+            deliveries,
+            seq: 0,
+        });
     });
     response
 }

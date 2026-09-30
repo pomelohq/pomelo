@@ -5,7 +5,6 @@ use crate::branch::{branch_hash, branch_host, branch_safe, workspace_label};
 use crate::template;
 
 pub const BIND_IP: &str = "127.0.0.1";
-pub const DEFAULT_PROXY_PORT: u16 = 8767;
 pub const DEV_PROXY_PREFIX: &str = "/_pom_dev";
 const LOCAL_DOMAIN: &str = "localhost";
 
@@ -32,6 +31,9 @@ pub trait EnvSources {
     fn service_port(&self, ws_key: &str, service_key: &str) -> Option<u16>;
     fn slot(&self, shared_name: &str, ws_key: &str) -> Option<SlotAllocation>;
     fn secret(&self, session: &str, name: &str) -> Option<String>;
+    fn proxy_port(&self) -> u16 {
+        crate::DEFAULT_PROXY_PORT
+    }
 }
 
 /// Everything needed to turn `{{...}}` tokens into values for one workspace.
@@ -156,8 +158,8 @@ impl ResolveContext<'_> {
         match field {
             "port" => Some(self.service_port(dir, &alias, service).to_string()),
             "host" => Some(host),
-            "url" => Some(format!("http://{host}:{DEFAULT_PROXY_PORT}")),
-            "ws" => Some(format!("ws://{host}:{DEFAULT_PROXY_PORT}")),
+            "url" => Some(format!("http://{host}:{}", self.sources.proxy_port())),
+            "ws" => Some(format!("ws://{host}:{}", self.sources.proxy_port())),
             _ => None,
         }
     }

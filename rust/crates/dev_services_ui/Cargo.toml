@@ -1,0 +1,15 @@
+[package]
+name = "dev_services_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Dev Requests tab: the reverse proxy's and webhook relay's status and every request they handled."
+
+[lib]
+path = "src/dev_services_ui.rs"
+
+[dependencies]
+pom_proxy = { path = "../pom_proxy" }
+terminal = { path = "../terminal" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }

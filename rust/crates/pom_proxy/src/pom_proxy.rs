@@ -11,11 +11,8 @@ pub use routing::{
     rewrite_local_cookie, ConfigSource, Decision, Logged, Machine, ProjectRoute, Route, Router,
 };
 
-const DEFAULT_WEB_PORT: u16 = 8765;
 const LOG_CAPACITY: usize = 300;
 
-/// The dev proxy listens two above the base port and the webhook relay one above; `POM_WEB_PORT` moves the
-/// base so a dev build can run beside an installed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ports {
     pub webhook: u16,
@@ -23,24 +20,61 @@ pub struct Ports {
 }
 
 impl Ports {
+    /// `POM_WEB_PORT`, else the user's settings, else the defaults (shared with service URL templates).
     pub fn from_env() -> Ports {
-        let base = std::env::var("POM_WEB_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(DEFAULT_WEB_PORT);
-        Ports::from_base(base)
+        let ports = pom_env::dev_ports();
+        Ports {
+            webhook: ports.webhook,
+            proxy: ports.proxy,
+        }
     }
 
     pub fn from_base(base: u16) -> Ports {
+        let ports = pom_env::DevPorts::from_base(base);
         Ports {
-            webhook: base.saturating_add(1),
-            proxy: base.saturating_add(2),
+            webhook: ports.webhook,
+            proxy: ports.proxy,
         }
     }
 }
 
+/// Which of the two servers to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Serve {
+    pub proxy: bool,
+    pub webhook: bool,
+}
+
+impl Default for Serve {
+    fn default() -> Self {
+        Serve {
+            proxy: true,
+            webhook: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RequestKind {
+    #[default]
+    Proxy,
+    Webhook,
+}
+
+/// One workspace a webhook was handed to: `status` when it answered, else why it did not.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Delivery {
+    pub workspace: String,
+    pub port: u16,
+    pub status: Option<u16>,
+    pub error: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProxyLogEntry {
+    /// Increases by one per logged request, so a view can keep hold of a row as newer ones arrive.
+    pub seq: u64,
+    pub kind: RequestKind,
     pub time: String,
     pub method: String,
     pub path: String,
@@ -50,16 +84,20 @@ pub struct ProxyLogEntry {
     pub target: String,
     pub status: u16,
     pub ms: u64,
+    pub deliveries: Vec<Delivery>,
 }
 
 #[derive(Default)]
 pub struct ProxyLog {
-    entries: Mutex<VecDeque<ProxyLogEntry>>,
+    entries: Mutex<(u64, VecDeque<ProxyLogEntry>)>,
 }
 
 impl ProxyLog {
-    pub fn add(&self, entry: ProxyLogEntry) {
-        if let Ok(mut entries) = self.entries.lock() {
+    pub fn add(&self, mut entry: ProxyLogEntry) {
+        if let Ok(mut guard) = self.entries.lock() {
+            let (next, entries) = &mut *guard;
+            *next += 1;
+            entry.seq = *next;
             entries.push_back(entry);
             while entries.len() > LOG_CAPACITY {
                 entries.pop_front();
@@ -71,7 +109,7 @@ impl ProxyLog {
     pub fn snapshot(&self, limit: usize) -> Vec<ProxyLogEntry> {
         self.entries
             .lock()
-            .map(|entries| entries.iter().rev().take(limit).cloned().collect())
+            .map(|guard| guard.1.iter().rev().take(limit).cloned().collect())
             .unwrap_or_default()
     }
 }
@@ -97,11 +135,16 @@ pub struct DevProxy {
     ports: Ports,
     proxy_bound: bool,
     webhook_bound: bool,
+    serve: Serve,
     _runtime: tokio::runtime::Runtime,
 }
 
 impl DevProxy {
-    pub fn start(machine: Box<dyn Machine>, ports: Ports) -> std::io::Result<DevProxy> {
+    pub fn start(
+        machine: Box<dyn Machine>,
+        ports: Ports,
+        serve: Serve,
+    ) -> std::io::Result<DevProxy> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("pom-proxy")
@@ -112,7 +155,7 @@ impl DevProxy {
         let shared = Arc::new(server::Shared::new(router.clone(), log.clone()));
         let _entered = runtime.enter();
         let mut proxy_bound = false;
-        for host in ["127.0.0.1", "[::1]"] {
+        for host in ["127.0.0.1", "[::1]"].into_iter().filter(|_| serve.proxy) {
             match bind(&format!("{host}:{}", ports.proxy)) {
                 Ok(listener) => {
                     proxy_bound = true;
@@ -125,18 +168,22 @@ impl DevProxy {
                 Err(error) => eprintln!("dev proxy: {host}:{} unavailable: {error}", ports.proxy),
             }
         }
-        if !proxy_bound {
+        if serve.proxy && !proxy_bound {
             eprintln!(
                 "dev proxy: port {} already in use - skipping; service URLs will not route",
                 ports.proxy
             );
         }
-        let webhook_bound = match bind(&format!("127.0.0.1:{}", ports.webhook)) {
-            Ok(listener) => {
+        let webhook_bound = match serve
+            .webhook
+            .then(|| bind(&format!("127.0.0.1:{}", ports.webhook)))
+        {
+            None => false,
+            Some(Ok(listener)) => {
                 runtime.spawn(server::accept(listener, shared, server::Kind::Webhook));
                 true
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 eprintln!(
                     "webhook relay: 127.0.0.1:{} unavailable: {error}",
                     ports.webhook
@@ -151,6 +198,7 @@ impl DevProxy {
             ports,
             proxy_bound,
             webhook_bound,
+            serve,
             _runtime: runtime,
         })
     }
@@ -165,6 +213,10 @@ impl DevProxy {
 
     pub fn ports(&self) -> Ports {
         self.ports
+    }
+
+    pub fn serve(&self) -> Serve {
+        self.serve
     }
 
     pub fn proxy_running(&self) -> bool {
