@@ -47,6 +47,14 @@ pub trait WindowModal: 'static {
     fn busy(&self) -> bool {
         false
     }
+    /// The modal's control under the pointer changed; returns whether it needs a repaint.
+    fn hover(&mut self, _id: Option<u64>) -> bool {
+        false
+    }
+    /// Whether `id` shows the pointer cursor (backgrounds and text fields keep the arrow).
+    fn is_pointer(&self, _id: u64) -> bool {
+        true
+    }
     /// Whether a press outside the modal closes it.
     fn dismissable(&self) -> bool {
         true

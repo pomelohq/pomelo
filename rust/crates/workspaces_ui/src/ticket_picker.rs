@@ -326,7 +326,7 @@ impl TicketPicker {
     }
 
     /// The field, with the ticket list floating `width` wide under it while `focused`.
-    pub fn render(&self, focused: bool, width: f32) -> Node {
+    pub fn render(&self, focused: bool, width: f32, hovered: Option<u64>) -> Node {
         let colors = theme();
         let mut header = div().row().items_center().gap(6.0).child(
             label(self.field.label)
@@ -334,9 +334,11 @@ impl TicketPicker {
                 .color(colors.text),
         );
         if let Some(name) = self.source_name() {
-            let mut anchor = div().col().child(self.source_button(&name));
+            let mut anchor = div()
+                .col()
+                .child(self.source_button(&name, hovered == Some(SOURCE)));
             if self.menu_open {
-                anchor = anchor.child(self.source_menu());
+                anchor = anchor.child(self.source_menu(hovered));
             }
             header = header.child(anchor);
         }
@@ -352,7 +354,7 @@ impl TicketPicker {
             .col()
             .child(self.field.render_input(TICKET_FIELD, focused, false));
         if focused && self.list_open && !self.menu_open {
-            if let Some(list) = self.suggestion_list(width) {
+            if let Some(list) = self.suggestion_list(width, hovered) {
                 anchor = anchor.child(
                     deferred(list)
                         .below_or_above(FIELD_HEIGHT, 4.0)
@@ -373,7 +375,7 @@ impl TicketPicker {
         column.into()
     }
 
-    fn suggestion_list(&self, width: f32) -> Option<Node> {
+    fn suggestion_list(&self, width: f32, hovered: Option<u64>) -> Option<Node> {
         let colors = theme();
         let suggestions = self.suggestions();
         let typed = self.field.text().trim().to_string();
@@ -411,16 +413,18 @@ impl TicketPicker {
             );
         }
         for (index, issue) in suggestions.iter().enumerate() {
+            let id = SUGGESTION_BASE + index as u64;
             list = list.child(suggestion_row(
                 issue,
-                SUGGESTION_BASE + index as u64,
+                id,
                 index == self.highlighted,
+                hovered == Some(id),
             ));
         }
         Some(list.into())
     }
 
-    fn source_button(&self, name: &str) -> Node {
+    fn source_button(&self, name: &str, hovered: bool) -> Node {
         let colors = theme();
         let mut button =
             div()
@@ -442,7 +446,7 @@ impl TicketPicker {
                         .size(10.0)
                         .color(colors.icon_muted),
                 );
-        if self.menu_open {
+        if self.menu_open || (hovered && self.boards_known) {
             button = button.bg(colors.ghost_element_hover);
         }
         if self.boards_known {
@@ -452,7 +456,7 @@ impl TicketPicker {
     }
 
     /// Every board's sprint, then the backlog and the user's own tickets; the current one is accented.
-    fn source_menu(&self) -> Node {
+    fn source_menu(&self, hovered: Option<u64>) -> Node {
         let colors = theme();
         let mut menu = div()
             .col()
@@ -473,6 +477,7 @@ impl TicketPicker {
                 );
             }
             let current = Some(option.list) == self.list;
+            let id = SOURCE_OPTION_BASE + index as u64;
             menu = menu.child(
                 div()
                     .row()
@@ -481,7 +486,12 @@ impl TicketPicker {
                     .gap(8.0)
                     .items_center()
                     .rounded(4.0)
-                    .on_click(SOURCE_OPTION_BASE + index as u64)
+                    .bg(if hovered == Some(id) {
+                        colors.ghost_element_hover
+                    } else {
+                        Rgba::TRANSPARENT
+                    })
+                    .on_click(id)
                     .child(
                         div().row().flex(1.0).items_center().child(
                             label(option.name)
@@ -565,7 +575,7 @@ fn status_pill(issue: &SprintIssue) -> Node {
         .into()
 }
 
-fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool) -> Node {
+fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool, hovered: bool) -> Node {
     let colors = theme();
     div()
         .row()
@@ -577,6 +587,8 @@ fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool) -> Node {
         .on_click(id)
         .bg(if highlighted {
             colors.element_selected
+        } else if hovered {
+            colors.ghost_element_hover
         } else {
             Rgba::TRANSPARENT
         })

@@ -165,6 +165,8 @@ pub struct CreateWorkspaceModal {
     environments: Vec<String>,
     environment: usize,
     environment_menu_open: bool,
+    /// The control under the pointer.
+    hovered: Option<u64>,
     /// Repos whose databases start as a copy of main's.
     seeded_from_main: Vec<String>,
     fresh_databases: bool,
@@ -202,6 +204,7 @@ impl CreateWorkspaceModal {
             environments: Vec::new(),
             environment: 0,
             environment_menu_open: false,
+            hovered: None,
             seeded_from_main: Vec::new(),
             fresh_databases: false,
         }
@@ -652,7 +655,7 @@ impl CreateWorkspaceModal {
                     .size(10.0)
                     .color(colors.icon_muted),
             );
-        if self.environment_menu_open {
+        if self.environment_menu_open || self.hovered == Some(ENVIRONMENT_SELECT) {
             trigger = trigger.bg(colors.ghost_element_hover);
         }
         let mut column = div().col().child(trigger);
@@ -666,6 +669,7 @@ impl CreateWorkspaceModal {
                 .bg(colors.elevated_surface_background)
                 .on_click(ENVIRONMENT_MENU_SURFACE);
             for (index, name) in names.iter().enumerate() {
+                let id = ENVIRONMENT_BASE + index as u64;
                 menu = menu.child(
                     div()
                         .row()
@@ -673,7 +677,12 @@ impl CreateWorkspaceModal {
                         .px(8.0)
                         .items_center()
                         .rounded(4.0)
-                        .on_click(ENVIRONMENT_BASE + index as u64)
+                        .bg(if self.hovered == Some(id) {
+                            colors.ghost_element_hover
+                        } else {
+                            Rgba::TRANSPARENT
+                        })
+                        .on_click(id)
                         .child(
                             label(name.to_string())
                                 .label_size(LabelSize::Default)
@@ -957,6 +966,7 @@ impl WindowModal for CreateWorkspaceModal {
             section = section.child(tickets.render(
                 self.focus == CreateFocus::Ticket,
                 CREATE_WIDTH - 2.0 * SECTION_PADDING,
+                self.hovered,
             ));
         }
         let name_from = self.filled_from(
@@ -1224,6 +1234,25 @@ impl WindowModal for CreateWorkspaceModal {
 
     fn take_result(&mut self) -> Option<ModalResult> {
         self.result.take()
+    }
+
+    fn hover(&mut self, id: Option<u64>) -> bool {
+        std::mem::replace(&mut self.hovered, id) != id
+    }
+
+    fn is_pointer(&self, id: u64) -> bool {
+        !matches!(
+            id,
+            FORM_SURFACE
+                | SOURCE_MENU_SURFACE
+                | SUGGESTIONS_SURFACE
+                | ENVIRONMENT_MENU_SURFACE
+                | PICKER_SURFACE
+                | PICKER_QUERY
+                | TICKET_FIELD
+                | NAME_FIELD
+                | BRANCH_FIELD
+        )
     }
 }
 
@@ -1766,6 +1795,20 @@ mod tests {
         modal.key(EditKey::Enter, false);
         let created = submitted::<CreateWorkspace>(modal.take_result()).expect("submitted");
         assert_eq!(created.environment, "staging-3");
+    }
+
+    #[test]
+    fn menu_rows_take_the_hover_and_the_pointer_but_the_surface_does_not() {
+        let mut modal =
+            CreateWorkspaceModal::new(Vec::new(), Vec::new(), namer()).with_tickets(tickets(false));
+        settle(&mut modal);
+        assert!(modal.hover(Some(SUGGESTION_BASE + 1)), "a new row repaints");
+        assert!(
+            !modal.hover(Some(SUGGESTION_BASE + 1)),
+            "the same row does not"
+        );
+        assert!(modal.is_pointer(SUGGESTION_BASE + 1) && modal.is_pointer(SOURCE));
+        assert!(!modal.is_pointer(FORM_SURFACE) && !modal.is_pointer(TICKET_FIELD));
     }
 
     #[test]
