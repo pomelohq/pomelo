@@ -329,10 +329,26 @@ fn earclip(poly: &[(f32, f32)], color: Rgba) -> Vec<Tri> {
 
 type IconDraw = (IconTexKey, u32, u32);
 
+/// Present each frame inside the window's Core Animation transaction, so a live resize never shows a frame
+/// sized for the previous window size.
+#[cfg(target_os = "macos")]
+fn present_with_transaction(surface: &wgpu::Surface<'static>) {
+    // SAFETY: the Metal surface was just created on this thread and outlives the call.
+    unsafe {
+        if let Some(metal) = surface.as_hal::<wgpu::hal::api::Metal>() {
+            metal.render_layer().lock().setPresentsWithTransaction(true);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn present_with_transaction(_surface: &wgpu::Surface<'static>) {}
+
 fn ui_config(width: u32, height: u32) -> SurfaceConfiguration {
     SurfaceConfiguration {
         usage: TextureUsages::RENDER_ATTACHMENT,
         format: TextureFormat::Bgra8UnormSrgb,
+        color_space: wgpu::SurfaceColorSpace::Auto,
         width: width.max(1),
         height: height.max(1),
         present_mode: PresentMode::Fifo,
@@ -604,13 +620,14 @@ pub fn measure_text_width_styled(
             None => Family::SansSerif,
         };
         let mut buffer = Buffer::new(&mut m.font_system, Metrics::new(size, size * 1.3));
-        buffer.set_size(&mut m.font_system, None, None);
+        buffer.set_size(None, None);
         buffer.set_text(
-            &mut m.font_system,
             text,
-            text_attrs(family, weight, italic),
+            &text_attrs(family, weight, italic),
             Shaping::Advanced,
+            None,
         );
+        buffer.shape_until_scroll(&mut m.font_system, false);
         buffer.shape_until_scroll(&mut m.font_system, false);
         let width = buffer
             .layout_runs()
@@ -645,7 +662,7 @@ pub fn mono_descent(size: f32) -> f32 {
             families: &[glyphon::fontdb::Family::Name(&name)],
             ..Default::default()
         });
-        let Some(font) = id.and_then(|id| m.font_system.get_font(id)) else {
+        let Some(font) = id.and_then(|id| m.font_system.get_font(id, Weight::NORMAL)) else {
             return 0.0;
         };
         let metrics = font.as_swash().metrics(&[]);
@@ -702,13 +719,14 @@ pub fn measure_glyphs(text: &str, size: f32, mono: bool, weight: u16) -> GlyphOf
             None => Family::SansSerif,
         };
         let mut buffer = Buffer::new(&mut m.font_system, Metrics::new(size, size * 1.3));
-        buffer.set_size(&mut m.font_system, None, None);
+        buffer.set_size(None, None);
         buffer.set_text(
-            &mut m.font_system,
             text,
-            Attrs::new().family(family).weight(Weight(weight)),
+            &Attrs::new().family(family).weight(Weight(weight)),
             Shaping::Advanced,
+            None,
         );
+        buffer.shape_until_scroll(&mut m.font_system, false);
         buffer.shape_until_scroll(&mut m.font_system, false);
         let mut glyphs = Vec::new();
         let mut width = 0.0_f32;
@@ -773,13 +791,14 @@ pub fn measure_wrapped(text: &str, size: f32, mono: bool, weight: u16, max_w: f3
             None => Family::SansSerif,
         };
         let mut buffer = Buffer::new(&mut m.font_system, Metrics::new(size, size * 1.3));
-        buffer.set_size(&mut m.font_system, Some(max_w), None);
+        buffer.set_size(Some(max_w), None);
         buffer.set_text(
-            &mut m.font_system,
             text,
-            Attrs::new().family(family).weight(Weight(weight)),
+            &Attrs::new().family(family).weight(Weight(weight)),
             Shaping::Advanced,
+            None,
         );
+        buffer.shape_until_scroll(&mut m.font_system, false);
         buffer.shape_until_scroll(&mut m.font_system, false);
         let mut lines = 0usize;
         let mut w = 0.0_f32;
@@ -998,12 +1017,13 @@ impl UiRenderer {
             compatible_surface: Some(&surface),
             ..Default::default()
         }))
-        .ok_or_else(|| anyhow::anyhow!("no GPU adapter"))?;
+        .map_err(|error| anyhow::anyhow!("no GPU adapter: {error}"))?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&DeviceDescriptor::default(), None))?;
+            pollster::block_on(adapter.request_device(&DeviceDescriptor::default()))?;
 
         let config = ui_config(size.width, size.height);
         surface.configure(&device, &config);
+        present_with_transaction(&surface);
         Self::from_parts(device, queue, config, scale, Some(surface), None)
     }
 
@@ -1012,9 +1032,9 @@ impl UiRenderer {
         let instance = Instance::default();
         let adapter =
             pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default()))
-                .ok_or_else(|| anyhow::anyhow!("no GPU adapter"))?;
+                .map_err(|error| anyhow::anyhow!("no GPU adapter: {error}"))?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&DeviceDescriptor::default(), None))?;
+            pollster::block_on(adapter.request_device(&DeviceDescriptor::default()))?;
         let config = ui_config(width, height);
         let offscreen = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ui-offscreen"),
@@ -1125,9 +1145,9 @@ impl UiRenderer {
             layout: None,
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs",
+                entry_point: Some("vs"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: 64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -1167,11 +1187,11 @@ impl UiRenderer {
                             shader_location: 6,
                         },
                     ],
-                }],
+                })],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs",
+                entry_point: Some("fs"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
@@ -1186,7 +1206,7 @@ impl UiRenderer {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let capacity = 256;
@@ -1277,17 +1297,17 @@ impl UiRenderer {
         });
         let icon_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ui-icon-layout"),
-            bind_group_layouts: &[&icon_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&icon_bgl)],
+            immediate_size: 0,
         });
         let icon_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ui-icon"),
             layout: Some(&icon_layout),
             vertex: wgpu::VertexState {
                 module: &icon_shader,
-                entry_point: "vs",
+                entry_point: Some("vs"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: 36,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -1312,11 +1332,11 @@ impl UiRenderer {
                             shader_location: 3,
                         },
                     ],
-                }],
+                })],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &icon_shader,
-                entry_point: "fs",
+                entry_point: Some("fs"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
@@ -1331,7 +1351,7 @@ impl UiRenderer {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let icon_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1411,14 +1431,14 @@ impl UiRenderer {
             view_formats: &[],
         });
         self.queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &bytes,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(height),
@@ -1582,13 +1602,14 @@ impl UiRenderer {
             };
             let weight = theme::snap_weight(fam.as_deref(), t.weight);
             let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
-            buf.set_size(&mut self.font_system, Some(wrap_w), None);
+            buf.set_size(Some(wrap_w), None);
             buf.set_text(
-                &mut self.font_system,
                 &t.text,
-                text_attrs(family, weight, t.italic).color(glyph_color(t.color)),
+                &text_attrs(family, weight, t.italic).color(glyph_color(t.color)),
                 Shaping::Advanced,
+                None,
             );
+            buf.shape_until_scroll(&mut self.font_system, false);
             buf.shape_until_scroll(&mut self.font_system, false);
             buffers.push(buf);
         }
@@ -1624,7 +1645,10 @@ impl UiRenderer {
         )?;
 
         let frame = match &self.surface {
-            Some(surface) => Some(surface.get_current_texture()?),
+            Some(surface) => match self.acquire_frame(surface) {
+                Some(frame) => Some(frame),
+                None => return Ok(()),
+            },
             None => None,
         };
         let target = match (&frame, &self.offscreen) {
@@ -1640,6 +1664,7 @@ impl UiRenderer {
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view: &self.msaa,
                     resolve_target: Some(&view),
+                    depth_slice: None,
                     ops: Operations {
                         load: LoadOp::Clear(wgpu::Color::BLACK),
                         store: StoreOp::Store,
@@ -1648,6 +1673,7 @@ impl UiRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             if vert_count > 0 {
                 pass.set_pipeline(&self.pipeline);
@@ -1658,13 +1684,29 @@ impl UiRenderer {
         }
         self.queue.submit(Some(encoder.finish()));
         if let Some(frame) = frame {
-            frame.present();
+            self.queue.present(frame);
         }
         self.atlas.trim();
         Ok(())
     }
 
     /// Read the offscreen framebuffer back as RGBA8 (headless only). Call after `render`.
+    /// The next frame to draw into, or `None` to skip this one (hidden window, timeout, lost surface).
+    fn acquire_frame(&self, surface: &wgpu::Surface<'static>) -> Option<wgpu::SurfaceTexture> {
+        use wgpu::CurrentSurfaceTexture as Current;
+        match surface.get_current_texture() {
+            Current::Success(frame) | Current::Suboptimal(frame) => Some(frame),
+            Current::Outdated | Current::Lost => {
+                surface.configure(&self.device, &self.config);
+                match surface.get_current_texture() {
+                    Current::Success(frame) | Current::Suboptimal(frame) => Some(frame),
+                    _ => None,
+                }
+            }
+            Current::Timeout | Current::Occluded | Current::Validation => None,
+        }
+    }
+
     pub fn read_rgba(&self) -> Result<(u32, u32, Vec<u8>)> {
         let tex = self
             .offscreen
@@ -1680,15 +1722,15 @@ impl UiRenderer {
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: tex,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &buf,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(h),
@@ -1703,8 +1745,15 @@ impl UiRenderer {
         self.queue.submit(Some(encoder.finish()));
         let slice = buf.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
-        let data = slice.get_mapped_range();
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|error| anyhow::anyhow!("wait for the frame: {error:?}"))?;
+        let data = slice
+            .get_mapped_range()
+            .map_err(|error| anyhow::anyhow!("read the frame back: {error:?}"))?;
         // De-pad rows and swap BGRA -> RGBA.
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for row in 0..h {
@@ -1894,7 +1943,10 @@ impl UiRenderer {
         }
 
         let frame = match &self.surface {
-            Some(surface) => Some(surface.get_current_texture()?),
+            Some(surface) => match self.acquire_frame(surface) {
+                Some(frame) => Some(frame),
+                None => return Ok(()),
+            },
             None => None,
         };
         let target = match (&frame, &self.offscreen) {
@@ -1920,6 +1972,7 @@ impl UiRenderer {
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view: &self.msaa,
                     resolve_target: Some(&view),
+                    depth_slice: None,
                     ops: Operations {
                         load,
                         store: StoreOp::Store,
@@ -1928,6 +1981,7 @@ impl UiRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             if let Some((cx, cy, cw, ch)) = *clip {
                 let s = self.scale;
@@ -1965,7 +2019,7 @@ impl UiRenderer {
         }
         self.queue.submit(Some(encoder.finish()));
         if let Some(frame) = frame {
-            frame.present();
+            self.queue.present(frame);
         }
         self.atlas.trim();
         Ok(())
@@ -2065,13 +2119,14 @@ impl UiRenderer {
                     None => Family::SansSerif,
                 };
                 let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
-                buf.set_size(&mut self.font_system, wrap_w, None);
+                buf.set_size(wrap_w, None);
                 buf.set_text(
-                    &mut self.font_system,
                     &t.text,
-                    text_attrs(family, weight, t.italic),
+                    &text_attrs(family, weight, t.italic),
                     Shaping::Advanced,
+                    None,
                 );
+                buf.shape_until_scroll(&mut self.font_system, false);
                 buf.shape_until_scroll(&mut self.font_system, false);
                 self.shaped_cache.insert(key, buf);
             }

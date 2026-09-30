@@ -10,7 +10,7 @@ databases. It is one Rust workspace under `rust/`: the app (`crates/pomelo`) and
 (`crates/pom_cli`) over the same feature crates. There is no daemon and no localhost server between UI and core.
 
 **Read `rust/CLAUDE.md` before touching code**: crate-per-feature layout, Rust rules, the `make check` gate,
-build/run, vendored deps.
+build/run, smooth resize.
 
 ## Commands
 
