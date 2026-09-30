@@ -450,6 +450,18 @@ impl Settings {
         Some(pom_paths::config_dir()?.join("settings.json"))
     }
 
+    /// The file's settings, `None` when it is missing or unreadable; a parse error keeps its line.
+    pub fn read() -> Result<Option<Self>, serde_json::Error> {
+        let Some(text) = Self::path().and_then(|path| std::fs::read_to_string(path).ok()) else {
+            return Ok(None);
+        };
+        Self::parse(&text).map(Some)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(text)
+    }
+
     /// Load from disk, or defaults if the file is missing or unreadable.
     pub fn load() -> Self {
         let Some(path) = Self::path() else {
@@ -477,6 +489,13 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_file_reports_the_line_it_broke_on() {
+        let error = Settings::parse("{\n  \"buffer_font_size\": 14,\n  oops\n}").unwrap_err();
+        assert_eq!(error.line(), 3);
+        assert_eq!(Settings::parse("{}").ok(), Some(Settings::default()));
+    }
 
     #[test]
     fn a_language_overrides_what_every_language_shares() {

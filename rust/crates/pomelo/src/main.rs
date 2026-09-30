@@ -641,6 +641,8 @@ struct App {
     theme_file_problems: Vec<String>,
     themes_checked_at: Option<Instant>,
     keymap_checked: Option<Instant>,
+    settings_read: Option<std::time::SystemTime>,
+    settings_checked: Option<Instant>,
     dev_proxy: Option<pom_proxy::DevProxy>,
     dev_requests: dev_services::DevRequestsTabs,
     module_store: module_store_tabs::ModuleStoreTabs,
@@ -664,6 +666,7 @@ struct AgentTracker {
 }
 
 const AGENT_RECHECK: Duration = Duration::from_secs(5);
+const INVALID_SETTINGS: &str = "Invalid settings.json";
 
 /// After a config change: rewrites every workspace's env files, then lists running services whose command or
 /// env no longer matches what they were started with.
@@ -1844,6 +1847,73 @@ impl App {
         if let Some(main) = self.mains.get(&id) {
             main.window.focus_window();
         }
+        self.mark_all_mains_dirty();
+    }
+
+    fn settings_modified() -> Option<std::time::SystemTime> {
+        Settings::path()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|meta| meta.modified().ok())
+    }
+
+    /// Applies hand edits of settings.json; a broken file keeps the current settings and says where it broke.
+    fn reload_settings_if_changed(&mut self) {
+        if self
+            .settings_checked
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.settings_checked = Some(Instant::now());
+        let modified = Self::settings_modified();
+        if modified == self.settings_read {
+            return;
+        }
+        self.settings_read = modified;
+        let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+        let settings = match Settings::read() {
+            Ok(Some(settings)) => settings,
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("settings: {error}");
+                let Some(path) = Settings::path() else {
+                    return;
+                };
+                let line = u32::try_from(error.line()).ok();
+                for id in windows {
+                    let (path, message) = (path.clone(), error.to_string());
+                    self.with_workspace_view(id, |view, _| {
+                        view.notify_with_file(
+                            INVALID_SETTINGS,
+                            message,
+                            "Open settings.json",
+                            path,
+                            line,
+                        );
+                    });
+                }
+                self.mark_all_mains_dirty();
+                return;
+            }
+        };
+        for id in windows {
+            self.with_workspace_view(id, |view, _| view.dismiss_notification(INVALID_SETTINGS));
+        }
+        self.mark_all_mains_dirty();
+        if settings == self.settings {
+            return;
+        }
+        self.settings = settings.clone();
+        self.with_settings_view(|view, _| view.replace_settings(settings));
+        self.apply_theme();
+        self.apply_ui_font();
+        self.apply_font_scale();
+        self.apply_font_weight();
+        self.apply_editor_defaults();
+        self.apply_workspace_grouping();
+        self.apply_dev_services_settings();
+        self.settings_pages_at = None;
+        self.settings_dirty = true;
         self.mark_all_mains_dirty();
     }
 
@@ -3278,6 +3348,7 @@ impl ApplicationHandler for App {
         self.poll_add_repo();
         self.poll_clone_repos();
         self.reload_keymap_if_changed();
+        self.reload_settings_if_changed();
         self.reload_themes_if_changed();
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {
@@ -4558,6 +4629,7 @@ fn main() -> anyhow::Result<()> {
     }
     app.keymap = keymap;
     app.keymap_problems = problems;
+    app.settings_read = App::settings_modified();
     app.keymap_read = workspace::keymap::Keymap::user_file()
         .and_then(|path| std::fs::metadata(path).ok())
         .and_then(|meta| meta.modified().ok());

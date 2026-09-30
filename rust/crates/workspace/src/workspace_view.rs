@@ -1118,6 +1118,16 @@ impl WorkspaceView {
         self.ai_available = available;
     }
 
+    pub fn dismiss_notification(&mut self, title: &str) {
+        if self
+            .notification
+            .as_ref()
+            .is_some_and(|notification| notification.title == title)
+        {
+            self.notification = None;
+        }
+    }
+
     /// A notification whose button opens `path` (at `line`), e.g. the drafted config of a new project.
     pub fn notify_with_file(
         &mut self,
