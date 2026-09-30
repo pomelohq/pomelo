@@ -13,6 +13,7 @@ pub mod persistence;
 pub mod search_bar;
 pub mod tab_drag;
 pub mod text_field;
+mod update;
 mod usage;
 mod welcome;
 mod workspace_view;
@@ -28,6 +29,10 @@ pub use panel::{
     TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use ui::render_keystroke;
+pub use update::{
+    UpdateAction, UpdateButton, UpdateInfo, UpdateMenuItem, UpdateTone, UPDATE_BUTTON,
+    UPDATE_DISMISS,
+};
 pub use usage::{
     tone as usage_tone, UsageAccount, UsageInfo, UsageToday, UsageWindow, APP_MENU, USAGE_CHIP,
     USAGE_OPEN, USAGE_REFRESH, USAGE_STATUS,
@@ -659,11 +664,12 @@ pub const TAB_MENU_TARGET: u64 = 852;
 /// The title bar's app menu (its chevron).
 pub const APP_MENU_TARGET: u64 = 854;
 pub const MENU_APP_ACCOUNT: u64 = 950;
-pub const MENU_APP_UPDATING: u64 = 951;
+pub const MENU_APP_UPDATE: u64 = 951;
 pub const MENU_APP_SETTINGS: u64 = 952;
 pub const MENU_APP_KEYMAP: u64 = 953;
 pub const MENU_APP_THEME: u64 = 954;
 pub const MENU_APP_USAGE: u64 = 955;
+pub const MENU_APP_RELEASE_NOTES: u64 = 956;
 /// The app menu's Panel Layout submenu.
 pub const MENU_SUBMENU_LAYOUT: u64 = 869;
 pub const MENU_TAB_CLOSE: u64 = 900;
@@ -796,6 +802,7 @@ pub struct Layout {
     pub sessions: Vec<Session>,
     /// The agents' usage: the title bar chip and the status bar's total.
     pub usage: UsageInfo,
+    pub update: UpdateInfo,
     /// The app menu or the usage card is open, so their buttons stay lit.
     pub app_menu_open: bool,
     pub usage_card_open: bool,
@@ -1796,6 +1803,7 @@ impl Default for Layout {
             sessions: Vec::new(),
             machine: Vec::new(),
             usage: UsageInfo::default(),
+            update: UpdateInfo::default(),
             app_menu_open: false,
             usage_card_open: false,
             usage_today_open: false,
@@ -2377,11 +2385,11 @@ impl Layout {
         if chevron_hot {
             chevron = chevron.bg(theme().ghost_element_hover);
         }
-        let right: Node = div()
-            .row()
-            .items_center()
-            .gap(4.0)
-            .h_px(TOP_BAR_H)
+        let mut right = div().row().items_center().gap(4.0).h_px(TOP_BAR_H);
+        if let Some(update) = &self.update.button {
+            right = right.child(crate::update::button(update, hovered));
+        }
+        let right: Node = right
             .child(crate::usage::chip(
                 &self.usage,
                 hovered == Some(USAGE_CHIP) || self.usage_card_open,

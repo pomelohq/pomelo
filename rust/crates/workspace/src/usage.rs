@@ -45,8 +45,6 @@ pub struct UsageInfo {
     /// "Updated 12s ago", or why the limits are missing.
     pub note: String,
     pub today: Option<UsageToday>,
-    /// A new version is downloading: its number.
-    pub updating_to: Option<String>,
 }
 
 /// Green, then warning at 70%, error at 90%.

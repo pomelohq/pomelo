@@ -3,11 +3,12 @@ name = "auto_update_ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The auto-update notification banner: renders auto_update::Status into ui primitives."
+description = "What the window shows of the updater: the title bar button, app menu item, Settings row and notification."
 
 [lib]
 path = "src/auto_update_ui.rs"
 
 [dependencies]
 ui = { path = "../ui" }
+workspace = { path = "../workspace" }
 auto_update = { path = "../auto_update" }

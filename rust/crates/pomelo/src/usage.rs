@@ -52,7 +52,6 @@ pub(crate) struct UsageTracker {
     limits: Option<Limits>,
     limits_error: Option<LimitsError>,
     limits_at: Option<u64>,
-    updating_to: Option<String>,
     /// Each window's open Agent usage tab.
     pages: Vec<(WindowId, agent_usage_ui::Shared)>,
 }
@@ -194,12 +193,7 @@ impl App {
             self.usage.receiver = Some(receiver);
             self.usage.now = Some(now);
         }
-        let updating = match auto_update::status() {
-            auto_update::Status::UpdateAvailable(version) => Some(format!("v{version}")),
-            _ => None,
-        };
-        let mut changed = updating != self.usage.updating_to;
-        self.usage.updating_to = updating;
+        let mut changed = false;
         loop {
             let Some(receiver) = self.usage.receiver.as_ref() else {
                 return;
@@ -323,7 +317,6 @@ impl App {
                 .map(|limits| window(limits.weekly.used, limits.weekly.resets_at)),
             note,
             today,
-            updating_to: tracker.updating_to.clone(),
         }
     }
 

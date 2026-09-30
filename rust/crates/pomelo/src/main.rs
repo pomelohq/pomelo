@@ -9,6 +9,7 @@ mod add_repo;
 mod config_bundle;
 mod notifications;
 mod onboarding;
+mod updates;
 mod usage;
 mod workspaces;
 
@@ -638,6 +639,7 @@ struct App {
     onboarding: Option<onboarding::OnboardingFlow>,
     machine: onboarding::MachineChecks,
     usage: usage::UsageTracker,
+    updates: updates::UpdateTracker,
     adding_repo: Option<add_repo::AddingRepo>,
     cloning_repos: Option<add_repo::CloningRepos>,
     keymap: workspace::keymap::Keymap,
@@ -1815,15 +1817,13 @@ impl App {
                 })
                 .collect(),
         };
+        let update = self.update_settings_row();
         let general = settings_ui::GeneralPage {
             start_at_login: start_at_login(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            updates_apply: installed_app().is_some(),
-            update_note: auto_update::status().note(),
-            update_busy: matches!(
-                auto_update::status(),
-                auto_update::Status::Checking | auto_update::Status::UpdateAvailable(_)
-            ),
+            version: auto_update::current_version().to_string(),
+            updates_apply: auto_update::supported(),
+            update_note: Some(update.note),
+            update_button: Some((update.button, update.enabled)),
         };
         let keymap = settings_ui::KeymapPage {
             rows: workspace::keymap::Action::ALL
@@ -2574,7 +2574,7 @@ impl App {
             self.settings_pages_at = None;
         }
         if effects.check_updates {
-            auto_update::spawn_background_check();
+            self.settings_update_clicked();
         }
         if effects.edit_keymap {
             self.edit_keymap();
@@ -2749,6 +2749,9 @@ impl App {
         if effects.refresh_usage {
             self.refresh_usage_now();
         }
+        if let Some(action) = effects.update {
+            self.run_update_action(id, action, event_loop);
+        }
         if effects.restart_stale {
             self.restart_stale(id);
         }
@@ -2838,6 +2841,7 @@ impl ApplicationHandler for App {
             self.with_workspace_view(id, |v, _| v.persist_panes(true));
         }
         files_ui::flush_unsaved_writes(Duration::from_secs(5));
+        auto_update::install_on_quit();
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
@@ -2856,6 +2860,7 @@ impl ApplicationHandler for App {
         self.poll_machine();
         self.poll_usage();
         self.poll_usage_pages();
+        self.poll_updates();
         self.poll_add_repo();
         self.poll_clone_repos();
         self.reload_keymap_if_changed();
@@ -2981,9 +2986,6 @@ impl ApplicationHandler for App {
         self.apply_editor_defaults();
         #[cfg(target_os = "macos")]
         set_dock_icon();
-        if self.settings.auto_update {
-            auto_update::spawn_background_check();
-        }
 
         let mut layout = Layout::default();
         apply_dock_settings(&self.settings, &mut layout);
@@ -2992,6 +2994,7 @@ impl ApplicationHandler for App {
         let config =
             pom_core::startup_config(&pom_paths::StateDir::from_env(), explicit.as_deref());
         self.open_project_in(id, config);
+        self.announce_update(id);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -3839,12 +3842,6 @@ fn center_traffic_lights(window: &Window) {
 }
 
 /// The installed app bundle when this is it (only it replaces itself on update).
-fn installed_app() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let app = exe.ancestors().nth(3)?;
-    (app.file_name()? == "Pomelo.app").then(|| app.to_path_buf())
-}
-
 /// The LaunchAgent that opens the app at login.
 fn login_item_path() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
