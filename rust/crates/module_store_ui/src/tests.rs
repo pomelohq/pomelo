@@ -1,5 +1,13 @@
 use super::*;
 
+fn popover_texts(state: &StoreState) -> Vec<String> {
+    let Some(node) = popover(state, None) else {
+        return Vec::new();
+    };
+    let painted = ui::render(&node, Rect::new(0.0, 0.0, 500.0, 400.0, Rgba::TRANSPARENT));
+    painted.texts.iter().map(|text| text.text.clone()).collect()
+}
+
 fn texts(state: &StoreState, width: f32) -> Vec<String> {
     let painted = ui::render(
         &render(state, "/store", width, None),
@@ -92,7 +100,7 @@ fn buttons_hand_their_request_to_the_app_and_wait_while_busy() {
     click(&mut state, ACTION_BASE + 1);
     assert!(state.requests.is_empty(), "a swap asks first");
     assert_eq!(state.confirm, Some(requests[1].clone()));
-    let shown = texts(&state, 1200.0);
+    let shown = popover_texts(&state);
     assert!(shown
         .iter()
         .any(|text| text == "Use the shared copy in feat-pay?"));
@@ -168,7 +176,7 @@ fn optimize_keeps_then_moves_then_frees_and_asks_first() {
     );
     click(&mut state, OPTIMIZE);
     assert!(state.requests.is_empty(), "optimize shows its plan first");
-    let shown = texts(&state, 1200.0);
+    let shown = popover_texts(&state);
     assert!(shown
         .iter()
         .any(|text| text.starts_with("Optimize: 1 install kept")));

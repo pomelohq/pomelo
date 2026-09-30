@@ -1640,13 +1640,20 @@ impl WorkspaceView {
             let painted = self.page.as_mut().and_then(|page| {
                 let item = page.open.first_mut()?;
                 item.tick(&Self::clip_get);
-                item.paint_body(body, true)
+                let painted = item.paint_body(body, true)?;
+                Some((painted, item.paint_popover(body)))
             });
-            if let Some(painted) = painted {
+            if let Some((painted, popover)) = painted {
                 center_overlays.push(Overlay {
                     painted,
                     clip: Some(body),
                 });
+                if let Some(popover) = popover {
+                    center_overlays.push(Overlay {
+                        painted: popover,
+                        clip: Some(body),
+                    });
+                }
             }
         } else if self.layout.project.is_none() {
             let page = crate::welcome::welcome_page(
@@ -7036,6 +7043,12 @@ fn push_pane_group(
 ) {
     for pane in &mut layout.panes {
         if let Some((painted, clip)) = pane.painted.take() {
+            overlays.push(Overlay {
+                painted,
+                clip: Some(clip),
+            });
+        }
+        if let Some((painted, clip)) = pane.popover.take() {
             overlays.push(Overlay {
                 painted,
                 clip: Some(clip),

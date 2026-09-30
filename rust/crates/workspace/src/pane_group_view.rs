@@ -2192,6 +2192,7 @@ fn layout_body(
         painted: None,
         companion: None,
         footer: None,
+        popover: None,
         body: None,
         back: Vec::new(),
         back_tris: Vec::new(),
@@ -2203,6 +2204,9 @@ fn layout_body(
         return (None, placement);
     };
     if let Some(painted) = item.paint_body(body_rect, is_focused) {
+        placement.popover = item
+            .paint_popover(body_rect)
+            .map(|popover| (popover, body_rect));
         return (Some((painted, body_rect)), placement);
     }
     item.set_focused(is_focused);

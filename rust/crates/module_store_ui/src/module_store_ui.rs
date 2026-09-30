@@ -153,6 +153,13 @@ impl StoreState {
     }
 }
 
+fn hit_in(hits: &[(Rect, u64)], x: f32, y: f32) -> Option<u64> {
+    hits.iter()
+        .rev()
+        .find(|(rect, _)| x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h)
+        .map(|(_, id)| *id)
+}
+
 pub fn ago(now: u64, then: u64) -> String {
     let seconds = now.saturating_sub(then);
     match seconds {
@@ -294,6 +301,55 @@ fn plan_frees(overview: &Overview, steps: &[Request]) -> u64 {
     total
 }
 
+const SWAP_POPOVER_W: f32 = 340.0;
+const OPTIMIZE_POPOVER_W: f32 = 400.0;
+
+/// The floating card a confirmation sits in, styled like the app's other popovers.
+fn popover_frame(width: f32) -> ui::Div {
+    let colors = theme();
+    div()
+        .col()
+        .w_px(width)
+        .gap(6.0)
+        .p(12.0)
+        .rounded(8.0)
+        .border(1.0, colors.border)
+        .bg(colors.elevated_surface_background)
+}
+
+/// The open confirmation, as a card to float by its button.
+fn popover(state: &StoreState, hovered: Option<u64>) -> Option<Node> {
+    let overview = state.overview.as_ref()?;
+    if state.confirm_optimize {
+        return Some(optimize_strip(state, overview, hovered));
+    }
+    let request = state.confirm.as_ref()?;
+    let Request::Relink {
+        repo,
+        workspace,
+        path,
+    } = request
+    else {
+        return None;
+    };
+    let size = overview.repos.iter().find_map(|found| match &found.state {
+        RepoState::Versions { versions, .. } => versions
+            .iter()
+            .flat_map(|version| &version.users)
+            .find(|user| user.path == *path)
+            .and_then(|user| match user.holding {
+                Holding::Own { size } => size,
+                _ => None,
+            }),
+        _ => None,
+    });
+    let services = state
+        .running
+        .iter()
+        .any(|(running_repo, running)| running_repo == repo && running == workspace);
+    Some(confirm_strip(request, size, services, hovered))
+}
+
 fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>) -> Node {
     let colors = theme();
     let steps = plan(overview);
@@ -337,13 +393,7 @@ fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>)
             _ => None,
         })
         .collect();
-    let mut column = div()
-        .col()
-        .gap(6.0)
-        .p(12.0)
-        .rounded(8.0)
-        .border(1.0, colors.border_variant)
-        .bg(colors.surface_background)
+    let mut column = popover_frame(OPTIMIZE_POPOVER_W)
         .child(
             label(format!("Optimize: {}", parts.join(", ")))
                 .size(13.0)
@@ -745,12 +795,7 @@ fn confirm_strip(
     let freed = size.map_or(String::new(), |size| {
         format!(" Frees up to {}.", format_size(size))
     });
-    let mut column = div()
-        .col()
-        .gap(6.0)
-        .px(12.0)
-        .py(10.0)
-        .bg(colors.surface_background)
+    let mut column = popover_frame(SWAP_POPOVER_W)
         .child(
             label(format!("Use the shared copy in {workspace}?"))
                 .size(13.0)
@@ -946,12 +991,6 @@ fn version_rows(
                 state,
                 hovered,
             ));
-            if state.confirm.as_ref() == Some(&request) {
-                let services = state.running.iter().any(|(running_repo, workspace)| {
-                    running_repo == repo && *workspace == user.workspace
-                });
-                rows.push(confirm_strip(&request, size, services, hovered));
-            }
         }
     }
     rows
@@ -1194,9 +1233,6 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
         .w_px(content_w)
         .gap(14.0)
         .child(header(state, hovered));
-    if let Some(overview) = state.overview.as_ref().filter(|_| state.confirm_optimize) {
-        column = column.child(optimize_strip(state, overview, hovered));
-    }
     let Some(overview) = &state.overview else {
         return frame(column);
     };
@@ -1361,6 +1397,10 @@ pub struct StorePage {
     seen: u64,
     opened: Instant,
     painted: Option<(PaintKey, ui::Painted)>,
+    /// The button a popover opened from, in window coordinates.
+    anchor: Option<Rect>,
+    popover_rect: Option<Rect>,
+    popover_hits: Vec<(Rect, u64)>,
 }
 
 /// What a kept layout was made from; any change lays the page out again.
@@ -1387,6 +1427,9 @@ impl StorePage {
             seen: u64::MAX,
             opened: Instant::now(),
             painted: None,
+            anchor: None,
+            popover_rect: None,
+            popover_hits: Vec::new(),
         }
     }
 
@@ -1416,6 +1459,24 @@ impl StorePage {
 
     pub fn click(&mut self, id: u64) {
         click(&mut self.shared.borrow_mut(), id);
+    }
+
+    fn popover_open(&self) -> bool {
+        let state = self.shared.borrow();
+        state.confirm.is_some() || state.confirm_optimize
+    }
+
+    fn in_popover(&self, x: f32, y: f32) -> bool {
+        self.popover_rect.is_some_and(|rect| {
+            x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
+        })
+    }
+
+    fn close_popover(&mut self) {
+        let mut state = self.shared.borrow_mut();
+        state.confirm = None;
+        state.confirm_optimize = false;
+        state.changed();
     }
 }
 
@@ -1507,13 +1568,34 @@ impl Item for StorePage {
     }
 
     fn pointer_down(&mut self, x: f32, y: f32, _click_count: u32, _modifiers: Modifiers) -> bool {
+        if self.popover_open() {
+            match hit_in(&self.popover_hits, x, y) {
+                Some(id) => self.click(id),
+                // A click outside the card dismisses it and does nothing else.
+                None if !self.in_popover(x, y) => self.close_popover(),
+                None => {}
+            }
+            return true;
+        }
         if let Some(id) = self.hit(x, y) {
+            self.anchor = self
+                .hits
+                .iter()
+                .rev()
+                .find(|(_, hit)| *hit == id)
+                .map(|(rect, _)| *rect);
             self.click(id);
         }
         true
     }
 
     fn pointer_move(&mut self, x: f32, y: f32, _modifiers: Modifiers, _focused: bool) -> bool {
+        if self.popover_open() {
+            let hovered = hit_in(&self.popover_hits, x, y);
+            let moved = hovered != self.hovered;
+            self.hovered = hovered;
+            return moved;
+        }
         let hovered = self.hit(x, y);
         // Hovering a row's button keeps the row hovered, so its hover-only actions stay visible.
         let hovered = match hovered {
@@ -1526,10 +1608,42 @@ impl Item for StorePage {
     }
 
     fn pointer_scroll(&mut self, _x: f32, _y: f32, delta_y: f32, _modifiers: Modifiers) -> bool {
+        if self.popover_open() {
+            self.close_popover();
+        }
         let next = (self.scroll - delta_y).clamp(0.0, (self.content_h - self.body_h).max(0.0));
         let moved = (next - self.scroll).abs() > 0.01;
         self.scroll = next;
         moved
+    }
+
+    fn paint_popover(&mut self, body: Rect) -> Option<ui::Painted> {
+        let scale = ui::ui_text_scale();
+        let node = {
+            let state = self.shared.borrow();
+            popover(&state, self.hovered)
+        };
+        let (Some(node), Some(anchor)) = (node, self.anchor) else {
+            self.popover_hits.clear();
+            self.popover_rect = None;
+            return None;
+        };
+        let (w, h) = ui::measure(&node);
+        let (w, h) = (w * scale, h * scale);
+        let gap = 6.0 * scale;
+        let x =
+            (anchor.x + anchor.w - w).clamp(body.x + gap, (body.x + body.w - w - gap).max(body.x));
+        let below = anchor.y + anchor.h + gap;
+        let y = if below + h <= body.y + body.h {
+            below
+        } else {
+            (anchor.y - h - gap).max(body.y)
+        };
+        let area = Rect::new(x, y, w, h, Rgba::TRANSPARENT);
+        let painted = ui::render(&node, area);
+        self.popover_rect = Some(area);
+        self.popover_hits = painted.hits.clone();
+        Some(painted)
     }
 
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
