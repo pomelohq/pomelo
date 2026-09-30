@@ -2688,6 +2688,21 @@ impl App {
         };
         let (effects, agent_fix) =
             entity.update(app.app_mut(), |v, _| (v.take_effects(), v.take_agent_fix()));
+        if let (Some(gesture), Some(main)) = (effects.titlebar, self.mains.get(&id)) {
+            match gesture {
+                workspace::TitlebarGesture::Move => {
+                    if let Err(error) = main.window.drag_window() {
+                        eprintln!("move window: {error}");
+                    }
+                }
+                #[cfg(target_os = "macos")]
+                workspace::TitlebarGesture::DoubleClick => titlebar_double_click(&main.window),
+                #[cfg(not(target_os = "macos"))]
+                workspace::TitlebarGesture::DoubleClick => {
+                    main.window.set_maximized(!main.window.is_maximized())
+                }
+            }
+        }
         if effects.persist {
             let view = entity.read(app.app());
             read_dock_settings(&mut self.settings, view.layout());
@@ -3696,6 +3711,57 @@ fn set_dock_icon() {
         if std::env::var("POMELO_ICON_LOG").is_ok() {
             let valid: bool = msg_send![image, isValid];
             eprintln!("[icon] set applicationIconImage, image_valid={valid} app={app:p}");
+        }
+    }
+}
+
+/// Do what the system's "double-click a window's title bar" setting says: fill, zoom, minimize or nothing.
+#[cfg(target_os = "macos")]
+fn titlebar_double_click(window: &Window) {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send, sel};
+    use objc2_app_kit::NSView;
+    use objc2_foundation::NSString;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: the view belongs to a live window of this app; AppKit calls on the main thread.
+    unsafe {
+        let view: &NSView = &*(handle.ns_view.as_ptr() as *const NSView);
+        let Some(ns_window) = view.window() else {
+            return;
+        };
+        let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        let global: *mut AnyObject =
+            msg_send![defaults, persistentDomainForName: &*NSString::from_str("NSGlobalDomain")];
+        let action: *mut AnyObject = if global.is_null() {
+            std::ptr::null_mut()
+        } else {
+            msg_send![global, objectForKey: &*NSString::from_str("AppleActionOnDoubleClick")]
+        };
+        let action = if action.is_null() {
+            String::new()
+        } else {
+            (*(action as *const NSString)).to_string()
+        };
+        match action.as_str() {
+            "None" => {}
+            "Minimize" => ns_window.miniaturize(None),
+            "Fill" => {
+                // AppKit's own Fill honours "Tiled windows have margins"; older systems only zoom.
+                let fill: bool = msg_send![&*ns_window, respondsToSelector: sel!(_zoomFill:)];
+                if fill {
+                    let _: () = msg_send![&*ns_window, _zoomFill: std::ptr::null::<AnyObject>()];
+                } else {
+                    ns_window.zoom(None);
+                }
+            }
+            _ => ns_window.zoom(None),
         }
     }
 }

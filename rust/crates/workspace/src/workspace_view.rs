@@ -78,6 +78,15 @@ pub struct WorkspaceEffects {
     /// The usage card's Refresh Now.
     pub refresh_usage: bool,
     pub update: Option<crate::UpdateAction>,
+    pub titlebar: Option<TitlebarGesture>,
+}
+
+/// What a press on an empty part of the title bar asks the window to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitlebarGesture {
+    Move,
+    /// Whatever the system's "double-click a window's title bar" setting says.
+    DoubleClick,
 }
 
 /// What the WORKSPACES panel asked for: the new-workspace form, an action on a row (an index into
@@ -283,6 +292,8 @@ pub struct WorkspaceView {
     upkeep_done_at: Option<Instant>,
     /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
     terminal_click: Option<(Instant, f32, f32, u32)>,
+    titlebar_press: bool,
+    titlebar_click: Option<(Instant, f32, f32)>,
     layout: Layout,
     session_menu_hover: Option<u64>,
     session_search_query: String,
@@ -382,6 +393,8 @@ impl WorkspaceView {
             toast_then: None,
             upkeep_done_at: None,
             terminal_click: None,
+            titlebar_press: false,
+            titlebar_click: None,
             toast: None,
             notification: None,
             shown_problem: None,
@@ -4322,6 +4335,10 @@ impl WorkspaceView {
     /// Cursor move: drag a divider, or hover the header/menu. Returns true if a repaint is warranted.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
         self.pointer = (x, y);
+        if std::mem::take(&mut self.titlebar_press) {
+            self.titlebar_click = None;
+            self.pending.titlebar = Some(TitlebarGesture::Move);
+        }
         if self.page_body_at(x, y) {
             let modifiers = terminal_modifiers();
             return self
@@ -4682,6 +4699,25 @@ impl WorkspaceView {
     /// Left-button press: route a header/menu click, close the menu, toggle a dock, or begin a divider drag.
     pub fn mouse_down(&mut self, x: f32, y: f32) {
         self.press = (x, y);
+        self.titlebar_press = y < crate::TOP_BAR_H
+            && self.hit(x, y).is_none()
+            && self.prompt_shown.is_none()
+            && self.window_modal.is_none();
+        if self.titlebar_press {
+            let now = Instant::now();
+            let second = self.titlebar_click.is_some_and(|(at, px, py)| {
+                now.duration_since(at) < Duration::from_millis(400)
+                    && (x - px).abs() < 4.0
+                    && (y - py).abs() < 4.0
+            });
+            if second {
+                self.titlebar_click = None;
+                self.titlebar_press = false;
+                self.pending.titlebar = Some(TitlebarGesture::DoubleClick);
+            } else {
+                self.titlebar_click = Some((now, x, y));
+            }
+        }
         if self.prompt_shown.is_some() {
             if let Some(index) = self
                 .hit(x, y)
@@ -5255,6 +5291,7 @@ impl WorkspaceView {
     }
 
     pub fn mouse_up(&mut self) {
+        self.titlebar_press = false;
         if let Drag::ItemPointer(group) = self.dragging {
             let (x, y) = self.pointer;
             if let Some(input) = self.input(group) {
@@ -7596,6 +7633,58 @@ mod tests {
             v.take_effects()
         });
         assert_eq!(effects.session, Some(SessionRequest::NewProject));
+    }
+
+    #[test]
+    fn an_empty_title_bar_moves_the_window_and_double_click_zooms_it() {
+        let (mut app, h, e) = open();
+        app.draw(h);
+        let trigger = app
+            .window(h)
+            .and_then(|w| w.center_of(SESSION_TRIGGER))
+            .expect("trigger");
+        let y = crate::TOP_BAR_H / 2.0;
+        let empty = e.update(app.app_mut(), |v, _| {
+            (0..60)
+                .map(|step| trigger.0 + 40.0 + step as f32 * 10.0)
+                .find(|x| v.hit_at(*x, y).is_none())
+        });
+        let x = empty.expect("an empty spot in the title bar");
+        let gesture = |app: &mut Application, act: &dyn Fn(&mut WorkspaceView)| {
+            e.update(app.app_mut(), |v, _| {
+                act(v);
+                v.take_effects().titlebar
+            })
+        };
+        assert_eq!(
+            gesture(&mut app, &|v| {
+                v.mouse_down(x, y);
+                v.mouse_up();
+            }),
+            None
+        );
+        assert_eq!(
+            gesture(&mut app, &|v| v.mouse_down(x, y)),
+            Some(TitlebarGesture::DoubleClick)
+        );
+        gesture(&mut app, &|v| v.mouse_up());
+        std::thread::sleep(Duration::from_millis(450));
+        assert_eq!(
+            gesture(&mut app, &|v| {
+                v.mouse_down(x, y);
+                v.mouse_move(x + 12.0, y);
+            }),
+            Some(TitlebarGesture::Move)
+        );
+        gesture(&mut app, &|v| v.mouse_up());
+        assert_eq!(
+            gesture(&mut app, &|v| {
+                v.mouse_down(trigger.0, trigger.1);
+                v.mouse_move(trigger.0 + 12.0, trigger.1);
+            }),
+            None,
+            "a control in the title bar keeps its own click"
+        );
     }
 
     #[test]
