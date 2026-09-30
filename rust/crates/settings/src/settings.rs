@@ -96,6 +96,9 @@ pub struct Settings {
     pub file_types: std::collections::BTreeMap<String, Vec<String>>,
     /// Per-language settings over the ones above, by language name.
     pub languages: std::collections::BTreeMap<String, LanguageSettings>,
+    /// Keys this version does not know, written back as they were so a newer version's settings survive.
+    #[serde(flatten)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
     pub notify_claude: bool,
     /// Also alert for the workspace on screen in the focused window.
     pub notify_when_focused: bool,
@@ -193,6 +196,7 @@ impl Default for Settings {
             diagnostics: Diagnostics::default(),
             file_types: std::collections::BTreeMap::new(),
             languages: std::collections::BTreeMap::new(),
+            unknown: serde_json::Map::new(),
             notify_claude: true,
             notify_when_focused: false,
             sound_working: String::new(),
@@ -489,6 +493,17 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_from_a_newer_version_survive_a_save() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"buffer_font_size": 15, "future_panel": {"open": true}}"#)
+                .unwrap();
+        assert_eq!(settings.buffer_font_size, 15.0);
+        let written: serde_json::Value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(written["future_panel"], serde_json::json!({"open": true}));
+        assert_eq!(written["buffer_font_size"], serde_json::json!(15.0));
+    }
 
     #[test]
     fn a_broken_file_reports_the_line_it_broke_on() {
