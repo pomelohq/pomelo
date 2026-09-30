@@ -4602,6 +4602,10 @@ impl Item for FileItem {
     }
 
     fn cmd_click(&mut self, local_x: f32, local_y: f32) -> bool {
+        // A drag from the press made a selection: that was selecting, not following the link.
+        if self.buffer.as_ref().is_some_and(|b| !b.newest().is_empty()) {
+            return false;
+        }
         if let Some(targets) = self.definition_click(local_x, local_y) {
             self.navigation = Some((targets, self.caret_top()));
         }
@@ -7645,6 +7649,11 @@ impl ItemInput for FilesView {
         self.panes.editor_drag(x, y)
     }
 
+    fn editor_release(&mut self) {
+        self.panes.editor_release();
+        self.follow_navigation();
+    }
+
     fn editor_hover(&mut self, x: f32, y: f32) -> bool {
         self.panes.editor_hover(x, y)
     }
@@ -9092,6 +9101,25 @@ mod shift_click_tests {
             vec![(9, 10)],
             "one selection from the newest one's start"
         );
+    }
+}
+
+#[cfg(test)]
+mod link_click_tests {
+    use super::*;
+
+    #[test]
+    fn a_drag_from_a_link_press_selects_instead_of_following() {
+        let mut item = FileItem::new(
+            std::path::PathBuf::from("/nonexistent"),
+            "a.rs",
+            Some("fn main() {}\n".into()),
+        );
+        let b = item.buffer.as_mut().unwrap();
+        b.place_cursor(0);
+        b.extend_cursor(7);
+        assert!(!workspace::Item::cmd_click(&mut item, 10.0, 1.0));
+        assert!(item.definition_request.is_none());
     }
 }
 
