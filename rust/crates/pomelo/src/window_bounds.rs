@@ -74,12 +74,15 @@ pub fn save(project: Option<&Path>, bounds: WindowBounds) {
     }
 }
 
+const MIN_SIZE: (f64, f64) = (360.0, 240.0);
+
 /// Size (and position, when it still lands on a connected display) for a new window.
 pub fn apply(
     attrs: WindowAttributes,
     bounds: Option<WindowBounds>,
     event_loop: &ActiveEventLoop,
 ) -> WindowAttributes {
+    let attrs = attrs.with_min_inner_size(LogicalSize::new(MIN_SIZE.0, MIN_SIZE.1));
     let Some(bounds) = bounds else {
         return attrs.with_inner_size(LogicalSize::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1));
     };

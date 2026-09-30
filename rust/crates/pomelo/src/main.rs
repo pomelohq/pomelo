@@ -3800,6 +3800,16 @@ impl ApplicationHandler for App {
                     }
                 }
                 WindowEvent::RedrawRequested => self.draw_settings(),
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    if let (Some(ui), Some(win)) =
+                        (self.settings_ui.as_mut(), self.settings_window.as_ref())
+                    {
+                        ui.set_scale(scale_factor as f32);
+                        let size = win.inner_size();
+                        ui.resize(size.width, size.height);
+                    }
+                    self.draw_settings();
+                }
                 _ => {}
             }
             return;
@@ -3826,6 +3836,14 @@ impl ApplicationHandler for App {
         }
         match event {
             WindowEvent::Moved(_) => self.track_windowed_frame(id),
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(m) = self.mains.get_mut(&id) {
+                    m.ui.set_scale(scale_factor as f32);
+                    let size = m.window.inner_size();
+                    m.ui.resize(size.width, size.height);
+                }
+                self.draw_main(id);
+            }
             WindowEvent::CloseRequested => {
                 self.with_workspace_view(id, |v, _| v.persist_panes(true));
                 self.persist_settings();
