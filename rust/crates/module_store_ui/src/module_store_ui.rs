@@ -27,6 +27,25 @@ const TOP_BAR_H: f32 = 2.0;
 /// Seconds a finished action's note and highlight stay.
 const NOTE_FOR: f32 = 3.0;
 const FLASH_FOR: f32 = 1.4;
+/// Pulses and shimmers redraw at this rate, not every frame: the page is costly to lay out.
+const ANIMATION_STEP: f32 = 1.0 / 15.0;
+
+thread_local! {
+    /// Laid-out widths of chips and "+N more" labels, by font generation and text.
+    static WIDTHS: RefCell<std::collections::HashMap<(u64, String), f32>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// The width `node` lays out to, measured once per text and font.
+fn width_of(text: &str, node: impl FnOnce() -> Node) -> f32 {
+    let key = (ui::font_generation(), text.to_string());
+    if let Some(width) = WIDTHS.with(|widths| widths.borrow().get(&key).copied()) {
+        return width;
+    }
+    let width = ui::measure(&node()).0;
+    WIDTHS.with(|widths| widths.borrow_mut().insert(key, width));
+    width
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -314,7 +333,7 @@ fn chips(
         let mut used = 0.0;
         for name in names {
             let part = node(name);
-            let w = ui::measure(&part).0;
+            let w = width_of(name, || chip(name, false));
             if used > 0.0 && used + w > width {
                 wrap = wrap.child(line);
                 line = div().row().gap(CHIP_GAP);
@@ -325,13 +344,13 @@ fn chips(
         }
         return wrap.child(line.child(toggle("Show less".into()))).into();
     }
-    let reserve = ui::measure(&toggle(format!("+{} more", names.len())).into()).0 + CHIP_GAP;
+    let more_text = format!("+{} more", names.len());
+    let reserve = width_of(&more_text, || toggle(more_text.clone()).into()) + CHIP_GAP;
     let mut row = div().row().items_center().gap(CHIP_GAP);
     let mut used = 0.0;
     let mut shown = 0;
     for (index, name) in names.iter().enumerate() {
-        let part = node(name);
-        let w = ui::measure(&part).0 + CHIP_GAP;
+        let w = width_of(name, || chip(name, false)) + CHIP_GAP;
         let room = if index + 1 == names.len() {
             width
         } else {
@@ -342,7 +361,7 @@ fn chips(
         }
         used += w;
         shown += 1;
-        row = row.child(part);
+        row = row.child(node(name));
     }
     if shown < names.len() {
         row = row.child(toggle(format!("+{} more", names.len() - shown)));
@@ -1101,6 +1120,7 @@ pub struct StorePage {
     body_h: f32,
     seen: u64,
     opened: Instant,
+    animated_at: f32,
 }
 
 impl StorePage {
@@ -1115,6 +1135,7 @@ impl StorePage {
             body_h: 0.0,
             seen: u64::MAX,
             opened: Instant::now(),
+            animated_at: 0.0,
         }
     }
 
@@ -1241,8 +1262,11 @@ impl Item for StorePage {
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
         let mut state = self.shared.borrow_mut();
         state.clock = self.opened.elapsed().as_secs_f32();
-        let animating = state.animating();
-        let changed = state.version != self.seen || animating;
+        let frame_due = state.animating() && state.clock - self.animated_at >= ANIMATION_STEP;
+        if frame_due {
+            self.animated_at = state.clock;
+        }
+        let changed = state.version != self.seen || frame_due;
         self.seen = state.version;
         ItemTick {
             changed,
