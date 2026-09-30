@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use module_store::{format_size, Method, Options, Store};
+use module_store::{format_size, Method, Options, Overview, RepoWorktrees, Store, Worktree};
 use module_store_ui::{Request, StorePage, StoreState};
 use winit::window::WindowId;
 
@@ -11,12 +11,12 @@ use crate::App;
 #[derive(Default)]
 pub(crate) struct ModuleStoreTabs {
     pages: Vec<(WindowId, module_store_ui::Shared)>,
-    work: Option<Receiver<Finished>>,
+    work: Option<(WindowId, Receiver<Finished>)>,
     method: Option<String>,
 }
 
 struct Finished {
-    entries: Vec<module_store::Entry>,
+    overview: Overview,
     message: Option<String>,
 }
 
@@ -30,6 +30,53 @@ fn now() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+/// Every repo of the project with its worktree in each workspace; Node versions are read later, off
+/// the main thread.
+fn project_worktrees(project: &pom_core::Project) -> Vec<RepoWorktrees> {
+    let Some(config) = &project.config else {
+        return Vec::new();
+    };
+    config
+        .repos
+        .keys()
+        .map(|repo| RepoWorktrees {
+            repo: repo.clone(),
+            worktrees: project
+                .workspaces
+                .iter()
+                .filter_map(|workspace| {
+                    let checkout = workspace.repos.iter().find(|found| found.name == *repo)?;
+                    Some(Worktree {
+                        workspace: workspace.branch.clone(),
+                        is_main: workspace.is_main,
+                        path: checkout.path.clone(),
+                    })
+                })
+                .collect(),
+            node: None,
+        })
+        .collect()
+}
+
+fn with_node_versions(mut repos: Vec<RepoWorktrees>) -> Vec<RepoWorktrees> {
+    for repo in &mut repos {
+        let probe = repo
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.is_main)
+            .or(repo.worktrees.first());
+        repo.node = probe.and_then(|worktree| pom_workspace::node_version(&worktree.path, &[]));
+    }
+    repos
+}
+
+fn node_for(repos: &[RepoWorktrees], repo: &str) -> Option<String> {
+    repos
+        .iter()
+        .find(|found| found.repo == repo)
+        .and_then(|found| found.node.clone())
+}
+
 impl App {
     /// How the store reaches project folders here, given the user's fallback: probed once.
     pub(crate) fn module_store_method(&mut self) -> String {
@@ -37,11 +84,11 @@ impl App {
             return method.clone();
         }
         let supported = store().supported_method(&pom_paths::sessions_root());
-        let options = Options::from_settings_file();
-        let method = match options.method(supported) {
-            Some(Method::Clone) => Method::Clone.label().to_string(),
-            Some(method) => format!("{} (no copy-on-write on this drive)", method.label()),
-            None => "None: installs run as usual (no copy-on-write on this drive)".to_string(),
+        let method = match Options::from_settings_file().method(supported) {
+            Some(Method::Clone) => "copy-on-write, workspaces take no extra disk".to_string(),
+            Some(Method::HardLink) => "hard links, workspaces share read-only files".to_string(),
+            Some(Method::Copy) => "copies, each workspace takes the full size".to_string(),
+            None => "off on this drive, installs run as usual".to_string(),
         };
         self.module_store.method = Some(method.clone());
         method
@@ -83,95 +130,164 @@ impl App {
         self.poll_module_store();
     }
 
+    /// Workspaces of this window's project with services running, which a swap would pull files from under.
+    fn running_workspace(&self, id: WindowId, workspace: &str) -> bool {
+        let Some(app) = self.main_app.as_ref() else {
+            return false;
+        };
+        let Some(main) = self.mains.get(&id) else {
+            return false;
+        };
+        let view = main.entity.read(app.app());
+        view.layout().project.as_ref().is_some_and(|project| {
+            project
+                .workspaces
+                .iter()
+                .position(|branch| branch == workspace)
+                .and_then(|index| project.running.get(index))
+                .is_some_and(|running| *running > 0)
+        })
+    }
+
+    fn show_store_state(&mut self, id: WindowId, change: impl FnOnce(&mut StoreState)) {
+        if let Some((_, shared)) = self
+            .module_store
+            .pages
+            .iter()
+            .find(|(window, _)| *window == id)
+        {
+            let mut state = shared.borrow_mut();
+            change(&mut state);
+            state.changed();
+        }
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.dirty = true;
+        }
+    }
+
     pub(crate) fn poll_module_store(&mut self) {
         self.module_store
             .pages
             .retain(|(_, shared)| Rc::strong_count(shared) > 1);
-        if let Some(work) = &self.module_store.work {
+        if let Some((id, work)) = &self.module_store.work {
+            let id = *id;
             match work.try_recv() {
                 Ok(finished) => {
                     self.module_store.work = None;
-                    let stamp = now();
-                    for (id, shared) in &self.module_store.pages {
-                        let mut state = shared.borrow_mut();
-                        state.entries = finished.entries.clone();
-                        state.loaded = true;
+                    self.show_store_state(id, |state| {
+                        state.overview = Some(finished.overview);
                         state.busy = None;
-                        state.message = finished.message.clone();
-                        state.now = stamp;
-                        state.changed();
-                        if let Some(main) = self.mains.get_mut(id) {
-                            main.dirty = true;
-                        }
-                    }
+                        state.message = finished.message;
+                        state.now = now();
+                    });
                 }
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => self.module_store.work = None,
             }
         }
-        let request = self
-            .module_store
-            .pages
-            .iter()
-            .find_map(|(_, shared)| {
-                let mut state = shared.borrow_mut();
-                (!state.requests.is_empty()).then(|| std::mem::take(&mut state.requests))
-            })
-            .and_then(|requests| requests.into_iter().next());
-        let Some(request) = request else {
+        let next = self.module_store.pages.iter().find_map(|(id, shared)| {
+            let mut state = shared.borrow_mut();
+            (!state.requests.is_empty()).then(|| (*id, state.requests.remove(0)))
+        });
+        let Some((id, request)) = next else {
+            return;
+        };
+        if let Request::Relink { workspace, .. } = &request {
+            if self.running_workspace(id, workspace) {
+                let message = format!(
+                    "Stop the services of {workspace} first: they are using its node_modules."
+                );
+                self.show_store_state(id, |state| state.message = Some(message));
+                return;
+            }
+        }
+        let Some(repos) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .map(project_worktrees)
+        else {
             return;
         };
         let busy = match &request {
-            Request::Refresh => "Measuring the store...".to_string(),
-            Request::Delete { repo, .. } => format!("Removing the {repo} copy..."),
-            Request::Prune => "Removing unused copies...".to_string(),
-            Request::Clear => "Removing every copy...".to_string(),
-        };
-        for (id, shared) in &self.module_store.pages {
-            let mut state = shared.borrow_mut();
-            state.busy = Some(busy.clone());
-            state.changed();
-            if let Some(main) = self.mains.get_mut(id) {
-                main.dirty = true;
+            Request::Refresh => "Looking at every workspace...".to_string(),
+            Request::FreeUnused => "Removing unused copies...".to_string(),
+            Request::FreeOld { repo } => format!("Removing old {repo} copies..."),
+            Request::FreeOthers => "Removing other projects' copies...".to_string(),
+            Request::Relink { workspace, .. } => {
+                format!("Swapping {workspace} to the shared copy...")
             }
-        }
+            Request::Keep { repo, .. } => format!("Keeping {repo}'s install in the store..."),
+        };
+        self.show_store_state(id, |state| state.busy = Some(busy));
+        let previous = self
+            .module_store
+            .pages
+            .iter()
+            .find(|(window, _)| *window == id)
+            .and_then(|(_, shared)| shared.borrow().overview.clone());
         let (sender, receiver) = std::sync::mpsc::channel();
-        self.module_store.work = Some(receiver);
+        self.module_store.work = Some((id, receiver));
         std::thread::spawn(move || {
             let store = store();
-            let freed = match request {
-                Request::Refresh => Ok(None),
-                Request::Delete { repo, key } => store.delete(&repo, &key).map(|freed| {
-                    Some(format!(
-                        "Removed the {repo} copy, freed {}",
-                        format_size(freed)
-                    ))
-                }),
-                Request::Prune => store.prune(&Options::from_settings_file()).map(|pruned| {
-                    Some(format!(
-                        "Pruned {} copies, freed {}",
-                        pruned.removed,
-                        format_size(pruned.freed)
-                    ))
-                }),
-                Request::Clear => store.clear().map(|pruned| {
-                    Some(format!(
-                        "Removed {} copies, freed {}",
-                        pruned.removed,
-                        format_size(pruned.freed)
-                    ))
-                }),
+            let repos = with_node_versions(repos);
+            let unused_of = |overview: Option<&Overview>, repo: Option<&str>, others: bool| {
+                overview.map_or_else(Vec::new, |overview| {
+                    let mut copies: Vec<(String, String)> = Vec::new();
+                    for entry in overview.unused() {
+                        let is_other = !overview.repos.iter().any(|known| known.repo == entry.repo);
+                        let wanted = match repo {
+                            Some(repo) => entry.repo == repo && !is_other,
+                            None => !others || is_other,
+                        };
+                        if wanted {
+                            copies.push((entry.repo.clone(), entry.key.clone()));
+                        }
+                    }
+                    copies
+                })
             };
-            let listed = store.list();
-            let failure = freed
+            let done = match &request {
+                Request::Refresh => Ok(None),
+                Request::FreeUnused => store
+                    .delete_all(&unused_of(previous.as_ref(), None, false))
+                    .map(|freed| Some(format!("Freed {}", format_size(freed)))),
+                Request::FreeOld { repo } => store
+                    .delete_all(&unused_of(previous.as_ref(), Some(repo), false))
+                    .map(|freed| {
+                        Some(format!("Freed {} of old {repo} copies", format_size(freed)))
+                    }),
+                Request::FreeOthers => store
+                    .delete_all(&unused_of(previous.as_ref(), None, true))
+                    .map(|freed| Some(format!("Freed {}", format_size(freed)))),
+                Request::Relink {
+                    repo,
+                    workspace,
+                    path,
+                } => store
+                    .relink(repo, path, node_for(&repos, repo).as_deref())
+                    .map(|freed| {
+                        Some(format!(
+                            "{workspace} now uses the shared copy; freed {}",
+                            format_size(freed)
+                        ))
+                    }),
+                Request::Keep { repo, path } => store
+                    .keep(repo, path, node_for(&repos, repo).as_deref())
+                    .map(|()| Some(format!("Kept {repo}'s install; new workspaces get it now"))),
+            };
+            let overview = store.overview(&repos);
+            let failure = done
                 .as_ref()
                 .err()
-                .or(listed.as_ref().err())
+                .or(overview.as_ref().err())
                 .map(|error| format!("The store could not be read or changed: {error}"));
-            let message = failure.or(freed.ok().flatten());
-            let entries = listed.unwrap_or_default();
-            let delivered = sender.send(Finished { entries, message });
-            if delivered.is_ok() {
+            let message = failure.or(done.ok().flatten());
+            let finished = Finished {
+                overview: overview.unwrap_or_default(),
+                message,
+            };
+            if sender.send(finished).is_ok() {
                 ui::wake();
             }
         });

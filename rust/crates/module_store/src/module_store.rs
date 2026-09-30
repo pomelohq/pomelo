@@ -5,6 +5,7 @@
 
 mod detect;
 mod import;
+mod overview;
 
 use std::fs;
 use std::io;
@@ -15,6 +16,9 @@ use serde::{Deserialize, Serialize};
 
 pub use detect::{detect, key, node_major, Detection, Manager};
 pub use import::{probe, tree_size, Method};
+pub use overview::{
+    Holding, Overview, RepoOverview, RepoState, RepoWorktrees, User, Version, Worktree,
+};
 
 const STORE_DIR: &str = "nm-store";
 const INDEX_FILE: &str = "index.json";

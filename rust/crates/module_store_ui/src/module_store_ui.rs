@@ -1,42 +1,59 @@
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
-use module_store::{format_size, Entry};
+use module_store::{format_size, Holding, Overview, RepoState, User, Version};
 use terminal::Modifiers;
 use ui::{div, label, theme, ButtonStyle, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::{Item, ItemTick};
 
 pub const TAB_ID: &str = "module-store";
 
-const PRUNE: u64 = 1;
-const CLEAR: u64 = 2;
-const REFRESH: u64 = 3;
-const ROW_BASE: u64 = 1_000;
-const DELETE_BASE: u64 = 100_000;
-const CONTENT_MAX_W: f32 = 980.0;
+const REFRESH: u64 = 1;
+const FREE_UNUSED: u64 = 2;
+const ACTION_BASE: u64 = 1_000;
+const MORE_BASE: u64 = 100_000;
+const CONTENT_MAX_W: f32 = 1040.0;
 const PAD_X: f32 = 32.0;
+const LABEL_W: f32 = 250.0;
+const SIZE_W: f32 = 76.0;
+const ACTION_W: f32 = 150.0;
+const CHIP_GAP: f32 = 4.0;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     Refresh,
-    Delete { repo: String, key: String },
-    Prune,
-    Clear,
+    /// Every copy no worktree of this project uses.
+    FreeUnused,
+    FreeOld {
+        repo: String,
+    },
+    FreeOthers,
+    /// Swap a worktree's own install for the stored copy.
+    Relink {
+        repo: String,
+        workspace: String,
+        path: PathBuf,
+    },
+    /// Keep a worktree's own install as the stored copy.
+    Keep {
+        repo: String,
+        path: PathBuf,
+    },
 }
 
 #[derive(Default)]
 pub struct StoreState {
-    /// How the store reaches project folders on this drive, e.g. "Copy-on-write clone".
+    /// How copies reach project folders here, e.g. "copy-on-write, workspaces take no extra disk".
     pub method: String,
-    pub entries: Vec<Entry>,
-    pub loaded: bool,
-    /// Work in flight ("Removing copies..."); the actions wait for it.
+    /// `None` while the first measurement runs.
+    pub overview: Option<Overview>,
     pub busy: Option<String>,
-    /// The last action's result.
     pub message: Option<String>,
-    /// Seconds since the epoch, for "used 2 days ago".
+    /// Seconds since the epoch, for "changed 2 days ago".
     pub now: u64,
-    pub selected: Option<(String, String)>,
+    /// Versions whose workspace list is shown in full, by key.
+    pub expanded: Vec<String>,
     pub requests: Vec<Request>,
     pub version: u64,
 }
@@ -60,264 +77,603 @@ pub fn ago(now: u64, then: u64) -> String {
     }
 }
 
-fn cell(text: impl Into<String>, width: f32, color: Rgba) -> Node {
+fn own_users(version: &Version) -> impl Iterator<Item = &User> {
+    version
+        .users
+        .iter()
+        .filter(|user| matches!(user.holding, Holding::Own { .. }))
+}
+
+/// A version with no stored copy but an install to keep: main's first, else any workspace's.
+fn keep_request(repo: &str, version: &Version) -> Option<Request> {
+    if version.stored.is_some() {
+        return None;
+    }
+    let installed = |user: &&User| !matches!(user.holding, Holding::NotInstalled);
+    let source = version
+        .users
+        .iter()
+        .filter(installed)
+        .find(|user| user.is_main)
+        .or_else(|| version.users.iter().find(installed))?;
+    Some(Request::Keep {
+        repo: repo.to_string(),
+        path: source.path.clone(),
+    })
+}
+
+/// Every button on the page in render order, so a click id maps back to what it asks for.
+fn actions(state: &StoreState) -> Vec<Request> {
+    let mut out = Vec::new();
+    let Some(overview) = &state.overview else {
+        return out;
+    };
+    for repo in &overview.repos {
+        let RepoState::Versions { versions, old, .. } = &repo.state else {
+            continue;
+        };
+        for version in versions {
+            if let Some(request) = keep_request(&repo.repo, version) {
+                out.push(request);
+            }
+            if version.stored.is_some() {
+                for user in own_users(version) {
+                    out.push(Request::Relink {
+                        repo: repo.repo.clone(),
+                        workspace: user.workspace.clone(),
+                        path: user.path.clone(),
+                    });
+                }
+            }
+        }
+        if !old.is_empty() {
+            out.push(Request::FreeOld {
+                repo: repo.repo.clone(),
+            });
+        }
+    }
+    if !overview.others.is_empty() {
+        out.push(Request::FreeOthers);
+    }
+    out
+}
+
+/// The version a "+N more" chip belongs to, walking versions in render order (each version's own-copy
+/// rows take a chip id too).
+fn more_key(state: &StoreState, index: usize) -> Option<String> {
+    let overview = state.overview.as_ref()?;
+    let mut next = 0;
+    for repo in &overview.repos {
+        let RepoState::Versions { versions, .. } = &repo.state else {
+            continue;
+        };
+        for version in versions {
+            if next == index {
+                return Some(version.key.clone());
+            }
+            next += 1;
+            if version.stored.is_some() {
+                next += own_users(version).count();
+            }
+        }
+    }
+    None
+}
+
+fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
+    label(text.into()).label_size(LabelSize::Small).color(color)
+}
+
+fn section_label(text: &str) -> ui::Label {
+    label(text.to_uppercase())
+        .size(11.0)
+        .weight(600)
+        .color(theme().text_placeholder)
+}
+
+fn pill(text: &str, color: Rgba) -> Node {
     div()
         .row()
-        .w_px(width)
-        .child(
-            label(text.into())
-                .label_size(LabelSize::Small)
-                .color(color)
-                .truncate(),
-        )
+        .px(9.0)
+        .py(2.0)
+        .rounded(10.0)
+        .border(1.0, color.alpha(0.45))
+        .child(small(text, color))
         .into()
 }
 
-fn workspaces_label(count: usize) -> String {
-    match count {
-        0 => "no workspace".into(),
-        1 => "1 workspace".into(),
-        count => format!("{count} workspaces"),
+fn chip(text: &str) -> Node {
+    div()
+        .row()
+        .px(7.0)
+        .py(1.0)
+        .rounded(5.0)
+        .border(1.0, theme().border_variant)
+        .child(label(text.to_string()).size(11.5).color(theme().text))
+        .into()
+}
+
+/// As many chips as fit in `width`, then "+N more" (or all of them, wrapped, with "Show less").
+fn chips(names: &[String], width: f32, expanded: bool, more_id: u64, hovered: Option<u64>) -> Node {
+    let colors = theme();
+    if names.is_empty() {
+        return small("no workspace", colors.text_placeholder).into();
+    }
+    let toggle = |text: String| {
+        let mut part = div()
+            .row()
+            .px(7.0)
+            .py(1.0)
+            .rounded(5.0)
+            .on_click(more_id)
+            .child(label(text).size(11.5).color(colors.text_accent));
+        if hovered == Some(more_id) {
+            part = part.bg(colors.ghost_element_hover);
+        }
+        part
+    };
+    if expanded {
+        let mut wrap = div().col().gap(CHIP_GAP);
+        let mut line = div().row().gap(CHIP_GAP);
+        let mut used = 0.0;
+        for name in names {
+            let node = chip(name);
+            let w = ui::measure(&node).0;
+            if used > 0.0 && used + w > width {
+                wrap = wrap.child(line);
+                line = div().row().gap(CHIP_GAP);
+                used = 0.0;
+            }
+            used += w + CHIP_GAP;
+            line = line.child(node);
+        }
+        return wrap.child(line.child(toggle("Show less".into()))).into();
+    }
+    let reserve = ui::measure(&toggle(format!("+{} more", names.len())).into()).0 + CHIP_GAP;
+    let mut row = div().row().items_center().gap(CHIP_GAP);
+    let mut used = 0.0;
+    let mut shown = 0;
+    for (index, name) in names.iter().enumerate() {
+        let node = chip(name);
+        let w = ui::measure(&node).0 + CHIP_GAP;
+        let room = if index + 1 == names.len() {
+            width
+        } else {
+            width - reserve
+        };
+        if used + w > room {
+            break;
+        }
+        used += w;
+        shown += 1;
+        row = row.child(node);
+    }
+    if shown < names.len() {
+        row = row.child(toggle(format!("+{} more", names.len() - shown)));
+    }
+    row.into()
+}
+
+struct Line {
+    title: String,
+    detail: String,
+    size: String,
+    users: Node,
+    trailing: Option<Node>,
+    faded: bool,
+}
+
+fn line(line: Line) -> Node {
+    let colors = theme();
+    let (title, detail) = if line.faded {
+        (colors.text_muted, colors.text_placeholder)
+    } else {
+        (colors.text, colors.text_muted)
+    };
+    let mut right = div().row().w_px(ACTION_W).justify_end();
+    if let Some(trailing) = line.trailing {
+        right = right.child(trailing);
+    }
+    div()
+        .row()
+        .items_center()
+        .gap(10.0)
+        .px(12.0)
+        .py(7.0)
+        .child(
+            div()
+                .col()
+                .w_px(LABEL_W)
+                .gap(1.0)
+                .child(
+                    div()
+                        .row()
+                        .child(label(line.title).size(13.0).color(title).truncate()),
+                )
+                .child(div().row().child(small(line.detail, detail).truncate())),
+        )
+        .child(
+            div()
+                .row()
+                .w_px(SIZE_W)
+                .justify_end()
+                .child(small(line.size, title)),
+        )
+        .child(div().row().flex(1.0).child(line.users))
+        .child(right)
+        .into()
+}
+
+fn action_button(id: u64, text: &str, idle: bool, hovered: Option<u64>) -> Node {
+    if !idle {
+        return ui::button_static(text, ButtonStyle::Outlined).into();
+    }
+    let mut button = ui::button(id, text, ButtonStyle::Outlined);
+    if hovered == Some(id) {
+        button = button.bg(theme().ghost_element_hover);
+    }
+    button.into()
+}
+
+#[derive(Default)]
+struct Ids {
+    action: u64,
+    more: u64,
+}
+
+impl Ids {
+    fn action(&mut self) -> u64 {
+        self.action += 1;
+        ACTION_BASE + self.action - 1
+    }
+
+    fn more(&mut self) -> u64 {
+        self.more += 1;
+        MORE_BASE + self.more - 1
     }
 }
 
-fn header(state: &StoreState) -> Node {
+fn version_rows(
+    state: &StoreState,
+    repo: &str,
+    version: &Version,
+    users_w: f32,
+    ids: &mut Ids,
+    hovered: Option<u64>,
+) -> Vec<Node> {
     let colors = theme();
-    let total: u64 = state.entries.iter().map(|entry| entry.size).sum();
-    let summary = if state.loaded {
-        format!(
-            "{} copies - {} (files shared with clones are counted in full)",
-            state.entries.len(),
-            format_size(total)
-        )
-    } else {
-        "Measuring the store...".to_string()
-    };
     let idle = state.busy.is_none();
-    let action = |id: u64, text: &str| {
-        let button = ui::button(id, text, ButtonStyle::Outlined);
-        if idle {
-            button
-        } else {
-            ui::button_static(text, ButtonStyle::Outlined)
-        }
+    let first_branch = version
+        .users
+        .iter()
+        .find(|user| !user.is_main)
+        .map_or("a branch", |user| user.workspace.as_str());
+    let title = if version.on_main {
+        "Current on main".to_string()
+    } else {
+        format!("Changed on {first_branch}")
     };
+    let keep = keep_request(repo, version);
+    let detail = match (&version.stored, &keep) {
+        (Some(_), _) => version
+            .changed
+            .map(|at| format!("{} changed {}", version.lockfile, ago(state.now, at)))
+            .unwrap_or_else(|| version.lockfile.clone()),
+        (None, Some(_)) => "no saved copy yet; its own install can be kept".to_string(),
+        (None, None) => "no saved copy yet; the next install is kept".to_string(),
+    };
+    let listed: Vec<String> = version
+        .users
+        .iter()
+        .filter(|user| version.stored.is_none() || !matches!(user.holding, Holding::Own { .. }))
+        .map(|user| user.workspace.clone())
+        .collect();
+    let expanded = state.expanded.contains(&version.key);
+    let users = chips(&listed, users_w, expanded, ids.more(), hovered);
+    let trailing = if keep.is_some() {
+        Some(action_button(ids.action(), "Save to Store", idle, hovered))
+    } else if version.stored.is_some() && version.on_main {
+        Some(pill("New workspaces", colors.success))
+    } else if version.stored.is_none() {
+        Some(pill("Installs once", colors.text_muted))
+    } else {
+        None
+    };
+    let mut rows = vec![line(Line {
+        title,
+        detail,
+        size: version
+            .stored
+            .as_ref()
+            .map_or("-".to_string(), |entry| format_size(entry.size)),
+        users,
+        trailing,
+        faded: false,
+    })];
+    if version.stored.is_some() {
+        let same_as = if version.on_main {
+            "main"
+        } else {
+            first_branch
+        };
+        for user in own_users(version) {
+            let Holding::Own { size } = user.holding else {
+                continue;
+            };
+            rows.push(line(Line {
+                title: format!("{} has its own copy", user.workspace),
+                detail: format!(
+                    "installed on its own; same {} as {same_as}",
+                    version.lockfile
+                ),
+                size: format_size(size),
+                users: chips(
+                    std::slice::from_ref(&user.workspace),
+                    users_w,
+                    false,
+                    ids.more(),
+                    hovered,
+                ),
+                trailing: Some(action_button(
+                    ids.action(),
+                    "Use Shared Copy",
+                    idle,
+                    hovered,
+                )),
+                faded: false,
+            }));
+        }
+    }
+    rows
+}
+
+fn group(head: Node, rows: Vec<Node>) -> Node {
+    let colors = theme();
     let mut column = div()
         .col()
-        .gap(8.0)
+        .rounded(8.0)
+        .border(1.0, colors.border_variant)
         .child(
             div()
                 .row()
                 .items_center()
                 .gap(8.0)
-                .child(
-                    div().row().flex(1.0).child(
-                        label("node_modules Store")
-                            .label_size(LabelSize::Large)
-                            .color(colors.text),
-                    ),
-                )
-                .child(action(REFRESH, "Refresh"))
-                .child(action(PRUNE, "Prune"))
-                .child(action(CLEAR, "Clear All")),
-        )
-        .child(workspace::status_line(
-            IconKind::Package,
-            colors.icon_muted,
-            &format!("Import method: {}", state.method),
-        ))
-        .child(
-            label(summary)
-                .label_size(LabelSize::Small)
-                .color(colors.text_muted),
+                .px(14.0)
+                .h_px(36.0)
+                .bg(colors.panel_background)
+                .child(head),
         );
-    let note = state.busy.as_ref().or(state.message.as_ref());
-    if let Some(note) = note {
-        column = column.child(label(note.clone()).label_size(LabelSize::Small).color(
-            if state.busy.is_some() {
-                colors.text_accent
-            } else {
-                colors.text_muted
-            },
-        ));
+    for row in rows {
+        column = column
+            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(row);
     }
     column.into()
 }
 
-fn row(state: &StoreState, index: usize, entry: &Entry, hovered: Option<u64>) -> Node {
+fn group_head(name: &str, manager: &str, total: Option<u64>) -> Node {
     let colors = theme();
-    let selected = state
-        .selected
-        .as_ref()
-        .is_some_and(|(repo, key)| *repo == entry.repo && *key == entry.key);
-    let manager = if entry.manager.is_empty() {
-        "-".to_string()
-    } else {
-        entry.manager.clone()
-    };
-    let delete_id = DELETE_BASE + index as u64;
-    let delete = if state.busy.is_none() {
-        ui::button(delete_id, "Delete", ButtonStyle::Subtle)
-    } else {
-        ui::button_static("Delete", ButtonStyle::Subtle)
-    };
-    let mut line = div()
-        .row()
-        .items_center()
-        .gap(10.0)
-        .px(12.0)
-        .h_px(32.0)
-        .on_click(ROW_BASE + index as u64)
-        .child(
-            div().row().flex(1.0).child(
-                label(entry.repo.clone())
-                    .label_size(LabelSize::Small)
-                    .color(colors.text)
-                    .truncate(),
-            ),
-        )
-        .child(cell(manager, 48.0, colors.text_muted))
-        .child(
-            div().row().w_px(76.0).justify_end().child(
-                label(format_size(entry.size))
-                    .label_size(LabelSize::Small)
-                    .color(colors.text),
-            ),
-        )
-        .child(cell(
-            format!("used {}", ago(state.now, entry.last_used)),
-            120.0,
-            colors.text_muted,
-        ))
-        .child(cell(
-            workspaces_label(entry.live_workspaces().len()),
-            100.0,
-            colors.text_muted,
-        ))
-        .child(delete);
-    if selected {
-        line = line.bg(colors.element_selected);
-    } else if hovered == Some(ROW_BASE + index as u64) {
-        line = line.bg(colors.ghost_element_hover);
+    let mut head = div().row().items_center().gap(8.0).child(
+        label(name.to_string())
+            .size(13.0)
+            .weight(600)
+            .color(colors.text),
+    );
+    if !manager.is_empty() {
+        head = head.child(small(manager, colors.text_muted));
     }
-    line.into()
+    if let Some(total) = total.filter(|total| *total > 0) {
+        head = head.child(small(
+            format!("- {}", format_size(total)),
+            colors.text_muted,
+        ));
+    }
+    head.into()
 }
 
-fn detail_line(name: &str, value: String) -> Node {
+fn note_row(text: String) -> Node {
     div()
         .row()
-        .gap(10.0)
-        .child(cell(name, 120.0, theme().text_placeholder))
-        .child(
-            label(value)
-                .label_size(LabelSize::Small)
-                .color(theme().text_muted)
-                .truncate(),
-        )
+        .px(12.0)
+        .h_px(34.0)
+        .items_center()
+        .child(small(text, theme().text_muted))
         .into()
 }
 
-fn detail(state: &StoreState, entry: &Entry, root: &str) -> Node {
-    let mut column = div()
-        .col()
-        .gap(6.0)
-        .px(12.0)
-        .py(10.0)
-        .bg(theme().surface_background)
-        .child(detail_line("Key", entry.key.clone()))
-        .child(detail_line(
-            "Path",
-            format!("{root}/{}/{}/node_modules", entry.repo, entry.key),
-        ))
-        .child(detail_line("Stored by", entry.method.label().to_string()))
-        .child(detail_line("Kept", ago(state.now, entry.created)));
-    let live = entry.live_workspaces();
-    if live.is_empty() {
-        column = column.child(detail_line("Workspaces", "none still exists".into()));
-    }
-    for (index, path) in live.iter().enumerate() {
-        column = column.child(detail_line(
-            if index == 0 { "Workspaces" } else { "" },
-            path.display().to_string(),
-        ));
-    }
-    column.into()
+fn unused_row(
+    title: String,
+    detail: &str,
+    size: u64,
+    id: u64,
+    idle: bool,
+    hovered: Option<u64>,
+) -> Node {
+    line(Line {
+        title,
+        detail: detail.to_string(),
+        size: format_size(size),
+        users: small("no workspace", theme().text_placeholder).into(),
+        trailing: Some(action_button(id, "Free", idle, hovered)),
+        faded: true,
+    })
 }
 
-/// `root` is the store folder, shown in each copy's details.
+fn plural(count: usize, one: &str, many: &str) -> String {
+    if count == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{count} {many}")
+    }
+}
+
+/// `root` is the store folder, named in the footnote.
 pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) -> Node {
     let colors = theme();
-    let mut list = div().col().rounded(8.0).border(1.0, colors.border_variant);
-    for (index, entry) in state.entries.iter().enumerate() {
-        if index > 0 {
-            list = list.child(div().h_px(1.0).bg(colors.border_variant));
-        }
-        list = list.child(row(state, index, entry, hovered));
-        let selected = state
-            .selected
-            .as_ref()
-            .is_some_and(|(repo, key)| *repo == entry.repo && *key == entry.key);
-        if selected {
-            list = list.child(detail(state, entry, root));
-        }
+    let content_w = (width - PAD_X * 2.0).clamp(0.0, CONTENT_MAX_W);
+    let users_w = (content_w - LABEL_W - SIZE_W - ACTION_W - 3.0 * 10.0 - 24.0).max(80.0);
+    let idle = state.busy.is_none();
+    let total = state.overview.as_ref().map_or(0, Overview::stored_total);
+    let unused: u64 = state.overview.as_ref().map_or(0, |overview| {
+        overview.unused().iter().map(|entry| entry.size).sum()
+    });
+    let summary = if state.overview.is_some() {
+        format!("{} saved - {}", format_size(total), state.method)
+    } else {
+        state.method.clone()
+    };
+    let mut head = div()
+        .row()
+        .items_center()
+        .gap(10.0)
+        .child(
+            label("node_modules Store")
+                .label_size(LabelSize::Large)
+                .color(colors.text),
+        )
+        .child(small(summary, colors.text_muted))
+        .child(div().flex(1.0))
+        .child(action_button(REFRESH, "Refresh", idle, hovered));
+    if unused > 0 {
+        head = head.child(action_button(
+            FREE_UNUSED,
+            &format!("Free {} Unused", format_size(unused)),
+            idle,
+            hovered,
+        ));
     }
-    if state.loaded && state.entries.is_empty() {
-        list = list.child(
+    let mut column = div().col().w_px(content_w).gap(14.0).child(head);
+    if let Some(note) = state.busy.as_ref().or(state.message.as_ref()) {
+        let color = if state.busy.is_some() {
+            colors.text_accent
+        } else {
+            colors.text_muted
+        };
+        column = column.child(small(note.clone(), color));
+    }
+    let Some(overview) = &state.overview else {
+        return frame(column.child(small("Looking at every workspace...", colors.text_muted)));
+    };
+    column = column.child(
+        div()
+            .row()
+            .gap(10.0)
+            .px(12.0)
+            .child(
+                div()
+                    .row()
+                    .w_px(LABEL_W)
+                    .child(section_label("Lockfile version")),
+            )
+            .child(
+                div()
+                    .row()
+                    .w_px(SIZE_W)
+                    .justify_end()
+                    .child(section_label("Size")),
+            )
+            .child(div().row().flex(1.0).child(section_label("Used by"))),
+    );
+    let mut ids = Ids::default();
+    for repo in &overview.repos {
+        let node = match &repo.state {
+            RepoState::SelfManaged(name) => group(
+                group_head(&repo.repo, name, None),
+                vec![note_row(format!(
+                    "{name} shares packages itself; Pomelo leaves it alone."
+                ))],
+            ),
+            RepoState::NoLockfile => group(
+                group_head(&repo.repo, "", None),
+                vec![note_row(
+                    "No package-lock.json, yarn.lock or bun.lock in its worktrees.".into(),
+                )],
+            ),
+            RepoState::Versions {
+                manager,
+                versions,
+                old,
+            } => {
+                let stored: u64 = versions
+                    .iter()
+                    .filter_map(|version| version.stored.as_ref())
+                    .chain(old.iter())
+                    .map(|entry| entry.size)
+                    .sum();
+                let mut rows = Vec::new();
+                for version in versions {
+                    rows.extend(version_rows(
+                        state, &repo.repo, version, users_w, &mut ids, hovered,
+                    ));
+                }
+                if !old.is_empty() {
+                    rows.push(unused_row(
+                        plural(old.len(), "old version", "old versions"),
+                        "no workspace uses these lockfiles any more",
+                        old.iter().map(|entry| entry.size).sum(),
+                        ids.action(),
+                        idle,
+                        hovered,
+                    ));
+                }
+                group(group_head(&repo.repo, manager.label(), Some(stored)), rows)
+            }
+        };
+        column = column.child(node);
+    }
+    if !overview.others.is_empty() {
+        let size = overview.others.iter().map(|entry| entry.size).sum();
+        column = column.child(group(
+            group_head("Other projects", "", Some(size)),
+            vec![unused_row(
+                plural(overview.others.len(), "copy", "copies"),
+                "repos this project does not have",
+                size,
+                ids.action(),
+                idle,
+                hovered,
+            )],
+        ));
+    }
+    for note in [
+        "One copy per lockfile, patches/ folder, Node major version and platform.".to_string(),
+        "A new workspace with a matching one gets it in seconds; otherwise it installs once and that install is kept.".to_string(),
+        format!("Stored in {root}"),
+    ] {
+        column = column.child(
             div()
-                .col()
-                .gap(4.0)
-                .p(16.0)
-                .child(label("The store is empty").color(colors.text))
-                .child(
-                    label("A workspace's node_modules is kept here after its first install, for the next workspace with the same lockfile.")
-                        .label_size(LabelSize::Small)
-                        .color(colors.text_muted),
-                ),
+                .row()
+                .child(small(note, colors.text_placeholder).truncate()),
         );
     }
-    let content_w = (width - PAD_X * 2.0).clamp(0.0, CONTENT_MAX_W);
-    div()
-        .col()
-        .items_center()
-        .py(24.0)
-        .child(
-            div()
-                .col()
-                .w_px(content_w)
-                .gap(16.0)
-                .child(header(state))
-                .child(list),
-        )
-        .into()
+    frame(column)
+}
+
+fn frame(column: ui::Div) -> Node {
+    div().col().items_center().py(24.0).child(column).into()
 }
 
 fn click(state: &mut StoreState, id: u64) {
     let idle = state.busy.is_none();
     match id {
         REFRESH if idle => state.requests.push(Request::Refresh),
-        PRUNE if idle => state.requests.push(Request::Prune),
-        CLEAR if idle => state.requests.push(Request::Clear),
-        id if id >= DELETE_BASE => {
-            let Some(entry) = state.entries.get((id - DELETE_BASE) as usize) else {
+        FREE_UNUSED if idle => state.requests.push(Request::FreeUnused),
+        id if id >= MORE_BASE => {
+            let Some(key) = more_key(state, (id - MORE_BASE) as usize) else {
                 return;
             };
-            if idle {
-                state.requests.push(Request::Delete {
-                    repo: entry.repo.clone(),
-                    key: entry.key.clone(),
-                });
+            match state.expanded.iter().position(|open| *open == key) {
+                Some(index) => {
+                    state.expanded.remove(index);
+                }
+                None => state.expanded.push(key),
             }
         }
-        id if id >= ROW_BASE => {
-            let Some(entry) = state.entries.get((id - ROW_BASE) as usize) else {
+        id if id >= ACTION_BASE && idle => {
+            let Some(request) = actions(state).into_iter().nth((id - ACTION_BASE) as usize) else {
                 return;
             };
-            let pick = (entry.repo.clone(), entry.key.clone());
-            state.selected = if state.selected.as_ref() == Some(&pick) {
-                None
-            } else {
-                Some(pick)
-            };
+            state.requests.push(request);
         }
         _ => return,
     }
@@ -447,34 +803,138 @@ impl Item for StorePage {
     }
 }
 
-/// A tab over made-up copies, for headless snapshots.
+/// A tab over a made-up project, for headless snapshots.
 pub fn preview_page() -> StorePage {
+    use module_store::{Entry, Manager, Method, RepoOverview};
     let now = 1_800_000_000;
-    let entry = |repo: &str, manager: &str, gb: f64, days: u64, workspaces: usize| Entry {
+    let day = 86_400;
+    let entry = |repo: &str, key: &str, gb: f64, days: u64| Entry {
         repo: repo.into(),
-        key: format!("{:016x}", repo.len() as u64 * 7919 + days),
-        manager: manager.into(),
-        method: module_store::Method::Clone,
+        key: key.into(),
+        manager: "npm".into(),
+        method: Method::Clone,
         size: (gb * (1u64 << 30) as f64) as u64,
-        created: now - (days + 3) * 86_400,
-        last_used: now - days * 86_400,
-        workspaces: (0..workspaces)
-            .map(|index| std::env::temp_dir().join(format!("preview-ws-{index}")))
-            .collect(),
+        created: now - (days + 3) * day,
+        last_used: now - days * day,
+        workspaces: Vec::new(),
     };
-    let entries = vec![
-        entry("web", "yarn", 4.2, 0, 0),
-        entry("api", "npm", 3.3, 2, 0),
-        entry("admin", "yarn", 2.8, 6, 0),
-        entry("docs", "bun", 0.6, 12, 0),
+    let user = |name: &str, holding: Holding| User {
+        workspace: name.into(),
+        is_main: name == "main",
+        path: PathBuf::from(format!("/work/{name}/api")),
+        holding,
+    };
+    let version = |key: &str,
+                   lockfile: &str,
+                   days: u64,
+                   on_main: bool,
+                   stored: Option<Entry>,
+                   users: Vec<User>| Version {
+        key: key.into(),
+        lockfile: lockfile.into(),
+        changed: Some(now - days * day),
+        on_main,
+        stored,
+        users,
+    };
+    let many = [
+        "main",
+        "feat-login",
+        "feat-pay",
+        "PROJ-101",
+        "PROJ-102",
+        "PROJ-104",
+        "PROJ-107",
+        "PROJ-110",
+        "PROJ-111",
+        "fix-cart",
+        "fix-tax",
+        "spike-cache",
     ];
+    let overview = Overview {
+        repos: vec![
+            RepoOverview {
+                repo: "api".into(),
+                state: RepoState::Versions {
+                    manager: Manager::Npm,
+                    versions: vec![
+                        version(
+                            "k1",
+                            "package-lock.json",
+                            12,
+                            true,
+                            Some(entry("api", "k1", 1.4, 0)),
+                            many.iter()
+                                .map(|name| user(name, Holding::Shared))
+                                .collect(),
+                        ),
+                        version(
+                            "k2",
+                            "package-lock.json",
+                            3,
+                            false,
+                            Some(entry("api", "k2", 1.5, 1)),
+                            vec![user("feat-react", Holding::Shared)],
+                        ),
+                    ],
+                    old: vec![entry("api", "o1", 0.9, 20), entry("api", "o2", 1.2, 30)],
+                },
+            },
+            RepoOverview {
+                repo: "web".into(),
+                state: RepoState::Versions {
+                    manager: Manager::Yarn,
+                    versions: vec![version(
+                        "w1",
+                        "yarn.lock",
+                        2,
+                        true,
+                        Some(entry("web", "w1", 1.2, 0)),
+                        vec![
+                            user("main", Holding::Shared),
+                            user("feat-login", Holding::Shared),
+                            user(
+                                "feat-pay",
+                                Holding::Own {
+                                    size: 1_288_490_188,
+                                },
+                            ),
+                        ],
+                    )],
+                    old: Vec::new(),
+                },
+            },
+            RepoOverview {
+                repo: "admin".into(),
+                state: RepoState::Versions {
+                    manager: Manager::Yarn,
+                    versions: vec![version(
+                        "a1",
+                        "yarn.lock",
+                        5,
+                        true,
+                        None,
+                        vec![user(
+                            "main",
+                            Holding::Own {
+                                size: 1_181_116_006,
+                            },
+                        )],
+                    )],
+                    old: vec![entry("admin", "o3", 3.4, 27)],
+                },
+            },
+            RepoOverview {
+                repo: "docs".into(),
+                state: RepoState::SelfManaged("pnpm"),
+            },
+        ],
+        others: vec![entry("billing", "x1", 0.5, 40)],
+    };
     let state = StoreState {
-        method: "Copy-on-write clone".into(),
-        selected: Some((entries[1].repo.clone(), entries[1].key.clone())),
-        entries,
-        loaded: true,
+        method: "copy-on-write, workspaces take no extra disk".into(),
+        overview: Some(overview),
         now,
-        message: Some("Freed 1.2 GB".into()),
         ..StoreState::default()
     };
     StorePage::new(
@@ -484,72 +944,4 @@ pub fn preview_page() -> StorePage {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn texts(state: &StoreState) -> Vec<String> {
-        let painted = ui::render(
-            &render(state, "/store", 1000.0, None),
-            Rect::new(0.0, 0.0, 1000.0, 2000.0, Rgba::TRANSPARENT),
-        );
-        painted.texts.iter().map(|text| text.text.clone()).collect()
-    }
-
-    #[test]
-    fn actions_are_handed_to_the_app_and_wait_while_busy() {
-        let page = preview_page();
-        let mut state = page.shared.borrow_mut();
-        click(&mut state, DELETE_BASE + 1);
-        click(&mut state, PRUNE);
-        let api_key = state.entries[1].key.clone();
-        assert_eq!(
-            state.requests,
-            [
-                Request::Delete {
-                    repo: "api".into(),
-                    key: api_key
-                },
-                Request::Prune
-            ]
-        );
-        state.requests.clear();
-        state.busy = Some("Removing copies...".into());
-        click(&mut state, CLEAR);
-        click(&mut state, DELETE_BASE);
-        assert!(state.requests.is_empty());
-        assert!(texts(&state)
-            .iter()
-            .any(|text| text == "Removing copies..."));
-    }
-
-    #[test]
-    fn a_row_expands_to_its_details_and_totals_are_shown() {
-        let page = preview_page();
-        let mut state = page.shared.borrow_mut();
-        let shown = texts(&state);
-        assert!(shown
-            .iter()
-            .any(|text| text.starts_with("4 copies - 10.9 GB")));
-        assert!(shown.iter().any(|text| text.contains("/api/")));
-        click(&mut state, ROW_BASE + 1);
-        assert_eq!(state.selected, None);
-        click(&mut state, ROW_BASE);
-        assert_eq!(
-            state.selected.as_ref().map(|(repo, _)| repo.as_str()),
-            Some("web")
-        );
-        state.entries.clear();
-        assert!(texts(&state)
-            .iter()
-            .any(|text| text == "The store is empty"));
-    }
-
-    #[test]
-    fn ages_read_naturally() {
-        assert_eq!(ago(1000, 990), "just now");
-        assert_eq!(ago(10_000, 10_000 - 300), "5 min ago");
-        assert_eq!(ago(100_000, 100_000 - 7200), "2 h ago");
-        assert_eq!(ago(300_000, 300_000 - 100_000), "yesterday");
-        assert_eq!(ago(1_000_000, 1_000_000 - 5 * 86_400), "5 days ago");
-    }
-}
+mod tests;

@@ -314,7 +314,7 @@ impl Run<'_> {
 
 /// Runs a shell command in `cwd` with the tool PATH and `env`; on failure, the tail of its output.
 /// `node --version` as the workspace's login shell resolves it (nvm, volta, asdf...).
-pub(crate) fn node_version(cwd: &Path, env: &[(String, String)]) -> Option<String> {
+pub fn node_version(cwd: &Path, env: &[(String, String)]) -> Option<String> {
     let output = Command::new("zsh")
         .arg("-lc")
         .arg("node --version")
