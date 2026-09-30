@@ -4025,6 +4025,11 @@ impl WorkspaceView {
         ]
     }
 
+    /// Whether a submenu's items are applied under the submenu's own id rather than the menu it opened from.
+    fn menu_owns(&self, target: u64) -> bool {
+        target == crate::MENU_SUBMENU_LAYOUT
+    }
+
     fn apply_menu(&mut self, target: u64, item: u64) {
         if target == crate::ITEM_MENU_TARGET {
             if let Some(view) = self.layout.files_view.as_mut() {
@@ -4905,17 +4910,32 @@ impl WorkspaceView {
             if hit.is_some_and(is_submenu) {
                 return;
             }
-            let mut rows = self.menu_items(target);
+            // A submenu's item belongs to the submenu: its own menus (Panel Layout) take it by the submenu's id.
+            let mut rows: Vec<(u64, MenuItem)> = self
+                .menu_items(target)
+                .into_iter()
+                .map(|row| (target, row))
+                .collect();
             if let Some(parent) = self.submenu {
-                rows.extend(self.menu_items(parent.3));
+                rows.splice(
+                    0..0,
+                    self.menu_items(parent.3)
+                        .into_iter()
+                        .map(|row| (parent.3, row)),
+                );
             }
-            let row = hit.and_then(|id| rows.iter().find(|row| row.id == id));
-            if let Some(row) = row {
+            let row = hit.and_then(|id| rows.iter().find(|(_, row)| row.id == id));
+            if let Some((owner, row)) = row {
                 if row.disabled {
                     return;
                 }
                 let before = self.menu;
-                self.apply_menu(target, row.id);
+                let owner = if self.menu_owns(*owner) {
+                    *owner
+                } else {
+                    target
+                };
+                self.apply_menu(owner, row.id);
                 // A panel item can open a follow-up menu (a picker); keep that one.
                 if self.menu != before {
                     return;
@@ -7579,6 +7599,39 @@ mod tests {
             .map(|text| text.text.as_str())
             .collect::<Vec<_>>()
             .join("|")
+    }
+
+    #[test]
+    fn a_submenu_flipped_to_the_left_still_takes_clicks() {
+        let (mut app, h, e) = open();
+        app.draw(h);
+        e.update(app.app_mut(), |view, _| {
+            view.show_app_menu(Rect::new(1170.0, 4.0, 24.0, 24.0, Rgba::TRANSPARENT))
+        });
+        app.draw(h);
+        let parent = app
+            .window(h)
+            .and_then(|w| w.center_of(crate::MENU_SUBMENU_LAYOUT))
+            .expect("submenu row laid out");
+        e.update(app.app_mut(), |v, _| v.mouse_move(parent.0, parent.1));
+        app.draw(h);
+        let item = app
+            .window(h)
+            .and_then(|w| w.rect_of(MENU_DOCK_LEFT))
+            .expect("submenu open");
+        assert!(
+            item.x + item.w <= parent.0,
+            "flipped to the left of its row"
+        );
+        let (x, y) = (item.x + item.w / 2.0, item.y + item.h / 2.0);
+        let side = e.update(app.app_mut(), |v, _| {
+            v.mouse_move(parent.0 - 30.0, parent.1);
+            v.mouse_move(x, y);
+            v.mouse_down(x, y);
+            v.mouse_up();
+            v.layout.agent_side
+        });
+        assert_eq!(side, DockPosition::Left);
     }
 
     #[test]
