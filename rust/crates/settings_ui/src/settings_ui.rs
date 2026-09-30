@@ -98,7 +98,7 @@ fn nav_item_box(active: bool, hovered: bool) -> Div {
 // The Appearance page's section headers, in order. Single source of truth: the navbar lists them as jump
 // entries and `appearance_page` emits the same headers, so the two never drift.
 const APPEARANCE_SECTIONS: [&str; 2] = ["Theme", "UI Font"];
-const WINDOW_LAYOUT_SECTIONS: [&str; 5] = ["Status Bar", "Title Bar", "Window", "Docks", "Panels"];
+const WINDOW_LAYOUT_SECTIONS: [&str; 3] = ["Status Bar", "Title Bar", "Docks"];
 
 const INTEGRATIONS_SECTIONS: [&str; 2] = ["Jira", "Main Workspace"];
 const GENERAL_SECTIONS: [&str; 2] = ["Startup", "Updates"];
@@ -269,10 +269,6 @@ pub const EXTERNAL_EDITORS: [&str; 6] = [
 ];
 pub const REFRESH_MINUTES_MIN: u64 = 1;
 pub const REFRESH_MINUTES_MAX: u64 = 1440;
-pub const WIN_W_MIN: f32 = 640.0;
-pub const WIN_W_MAX: f32 = 4000.0;
-pub const WIN_H_MIN: f32 = 480.0;
-pub const WIN_H_MAX: f32 = 3000.0;
 pub const RESET_OFFSET: u64 = 100_000;
 
 /// Font-size bounds, matching the reference's `FontSize` stepper (min 6, max 72).
@@ -518,8 +514,6 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_SHOW_SESSION => s.show_session_name == d.show_session_name,
         CTRL_JIRA_ONLY_MINE => s.jira_only_mine == d.jira_only_mine,
         CTRL_GROUP_WORKSPACES => s.group_workspaces == d.group_workspaces,
-        CTRL_WIN_W_EDIT => s.window_width == d.window_width,
-        CTRL_WIN_H_EDIT => s.window_height == d.window_height,
         CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
         CTRL_AUTO_UPDATE => s.auto_update == d.auto_update,
         CTRL_BUFFER_FONT_EDIT => s.buffer_font_size == d.buffer_font_size,
@@ -566,8 +560,6 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_SHOW_SESSION => s.show_session_name = d.show_session_name,
         CTRL_JIRA_ONLY_MINE => s.jira_only_mine = d.jira_only_mine,
         CTRL_GROUP_WORKSPACES => s.group_workspaces = d.group_workspaces,
-        CTRL_WIN_W_EDIT => s.window_width = d.window_width,
-        CTRL_WIN_H_EDIT => s.window_height = d.window_height,
         CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
         CTRL_AUTO_UPDATE => s.auto_update = d.auto_update,
         CTRL_BUFFER_FONT_EDIT => s.buffer_font_size = d.buffer_font_size,
@@ -601,10 +593,6 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         CTRL_FONT_SIZE_INC => set_font_size(s, s.ui_font_size + 1.0),
         CTRL_FONT_WEIGHT_DEC => set_font_weight(s, s.ui_font_weight - 100.0),
         CTRL_FONT_WEIGHT_INC => set_font_weight(s, s.ui_font_weight + 100.0),
-        CTRL_WIN_W_DEC => set_clamped(&mut s.window_width, -20.0, WIN_W_MIN, WIN_W_MAX),
-        CTRL_WIN_W_INC => set_clamped(&mut s.window_width, 20.0, WIN_W_MIN, WIN_W_MAX),
-        CTRL_WIN_H_DEC => set_clamped(&mut s.window_height, -20.0, WIN_H_MIN, WIN_H_MAX),
-        CTRL_WIN_H_INC => set_clamped(&mut s.window_height, 20.0, WIN_H_MIN, WIN_H_MAX),
         CTRL_SHOW_AGENT => {
             s.agent_hidden = !s.agent_hidden;
             true
@@ -1837,10 +1825,28 @@ fn window_layout_page(s: &Settings) -> Page {
                 },
                 reset: reset_if_changed(CTRL_SHOW_LANGUAGE, s),
             }),
+            PageItem::Row(SettingRow {
+                title: "Show Agent Button".into(),
+                description: "Show the agent toggle in the status bar.".into(),
+                control: Control::Toggle {
+                    id: CTRL_SHOW_AGENT,
+                    on: !s.agent_hidden,
+                },
+                reset: reset_if_changed(CTRL_SHOW_AGENT, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Show Terminal Button".into(),
+                description: "Show the terminal toggle in the status bar.".into(),
+                control: Control::Toggle {
+                    id: CTRL_SHOW_TERMINAL,
+                    on: !s.terminal_hidden,
+                },
+                reset: reset_if_changed(CTRL_SHOW_TERMINAL, s),
+            }),
             PageItem::Header("Title Bar"),
             PageItem::Row(SettingRow {
-                title: "Show Branch".into(),
-                description: "Show the current git branch in the title bar.".into(),
+                title: "Show Branch Name".into(),
+                description: "Show the active workspace's branch in the title bar.".into(),
                 control: Control::Toggle {
                     id: CTRL_SHOW_BRANCH,
                     on: s.show_branch,
@@ -1855,29 +1861,6 @@ fn window_layout_page(s: &Settings) -> Page {
                     on: s.show_session_name,
                 },
                 reset: reset_if_changed(CTRL_SHOW_SESSION, s),
-            }),
-            PageItem::Header("Window"),
-            PageItem::Row(SettingRow {
-                title: "Window Width".into(),
-                description: "Default width (px) of a new window.".into(),
-                control: Control::Stepper {
-                    dec: CTRL_WIN_W_DEC,
-                    inc: CTRL_WIN_W_INC,
-                    edit: CTRL_WIN_W_EDIT,
-                    value: format!("{:.0}", s.window_width),
-                },
-                reset: reset_if_changed(CTRL_WIN_W_EDIT, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Window Height".into(),
-                description: "Default height (px) of a new window.".into(),
-                control: Control::Stepper {
-                    dec: CTRL_WIN_H_DEC,
-                    inc: CTRL_WIN_H_INC,
-                    edit: CTRL_WIN_H_EDIT,
-                    value: format!("{:.0}", s.window_height),
-                },
-                reset: reset_if_changed(CTRL_WIN_H_EDIT, s),
             }),
             PageItem::Header("Docks"),
             PageItem::Row(SettingRow {
@@ -1906,25 +1889,6 @@ fn window_layout_page(s: &Settings) -> Page {
                     value: cap(&s.terminal_side),
                 },
                 reset: reset_if_changed(CTRL_TERMINAL_SIDE, s),
-            }),
-            PageItem::Header("Panels"),
-            PageItem::Row(SettingRow {
-                title: "Show Agent Button".into(),
-                description: "Show the agent toggle in the status bar.".into(),
-                control: Control::Toggle {
-                    id: CTRL_SHOW_AGENT,
-                    on: !s.agent_hidden,
-                },
-                reset: reset_if_changed(CTRL_SHOW_AGENT, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Show Terminal Button".into(),
-                description: "Show the terminal toggle in the status bar.".into(),
-                control: Control::Toggle {
-                    id: CTRL_SHOW_TERMINAL,
-                    on: !s.terminal_hidden,
-                },
-                reset: reset_if_changed(CTRL_SHOW_TERMINAL, s),
             }),
         ],
     }

@@ -3480,6 +3480,7 @@ dependencies = [
  "pom_services",
  "pom_workspace",
  "pull_request_ui",
+ "serde",
  "serde_json",
  "services_ui",
  "settings",
