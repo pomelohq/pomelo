@@ -7,6 +7,8 @@
 #[cfg(target_os = "macos")]
 mod add_repo;
 mod config_bundle;
+#[cfg(target_os = "macos")]
+mod key_equivalents;
 mod notifications;
 mod onboarding;
 mod updates;
@@ -1700,6 +1702,8 @@ impl App {
         }
         self.keymap_read = modified;
         let (keymap, problems) = workspace::keymap::Keymap::load();
+        #[cfg(target_os = "macos")]
+        key_equivalents::set_keymap(&keymap);
         self.keymap = keymap;
         self.keymap_problems = problems;
         self.pending_keys.clear();
@@ -2335,7 +2339,10 @@ impl App {
         if !in_settings && !self.mains.contains_key(&id) {
             return false;
         }
-        match self.keymap.match_keys(&self.pending_keys, &stroke) {
+        let matched = self.keymap.match_keys(&self.pending_keys, &stroke);
+        #[cfg(target_os = "macos")]
+        key_equivalents::set_chord_pending(matched == KeyMatch::Pending);
+        match matched {
             KeyMatch::Action(action) => {
                 self.pending_keys.clear();
                 if in_settings {
@@ -2844,7 +2851,20 @@ impl ApplicationHandler for App {
         auto_update::install_on_quit();
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
+        #[cfg(target_os = "macos")]
+        for stroke in key_equivalents::take_pending() {
+            let target = self
+                .focused_main
+                .filter(|id| self.mains.contains_key(id))
+                .or_else(|| self.mains.keys().next().copied());
+            if let Some(id) = target {
+                self.dispatch_keys(id, stroke, event_loop);
+                if let Some(main) = self.mains.get_mut(&id) {
+                    main.dirty = true;
+                }
+            }
+        }
         self.reload_changed_projects();
         self.refresh_agents();
         self.open_clicked_notification();
@@ -3000,6 +3020,10 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.mains.is_empty() {
             return;
+        }
+        #[cfg(target_os = "macos")]
+        if let WindowEvent::Focused(true) = &event {
+            key_equivalents::set_main_focused(self.mains.contains_key(&id));
         }
         // Cmd+, toggles the Settings window from anywhere; Esc closes it if focused.
         if let WindowEvent::ModifiersChanged(mods) = &event {
@@ -4009,6 +4033,11 @@ fn main() -> anyhow::Result<()> {
     let (keymap, problems) = workspace::keymap::Keymap::load();
     for problem in &problems {
         eprintln!("{problem}");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        key_equivalents::set_keymap(&keymap);
+        key_equivalents::install();
     }
     app.keymap = keymap;
     app.keymap_problems = problems;
