@@ -157,11 +157,11 @@ pub(crate) fn merge(into: &mut ui::Painted, part: ui::Painted) {
     into.hits.extend(part.hits);
 }
 
-fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
+pub(crate) fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
     label(text.into()).label_size(LabelSize::Small).color(color)
 }
 
-fn link(id: u64, text: &str, hovered: Option<u64>) -> Node {
+pub(crate) fn link(id: u64, text: &str, hovered: Option<u64>) -> Node {
     let colors = theme();
     let mut part = div()
         .row()
@@ -177,7 +177,7 @@ fn link(id: u64, text: &str, hovered: Option<u64>) -> Node {
     part.into()
 }
 
-fn section(title: &str) -> Node {
+pub(crate) fn section(title: &str) -> Node {
     div()
         .row()
         .pt(12.0)
@@ -551,7 +551,14 @@ pub(crate) fn value_title(cell: &CellView<'_>) -> Node {
 pub(crate) fn value_box(cell: &CellView<'_>, editor: Option<Node>, width: f32) -> Node {
     let colors = theme();
     if let Some(editor) = editor {
-        return editor;
+        return div()
+            .col()
+            .p(10.0)
+            .rounded(6.0)
+            .border(1.0, colors.border_focused)
+            .bg(colors.editor_background)
+            .child(editor)
+            .into();
     }
     let body: Node = match cell.value {
         None => label("NULL")
@@ -606,7 +613,8 @@ pub(crate) fn value_actions(
     actions = actions.child(div().row().flex(1.0));
     if editing {
         return actions
-            .child(small("cmd-enter keeps it", colors.text_placeholder))
+            .child(workspace::render_keystroke("cmd-enter", 10.5))
+            .child(small(" keeps it  ", colors.text_placeholder))
             .child(link(CANCEL_VALUE, "Cancel", hovered))
             .child(link(SAVE_VALUE, "Keep", hovered))
             .into();

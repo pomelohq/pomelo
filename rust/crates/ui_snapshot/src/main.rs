@@ -334,6 +334,7 @@ fn main() -> anyhow::Result<()> {
             config_path: dir.join("pom.yml"),
             waker: std::sync::Arc::new(|| {}),
             objects: std::sync::Arc::new(SnapshotStorage),
+            choose_files: std::sync::Arc::new(Vec::new),
         };
         let table = |schema: &str, name: &str, kind: pom_db::TableKind, count: Option<usize>| {
             pom_db::Table {
@@ -349,6 +350,8 @@ fn main() -> anyhow::Result<()> {
             (300.0_f32, 1180.0_f32)
         } else if which == "object" {
             (760.0_f32, 460.0_f32)
+        } else if which == "bucket" {
+            (1100.0_f32, 480.0_f32)
         } else if which == "console" {
             (900.0_f32, 280.0_f32)
         } else if which == "table" {
@@ -568,6 +571,80 @@ fn main() -> anyhow::Result<()> {
             item.tick(&|| None);
             item.paint_body(body, true)
                 .ok_or_else(|| anyhow::anyhow!("no body"))?
+        } else if which == "bucket" {
+            let files = databases
+                .iter()
+                .find(|db| db.name == "files")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no object storage"))?;
+            let object =
+                |key: &str, size: u64, modified: &str| pom_db::object_storage::ObjectEntry {
+                    key: key.into(),
+                    size,
+                    modified: modified.into(),
+                    etag: "9b2cf5e1a4d0".into(),
+                };
+            let mut item = database_ui::BucketItem::new(
+                context,
+                files,
+                "uploads".into(),
+                "exports/",
+                Some("exports/orders-2026-09-27.json".into()),
+            );
+            let wait = |item: &mut database_ui::BucketItem| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while item.is_busy() && std::time::Instant::now() < deadline {
+                    item.tick(&|| None);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                item.tick(&|| None);
+            };
+            wait(&mut item);
+            item.show(
+                pom_db::object_storage::Listing {
+                    prefixes: vec!["exports/2025/".into(), "exports/archive/".into()],
+                    objects: vec![
+                        object(
+                            "exports/customers.csv",
+                            3_565_158,
+                            "2026-09-28T09:15:00.000Z",
+                        ),
+                        object(
+                            "exports/invoice-4412.pdf",
+                            98_304,
+                            "2026-09-29T14:02:00.000Z",
+                        ),
+                        object(
+                            "exports/orders-2026-09-27.json",
+                            5_347_737,
+                            "2026-09-27T18:42:00.000Z",
+                        ),
+                        object("exports/report.xlsx", 61_440, "2026-09-26T08:00:00.000Z"),
+                    ],
+                    next: None,
+                },
+                vec![
+                    (
+                        "exports/2025/".into(),
+                        pom_db::object_storage::PrefixStats {
+                            objects: 214,
+                            bytes: 63_963_136,
+                            capped: false,
+                        },
+                    ),
+                    (
+                        "exports/archive/".into(),
+                        pom_db::object_storage::PrefixStats {
+                            objects: 14,
+                            bytes: 1_288_490,
+                            capped: false,
+                        },
+                    ),
+                ],
+            );
+            wait(&mut item);
+            item.paint_body(body, true)
+                .ok_or_else(|| anyhow::anyhow!("no body"))?
         } else if which == "redis" {
             let database = pom_db::list_databases(
                 &pom_config::Config::load(&dir.join("pom.yml"))?,
@@ -576,42 +653,62 @@ fn main() -> anyhow::Result<()> {
             .into_iter()
             .find(|database| database.engine == pom_db::Engine::Redis)
             .ok_or_else(|| anyhow::anyhow!("no redis"))?;
-            let mut item = database_ui::TableItem::new(
+            let mut item = database_ui::KeyspaceItem::new(
                 context,
                 database,
-                table("", "session", pom_db::TableKind::Table, None),
+                table("", "bull", pom_db::TableKind::Keyspace, None),
             );
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while item.is_busy() && std::time::Instant::now() < deadline {
-                item.tick(&|| None);
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            let rows = (0..24)
-                .map(|row| {
-                    let (kind, value) = match row % 3 {
-                        0 => (
-                            "string",
-                            format!("{{\"user_id\":{},\"csrf\":\"a8f{row}\"}}", 100 + row),
-                        ),
-                        1 => ("hash", "{user_id: 7, ip: 127.0.0.1}".to_string()),
-                        _ => ("list", "[job-1, job-2, job-3]".to_string()),
-                    };
-                    vec![
-                        Some(format!("session:{:04x}", 4096 + row * 37)),
-                        Some(kind.to_string()),
-                        (row % 4 != 0).then(|| format!("{}", 3600 - row * 60)),
-                        Some(value),
-                    ]
-                })
-                .collect();
-            item.show_page(
-                pom_db::QueryResult {
-                    columns: ["key", "type", "ttl", "value"].map(str::to_string).to_vec(),
-                    rows,
-                    ..pom_db::QueryResult::default()
-                },
-                None,
+            let key = |key: &str, kind: &str, ttl: Option<i64>| pom_db::RedisKey {
+                key: key.into(),
+                kind: kind.into(),
+                ttl,
+            };
+            let mut keys = vec![
+                key("bull:mail:id", "string", None),
+                key("bull:mail:meta", "hash", None),
+                key("bull:mail:wait", "list", None),
+                key("bull:mail:delayed", "zset", None),
+            ];
+            keys.extend(
+                (1..6).map(|job| key(&format!("bull:mail:{job}"), "hash", Some(3600 * job))),
             );
+            keys.push(key("bull:sms:wait", "list", None));
+            keys.push(key("bull:sms:workers", "set", Some(95)));
+            let (selected, value) = match std::env::var("KEY").as_deref() {
+                Ok("hash") => (
+                    1,
+                    pom_db::RedisValue::Hash(vec![
+                        ("opts".into(), r#"{"maxLenEvents":10000}"#.into()),
+                        ("version".into(), "bullmq:5.12.0".into()),
+                        ("concurrency".into(), "4".into()),
+                    ]),
+                ),
+                Ok("list") => (
+                    2,
+                    pom_db::RedisValue::List((41..47).map(|job| job.to_string()).collect()),
+                ),
+                Ok("zset") => (
+                    3,
+                    pom_db::RedisValue::Sorted(
+                        (7..11)
+                            .map(|job| (job.to_string(), format!("{}", 1_727_700_000_000_i64 + job * 60_000)))
+                            .collect(),
+                    ),
+                ),
+                Ok("set") => (
+                    keys.len() - 1,
+                    pom_db::RedisValue::Set(
+                        ["worker-a1", "worker-b7", "worker-c3", "worker-d9"].map(str::to_string).to_vec(),
+                    ),
+                ),
+                _ => (
+                    0,
+                    pom_db::RedisValue::Text(
+                        r#"{"name":"welcome","data":{"to":"ann@example.com","template":"welcome","vars":{"first":"Ann"}},"opts":{"attempts":3,"backoff":{"type":"exponential","delay":1000}},"timestamp":1727700000000}"#.into(),
+                    ),
+                ),
+            };
+            item.show(keys, selected, value);
             item.paint_body(body, true)
                 .ok_or_else(|| anyhow::anyhow!("no body"))?
         } else {

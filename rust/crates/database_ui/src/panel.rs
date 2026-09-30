@@ -14,8 +14,10 @@ use workspace::{
     side_panel_base, AgentFix, EditKey, Item, MenuItem, PaneKind, PanelRequest, SidePanelView,
 };
 
+use crate::bucket_item::BucketItem;
 use crate::console::{console_item, console_item_id, new_console, restore_console};
 use crate::failure::{Failure, FailureAction, ACTION_STRIDE};
+use crate::keyspace_item::KeyspaceItem;
 use crate::menu::{self, Action, Entry, Facts};
 use crate::object_item::{object_item_id, ObjectItem};
 use crate::tree::{
@@ -992,13 +994,15 @@ impl DatabasePanel {
                     self.ask(&database, prompt);
                 }
             }
-            Action::OpenData | Action::OpenKeys => {
-                if let (Row::Table { table, .. } | Row::Keyspace { table, .. }, Some(database)) =
-                    (&row, database)
-                {
-                    self.open_table(database, table.clone(), "");
+            Action::OpenData | Action::OpenKeys => match (&row, database) {
+                (Row::Table { table, .. }, Some(database)) => {
+                    self.open_table(database, table.clone(), "")
                 }
-            }
+                (Row::Keyspace { table, .. }, Some(database)) => {
+                    self.open_keyspace(database, table.clone())
+                }
+                _ => {}
+            },
             Action::NewConsoleWithSelect => {
                 if let Row::Table { table, .. } = &row {
                     let sql = format!("SELECT * FROM {} LIMIT {SELECT_LIMIT};\n", table.sql_name());
@@ -1324,6 +1328,33 @@ impl DatabasePanel {
         });
     }
 
+    fn open_keyspace(&mut self, database: Database, table: Table) {
+        let context = self.context.clone();
+        self.requests.push(PanelRequest::Reveal {
+            id: KeyspaceItem::item_id(&database, &table),
+            open: Box::new(move || Some(Box::new(KeyspaceItem::new(context, database, table)))),
+        });
+    }
+
+    fn open_bucket(
+        &mut self,
+        database: Database,
+        bucket: String,
+        prefix: &str,
+        selected: Option<String>,
+    ) {
+        let id = BucketItem::item_id(&database, &bucket);
+        let (context, prefix) = (self.context.clone(), prefix.to_string());
+        self.requests.push(PanelRequest::Reveal {
+            id,
+            open: Box::new(move || {
+                Some(Box::new(BucketItem::new(
+                    context, database, bucket, &prefix, selected,
+                )))
+            }),
+        });
+    }
+
     fn open_object(&mut self, database: Database, bucket: String, object: ObjectEntry) {
         let context = self.context.clone();
         self.requests.push(PanelRequest::Reveal {
@@ -1493,7 +1524,7 @@ impl DatabasePanel {
             }
             Row::Keyspace { index, table, .. } => {
                 if let Some(database) = self.database_at(index) {
-                    self.open_table(database, table, "");
+                    self.open_keyspace(database, table);
                 }
             }
             Row::Bucket {
@@ -1505,6 +1536,10 @@ impl DatabasePanel {
                 let Some(database) = self.database_at(index) else {
                     return;
                 };
+                if part != CHEVRON {
+                    self.open_bucket(database, bucket, "", None);
+                    return;
+                }
                 let key = bucket_key(&repo, &database.name, &bucket);
                 self.model.toggle(&key);
                 if self.model.is_open(&key)
@@ -1526,6 +1561,10 @@ impl DatabasePanel {
                 let Some(database) = self.database_at(index) else {
                     return;
                 };
+                if part != CHEVRON {
+                    self.open_bucket(database, bucket, &prefix, None);
+                    return;
+                }
                 let key = prefix_key(&repo, &database.name, &bucket, &prefix);
                 self.model.toggle(&key);
                 if self.model.is_open(&key)
@@ -1545,7 +1584,8 @@ impl DatabasePanel {
                 ..
             } => {
                 if let Some(database) = self.database_at(index) {
-                    self.open_object(database, bucket, object);
+                    let folder = parent_prefix(&object.key);
+                    self.open_bucket(database, bucket, &folder, Some(object.key));
                 }
             }
             Row::More {
@@ -1817,6 +1857,8 @@ impl SidePanelView for DatabasePanel {
     fn restore_item(&mut self, item: &SerializedItem) -> Option<Box<dyn Item>> {
         restore_console(&self.context, item)
             .or_else(|| crate::table_item::restore_table(&self.context, item))
+            .or_else(|| crate::keyspace_item::restore_keyspace(&self.context, item))
+            .or_else(|| crate::bucket_item::restore_bucket(&self.context, item))
     }
 
     fn take_requests(&mut self) -> Vec<PanelRequest> {

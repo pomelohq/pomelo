@@ -202,9 +202,16 @@ struct AreaRow {
     xs: Vec<f32>,
 }
 
+/// Splits a text into `(start byte, end byte, syntax capture)` runs; what the runs leave out is plain.
+pub type Highlighter = fn(&str) -> Vec<(usize, usize, &'static str)>;
+
 pub struct TextArea {
     buffer: EditorBuffer,
     font_size: f32,
+    highlighter: Option<Highlighter>,
+    /// The capture of each char, for the buffer version it was computed at.
+    captures: Option<(u64, Vec<Option<&'static str>>)>,
+    gutter: bool,
     rows: Vec<AreaRow>,
     wrap_width: f32,
     laid_out_version: Option<u64>,
@@ -217,6 +224,9 @@ impl Default for TextArea {
         TextArea {
             buffer: EditorBuffer::default(),
             font_size: 13.0,
+            highlighter: None,
+            captures: None,
+            gutter: false,
             rows: Vec::new(),
             wrap_width: 0.0,
             laid_out_version: None,
@@ -305,6 +315,49 @@ impl TextArea {
     pub fn set_font_size(&mut self, size: f32) {
         self.font_size = size;
         self.laid_out_version = None;
+    }
+
+    /// Colors the text as code, with line numbers beside it.
+    pub fn set_code(&mut self, highlighter: Option<Highlighter>) {
+        self.highlighter = highlighter;
+        self.gutter = highlighter.is_some();
+        self.captures = None;
+        self.laid_out_version = None;
+    }
+
+    fn gutter_width(&self) -> f32 {
+        if !self.gutter {
+            return 0.0;
+        }
+        let digits = self.buffer.rope.len_lines().to_string().len().max(2);
+        ui::measure_text_width(&"0".repeat(digits), self.font_size, true, 400)
+            / ui::ui_text_scale().max(0.01)
+            + 12.0
+    }
+
+    fn refresh_captures(&mut self) {
+        let Some(highlighter) = self.highlighter else {
+            return;
+        };
+        let version = self.buffer.version();
+        if self.captures.as_ref().is_some_and(|(at, _)| *at == version) {
+            return;
+        }
+        let text = self.buffer.text();
+        let mut by_byte = vec![None; text.len() + 1];
+        for (start, end, capture) in highlighter(&text) {
+            for slot in &mut by_byte[start.min(text.len())..end.min(text.len())] {
+                *slot = Some(capture);
+            }
+        }
+        let captures = text.char_indices().map(|(byte, _)| by_byte[byte]).collect();
+        self.captures = Some((version, captures));
+    }
+
+    fn capture_at(&self, offset: usize) -> Option<&'static str> {
+        self.captures
+            .as_ref()
+            .and_then(|(_, captures)| captures.get(offset).copied().flatten())
     }
 
     pub fn line_height(&self) -> f32 {
@@ -470,7 +523,10 @@ impl TextArea {
 
     pub fn render(&mut self, placeholder: &str, focused: bool, width: f32, rows: usize) -> Node {
         self.visible_rows = rows.max(1);
+        let gutter_w = self.gutter_width();
+        let width = width - gutter_w;
         self.layout(width);
+        self.refresh_captures();
         self.keep_caret_visible();
         let size = self.font_size;
         let line_h = self.line_height();
@@ -512,6 +568,18 @@ impl TextArea {
             st.selection_alpha,
         );
         let last_row = self.rows.len().saturating_sub(1);
+        let palette = crate::syntax_theme();
+        let capture_color = |capture: Option<&str>| match capture {
+            Some(capture) => {
+                let [r, g, b] = palette.syntax_color(capture).0;
+                ui::Rgba::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
+            }
+            None => text_color,
+        };
+        let current_line = self
+            .buffer
+            .rope
+            .char_to_line(head.min(self.buffer.rope.len_chars()));
         for (index, row) in self
             .rows
             .iter()
@@ -528,6 +596,24 @@ impl TextArea {
                     .collect()
             };
             let mut line = div().row().h_px(line_h).items_center();
+            if gutter_w > 0.0 {
+                let line_index = self.buffer.rope.char_to_line(row.start);
+                let first = self.buffer.rope.line_to_char(line_index) == row.start;
+                let number = if first {
+                    (line_index + 1).to_string()
+                } else {
+                    String::new()
+                };
+                line = line.child(div().row().w_px(gutter_w).pr(12.0).justify_end().child(
+                    label(number).size(size).mono().color(
+                        if line_index == current_line && focused {
+                            theme().text_muted
+                        } else {
+                            theme().text_placeholder
+                        },
+                    ),
+                ));
+            }
             let caret_here = head >= row.start
                 && (head < row.end || (head == row.end && (!row.soft || index == last_row)));
             let cut_start = start.clamp(row.start, row.end);
@@ -543,11 +629,26 @@ impl TextArea {
                 if from == to {
                     continue;
                 }
-                let text = label(piece(from, to)).size(size).mono().color(text_color);
+                let mut runs = div().row().items_center();
+                let mut run_start = from;
+                while run_start < to {
+                    let capture = self.capture_at(run_start);
+                    let mut run_end = run_start + 1;
+                    while run_end < to && self.capture_at(run_end) == capture {
+                        run_end += 1;
+                    }
+                    runs = runs.child(
+                        label(piece(run_start, run_end))
+                            .size(size)
+                            .mono()
+                            .color(capture_color(capture)),
+                    );
+                    run_start = run_end;
+                }
                 line = if selected {
-                    line.child(div().bg(tint).child(text))
+                    line.child(runs.bg(tint))
                 } else {
-                    line.child(text)
+                    line.child(runs)
                 };
             }
             if caret_here && head == row.end && row.end != row.start && cut_end != row.end {

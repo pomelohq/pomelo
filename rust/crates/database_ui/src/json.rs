@@ -41,6 +41,25 @@ pub(crate) fn pretty(value: &Json) -> String {
     out
 }
 
+/// One line, spaced the way Postgres prints jsonb: `{"a": 1, "b": [1, 2]}`.
+pub(crate) fn compact(value: &Json) -> String {
+    match value {
+        Json::Array(items) => format!(
+            "[{}]",
+            items.iter().map(compact).collect::<Vec<_>>().join(", ")
+        ),
+        Json::Object(entries) => format!(
+            "{{{}}}",
+            entries
+                .iter()
+                .map(|(key, item)| format!("{}: {}", quote(key), compact(item)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        scalar => pretty(scalar),
+    }
+}
+
 fn write(value: &Json, depth: usize, out: &mut String) {
     let indent = |depth: usize| "  ".repeat(depth);
     match value {
@@ -77,6 +96,51 @@ fn write(value: &Json, depth: usize, out: &mut String) {
             out.push('}');
         }
     }
+}
+
+/// JSON text as syntax runs: keys, strings, numbers, and the literals.
+pub(crate) fn highlight(text: &str) -> Vec<(usize, usize, &'static str)> {
+    let bytes = text.as_bytes();
+    let mut runs = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        let start = at;
+        match bytes[at] {
+            b'"' => {
+                at += 1;
+                while at < bytes.len() && bytes[at] != b'"' {
+                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                }
+                at = (at + 1).min(bytes.len());
+                let key = bytes[at..]
+                    .iter()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    .is_some_and(|byte| *byte == b':');
+                runs.push((start, at, if key { "property" } else { "string" }));
+            }
+            b'-' | b'0'..=b'9' => {
+                at += 1;
+                while at < bytes.len()
+                    && matches!(bytes[at], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+                {
+                    at += 1;
+                }
+                runs.push((start, at, "number"));
+            }
+            byte if byte.is_ascii_alphabetic() => {
+                while at < bytes.len() && bytes[at].is_ascii_alphabetic() {
+                    at += 1;
+                }
+                match &text[start..at] {
+                    "true" | "false" => runs.push((start, at, "boolean")),
+                    "null" => runs.push((start, at, "constant")),
+                    _ => {}
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    runs
 }
 
 pub(crate) fn quote(text: &str) -> String {
@@ -233,6 +297,27 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edited_value_goes_back_to_one_line_and_colors_its_keys() {
+        let value = parse("{\n  \"ip\": \"10.0.0.1\",\n  \"ok\": true,\n  \"tags\": [1, null]\n}")
+            .expect("json");
+        assert_eq!(
+            compact(&value),
+            r#"{"ip": "10.0.0.1", "ok": true, "tags": [1, null]}"#
+        );
+        let captures: Vec<&str> = highlight(r#"{"ip": "x", "n": -2, "b": false, "z": null}"#)
+            .into_iter()
+            .map(|(_, _, capture)| capture)
+            .collect();
+        assert_eq!(
+            captures,
+            [
+                "property", "string", "property", "number", "property", "boolean", "property",
+                "constant"
+            ]
+        );
+    }
 
     #[test]
     fn keys_keep_their_written_order_and_pretty_round_trips() {

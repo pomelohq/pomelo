@@ -39,7 +39,6 @@ const FILTER_H: f32 = 26.0;
 const FIELD_FONT: f32 = 12.0;
 const SIDE_W: f32 = 360.0;
 const SIDE_HEAD_H: f32 = 36.0;
-const REVIEW_LINE_H: f32 = 18.0;
 const PAGE_SIZES: [usize; 4] = [100, 500, 1000, 5000];
 const DEFAULT_PAGE: usize = 500;
 /// A value longer than this, or on several lines, is edited in the Details side instead of in its cell.
@@ -73,7 +72,6 @@ const DETAILS: u64 = 13;
 const REVIEW: u64 = 14;
 const DISCARD: u64 = 15;
 const APPLY: u64 = 16;
-const COPY_SQL: u64 = 17;
 const FILTER_BASE: u64 = 100;
 const FILTER_END: u64 = 1000;
 
@@ -175,7 +173,7 @@ pub struct TableItem {
     edits: Vec<Edit>,
     cell_editor: TextField,
     value_editor: TextArea,
-    review: bool,
+    value_one_line: bool,
     applying: Pending<u64>,
     opened: Vec<OpenedValue>,
     files_checked: Instant,
@@ -244,7 +242,7 @@ impl TableItem {
             edits: Vec::new(),
             cell_editor: field(),
             value_editor: TextArea::default(),
-            review: false,
+            value_one_line: false,
             applying: Pending::idle(),
             opened: Vec::new(),
             files_checked: Instant::now(),
@@ -516,7 +514,22 @@ impl TableItem {
         if long {
             self.details = true;
             self.side = Side::Value;
-            self.value_editor.set_text(&value);
+            let parsed = self
+                .column_info(column)
+                .filter(|info| info.data_type.contains("json"))
+                .and_then(|_| json::parse(&value));
+            match parsed {
+                Some(parsed) => {
+                    self.value_editor.set_text(&json::pretty(&parsed));
+                    self.value_editor.set_code(Some(json::highlight));
+                    self.value_one_line = !value.contains('\n');
+                }
+                None => {
+                    self.value_editor.set_text(&value);
+                    self.value_editor.set_code(None);
+                    self.value_one_line = false;
+                }
+            }
             self.focus = Focus::Value;
         } else {
             self.cell_editor.set_text(&value);
@@ -536,7 +549,13 @@ impl TableItem {
 
     fn keep_value_edit(&mut self) {
         if let Some((row, column)) = self.grid.selected() {
-            let text = self.value_editor.text();
+            let mut text = self.value_editor.text();
+            // Edited as indented lines; saved on one line like it was, so only the change shows.
+            if self.value_one_line {
+                if let Some(parsed) = json::parse(&text) {
+                    text = json::compact(&parsed);
+                }
+            }
             self.stage_cell(row, column, Some(text));
         }
         self.focus = Focus::Grid;
@@ -638,6 +657,53 @@ impl TableItem {
     }
 
     /// Writes the selected value to a file and opens it in an editor tab; saving the file stages it.
+    /// The staged statements in an editor tab, one per paragraph, to read before Apply runs them.
+    fn review_in_tab(&mut self) {
+        if self.edits.is_empty() {
+            return;
+        }
+        let count = self.edits.len();
+        let mut text = format!(
+            "-- {count} {} to {} in {}, not applied yet.\n-- Apply (cmd-s) in the table tab runs them in one transaction; any error saves nothing.\n-- Editing this file does not change what runs.\n",
+            if count == 1 { "change" } else { "changes" },
+            self.table.qualified(),
+            self.database.label,
+        );
+        for edit in &self.edits {
+            text.push('\n');
+            text.push_str(&pom_db::update_statement_lines(
+                &self.table,
+                &edit.key,
+                &edit.column,
+                edit.value.as_deref(),
+            ));
+            text.push_str(";\n");
+        }
+        let safe: String = format!("{}-{}-pending", self.database.name, self.table.name)
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let path = self
+            .context
+            .state
+            .path("db-values")
+            .join(format!("{safe}.sql"));
+        let written = std::fs::create_dir_all(path.parent().unwrap_or(&path))
+            .and_then(|()| std::fs::write(&path, &text));
+        match written {
+            Ok(()) => self.requests.push(PanelRequest::OpenFile(path)),
+            Err(error) => {
+                self.status = Some((format!("Could not open the SQL in a tab: {error}"), true))
+            }
+        }
+    }
+
     fn open_in_tab(&mut self) {
         let Some((row, column)) = self.grid.selected() else {
             return;
@@ -971,14 +1037,12 @@ impl TableItem {
             DETAILS | SIDE_CLOSE => self.details = !self.details,
             SIDE_VALUE => self.side = Side::Value,
             SIDE_ROW => self.side = Side::Row,
-            REVIEW => self.review = !self.review,
+            REVIEW => self.review_in_tab(),
             DISCARD => {
                 self.edits.clear();
-                self.review = false;
                 self.lay_edits();
             }
             APPLY => self.apply(),
-            COPY_SQL => self.clipboard = Some(self.statements().join(";\n") + ";"),
             VALUE_AREA
                 if self.focus != Focus::Value
                     && self
@@ -1157,20 +1221,7 @@ impl TableItem {
             .border(1.0, colors.border_variant)
             .on_click(id)
             .child(label(text.to_string()).size(12.0).color(colors.text))
-            .child(
-                div()
-                    .row()
-                    .px(4.0)
-                    .h_px(14.0)
-                    .items_center()
-                    .rounded(3.0)
-                    .border(1.0, colors.border_variant)
-                    .child(
-                        label(keys.to_string())
-                            .size(10.0)
-                            .color(colors.text_placeholder),
-                    ),
-            );
+            .child(workspace::render_keystroke(keys, 10.5));
         if on {
             button = button.bg(colors.element_selected);
         } else if self.hovered == Some(id) {
@@ -1493,48 +1544,10 @@ impl TableItem {
                         .truncate(),
                 ),
             )
-            .child(self.text_button(REVIEW, "Review SQL".into(), self.review))
+            .child(self.text_button(REVIEW, "Review SQL".into(), false))
             .child(self.text_button(DISCARD, "Discard".into(), false))
             .child(self.keyed_button(APPLY, "Apply", "cmd-s", false))
             .into()
-    }
-
-    fn review_panel(&self) -> Node {
-        let colors = theme();
-        let mut list = div().col().px(10.0).py(6.0).bg(colors.panel_background);
-        list = list.child(
-            div()
-                .row()
-                .h_px(REVIEW_LINE_H + 4.0)
-                .items_center()
-                .child(
-                    label("Runs in one transaction; any error saves nothing")
-                        .size(11.5)
-                        .color(colors.text_muted),
-                )
-                .child(div().row().flex(1.0))
-                .child(self.text_button(COPY_SQL, "Copy".into(), false)),
-        );
-        for statement in self.statements() {
-            list = list.child(
-                div().row().h_px(REVIEW_LINE_H).items_center().child(
-                    label(format!("{statement};"))
-                        .size(11.5)
-                        .mono()
-                        .color(colors.text)
-                        .truncate(),
-                ),
-            );
-        }
-        list.into()
-    }
-
-    fn review_height(&self) -> f32 {
-        if self.review && !self.edits.is_empty() {
-            (self.edits.len() as f32 + 1.0) * REVIEW_LINE_H + 16.0
-        } else {
-            0.0
-        }
     }
 
     fn side_head(&self) -> Node {
@@ -1606,9 +1619,11 @@ impl TableItem {
             _ => &no_target,
         };
         let editing = self.focus == Focus::Value;
+        let (_, view_h) = self.side_pane.window();
+        let rows = ((view_h - 150.0) / self.value_editor.line_height()).max(8.0) as usize;
         let editor = editing.then(|| {
             self.value_editor
-                .render("value", self.focused, width - 20.0, 12)
+                .render("value", self.focused, width - 42.0, rows)
         });
         let row_name = self
             .row_key(row)
@@ -2177,9 +2192,8 @@ impl Item for TableItem {
             0.0
         };
         self.grid.below_header = if querying { FILTER_H + 1.0 } else { 0.0 };
-        let review_h = self.review_height();
         let above = TOOLBAR_H + 1.0 + query_h;
-        let middle_h = (main.h / scale - above - 1.0 - bottom_h - review_h).max(0.0);
+        let middle_h = (main.h / scale - above - 1.0 - bottom_h).max(0.0);
         let middle_area = Rect::new(
             main.x,
             main.y + above * scale,
@@ -2234,9 +2248,6 @@ impl Item for TableItem {
         tree = tree
             .child(middle)
             .child(div().h_px(1.0).bg(colors.border_variant));
-        if review_h > 0.0 {
-            tree = tree.child(self.review_panel());
-        }
         tree = tree.child(if self.edits.is_empty() {
             self.status_bar()
         } else {
@@ -2355,10 +2366,6 @@ impl Item for TableItem {
             }
             "enter" => {
                 self.edit_selected();
-                true
-            }
-            "escape" if self.review => {
-                self.review = false;
                 true
             }
             "up" => self.grid.move_selection(-1, 0),
@@ -2506,7 +2513,6 @@ impl Item for TableItem {
                 Ok(rows) => {
                     let count = self.edits.len();
                     self.edits.clear();
-                    self.review = false;
                     self.status = Some((
                         format!(
                             "Saved {count} {} ({rows} {})",

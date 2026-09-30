@@ -2,6 +2,7 @@
 
 use sha2::{Digest, Sha256};
 
+pub const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
 pub const EMPTY_PAYLOAD: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const ALGORITHM: &str = "AWS4-HMAC-SHA256";
 const SERVICE: &str = "s3";

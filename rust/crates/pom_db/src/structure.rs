@@ -102,6 +102,25 @@ pub fn update_statement(
     column: &str,
     value: Option<&str>,
 ) -> String {
+    update_parts(table, key, column, value).join(" ")
+}
+
+/// The same statement over three lines (UPDATE, SET, WHERE), for reading it back.
+pub fn update_statement_lines(
+    table: &Table,
+    key: &[(String, Option<String>)],
+    column: &str,
+    value: Option<&str>,
+) -> String {
+    update_parts(table, key, column, value).join("\n")
+}
+
+fn update_parts(
+    table: &Table,
+    key: &[(String, Option<String>)],
+    column: &str,
+    value: Option<&str>,
+) -> [String; 3] {
     let set = match value {
         Some(value) => quote_literal(value),
         None => "NULL".into(),
@@ -114,11 +133,11 @@ pub fn update_statement(
         })
         .collect::<Vec<_>>()
         .join(" AND ");
-    format!(
-        "UPDATE {} SET {} = {set} WHERE {condition}",
-        table.sql_name(),
-        quote_identifier(column)
-    )
+    [
+        format!("UPDATE {}", table.sql_name()),
+        format!("SET {} = {set}", quote_identifier(column)),
+        format!("WHERE {condition}"),
+    ]
 }
 
 /// The row a foreign key value points at.
@@ -147,6 +166,15 @@ pub fn reference_count_query(reference: &Reference, value: &str) -> String {
 mod tests {
     use super::*;
     use crate::TableKind;
+
+    #[test]
+    fn a_reviewed_update_reads_over_three_lines() {
+        let key = [("id".to_string(), Some("7".to_string()))];
+        assert_eq!(
+            update_statement_lines(&users(), &key, "role", Some("admin")),
+            "UPDATE \"public\".\"users\"\nSET \"role\" = 'admin'\nWHERE \"id\" = '7'"
+        );
+    }
 
     fn users() -> Table {
         Table {

@@ -23,10 +23,11 @@ pub use connect_error::{classify, ConnectError, ConnectErrorKind};
 pub use consoles::{load_consoles, save_consoles, Console, ConsoleKind};
 pub use engine::Engine;
 pub use object_storage::ObjectStore;
+pub use redis_driver::{RedisKey, RedisValue, VALUE_ITEMS};
 pub use statements::{first_keyword, statement_at, statement_ranges};
 pub use structure::{
     combined_filter, filter_condition, quote_literal, reference_count_query, referenced_row_query,
-    update_statement, ColumnInfo, Index, Reference, TableStructure,
+    update_statement, update_statement_lines, ColumnInfo, Index, Reference, TableStructure,
 };
 
 pub const DEFAULT_LIMIT: usize = 500;
@@ -504,6 +505,46 @@ impl Connector<'_> {
                 &mut self.postgres(&database.name, QUERY_TIMEOUT)?,
                 statements,
             ),
+            _ => Err(unsupported(database)),
+        }
+    }
+
+    /// Redis keys matching `pattern` with type and TTL, at most `limit` (and whether more exist).
+    pub fn redis_keys(
+        &self,
+        database: &Database,
+        pattern: &str,
+        limit: usize,
+    ) -> Result<(Vec<RedisKey>, bool), String> {
+        match database.engine {
+            Engine::Redis => redis_driver::keys(&mut self.redis(&database.name)?, pattern, limit),
+            _ => Err(unsupported(database)),
+        }
+    }
+
+    pub fn redis_value(&self, database: &Database, key: &str) -> Result<RedisValue, String> {
+        match database.engine {
+            Engine::Redis => redis_driver::value(&mut self.redis(&database.name)?, key),
+            _ => Err(unsupported(database)),
+        }
+    }
+
+    /// Sets a Redis key's TTL, or keeps it forever with `None`.
+    pub fn redis_expire(
+        &self,
+        database: &Database,
+        key: &str,
+        seconds: Option<i64>,
+    ) -> Result<(), String> {
+        match database.engine {
+            Engine::Redis => redis_driver::expire(&mut self.redis(&database.name)?, key, seconds),
+            _ => Err(unsupported(database)),
+        }
+    }
+
+    pub fn redis_delete(&self, database: &Database, key: &str) -> Result<(), String> {
+        match database.engine {
+            Engine::Redis => redis_driver::delete(&mut self.redis(&database.name)?, key),
             _ => Err(unsupported(database)),
         }
     }

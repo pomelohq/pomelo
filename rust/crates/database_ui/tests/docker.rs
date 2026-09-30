@@ -111,6 +111,7 @@ fn a_table_tab_pages_sorts_filters_and_saves_edits() {
         config_path: temp.path().join("pom.yml"),
         waker: Arc::new(|| {}),
         objects: Arc::new(database_ui::CurlTransport::default()),
+        choose_files: Arc::new(Vec::new),
     };
     let table = pom_db::Table {
         schema: "public".into(),
