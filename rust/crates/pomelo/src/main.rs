@@ -15,6 +15,7 @@ mod notifications;
 mod onboarding;
 mod updates;
 mod usage;
+mod window_bounds;
 mod workspaces;
 
 use std::sync::Arc;
@@ -490,6 +491,8 @@ struct MainWindow {
     use_branch: Option<std::sync::mpsc::Receiver<String>>,
     /// When the Services badge last checked the active workspace's services.
     services_checked: Option<Instant>,
+    /// The last frame seen while neither maximized nor fullscreen: what a restored window returns to.
+    windowed: Option<(f64, f64, f64, f64)>,
     /// Refresh-main, auto-push and the port reaper, when this process holds the session's primary lock.
     background: Option<workspaces_ui::BackgroundSync>,
 }
@@ -1486,13 +1489,18 @@ impl App {
 
     /// Create a real OS window hosting a `WorkspaceView` for `layout`, wire its renderer + macOS chrome, and
     /// register it. Returns its `WindowId`. Used both for the first window and for "Open in new window".
-    fn new_main_window(&mut self, event_loop: &ActiveEventLoop, layout: Layout) -> WindowId {
-        let mut attrs = Window::default_attributes()
-            .with_title("Pomelo")
-            .with_inner_size(LogicalSize::new(
-                self.settings.window_width,
-                self.settings.window_height,
-            ));
+    fn new_main_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        layout: Layout,
+        project: Option<&std::path::Path>,
+    ) -> WindowId {
+        let bounds = window_bounds::restore(project);
+        let mut attrs = window_bounds::apply(
+            Window::default_attributes().with_title("Pomelo"),
+            bounds,
+            event_loop,
+        );
         #[cfg(target_os = "macos")]
         {
             use winit::platform::macos::WindowAttributesExtMacOS;
@@ -1502,6 +1510,9 @@ impl App {
                 .with_title_hidden(true);
         }
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
+        window_bounds::enter_saved_mode(&window, bounds);
+        let windowed = window_bounds::windowed_frame(&window)
+            .or_else(|| bounds.map(|bounds| (bounds.x, bounds.y, bounds.width, bounds.height)));
         // Input methods (e.g. Vietnamese Telex) compose through Ime events; plain keys still arrive as input.
         window.set_ime_allowed(true);
         let id = window.id();
@@ -1547,6 +1558,7 @@ impl App {
                 use_branch: None,
                 services_checked: None,
                 background: None,
+                windowed,
             },
         );
         let bindings = self.keymap_bindings();
@@ -1672,6 +1684,7 @@ impl App {
     }
 
     fn apply_editor_defaults(&mut self) {
+        ui::set_chrome(settings_ui::chrome_flags(&self.settings));
         let fonts_changed = self.apply_fonts();
         let font_changed = files_ui::set_editor_defaults(
             self.settings.buffer_font_size,
@@ -2895,7 +2908,8 @@ impl App {
                 if !self.focus_window_with_project(&path, None) {
                     let mut layout = Layout::default();
                     apply_dock_settings(&self.settings, &mut layout);
-                    let new_id = self.new_main_window(event_loop, layout);
+                    let config = pom_core::config_in(&path);
+                    let new_id = self.new_main_window(event_loop, layout, config.as_deref());
                     self.open_folder_in(new_id, &path);
                 }
             }
@@ -3005,6 +3019,27 @@ impl App {
             .any(|m| m.entity.read(app.app()).menu_open())
     }
 
+    fn track_windowed_frame(&mut self, id: WindowId) {
+        if let Some(main) = self.mains.get_mut(&id) {
+            if let Some(frame) = window_bounds::windowed_frame(&main.window) {
+                main.windowed = Some(frame);
+            }
+        }
+    }
+
+    fn save_window_bounds(&self, id: WindowId) {
+        let Some(main) = self.mains.get(&id) else {
+            return;
+        };
+        if let Some(bounds) = window_bounds::current(&main.window, main.windowed) {
+            let project = main
+                .project
+                .as_ref()
+                .map(|project| project.config_path.as_path());
+            window_bounds::save(project, bounds);
+        }
+    }
+
     /// Persist dock geometry read from any one main view (on quit / dock change).
     fn persist_settings(&mut self) {
         if let (Some(app), Some(m)) = (self.main_app.as_ref(), self.mains.values().next()) {
@@ -3023,6 +3058,7 @@ impl ApplicationHandler for App {
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {
             self.with_workspace_view(id, |v, _| v.persist_panes(true));
+            self.save_window_bounds(id);
         }
         files_ui::flush_unsaved_writes(Duration::from_secs(5));
         auto_update::install_on_quit();
@@ -3203,7 +3239,6 @@ impl ApplicationHandler for App {
         self.reload_themes_if_changed();
         self.apply_font_scale();
         self.apply_font_weight();
-        ui::set_chrome(settings_ui::chrome_flags(&self.settings));
         self.apply_editor_defaults();
         #[cfg(target_os = "macos")]
         {
@@ -3213,10 +3248,10 @@ impl ApplicationHandler for App {
 
         let mut layout = Layout::default();
         apply_dock_settings(&self.settings, &mut layout);
-        let id = self.new_main_window(event_loop, layout);
         let explicit = std::env::var_os("POM_CONFIG").map(std::path::PathBuf::from);
         let config =
             pom_core::startup_config(&pom_paths::StateDir::from_env(), explicit.as_deref());
+        let id = self.new_main_window(event_loop, layout, config.as_deref());
         self.open_project_in(id, config);
         self.announce_update(id);
     }
@@ -3733,9 +3768,11 @@ impl ApplicationHandler for App {
             }
         }
         match event {
+            WindowEvent::Moved(_) => self.track_windowed_frame(id),
             WindowEvent::CloseRequested => {
                 self.with_workspace_view(id, |v, _| v.persist_panes(true));
                 self.persist_settings();
+                self.save_window_bounds(id);
                 if let Some(m) = self.mains.remove(&id) {
                     if let Some(app) = self.main_app.as_mut() {
                         app.close_window(m.handle);
@@ -3755,9 +3792,7 @@ impl ApplicationHandler for App {
                         center_traffic_lights(&m.window);
                     }
                 }
-                // Remember the window size (persisted on quit / dock change), not on every resize event.
-                self.settings.window_width = size.width as f32 / scale;
-                self.settings.window_height = size.height as f32 / scale;
+                self.track_windowed_frame(id);
                 self.draw_main(id);
             }
             WindowEvent::CursorMoved { position, .. } => {

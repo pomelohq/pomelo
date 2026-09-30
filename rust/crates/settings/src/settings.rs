@@ -32,8 +32,6 @@ pub struct Settings {
     pub bottom_dock_collapsed: bool,
     /// The left panel column (Files, Services, ...) is closed.
     pub panels_collapsed: bool,
-    pub window_width: f32,
-    pub window_height: f32,
     /// Dock layout ("left"/"right"/"bottom"): where the sidebar/agent/terminal and each function button live,
     /// plus which buttons are hidden. Persisted so the user's arrangement survives a restart.
     pub sidebar_side: String,
@@ -114,8 +112,6 @@ impl Default for Settings {
             panels_collapsed: false,
             right_dock_collapsed: true,
             bottom_dock_collapsed: false,
-            window_width: 1280.0,
-            window_height: 820.0,
             sidebar_side: "left".into(),
             agent_side: "right".into(),
             terminal_side: "bottom".into(),
