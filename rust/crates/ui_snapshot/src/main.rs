@@ -351,6 +351,8 @@ fn main() -> anyhow::Result<()> {
             (760.0_f32, 460.0_f32)
         } else if which == "console" {
             (900.0_f32, 280.0_f32)
+        } else if which == "table" {
+            (1240.0_f32, 620.0_f32)
         } else {
             (900.0_f32, 460.0_f32)
         };
@@ -560,6 +562,52 @@ fn main() -> anyhow::Result<()> {
             item.tick(&|| None);
             item.paint_body(body, true)
                 .ok_or_else(|| anyhow::anyhow!("no body"))?
+        } else if which == "redis" {
+            let database = pom_db::list_databases(
+                &pom_config::Config::load(&dir.join("pom.yml"))?,
+                "feat-login",
+            )
+            .into_iter()
+            .find(|database| database.engine == pom_db::Engine::Redis)
+            .ok_or_else(|| anyhow::anyhow!("no redis"))?;
+            let mut item = database_ui::TableItem::new(
+                context,
+                database,
+                table("", "session", pom_db::TableKind::Table, None),
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while item.is_busy() && std::time::Instant::now() < deadline {
+                item.tick(&|| None);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let rows = (0..24)
+                .map(|row| {
+                    let (kind, value) = match row % 3 {
+                        0 => (
+                            "string",
+                            format!("{{\"user_id\":{},\"csrf\":\"a8f{row}\"}}", 100 + row),
+                        ),
+                        1 => ("hash", "{user_id: 7, ip: 127.0.0.1}".to_string()),
+                        _ => ("list", "[job-1, job-2, job-3]".to_string()),
+                    };
+                    vec![
+                        Some(format!("session:{:04x}", 4096 + row * 37)),
+                        Some(kind.to_string()),
+                        (row % 4 != 0).then(|| format!("{}", 3600 - row * 60)),
+                        Some(value),
+                    ]
+                })
+                .collect();
+            item.show_page(
+                pom_db::QueryResult {
+                    columns: ["key", "type", "ttl", "value"].map(str::to_string).to_vec(),
+                    rows,
+                    ..pom_db::QueryResult::default()
+                },
+                None,
+            );
+            item.paint_body(body, true)
+                .ok_or_else(|| anyhow::anyhow!("no body"))?
         } else {
             let database = pom_db::list_databases(
                 &pom_config::Config::load(&dir.join("pom.yml"))?,
@@ -578,42 +626,139 @@ fn main() -> anyhow::Result<()> {
                 item.tick(&|| None);
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
+            // TABLEVIEW=structure|ddl, SIDE=row, EDITS=1, CELL=<column>: the table tab's other states.
             let names = ["Ann", "Bob", "Cy", "Di", "Ed", "Flo", "Gus", "Hal"];
+            let big_settings = format!(
+                "{{\"theme\":\"dark\",\"beta\":true,\"digest\":\"weekly\",\"locale\":\"en-US\",\"notifications\":{{\"email\":{{\"enabled\":true}},\"push\":{{\"enabled\":false}}}},\"saved_views\":[{}]}}",
+                (0..180)
+                    .map(|index| format!("{{\"name\":\"View {index}\",\"sort\":\"updated_at\"}}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             let rows = (0..40)
                 .map(|row| {
                     vec![
-                        Some((row + 1).to_string()),
+                        Some((row + 101).to_string()),
                         Some(format!(
                             "{}@example.com",
                             names[row % names.len()].to_lowercase()
                         )),
                         Some(names[row % names.len()].to_string()),
+                        Some((row % 3 + 1).to_string()),
+                        Some(if row % 3 == 0 { "admin" } else { "member" }.to_string()),
+                        match row % 5 {
+                            1 => Some(big_settings.clone()),
+                            2 => None,
+                            _ => Some(format!(
+                                "{{\"theme\":\"{}\",\"beta\":{}}}",
+                                if row % 2 == 0 { "light" } else { "dark" },
+                                row % 3 == 0
+                            )),
+                        },
                         (row % 4 != 0)
                             .then(|| format!("2026-09-{:02} 10:{:02}:00", row % 28 + 1, row % 60)),
-                        Some(if row % 3 == 0 { "admin" } else { "member" }.to_string()),
                     ]
                 })
                 .collect();
             item.show_page(
                 pom_db::QueryResult {
-                    columns: ["id", "email", "name", "last_seen_at", "role"]
-                        .map(str::to_string)
-                        .to_vec(),
+                    columns: [
+                        "id",
+                        "email",
+                        "name",
+                        "org_id",
+                        "role",
+                        "settings",
+                        "last_seen_at",
+                    ]
+                    .map(str::to_string)
+                    .to_vec(),
                     rows,
                     ..pom_db::QueryResult::default()
                 },
                 Some(1234),
             );
+            let info = |name: &str,
+                        data_type: &str,
+                        primary_key: bool,
+                        references: Option<(&str, &str)>| {
+                pom_db::ColumnInfo {
+                    name: name.into(),
+                    data_type: data_type.into(),
+                    nullable: !primary_key && name != "email",
+                    default: primary_key.then(|| "nextval('users_id_seq'::regclass)".to_string()),
+                    primary_key,
+                    references: references
+                        .map(|(table, column)| (table.to_string(), column.to_string())),
+                }
+            };
+            item.show_structure(pom_db::TableStructure {
+                columns: vec![
+                    info("id", "bigint", true, None),
+                    info("email", "varchar(255)", false, None),
+                    info("name", "varchar(120)", false, None),
+                    info("org_id", "bigint", false, Some(("orgs", "id"))),
+                    info("role", "text", false, None),
+                    info("settings", "jsonb", false, None),
+                    info("last_seen_at", "timestamptz", false, None),
+                ],
+                indexes: vec![
+                    pom_db::Index {
+                        name: "users_pkey".into(),
+                        columns: "id".into(),
+                        unique: true,
+                        primary: true,
+                    },
+                    pom_db::Index {
+                        name: "users_email_key".into(),
+                        columns: "email".into(),
+                        unique: true,
+                        primary: false,
+                    },
+                    pom_db::Index {
+                        name: "index_users_on_org_id".into(),
+                        columns: "org_id".into(),
+                        unique: false,
+                        primary: false,
+                    },
+                ],
+                referenced_by: vec![
+                    pom_db::Reference {
+                        schema: "public".into(),
+                        table: "orders".into(),
+                        column: "user_id".into(),
+                        on_delete: "cascade".into(),
+                    },
+                    pom_db::Reference {
+                        schema: "public".into(),
+                        table: "login_tokens".into(),
+                        column: "user_id".into(),
+                        on_delete: "cascade".into(),
+                    },
+                ],
+            });
+            if std::env::var_os("EDITS").is_some() {
+                item.edit_cell(3, 4, Some("admin"));
+                item.edit_cell(6, 2, Some("Gus QA"));
+            }
+            let column: usize = std::env::var("CELL")
+                .ok()
+                .and_then(|c| c.parse().ok())
+                .unwrap_or(5);
             item.paint_body(body, true);
-            item.pointer_down(
-                330.0,
-                37.0 + 27.0 + 22.0 * 2.5,
-                1,
-                terminal::Modifiers::default(),
-            );
+            item.select_cell(1, column);
+            if std::env::var("SIDE").as_deref() == Ok("row") {
+                item.show_side_row();
+            }
+            match std::env::var("TABLEVIEW").as_deref() {
+                Ok("structure") => item.show_view_structure(),
+                Ok("ddl") => item.show_ddl("CREATE TABLE \"public\".\"users\" (\n    \"id\" bigint DEFAULT nextval('users_id_seq'::regclass) NOT NULL,\n    \"email\" character varying(255) NOT NULL,\n    \"org_id\" bigint,\n    \"settings\" jsonb,\n    CONSTRAINT \"users_pkey\" PRIMARY KEY (id),\n    CONSTRAINT \"users_org_id_fkey\" FOREIGN KEY (org_id) REFERENCES orgs(id)\n);\nCREATE INDEX index_users_on_org_id ON public.users USING btree (org_id);\n"),
+                _ => {}
+            }
+            item.paint_body(body, true);
             item.pointer_move(
                 200.0,
-                37.0 + 27.0 + 22.0 * 5.5,
+                37.0 + 27.0 + 27.0 + 22.0 * 5.5,
                 terminal::Modifiers::default(),
                 true,
             );

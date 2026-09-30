@@ -8,6 +8,7 @@ use std::time::Duration;
 use pom_services::Endpoint;
 use postgres::{Client, NoTls, SimpleQueryMessage};
 
+use crate::structure::{ColumnInfo, Index, Reference, TableStructure};
 use crate::{first_keyword, Column, QueryResult, Table, TableKind};
 
 const CURSOR: &str = "pom_browse";
@@ -166,12 +167,7 @@ pub(crate) fn table_ddl(client: &mut Client, table: &Table) -> Result<String, St
     } else {
         &table.schema
     };
-    let relation = format!(
-        "(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-          WHERE n.nspname = {} AND c.relname = {})",
-        literal(schema),
-        literal(&table.name)
-    );
+    let relation = relation_of(schema, &table.name);
     if table.kind == TableKind::View {
         let definition = rows(client, &format!("SELECT pg_get_viewdef({relation}, true)"))?;
         let body = definition
@@ -249,6 +245,113 @@ pub(crate) fn table_ddl(client: &mut Client, table: &Table) -> Result<String, St
         ddl.push_str(&format!("{};\n", text(row, 0)));
     }
     Ok(ddl)
+}
+
+fn relation_of(schema: &str, table: &str) -> String {
+    format!(
+        "(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+          WHERE n.nspname = {} AND c.relname = {})",
+        literal(schema),
+        literal(table)
+    )
+}
+
+/// Columns with nullability, defaults and the column each foreign key points at; indexes; and the foreign keys
+/// elsewhere that point at this table.
+pub(crate) fn structure(client: &mut Client, table: &Table) -> Result<TableStructure, String> {
+    let schema = if table.schema.is_empty() {
+        "public"
+    } else {
+        &table.schema
+    };
+    let relation = relation_of(schema, &table.name);
+    let text = |row: &Vec<Option<String>>, index: usize| row.get(index).cloned().flatten();
+    let columns = rows(
+        client,
+        &format!(
+            "SELECT a.attname, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
+               pg_get_expr(d.adbin, d.adrelid), \
+               EXISTS (SELECT 1 FROM pg_constraint p WHERE p.conrelid = a.attrelid AND p.contype = 'p' \
+                       AND a.attnum = ANY (p.conkey)), \
+               (SELECT r.relname FROM pg_constraint f JOIN pg_class r ON r.oid = f.confrelid \
+                WHERE f.conrelid = a.attrelid AND f.contype = 'f' AND a.attnum = ANY (f.conkey) LIMIT 1), \
+               (SELECT t.attname FROM pg_constraint f JOIN pg_attribute t ON t.attrelid = f.confrelid \
+                  AND t.attnum = f.confkey[array_position(f.conkey, a.attnum)] \
+                WHERE f.conrelid = a.attrelid AND f.contype = 'f' AND a.attnum = ANY (f.conkey) LIMIT 1) \
+             FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             WHERE a.attrelid = {relation} AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
+        ),
+    )?
+    .iter()
+    .map(|row| ColumnInfo {
+        name: text(row, 0).unwrap_or_default(),
+        data_type: short_type(&text(row, 1).unwrap_or_default()),
+        nullable: text(row, 2).as_deref() == Some("t"),
+        default: text(row, 3),
+        primary_key: text(row, 4).as_deref() == Some("t"),
+        references: text(row, 5).zip(text(row, 6)),
+    })
+    .collect();
+    let indexes = rows(
+        client,
+        &format!(
+            "SELECT i.relname, x.indisunique, x.indisprimary, \
+               (SELECT string_agg(a.attname, ', ' ORDER BY k.n) FROM unnest(x.indkey) WITH ORDINALITY k(attnum, n) \
+                JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum) \
+             FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid \
+             WHERE x.indrelid = {relation} ORDER BY x.indisprimary DESC, i.relname"
+        ),
+    )?
+    .iter()
+    .map(|row| Index {
+        name: text(row, 0).unwrap_or_default(),
+        unique: text(row, 1).as_deref() == Some("t"),
+        primary: text(row, 2).as_deref() == Some("t"),
+        columns: text(row, 3).unwrap_or_default(),
+    })
+    .collect();
+    let referenced_by = rows(
+        client,
+        &format!(
+            "SELECT n.nspname, c.relname, a.attname, f.confdeltype FROM pg_constraint f \
+             JOIN pg_class c ON c.oid = f.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_attribute a ON a.attrelid = f.conrelid AND a.attnum = f.conkey[1] \
+             WHERE f.contype = 'f' AND f.confrelid = {relation} ORDER BY c.relname, a.attname"
+        ),
+    )?
+    .iter()
+    .map(|row| Reference {
+        schema: text(row, 0).unwrap_or_default(),
+        table: text(row, 1).unwrap_or_default(),
+        column: text(row, 2).unwrap_or_default(),
+        on_delete: match text(row, 3).as_deref() {
+            Some("c") => "cascade",
+            Some("n") => "set null",
+            Some("d") => "set default",
+            Some("r") => "restrict",
+            _ => "no action",
+        }
+        .into(),
+    })
+    .collect();
+    Ok(TableStructure {
+        columns,
+        indexes,
+        referenced_by,
+    })
+}
+
+/// Runs the statements in one transaction: all of them change the database, or (on the first error) none do.
+pub(crate) fn apply(client: &mut Client, statements: &[String]) -> Result<u64, String> {
+    let mut transaction = client.transaction().map_err(|error| describe(&error))?;
+    let mut changed = 0;
+    for (index, statement) in statements.iter().enumerate() {
+        changed += transaction
+            .execute(statement.as_str(), &[])
+            .map_err(|error| format!("statement {}: {}", index + 1, describe(&error)))?;
+    }
+    transaction.commit().map_err(|error| describe(&error))?;
+    Ok(changed)
 }
 
 /// The last result set (or command) of the messages, at most `limit` rows.

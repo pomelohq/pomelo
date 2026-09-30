@@ -3,6 +3,7 @@
 //! column resizing from an 8px handle at each header edge (double-click restores the width), a clicked cell
 //! selected. Only the rows that fit are built; the grid scrolls by whole rows down and by pixels sideways.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
@@ -19,12 +20,18 @@ const SAMPLE_ROWS: usize = 50;
 /// Half of the reference's 8px resize handle, on each side of the edge.
 const HANDLE_HALF: f32 = 4.0;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// A value longer than this reads as its JSON summary in the cell.
+const SUMMARIZE_OVER: usize = 2048;
+/// The follow-link arrow at a foreign key cell's right end.
+const LINK_W: f32 = 18.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Region {
     HeaderEdge(usize),
     Header(usize),
     Cell(usize, usize),
+    /// The arrow that follows a foreign key cell to the row it points at.
+    Link(usize, usize),
     RowNumber(usize),
     Outside,
 }
@@ -35,6 +42,10 @@ pub enum GridEvent {
     None,
     /// The header of this column was clicked: cycle its sort.
     Sort(usize),
+    /// A foreign key cell's arrow: open the row it points at.
+    Follow(usize, usize),
+    /// A cell was double-clicked: edit it.
+    Edit(usize, usize),
 }
 
 pub struct Grid {
@@ -52,7 +63,15 @@ pub struct Grid {
     hover_row: Option<usize>,
     hover_edge: Option<usize>,
     last_edge_click: Option<(Instant, usize)>,
+    last_cell_click: Option<(Instant, (usize, usize))>,
     area: Rect,
+    /// Columns that are foreign keys, which get the follow arrow.
+    pub links: Vec<bool>,
+    /// Cells changed but not saved yet.
+    pub edited: HashSet<(usize, usize)>,
+    /// The cell being edited, drawn with the editor node `render` is handed.
+    pub editing: Option<(usize, usize)>,
+    summaries: HashMap<(usize, usize), Option<String>>,
 }
 
 impl Default for Grid {
@@ -71,7 +90,12 @@ impl Default for Grid {
             hover_row: None,
             hover_edge: None,
             last_edge_click: None,
+            last_cell_click: None,
             area: Rect::new(0.0, 0.0, 0.0, 0.0, Rgba::TRANSPARENT),
+            links: Vec::new(),
+            edited: HashSet::new(),
+            editing: None,
+            summaries: HashMap::new(),
         }
     }
 }
@@ -98,6 +122,9 @@ impl Grid {
         let same_columns = columns == self.columns;
         self.columns = columns;
         self.rows = rows;
+        self.summaries.clear();
+        self.edited.clear();
+        self.editing = None;
         self.first_row = 0;
         self.scroll_carry = 0.0;
         self.selected = self
@@ -110,6 +137,59 @@ impl Grid {
             self.selected = None;
             self.sort = None;
         }
+    }
+
+    /// Shows a staged value in place of the loaded one.
+    pub fn set_cell(&mut self, row: usize, column: usize, value: Option<String>) {
+        if let Some(cell) = self
+            .rows
+            .get_mut(row)
+            .and_then(|cells| cells.get_mut(column))
+        {
+            *cell = value;
+            self.summaries.remove(&(row, column));
+        }
+    }
+
+    pub fn select(&mut self, row: usize, column: usize) {
+        if row < self.rows.len() && column < self.columns.len() {
+            self.selected = Some((row, column));
+        }
+    }
+
+    /// Lays the grid into `area` ahead of `render`, so its columns can be read (for a row aligned above it).
+    pub fn set_area(&mut self, area: Rect) {
+        self.area = area;
+        self.first_row = self.first_row.min(self.max_first_row());
+        let max_x = (self.total_width() - self.data_view_width()).max(0.0);
+        self.scroll_x = self.scroll_x.min(max_x);
+    }
+
+    /// The row-number column's width and each visible column's `(column, left, width)`, in design px.
+    pub fn column_slices(&self) -> (f32, Vec<(usize, f32, f32)>) {
+        (self.row_number_width(), self.visible_columns())
+    }
+
+    fn summary(&mut self, row: usize, column: usize) -> Option<String> {
+        if let Some(known) = self.summaries.get(&(row, column)) {
+            return known.clone();
+        }
+        let summary = self
+            .rows
+            .get(row)
+            .and_then(|cells| cells.get(column))
+            .and_then(|cell| cell.as_deref())
+            .filter(|text| text.len() > SUMMARIZE_OVER)
+            .and_then(|text| {
+                let parsed = crate::json::parse(text)?;
+                Some(format!(
+                    "{} {}",
+                    crate::json::summary(&parsed)?,
+                    pom_db::object_storage::format_size(text.len() as u64)
+                ))
+            });
+        self.summaries.insert((row, column), summary.clone());
+        summary
     }
 
     fn auto_widths(&self) -> Vec<f32> {
@@ -204,7 +284,20 @@ impl Grid {
             .map(|(column, _, _)| column);
         match (column, local_y < HEADER_H) {
             (Some(column), true) => Region::Header(column),
-            (Some(column), false) if row < self.rows.len() => Region::Cell(row, column),
+            (Some(column), false) if row < self.rows.len() => {
+                let linked = self.links.get(column).copied().unwrap_or(false)
+                    && self.rows[row].get(column).is_some_and(Option::is_some);
+                let right = self
+                    .visible_columns()
+                    .into_iter()
+                    .find(|(shown, _, _)| *shown == column)
+                    .map_or(0.0, |(_, left, width)| left + width);
+                if linked && local_x >= right - LINK_W {
+                    Region::Link(row, column)
+                } else {
+                    Region::Cell(row, column)
+                }
+            }
             _ => Region::Outside,
         }
     }
@@ -227,7 +320,21 @@ impl Grid {
             Region::Header(column) => GridEvent::Sort(column),
             Region::Cell(row, column) => {
                 self.selected = Some((row, column));
-                GridEvent::None
+                let now = Instant::now();
+                let double = self.last_cell_click.is_some_and(|(at, clicked)| {
+                    clicked == (row, column) && now.duration_since(at) < DOUBLE_CLICK
+                });
+                self.last_cell_click = Some((now, (row, column)));
+                if double {
+                    self.last_cell_click = None;
+                    GridEvent::Edit(row, column)
+                } else {
+                    GridEvent::None
+                }
+            }
+            Region::Link(row, column) => {
+                self.selected = Some((row, column));
+                GridEvent::Follow(row, column)
             }
             Region::RowNumber(row) => {
                 self.selected = Some((row, self.selected.map_or(0, |(_, column)| column)));
@@ -257,7 +364,9 @@ impl Grid {
     /// Hover feedback: the row under the pointer and a highlighted resize edge.
     pub fn pointer_move(&mut self, x: f32, y: f32) -> bool {
         let (row, edge) = match self.region(x, y) {
-            Region::Cell(row, _) | Region::RowNumber(row) => (Some(row), None),
+            Region::Cell(row, _) | Region::Link(row, _) | Region::RowNumber(row) => {
+                (Some(row), None)
+            }
             Region::HeaderEdge(column) => (None, Some(column)),
             _ => (None, None),
         };
@@ -334,12 +443,9 @@ impl Grid {
         self.selected
     }
 
-    /// The grid laid into `area` (window px).
-    pub fn render(&mut self, area: Rect) -> Node {
-        self.area = area;
-        self.first_row = self.first_row.min(self.max_first_row());
-        let max_x = (self.total_width() - self.data_view_width()).max(0.0);
-        self.scroll_x = self.scroll_x.min(max_x);
+    /// The grid laid into `area` (window px), with `editor` drawn in the cell being edited.
+    pub fn render(&mut self, area: Rect, mut editor: Option<Node>) -> Node {
+        self.set_area(area);
         let colors = theme();
         let number_width = self.row_number_width();
         let columns = self.visible_columns();
@@ -419,25 +525,55 @@ impl Grid {
                     ),
             );
             for (column, _, width) in &columns {
-                let value = self.rows[row].get(*column).cloned().flatten();
-                let selected = self.selected == Some((row, *column));
-                let text = match &value {
-                    Some(text) => label(text.lines().next().unwrap_or_default().to_string())
-                        .size(FONT)
-                        .mono()
-                        .color(colors.text)
-                        .truncate(),
-                    None => label("NULL").size(FONT).mono().color(colors.text_disabled),
-                };
+                let (column, width) = (*column, *width);
                 let mut cell = div()
                     .row()
-                    .w_px(*width)
+                    .w_px(width)
                     .h_px(ROW_H)
                     .px(CELL_PAD)
-                    .items_center()
-                    .child(text);
+                    .items_center();
+                if self.editing == Some((row, column)) {
+                    if let Some(editor) = editor.take() {
+                        line = line.child(cell.bg(colors.editor_background).child(editor));
+                        continue;
+                    }
+                }
+                let value = self.rows[row].get(column).cloned().flatten();
+                let selected = self.selected == Some((row, column));
+                let edited = self.edited.contains(&(row, column));
+                let summary = self.summary(row, column);
+                let text = match (&value, summary) {
+                    (Some(_), Some(summary)) => label(summary)
+                        .size(FONT)
+                        .mono()
+                        .color(colors.text_muted)
+                        .truncate(),
+                    (Some(text), None) => {
+                        label(text.lines().next().unwrap_or_default().to_string())
+                            .size(FONT)
+                            .mono()
+                            .color(if edited { colors.warning } else { colors.text })
+                            .truncate()
+                    }
+                    (None, _) => label("NULL").size(FONT).mono().color(if edited {
+                        colors.warning
+                    } else {
+                        colors.text_disabled
+                    }),
+                };
+                cell = cell.child(div().row().flex(1.0).items_center().child(text));
+                let linked = self.links.get(column).copied().unwrap_or(false) && value.is_some();
+                if linked && (selected || self.hover_row == Some(row)) {
+                    cell = cell.child(
+                        icon(IconKind::ArrowUpRight)
+                            .size(10.0)
+                            .color(colors.text_accent),
+                    );
+                }
                 if selected {
                     cell = cell.bg(colors.element_selected);
+                } else if edited {
+                    cell = cell.bg(colors.warning.alpha(0.12));
                 }
                 line = line.child(cell);
             }
@@ -465,13 +601,16 @@ mod tests {
                 })
                 .collect(),
         );
-        grid.render(Rect::new(
-            0.0,
-            0.0,
-            400.0,
-            (HEADER_H + 10.0 * ROW_H) * scale(),
-            Rgba::TRANSPARENT,
-        ));
+        grid.render(
+            Rect::new(
+                0.0,
+                0.0,
+                400.0,
+                (HEADER_H + 10.0 * ROW_H) * scale(),
+                Rgba::TRANSPARENT,
+            ),
+            None,
+        );
         grid
     }
 

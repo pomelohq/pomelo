@@ -10,6 +10,7 @@ mod postgres_driver;
 mod redis_driver;
 pub mod sigv4;
 mod statements;
+mod structure;
 
 use std::path::Path;
 use std::time::Duration;
@@ -23,6 +24,10 @@ pub use consoles::{load_consoles, save_consoles, Console, ConsoleKind};
 pub use engine::Engine;
 pub use object_storage::ObjectStore;
 pub use statements::{first_keyword, statement_at, statement_ranges};
+pub use structure::{
+    combined_filter, filter_condition, quote_literal, reference_count_query, referenced_row_query,
+    update_statement, ColumnInfo, Index, Reference, TableStructure,
+};
 
 pub const DEFAULT_LIMIT: usize = 500;
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -475,6 +480,30 @@ impl Connector<'_> {
             Engine::Postgres => {
                 postgres_driver::table_ddl(&mut self.postgres(&database.name, LIST_TIMEOUT)?, table)
             }
+            _ => Err(unsupported(database)),
+        }
+    }
+
+    pub fn table_structure(
+        &self,
+        database: &Database,
+        table: &Table,
+    ) -> Result<TableStructure, String> {
+        match database.engine {
+            Engine::Postgres => {
+                postgres_driver::structure(&mut self.postgres(&database.name, LIST_TIMEOUT)?, table)
+            }
+            _ => Err(unsupported(database)),
+        }
+    }
+
+    /// Runs the statements in one transaction; answers how many rows they changed.
+    pub fn apply(&self, database: &Database, statements: &[String]) -> Result<u64, String> {
+        match database.engine {
+            Engine::Postgres => postgres_driver::apply(
+                &mut self.postgres(&database.name, QUERY_TIMEOUT)?,
+                statements,
+            ),
             _ => Err(unsupported(database)),
         }
     }

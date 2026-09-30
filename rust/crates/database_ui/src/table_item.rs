@@ -1,22 +1,44 @@
-//! A table tab: one page of a table's rows in the grid, with WHERE / ORDER BY fields, a page size, paging
-//! ("1-500 of 1234"), sorting by clicking a column header, copying a cell and exporting the whole result as CSV.
-//! A Redis keyspace tab lists its keys instead (no filter or paging).
+//! A table tab: one page of a table's rows in the grid, with WHERE / ORDER BY fields and a filter box per column,
+//! a page size, paging ("1-500 of 1234"), sorting by clicking a column header, copying a cell and exporting the
+//! whole result as CSV. Beside the grid a Details side shows the selected cell's whole value (JSON as a tree) or
+//! its row as a record with the tables pointing at it; a foreign key opens the row it points at. Cells are edited
+//! in place and saved together in one transaction. Structure and DDL views show the table's shape.
+//! A Redis keyspace tab lists its keys instead (no filter, paging or editing).
 
-use pom_db::{Database, Engine, QueryResult, Table};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime};
+
+use pom_db::{Database, Engine, QueryResult, Table, TableKind, TableStructure};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
-use workspace::text_field::{FieldFont, TextField};
-use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::text_field::{FieldFont, TextArea, TextField};
+use workspace::{segmented, EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
+use crate::details::{
+    self, CellView, FoldTarget, JsonFold, Pane, RowField, Target, CANCEL_VALUE, COLLAPSE, COPY_DDL,
+    COPY_VALUE, EDIT_VALUE, EXPAND_ALL, FIELD_BASE, FIELD_LINK_BASE, FOLD_BASE, FOLD_END,
+    OPEN_IN_TAB, OPEN_TARGET, RANGE_END, REFERENCE_BASE, REVERT, SAVE_VALUE, SET_NULL, SIDE_CLOSE,
+    SIDE_ROW, SIDE_VALUE, STRUCTURE_LINK_BASE, STRUCTURE_REFERENCE_BASE, VALUE_AREA,
+};
 use crate::grid::{Grid, GridEvent};
+use crate::json::{self, Json};
 use crate::{DatabaseContext, Pending};
 
 const TOOLBAR_H: f32 = 36.0;
 const STATUS_H: f32 = 28.0;
+const PENDING_H: f32 = 34.0;
 const FIELD_H: f32 = 24.0;
+const FILTER_H: f32 = 26.0;
 const FIELD_FONT: f32 = 12.0;
+const SIDE_W: f32 = 360.0;
+const SIDE_HEAD_H: f32 = 36.0;
+const REVIEW_LINE_H: f32 = 18.0;
 const PAGE_SIZES: [usize; 4] = [100, 500, 1000, 5000];
 const DEFAULT_PAGE: usize = 500;
+/// A value longer than this, or on several lines, is edited in the Details side instead of in its cell.
+const INLINE_EDIT_MAX: usize = 200;
+const FILE_CHECK: Duration = Duration::from_millis(500);
 
 const WHERE_FIELD: u64 = 1;
 const ORDER_FIELD: u64 = 2;
@@ -26,12 +48,61 @@ const FIRST_PAGE: u64 = 5;
 const PREVIOUS_PAGE: u64 = 6;
 const NEXT_PAGE: u64 = 7;
 const EXPORT: u64 = 8;
+const VIEW_DATA: u64 = 10;
+const VIEW_STRUCTURE: u64 = 11;
+const VIEW_DDL: u64 = 12;
+const DETAILS: u64 = 13;
+const REVIEW: u64 = 14;
+const DISCARD: u64 = 15;
+const APPLY: u64 = 16;
+const COPY_SQL: u64 = 17;
+const FILTER_BASE: u64 = 100;
+const FILTER_END: u64 = 1000;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Focus {
     Grid,
     Where,
     Order,
+    /// The filter box of this grid column.
+    Column(usize),
+    /// The selected cell's in-place editor.
+    Cell,
+    /// The Details side's text box.
+    Value,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum View {
+    Data,
+    Structure,
+    Ddl,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Side {
+    Value,
+    Row,
+}
+
+type RowKey = Vec<(String, Option<String>)>;
+
+/// A cell changed but not saved yet, found again by its row's primary key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Edit {
+    key: RowKey,
+    column: String,
+    value: Option<String>,
+}
+
+/// A value opened in an editor tab; saving the file stages its text as an edit.
+struct OpenedValue {
+    path: PathBuf,
+    key: RowKey,
+    column: String,
+    json: bool,
+    written: String,
+    modified: Option<SystemTime>,
 }
 
 struct Page {
@@ -45,17 +116,48 @@ pub struct TableItem {
     table: Table,
     filter: TextField,
     order: TextField,
+    column_filters: HashMap<String, TextField>,
     focus: Focus,
     focused: bool,
     page_size: usize,
     offset: usize,
     total: Option<u64>,
     shown: usize,
+    /// The page as loaded, before staged edits are laid over it.
+    loaded: Vec<Vec<Option<String>>>,
     grid: Grid,
     loading: Pending<Page>,
-    exporting: Pending<(u64, std::path::PathBuf)>,
+    exporting: Pending<(u64, PathBuf)>,
     status: Option<(String, bool)>,
     hits: Vec<(Rect, u64)>,
+    hovered: Option<u64>,
+    view: View,
+    structure: Option<TableStructure>,
+    loading_structure: Pending<TableStructure>,
+    ddl: Option<Result<String, String>>,
+    loading_ddl: Pending<String>,
+    view_pane: Pane,
+    details: bool,
+    side: Side,
+    side_pane: Pane,
+    /// The cell the side last showed, whose parsed value and folds it keeps.
+    shown_cell: Option<(usize, usize)>,
+    shown_json: Option<Json>,
+    fold: JsonFold,
+    fold_targets: Vec<FoldTarget>,
+    target: Option<((String, String), Target)>,
+    loading_target: Pending<Target>,
+    counts: Option<(RowKey, Vec<Option<u64>>)>,
+    loading_counts: Pending<Vec<Option<u64>>>,
+    edits: Vec<Edit>,
+    cell_editor: TextField,
+    value_editor: TextArea,
+    review: bool,
+    applying: Pending<u64>,
+    opened: Vec<OpenedValue>,
+    files_checked: Instant,
+    requests: Vec<PanelRequest>,
+    clipboard: Option<String>,
 }
 
 impl TableItem {
@@ -74,40 +176,83 @@ impl TableItem {
         table: Table,
         filter: &str,
     ) -> TableItem {
-        let field = || {
-            let mut field = TextField::default();
-            field.set_font_size(FIELD_FONT);
-            field
-        };
         let mut item = TableItem {
             context,
             database,
             table,
             filter: field(),
             order: field(),
+            column_filters: HashMap::new(),
             focus: Focus::Grid,
             focused: false,
             page_size: DEFAULT_PAGE,
             offset: 0,
             total: None,
             shown: 0,
+            loaded: Vec::new(),
             grid: Grid::default(),
             loading: Pending::idle(),
             exporting: Pending::idle(),
             status: None,
             hits: Vec::new(),
+            hovered: None,
+            view: View::Data,
+            structure: None,
+            loading_structure: Pending::idle(),
+            ddl: None,
+            loading_ddl: Pending::idle(),
+            view_pane: Pane::default(),
+            details: true,
+            side: Side::Value,
+            side_pane: Pane::default(),
+            shown_cell: None,
+            shown_json: None,
+            fold: JsonFold::default(),
+            fold_targets: Vec::new(),
+            target: None,
+            loading_target: Pending::idle(),
+            counts: None,
+            loading_counts: Pending::idle(),
+            edits: Vec::new(),
+            cell_editor: field(),
+            value_editor: TextArea::default(),
+            review: false,
+            applying: Pending::idle(),
+            opened: Vec::new(),
+            files_checked: Instant::now(),
+            requests: Vec::new(),
+            clipboard: None,
         };
         if !filter.is_empty() {
             item.filter.set_text(filter);
             item.filter.move_to_end();
-            item.focus = Focus::Where;
         }
+        item.value_editor.set_font_size(FIELD_FONT);
         item.run();
+        if !item.is_redis() {
+            let (database, table) = (item.database.clone(), item.table.clone());
+            item.loading_structure = item
+                .context
+                .run(move |connector| connector.table_structure(&database, &table));
+        }
         item
     }
 
     fn is_redis(&self) -> bool {
         self.database.engine == Engine::Redis
+    }
+
+    fn where_clause(&self) -> String {
+        let conditions: Vec<String> = self
+            .grid
+            .columns()
+            .iter()
+            .filter_map(|name| {
+                let typed = self.column_filters.get(name)?.text();
+                pom_db::filter_condition(name, &typed)
+            })
+            .collect();
+        pom_db::combined_filter(&self.filter.text(), &conditions)
     }
 
     fn run(&mut self) {
@@ -116,7 +261,7 @@ impl TableItem {
         let (query, count) = if self.is_redis() {
             (format!("{}:*", self.table.name), None)
         } else {
-            let (filter, order) = (self.filter.text(), self.order.text());
+            let (filter, order) = (self.where_clause(), self.order.text());
             (
                 pom_db::table_query(&self.table, &filter, &order, limit, offset),
                 Some(pom_db::count_query(&self.table, &filter)),
@@ -171,7 +316,7 @@ impl TableItem {
             Some((sorted, false)) if sorted == column => None,
             _ => Some((column, true)),
         };
-        let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+        let quoted = pom_db::quote_identifier(&name);
         let order = match next {
             Some((_, true)) => format!("{quoted} ASC"),
             Some((_, false)) => format!("{quoted} DESC"),
@@ -188,7 +333,7 @@ impl TableItem {
             return;
         }
         let downloads = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
+            .map(PathBuf::from)
             .unwrap_or_default()
             .join("Downloads");
         let stem = self.table.name.replace(['/', '\\'], "_");
@@ -198,7 +343,7 @@ impl TableItem {
             path = downloads.join(format!("{stem}-{copy}.csv"));
             copy += 1;
         }
-        let sql = pom_db::table_select(&self.table, &self.filter.text(), &self.order.text());
+        let sql = pom_db::table_select(&self.table, &self.where_clause(), &self.order.text());
         let database = self.database.clone();
         self.status = Some(("Exporting...".into(), false));
         self.exporting = self.context.run(move |connector| {
@@ -208,11 +353,452 @@ impl TableItem {
         });
     }
 
-    fn field(&mut self) -> Option<&mut TextField> {
-        match self.focus {
-            Focus::Where => Some(&mut self.filter),
-            Focus::Order => Some(&mut self.order),
-            Focus::Grid => None,
+    fn column_name(&self, column: usize) -> Option<&str> {
+        self.grid.columns().get(column).map(String::as_str)
+    }
+
+    fn column_info(&self, column: usize) -> Option<&pom_db::ColumnInfo> {
+        let name = self.column_name(column)?;
+        self.structure.as_ref()?.column(name)
+    }
+
+    /// The row's primary key values as loaded, which is how its edits find it again.
+    fn row_key(&self, row: usize) -> Option<RowKey> {
+        let structure = self.structure.as_ref()?;
+        let keys = structure.primary_key();
+        if keys.is_empty() {
+            return None;
+        }
+        let cells = self.loaded.get(row)?;
+        keys.iter()
+            .map(|name| {
+                let at = self
+                    .grid
+                    .columns()
+                    .iter()
+                    .position(|column| column == name)?;
+                Some((name.to_string(), cells.get(at).cloned().flatten()))
+            })
+            .collect()
+    }
+
+    fn staged(&self, key: &RowKey, column: &str) -> Option<&Edit> {
+        self.edits
+            .iter()
+            .find(|edit| edit.key == *key && edit.column == column)
+    }
+
+    /// Why a cell can't be changed here, if it can't.
+    fn read_only(&self, column: usize) -> Option<&'static str> {
+        if self.is_redis() {
+            return Some("Redis values are read-only here");
+        }
+        if self.table.kind != TableKind::Table {
+            return Some("A view is read-only");
+        }
+        let Some(structure) = self.structure.as_ref() else {
+            return Some("Reading the table's structure...");
+        };
+        if structure.primary_key().is_empty() {
+            return Some("No primary key; edit it in a console");
+        }
+        if self
+            .column_info(column)
+            .is_some_and(|info| info.primary_key)
+        {
+            return Some("Primary key");
+        }
+        None
+    }
+
+    /// Lays the staged edits over the loaded page, marking the cells they change.
+    fn lay_edits(&mut self) {
+        self.grid.edited.clear();
+        for row in 0..self.loaded.len() {
+            let key = self.row_key(row);
+            for column in 0..self.grid.columns().len() {
+                let name = self.grid.columns()[column].clone();
+                let staged = key
+                    .as_ref()
+                    .and_then(|key| self.staged(key, &name))
+                    .map(|edit| edit.value.clone());
+                let want = match &staged {
+                    Some(value) => value.clone(),
+                    None => self.loaded[row].get(column).cloned().flatten(),
+                };
+                if self.grid.rows()[row].get(column).cloned().flatten() != want {
+                    self.grid.set_cell(row, column, want);
+                }
+                if staged.is_some() {
+                    self.grid.edited.insert((row, column));
+                }
+            }
+        }
+    }
+
+    fn stage(
+        &mut self,
+        key: RowKey,
+        column: String,
+        value: Option<String>,
+        original: Option<String>,
+    ) {
+        self.edits
+            .retain(|edit| !(edit.key == key && edit.column == column));
+        if value != original {
+            self.edits.push(Edit { key, column, value });
+        }
+        self.lay_edits();
+    }
+
+    fn stage_cell(&mut self, row: usize, column: usize, value: Option<String>) {
+        let (Some(key), Some(name)) = (self.row_key(row), self.column_name(column)) else {
+            return;
+        };
+        let name = name.to_string();
+        let original = self
+            .loaded
+            .get(row)
+            .and_then(|cells| cells.get(column))
+            .cloned()
+            .flatten();
+        self.stage(key, name, value, original);
+    }
+
+    fn current(&self, row: usize, column: usize) -> Option<String> {
+        self.grid.rows().get(row)?.get(column).cloned().flatten()
+    }
+
+    /// Starts editing the selected cell: in place for a short one-line value, else in the Details side.
+    fn edit_selected(&mut self) {
+        let Some((row, column)) = self.grid.selected() else {
+            return;
+        };
+        if let Some(reason) = self.read_only(column) {
+            self.status = Some((reason.to_string(), false));
+            return;
+        }
+        let value = self.current(row, column).unwrap_or_default();
+        let long = value.len() > INLINE_EDIT_MAX
+            || value.contains('\n')
+            || self
+                .column_info(column)
+                .is_some_and(|info| info.data_type.contains("json"));
+        if long {
+            self.details = true;
+            self.side = Side::Value;
+            self.value_editor.set_text(&value);
+            self.focus = Focus::Value;
+        } else {
+            self.cell_editor.set_text(&value);
+            self.cell_editor.select_all();
+            self.grid.editing = Some((row, column));
+            self.focus = Focus::Cell;
+        }
+    }
+
+    fn keep_cell_edit(&mut self) {
+        if let Some((row, column)) = self.grid.editing.take() {
+            let text = self.cell_editor.text();
+            self.stage_cell(row, column, Some(text));
+        }
+        self.focus = Focus::Grid;
+    }
+
+    fn keep_value_edit(&mut self) {
+        if let Some((row, column)) = self.grid.selected() {
+            let text = self.value_editor.text();
+            self.stage_cell(row, column, Some(text));
+        }
+        self.focus = Focus::Grid;
+    }
+
+    fn statements(&self) -> Vec<String> {
+        self.edits
+            .iter()
+            .map(|edit| {
+                pom_db::update_statement(
+                    &self.table,
+                    &edit.key,
+                    &edit.column,
+                    edit.value.as_deref(),
+                )
+            })
+            .collect()
+    }
+
+    fn apply(&mut self) {
+        if self.edits.is_empty() || self.applying.busy() {
+            return;
+        }
+        let statements = self.statements();
+        let database = self.database.clone();
+        self.status = Some(("Saving...".into(), false));
+        self.applying = self
+            .context
+            .run(move |connector| connector.apply(&database, &statements));
+    }
+
+    fn reveal_table(&mut self, name: &str, filter: String) {
+        let table = Table {
+            schema: self.table.schema.clone(),
+            name: name.to_string(),
+            kind: TableKind::Table,
+            count: None,
+        };
+        let id = if filter.is_empty() {
+            TableItem::item_id(&self.database, &table)
+        } else {
+            format!("{}:{filter}", TableItem::item_id(&self.database, &table))
+        };
+        let (context, database) = (self.context.clone(), self.database.clone());
+        self.requests.push(PanelRequest::Reveal {
+            id,
+            open: Box::new(move || {
+                Some(Box::new(TableItem::filtered(
+                    context, database, table, &filter,
+                )))
+            }),
+        });
+    }
+
+    /// Opens the row a foreign key cell points at, in that table's tab.
+    fn follow(&mut self, row: usize, column: usize) {
+        let Some((table, target)) = self
+            .column_info(column)
+            .and_then(|info| info.references.clone())
+        else {
+            return;
+        };
+        let Some(value) = self.current(row, column) else {
+            return;
+        };
+        let filter = format!(
+            "{} = {}",
+            pom_db::quote_identifier(&target),
+            pom_db::quote_literal(&value)
+        );
+        self.reveal_table(&table, filter);
+    }
+
+    fn open_reference(&mut self, index: usize, filtered: bool) {
+        let Some(reference) = self
+            .structure
+            .as_ref()
+            .and_then(|structure| structure.referenced_by.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let value = filtered
+            .then(|| {
+                let (row, _) = self.grid.selected()?;
+                let key = self.row_key(row)?;
+                key.into_iter().next()?.1
+            })
+            .flatten();
+        let filter = match value {
+            Some(value) => format!(
+                "{} = {}",
+                pom_db::quote_identifier(&reference.column),
+                pom_db::quote_literal(&value)
+            ),
+            None => String::new(),
+        };
+        self.reveal_table(&reference.table, filter);
+    }
+
+    /// Writes the selected value to a file and opens it in an editor tab; saving the file stages it.
+    fn open_in_tab(&mut self) {
+        let Some((row, column)) = self.grid.selected() else {
+            return;
+        };
+        let Some(value) = self.current(row, column) else {
+            return;
+        };
+        let name = self.column_name(column).unwrap_or_default().to_string();
+        let parsed = json::parse(&value);
+        let text = parsed.as_ref().map_or(value.clone(), json::pretty);
+        let key = self.row_key(row).unwrap_or_default();
+        let key_text: Vec<String> = key
+            .iter()
+            .map(|(_, value)| value.clone().unwrap_or_else(|| "null".into()))
+            .collect();
+        let stem = format!(
+            "{}-{}-{}-{}",
+            self.database.name,
+            self.table.name,
+            if key_text.is_empty() {
+                format!("row{}", row + 1)
+            } else {
+                key_text.join("-")
+            },
+            name
+        );
+        let safe: String = stem
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let path = self.context.state.path("db-values").join(format!(
+            "{safe}.{}",
+            if parsed.is_some() { "json" } else { "txt" }
+        ));
+        let written = std::fs::create_dir_all(path.parent().unwrap_or(&path))
+            .and_then(|()| std::fs::write(&path, &text));
+        if let Err(error) = written {
+            self.status = Some((format!("Could not open it in a tab: {error}"), true));
+            return;
+        }
+        let modified = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok();
+        self.opened.retain(|opened| opened.path != path);
+        if self.read_only(column).is_none() {
+            self.opened.push(OpenedValue {
+                path: path.clone(),
+                key,
+                column: name,
+                json: parsed.is_some(),
+                written: text,
+                modified,
+            });
+            self.status = Some(("Saving the tab stages the change here".into(), false));
+        }
+        self.requests.push(PanelRequest::OpenFile(path));
+    }
+
+    /// Stages what was saved in a value's editor tab.
+    fn check_opened(&mut self) -> bool {
+        if self.opened.is_empty() || self.files_checked.elapsed() < FILE_CHECK {
+            return false;
+        }
+        self.files_checked = Instant::now();
+        let mut staged = Vec::new();
+        for opened in &mut self.opened {
+            let modified = std::fs::metadata(&opened.path)
+                .and_then(|meta| meta.modified())
+                .ok();
+            if modified == opened.modified {
+                continue;
+            }
+            opened.modified = modified;
+            let Ok(text) = std::fs::read_to_string(&opened.path) else {
+                continue;
+            };
+            if text == opened.written {
+                continue;
+            }
+            opened.written = text.clone();
+            staged.push((opened.key.clone(), opened.column.clone(), text, opened.json));
+        }
+        let mut changed = false;
+        for (key, column, text, is_json) in staged {
+            if is_json && json::parse(&text).is_none() {
+                self.status = Some((format!("{column}: the saved file is not valid JSON"), true));
+                changed = true;
+                continue;
+            }
+            let row = (0..self.loaded.len()).find(|row| self.row_key(*row).as_ref() == Some(&key));
+            let original = row
+                .and_then(|row| {
+                    let at = self
+                        .grid
+                        .columns()
+                        .iter()
+                        .position(|name| *name == column)?;
+                    self.loaded[row].get(at).cloned()
+                })
+                .flatten();
+            self.stage(
+                key,
+                column.clone(),
+                Some(text.trim_end().to_string()),
+                original,
+            );
+            self.status = Some((format!("Staged {column} from its tab"), false));
+            changed = true;
+        }
+        changed
+    }
+
+    /// Loads what the side needs for the selected cell: its parsed value, the row a foreign key points at, and
+    /// how many rows of other tables point at its row.
+    fn follow_selection(&mut self) {
+        let selected = self.grid.selected();
+        if selected != self.shown_cell {
+            self.shown_cell = selected;
+            self.fold = JsonFold::default();
+            self.side_pane.scroll = 0.0;
+            self.shown_json = selected
+                .and_then(|(row, column)| self.current(row, column))
+                .filter(|value| value.starts_with(['{', '[']))
+                .and_then(|value| json::parse(&value));
+            if self.focus == Focus::Value {
+                self.focus = Focus::Grid;
+            }
+        }
+        if !self.details || self.is_redis() {
+            return;
+        }
+        let Some((row, column)) = selected else {
+            return;
+        };
+        if self.side == Side::Value {
+            let references = self
+                .column_info(column)
+                .and_then(|info| info.references.clone());
+            if let (Some((table, target)), Some(value)) = (references, self.current(row, column)) {
+                let wanted = (table.clone(), value.clone());
+                if self.target.as_ref().map(|(key, _)| key) != Some(&wanted) {
+                    self.target = Some((wanted, Target::Loading));
+                    let (database, schema) = (self.database.clone(), self.table.schema.clone());
+                    self.loading_target = self.context.run(move |connector| {
+                        let sql = pom_db::referenced_row_query(&schema, &table, &target, &value);
+                        let found = connector.query(&database, &sql, 1)?;
+                        Ok(match found.rows.into_iter().next() {
+                            Some(cells) => Target::Found {
+                                table,
+                                fields: found.columns.into_iter().zip(cells).collect(),
+                            },
+                            None => {
+                                Target::Missing(format!("No {table} row has {target} = {value}"))
+                            }
+                        })
+                    });
+                }
+            }
+        } else if let (Some(key), Some(structure)) = (self.row_key(row), self.structure.as_ref()) {
+            if !structure.referenced_by.is_empty()
+                && self.counts.as_ref().map(|(counted, _)| counted) != Some(&key)
+            {
+                let value = key
+                    .first()
+                    .and_then(|(_, value)| value.clone())
+                    .unwrap_or_default();
+                let references = structure.referenced_by.clone();
+                self.counts = Some((key, vec![None; references.len()]));
+                let database = self.database.clone();
+                self.loading_counts = self.context.run(move |connector| {
+                    Ok(references
+                        .iter()
+                        .map(|reference| {
+                            let sql = pom_db::reference_count_query(reference, &value);
+                            connector
+                                .query(&database, &sql, 1)
+                                .ok()
+                                .and_then(|counted| {
+                                    counted.rows.first()?.first()?.clone()?.parse().ok()
+                                })
+                        })
+                        .collect())
+                });
+            }
         }
     }
 
@@ -239,7 +825,144 @@ impl TableItem {
                 self.run();
             }
             EXPORT => self.export(),
+            VIEW_DATA => self.view = View::Data,
+            VIEW_STRUCTURE => self.view = View::Structure,
+            VIEW_DDL => {
+                self.view = View::Ddl;
+                if self.ddl.is_none() && !self.loading_ddl.busy() {
+                    let (database, table) = (self.database.clone(), self.table.clone());
+                    self.loading_ddl = self
+                        .context
+                        .run(move |connector| connector.table_ddl(&database, &table));
+                }
+            }
+            DETAILS | SIDE_CLOSE => self.details = !self.details,
+            SIDE_VALUE => self.side = Side::Value,
+            SIDE_ROW => self.side = Side::Row,
+            REVIEW => self.review = !self.review,
+            DISCARD => {
+                self.edits.clear();
+                self.review = false;
+                self.lay_edits();
+            }
+            APPLY => self.apply(),
+            COPY_SQL => self.clipboard = Some(self.statements().join(";\n") + ";"),
+            EDIT_VALUE if self.focus != Focus::Value => self.edit_selected(),
+            VALUE_AREA
+                if self.focus != Focus::Value
+                    && self
+                        .grid
+                        .selected()
+                        .is_some_and(|(_, column)| self.read_only(column).is_none()) =>
+            {
+                self.edit_selected()
+            }
+            SAVE_VALUE => self.keep_value_edit(),
+            CANCEL_VALUE => self.focus = Focus::Grid,
+            SET_NULL => {
+                if let Some((row, column)) = self.grid.selected() {
+                    self.stage_cell(row, column, None);
+                }
+            }
+            REVERT => {
+                if let Some((row, column)) = self.grid.selected() {
+                    let original = self
+                        .loaded
+                        .get(row)
+                        .and_then(|cells| cells.get(column))
+                        .cloned()
+                        .flatten();
+                    self.stage_cell(row, column, original);
+                }
+            }
+            COPY_VALUE => {
+                if let Some((row, column)) = self.grid.selected() {
+                    self.clipboard = Some(self.current(row, column).unwrap_or_default());
+                }
+            }
+            OPEN_IN_TAB => self.open_in_tab(),
+            EXPAND_ALL => {
+                if let Some(value) = &self.shown_json {
+                    self.fold.expand_all(value);
+                }
+            }
+            COLLAPSE => self.fold.collapse(),
+            OPEN_TARGET => {
+                if let Some((row, column)) = self.grid.selected() {
+                    self.follow(row, column);
+                }
+            }
+            COPY_DDL => {
+                if let Some(Ok(ddl)) = &self.ddl {
+                    self.clipboard = Some(ddl.clone());
+                }
+            }
+            id if (FOLD_BASE..FOLD_END).contains(&id) => {
+                match self.fold_targets.get((id - FOLD_BASE) as usize).cloned() {
+                    Some(FoldTarget::Toggle(path, open)) => {
+                        if open {
+                            self.fold.open.remove(&path);
+                            self.fold.closed.insert(path);
+                        } else {
+                            self.fold.closed.remove(&path);
+                            self.fold.open.insert(path);
+                        }
+                    }
+                    Some(FoldTarget::More(path)) => {
+                        self.fold.more.insert(path);
+                    }
+                    None => {}
+                }
+            }
+            id if (FIELD_LINK_BASE..REFERENCE_BASE).contains(&id) => {
+                if let Some((row, _)) = self.grid.selected() {
+                    self.follow(row, (id - FIELD_LINK_BASE) as usize);
+                }
+            }
+            id if (FIELD_BASE..FIELD_LINK_BASE).contains(&id) => {
+                if let Some((row, _)) = self.grid.selected() {
+                    self.grid.select(row, (id - FIELD_BASE) as usize);
+                }
+            }
+            id if (REFERENCE_BASE..STRUCTURE_REFERENCE_BASE).contains(&id) => {
+                self.open_reference((id - REFERENCE_BASE) as usize, true);
+            }
+            id if (STRUCTURE_REFERENCE_BASE..STRUCTURE_LINK_BASE).contains(&id) => {
+                self.open_reference((id - STRUCTURE_REFERENCE_BASE) as usize, false);
+            }
+            id if (STRUCTURE_LINK_BASE..RANGE_END).contains(&id) => {
+                let target = self
+                    .structure
+                    .as_ref()
+                    .and_then(|structure| {
+                        structure.columns.get((id - STRUCTURE_LINK_BASE) as usize)
+                    })
+                    .and_then(|column| column.references.clone());
+                if let Some((table, _)) = target {
+                    self.reveal_table(&table, String::new());
+                }
+            }
+            id if (FILTER_BASE..FILTER_END).contains(&id) => {
+                let column = (id - FILTER_BASE) as usize;
+                if let Some(name) = self.column_name(column).map(str::to_string) {
+                    self.column_filters.entry(name).or_insert_with(field);
+                    self.focus = Focus::Column(column);
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn field(&mut self) -> Option<&mut TextField> {
+        match self.focus {
+            Focus::Where => Some(&mut self.filter),
+            Focus::Order => Some(&mut self.order),
+            Focus::Cell => Some(&mut self.cell_editor),
+            Focus::Column(column) => {
+                let name = self.grid.columns().get(column)?.clone();
+                Some(self.column_filters.entry(name).or_insert_with(field))
+            }
+            Focus::Grid | Focus::Value => None,
         }
     }
 
@@ -259,13 +982,16 @@ impl TableItem {
             }));
         if enabled {
             button = button.on_click(id);
+            if self.hovered == Some(id) {
+                button = button.bg(colors.ghost_element_hover);
+            }
         }
         button.into()
     }
 
-    fn text_button(&self, id: u64, text: String) -> Node {
+    fn text_button(&self, id: u64, text: String, on: bool) -> Node {
         let colors = theme();
-        div()
+        let mut button = div()
             .row()
             .h_px(22.0)
             .px(6.0)
@@ -273,8 +999,13 @@ impl TableItem {
             .items_center()
             .border(1.0, colors.border_variant)
             .on_click(id)
-            .child(label(text).size(12.0).color(colors.text))
-            .into()
+            .child(label(text).size(12.0).color(colors.text));
+        if on {
+            button = button.bg(colors.element_selected);
+        } else if self.hovered == Some(id) {
+            button = button.bg(colors.ghost_element_hover);
+        }
+        button.into()
     }
 
     fn input(
@@ -343,37 +1074,120 @@ impl TableItem {
         if self.is_redis() {
             bar = bar.child(div().row().flex(1.0));
         } else {
-            bar = bar
-                .child(self.input(
-                    WHERE_FIELD,
-                    "WHERE",
-                    &self.filter,
-                    "id > 10",
-                    self.focus == Focus::Where,
-                ))
-                .child(self.input(
-                    ORDER_FIELD,
-                    "ORDER BY",
-                    &self.order,
-                    "created_at DESC",
-                    self.focus == Focus::Order,
-                ))
-                .child(self.text_button(PAGE_SIZE, format!("{} rows", self.page_size)));
+            if self.view == View::Data {
+                bar = bar
+                    .child(self.input(
+                        WHERE_FIELD,
+                        "WHERE",
+                        &self.filter,
+                        "id > 10",
+                        self.focus == Focus::Where,
+                    ))
+                    .child(self.input(
+                        ORDER_FIELD,
+                        "ORDER BY",
+                        &self.order,
+                        "created_at DESC",
+                        self.focus == Focus::Order,
+                    ))
+                    .child(self.text_button(PAGE_SIZE, format!("{} rows", self.page_size), false));
+            } else {
+                bar = bar.child(div().row().flex(1.0));
+            }
+            let views = [
+                (VIEW_DATA, "Data"),
+                (VIEW_STRUCTURE, "Structure"),
+                (VIEW_DDL, "DDL"),
+            ];
+            let selected = match self.view {
+                View::Data => 0,
+                View::Structure => 1,
+                View::Ddl => 2,
+            };
+            bar = bar.child(segmented(&views, selected, self.hovered));
+        }
+        if self.view == View::Data {
+            bar = bar.child(self.text_button(DETAILS, "Details".into(), self.details));
         }
         bar.child(self.icon_button(REFRESH, IconKind::RotateCw, true))
             .into()
     }
 
+    /// A filter box under each visible column, lined up with the grid below.
+    fn filter_row(&self) -> Node {
+        let colors = theme();
+        let (number_width, slices) = self.grid.column_slices();
+        let mut row = div()
+            .row()
+            .h_px(FILTER_H)
+            .items_center()
+            .bg(colors.editor_background)
+            .child(
+                div()
+                    .w_px(number_width)
+                    .h_px(FILTER_H)
+                    .bg(colors.panel_background),
+            );
+        for (column, _, width) in slices {
+            let name = &self.grid.columns()[column];
+            let focused = self.focus == Focus::Column(column) && self.focused;
+            let box_: Node = match self.column_filters.get(name) {
+                Some(filter) if focused || !filter.text().is_empty() => filter.render(
+                    "filter",
+                    focused,
+                    colors.text,
+                    FIELD_H - 8.0,
+                    FieldFont::Mono,
+                ),
+                _ => label("filter")
+                    .size(11.0)
+                    .mono()
+                    .color(colors.text_placeholder)
+                    .truncate()
+                    .into(),
+            };
+            row = row.child(
+                div()
+                    .row()
+                    .w_px(width)
+                    .h_px(FILTER_H)
+                    .px(2.0)
+                    .items_center()
+                    .child(
+                        div()
+                            .row()
+                            .flex(1.0)
+                            .h_px(FIELD_H - 4.0)
+                            .px(6.0)
+                            .items_center()
+                            .rounded(3.0)
+                            .border(
+                                1.0,
+                                if focused {
+                                    colors.border_focused
+                                } else {
+                                    colors.border_variant
+                                },
+                            )
+                            .on_click(FILTER_BASE + column as u64)
+                            .child(box_),
+                    ),
+            );
+        }
+        row.into()
+    }
+
     fn status_bar(&self) -> Node {
         let colors = theme();
         let mut bar = div().row().h_px(STATUS_H).px(8.0).gap(4.0).items_center();
-        if !self.is_redis() {
+        let data = self.view == View::Data;
+        if !self.is_redis() && data {
             bar = bar
                 .child(self.icon_button(FIRST_PAGE, IconKind::ChevronLeft, self.offset > 0))
                 .child(self.icon_button(PREVIOUS_PAGE, IconKind::ArrowLeft, self.offset > 0))
                 .child(label(self.page_label()).size(12.0).color(colors.text_muted))
                 .child(self.icon_button(NEXT_PAGE, IconKind::ArrowRight, self.can_go_next()));
-        } else {
+        } else if data {
             bar = bar.child(label(self.page_label()).size(12.0).color(colors.text_muted));
         }
         let (status, error) = if self.loading.busy() {
@@ -393,10 +1207,263 @@ impl TableItem {
                     .truncate(),
             ),
         );
-        if !self.is_redis() {
-            bar = bar.child(self.text_button(EXPORT, "Export CSV".into()));
+        if !self.is_redis() && data {
+            bar = bar.child(self.text_button(EXPORT, "Export CSV".into(), false));
         }
         bar.into()
+    }
+
+    /// Staged edits waiting to be saved: how many, into which database, and the three ways out.
+    fn pending_bar(&self) -> Node {
+        let colors = theme();
+        let count = self.edits.len();
+        let (status, error) = if self.applying.busy() {
+            ("Saving...".to_string(), false)
+        } else {
+            self.status.clone().unwrap_or_default()
+        };
+        div()
+            .row()
+            .h_px(PENDING_H)
+            .px(10.0)
+            .gap(8.0)
+            .items_center()
+            .bg(colors.warning.alpha(0.07))
+            .child(
+                label(format!(
+                    "{count} {}",
+                    if count == 1 { "change" } else { "changes" }
+                ))
+                .size(12.5)
+                .medium()
+                .color(colors.warning),
+            )
+            .child(
+                label(format!("not saved - into {}", self.database.name))
+                    .size(12.0)
+                    .color(colors.text_muted),
+            )
+            .child(
+                div().row().flex(1.0).pl(8.0).items_center().child(
+                    label(status)
+                        .size(12.0)
+                        .color(if error {
+                            colors.error
+                        } else {
+                            colors.text_muted
+                        })
+                        .truncate(),
+                ),
+            )
+            .child(self.text_button(REVIEW, "Review SQL".into(), self.review))
+            .child(self.text_button(DISCARD, "Discard".into(), false))
+            .child(self.text_button(APPLY, "Apply".into(), false))
+            .into()
+    }
+
+    fn review_panel(&self) -> Node {
+        let colors = theme();
+        let mut list = div().col().px(10.0).py(6.0).bg(colors.panel_background);
+        list = list.child(
+            div()
+                .row()
+                .h_px(REVIEW_LINE_H + 4.0)
+                .items_center()
+                .child(
+                    label("Runs in one transaction; any error saves nothing")
+                        .size(11.5)
+                        .color(colors.text_muted),
+                )
+                .child(div().row().flex(1.0))
+                .child(self.text_button(COPY_SQL, "Copy".into(), false)),
+        );
+        for statement in self.statements() {
+            list = list.child(
+                div().row().h_px(REVIEW_LINE_H).items_center().child(
+                    label(format!("{statement};"))
+                        .size(11.5)
+                        .mono()
+                        .color(colors.text)
+                        .truncate(),
+                ),
+            );
+        }
+        list.into()
+    }
+
+    fn review_height(&self) -> f32 {
+        if self.review && !self.edits.is_empty() {
+            (self.edits.len() as f32 + 1.0) * REVIEW_LINE_H + 16.0
+        } else {
+            0.0
+        }
+    }
+
+    fn side_head(&self) -> Node {
+        let colors = theme();
+        let modes = [(SIDE_VALUE, "Value"), (SIDE_ROW, "Row")];
+        div()
+            .row()
+            .h_px(SIDE_HEAD_H)
+            .px(10.0)
+            .gap(8.0)
+            .items_center()
+            .child(segmented(
+                &modes,
+                usize::from(self.side == Side::Row),
+                self.hovered,
+            ))
+            .child(div().row().flex(1.0))
+            .child(
+                div()
+                    .row()
+                    .w_px(22.0)
+                    .h_px(22.0)
+                    .rounded(4.0)
+                    .items_center()
+                    .justify_center()
+                    .on_click(SIDE_CLOSE)
+                    .bg(if self.hovered == Some(SIDE_CLOSE) {
+                        colors.ghost_element_hover
+                    } else {
+                        Rgba::TRANSPARENT
+                    })
+                    .child(icon(IconKind::Close).size(11.0).color(colors.icon_muted)),
+            )
+            .into()
+    }
+
+    fn side_content(&mut self, width: f32) -> Node {
+        let colors = theme();
+        self.fold_targets.clear();
+        let Some((row, column)) = self.grid.selected() else {
+            return div()
+                .col()
+                .p(12.0)
+                .child(
+                    label("Select a cell to see its whole value")
+                        .size(12.0)
+                        .color(colors.text_muted),
+                )
+                .into();
+        };
+        if self.side == Side::Row {
+            let key = self.row_key(row);
+            let fields: Vec<RowField<'_>> = self
+                .grid
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    let value = self.grid.rows()[row]
+                        .get(index)
+                        .and_then(|cell| cell.as_deref());
+                    let summary = value
+                        .filter(|text| text.starts_with(['{', '[']) && text.len() > 120)
+                        .and_then(json::parse)
+                        .and_then(|parsed| json::summary(&parsed));
+                    RowField {
+                        name,
+                        value,
+                        edited: self.grid.edited.contains(&(row, index)),
+                        linked: value.is_some()
+                            && self
+                                .structure
+                                .as_ref()
+                                .and_then(|structure| structure.column(name))
+                                .is_some_and(|info| info.references.is_some()),
+                        summary,
+                    }
+                })
+                .collect();
+            let references: Vec<(String, Option<u64>)> = self
+                .structure
+                .as_ref()
+                .map(|structure| {
+                    structure
+                        .referenced_by
+                        .iter()
+                        .enumerate()
+                        .map(|(index, reference)| {
+                            let count = self
+                                .counts
+                                .as_ref()
+                                .filter(|(counted, _)| key.as_ref() == Some(counted))
+                                .and_then(|(_, counts)| counts.get(index).copied().flatten());
+                            (format!("{}.{}", reference.table, reference.column), count)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            return div()
+                .col()
+                .p(10.0)
+                .child(details::row_view(
+                    &fields,
+                    Some(column),
+                    &references,
+                    self.hovered,
+                ))
+                .into();
+        }
+        let info = self.column_info(column).cloned();
+        let name = self.column_name(column).unwrap_or_default().to_string();
+        let value = self.current(row, column);
+        let read_only = self.read_only(column);
+        let no_target = Target::None;
+        let target = match (
+            &self.target,
+            info.as_ref().and_then(|info| info.references.as_ref()),
+        ) {
+            (Some(((table, wanted), target)), Some((references, _)))
+                if table == references && value.as_deref() == Some(wanted.as_str()) =>
+            {
+                target
+            }
+            _ => &no_target,
+        };
+        let editor = (self.focus == Focus::Value).then(|| {
+            let rows = 12;
+            self.value_editor
+                .render("value", self.focused, width - 20.0, rows)
+        });
+        let cell = CellView {
+            column: &name,
+            data_type: info.as_ref().map_or("", |info| info.data_type.as_str()),
+            primary_key: info.as_ref().is_some_and(|info| info.primary_key),
+            value: value.as_deref(),
+            edited: self.grid.edited.contains(&(row, column)),
+            row,
+            read_only,
+            references: info.as_ref().and_then(|info| info.references.as_ref()),
+            target,
+            json: self.shown_json.as_ref(),
+        };
+        let head = details::value_head(&cell, editor, width - 20.0, self.hovered);
+        let head_h = ui::measure(&head).1 + 10.0 + 6.0;
+        let mut content = div().col().p(10.0).gap(6.0).child(head);
+        if self.focus != Focus::Value {
+            if let Some(parsed) = &self.shown_json {
+                let (scroll, view) = self.side_pane.window();
+                let tree = details::json_tree(
+                    parsed,
+                    &self.fold,
+                    (scroll - head_h, view),
+                    &mut self.fold_targets,
+                    self.hovered,
+                );
+                content = content.child(
+                    div()
+                        .col()
+                        .rounded(6.0)
+                        .border(1.0, colors.border_variant)
+                        .bg(colors.editor_background)
+                        .px(6.0)
+                        .child(tree),
+                );
+            }
+        }
+        content.into()
     }
 
     /// Rows shown, the total when counted, and the first row's first cell (tests).
@@ -421,11 +1488,87 @@ impl TableItem {
         self.rerun_from_start();
     }
 
+    /// Types into a column's filter box and runs it, as Enter there does (tests).
+    pub fn set_column_filter(&mut self, column: &str, typed: &str) {
+        let mut filter = field();
+        filter.set_text(typed);
+        self.column_filters.insert(column.to_string(), filter);
+        self.rerun_from_start();
+    }
+
+    /// Stages a new value for a cell, as editing it does (tests).
+    pub fn edit_cell(&mut self, row: usize, column: usize, value: Option<&str>) {
+        self.stage_cell(row, column, value.map(str::to_string));
+    }
+
+    /// Saves the staged edits, as Apply does (tests).
+    pub fn apply_edits(&mut self) {
+        self.apply();
+    }
+
+    /// The staged edits as the statements Apply would run (tests).
+    pub fn pending_statements(&self) -> Vec<String> {
+        self.statements()
+    }
+
+    /// The table's shape once read (tests).
+    pub fn structure(&self) -> Option<&TableStructure> {
+        self.structure.as_ref()
+    }
+
     /// Shows a page as if the query had returned it (previews and tests).
     pub fn show_page(&mut self, result: QueryResult, total: Option<u64>) {
         self.loading = Pending::idle();
         self.status = None;
         self.apply_page(Ok(Page { result, total }));
+    }
+
+    /// Selects a cell, as clicking it does (previews and tests).
+    pub fn select_cell(&mut self, row: usize, column: usize) {
+        self.grid.select(row, column);
+    }
+
+    /// Switches the Details side to the selected row's record (previews and tests).
+    pub fn show_side_row(&mut self) {
+        self.side = Side::Row;
+    }
+
+    /// Switches to the Structure view (previews and tests).
+    pub fn show_view_structure(&mut self) {
+        self.view = View::Structure;
+    }
+
+    /// Switches to the DDL view showing `ddl` (previews and tests).
+    pub fn show_ddl(&mut self, ddl: &str) {
+        self.view = View::Ddl;
+        self.ddl = Some(Ok(ddl.to_string()));
+    }
+
+    /// Shows the table's structure as if it had been read (previews and tests).
+    pub fn show_structure(&mut self, structure: TableStructure) {
+        self.loading_structure = Pending::idle();
+        self.set_structure(structure);
+    }
+
+    fn set_structure(&mut self, structure: TableStructure) {
+        self.structure = Some(structure);
+        self.mark_links();
+        self.lay_edits();
+    }
+
+    fn mark_links(&mut self) {
+        let links: Vec<bool> = self
+            .grid
+            .columns()
+            .iter()
+            .map(|name| {
+                self.structure
+                    .as_ref()
+                    .and_then(|structure| structure.column(name))
+                    .is_some_and(|info| info.references.is_some())
+            })
+            .collect();
+        self.grid.links = links;
     }
 
     fn apply_page(&mut self, page: Result<Page, String>) {
@@ -434,7 +1577,11 @@ impl TableItem {
                 self.shown = page.result.rows.len();
                 self.total = page.total;
                 let affected = page.result.rows_affected;
+                self.loaded = page.result.rows.clone();
                 self.grid.set_data(page.result.columns, page.result.rows);
+                self.shown_cell = None;
+                self.mark_links();
+                self.lay_edits();
                 if let Some(count) = affected {
                     self.status = Some((format!("{count} rows affected"), false));
                 }
@@ -454,6 +1601,8 @@ impl TableItem {
             "right" if cmd => EditKey::End,
             "left" if alt => EditKey::WordLeft,
             "right" if alt => EditKey::WordRight,
+            "up" => EditKey::Up,
+            "down" => EditKey::Down,
             "left" => EditKey::Left,
             "right" => EditKey::Right,
             "home" => EditKey::Home,
@@ -469,6 +1618,101 @@ impl TableItem {
         };
         Some((key, shift))
     }
+
+    fn field_keystroke(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
+        let modifiers = keystroke.modifiers;
+        match keystroke.key.as_str() {
+            "enter" => match self.focus {
+                Focus::Cell => self.keep_cell_edit(),
+                _ => {
+                    self.focus = Focus::Grid;
+                    self.grid.sort = None;
+                    self.rerun_from_start();
+                }
+            },
+            "escape" => {
+                if self.focus == Focus::Cell {
+                    self.grid.editing = None;
+                }
+                self.focus = Focus::Grid;
+            }
+            "tab" => {
+                self.focus = match self.focus {
+                    Focus::Where => Focus::Order,
+                    Focus::Order => Focus::Where,
+                    Focus::Column(column) => {
+                        let count = self.grid.columns().len().max(1);
+                        let next = if modifiers.shift {
+                            (column + count - 1) % count
+                        } else {
+                            (column + 1) % count
+                        };
+                        if let Some(name) = self.column_name(next).map(str::to_string) {
+                            self.column_filters.entry(name).or_insert_with(field);
+                        }
+                        Focus::Column(next)
+                    }
+                    other => other,
+                }
+            }
+            "c" if modifiers.cmd => {
+                return self
+                    .field()
+                    .and_then(|field| field.selected_text())
+                    .map_or(TerminalKeyOutcome::Handled, TerminalKeyOutcome::Copy);
+            }
+            "v" if modifiers.cmd => return TerminalKeyOutcome::Paste,
+            _ => match Self::edit_key(keystroke) {
+                Some((key, shift)) => {
+                    if let Some(field) = self.field() {
+                        field.key(key, shift);
+                    }
+                }
+                None => return TerminalKeyOutcome::Ignored,
+            },
+        }
+        TerminalKeyOutcome::Handled
+    }
+
+    fn value_keystroke(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
+        let modifiers = keystroke.modifiers;
+        match keystroke.key.as_str() {
+            "enter" if modifiers.cmd => self.keep_value_edit(),
+            "enter" => self.value_editor.insert("\n"),
+            "escape" => self.focus = Focus::Grid,
+            "tab" => self.value_editor.insert("  "),
+            "c" if modifiers.cmd => {
+                return self
+                    .value_editor
+                    .selected_text()
+                    .map_or(TerminalKeyOutcome::Handled, TerminalKeyOutcome::Copy);
+            }
+            "v" if modifiers.cmd => return TerminalKeyOutcome::Paste,
+            _ => match Self::edit_key(keystroke) {
+                Some((key, shift)) => {
+                    self.value_editor.key(key, shift);
+                }
+                None => return TerminalKeyOutcome::Ignored,
+            },
+        }
+        TerminalKeyOutcome::Handled
+    }
+
+    fn hit(&self, x: f32, y: f32) -> Option<u64> {
+        self.hits
+            .iter()
+            .rev()
+            .find(|(rect, _)| {
+                x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
+            })
+            .map(|(_, id)| *id)
+    }
+}
+
+fn field() -> TextField {
+    let mut field = TextField::default();
+    field.set_font_size(FIELD_FONT);
+    field
 }
 
 impl Item for TableItem {
@@ -491,44 +1735,158 @@ impl Item for TableItem {
 
     fn paint_body(&mut self, body: Rect, _focused: bool) -> Option<ui::Painted> {
         let scale = ui::ui_text_scale();
-        let grid_area = Rect::new(
-            body.x,
-            body.y + (TOOLBAR_H + 1.0) * scale,
-            body.w,
-            (body.h - (TOOLBAR_H + STATUS_H + 2.0) * scale).max(0.0),
+        let colors = theme();
+        self.follow_selection();
+        let side_open = self.view == View::Data && self.details;
+        let side_w = if side_open {
+            (SIDE_W * scale).min(body.w * 0.5)
+        } else {
+            0.0
+        };
+        let main = Rect::new(body.x, body.y, body.w - side_w, body.h, Rgba::TRANSPARENT);
+        let bottom_h = if self.edits.is_empty() {
+            STATUS_H
+        } else {
+            PENDING_H
+        };
+        let filter_h = if self.view == View::Data && !self.is_redis() {
+            FILTER_H + 1.0
+        } else {
+            0.0
+        };
+        let review_h = self.review_height();
+        let above = TOOLBAR_H + 1.0 + filter_h;
+        let middle_h = (main.h / scale - above - 1.0 - bottom_h - review_h).max(0.0);
+        let middle_area = Rect::new(
+            main.x,
+            main.y + above * scale,
+            main.w,
+            middle_h * scale,
             Rgba::TRANSPARENT,
         );
-        let colors = theme();
-        let empty = self.grid.columns().is_empty();
-        let middle: Node = if empty {
-            let text = if self.loading.busy() {
-                "Loading..."
-            } else {
-                "No rows"
-            };
-            div()
-                .row()
-                .h_px(grid_area.h / scale)
-                .justify_center()
-                .pt(24.0)
-                .child(label(text).color(colors.text_muted))
-                .into()
-        } else {
-            let grid = self.grid.render(grid_area);
-            div().col().h_px(grid_area.h / scale).child(grid).into()
-        };
-        let tree: Node = div()
+        let mut tree = div()
             .col()
-            .w_px(body.w / scale)
-            .h_px(body.h / scale)
+            .w_px(main.w / scale)
+            .h_px(main.h / scale)
             .bg(colors.editor_background)
             .child(self.toolbar())
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(div().h_px(1.0).bg(colors.border_variant));
+        let middle: Node = match self.view {
+            View::Data if self.grid.columns().is_empty() => {
+                let text = if self.loading.busy() {
+                    "Loading..."
+                } else {
+                    "No rows"
+                };
+                div()
+                    .row()
+                    .h_px(middle_h)
+                    .justify_center()
+                    .pt(24.0)
+                    .child(label(text).color(colors.text_muted))
+                    .into()
+            }
+            View::Data => {
+                self.grid.set_area(middle_area);
+                if filter_h > 0.0 {
+                    tree = tree
+                        .child(self.filter_row())
+                        .child(div().h_px(1.0).bg(colors.border_variant));
+                }
+                let editor = self.grid.editing.map(|_| {
+                    self.cell_editor.render(
+                        "",
+                        self.focused && self.focus == Focus::Cell,
+                        colors.text,
+                        FIELD_H - 6.0,
+                        FieldFont::Mono,
+                    )
+                });
+                let grid = self.grid.render(middle_area, editor);
+                div().col().h_px(middle_h).child(grid).into()
+            }
+            View::Structure | View::Ddl => div().h_px(middle_h).into(),
+        };
+        tree = tree
             .child(middle)
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(self.status_bar())
-            .into();
-        let painted = ui::render(&tree, body);
+            .child(div().h_px(1.0).bg(colors.border_variant));
+        if review_h > 0.0 {
+            tree = tree.child(self.review_panel());
+        }
+        tree = tree.child(if self.edits.is_empty() {
+            self.status_bar()
+        } else {
+            self.pending_bar()
+        });
+        let tree: Node = tree.into();
+        let mut painted = ui::render(&tree, main);
+        if self.view != View::Data {
+            let content: Node = match (self.view, &self.structure, &self.ddl) {
+                (View::Structure, Some(structure), _) => {
+                    details::structure_view(structure, self.hovered)
+                }
+                (View::Ddl, _, Some(Ok(ddl))) => details::ddl_view(ddl, self.hovered),
+                (View::Ddl, _, Some(Err(error))) => div()
+                    .col()
+                    .p(12.0)
+                    .child(label(error.clone()).size(12.0).color(colors.error))
+                    .into(),
+                _ => div()
+                    .col()
+                    .p(12.0)
+                    .child(label("Loading...").size(12.0).color(colors.text_muted))
+                    .into(),
+            };
+            let view = self.view_pane.paint(&content, middle_area);
+            details::merge(&mut painted, view);
+        }
+        if side_open {
+            let side = Rect::new(
+                body.x + body.w - side_w,
+                body.y,
+                side_w,
+                body.h,
+                Rgba::TRANSPARENT,
+            );
+            let rule = ui::render(
+                &div().bg(colors.border_variant).into(),
+                Rect::new(side.x, side.y, scale, side.h, Rgba::TRANSPARENT),
+            );
+            details::merge(&mut painted, rule);
+            let background = ui::render(
+                &div().bg(colors.panel_background).into(),
+                Rect::new(
+                    side.x + scale,
+                    side.y,
+                    side.w - scale,
+                    side.h,
+                    Rgba::TRANSPARENT,
+                ),
+            );
+            details::merge(&mut painted, background);
+            let head_h = SIDE_HEAD_H * scale;
+            let head = ui::render(
+                &self.side_head(),
+                Rect::new(
+                    side.x + scale,
+                    side.y,
+                    side.w - scale,
+                    head_h,
+                    Rgba::TRANSPARENT,
+                ),
+            );
+            details::merge(&mut painted, head);
+            let content = self.side_content(side.w / scale - 1.0);
+            let body_area = Rect::new(
+                side.x + scale,
+                side.y + head_h,
+                side.w - scale,
+                side.h - head_h,
+                Rgba::TRANSPARENT,
+            );
+            let content = self.side_pane.paint(&content, body_area);
+            details::merge(&mut painted, content);
+        }
         self.hits = painted.hits.clone();
         Some(painted)
     }
@@ -543,38 +1901,19 @@ impl Item for TableItem {
             self.run();
             return TerminalKeyOutcome::Handled;
         }
-        if self.focus != Focus::Grid {
-            match keystroke.key.as_str() {
-                "enter" => {
-                    self.focus = Focus::Grid;
-                    self.grid.sort = None;
-                    self.rerun_from_start();
-                }
-                "escape" => self.focus = Focus::Grid,
-                "tab" => {
-                    self.focus = if self.focus == Focus::Where {
-                        Focus::Order
-                    } else {
-                        Focus::Where
-                    }
-                }
-                "c" if modifiers.cmd => {
-                    return self
-                        .field()
-                        .and_then(|field| field.selected_text())
-                        .map_or(TerminalKeyOutcome::Handled, TerminalKeyOutcome::Copy);
-                }
-                "v" if modifiers.cmd => return TerminalKeyOutcome::Paste,
-                _ => match Self::edit_key(keystroke) {
-                    Some((key, shift)) => {
-                        if let Some(field) = self.field() {
-                            field.key(key, shift);
-                        }
-                    }
-                    None => return TerminalKeyOutcome::Ignored,
-                },
+        if modifiers.cmd && keystroke.key == "s" {
+            if self.focus == Focus::Cell {
+                self.keep_cell_edit();
+            } else if self.focus == Focus::Value {
+                self.keep_value_edit();
             }
+            self.apply();
             return TerminalKeyOutcome::Handled;
+        }
+        match self.focus {
+            Focus::Value => return self.value_keystroke(keystroke),
+            Focus::Grid => {}
+            _ => return self.field_keystroke(keystroke),
         }
         let page = self.grid.page_rows();
         match keystroke.key.as_str() {
@@ -583,6 +1922,18 @@ impl Item for TableItem {
                     .grid
                     .selected_text()
                     .map_or(TerminalKeyOutcome::Ignored, TerminalKeyOutcome::Copy)
+            }
+            "enter" if modifiers.shift => {
+                self.details = !self.details;
+                true
+            }
+            "enter" => {
+                self.edit_selected();
+                true
+            }
+            "escape" if self.review => {
+                self.review = false;
+                true
             }
             "up" => self.grid.move_selection(-1, 0),
             "down" => self.grid.move_selection(1, 0),
@@ -596,6 +1947,10 @@ impl Item for TableItem {
     }
 
     fn input_text(&mut self, text: &str) {
+        if self.focus == Focus::Value {
+            self.value_editor.insert(text);
+            return;
+        }
         let typed: String = text.chars().filter(|c| !c.is_control()).collect();
         if let Some(field) = self.field() {
             field.insert(&typed);
@@ -603,6 +1958,10 @@ impl Item for TableItem {
     }
 
     fn paste(&mut self, text: &str, _slices: Option<&[workspace::ClipboardSlice]>) {
+        if self.focus == Focus::Value {
+            self.value_editor.insert(text);
+            return;
+        }
         let line: String = text.chars().filter(|c| !c.is_control()).collect();
         if let Some(field) = self.field() {
             field.insert(&line);
@@ -618,21 +1977,29 @@ impl Item for TableItem {
     }
 
     fn pointer_down(&mut self, x: f32, y: f32, _click_count: u32, _modifiers: Modifiers) -> bool {
-        let hit = self
-            .hits
-            .iter()
-            .rev()
-            .find(|(rect, _)| {
-                x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
-            })
-            .map(|(_, id)| *id);
-        if let Some(id) = hit {
+        if let Some(id) = self.hit(x, y) {
+            if self.focus == Focus::Cell && !(FILTER_BASE..FILTER_END).contains(&id) {
+                self.keep_cell_edit();
+            }
             self.click(id);
             return true;
         }
-        self.focus = Focus::Grid;
-        if let GridEvent::Sort(column) = self.grid.pointer_down(x, y) {
-            self.sort_by(column);
+        if self.side_pane.contains(x, y) {
+            return true;
+        }
+        match self.focus {
+            Focus::Cell => self.keep_cell_edit(),
+            Focus::Value => {}
+            _ => self.focus = Focus::Grid,
+        }
+        if self.view != View::Data {
+            return true;
+        }
+        match self.grid.pointer_down(x, y) {
+            GridEvent::Sort(column) => self.sort_by(column),
+            GridEvent::Follow(row, column) => self.follow(row, column),
+            GridEvent::Edit(_, _) => self.edit_selected(),
+            GridEvent::None => {}
         }
         true
     }
@@ -646,10 +2013,19 @@ impl Item for TableItem {
     }
 
     fn pointer_move(&mut self, x: f32, y: f32, _modifiers: Modifiers, _focused: bool) -> bool {
-        self.grid.pointer_move(x, y)
+        let hovered = self.hit(x, y);
+        let changed = hovered != self.hovered;
+        self.hovered = hovered;
+        self.grid.pointer_move(x, y) || changed
     }
 
-    fn pointer_scroll(&mut self, _x: f32, _y: f32, delta_y: f32, modifiers: Modifiers) -> bool {
+    fn pointer_scroll(&mut self, x: f32, y: f32, delta_y: f32, modifiers: Modifiers) -> bool {
+        if self.side_pane.contains(x, y) {
+            return self.side_pane.scroll_by(delta_y);
+        }
+        if self.view != View::Data {
+            return self.view_pane.scroll_by(delta_y);
+        }
         if modifiers.shift {
             self.grid.scroll_columns(delta_y)
         } else {
@@ -667,6 +2043,49 @@ impl Item for TableItem {
             self.apply_page(page);
             changed = true;
         }
+        if let Some(structure) = self.loading_structure.poll() {
+            match structure {
+                Ok(structure) => self.set_structure(structure),
+                Err(error) => eprintln!("database: read {}: {error}", self.table.qualified()),
+            }
+            changed = true;
+        }
+        if let Some(ddl) = self.loading_ddl.poll() {
+            self.ddl = Some(ddl);
+            changed = true;
+        }
+        if let Some(target) = self.loading_target.poll() {
+            if let Some((_, shown)) = self.target.as_mut() {
+                *shown = target.unwrap_or_else(Target::Missing);
+            }
+            changed = true;
+        }
+        if let Some(counts) = self.loading_counts.poll() {
+            if let (Some((_, shown)), Ok(counts)) = (self.counts.as_mut(), counts) {
+                *shown = counts;
+            }
+            changed = true;
+        }
+        if let Some(applied) = self.applying.poll() {
+            match applied {
+                Ok(rows) => {
+                    let count = self.edits.len();
+                    self.edits.clear();
+                    self.review = false;
+                    self.status = Some((
+                        format!(
+                            "Saved {count} {} ({rows} {})",
+                            if count == 1 { "change" } else { "changes" },
+                            if rows == 1 { "row" } else { "rows" }
+                        ),
+                        false,
+                    ));
+                    self.run();
+                }
+                Err(error) => self.status = Some((format!("Nothing saved: {error}"), true)),
+            }
+            changed = true;
+        }
         if let Some(exported) = self.exporting.poll() {
             self.status = Some(match exported {
                 Ok((rows, path)) => (format!("Exported {rows} rows to {}", path.display()), false),
@@ -674,17 +2093,211 @@ impl Item for TableItem {
             });
             changed = true;
         }
+        changed |= self.check_opened();
         ItemTick {
             changed,
+            clipboard_store: self.clipboard.take(),
             ..ItemTick::default()
         }
     }
 
+    fn take_requests(&mut self) -> Vec<PanelRequest> {
+        std::mem::take(&mut self.requests)
+    }
+
     fn is_busy(&self) -> bool {
-        self.loading.busy() || self.exporting.busy()
+        self.loading.busy()
+            || self.exporting.busy()
+            || self.loading_structure.busy()
+            || self.loading_ddl.busy()
+            || self.loading_target.busy()
+            || self.loading_counts.busy()
+            || self.applying.busy()
+            || !self.opened.is_empty()
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn users() -> Table {
+        Table {
+            schema: "public".into(),
+            name: "users".into(),
+            kind: TableKind::Table,
+            count: None,
+        }
+    }
+
+    fn column(
+        name: &str,
+        primary_key: bool,
+        references: Option<(&str, &str)>,
+    ) -> pom_db::ColumnInfo {
+        pom_db::ColumnInfo {
+            name: name.into(),
+            data_type: if name == "settings" { "jsonb" } else { "text" }.into(),
+            nullable: !primary_key,
+            default: None,
+            primary_key,
+            references: references.map(|(table, column)| (table.into(), column.into())),
+        }
+    }
+
+    fn structure() -> TableStructure {
+        TableStructure {
+            columns: vec![
+                column("id", true, None),
+                column("name", false, None),
+                column("org_id", false, Some(("orgs", "id"))),
+                column("settings", false, None),
+            ],
+            indexes: Vec::new(),
+            referenced_by: vec![pom_db::Reference {
+                schema: "public".into(),
+                table: "orders".into(),
+                column: "user_id".into(),
+                on_delete: "cascade".into(),
+            }],
+        }
+    }
+
+    fn page(rows: &[(&str, &str)]) -> QueryResult {
+        QueryResult {
+            columns: ["id", "name", "org_id", "settings"]
+                .map(str::to_string)
+                .to_vec(),
+            rows: rows
+                .iter()
+                .map(|(id, name)| {
+                    vec![
+                        Some(id.to_string()),
+                        Some(name.to_string()),
+                        Some("3".into()),
+                        Some(r#"{"theme":"dark"}"#.into()),
+                    ]
+                })
+                .collect(),
+            ..QueryResult::default()
+        }
+    }
+
+    fn item(context: &crate::tests::TestContext) -> TableItem {
+        let database = context.context.databases().remove(0);
+        let mut item = TableItem::new(context.context.clone(), database, users());
+        item.show_page(page(&[("1", "Ann"), ("2", "Bob")]), Some(2));
+        item.show_structure(structure());
+        item
+    }
+
+    fn reveals(item: &mut TableItem) -> Vec<String> {
+        item.take_requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                PanelRequest::Reveal { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn edits_find_their_row_by_primary_key_and_save_as_one_transaction() {
+        let context = crate::tests::context();
+        let mut item = item(&context);
+        item.edit_cell(0, 1, Some("Anna"));
+        item.edit_cell(1, 1, Some("Bob"));
+        assert_eq!(
+            item.pending_statements(),
+            ["UPDATE \"public\".\"users\" SET \"name\" = 'Anna' WHERE \"id\" = '1'"],
+            "an unchanged value stages nothing"
+        );
+        assert!(item.grid.edited.contains(&(0, 1)));
+        item.show_page(page(&[("2", "Bob"), ("1", "Ann")]), Some(2));
+        assert_eq!(item.current(1, 1).as_deref(), Some("Anna"));
+        assert!(item.grid.edited.contains(&(1, 1)) && !item.grid.edited.contains(&(0, 1)));
+        item.edit_cell(1, 1, Some("Ann"));
+        assert!(
+            item.edits.is_empty(),
+            "typing the original back drops the edit"
+        );
+        assert_eq!(item.read_only(0), Some("Primary key"));
+        assert_eq!(item.read_only(1), None);
+        let mut keyless = structure();
+        keyless.columns[0].primary_key = false;
+        item.show_structure(keyless);
+        assert_eq!(
+            item.read_only(1),
+            Some("No primary key; edit it in a console")
+        );
+    }
+
+    #[test]
+    fn a_foreign_key_and_the_tables_pointing_here_open_filtered_tabs() {
+        let context = crate::tests::context();
+        let mut item = item(&context);
+        item.follow(0, 2);
+        let opened = reveals(&mut item);
+        assert_eq!(opened.len(), 1);
+        assert!(opened[0].contains(":orgs:\"id\" = '3'"), "{opened:?}");
+        item.select_cell(1, 1);
+        item.open_reference(0, true);
+        let opened = reveals(&mut item);
+        assert!(
+            opened[0].contains(":orders:\"user_id\" = '2'"),
+            "{opened:?}"
+        );
+        item.open_reference(0, false);
+        assert!(reveals(&mut item)[0].ends_with(":orders"));
+    }
+
+    #[test]
+    fn column_filters_join_the_typed_where() {
+        let context = crate::tests::context();
+        let mut item = item(&context);
+        item.filter.set_text("id > 0");
+        item.set_column_filter("name", "= Ann");
+        item.set_column_filter("settings", "null");
+        assert_eq!(
+            item.where_clause(),
+            "(id > 0) AND \"name\"::text = 'Ann' AND \"settings\" IS NULL"
+        );
+    }
+
+    #[test]
+    fn a_value_saved_in_its_editor_tab_is_staged() {
+        let context = crate::tests::context();
+        let mut item = item(&context);
+        item.select_cell(0, 3);
+        item.open_in_tab();
+        let path = match item.take_requests().pop() {
+            Some(PanelRequest::OpenFile(path)) => path,
+            _ => panic!("expected the value to open as a file"),
+        };
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("written"),
+            "{\n  \"theme\": \"dark\"\n}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&path, "{\"theme\": ").expect("save");
+        item.files_checked = Instant::now() - FILE_CHECK;
+        assert!(item.check_opened());
+        assert!(item.edits.is_empty());
+        assert!(item
+            .status
+            .as_ref()
+            .is_some_and(|(text, error)| *error && text.contains("not valid JSON")));
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&path, "{\n  \"theme\": \"light\"\n}\n").expect("save");
+        item.files_checked = Instant::now() - FILE_CHECK;
+        assert!(item.check_opened());
+        assert_eq!(
+            item.pending_statements(),
+            ["UPDATE \"public\".\"users\" SET \"settings\" = '{\n  \"theme\": \"light\"\n}' WHERE \"id\" = '1'"]
+        );
     }
 }

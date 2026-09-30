@@ -1,6 +1,8 @@
 mod console;
+mod details;
 mod failure;
 mod grid;
+mod json;
 mod menu;
 mod object_item;
 mod panel;

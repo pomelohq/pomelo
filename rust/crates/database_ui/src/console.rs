@@ -272,7 +272,7 @@ impl ItemFooter for ConsoleFooter {
                 .child(label(hint).size(12.0).color(colors.text_muted))
                 .into()
         } else {
-            let grid = self.grid.render(grid_area);
+            let grid = self.grid.render(grid_area, None);
             div().col().h_px(grid_area.h / scale).child(grid).into()
         };
         let tree: Node = div()
