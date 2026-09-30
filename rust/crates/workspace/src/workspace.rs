@@ -45,8 +45,8 @@ pub use welcome::{
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
 pub use workspace_view::{
-    ParkedWorkspace, ResizeCursor, SessionRequest, WorkspaceEffects, WorkspaceRequests,
-    WorkspaceView,
+    ParkedWorkspace, ResizeCursor, SessionRequest, TitlebarGesture, WorkspaceEffects,
+    WorkspaceRequests, WorkspaceView,
 };
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the
