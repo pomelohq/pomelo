@@ -833,6 +833,7 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::PullRequest => svg!("pull_request.svg"),
         IconKind::Merged => svg!("merged.svg"),
         IconKind::Clock => svg!("clock.svg"),
+        IconKind::FileLock => svg!("file_lock.svg"),
         IconKind::Filter => svg!("filter.svg"),
         IconKind::Copy => svg!("copy.svg"),
         IconKind::Trash => svg!("trash.svg"),

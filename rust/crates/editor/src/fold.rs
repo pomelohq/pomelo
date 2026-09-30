@@ -183,6 +183,25 @@ impl FoldMap {
     }
 
     /// Buffer rows in display order: a fold's rows after its header, through the row holding its end, are hidden.
+    pub fn collapsed_lines(&self, buffer: &EditorBuffer) -> Vec<(usize, usize)> {
+        let mut collapsed: Vec<(usize, usize)> = Vec::new();
+        let mut current: Option<(usize, usize)> = None;
+        for fold in &self.folds {
+            let start_row = buffer.rope.char_to_line(fold.start);
+            let end_row = buffer.rope.char_to_line(fold.end) + 1;
+            match current.as_mut() {
+                Some((header, next)) if start_row == *header => *next = (*next).max(end_row),
+                Some((_, next)) if start_row < *next => {}
+                _ => {
+                    collapsed.extend(current.take());
+                    current = Some((start_row, end_row.max(start_row + 1)));
+                }
+            }
+        }
+        collapsed.extend(current);
+        collapsed
+    }
+
     pub fn visible_rows(&self, buffer: &EditorBuffer) -> Vec<usize> {
         let rows = buffer.rope.len_lines();
         let mut visible = Vec::with_capacity(rows);

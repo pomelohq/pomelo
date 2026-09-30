@@ -117,6 +117,7 @@ pub enum IconKind {
     PullRequest,
     Merged,
     Clock,
+    FileLock,
     Filter,
     Copy,
     Ellipsis,

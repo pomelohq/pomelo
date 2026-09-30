@@ -405,10 +405,23 @@ pub fn read(root: &Path, rel: &str) -> std::io::Result<FileContent> {
         text: if binary {
             None
         } else {
-            Some(String::from_utf8_lossy(&bytes).into_owned())
+            Some(match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(invalid) => String::from_utf8_lossy(invalid.as_bytes()).into_owned(),
+            })
         },
         binary,
     })
+}
+
+pub fn text_file(root: &Path, rel: &str) -> std::io::Result<Option<(PathBuf, u64)>> {
+    use std::io::Read;
+    let full = safe_join(root, rel)?;
+    let file = std::fs::File::open(&full)?;
+    let len = file.metadata()?.len();
+    let mut head = Vec::with_capacity(BINARY_SNIFF);
+    file.take(BINARY_SNIFF as u64).read_to_end(&mut head)?;
+    Ok((!head.contains(&0)).then_some((full, len)))
 }
 
 /// Write `text` to `root/rel`, creating missing parent directories, and return the file's new mtime.

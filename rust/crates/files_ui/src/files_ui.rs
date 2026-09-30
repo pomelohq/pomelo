@@ -16,11 +16,13 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use editor::buffer::{
-    Bias, ClipboardSelection, Deletion, DisplayRows, Motion, Selection, SelectionGoal,
+    Bias, ClipboardSelection, Deletion, DisplayRows, LineEnding, Motion, Selection, SelectionGoal,
 };
 use editor::fold::FoldMap;
+use editor::line_widths::{LineWidth, LineWidths};
 use editor::search::SearchQuery;
 use editor::transform::{LineTransform, TextTransform};
+use ropey::Rope;
 use workspace::pane::{Pane, PaneCommand};
 #[cfg(test)]
 use workspace::pane_group::Member;
@@ -46,6 +48,7 @@ mod markdown_preview;
 mod outline_view;
 mod project_search;
 mod saved_state;
+pub use saved_state::flush_unsaved_writes;
 mod snippet_store;
 mod tree_actions;
 use editor::wrap::Boundary;
@@ -226,6 +229,121 @@ impl DisplayRow {
     fn is_virtual(&self) -> bool {
         self.deleted.is_some() || self.block.is_some() || self.spacer
     }
+
+    fn plain(line: usize) -> Self {
+        Self {
+            line,
+            start: 0,
+            end: usize::MAX,
+            indent: 0,
+            deleted: None,
+            block: None,
+            spacer: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct RowMap {
+    spans: Vec<RowSpan>,
+    rows: usize,
+}
+
+#[derive(Clone, Debug)]
+struct RowSpan {
+    first_row: usize,
+    first_line: usize,
+    lines: usize,
+    detail: Option<SpanRows>,
+}
+
+#[derive(Clone, Debug)]
+struct SpanRows {
+    rows: Vec<DisplayRow>,
+    line_rows: Vec<usize>,
+}
+
+impl RowMap {
+    fn from_rows(rows: Vec<DisplayRow>, line_rows: Vec<usize>) -> Self {
+        let mut map = Self::default();
+        map.push_rows(0, rows, line_rows);
+        map
+    }
+
+    fn push_plain(&mut self, first_line: usize, lines: usize) {
+        if lines == 0 {
+            return;
+        }
+        if let Some(last) = self.spans.last_mut() {
+            if last.detail.is_none() && last.first_line + last.lines == first_line {
+                last.lines += lines;
+                self.rows += lines;
+                return;
+            }
+        }
+        self.spans.push(RowSpan {
+            first_row: self.rows,
+            first_line,
+            lines,
+            detail: None,
+        });
+        self.rows += lines;
+    }
+
+    fn push_rows(&mut self, first_line: usize, rows: Vec<DisplayRow>, line_rows: Vec<usize>) {
+        if rows.is_empty() {
+            return;
+        }
+        let count = rows.len();
+        self.spans.push(RowSpan {
+            first_row: self.rows,
+            first_line,
+            lines: line_rows.len(),
+            detail: Some(SpanRows { rows, line_rows }),
+        });
+        self.rows += count;
+    }
+
+    fn len(&self) -> usize {
+        self.rows
+    }
+
+    fn get(&self, row: usize) -> Option<DisplayRow> {
+        if row >= self.rows {
+            return None;
+        }
+        let index = self
+            .spans
+            .partition_point(|span| span.first_row <= row)
+            .checked_sub(1)?;
+        let span = self.spans.get(index)?;
+        let offset = row - span.first_row;
+        match &span.detail {
+            None => Some(DisplayRow::plain(span.first_line + offset)),
+            Some(detail) => detail.rows.get(offset).copied(),
+        }
+    }
+
+    fn row_of_line(&self, line: usize) -> Option<usize> {
+        let index = self
+            .spans
+            .partition_point(|span| span.first_line <= line)
+            .checked_sub(1)?;
+        let span = self.spans.get(index)?;
+        let offset = line - span.first_line;
+        if offset >= span.lines {
+            return None;
+        }
+        match &span.detail {
+            None => Some(span.first_row + offset),
+            Some(detail) => detail.line_rows.get(offset).map(|row| span.first_row + row),
+        }
+    }
+
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = DisplayRow> + '_ {
+        (0..self.rows).filter_map(|row| self.get(row))
+    }
 }
 
 /// What a split diff's old side shows on one display row: a line of the old text (or nothing), and
@@ -282,15 +400,12 @@ struct FileItem {
     /// the text scrolls left by `scroll_x`.
     scroll_x: f32,
     body_w: f32,
-    /// Visual width per line (`None` = needs measuring); edits splice it so only touched lines are re-measured.
-    line_widths: Vec<Option<usize>>,
+    line_widths: LineWidths,
     /// Shaped rows by buffer line, dropped whenever the text changes.
     layout_cache: std::cell::RefCell<std::collections::HashMap<usize, std::rc::Rc<LineLayout>>>,
     folds: FoldMap,
     /// Screen rows after folds and soft wrap (rebuilt when text, folds or wrap width change). `None` = stale.
-    rows: Option<Vec<DisplayRow>>,
-    /// First row of each buffer line; a line hidden in a fold maps to its header's first row.
-    line_rows: Vec<usize>,
+    rows: Option<RowMap>,
     /// Soft-wrap breaks per buffer line (`None` = not computed), spliced on edits like `line_widths`.
     wraps: Vec<Option<Rc<[Boundary]>>>,
     wrap_width: f32,
@@ -350,6 +465,9 @@ struct FileItem {
     /// Asked before writing: may refuse the save (the project config must keep loading).
     save_check: Option<SaveCheck>,
     footer: Option<Footer>,
+    premeasured: bool,
+    unsaved_queued: std::cell::Cell<Option<u64>>,
+    active_indent: RefCell<Option<ActiveIndent>>,
 }
 
 struct Footer {
@@ -594,21 +712,14 @@ impl FileItem {
             body_h: 400.0,
             scroll_x: 0.0,
             body_w: 400.0,
-            line_widths: Vec::new(),
+            line_widths: LineWidths::default(),
             layout_cache: Default::default(),
             folds: FoldMap::default(),
             rows: None,
-            line_rows: Vec::new(),
             wraps: Vec::new(),
             wrap_width: 0.0,
             lang,
-            soft_wrap: if lang == Lang::Markdown
-                || SOFT_WRAP_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)
-            {
-                SoftWrap::EditorWidth
-            } else {
-                SoftWrap::None
-            },
+            soft_wrap: default_soft_wrap(lang),
             soft_wrap_override: None,
             max_row_cols: 0,
             char_widths: RefCell::default(),
@@ -648,7 +759,32 @@ impl FileItem {
             read_only: false,
             save_check: None,
             footer: None,
+            premeasured: false,
+            unsaved_queued: std::cell::Cell::new(None),
+            active_indent: RefCell::default(),
         }
+    }
+
+    fn loaded(root: PathBuf, path: &str, loaded: LoadedFile) -> Self {
+        let mut item = Self::new(root, path, None);
+        let Some(buffer) = loaded.buffer else {
+            return item;
+        };
+        let first_line: String = buffer
+            .rope
+            .line(0)
+            .chars()
+            .take_while(|c| *c != '\n')
+            .take(FIRST_LINE_SNIFF)
+            .collect();
+        item.lang = Lang::detect(path, Some(&first_line));
+        item.syntax = Syntax::new(item.lang);
+        item.soft_wrap = default_soft_wrap(item.lang);
+        item.git = git_diff::GitDiff::load(item.root.join(path));
+        item.buffer = Some(buffer);
+        item.line_widths = loaded.widths;
+        item.premeasured = true;
+        item
     }
 
     /// Adopt a file's diagnostics: placed in the text they were computed for, then carried through the edits
@@ -774,31 +910,45 @@ impl FileItem {
             // Edits are logged in application order with rows valid at that moment, so splicing in that order
             // keeps every slot aligned with its line; only the spliced-in rows get re-measured.
             Some(since) if !self.line_widths.is_empty() => {
+                let mut stale: Vec<Range<usize>> = Vec::new();
                 for edit in b.syntax_edits_since(since) {
                     let start = edit.start_position.row.min(self.line_widths.len());
                     let old_end =
                         (edit.old_end_position.row + 1).clamp(start, self.line_widths.len());
                     let fresh = edit.new_end_position.row + 1 - edit.start_position.row;
                     self.line_widths
-                        .splice(start..old_end, std::iter::repeat_n(None, fresh));
+                        .splice(start..old_end, vec![LineWidth::default(); fresh]);
+                    for range in &mut stale {
+                        *range = shift_line(range.start, start..old_end, fresh)
+                            ..shift_line(range.end, start..old_end, fresh);
+                    }
+                    stale.push(start..start + fresh);
                     let wrap_end = old_end.min(self.wraps.len());
                     let wrap_start = start.min(wrap_end);
                     self.wraps
                         .splice(wrap_start..wrap_end, std::iter::repeat_n(None, fresh));
                 }
+                let line_count = b.rope.len_lines();
+                for range in stale {
+                    let end = range.end.min(line_count);
+                    let start = range.start.min(end);
+                    let widths = (start..end)
+                        .map(|line| LineWidth::of_line(b.rope.line(line), TAB_COLS))
+                        .collect();
+                    self.line_widths.splice(start..end, widths);
+                }
             }
             _ => {
-                self.line_widths.clear();
+                if !std::mem::take(&mut self.premeasured) {
+                    self.line_widths = LineWidths::measure(&b.rope, TAB_COLS);
+                }
                 self.wraps.clear();
             }
         }
-        self.line_widths.resize(b.rope.len_lines(), None);
-        self.wraps.resize(b.rope.len_lines(), None);
-        for (line, width) in self.line_widths.iter_mut().enumerate() {
-            if width.is_none() {
-                *width = Some(Self::vis_col(b, line, b.line_len(line)));
-            }
+        if self.line_widths.len() != b.rope.len_lines() {
+            self.line_widths = LineWidths::measure(&b.rope, TAB_COLS);
         }
+        self.wraps.resize(b.rope.len_lines(), None);
         self.rows = None;
         self.layout_cache.borrow_mut().clear();
         self.synced_version = Some(version);
@@ -968,8 +1118,145 @@ impl FileItem {
     }
 
     fn rebuild_rows(&mut self) {
+        let wrap_width = self.current_wrap_width();
+        if (wrap_width - self.wrap_width).abs() > 0.5 {
+            self.wraps.iter_mut().for_each(|w| *w = None);
+            self.wrap_width = wrap_width;
+        }
+        if self.split_active {
+            self.rebuild_split_rows();
+            return;
+        }
         let Some(b) = self.buffer.as_ref() else {
-            self.rows = Some(Vec::new());
+            self.rows = Some(RowMap::default());
+            return;
+        };
+        let line_count = b.rope.len_lines();
+        let em = char_advance();
+        let wrap_columns = (wrap_width / em).floor().max(0.0) as usize;
+        let collapsed = self.folds.collapsed_lines(b);
+        let block = self.block_placement();
+        let deletions = self.expanded_deletions();
+        let block_line = match &block {
+            Some(diagnostic_nav::BlockPlacement::Rows { line, .. }) => Some(*line),
+            _ => None,
+        };
+        let mut collapsed = collapsed.iter().copied().peekable();
+        let mut pending = deletions.iter().peekable();
+        let mut map = RowMap::default();
+        let mut max_row_cols = 0usize;
+        let mut block_rows = false;
+        let mut line = 0;
+        while line < line_count {
+            while pending.next_if(|(at, _)| *at < line).is_some() {}
+            let next_fold = collapsed.peek().map_or(line_count, |(header, _)| *header);
+            let next_deletion = pending.peek().map_or(line_count, |(at, _)| *at);
+            let next_block = block_line.filter(|at| *at >= line).unwrap_or(line_count);
+            let next_wrap = self
+                .line_widths
+                .next_reaching_past(line, wrap_columns)
+                .unwrap_or(line_count);
+            let special = next_fold
+                .min(next_deletion)
+                .min(next_block)
+                .min(next_wrap)
+                .clamp(line, line_count);
+            if special > line {
+                max_row_cols =
+                    max_row_cols.max(self.line_widths.widest_in(line..special, wrap_columns));
+                map.push_plain(line, special - line);
+                line = special;
+                continue;
+            }
+            let mut rows = Vec::new();
+            while let Some((_, base_rows)) = pending.next_if(|(at, _)| *at == line) {
+                for base_line in base_rows.clone() {
+                    rows.push(DisplayRow {
+                        deleted: Some(base_line),
+                        ..DisplayRow::plain(line)
+                    });
+                }
+            }
+            let first_row = rows.len();
+            let hidden_end = collapsed
+                .next_if(|(header, _)| *header == line)
+                .map(|(_, end)| end);
+            let columns = self.line_widths.get(line).map_or(0, |width| width.columns);
+            let boundaries = if hidden_end.is_some() {
+                None
+            } else {
+                match self.wraps.get(line).cloned().flatten() {
+                    Some(cached) => Some(cached),
+                    None => {
+                        let computed =
+                            wrap_boundaries(b, line, columns, wrap_width, em, &self.char_widths);
+                        if let Some(slot) = self.wraps.get_mut(line) {
+                            *slot = Some(computed.clone());
+                        }
+                        Some(computed)
+                    }
+                }
+            };
+            let (mut start, mut indent) = (0usize, 0usize);
+            for boundary in boundaries.iter().flat_map(|b| b.iter()) {
+                rows.push(DisplayRow {
+                    start,
+                    end: boundary.index,
+                    indent,
+                    ..DisplayRow::plain(line)
+                });
+                max_row_cols = max_row_cols.max(indent + boundary.index - start);
+                start = boundary.index;
+                indent = boundary.indent;
+            }
+            rows.push(DisplayRow {
+                start,
+                indent,
+                ..DisplayRow::plain(line)
+            });
+            if let Some(diagnostic_nav::BlockPlacement::Rows { line: at, count }) = &block {
+                if *at == line {
+                    for index in 0..*count {
+                        rows.push(DisplayRow {
+                            end: 0,
+                            block: Some(index),
+                            ..DisplayRow::plain(line)
+                        });
+                    }
+                    block_rows = true;
+                }
+            }
+            let last_cols = if start == 0 {
+                columns
+            } else {
+                indent + Self::display_index(b, line, b.line_len(line)).saturating_sub(start)
+            };
+            max_row_cols = max_row_cols.max(last_cols);
+            let next = hidden_end.unwrap_or(line + 1).clamp(line + 1, line_count);
+            map.push_rows(line, rows, vec![first_row; next - line]);
+            line = next;
+        }
+        let mut tail = Vec::new();
+        for (at, base_rows) in pending {
+            if *at >= line_count {
+                for base_line in base_rows.clone() {
+                    tail.push(DisplayRow {
+                        deleted: Some(base_line),
+                        ..DisplayRow::plain(line_count.saturating_sub(1))
+                    });
+                }
+            }
+        }
+        map.push_rows(line_count, tail, Vec::new());
+        self.split_left.clear();
+        self.has_virtual_rows = !deletions.is_empty() || block_rows;
+        self.rows = Some(map);
+        self.max_row_cols = max_row_cols;
+    }
+
+    fn rebuild_split_rows(&mut self) {
+        let Some(b) = self.buffer.as_ref() else {
+            self.rows = Some(RowMap::default());
             return;
         };
         let wrap_width = self.current_wrap_width();
@@ -1021,7 +1308,7 @@ impl FileItem {
             for slot in line_rows.iter_mut().take(next).skip(line) {
                 *slot = rows.len();
             }
-            let columns = self.line_widths.get(line).copied().flatten().unwrap_or(0);
+            let columns = self.line_widths.get(line).map_or(0, |width| width.columns);
             let boundaries = if folded.contains(&line) {
                 None
             } else {
@@ -1097,8 +1384,7 @@ impl FileItem {
         };
         self.has_virtual_rows =
             !deletions.is_empty() || block_rows || rows.iter().any(|row| row.spacer);
-        self.rows = Some(rows);
-        self.line_rows = line_rows;
+        self.rows = Some(RowMap::from_rows(rows, line_rows));
         self.max_row_cols = max_row_cols;
     }
 
@@ -1366,13 +1652,13 @@ impl FileItem {
     }
 
     fn row(&self, row: usize) -> Option<DisplayRow> {
-        self.rows.as_ref().and_then(|rows| rows.get(row).copied())
+        self.rows.as_ref().and_then(|rows| rows.get(row))
     }
 
     fn disp_count(&self) -> usize {
         self.rows
             .as_ref()
-            .map(|rows| rows.len())
+            .map(RowMap::len)
             .unwrap_or_else(|| self.line_count())
     }
 
@@ -1383,7 +1669,10 @@ impl FileItem {
 
     /// First display row of a buffer line (the fold header's row for a hidden line).
     fn disp_of(&self, line: usize) -> usize {
-        self.line_rows.get(line).copied().unwrap_or(line)
+        self.rows
+            .as_ref()
+            .and_then(|rows| rows.row_of_line(line))
+            .unwrap_or(line)
     }
 
     fn last_row_of_line(&self, line: usize) -> usize {
@@ -1953,6 +2242,7 @@ impl FileItem {
         result
     }
     /// Display column (tabs expanded) of buffer column `char_col` on `line`.
+    #[cfg(test)]
     fn vis_col(b: &EditorBuffer, line: usize, char_col: usize) -> usize {
         if line >= b.rope.len_lines() {
             return char_col;
@@ -3216,14 +3506,13 @@ impl Item for FileItem {
 
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
         let version = self.buffer.as_ref().map(EditorBuffer::version);
-        let text = self.buffer.as_ref().map(|buffer| buffer.text());
         let Some(footer) = self.footer.as_mut() else {
             return workspace::ItemTick::default();
         };
         if footer.version != version {
             footer.version = version;
-            if let Some(text) = text {
-                footer.view.text_changed(&text);
+            if let Some(buffer) = self.buffer.as_ref() {
+                footer.view.text_changed(&buffer.text());
             }
         }
         workspace::ItemTick {
@@ -3334,6 +3623,10 @@ impl Item for FileItem {
 
     fn icon(&self) -> Option<MaterialIcon> {
         Some(file_icon(&self.name))
+    }
+
+    fn tab_icon(&self) -> Option<IconKind> {
+        (self.read_only && self.scratch.is_none()).then_some(IconKind::FileLock)
     }
 
     fn clone_on_split(&self) -> Option<Box<dyn Item>> {
@@ -4439,9 +4732,23 @@ impl Item for FileItem {
         // a block inherit its depth so the guide doesn't break -- then mapped to display rows.
         let buf_first = self.buf_of(first);
         let buf_last = self.buf_of(last.saturating_sub(1)) + 1;
-        let cursor_line = b.line_col_of(b.newest().head()).0;
-        let active_block = Self::enclosing_indent(b, cursor_line);
-        for (s, e, depth) in self.indent_guides(buf_first, buf_last) {
+        let guides = self.indent_guides(buf_first, buf_last);
+        let active_block = if guides.is_empty() {
+            None
+        } else {
+            let cursor_line = b.line_col_of(b.newest().head()).0;
+            let key = (cursor_line, b.version());
+            let mut cached = self.active_indent.borrow_mut();
+            match *cached {
+                Some((at, block)) if at == key => block,
+                _ => {
+                    let block = Self::enclosing_indent(b, cursor_line);
+                    *cached = Some((key, block));
+                    block
+                }
+            }
+        };
+        for (s, e, depth) in guides {
             let unit = self.lang.tab_size();
             let active = active_block.is_some_and(|(start, end, column)| {
                 depth * unit == column && start <= e && s <= end
@@ -4643,6 +4950,139 @@ fn arrow_tris(cx: f32, cy: f32, width: f32, color: Rgba) -> Vec<ui::Tri> {
 }
 
 /// Soft-wrap breaks for `line`, skipping the measure when an all-ASCII line clearly fits.
+type ActiveIndent = ((usize, u64), Option<(usize, usize, usize)>);
+
+fn default_soft_wrap(lang: Lang) -> SoftWrap {
+    if lang == Lang::Markdown || SOFT_WRAP_DEFAULT.load(std::sync::atomic::Ordering::Relaxed) {
+        SoftWrap::EditorWidth
+    } else {
+        SoftWrap::None
+    }
+}
+
+const FIRST_LINE_SNIFF: usize = 4096;
+
+const BACKGROUND_OPEN_BYTES: u64 = 8 * 1024 * 1024;
+
+struct LoadedFile {
+    buffer: Option<EditorBuffer>,
+    widths: LineWidths,
+}
+
+fn load_file(root: &Path, path: &str) -> LoadedFile {
+    let loaded = files::text_file(root, path).and_then(|found| match found {
+        Some((full, len)) => load_text_in_pieces(&full, len).map(Some),
+        None => Ok(None),
+    });
+    let (buffer, widths) = match loaded {
+        Ok(Some((buffer, widths))) => (Some(buffer), widths),
+        Ok(None) => (None, LineWidths::default()),
+        Err(error) => {
+            eprintln!("open {path}: {error}");
+            (None, LineWidths::default())
+        }
+    };
+    LoadedFile { buffer, widths }
+}
+
+fn load_text_in_pieces(full: &Path, len: u64) -> std::io::Result<(EditorBuffer, LineWidths)> {
+    use std::io::{Read, Seek, SeekFrom};
+    const MIN_PIECE: u64 = 4 * 1024 * 1024;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(8) as u64;
+    let pieces = (len / MIN_PIECE).clamp(1, workers);
+    let mut bounds = vec![0u64];
+    let mut file = std::fs::File::open(full)?;
+    for index in 1..pieces {
+        let previous = bounds.last().copied().unwrap_or(0);
+        let nominal = (len * index / pieces).max(previous);
+        file.seek(SeekFrom::Start(nominal))?;
+        let mut window = [0u8; 64 * 1024];
+        let mut at = nominal;
+        let boundary = loop {
+            let read = file.read(&mut window)?;
+            if read == 0 {
+                break len;
+            }
+            if let Some(newline) = window[..read].iter().position(|byte| *byte == b'\n') {
+                break at + newline as u64 + 1;
+            }
+            at += read as u64;
+        };
+        bounds.push(boundary);
+    }
+    bounds.push(len);
+    type Piece = std::io::Result<(Rope, LineWidths, Option<LineEnding>)>;
+    let results: Vec<Piece> = std::thread::scope(|scope| {
+        let workers: Vec<_> = bounds
+            .windows(2)
+            .enumerate()
+            .map(|(index, range)| {
+                let (start, end) = (range[0], range[1].max(range[0]));
+                scope.spawn(move || -> Piece {
+                    let mut file = std::fs::File::open(full)?;
+                    file.seek(SeekFrom::Start(start))?;
+                    let mut bytes = vec![0u8; (end - start) as usize];
+                    file.read_exact(&mut bytes)?;
+                    let text = match String::from_utf8(bytes) {
+                        Ok(text) => text,
+                        Err(invalid) => String::from_utf8_lossy(invalid.as_bytes()).into_owned(),
+                    };
+                    let ending = (index == 0).then(|| LineEnding::detect(&text));
+                    let rope = Rope::from_str(&editor::buffer::normalize_newlines(&text));
+                    drop(text);
+                    let widths = LineWidths::measure(&rope, TAB_COLS);
+                    Ok((rope, widths, ending))
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err(std::io::Error::other("file piece reader panicked")))
+            })
+            .collect()
+    });
+    let mut rope = Rope::new();
+    let mut widths: Option<LineWidths> = None;
+    let mut line_ending = LineEnding::Unix;
+    for result in results {
+        let (piece, piece_widths, ending) = result?;
+        if let Some(ending) = ending {
+            line_ending = ending;
+        }
+        rope.append(piece);
+        match widths.as_mut() {
+            Some(joined) => joined.append_after_break(piece_widths),
+            None => widths = Some(piece_widths),
+        }
+    }
+    Ok((
+        EditorBuffer::from_rope(rope, line_ending),
+        widths.unwrap_or_default(),
+    ))
+}
+
+struct PendingOpen {
+    root: PathBuf,
+    path: String,
+    pane: u64,
+    receiver: std::sync::mpsc::Receiver<LoadedFile>,
+}
+
+fn shift_line(line: usize, edited: Range<usize>, fresh: usize) -> usize {
+    if line <= edited.start {
+        line
+    } else if line >= edited.end {
+        line - edited.len() + fresh
+    } else {
+        edited.start + fresh
+    }
+}
+
 fn wrap_boundaries(
     buffer: &EditorBuffer,
     line: usize,
@@ -4964,6 +5404,7 @@ pub struct FilesView {
     finder: Option<(Vec<usize>, file_finder::FileFinder)>,
     finder_candidates: std::sync::Arc<file_finder::Candidates>,
     finder_loading: Option<std::sync::mpsc::Receiver<file_finder::Candidates>>,
+    pending_opens: Vec<PendingOpen>,
     recent_files: Vec<String>,
     palette_memory: command_palette::PaletteMemory,
     extra_commands: Vec<workspace::ExtraCommand>,
@@ -5103,6 +5544,7 @@ impl FilesView {
             finder: None,
             finder_candidates: Default::default(),
             finder_loading: None,
+            pending_opens: Vec::new(),
             recent_files: Vec::new(),
             palette_memory: command_palette::PaletteMemory::default(),
             extra_commands: Vec::new(),
@@ -5145,9 +5587,87 @@ impl FilesView {
 
     fn open_file(&mut self, path: &str) {
         let root = self.root.clone();
-        if let Some(pane) = self.panes.active_pane_mut() {
+        let Some(pane) = self.panes.active_pane_mut() else {
+            return;
+        };
+        let already_open = pane
+            .open
+            .iter()
+            .any(|item| item.id().as_deref() == Some(path));
+        let large = std::fs::metadata(root.join(path))
+            .is_ok_and(|meta| meta.len() >= BACKGROUND_OPEN_BYTES);
+        let ext = path.rsplit('.').next().unwrap_or("");
+        if already_open || !large || is_image_ext(ext) {
             pane.open_file(&root, path);
+            return;
         }
+        if self
+            .pending_opens
+            .iter()
+            .any(|pending| pending.path == path)
+        {
+            return;
+        }
+        let pane = pane.id;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (worker_root, worker_path) = (root.clone(), path.to_string());
+        let spawned = std::thread::Builder::new()
+            .name("file-open".into())
+            .spawn(move || {
+                sender.send(load_file(&worker_root, &worker_path)).ok();
+            });
+        match spawned {
+            Ok(_) => self.pending_opens.push(PendingOpen {
+                root,
+                path: path.to_string(),
+                pane,
+                receiver,
+            }),
+            Err(error) => {
+                eprintln!("open {path} in the background: {error}");
+                if let Some(pane) = self.panes.active_pane_mut() {
+                    pane.open_file(&self.root.clone(), path);
+                }
+            }
+        }
+    }
+
+    fn poll_pending_opens(&mut self) -> bool {
+        let mut opened = false;
+        let mut index = 0;
+        while index < self.pending_opens.len() {
+            let pending = &self.pending_opens[index];
+            let loaded = match pending.receiver.try_recv() {
+                Ok(loaded) => loaded,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    index += 1;
+                    continue;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending_opens.remove(index);
+                    continue;
+                }
+            };
+            let pending = self.pending_opens.remove(index);
+            let item = FileItem::loaded(pending.root, &pending.path, loaded);
+            let mut item: Option<Box<dyn workspace::Item>> = Some(Box::new(item));
+            self.panes.group.for_each_pane_mut(&mut |pane| {
+                if pane.id == pending.pane {
+                    if let Some(item) = item.take() {
+                        pane.open.push(item);
+                        pane.activate_user(pane.open.len() - 1);
+                    }
+                }
+            });
+            if let Some(item) = item {
+                if let Some(pane) = self.panes.active_pane_mut() {
+                    pane.open.push(item);
+                    pane.activate_user(pane.open.len() - 1);
+                }
+            }
+            opened = true;
+        }
+        opened
     }
 
     /// A preview of the active markdown file, in its pane or the pane to its right (split off when there is
@@ -7024,6 +7544,7 @@ impl FunctionView for FilesView {
     fn tick_items(&mut self, clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
         let mut outcome = workspace::ItemTick::default();
         outcome.changed |= self.poll_finder_candidates();
+        outcome.changed |= self.poll_pending_opens();
         outcome.changed |= self.apply_disk_changes();
         outcome.changed |= self.serve_project_search();
         self.sync_markdown_previews();
@@ -7330,6 +7851,10 @@ mod line_layout_tests {
 mod line_width_tests {
     use super::*;
 
+    fn measured_widths(item: &FileItem) -> Vec<Option<usize>> {
+        item.line_widths.iter().map(|w| Some(w.columns)).collect()
+    }
+
     fn full_widths(item: &FileItem) -> Vec<Option<usize>> {
         let b = item.buffer.as_ref().unwrap();
         (0..b.rope.len_lines())
@@ -7337,12 +7862,73 @@ mod line_width_tests {
             .collect()
     }
 
+    fn row_layout(item: &FileItem) -> (Vec<DisplayRow>, Vec<usize>, usize) {
+        let rows = item.rows.as_ref().expect("rows");
+        let lines = (0..item.line_count())
+            .map(|line| item.disp_of(line))
+            .collect();
+        (rows.iter().collect(), lines, item.max_row_cols)
+    }
+
+    #[test]
+    fn a_file_read_in_pieces_matches_one_read_whole() {
+        let dir = std::env::temp_dir().join(format!("pomelo-pieces-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = "id,\tname \u{111}\u{1b0}\u{1edd}ng,\u{6771}\u{4eac}\r\n";
+        let text: String = (0..220_000).map(|i| format!("{i}{line}")).collect();
+        let path = dir.join("big.csv");
+        std::fs::write(&path, &text).unwrap();
+        let (pieces, widths) = load_text_in_pieces(&path, text.len() as u64).unwrap();
+        let whole = EditorBuffer::from_text(&text);
+        assert_eq!(pieces.text(), whole.text());
+        assert_eq!(pieces.text_for_save(), whole.text_for_save());
+        let expected = LineWidths::measure(&whole.rope, TAB_COLS);
+        assert_eq!(
+            widths.iter().collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn spans_match_every_row_built_one_by_one() {
+        let long = "word ".repeat(40);
+        let text = format!(
+            "fn a() {{\n    one\n    two\n}}\n{long}\nshort\n\tx\n{}\nend\n",
+            "đường ".repeat(30)
+        );
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.rs", Some(text.clone()));
+        item.body_w = 600.0;
+        for wrap in [SoftWrap::None, SoftWrap::EditorWidth] {
+            for folded in [false, true] {
+                item.soft_wrap_override = Some(wrap);
+                if folded {
+                    let b = item.buffer.as_ref().unwrap();
+                    let range = b.offset_at(0, 8)..b.offset_at(3, 0);
+                    item.folds.fold(b, range);
+                }
+                item.refresh();
+                item.rebuild_rows();
+                let spans = row_layout(&item);
+                item.rebuild_split_rows();
+                let full = row_layout(&item);
+                assert_eq!(spans, full, "wrap {wrap:?} folded {folded}");
+                if wrap == SoftWrap::EditorWidth && !folded {
+                    assert!(spans.0.len() > item.line_count(), "some line wraps");
+                }
+                if folded {
+                    assert_eq!(spans.1[1], spans.1[0], "hidden line maps to its header");
+                }
+            }
+        }
+    }
+
     #[test]
     fn incremental_widths_match_full_recompute() {
         let text = "a\n\tbb\nccc\n\ndddd\n";
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some(text.into()));
         item.refresh();
-        assert_eq!(item.line_widths, full_widths(&item));
+        assert_eq!(measured_widths(&item), full_widths(&item));
         type Step = Box<dyn Fn(&mut EditorBuffer)>;
         let steps: Vec<Step> = vec![
             Box::new(|b| {
@@ -7370,7 +7956,7 @@ mod line_width_tests {
         for step in steps {
             step(item.buffer.as_mut().unwrap());
             item.refresh();
-            assert_eq!(item.line_widths, full_widths(&item));
+            assert_eq!(measured_widths(&item), full_widths(&item));
             assert_eq!(item.wraps.len(), item.line_widths.len());
             item.ensure_visible();
             assert_eq!(

@@ -404,9 +404,15 @@ impl Default for EditorBuffer {
 
 impl EditorBuffer {
     pub fn from_text(text: &str) -> Self {
-        let line_ending = LineEnding::detect(text);
+        Self::from_rope(
+            Rope::from_str(&normalize_newlines(text)),
+            LineEnding::detect(text),
+        )
+    }
+
+    pub fn from_rope(rope: Rope, line_ending: LineEnding) -> Self {
         Self {
-            rope: Rope::from_str(&normalize_newlines(text)),
+            rope,
             line_ending,
             selections: vec![Selection {
                 id: 0,
