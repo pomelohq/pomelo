@@ -20,6 +20,7 @@ use crate::{
 use terminal::Keystroke;
 
 const TAB_ACTIVATE: u64 = 1_000_000;
+const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 const TAB_CLOSE: u64 = 3_000_000;
 const BUTTON: u64 = 5_000_000;
 const NAV_BACK: u64 = 7_000_000;
@@ -132,6 +133,8 @@ pub struct PaneGroupView {
     /// Path of the focused leaf (empty when the group is a single pane).
     pub active: Vec<usize>,
     next_pane_id: u64,
+    /// The last tab clicked and when, so a second click on it keeps a preview tab.
+    last_tab_click: Option<(std::time::Instant, u64)>,
     /// Rebuilt each layout: pane render index -> its path and screen rect, plus divider metadata by index.
     pane_order: Vec<Vec<usize>>,
     pane_rects: Vec<Rect>,
@@ -173,6 +176,7 @@ impl PaneGroupView {
             group: Member::Leaf(Pane::new(0)),
             active: Vec::new(),
             next_pane_id: 1,
+            last_tab_click: None,
             pane_order: Vec::new(),
             pane_rects: Vec::new(),
             divider_order: Vec::new(),
@@ -394,6 +398,11 @@ impl PaneGroupView {
                 }
             }
         }
+    }
+
+    pub fn keep_edited_previews(&mut self) {
+        self.group
+            .for_each_pane_mut(&mut |pane| pane.keep_edited_preview());
     }
 
     /// Opens `item` as the active pane's preview tab (in place of its preview, else a new tab).
@@ -931,10 +940,18 @@ impl PaneGroupView {
             return GroupClick::Handled;
         }
         let (p, index) = per_pane(TAB_ACTIVATE);
+        let now = std::time::Instant::now();
+        let second = self
+            .last_tab_click
+            .is_some_and(|(at, clicked)| clicked == id && now.duration_since(at) < DOUBLE_CLICK);
+        self.last_tab_click = (!second).then_some((now, id));
         if let Some(path) = self.pane_order.get(p).cloned() {
             if let Some(pane) = self.group.leaf_at_mut(&path) {
                 if (index as usize) < pane.open.len() {
                     pane.activate_user(index as usize);
+                    if second {
+                        pane.keep_if_preview(index as usize);
+                    }
                     self.active = path;
                 }
             }
