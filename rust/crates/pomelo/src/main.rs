@@ -6,6 +6,8 @@
 
 #[cfg(target_os = "macos")]
 mod add_repo;
+#[cfg(target_os = "macos")]
+mod app_menu;
 mod config_bundle;
 #[cfg(target_os = "macos")]
 mod key_equivalents;
@@ -1679,7 +1681,10 @@ impl App {
         self.keymap_read = modified;
         let (keymap, problems) = workspace::keymap::Keymap::load();
         #[cfg(target_os = "macos")]
-        key_equivalents::set_keymap(&keymap);
+        {
+            key_equivalents::set_keymap(&keymap);
+            app_menu::install(&keymap);
+        }
         self.keymap = keymap;
         self.keymap_problems = problems;
         self.pending_keys.clear();
@@ -2829,6 +2834,29 @@ impl ApplicationHandler for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
         #[cfg(target_os = "macos")]
+        for command in app_menu::take_selected() {
+            let target = self
+                .focused_main
+                .filter(|id| self.mains.contains_key(id))
+                .or_else(|| self.mains.keys().next().copied());
+            match command {
+                app_menu::Command::Open(url) => app_menu::open_url(url),
+                app_menu::Command::Run(action) => {
+                    if let Some(id) = target {
+                        self.run_app_action(id, action, event_loop);
+                    }
+                }
+                app_menu::Command::Update(action) => {
+                    if let Some(id) = target {
+                        self.run_update_action(id, action, event_loop);
+                        if let Some(main) = self.mains.get_mut(&id) {
+                            main.dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
         for stroke in key_equivalents::take_pending() {
             let target = self
                 .focused_main
@@ -2981,7 +3009,10 @@ impl ApplicationHandler for App {
         ui::set_chrome(settings_ui::chrome_flags(&self.settings));
         self.apply_editor_defaults();
         #[cfg(target_os = "macos")]
-        set_dock_icon();
+        {
+            set_dock_icon();
+            app_menu::install(&self.keymap);
+        }
 
         let mut layout = Layout::default();
         apply_dock_settings(&self.settings, &mut layout);
@@ -3994,6 +4025,12 @@ fn main() -> anyhow::Result<()> {
         previous(info);
     }));
 
+    #[cfg(target_os = "macos")]
+    let event_loop = {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        EventLoop::builder().with_default_menu(false).build()?
+    };
+    #[cfg(not(target_os = "macos"))]
     let event_loop = EventLoop::new()?;
     let proxy = event_loop.create_proxy();
     ui::set_waker(move || {
