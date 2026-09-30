@@ -4,6 +4,23 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-09-30
+
+### Added
+- Updates download in the background and wait for you: the title bar shows the download, then Restart to Update. Quitting installs a staged update too, and afterwards a notification offers the release notes. (#112)
+- The app menu has Release Notes, and Settings shows the version with Check Now, Restart to Update or Try Again. (#112)
+- A running service's tab is its live console: type into prompts and REPLs, paste, and use the mouse. Filter the logs to get the log list back. (#114)
+- Read-only tabs show a lock next to the name. (#115)
+
+### Changed
+- Automatic update checks run hourly and stay quiet; only Check for Updates reports checking and up to date. (#112)
+- Unwrapped service logs keep the time column in place and scroll the text sideways; wrapped rows line the time up with the first line. (#114)
+
+### Fixed
+- Very large files (millions of lines) open in a fraction of a second, scroll smoothly anywhere and take keystrokes instantly, without growing to gigabytes of memory. (#115)
+- Typing in a large unsaved file no longer freezes the app while it keeps the changes for the next launch. (#115)
+- A long value in a text field stays inside its box and keeps the caret in view. (#113)
+
 ## [0.7.3] - 2026-09-29
 
 ### Fixed
