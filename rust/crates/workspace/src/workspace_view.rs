@@ -2615,7 +2615,11 @@ impl WorkspaceView {
 
     /// Whether `(x, y)` is over a clickable region (for the shell to show a pointer cursor).
     pub fn hit_at(&self, x: f32, y: f32) -> Option<u64> {
-        self.hit(x, y)
+        let hit = self.hit(x, y)?;
+        match self.window_modal.as_ref() {
+            Some(modal) if crate::is_window_modal_id(hit) && !modal.is_pointer(hit) => None,
+            _ => Some(hit),
+        }
     }
 
     pub fn resize_cursor_at(&self, x: f32, y: f32) -> Option<ResizeCursor> {
@@ -4372,7 +4376,12 @@ impl WorkspaceView {
         }
         let hit = self.hit(x, y);
         let modifiers = terminal_modifiers();
+        let modal_hover = hit.filter(|id| crate::is_window_modal_id(*id));
         let mut repaint = self
+            .window_modal
+            .as_mut()
+            .is_some_and(|modal| modal.hover(modal_hover));
+        repaint |= self
             .layout
             .terminal_view
             .as_mut()

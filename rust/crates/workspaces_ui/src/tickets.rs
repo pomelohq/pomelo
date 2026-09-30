@@ -10,13 +10,69 @@ use pom_paths::StateDir;
 
 const REFRESH_EVERY: Duration = Duration::from_secs(60);
 
+/// Which tickets the new-workspace form lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TicketList {
+    Sprint(i64),
+    Backlog(i64),
+    Assigned,
+}
+
+impl TicketList {
+    fn encode(self) -> String {
+        match self {
+            TicketList::Sprint(board) => format!("sprint:{board}"),
+            TicketList::Backlog(board) => format!("backlog:{board}"),
+            TicketList::Assigned => "assigned".into(),
+        }
+    }
+
+    fn decode(text: &str) -> Option<TicketList> {
+        let text = text.trim();
+        if text == "assigned" {
+            return Some(TicketList::Assigned);
+        }
+        let (kind, board) = text.split_once(':')?;
+        let board = board.parse().ok()?;
+        match kind {
+            "sprint" => Some(TicketList::Sprint(board)),
+            "backlog" => Some(TicketList::Backlog(board)),
+            _ => None,
+        }
+    }
+}
+
+/// The list the form showed last in a project, opened again next time.
+fn list_file(state: &StateDir, session: &str) -> std::path::PathBuf {
+    state.path("cache").join(format!("jira-list-{session}"))
+}
+
+fn load_list(state: &StateDir, session: &str) -> Option<TicketList> {
+    TicketList::decode(&std::fs::read_to_string(list_file(state, session)).ok()?)
+}
+
+fn save_list(path: &std::path::Path, list: TicketList) {
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| pom_paths::write_atomic(path, list.encode().as_bytes(), 0o644));
+    if let Err(error) = written {
+        eprintln!("jira: remember the ticket list: {error}");
+    }
+}
+
+type Issues = Arc<dyn Fn(TicketList) -> Result<Vec<SprintIssue>, String> + Send + Sync>;
+
 /// Where the new-workspace form gets its tickets from.
 #[derive(Clone)]
 pub struct TicketSource {
     pub boards: Arc<dyn Fn() -> Result<Vec<Board>, String> + Send + Sync>,
-    pub sprint: Arc<dyn Fn(i64) -> Result<Vec<SprintIssue>, String> + Send + Sync>,
+    pub issues: Issues,
     /// The board picked last time, if any.
     pub board: Option<i64>,
+    /// The list picked last time in this project, if any.
+    pub start: Option<TicketList>,
+    pub remember: Arc<dyn Fn(TicketList) + Send + Sync>,
     pub only_mine: bool,
 }
 
@@ -29,15 +85,23 @@ impl TicketSource {
         only_mine: bool,
     ) -> Option<TicketSource> {
         let client = Arc::new(pom_jira::resolve(state, session)?);
-        let for_sprint = client.clone();
+        let for_issues = client.clone();
         Some(TicketSource {
             boards: Arc::new(move || client.boards().map_err(|error| error.to_string())),
-            sprint: Arc::new(move |board| {
-                for_sprint
-                    .current_sprint_issues(board)
-                    .map_err(|error| error.to_string())
+            issues: Arc::new(move |list| {
+                match list {
+                    TicketList::Sprint(board) => for_issues.current_sprint_issues(board),
+                    TicketList::Backlog(board) => for_issues.backlog_issues(board),
+                    TicketList::Assigned => for_issues.assigned_issues(),
+                }
+                .map_err(|error| error.to_string())
             }),
             board,
+            start: load_list(state, session),
+            remember: {
+                let path = list_file(state, session);
+                Arc::new(move |list| save_list(&path, list))
+            },
             only_mine,
         })
     }

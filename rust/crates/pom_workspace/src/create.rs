@@ -36,6 +36,8 @@ pub struct CreateRequest {
     /// Environment profile for every repo of the workspace; empty keeps `local`.
     pub environment: String,
     pub skip_seed: bool,
+    /// Start every database empty and seed it, even for repos that copy main's.
+    pub fresh_databases: bool,
     /// 0-based stage to start from when resuming a failed run.
     pub from_stage: usize,
     /// Repo -> the branch it checks out instead of `branch`. The workspace keeps `branch` for its folder,
@@ -307,7 +309,7 @@ impl Creation<'_> {
                     }
                 };
                 let (workspace, main) = (name(self.branch()), name(self.default_branch));
-                if dir.seed_from_main && workspace != main {
+                if dir.seed_from_main && !self.request.fresh_databases && workspace != main {
                     clones.push((workspace, main));
                 } else {
                     fresh.push(workspace);
@@ -491,7 +493,7 @@ impl Creation<'_> {
                 let Some(dir) = config.repos.get(&repo.name) else {
                     continue;
                 };
-                if dir.seed.is_empty() || dir.seed_from_main {
+                if dir.seed.is_empty() || (dir.seed_from_main && !self.request.fresh_databases) {
                     continue;
                 }
                 let repo_env = env.repo_env(&repo.name);

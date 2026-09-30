@@ -319,6 +319,23 @@ fn create_then_delete_round_trip() {
 }
 
 #[test]
+fn fresh_databases_seed_even_the_repos_that_copy_main() {
+    let fixture = Fixture::new();
+    let fresh = CreateRequest {
+        fresh_databases: true,
+        ..request("feat-y")
+    };
+    let (result, _) = fixture.create(&fresh);
+    result.expect("create");
+    assert!(fixture.workspace("feat-y").join("api/seeded.txt").is_file());
+    let docker = fixture.docker_calls();
+    assert!(
+        docker.contains("CREATE DATABASE \"demo_api_feat-y\"") && !docker.contains("TEMPLATE"),
+        "{docker}"
+    );
+}
+
+#[test]
 fn delete_keeps_a_branch_with_unpushed_commits() {
     let fixture = Fixture::new();
     let only_web = CreateRequest {

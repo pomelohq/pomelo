@@ -812,6 +812,8 @@ impl App {
                     repos: Vec::new(),
                     board: None,
                     repo_branches: Default::default(),
+                    environment: String::new(),
+                    fresh_databases: false,
                 },
             );
         }
