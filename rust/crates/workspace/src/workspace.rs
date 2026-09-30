@@ -663,6 +663,8 @@ pub const MENU_EDIT_MARKDOWN_PREVIEW: u64 = 898;
 pub const TAB_MENU_TARGET: u64 = 852;
 /// The title bar's app menu (its chevron).
 pub const APP_MENU_TARGET: u64 = 854;
+/// A menu a tab's own toolbar button opened; its entries and picks belong to that tab.
+pub const ITEM_MENU_TARGET: u64 = 856;
 pub const MENU_APP_ACCOUNT: u64 = 950;
 pub const MENU_APP_UPDATE: u64 = 951;
 pub const MENU_APP_SETTINGS: u64 = 952;
@@ -990,6 +992,12 @@ pub trait Item: 'static {
     fn toolbar_click(&mut self, _id: u64) -> bool {
         false
     }
+    /// The menu a toolbar click asked to open under the button it hit, once.
+    fn take_menu_request(&mut self) -> Option<Vec<MenuItem>> {
+        None
+    }
+    /// An entry picked from the menu `take_menu_request` opened.
+    fn menu_pick(&mut self, _id: u64) {}
     /// Whether a toolbar click asked for the pane's find bar, once.
     fn take_find_request(&mut self) -> bool {
         false
@@ -1644,6 +1652,12 @@ pub trait FunctionView: ItemInput + 'static {
     fn take_request(&mut self) -> Option<ViewRequest> {
         None
     }
+    /// A menu an item's toolbar asked to open, once.
+    fn take_menu_request(&mut self) -> Option<Vec<MenuItem>> {
+        None
+    }
+    /// An entry picked from that menu, for the item that opened it.
+    fn menu_pick(&mut self, _id: u64) {}
     /// Place an item as a new tab in the focused pane.
     fn add_center_item(&mut self, _item: Box<dyn Item>) {}
     /// Tick every item that works in the background; closes the tabs that asked to close.

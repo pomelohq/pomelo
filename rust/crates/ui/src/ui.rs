@@ -1033,6 +1033,8 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Clock => svg!("clock.svg"),
         IconKind::FileLock => svg!("file_lock.svg"),
         IconKind::Filter => svg!("filter.svg"),
+        IconKind::Sliders => svg!("sliders.svg"),
+        IconKind::CursorIBeam => svg!("cursor_i_beam.svg"),
         IconKind::Copy => svg!("copy.svg"),
         IconKind::Trash => svg!("trash.svg"),
         IconKind::Column => svg!("column.svg"),

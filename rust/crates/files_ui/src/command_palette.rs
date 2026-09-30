@@ -52,6 +52,14 @@ impl PaletteClick {
 
 use PaletteAction::{Key, Lines, Text};
 
+/// The key `key` is bound to, as the palette lists it.
+pub(crate) fn key_hint(key: EditKey) -> Option<&'static str> {
+    COMMANDS
+        .iter()
+        .find(|(_, action, _)| *action == Key(key))
+        .and_then(|(_, _, keys)| keys.first().copied())
+}
+
 // Bindings mirror the key map in the binary's event loop; keep both in sync.
 const COMMANDS: &[(&str, PaletteAction, &[&str])] = &[
     ("editor::MoveLeft", Key(EditKey::Left), &["left"]),

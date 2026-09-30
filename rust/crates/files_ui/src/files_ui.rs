@@ -172,6 +172,102 @@ fn gutter_width(line_count: usize) -> f32 {
     GutterDimensions::for_lines(line_count).full_width()
 }
 
+/// `text` in the buffer font with its syntax colors over `plain`.
+fn colored_label(text: &str, colors: &[(Range<usize>, Rgba)], size: f32, plain: Rgba) -> Node {
+    let mut row = div().row().items_center();
+    let mut at = 0;
+    let mut runs: Vec<&(Range<usize>, Rgba)> = colors.iter().collect();
+    runs.sort_by_key(|(range, _)| range.start);
+    for (range, color) in runs {
+        let (start, end) = (range.start.min(text.len()), range.end.min(text.len()));
+        if start < at || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+            continue;
+        }
+        if start > at {
+            row = row.child(
+                label(text[at..start].to_string())
+                    .size(size)
+                    .mono()
+                    .color(plain),
+            );
+        }
+        if end > start {
+            row = row.child(
+                label(text[start..end].to_string())
+                    .size(size)
+                    .mono()
+                    .color(*color),
+            );
+        }
+        at = end;
+    }
+    if at < text.len() {
+        row = row.child(label(text[at..].to_string()).size(size).mono().color(plain));
+    }
+    row.into()
+}
+
+/// The breadcrumb symbols and the (buffer version, caret) they were found for.
+type Crumbs = ((u64, usize), Vec<outline_view::Symbol>);
+
+/// Each editor's toolbar ids, clear of the other tabs' toolbars (which start at 1 << 50).
+fn next_toolbar_ids() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    (1 << 51) + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) * TOOLBAR_IDS_PER_EDITOR
+}
+
+const TOOLBAR_IDS_PER_EDITOR: u64 = 64;
+const TOOLBAR_CRUMBS: u64 = 0;
+const TOOLBAR_SEARCH: u64 = 1;
+const TOOLBAR_SELECTIONS: u64 = 2;
+const TOOLBAR_CONTROLS: u64 = 3;
+/// Menu entries: selection commands from here (by `SELECTION_COMMANDS` index), then the controls.
+const TOOLBAR_SELECTION_BASE: u64 = 8;
+const TOOLBAR_CONTROL_BASE: u64 = 40;
+/// Columns between a line's end and its inline diagnostic, as the reference pads it.
+const INLINE_DIAGNOSTIC_PADDING: f32 = 4.0;
+
+/// The Selection Controls menu: (label, key it runs, separator before it).
+const SELECTION_COMMANDS: [(&str, EditKey, bool); 15] = [
+    ("Select All", EditKey::SelectAll, false),
+    ("Select Next Occurrence", EditKey::SelectNext, false),
+    ("Expand Selection", EditKey::SelectLargerSyntaxNode, false),
+    ("Shrink Selection", EditKey::SelectSmallerSyntaxNode, false),
+    ("Add Cursor Above", EditKey::AddCursorAbove, false),
+    ("Add Cursor Below", EditKey::AddCursorBelow, false),
+    ("Go to Symbol", EditKey::ToggleOutline, true),
+    ("Go to Line/Column", EditKey::ToggleGoToLine, false),
+    ("Next Problem", EditKey::GoToDiagnostic, true),
+    ("Previous Problem", EditKey::GoToPreviousDiagnostic, false),
+    ("Next Hunk", EditKey::GoToHunk, true),
+    ("Previous Hunk", EditKey::GoToPreviousHunk, false),
+    ("Move Line Up", EditKey::MoveLineUp, true),
+    ("Move Line Down", EditKey::MoveLineDown, false),
+    ("Duplicate Selection", EditKey::DuplicateLineDown, false),
+];
+
+/// The Editor Controls menu entries, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EditorControl {
+    Diagnostics,
+    InlineDiagnostics,
+    LineNumbers,
+    InlineBlame,
+    SoftWrap,
+}
+
+const EDITOR_CONTROLS: [(EditorControl, &str, bool); 5] = [
+    (EditorControl::Diagnostics, "Diagnostics", false),
+    (
+        EditorControl::InlineDiagnostics,
+        "Inline Diagnostics",
+        false,
+    ),
+    (EditorControl::LineNumbers, "Line Numbers", true),
+    (EditorControl::InlineBlame, "Inline Git Blame", true),
+    (EditorControl::SoftWrap, "Soft Wrap", true),
+];
+
 const INDENT: f32 = 16.0; // per-depth indent (~20 in the design; trimmed for the narrower panel)
 const ROW_H: f32 = 22.0;
 const MAX_PANES: usize = 6; // ceiling on total leaf panes in the group
@@ -488,6 +584,18 @@ struct FileItem {
     glides: caret_glide::Glides,
     /// A caret is mid-glide, so the next frame is wanted right away.
     caret_gliding: bool,
+    /// What the toolbar's Editor Controls show or hide in this editor.
+    show_diagnostics: bool,
+    inline_diagnostics: bool,
+    line_numbers: bool,
+    inline_blame: bool,
+    toolbar_ids: u64,
+    menu_request: Option<Vec<workspace::MenuItem>>,
+    /// A key the toolbar ran, for the view to route like a keystroke (outline, go to line, ...).
+    view_key: Option<EditKey>,
+    find_requested: bool,
+    /// The symbols around the newest caret, for the breadcrumbs, by the buffer version and caret they were for.
+    crumbs: RefCell<Option<Crumbs>>,
 }
 
 struct Footer {
@@ -784,6 +892,15 @@ impl FileItem {
             active_indent: RefCell::default(),
             glides: caret_glide::Glides::default(),
             caret_gliding: false,
+            show_diagnostics: true,
+            inline_diagnostics: false,
+            line_numbers: true,
+            inline_blame: true,
+            toolbar_ids: next_toolbar_ids(),
+            menu_request: None,
+            view_key: None,
+            find_requested: false,
+            crumbs: RefCell::default(),
         }
     }
 
@@ -852,7 +969,10 @@ impl FileItem {
 
     /// Wavy underlines under the visible diagnostics, the more severe drawn on top.
     fn diagnostic_rects(&self, content: Rect, first: usize, last: usize) -> Vec<Rect> {
-        let gw = gutter_width(self.line_count());
+        if !self.show_diagnostics {
+            return Vec::new();
+        }
+        let gw = self.gutter_dims().full_width();
         let mut ordered: Vec<&DiagnosticEntry> = self.diagnostics.iter().collect();
         ordered.sort_by_key(|entry| std::cmp::Reverse(entry.severity));
         let mut rects = Vec::new();
@@ -1102,6 +1222,109 @@ impl FileItem {
                 )
             })
             .collect()
+    }
+
+    /// The symbols around the newest caret, outermost first.
+    fn symbols_at_cursor(&self) -> Vec<outline_view::Symbol> {
+        let Some(b) = self.buffer.as_ref() else {
+            return Vec::new();
+        };
+        let key = (b.version(), b.newest().head());
+        if let Some((at, symbols)) = self.crumbs.borrow().as_ref() {
+            if *at == key {
+                return symbols.clone();
+            }
+        }
+        let head = key.1;
+        let mut symbols: Vec<outline_view::Symbol> = self
+            .outline_symbols()
+            .into_iter()
+            .filter(|symbol| symbol.range.start <= head && head < symbol.range.end)
+            .collect();
+        symbols.sort_by_key(|symbol| symbol.depth);
+        *self.crumbs.borrow_mut() = Some((key, symbols.clone()));
+        symbols
+    }
+
+    fn selection_menu(&self) -> Vec<workspace::MenuItem> {
+        SELECTION_COMMANDS
+            .iter()
+            .enumerate()
+            .map(|(index, (text, key, sep))| workspace::MenuItem {
+                id: self.toolbar_ids + TOOLBAR_SELECTION_BASE + index as u64,
+                label: (*text).into(),
+                checked: false,
+                sep: *sep,
+                disabled: matches!(key, EditKey::GoToHunk | EditKey::GoToPreviousHunk)
+                    && self.git.hunks().is_empty(),
+                danger: false,
+                icon: None,
+                hint: command_palette::key_hint(*key).map(Into::into),
+            })
+            .collect()
+    }
+
+    fn controls_menu(&self) -> Vec<workspace::MenuItem> {
+        EDITOR_CONTROLS
+            .iter()
+            .enumerate()
+            .map(|(index, (control, text, sep))| workspace::MenuItem {
+                id: self.toolbar_ids + TOOLBAR_CONTROL_BASE + index as u64,
+                label: (*text).into(),
+                checked: match control {
+                    EditorControl::Diagnostics => self.show_diagnostics,
+                    EditorControl::InlineDiagnostics => self.inline_diagnostics,
+                    EditorControl::LineNumbers => self.line_numbers,
+                    EditorControl::InlineBlame => self.inline_blame,
+                    EditorControl::SoftWrap => self.soft_wrap_mode() == SoftWrap::EditorWidth,
+                },
+                sep: *sep,
+                disabled: *control == EditorControl::InlineDiagnostics && !self.show_diagnostics,
+                danger: false,
+                icon: None,
+                hint: None,
+            })
+            .collect()
+    }
+
+    /// A key a toolbar click or menu pick asked the view to run, once.
+    fn take_view_key(&mut self) -> Option<EditKey> {
+        self.view_key.take()
+    }
+
+    /// The gutter's layout, without the number column while line numbers are hidden.
+    fn gutter_dims(&self) -> GutterDimensions {
+        let mut dims = GutterDimensions::for_lines(self.line_count());
+        if !self.line_numbers {
+            dims.width = dims.left_padding + dims.right_padding;
+        }
+        dims
+    }
+
+    /// The message and color an inline diagnostic shows at the end of `line`: the most severe one starting on
+    /// it, left out while it is the diagnostic being looked at.
+    fn inline_diagnostic(&self, line: usize) -> Option<(String, Rgba)> {
+        if !self.inline_diagnostics || !self.show_diagnostics {
+            return None;
+        }
+        let b = self.buffer.as_ref()?;
+        let active = self
+            .active_diagnostic
+            .as_ref()
+            .map(|active| active.range.clone());
+        self.diagnostics
+            .iter()
+            .filter(|entry| {
+                b.rope
+                    .char_to_line(entry.range.start.min(b.rope.len_chars()))
+                    == line
+            })
+            .filter(|entry| active.as_ref() != Some(&entry.range))
+            .min_by_key(|entry| entry.severity)
+            .map(|entry| {
+                let message = entry.message.lines().next().unwrap_or_default().to_string();
+                (message, diagnostic_color(entry.severity))
+            })
     }
 
     fn soft_wrap_mode(&self) -> SoftWrap {
@@ -2002,7 +2225,7 @@ impl FileItem {
 
     /// The text viewport width (px): the body minus the padding and the fixed gutter.
     fn text_viewport_w(&self) -> f32 {
-        (self.body_w - gutter_width(self.line_count()) - SCROLLBAR_WIDTH).max(0.0)
+        (self.body_w - self.gutter_dims().full_width() - SCROLLBAR_WIDTH).max(0.0)
     }
 
     /// Total text width (px) of the widest line, plus a trailing column so the last glyph isn't flush to the edge.
@@ -2111,7 +2334,7 @@ impl FileItem {
     /// Map a content-local pointer position (before the gutter, before scroll) to a buffer offset.
     fn offset_at_local(&self, local_x: f32, local_y: f32) -> Option<usize> {
         let b = self.buffer.as_ref()?;
-        let gw = gutter_width(self.line_count());
+        let gw = self.gutter_dims().full_width();
         let row = ((self.scroll_y + local_y) / edit_line_h()).max(0.0) as usize;
         if row >= self.disp_count() {
             return Some(b.rope.len_chars());
@@ -2314,7 +2537,7 @@ impl FileItem {
         let Some(b) = self.buffer.as_ref() else {
             return Vec::new();
         };
-        let gw = gutter_width(self.line_count());
+        let gw = self.gutter_dims().full_width();
         let first = self.first_line();
         let last =
             (first + (self.body_h / edit_line_h()).ceil() as usize + 2).min(self.disp_count());
@@ -2389,7 +2612,7 @@ impl FileItem {
         if selected.is_empty() {
             return Vec::new();
         }
-        let gw = gutter_width(self.line_count());
+        let gw = self.gutter_dims().full_width();
         let first = self.first_line();
         let last =
             (first + (self.body_h / edit_line_h()).ceil() as usize + 2).min(self.disp_count());
@@ -2519,7 +2742,7 @@ impl FileItem {
     /// The display row the blame annotation trails: the newest caret's, while focused and off a blank line.
     fn inline_blame_row(&self) -> Option<usize> {
         let b = self.buffer.as_ref()?;
-        if !self.focused || self.git.blame().is_empty() {
+        if !self.focused || !self.inline_blame || self.git.blame().is_empty() {
             return None;
         }
         let head = b.newest().head();
@@ -2726,7 +2949,7 @@ impl FileItem {
         let menu = self.completions.as_ref()?;
         let b = self.buffer.as_ref()?;
         let (row, x) = self.position(b.newest().head());
-        let x = content.x + gutter_width(self.line_count()) + x - self.scroll_x;
+        let x = content.x + self.gutter_dims().full_width() + x - self.scroll_x;
         let row_top = content.y + row as f32 * edit_line_h() - self.scroll_y;
         let height = menu.height() * ui::ui_text_scale();
         let below = row_top + edit_line_h();
@@ -3261,7 +3484,7 @@ impl FileItem {
         let top = first_line.saturating_sub(rows.saturating_sub(1) / 2);
         let shift = name_start.min((name_end + 1).saturating_sub(columns));
         let colors = syntax_theme();
-        let dims = GutterDimensions::for_lines(self.line_count());
+        let dims = self.gutter_dims();
         let rows = (top..(top + rows).min(self.line_count()))
             .map(|line| {
                 let mut skip = shift;
@@ -3745,10 +3968,33 @@ impl Item for FileItem {
                 &inline_diagnostic,
                 Some(diagnostic_nav::BlockPlacement::Inline { row_line }) if *row_line == row.line
             ) && !self.soft_break_after(row_index);
+            let inline_message = (!inline_block && !self.soft_break_after(row_index))
+                .then(|| self.inline_diagnostic(row.line))
+                .flatten();
             if inline_block {
                 if let Some(block) = self.inline_block() {
                     r = r.child(block);
                 }
+            } else if let Some((message, color)) = inline_message {
+                r = r
+                    .child(div().w_px(INLINE_DIAGNOSTIC_PADDING * char_advance()))
+                    .child(
+                        div()
+                            .row()
+                            .flex(1.0)
+                            .h_px(edit_line_h())
+                            .px(4.0)
+                            .items_center()
+                            .rounded(2.0)
+                            .bg(color.alpha(0.05))
+                            .child(
+                                label(message)
+                                    .size(edit_font() * 0.875)
+                                    .mono()
+                                    .color(color)
+                                    .truncate(),
+                            ),
+                    );
             } else if Some(row_index) == blame_row {
                 if let Some(text) = self.inline_blame_text() {
                     let hint = theme().hint;
@@ -3796,7 +4042,7 @@ impl Item for FileItem {
         }
         self.sync_base_text();
         let buf = self.buffer.as_ref()?;
-        let dims = GutterDimensions::for_lines(self.line_count());
+        let dims = self.gutter_dims();
         let active = self.active_rows();
         let cursor_rows: Vec<usize> = buf
             .selections()
@@ -3865,12 +4111,18 @@ impl Item for FileItem {
                         }
                     })
                     .child(div().flex(1.0))
-                    .child(
-                        label((line + 1).to_string())
-                            .size(edit_font())
-                            .mono()
-                            .color(number_color),
-                    )
+                    .child({
+                        let number: Node = if self.line_numbers {
+                            label((line + 1).to_string())
+                                .size(edit_font())
+                                .mono()
+                                .color(number_color)
+                                .into()
+                        } else {
+                            div().into()
+                        };
+                        number
+                    })
                     .child(fold_cell),
             );
         }
@@ -3884,7 +4136,7 @@ impl Item for FileItem {
     }
 
     fn gutter_w(&self) -> f32 {
-        gutter_width(self.line_count())
+        self.gutter_dims().full_width()
     }
 
     fn toggle_fold(&mut self, line: usize) {
@@ -4098,7 +4350,7 @@ impl Item for FileItem {
         if self.buffer.is_none() || !self.scrollbars_revealed() {
             return Vec::new();
         }
-        let gw = gutter_width(self.line_count());
+        let gw = self.gutter_dims().full_width();
         let track = Rect::new(
             content.x + gw,
             content.y + content.h - SCROLLBAR_WIDTH,
@@ -4610,7 +4862,7 @@ impl Item for FileItem {
         let colors = theme();
         let line_h = edit_line_h();
         let column_w = char_advance();
-        let gw = gutter_width(self.line_count());
+        let gw = self.gutter_dims().full_width();
         let view = caret_glide::TextView {
             scroll_x: self.scroll_x,
             scroll_y: self.scroll_y,
@@ -4723,6 +4975,124 @@ impl Item for FileItem {
         true
     }
 
+    fn toolbar(&self, _width: f32) -> Option<Node> {
+        self.buffer.as_ref()?;
+        let colors = theme();
+        let id = |offset: u64| self.toolbar_ids + offset;
+        let mut crumbs = div()
+            .row()
+            .h_px(22.0)
+            .px(4.0)
+            .gap(4.0)
+            .items_center()
+            .rounded(4.0)
+            .on_click(id(TOOLBAR_CRUMBS))
+            .child(
+                label(self.path.clone())
+                    .size(13.0)
+                    .mono()
+                    .color(colors.text_muted)
+                    .truncate(),
+            );
+        for symbol in self.symbols_at_cursor() {
+            crumbs = crumbs
+                .child(
+                    icon(IconKind::ChevronRight)
+                        .size(10.0)
+                        .color(colors.text_placeholder),
+                )
+                .child(colored_label(
+                    &symbol.text,
+                    &symbol.colors,
+                    13.0,
+                    colors.text_muted,
+                ));
+        }
+        let button = |offset: u64, kind: IconKind| {
+            div()
+                .row()
+                .w_px(22.0)
+                .h_px(22.0)
+                .rounded(4.0)
+                .items_center()
+                .justify_center()
+                .on_click(id(offset))
+                .child(icon(kind).size(14.0).color(colors.icon_muted))
+        };
+        let row = div()
+            .row()
+            .h_px(workspace::pane::TOOLBAR_H - 1.0)
+            .px(8.0)
+            .gap(2.0)
+            .items_center()
+            .bg(colors.toolbar_background)
+            .child(div().row().flex(1.0).items_center().child(crumbs))
+            .child(button(TOOLBAR_SEARCH, IconKind::Search))
+            .child(button(TOOLBAR_SELECTIONS, IconKind::CursorIBeam))
+            .child(button(TOOLBAR_CONTROLS, IconKind::Sliders));
+        Some(
+            div()
+                .col()
+                .child(row)
+                .child(div().h_px(1.0).bg(colors.border_variant))
+                .into(),
+        )
+    }
+
+    fn toolbar_click(&mut self, id: u64) -> bool {
+        let Some(offset) = id
+            .checked_sub(self.toolbar_ids)
+            .filter(|offset| *offset < TOOLBAR_IDS_PER_EDITOR)
+        else {
+            return false;
+        };
+        match offset {
+            TOOLBAR_CRUMBS => self.view_key = Some(EditKey::ToggleOutline),
+            TOOLBAR_SEARCH => self.find_requested = true,
+            TOOLBAR_SELECTIONS => self.menu_request = Some(self.selection_menu()),
+            TOOLBAR_CONTROLS => self.menu_request = Some(self.controls_menu()),
+            _ => {}
+        }
+        true
+    }
+
+    fn take_find_request(&mut self) -> bool {
+        std::mem::take(&mut self.find_requested)
+    }
+
+    fn take_menu_request(&mut self) -> Option<Vec<workspace::MenuItem>> {
+        self.menu_request.take()
+    }
+
+    fn menu_pick(&mut self, id: u64) {
+        let Some(offset) = id.checked_sub(self.toolbar_ids) else {
+            return;
+        };
+        if let Some((_, key, _)) = offset
+            .checked_sub(TOOLBAR_SELECTION_BASE)
+            .and_then(|index| SELECTION_COMMANDS.get(index as usize))
+        {
+            self.view_key = Some(*key);
+            return;
+        }
+        let Some((control, _, _)) = offset
+            .checked_sub(TOOLBAR_CONTROL_BASE)
+            .and_then(|index| EDITOR_CONTROLS.get(index as usize))
+        else {
+            return;
+        };
+        match control {
+            EditorControl::Diagnostics => self.show_diagnostics = !self.show_diagnostics,
+            EditorControl::InlineDiagnostics => self.inline_diagnostics = !self.inline_diagnostics,
+            EditorControl::LineNumbers => {
+                self.line_numbers = !self.line_numbers;
+                self.rows = None;
+            }
+            EditorControl::InlineBlame => self.inline_blame = !self.inline_blame,
+            EditorControl::SoftWrap => self.toggle_soft_wrap(),
+        }
+    }
+
     fn toggle_cursor_at(&mut self, local_x: f32, local_y: f32) {
         self.hide_hover();
         self.close_completions();
@@ -4743,7 +5113,7 @@ impl Item for FileItem {
             return Vec::new();
         };
         let cw = char_advance();
-        let gw = gutter_width(self.line_count());
+        let gw = self.gutter_dims().full_width();
         let row_y = |row: usize| content.y + row as f32 * edit_line_h() - self.scroll_y;
         let first = self.first_line();
         let last =
@@ -5573,6 +5943,19 @@ pub struct FilesView {
 pub(crate) use workspace::syntax_theme;
 
 impl FilesView {
+    /// Runs the key the active editor's toolbar asked for, the way a keystroke would.
+    fn run_toolbar_key(&mut self) {
+        let key = self
+            .panes
+            .active_item_mut()
+            .and_then(|item| item.as_any_mut())
+            .and_then(|any| any.downcast_mut::<FileItem>())
+            .and_then(FileItem::take_view_key);
+        if let Some(key) = key {
+            ItemInput::editor_key(self, key, false);
+        }
+    }
+
     /// Opens at once with an empty tree; the tree fills in from a background walk so a large workspace
     /// never stalls the window.
     pub fn read_only(mut self, read_only: bool) -> Self {
@@ -7041,7 +7424,7 @@ impl FunctionView for FilesView {
                 (true, Some(symbol)) => {
                     let gutter = {
                         let item = self.go_to_line_item(&path)?;
-                        let dims = GutterDimensions::for_lines(item.line_count());
+                        let dims = item.gutter_dims();
                         dims.full_width() - dims.fold_area_width()
                     };
                     let (rows, columns) = self
@@ -7329,7 +7712,10 @@ impl FunctionView for FilesView {
     fn on_click(&mut self, id: u64) -> bool {
         match self.panes.click(id) {
             GroupClick::NotMine => {}
-            GroupClick::Handled => return true,
+            GroupClick::Handled => {
+                self.run_toolbar_key();
+                return true;
+            }
             GroupClick::Search { pane, click } => {
                 self.track_nav(|v| v.panes.search_click(pane, click));
                 return true;
@@ -7680,6 +8066,15 @@ impl FunctionView for FilesView {
 
     fn take_toast(&mut self) -> Option<String> {
         self.take_tree_toast()
+    }
+
+    fn take_menu_request(&mut self) -> Option<Vec<workspace::MenuItem>> {
+        self.panes.take_menu_request()
+    }
+
+    fn menu_pick(&mut self, id: u64) {
+        self.panes.menu_pick(id);
+        self.run_toolbar_key();
     }
 
     fn take_request(&mut self) -> Option<workspace::ViewRequest> {
@@ -8180,7 +8575,7 @@ mod wrap_tests {
         let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.md", Some(text.into()));
         let em = char_advance();
         let body_w =
-            (columns as f32 + 2.0) * em + gutter_width(item.line_count()) + SCROLLBAR_WIDTH;
+            (columns as f32 + 2.0) * em + item.gutter_dims().full_width() + SCROLLBAR_WIDTH;
         item.set_body_width(body_w);
         item.set_body_height(10.0 * edit_line_h());
         item
@@ -8299,6 +8694,69 @@ mod indent_guide_tests {
     }
 
     #[test]
+    fn the_toolbar_menus_toggle_what_the_editor_shows() {
+        let mut item = FileItem::new(
+            PathBuf::from("/nonexistent"),
+            "a.ts",
+            Some("const a = 1;\nconst b = 2;\n".into()),
+        );
+        item.diagnostics.push(DiagnosticEntry {
+            range: 16..17,
+            severity: lsp::lsp_types::DiagnosticSeverity::ERROR,
+            message: "b is never read\nmore".into(),
+            source: None,
+            code: None,
+        });
+        let base = item.toolbar_ids;
+        assert!(
+            !item.toolbar_click(base + TOOLBAR_IDS_PER_EDITOR),
+            "another editor's id"
+        );
+        assert!(item.toolbar_click(base + TOOLBAR_CONTROLS));
+        let menu = item.take_menu_request().expect("controls");
+        let checked: Vec<(&str, bool)> = menu
+            .iter()
+            .map(|entry| (entry.label.as_ref(), entry.checked))
+            .collect();
+        assert_eq!(
+            checked,
+            [
+                ("Diagnostics", true),
+                ("Inline Diagnostics", false),
+                ("Line Numbers", true),
+                ("Inline Git Blame", true),
+                ("Soft Wrap", false),
+            ]
+        );
+        assert_eq!(item.inline_diagnostic(1), None);
+        item.menu_pick(menu[1].id);
+        assert_eq!(
+            item.inline_diagnostic(1).map(|(text, _)| text).as_deref(),
+            Some("b is never read")
+        );
+        let wide = item.gutter_dims().full_width();
+        item.menu_pick(menu[2].id);
+        assert!(
+            item.gutter_dims().full_width() < wide,
+            "the number column goes"
+        );
+        item.menu_pick(menu[0].id);
+        assert_eq!(
+            item.inline_diagnostic(1),
+            None,
+            "diagnostics off hides them inline too"
+        );
+
+        assert!(item.toolbar_click(base + TOOLBAR_SELECTIONS));
+        let selection = item.take_menu_request().expect("selections");
+        assert_eq!(selection[0].hint.as_deref(), Some("cmd-a"));
+        item.menu_pick(selection[6].id);
+        assert_eq!(item.take_view_key(), Some(EditKey::ToggleOutline));
+        assert!(item.toolbar_click(base + TOOLBAR_SEARCH));
+        assert!(item.take_find_request());
+    }
+
+    #[test]
     fn a_sideways_scroll_keeps_guides_out_of_the_gutter() {
         let mut item = FileItem::new(
             PathBuf::from("/nonexistent"),
@@ -8306,7 +8764,7 @@ mod indent_guide_tests {
             Some("export {\n  a,\n  b,\n};\n".into()),
         );
         let content = Rect::new(0.0, 0.0, 600.0, 400.0, Rgba::TRANSPARENT);
-        let text_left = content.x + gutter_width(item.line_count());
+        let text_left = content.x + item.gutter_dims().full_width();
         let guide = |rect: &Rect| rect.w == 1.0 && rect.h >= edit_line_h();
         assert!(item.back_rects(content).iter().any(guide));
         item.scroll_x = 40.0;
