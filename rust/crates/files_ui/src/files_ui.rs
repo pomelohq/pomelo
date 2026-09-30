@@ -2325,7 +2325,8 @@ impl FileItem {
         };
         let thumb_at = start + offset / step * unit;
         if along < thumb_at || along > thumb_at + thumb {
-            let target = (along - start - thumb / 2.0).max(0.0) / unit.max(0.01) * step;
+            let target =
+                (along - start - thumb / 2.0).max(0.0) / unit.max(f32::MIN_POSITIVE) * step;
             if vertical {
                 self.set_scroll_y(target);
             } else {
@@ -4528,7 +4529,8 @@ impl Item for FileItem {
         if let Some((vertical, last)) = self.scrollbar_drag {
             let along = if vertical { y - body.y } else { x - body.x };
             if let Some((_, unit)) = self.scrollbar_metrics(vertical) {
-                let moved = (along - last) / unit.max(0.01);
+                // A huge file puts thousands of rows on each pixel, so no floor beyond zero here.
+                let moved = (along - last) / unit.max(f32::MIN_POSITIVE);
                 if vertical {
                     self.set_scroll_y(self.scroll_y + moved * edit_line_h());
                 } else {
@@ -4543,7 +4545,7 @@ impl Item for FileItem {
         if let (Some(last), Some(layout)) = (self.minimap_drag, self.minimap_layout) {
             let local_y = y - body.y;
             let per_line = (layout.area.h / layout.total_lines.max(1.0)).min(layout.line_h);
-            let lines = (local_y - last) / per_line.max(0.01);
+            let lines = (local_y - last) / per_line.max(f32::MIN_POSITIVE);
             self.set_scroll_y(self.scroll_y + lines * edit_line_h());
             self.minimap_drag = Some(local_y);
             return;
@@ -9143,6 +9145,26 @@ mod indent_guide_tests {
         assert!(
             item.scrollbar_drag.is_none(),
             "a press on the text ends the drag"
+        );
+    }
+
+    #[test]
+    fn dragging_through_a_huge_file_keeps_up_with_the_pointer() {
+        let text = "x\n".repeat(300_000);
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "a.txt", Some(text));
+        item.set_body_height(600.0);
+        item.set_body_width(900.0);
+        let x = 900.0 - SCROLLBAR_WIDTH / 2.0;
+        let (thumb, unit) = item.scrollbar_metrics(true).expect("scrolls");
+        assert!(unit < 0.01, "hundreds of rows a pixel");
+        assert!(item.minimap_press(x, thumb / 2.0), "on the thumb");
+        let body = Rect::new(0.0, 0.0, 900.0, 600.0, Rgba::TRANSPARENT);
+        item.drag_select(x, thumb / 2.0 + 10.0, body);
+        let rows = item.scroll_y / edit_line_h();
+        let expected = 10.0 / unit;
+        assert!(
+            (rows - expected).abs() < expected * 0.01,
+            "{rows} rows for {expected}"
         );
     }
 

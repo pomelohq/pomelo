@@ -2156,10 +2156,59 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        // Background work (the diff's hunks) settles over a few frames.
-        for _ in 0..40 {
+        // Background work (the diff's hunks, a large file's load) settles over a few frames; SETTLE=<frames>.
+        let settle = std::env::var("SETTLE")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(40);
+        for _ in 0..settle {
             app.draw(handle).expect("frame");
             std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        // DRAGBENCH=<x>: press the editor at x (a scrollbar or the minimap) and drag it down, timing each frame.
+        if let Some(bench_x) = std::env::var("DRAGBENCH")
+            .ok()
+            .and_then(|x| x.parse::<f32>().ok())
+        {
+            entity.update(app.app_mut(), |view, _| view.mouse_down(bench_x, 200.0));
+            let (mut layout_total, mut render_total) =
+                (std::time::Duration::ZERO, std::time::Duration::ZERO);
+            let frames = 60;
+            for step in 0..frames {
+                let still = std::env::var("BENCHSTILL").is_ok();
+                entity.update(app.app_mut(), |view, _| {
+                    view.mouse_move(bench_x, 200.0 + if still { 0.0 } else { step as f32 * 8.0 });
+                });
+                let started = std::time::Instant::now();
+                let frame = app.draw(handle).expect("frame");
+                let laid_out = started.elapsed();
+                let mut layers: Vec<ui::Layer> = vec![(
+                    frame.base.rects.as_slice(),
+                    frame.base.tris.as_slice(),
+                    frame.base.texts.as_slice(),
+                    frame.base.icons.as_slice(),
+                    None,
+                )];
+                for overlay in &frame.overlays {
+                    layers.push((
+                        overlay.painted.rects.as_slice(),
+                        overlay.painted.tris.as_slice(),
+                        overlay.painted.texts.as_slice(),
+                        overlay.painted.icons.as_slice(),
+                        overlay.clip.map(|c| (c.x, c.y, c.w, c.h)),
+                    ));
+                }
+                let started = std::time::Instant::now();
+                r.render_frame(ui::theme().background, &layers)?;
+                layout_total += laid_out;
+                render_total += started.elapsed();
+            }
+            entity.update(app.app_mut(), |view, _| view.mouse_up());
+            println!(
+                "drag frames: layout {:?}/frame, render {:?}/frame",
+                layout_total / frames,
+                render_total / frames
+            );
         }
         let frame = app.draw(handle).expect("frame");
         let mut layers: Vec<ui::Layer> = vec![(
