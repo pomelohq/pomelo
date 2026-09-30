@@ -306,6 +306,8 @@ pub struct WorkspaceView {
     last_click: Option<(Instant, f32, f32)>,
     /// An open right-click context menu: `(anchor_x, anchor_top, anchor_bottom, target button id)`.
     menu: Option<(f32, f32, f32, u64)>,
+    /// The entries of the menu a tab's toolbar button opened.
+    item_menu: Vec<MenuItem>,
     menu_path: Option<(String, bool)>,
     submenu: Option<(f32, f32, f32, u64)>,
     menu_editor_anchor: Option<(Vec<usize>, usize)>,
@@ -345,6 +347,7 @@ impl WorkspaceView {
             tab_ghost_at: None,
             last_click: None,
             menu: None,
+            item_menu: Vec::new(),
             menu_path: None,
             submenu: None,
             menu_editor_anchor: None,
@@ -3192,6 +3195,9 @@ impl WorkspaceView {
 
     /// The context-menu items for a given status-bar button (dock positions valid for it + Hide Button).
     fn menu_items(&self, target: u64) -> Vec<MenuItem> {
+        if target == crate::ITEM_MENU_TARGET {
+            return self.item_menu.clone();
+        }
         if target == crate::APP_MENU_TARGET {
             return self.app_menu_items();
         }
@@ -4020,6 +4026,12 @@ impl WorkspaceView {
     }
 
     fn apply_menu(&mut self, target: u64, item: u64) {
+        if target == crate::ITEM_MENU_TARGET {
+            if let Some(view) = self.layout.files_view.as_mut() {
+                view.menu_pick(item);
+            }
+            return;
+        }
         if target == crate::APP_MENU_TARGET {
             match item {
                 crate::MENU_APP_ACCOUNT | crate::MENU_APP_USAGE => {
@@ -6611,8 +6623,26 @@ impl WorkspaceView {
         }
         self.set_terminal_focus(false);
         if id >= FUNC_VIEW_BASE {
-            if let Some(view) = self.layout.files_view.as_mut() {
+            let menu = self.layout.files_view.as_mut().and_then(|view| {
                 view.on_click(id);
+                view.take_menu_request()
+            });
+            if let Some(entries) = menu {
+                // Under the button it came from, as the reference opens its toolbar menus.
+                let (x, top, bottom) = self
+                    .header_hits
+                    .iter()
+                    .rev()
+                    .find(|(_, hit)| *hit == id)
+                    .map_or(
+                        (self.pointer.0, self.pointer.1, self.pointer.1),
+                        |(rect, _)| (rect.x, rect.y, rect.y + rect.h),
+                    );
+                self.item_menu = entries;
+                self.menu = Some((x, top, bottom, crate::ITEM_MENU_TARGET));
+                self.menu_path = None;
+                self.submenu = None;
+                self.menu_editor_anchor = None;
             }
             self.ask_about_pending_close();
             return;

@@ -121,6 +121,8 @@ pub enum IconKind {
     Clock,
     FileLock,
     Filter,
+    Sliders,
+    CursorIBeam,
     Copy,
     Ellipsis,
     Pause,

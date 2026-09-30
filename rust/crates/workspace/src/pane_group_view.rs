@@ -152,6 +152,9 @@ pub struct PaneGroupView {
     pending_close: Option<CloseRequest>,
     /// Each pane's tab strip as last laid out: its path, the rect it shows in, and how far it can scroll.
     strips: Vec<(Vec<usize>, Rect, f32)>,
+    /// A menu an item's toolbar asked for, with the pane it came from (its picks go back there).
+    menu_request: Option<(Vec<usize>, Vec<crate::MenuItem>)>,
+    menu_from: Option<Vec<usize>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -181,6 +184,28 @@ impl PaneGroupView {
             zoomed: None,
             pending_close: None,
             strips: Vec::new(),
+            menu_request: None,
+            menu_from: None,
+        }
+    }
+
+    /// The menu a toolbar click asked for, once; its picks go to the item in that pane.
+    pub fn take_menu_request(&mut self) -> Option<Vec<crate::MenuItem>> {
+        let (path, entries) = self.menu_request.take()?;
+        self.menu_from = Some(path);
+        Some(entries)
+    }
+
+    pub fn menu_pick(&mut self, id: u64) {
+        let Some(path) = self.menu_from.take() else {
+            return;
+        };
+        if let Some(item) = self
+            .group
+            .leaf_at_mut(&path)
+            .and_then(|pane| pane.active_item_mut())
+        {
+            item.menu_pick(id);
         }
     }
 
@@ -336,6 +361,11 @@ impl PaneGroupView {
                 if pane.is_preview(index) {
                     pane.keep_preview();
                 }
+                self.menu_request = pane
+                    .open
+                    .get_mut(index)
+                    .and_then(|item| item.take_menu_request())
+                    .map(|entries| (path.clone(), entries));
                 let wants_find = pane
                     .open
                     .get_mut(index)
