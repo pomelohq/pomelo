@@ -27,7 +27,7 @@ const TOP_BAR_H: f32 = 2.0;
 /// Seconds a finished action's note and highlight stay.
 const NOTE_FOR: f32 = 3.0;
 const FLASH_FOR: f32 = 1.4;
-/// Pulses and shimmers redraw at this rate, not every frame: the page is costly to lay out.
+/// Pulses and shimmers lay the page out again at this rate; the loading bar moves every frame.
 const ANIMATION_STEP: f32 = 1.0 / 15.0;
 
 thread_local! {
@@ -1120,7 +1120,18 @@ pub struct StorePage {
     body_h: f32,
     seen: u64,
     opened: Instant,
-    animated_at: f32,
+    painted: Option<(PaintKey, ui::Painted)>,
+}
+
+/// What a kept layout was made from; any change lays the page out again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PaintKey {
+    version: u64,
+    hovered: Option<u64>,
+    scroll: u32,
+    body: [u32; 4],
+    scale: u32,
+    pulse: u64,
 }
 
 impl StorePage {
@@ -1135,7 +1146,7 @@ impl StorePage {
             body_h: 0.0,
             seen: u64::MAX,
             opened: Instant::now(),
-            animated_at: 0.0,
+            painted: None,
         }
     }
 
@@ -1188,34 +1199,62 @@ impl Item for StorePage {
     fn paint_body(&mut self, body: Rect, _focused: bool) -> Option<ui::Painted> {
         let scale = ui::ui_text_scale();
         let state = self.shared.borrow();
-        let tree = render(&state, &self.root, body.w / scale, self.hovered);
-        self.content_h = ui::measure(&tree).1 * scale;
-        self.body_h = body.h;
-        self.scroll = self
-            .scroll
-            .clamp(0.0, (self.content_h - self.body_h).max(0.0));
-        let shifted = Rect::new(
-            body.x,
-            body.y - self.scroll,
-            body.w,
-            body.h.max(self.content_h),
-            Rgba::TRANSPARENT,
-        );
-        let mut painted = ui::render(&tree, shifted);
+        // The page is laid out again only when something in it changed or a pulse is due; the loading
+        // bar on top moves every frame over the kept layout.
+        let key = PaintKey {
+            version: state.version,
+            hovered: self.hovered,
+            scroll: self.scroll.to_bits(),
+            body: [body.x, body.y, body.w, body.h].map(f32::to_bits),
+            scale: scale.to_bits(),
+            pulse: if state.animating() {
+                (state.clock / ANIMATION_STEP) as u64
+            } else {
+                0
+            },
+        };
+        let mut painted = match &self.painted {
+            Some((kept, painted)) if *kept == key => painted.clone(),
+            _ => {
+                let tree = render(&state, &self.root, body.w / scale, self.hovered);
+                self.content_h = ui::measure(&tree).1 * scale;
+                self.body_h = body.h;
+                self.scroll = self
+                    .scroll
+                    .clamp(0.0, (self.content_h - self.body_h).max(0.0));
+                let shifted = Rect::new(
+                    body.x,
+                    body.y - self.scroll,
+                    body.w,
+                    body.h.max(self.content_h),
+                    Rgba::TRANSPARENT,
+                );
+                let painted = ui::render(&tree, shifted);
+                self.hits = painted
+                    .hits
+                    .iter()
+                    .copied()
+                    .filter(|(rect, _)| rect.y + rect.h > body.y && rect.y < body.y + body.h)
+                    .collect();
+                self.painted = Some((key, painted.clone()));
+                painted
+            }
+        };
         let loading =
             state.overview.is_none() || state.measuring > 0 || state.busy == Some(Request::Refresh);
         if loading {
-            // A thin bar runs along the top while the page itself is loading.
             let colors = theme();
             let mut track = colors.text_accent;
             track.a = 0.12;
-            let offset = (state.clock / 1.4).fract();
-            let segment = body.w * 0.35;
-            let x = body.x - segment + (body.w + segment) * offset;
             let h = TOP_BAR_H * scale;
             painted
                 .rects
                 .push(Rect::new(body.x, body.y, body.w, h, track));
+            // Eased so the segment speeds up across the middle and slows at the ends.
+            let phase = (state.clock / 1.6).fract();
+            let eased = phase * phase * (3.0 - 2.0 * phase);
+            let segment = body.w * 0.3;
+            let x = body.x - segment + (body.w + segment) * eased;
             let left = x.max(body.x);
             let right = (x + segment).min(body.x + body.w);
             if right > left {
@@ -1224,12 +1263,6 @@ impl Item for StorePage {
                     .push(Rect::new(left, body.y, right - left, h, colors.text_accent));
             }
         }
-        self.hits = painted
-            .hits
-            .iter()
-            .copied()
-            .filter(|(rect, _)| rect.y + rect.h > body.y && rect.y < body.y + body.h)
-            .collect();
         Some(painted)
     }
 
@@ -1262,11 +1295,8 @@ impl Item for StorePage {
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
         let mut state = self.shared.borrow_mut();
         state.clock = self.opened.elapsed().as_secs_f32();
-        let frame_due = state.animating() && state.clock - self.animated_at >= ANIMATION_STEP;
-        if frame_due {
-            self.animated_at = state.clock;
-        }
-        let changed = state.version != self.seen || frame_due;
+        // Every frame while something moves: the kept layout makes most of them cheap.
+        let changed = state.version != self.seen || state.animating();
         self.seen = state.version;
         ItemTick {
             changed,
