@@ -1690,6 +1690,49 @@ impl App {
         generation != ui::font_generation() || buffer_line || terminal_line
     }
 
+    fn apply_language_tools(&self) {
+        let settings = self.settings.clone();
+        lsp::set_server_choice(move |language| {
+            let chosen = settings.language_server_settings(language);
+            lsp::ServerChoice {
+                enabled: chosen.enabled,
+                servers: chosen.servers,
+                completions: chosen.completions,
+                completion_timeout_ms: chosen.completion_timeout_ms,
+            }
+        });
+        editor::highlight::set_file_types(
+            self.settings
+                .file_types
+                .iter()
+                .filter_map(|(name, patterns)| {
+                    Some((editor::highlight::Lang::from_name(name)?, patterns.clone()))
+                })
+                .collect(),
+        );
+        files_ui::set_definition_scroll(
+            match self.settings.go_to_definition_scroll_strategy.as_str() {
+                "minimum" => files_ui::DefinitionScroll::Minimum,
+                "top" => files_ui::DefinitionScroll::Top,
+                "preserve" => files_ui::DefinitionScroll::Preserve,
+                _ => files_ui::DefinitionScroll::Center,
+            },
+        );
+        let inline = &self.settings.diagnostics.inline;
+        files_ui::set_diagnostics_defaults(files_ui::DiagnosticsDefaults {
+            max_severity: match self.settings.diagnostics_max_severity.as_str() {
+                "off" => 0,
+                "error" => 1,
+                "warning" => 2,
+                "info" => 3,
+                _ => 4,
+            },
+            inline: inline.enabled,
+            inline_padding: inline.padding,
+            inline_min_column: inline.min_column,
+        });
+    }
+
     fn apply_editor_defaults(&mut self) {
         ui::set_chrome(settings_ui::chrome_flags(&self.settings));
         let (agent_hidden, terminal_hidden, func_hidden) = (
@@ -1709,6 +1752,7 @@ impl App {
                 }
             }
         }
+        self.apply_language_tools();
         let fonts_changed = self.apply_fonts();
         let font_changed = files_ui::set_editor_defaults(
             self.settings.buffer_font_size,

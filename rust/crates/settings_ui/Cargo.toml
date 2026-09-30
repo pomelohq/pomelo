@@ -15,6 +15,7 @@ pom_sync = { path = "../pom_sync" }
 pom_paths = { path = "../pom_paths" }
 ui = { path = "../ui" }
 settings = { path = "../settings" }
+editor = { package = "pomelo-editor", path = "../editor" }
 serde_json.workspace = true
 
 [dev-dependencies]

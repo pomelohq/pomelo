@@ -80,6 +80,21 @@ pub struct Settings {
     pub cursor_shape: String,
     /// "on" holds loading shimmers, pulsing placeholders and the caret's glide still; "off" lets them move.
     pub reduce_motion: String,
+    /// Language servers start for the languages they serve; off, none does.
+    pub enable_language_server: bool,
+    /// Which servers a language uses, in order: a name turns one on, `!name` off, `...` stands for the rest
+    /// of its defaults.
+    pub language_servers: Vec<String>,
+    pub completions: Completions,
+    /// Where a definition lands in view: "center", "minimum", "top" or "preserve".
+    pub go_to_definition_scroll_strategy: String,
+    /// The least severe diagnostic shown: "off", "error", "warning", "info", "hint" or "all".
+    pub diagnostics_max_severity: String,
+    pub diagnostics: Diagnostics,
+    /// Language names to the file names, extensions or `*` globs that are that language, over detection.
+    pub file_types: std::collections::BTreeMap<String, Vec<String>>,
+    /// Per-language settings over the ones above, by language name.
+    pub languages: std::collections::BTreeMap<String, LanguageSettings>,
     pub notify_claude: bool,
     /// Also alert for the workspace on screen in the focused window.
     pub notify_when_focused: bool,
@@ -168,6 +183,14 @@ impl Default for Settings {
             cursor_animation: CursorAnimation::default(),
             cursor_shape: "bar".into(),
             reduce_motion: "off".into(),
+            enable_language_server: true,
+            language_servers: vec!["...".into()],
+            completions: Completions::default(),
+            go_to_definition_scroll_strategy: "center".into(),
+            diagnostics_max_severity: "all".into(),
+            diagnostics: Diagnostics::default(),
+            file_types: std::collections::BTreeMap::new(),
+            languages: std::collections::BTreeMap::new(),
             notify_claude: true,
             notify_when_focused: false,
             sound_working: String::new(),
@@ -193,6 +216,109 @@ impl Default for Settings {
             agent_font_size: 12.0,
             terminal_shell: String::new(),
             terminal_scrollback: 10_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Completions {
+    /// Language servers are asked for completions.
+    pub lsp: bool,
+    /// How long to wait for a server's completions, in milliseconds; 0 waits for them.
+    pub lsp_fetch_timeout_ms: u64,
+}
+
+impl Default for Completions {
+    fn default() -> Self {
+        Completions {
+            lsp: true,
+            lsp_fetch_timeout_ms: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Diagnostics {
+    pub inline: InlineDiagnostics,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InlineDiagnostics {
+    /// New editors show each line's diagnostic at its end.
+    pub enabled: bool,
+    /// Columns between a line's end and its diagnostic.
+    pub padding: u32,
+    /// The column diagnostics line up at, when the line is shorter.
+    pub min_column: u32,
+}
+
+impl Default for InlineDiagnostics {
+    fn default() -> Self {
+        InlineDiagnostics {
+            enabled: false,
+            padding: 4,
+            min_column: 0,
+        }
+    }
+}
+
+/// What one language sets over the settings every language shares; unset keeps those.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LanguageSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_language_server: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language_servers: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completions: Option<LanguageCompletions>,
+}
+
+impl LanguageSettings {
+    pub fn is_empty(&self) -> bool {
+        *self == LanguageSettings::default()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LanguageCompletions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp_fetch_timeout_ms: Option<u64>,
+}
+
+/// The language-server settings in effect for one language.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanguageServerSettings {
+    pub enabled: bool,
+    pub servers: Vec<String>,
+    pub completions: bool,
+    pub completion_timeout_ms: u64,
+}
+
+impl Settings {
+    /// `language`'s own settings over the shared ones.
+    pub fn language_server_settings(&self, language: &str) -> LanguageServerSettings {
+        let own = self.languages.get(language);
+        let completions = own.and_then(|own| own.completions.as_ref());
+        LanguageServerSettings {
+            enabled: own
+                .and_then(|own| own.enable_language_server)
+                .unwrap_or(self.enable_language_server),
+            servers: own
+                .and_then(|own| own.language_servers.clone())
+                .unwrap_or_else(|| self.language_servers.clone()),
+            completions: completions
+                .and_then(|completions| completions.lsp)
+                .unwrap_or(self.completions.lsp),
+            completion_timeout_ms: completions
+                .and_then(|completions| completions.lsp_fetch_timeout_ms)
+                .unwrap_or(self.completions.lsp_fetch_timeout_ms),
         }
     }
 }
@@ -335,6 +461,31 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_language_overrides_what_every_language_shares() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"language_servers": ["..."], "completions": {"lsp_fetch_timeout_ms": 500},
+                "languages": {"Python": {"language_servers": ["ty", "!basedpyright", "..."],
+                                         "completions": {"lsp": false}}},
+                "file_types": {"JavaScript": ["notjs"], "TOML": ["Embargo.lock"], "Shell Script": ["*.env*"]}}"#,
+        )
+        .expect("json");
+        let python = settings.language_server_settings("Python");
+        assert_eq!(python.servers, ["ty", "!basedpyright", "..."]);
+        assert!(!python.completions);
+        assert_eq!(
+            python.completion_timeout_ms, 500,
+            "unset keeps the shared value"
+        );
+        assert!(settings.language_server_settings("Rust").completions);
+        assert_eq!(settings.file_types["Shell Script"], ["*.env*"]);
+        let saved = serde_json::to_string(&Settings::default()).expect("saves");
+        assert!(
+            saved.contains("\"languages\":{}"),
+            "no empty language entries"
+        );
+    }
 
     #[test]
     fn defaults_roundtrip_through_json() {

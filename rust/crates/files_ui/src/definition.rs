@@ -242,15 +242,20 @@ impl FileItem {
             b.extend_cursor(end);
         }
         let (row, _) = self.position(start);
-        match caret_top {
-            Some(top) => self.set_scroll_y(row as f32 * edit_line_h() - top),
-            None => {
-                let line = self
-                    .buffer
-                    .as_ref()
-                    .map_or(0, |b| b.rope.char_to_line(start));
-                self.scroll_line_to_center(line);
+        let line = self
+            .buffer
+            .as_ref()
+            .map_or(0, |b| b.rope.char_to_line(start));
+        let on_screen = caret_top.filter(|top| *top >= 0.0 && *top + edit_line_h() <= self.body_h);
+        match (crate::definition_scroll(), on_screen) {
+            (crate::DefinitionScroll::Minimum, _) => {}
+            (crate::DefinitionScroll::Top, _) => self.set_scroll_y(
+                (row as f32 - crate::VERTICAL_SCROLL_MARGIN).max(0.0) * edit_line_h(),
+            ),
+            (crate::DefinitionScroll::Preserve, Some(top)) => {
+                self.set_scroll_y(row as f32 * edit_line_h() - top)
             }
+            _ => self.scroll_line_to_center(line),
         }
         self.ensure_cursor_visible();
     }

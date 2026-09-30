@@ -98,12 +98,74 @@ pub fn set_editor_defaults(font_size: f32, soft_wrap: bool, split_diff: bool) ->
     EDIT_FONT_HUNDREDTHS.swap(hundredths, Ordering::Relaxed) != hundredths
 }
 
+/// Diagnostics as the settings show them: the least severe one kept (LSP numbering, 0 keeps none), whether new
+/// editors show them at line ends, and how far from the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiagnosticsDefaults {
+    pub max_severity: u8,
+    pub inline: bool,
+    pub inline_padding: u32,
+    pub inline_min_column: u32,
+}
+
+static DIAGNOSTICS_DEFAULTS: std::sync::RwLock<DiagnosticsDefaults> =
+    std::sync::RwLock::new(DiagnosticsDefaults {
+        max_severity: 4,
+        inline: false,
+        inline_padding: 4,
+        inline_min_column: 0,
+    });
+
+pub fn set_diagnostics_defaults(defaults: DiagnosticsDefaults) {
+    if let Ok(mut slot) = DIAGNOSTICS_DEFAULTS.write() {
+        *slot = defaults;
+    }
+}
+
+fn diagnostics_defaults() -> DiagnosticsDefaults {
+    DIAGNOSTICS_DEFAULTS
+        .read()
+        .map(|defaults| *defaults)
+        .unwrap_or(DiagnosticsDefaults {
+            max_severity: 4,
+            inline: false,
+            inline_padding: 4,
+            inline_min_column: 0,
+        })
+}
+
+/// Where a definition lands in view once jumped to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefinitionScroll {
+    Center,
+    /// Only as far as it takes to show it.
+    Minimum,
+    Top,
+    /// At the height the caret was, when the caret was on screen.
+    Preserve,
+}
+
+static DEFINITION_SCROLL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_definition_scroll(scroll: DefinitionScroll) {
+    DEFINITION_SCROLL.store(scroll as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn definition_scroll() -> DefinitionScroll {
+    match DEFINITION_SCROLL.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => DefinitionScroll::Minimum,
+        2 => DefinitionScroll::Top,
+        3 => DefinitionScroll::Preserve,
+        _ => DefinitionScroll::Center,
+    }
+}
+
 pub fn default_buffer_font_size() -> f32 {
     DEFAULT_EDIT_FONT
 }
 const MESSAGE_PAD: f32 = 8.0;
 const CARET_W: f32 = 2.0;
-const VERTICAL_SCROLL_MARGIN: f32 = 3.0;
+pub(crate) const VERTICAL_SCROLL_MARGIN: f32 = 3.0;
 const HORIZONTAL_SCROLL_MARGIN: f32 = 5.0;
 /// With soft wrap off, lines still break past this many columns so pathological lines stay cheap to lay out.
 const UNWRAPPED_MAX_COLUMNS: f32 = 512.0;
@@ -248,9 +310,6 @@ struct MinimapLayout {
     thumb_h: f32,
     total_lines: f32,
 }
-
-/// Columns between a line's end and its inline diagnostic, as the reference pads it.
-const INLINE_DIAGNOSTIC_PADDING: f32 = 4.0;
 
 /// The Selection Controls menu: (label, key it runs, separator before it).
 const SELECTION_COMMANDS: [(&str, EditKey, bool); 15] = [
@@ -793,6 +852,16 @@ fn diagnostic_underline_top() -> f32 {
 }
 const DIAGNOSTIC_UNDERLINE_THICKNESS: f32 = 1.0;
 
+fn severity_rank(severity: lsp::lsp_types::DiagnosticSeverity) -> u8 {
+    use lsp::lsp_types::DiagnosticSeverity as Severity;
+    match severity {
+        Severity::ERROR => 1,
+        Severity::WARNING => 2,
+        Severity::INFORMATION => 3,
+        _ => 4,
+    }
+}
+
 fn diagnostic_color(severity: lsp::lsp_types::DiagnosticSeverity) -> Rgba {
     use lsp::lsp_types::DiagnosticSeverity as Severity;
     let colors = theme();
@@ -937,7 +1006,7 @@ impl FileItem {
             scrollbar_hovered: false,
             minimap_lines: RefCell::default(),
             show_diagnostics: true,
-            inline_diagnostics: false,
+            inline_diagnostics: diagnostics_defaults().inline,
             line_numbers: true,
             inline_blame: true,
             toolbar_ids: next_toolbar_ids(),
@@ -981,9 +1050,16 @@ impl FileItem {
             Some(synced) => (&synced.rope, Some(synced.buffer_version)),
             None => (&b.rope, None),
         };
+        let max_severity = diagnostics_defaults().max_severity;
         let mut entries: Vec<DiagnosticEntry> = update
             .diagnostics
             .iter()
+            .filter(|diagnostic| {
+                let severity = diagnostic
+                    .severity
+                    .unwrap_or(lsp::lsp_types::DiagnosticSeverity::ERROR);
+                max_severity > 0 && severity_rank(severity) <= max_severity
+            })
             .map(|diagnostic| DiagnosticEntry {
                 range: lsp::diagnostic_char_range(rope, diagnostic.range),
                 severity: diagnostic
@@ -4114,25 +4190,27 @@ impl Item for FileItem {
                     r = r.child(block);
                 }
             } else if let Some((message, color)) = inline_message {
-                r = r
-                    .child(div().w_px(INLINE_DIAGNOSTIC_PADDING * char_advance()))
-                    .child(
-                        div()
-                            .row()
-                            .flex(1.0)
-                            .h_px(edit_line_h())
-                            .px(4.0)
-                            .items_center()
-                            .rounded(2.0)
-                            .bg(color.alpha(0.05))
-                            .child(
-                                label(message)
-                                    .size(edit_font() * 0.875)
-                                    .mono()
-                                    .color(color)
-                                    .truncate(),
-                            ),
-                    );
+                let defaults = diagnostics_defaults();
+                let line_end = self.row_width(row_index);
+                let gap = (defaults.inline_padding as f32 * char_advance())
+                    .max(defaults.inline_min_column as f32 * char_advance() - line_end);
+                r = r.child(div().w_px(gap)).child(
+                    div()
+                        .row()
+                        .flex(1.0)
+                        .h_px(edit_line_h())
+                        .px(4.0)
+                        .items_center()
+                        .rounded(2.0)
+                        .bg(color.alpha(0.05))
+                        .child(
+                            label(message)
+                                .size(edit_font() * 0.875)
+                                .mono()
+                                .color(color)
+                                .truncate(),
+                        ),
+                );
             } else if Some(row_index) == blame_row {
                 if let Some(text) = self.inline_blame_text() {
                     let hint = theme().hint;
@@ -6700,6 +6778,7 @@ impl FilesView {
             for response in &completion_answers {
                 file.completions_answered(response);
             }
+            file.expire_completion(now);
             for resolved in &resolutions {
                 file.resolve_answered(resolved);
             }

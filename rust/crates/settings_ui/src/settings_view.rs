@@ -165,6 +165,7 @@ impl SettingsView {
             self.commit_edit();
             self.close_popover();
             self.selected = category;
+            self.pages.language = None;
             self.page_scroll = 0.0;
             self.active_section = None;
         }
@@ -416,6 +417,14 @@ impl SettingsView {
             }
             return;
         }
+        if settings_ui::language_number(id, &self.settings).is_some() {
+            if let Ok(value) = buf.trim().parse::<f32>() {
+                if settings_ui::set_language_number(id, value, &mut self.settings) {
+                    self.persist();
+                }
+            }
+            return;
+        }
         if NUMBER_FIELDS.contains(&id) {
             let Ok(value) = buf.trim().parse::<f32>() else {
                 return;
@@ -560,6 +569,7 @@ impl SettingsView {
             self.search_active(),
             self.nav_scroll,
             &self.pages.project.session,
+            self.pages.language,
         );
         self.nav_clip = chrome.nav_clip;
         self.nav_max = (chrome.nav_height - chrome.nav_clip.h).max(0.0);
@@ -903,7 +913,15 @@ impl SettingsView {
             }
             return;
         }
-        if id >= settings_ui::POPOVER_BASE {
+        if let Some(language) = settings_ui::language_to_open(id) {
+            self.show_language(Some(language));
+            return;
+        }
+        if id == settings_ui::CTRL_LANGUAGE_BACK {
+            self.show_language(None);
+            return;
+        }
+        if id >= settings_ui::POPOVER_BASE && self.popover.is_some() {
             let idx = (id - settings_ui::POPOVER_BASE) as usize;
             if let Some(cid) = self.popover {
                 if settings_ui::apply_choice(cid, idx, &self.fonts, &mut self.settings) {
@@ -952,6 +970,7 @@ impl SettingsView {
             let cat = (rel / settings_ui::NAV_JUMP_STRIDE) as usize;
             let si = (rel % settings_ui::NAV_JUMP_STRIDE) as usize;
             self.selected = cat;
+            self.pages.language = None;
             if let Some(e) = self.expanded.get_mut(cat) {
                 *e = true;
             }
@@ -1108,6 +1127,10 @@ impl SettingsView {
             self.editing = Some((id, seed));
             self.popover = None;
             self.popover_hover = None;
+        } else if let Some(seed) = settings_ui::language_number(id, &self.settings) {
+            self.commit_edit();
+            self.editing = Some((id, seed));
+            self.close_popover();
         } else if id >= 100 {
             self.commit_edit();
             if settings_ui::is_dropdown(id) {
@@ -1145,9 +1168,19 @@ impl SettingsView {
                 *e = true;
             }
             self.selected = i;
+            self.pages.language = None;
             self.page_scroll = 0.0;
             self.active_section = None;
         }
+    }
+
+    /// Open a language's own page over Languages & Tools, or go back from it.
+    fn show_language(&mut self, language: Option<usize>) {
+        self.commit_edit();
+        self.close_popover();
+        self.pages.language = language;
+        self.page_scroll = 0.0;
+        self.active_section = None;
     }
 }
 

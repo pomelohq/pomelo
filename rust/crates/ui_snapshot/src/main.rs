@@ -2432,6 +2432,10 @@ fn main() -> anyhow::Result<()> {
                 .collect(),
             problems: Vec::new(),
         },
+        // LANGUAGE=<index>: that language's page over Languages & Tools.
+        language: std::env::var("LANGUAGE")
+            .ok()
+            .and_then(|index| index.parse().ok()),
     };
     let fs_edit = std::env::var("FSEDIT").ok();
     let editing = fs_edit
@@ -2455,6 +2459,7 @@ fn main() -> anyhow::Result<()> {
             false,
             0.0,
             "myproject",
+            state.language,
         );
         let mut chrome = parts.fixed;
         chrome.rects.extend(parts.nav.rects);

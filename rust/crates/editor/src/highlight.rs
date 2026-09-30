@@ -53,7 +53,96 @@ pub enum Lang {
     PlainText,
 }
 
+static FILE_TYPES: std::sync::RwLock<Vec<(Lang, Vec<String>)>> = std::sync::RwLock::new(Vec::new());
+
+/// Files the settings say are a language, over detection: whole names, extensions, or `*` globs.
+pub fn set_file_types(file_types: Vec<(Lang, Vec<String>)>) {
+    if let Ok(mut slot) = FILE_TYPES.write() {
+        *slot = file_types;
+    }
+}
+
+fn file_type_matches(pattern: &str, name: &str, path: &str) -> bool {
+    if !pattern.contains('*') {
+        return name == pattern
+            || name
+                .rsplit_once('.')
+                .is_some_and(|(_, extension)| extension == pattern);
+    }
+    let subject = if pattern.contains('/') { path } else { name };
+    let mut parts = pattern.split('*');
+    let Some(mut rest) = subject.strip_prefix(parts.next().unwrap_or_default()) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    for (index, part) in parts.iter().enumerate() {
+        if index + 1 == parts.len() {
+            return rest.ends_with(part);
+        }
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    rest.is_empty()
+}
+
 impl Lang {
+    /// Every language a file can be, by name.
+    pub const LANGUAGES: [Lang; 47] = [
+        Lang::Rust,
+        Lang::TypeScript,
+        Lang::Tsx,
+        Lang::JavaScript,
+        Lang::Go,
+        Lang::Python,
+        Lang::Json,
+        Lang::C,
+        Lang::Cpp,
+        Lang::Bash,
+        Lang::Css,
+        Lang::Html,
+        Lang::Ruby,
+        Lang::Java,
+        Lang::Toml,
+        Lang::Yaml,
+        Lang::Lua,
+        Lang::CSharp,
+        Lang::Markdown,
+        Lang::Php,
+        Lang::Scala,
+        Lang::Elixir,
+        Lang::Haskell,
+        Lang::Ocaml,
+        Lang::Scss,
+        Lang::Nix,
+        Lang::Swift,
+        Lang::Make,
+        Lang::Xml,
+        Lang::Zig,
+        Lang::Dart,
+        Lang::Sql,
+        Lang::Kotlin,
+        Lang::Svelte,
+        Lang::Dockerfile,
+        Lang::GraphQl,
+        Lang::Hcl,
+        Lang::Proto,
+        Lang::Diff,
+        Lang::GitCommit,
+        Lang::Ini,
+        Lang::Erlang,
+        Lang::Gleam,
+        Lang::R,
+        Lang::Elm,
+        Lang::Prisma,
+        Lang::PlainText,
+    ];
+
+    pub fn from_name(name: &str) -> Option<Lang> {
+        Lang::LANGUAGES.into_iter().find(|lang| lang.name() == name)
+    }
+
     pub fn tab_size(self) -> usize {
         match self {
             Lang::TypeScript
@@ -180,6 +269,19 @@ impl Lang {
     /// language's suffix or ends in `.suffix` wins; with no match, a first-line pattern (a shebang) decides.
     pub fn detect(path: &str, first_line: Option<&str>) -> Lang {
         let name = path.rsplit('/').next().unwrap_or(path);
+        let set = FILE_TYPES.read().ok().and_then(|file_types| {
+            file_types
+                .iter()
+                .find(|(_, patterns)| {
+                    patterns
+                        .iter()
+                        .any(|pattern| file_type_matches(pattern, name, path))
+                })
+                .map(|(lang, _)| *lang)
+        });
+        if let Some(lang) = set {
+            return lang;
+        }
         let extension = name.rsplit('.').next().unwrap_or(name);
         let candidates = [extension, name, path];
         let mut best: Option<(usize, Lang)> = None;
@@ -680,63 +782,30 @@ pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, &'static str)> {
 mod tests {
     use super::*;
 
-    const ALL: [Lang; 50] = [
-        Lang::Rust,
-        Lang::TypeScript,
-        Lang::Tsx,
-        Lang::JavaScript,
-        Lang::Go,
-        Lang::Python,
-        Lang::Json,
-        Lang::C,
-        Lang::Cpp,
-        Lang::Bash,
-        Lang::Css,
-        Lang::Html,
-        Lang::Ruby,
-        Lang::Java,
-        Lang::Toml,
-        Lang::Yaml,
-        Lang::Lua,
-        Lang::CSharp,
-        Lang::Markdown,
-        Lang::Php,
-        Lang::Scala,
-        Lang::Elixir,
-        Lang::Haskell,
-        Lang::Ocaml,
-        Lang::Scss,
-        Lang::Nix,
-        Lang::Swift,
-        Lang::Make,
-        Lang::Xml,
-        Lang::Zig,
-        Lang::Dart,
-        Lang::Sql,
-        Lang::Kotlin,
-        Lang::Svelte,
-        Lang::Dockerfile,
-        Lang::GraphQl,
-        Lang::Hcl,
-        Lang::Proto,
-        Lang::Diff,
-        Lang::GitCommit,
-        Lang::Ini,
-        Lang::Erlang,
-        Lang::Gleam,
-        Lang::R,
-        Lang::Elm,
-        Lang::Prisma,
-        Lang::MarkdownInline,
-        Lang::Regex,
-        Lang::JsDoc,
-        Lang::PlainText,
-    ];
+    #[test]
+    fn file_types_match_names_extensions_and_globs() {
+        assert!(file_type_matches("notjs", "app.notjs", "src/app.notjs"));
+        assert!(file_type_matches(
+            "Embargo.lock",
+            "Embargo.lock",
+            "Embargo.lock"
+        ));
+        assert!(file_type_matches("*.env*", ".env.local", "api/.env.local"));
+        assert!(file_type_matches(
+            "**/templates/*.html",
+            "a.html",
+            "web/templates/a.html"
+        ));
+        assert!(!file_type_matches("*.env*", "main.rs", "main.rs"));
+        assert!(!file_type_matches("lock", "Cargo.toml", "Cargo.toml"));
+    }
 
     #[test]
     fn every_grammar_highlight_query_compiles() {
-        let failing: Vec<String> = ALL
+        let embedded = [Lang::MarkdownInline, Lang::Regex, Lang::JsDoc];
+        let failing: Vec<String> = Lang::LANGUAGES
             .iter()
+            .chain(&embedded)
             .filter_map(|lang| {
                 let (language, source) = grammar(*lang)?;
                 tree_sitter::Query::new(&language, source)

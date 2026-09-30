@@ -20,6 +20,7 @@ pub(crate) struct PendingCompletion {
     trigger: Option<String>,
     query: Option<String>,
     request: Option<u64>,
+    requested_at: Option<std::time::Instant>,
     menu_was_open: bool,
     typed_word: bool,
 }
@@ -117,6 +118,7 @@ impl FileItem {
             trigger: trigger_character,
             query,
             request: None,
+            requested_at: None,
             menu_was_open: menu_open,
             typed_word: trigger == CompletionTrigger::Typed,
         });
@@ -136,12 +138,29 @@ impl FileItem {
             Some(token) => {
                 if let Some(pending) = self.completion_request.as_mut() {
                     pending.request = Some(token);
+                    pending.requested_at = Some(std::time::Instant::now());
                 }
             }
             None => {
                 if let Some(pending) = self.completion_request.take() {
                     self.show_server_completions(pending, &[], false, 0);
                 }
+            }
+        }
+    }
+
+    /// Stop waiting on a server that is slower than the settings allow: the menu opens without its items.
+    pub(crate) fn expire_completion(&mut self, now: std::time::Instant) {
+        let timeout_ms = lsp::choice_for(self.lang).completion_timeout_ms;
+        let expired = self.completion_request.as_ref().is_some_and(|pending| {
+            timeout_ms > 0
+                && pending.requested_at.is_some_and(|at| {
+                    now.duration_since(at) >= std::time::Duration::from_millis(timeout_ms)
+                })
+        });
+        if expired {
+            if let Some(pending) = self.completion_request.take() {
+                self.show_server_completions(pending, &[], false, 0);
             }
         }
     }
