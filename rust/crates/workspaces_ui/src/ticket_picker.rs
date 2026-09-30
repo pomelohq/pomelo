@@ -2,7 +2,8 @@
 //! (ranked mine-first, best match), with the list they come from: a board's sprint or backlog, or every
 //! open ticket assigned to the user.
 
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::time::Instant;
 
 use pom_jira::{Board, SprintIssue};
 use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
@@ -23,10 +24,11 @@ const FIELD_HEIGHT: f32 = 32.0;
 const KEY_W: f32 = 86.0;
 const STATUS_W: f32 = 110.0;
 const MINE_W: f32 = 40.0;
+const PULSE_SECONDS: f32 = 1.2;
 
 enum Loaded {
     Boards(Result<Vec<Board>, String>),
-    Issues(Result<Vec<SprintIssue>, String>),
+    Issues(TicketList, Result<Vec<SprintIssue>, String>),
 }
 
 /// One row of the source menu.
@@ -48,103 +50,134 @@ pub(crate) struct TicketPicker {
     issues: Vec<SprintIssue>,
     /// Keys that already have a workspace, never suggested again.
     taken: Vec<String>,
-    loading: Option<Receiver<Loaded>>,
+    sender: Sender<Loaded>,
+    receiver: Receiver<Loaded>,
+    /// Jira answers still to come.
+    pending: usize,
+    /// When the list being shown started loading, for the placeholder rows' pulse.
+    loading_since: Instant,
     error: Option<String>,
     highlighted: usize,
     menu_open: bool,
+    boards_known: bool,
     /// The ticket list floats under the field while it is focused, until Escape or a pick.
     list_open: bool,
 }
 
 impl TicketPicker {
     pub fn new(source: TicketSource, existing_branches: &[String]) -> TicketPicker {
+        let (sender, receiver) = mpsc::channel();
         let mut picker = TicketPicker {
             field: InputField::new("Ticket", "PROJ-101"),
             board: source.board,
+            list: source.start,
             source,
             boards: Vec::new(),
-            list: None,
             issues: Vec::new(),
             taken: existing_branches
                 .iter()
                 .filter_map(|branch| pom_jira::key_for_branch(branch))
                 .collect(),
-            loading: None,
+            sender,
+            receiver,
+            pending: 0,
+            loading_since: Instant::now(),
             error: None,
             highlighted: 0,
             menu_open: false,
+            boards_known: false,
             list_open: true,
         };
         let boards = picker.source.boards.clone();
         picker.load(move || Loaded::Boards(boards()));
+        // The remembered list loads alongside the boards instead of after them.
+        picker.load_issues();
         picker
     }
 
     fn load(&mut self, work: impl FnOnce() -> Loaded + Send + 'static) {
-        let (sender, receiver) = mpsc::channel();
+        let sender = self.sender.clone();
         std::thread::spawn(move || {
             if sender.send(work()).is_err() {
                 eprintln!("workspaces: the form closed before Jira answered");
             }
         });
-        self.loading = Some(receiver);
+        self.pending += 1;
     }
 
     fn load_issues(&mut self) {
         let Some(list) = self.list else {
             return;
         };
+        self.loading_since = Instant::now();
         let issues = self.source.issues.clone();
-        self.load(move || Loaded::Issues(issues(list)));
+        self.load(move || Loaded::Issues(list, issues(list)));
     }
 
-    /// Picks up what Jira sent; returns whether anything changed.
+    fn loading(&self) -> bool {
+        self.pending > 0
+    }
+
+    /// The list is still on its way, so placeholder rows stand in for it.
+    fn loading_list(&self) -> bool {
+        self.loading() && self.issues.is_empty()
+    }
+
+    /// Picks up what Jira sent; returns whether anything changed, always while the placeholder rows pulse.
     pub fn poll(&mut self) -> bool {
-        let Some(receiver) = &self.loading else {
-            return false;
-        };
-        let loaded = match receiver.try_recv() {
-            Ok(loaded) => loaded,
-            Err(TryRecvError::Empty) => return false,
-            Err(TryRecvError::Disconnected) => {
-                self.loading = None;
-                return true;
-            }
-        };
-        self.loading = None;
-        match loaded {
-            Loaded::Boards(result) => {
-                let boards = match result {
-                    Ok(boards) => boards,
-                    Err(error) => {
-                        self.error = Some(error);
-                        Vec::new()
-                    }
-                };
-                if !self
-                    .board
-                    .is_some_and(|id| boards.iter().any(|board| board.id == id))
-                {
-                    self.board = boards.first().map(|board| board.id);
+        let mut changed = self.loading_list() && self.list_open;
+        loop {
+            let loaded = match self.receiver.try_recv() {
+                Ok(loaded) => loaded,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return changed,
+            };
+            self.pending = self.pending.saturating_sub(1);
+            changed = true;
+            match loaded {
+                Loaded::Boards(result) => self.boards_loaded(result),
+                Loaded::Issues(list, _) if Some(list) != self.list => {}
+                Loaded::Issues(_, Ok(issues)) => {
+                    self.issues = issues;
+                    self.error = None;
                 }
-                self.boards = boards;
-                self.list = Some(match self.board {
-                    Some(board) => TicketList::Sprint(board),
-                    None => TicketList::Assigned,
-                });
-                self.load_issues();
+                Loaded::Issues(_, Err(error)) => self.error = Some(error),
             }
-            Loaded::Issues(Ok(issues)) => {
-                self.issues = issues;
-                self.error = None;
-            }
-            Loaded::Issues(Err(error)) => self.error = Some(error),
         }
-        true
+    }
+
+    fn boards_loaded(&mut self, result: Result<Vec<Board>, String>) {
+        let boards = match result {
+            Ok(boards) => boards,
+            Err(error) => {
+                self.error = Some(error);
+                Vec::new()
+            }
+        };
+        let known = |id: i64| boards.iter().any(|board| board.id == id);
+        let remembered = match self.list {
+            Some(TicketList::Sprint(board) | TicketList::Backlog(board)) if known(board) => {
+                self.board = Some(board);
+                true
+            }
+            Some(TicketList::Assigned) => true,
+            _ => false,
+        };
+        if !self.board.is_some_and(known) {
+            self.board = boards.first().map(|board| board.id);
+        }
+        self.boards = boards;
+        self.boards_known = true;
+        if !remembered {
+            self.list = Some(match self.board {
+                Some(board) => TicketList::Sprint(board),
+                None => TicketList::Assigned,
+            });
+            self.load_issues();
+        }
     }
 
     pub fn busy(&self) -> bool {
-        self.loading.is_some()
+        self.loading()
     }
 
     pub fn board(&self) -> Option<i64> {
@@ -152,7 +185,7 @@ impl TicketPicker {
     }
 
     pub fn toggle_menu(&mut self) {
-        self.menu_open = !self.menu_open && self.list.is_some() && self.loading.is_none();
+        self.menu_open = !self.menu_open && self.boards_known;
     }
 
     pub fn close_menu(&mut self) {
@@ -220,9 +253,10 @@ impl TicketPicker {
             return;
         };
         self.list_open = true;
-        if Some(option.list) == self.list || self.loading.is_some() {
+        if Some(option.list) == self.list {
             return;
         }
+        (self.source.remember)(option.list);
         if let TicketList::Sprint(board) = option.list {
             self.board = Some(board);
         }
@@ -235,7 +269,10 @@ impl TicketPicker {
     /// What the source button reads: the board of the sprint, Backlog, or Assigned to me.
     fn source_name(&self) -> Option<String> {
         Some(match self.list? {
-            TicketList::Sprint(board) => self.board_name(board),
+            TicketList::Sprint(board) => match self.board_name(board) {
+                name if name.is_empty() => "Sprint".into(),
+                name => name,
+            },
             TicketList::Backlog(_) => "Backlog".into(),
             TicketList::Assigned => "Assigned to me".into(),
         })
@@ -326,13 +363,7 @@ impl TicketPicker {
         }
         let mut column = div().col().gap(4.0).child(header).child(anchor);
         let source = self.source_name().unwrap_or_else(|| "tickets".into());
-        if self.loading.is_some() {
-            column = column.child(status_line(
-                IconKind::RotateCw,
-                colors.icon_muted,
-                &format!("Loading {source}..."),
-            ));
-        } else if let Some(error) = &self.error {
+        if let Some(error) = self.error.as_ref().filter(|_| !self.loading()) {
             column = column.child(status_line(
                 IconKind::Warning,
                 colors.warning,
@@ -346,7 +377,8 @@ impl TicketPicker {
         let colors = theme();
         let suggestions = self.suggestions();
         let typed = self.field.text().trim().to_string();
-        if suggestions.is_empty() && (typed.is_empty() || self.loading.is_some()) {
+        let placeholders = self.loading_list();
+        if suggestions.is_empty() && typed.is_empty() && !placeholders {
             return None;
         }
         let mut list = div()
@@ -357,6 +389,13 @@ impl TicketPicker {
             .border(1.0, colors.border)
             .bg(colors.elevated_surface_background)
             .on_click(SUGGESTIONS_SURFACE);
+        if placeholders {
+            let seconds = self.loading_since.elapsed().as_secs_f32();
+            for (row, summary) in [0.62, 0.44, 0.7, 0.52].into_iter().enumerate() {
+                list = list.child(placeholder_row(seconds, row, summary * width * 0.6));
+            }
+            return Some(list.into());
+        }
         if suggestions.is_empty() {
             let note = format!("No ticket matches; {typed} is used as the key");
             return Some(
@@ -406,7 +445,7 @@ impl TicketPicker {
         if self.menu_open {
             button = button.bg(colors.ghost_element_hover);
         }
-        if self.loading.is_none() {
+        if self.boards_known {
             button = button.on_click(SOURCE);
         }
         button.into()
@@ -468,6 +507,33 @@ impl TicketPicker {
             .priority(2)
             .into()
     }
+}
+
+/// A grey bar pulsing where a ticket row will be; rows pulse a beat apart so the wave runs down the list.
+fn placeholder_row(seconds: f32, row: usize, summary_width: f32) -> Node {
+    let colors = theme();
+    let phase = (seconds / PULSE_SECONDS - row as f32 * 0.12) * std::f32::consts::TAU;
+    let fill = colors
+        .text_muted
+        .alpha(0.10 + 0.08 * (0.5 + 0.5 * phase.sin()));
+    let bar = |width: f32| div().w_px(width).h_px(10.0).rounded(5.0).bg(fill);
+    div()
+        .row()
+        .items_center()
+        .gap(10.0)
+        .h_px(28.0)
+        .px(8.0)
+        .child(div().row().w_px(KEY_W).items_center().child(bar(64.0)))
+        .child(
+            div()
+                .row()
+                .flex(1.0)
+                .items_center()
+                .child(bar(summary_width)),
+        )
+        .child(div().row().w_px(STATUS_W).items_center().child(bar(70.0)))
+        .child(div().w_px(MINE_W))
+        .into()
 }
 
 fn status_pill(issue: &SprintIssue) -> Node {

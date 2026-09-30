@@ -18,6 +18,49 @@ pub enum TicketList {
     Assigned,
 }
 
+impl TicketList {
+    fn encode(self) -> String {
+        match self {
+            TicketList::Sprint(board) => format!("sprint:{board}"),
+            TicketList::Backlog(board) => format!("backlog:{board}"),
+            TicketList::Assigned => "assigned".into(),
+        }
+    }
+
+    fn decode(text: &str) -> Option<TicketList> {
+        let text = text.trim();
+        if text == "assigned" {
+            return Some(TicketList::Assigned);
+        }
+        let (kind, board) = text.split_once(':')?;
+        let board = board.parse().ok()?;
+        match kind {
+            "sprint" => Some(TicketList::Sprint(board)),
+            "backlog" => Some(TicketList::Backlog(board)),
+            _ => None,
+        }
+    }
+}
+
+/// The list the form showed last in a project, opened again next time.
+fn list_file(state: &StateDir, session: &str) -> std::path::PathBuf {
+    state.path("cache").join(format!("jira-list-{session}"))
+}
+
+fn load_list(state: &StateDir, session: &str) -> Option<TicketList> {
+    TicketList::decode(&std::fs::read_to_string(list_file(state, session)).ok()?)
+}
+
+fn save_list(path: &std::path::Path, list: TicketList) {
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| pom_paths::write_atomic(path, list.encode().as_bytes(), 0o644));
+    if let Err(error) = written {
+        eprintln!("jira: remember the ticket list: {error}");
+    }
+}
+
 type Issues = Arc<dyn Fn(TicketList) -> Result<Vec<SprintIssue>, String> + Send + Sync>;
 
 /// Where the new-workspace form gets its tickets from.
@@ -27,6 +70,9 @@ pub struct TicketSource {
     pub issues: Issues,
     /// The board picked last time, if any.
     pub board: Option<i64>,
+    /// The list picked last time in this project, if any.
+    pub start: Option<TicketList>,
+    pub remember: Arc<dyn Fn(TicketList) + Send + Sync>,
     pub only_mine: bool,
 }
 
@@ -51,6 +97,11 @@ impl TicketSource {
                 .map_err(|error| error.to_string())
             }),
             board,
+            start: load_list(state, session),
+            remember: {
+                let path = list_file(state, session);
+                Arc::new(move |list| save_list(&path, list))
+            },
             only_mine,
         })
     }

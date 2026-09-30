@@ -1331,7 +1331,19 @@ fn main() -> anyhow::Result<()> {
                 vec!["main".into(), "feat-login".into()],
                 namer.clone(),
             )
-            .with_options(vec!["staging".into()], vec!["api".into()])
+            // ENVS=n: that many environment profiles, to see them fold into a dropdown.
+            .with_options(
+                match std::env::var("ENVS")
+                    .ok()
+                    .and_then(|n| n.parse::<usize>().ok())
+                {
+                    Some(count) => (1..=count)
+                        .map(|index| format!("staging-{index}"))
+                        .collect(),
+                    None => vec!["staging".into()],
+                },
+                vec!["api".into()],
+            )
             .with_modules(std::sync::Arc::new(|repo: &str| match repo {
                 "api" => module_store::Outlook::FromStore,
                 "web" => module_store::Outlook::InstallsOnce,
@@ -1379,8 +1391,16 @@ fn main() -> anyhow::Result<()> {
                             },
                         ])
                     }),
-                    issues: std::sync::Arc::new(move |_| Ok(issues.clone())),
+                    // TICKETSLOW=1: Jira never answers, so the list shows its loading rows.
+                    issues: std::sync::Arc::new(move |_| {
+                        if std::env::var_os("TICKETSLOW").is_some() {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                        Ok(issues.clone())
+                    }),
                     board: None,
+                    start: None,
+                    remember: std::sync::Arc::new(|_| {}),
                     only_mine: false,
                 });
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

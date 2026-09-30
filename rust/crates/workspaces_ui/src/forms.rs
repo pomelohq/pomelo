@@ -8,7 +8,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use module_store::Outlook;
 use pom_agent::NameSuggestion;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::{
     checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section,
     outlined_button, status_line, toggle_button_group, EditKey, InputField, ModalResult,
@@ -47,6 +47,9 @@ const ENVIRONMENT_BASE: u64 = WINDOW_MODAL_BASE + 20;
 const ENVIRONMENT_END: u64 = WINDOW_MODAL_BASE + 40;
 const DATA_FROM_MAIN: u64 = WINDOW_MODAL_BASE + 41;
 const DATA_FRESH: u64 = WINDOW_MODAL_BASE + 42;
+const ENVIRONMENT_SELECT: u64 = WINDOW_MODAL_BASE + 43;
+const ENVIRONMENT_MENU_SURFACE: u64 = WINDOW_MODAL_BASE + 44;
+const SELECT_HEIGHT: f32 = 28.0;
 const PER_REPO: u64 = 100;
 
 /// What the create form submits.
@@ -161,6 +164,7 @@ pub struct CreateWorkspaceModal {
     /// The project's environment profiles besides `local`.
     environments: Vec<String>,
     environment: usize,
+    environment_menu_open: bool,
     /// Repos whose databases start as a copy of main's.
     seeded_from_main: Vec<String>,
     fresh_databases: bool,
@@ -197,6 +201,7 @@ impl CreateWorkspaceModal {
             outlook_receiver: None,
             environments: Vec::new(),
             environment: 0,
+            environment_menu_open: false,
             seeded_from_main: Vec::new(),
             fresh_databases: false,
         }
@@ -583,18 +588,33 @@ impl CreateWorkspaceModal {
             let names: Vec<&str> = std::iter::once("local")
                 .chain(self.environments.iter().map(String::as_str))
                 .collect();
-            let choices: Vec<(u64, Option<IconKind>, &str)> = names
+            let content = CREATE_WIDTH - 2.0 * SECTION_PADDING;
+            let available = if self.offers_data_choice() {
+                (content - 12.0) / 2.0
+            } else {
+                content
+            };
+            let needed: f32 = names
                 .iter()
-                .enumerate()
-                .map(|(index, name)| (ENVIRONMENT_BASE + index as u64, None, *name))
-                .collect();
+                .map(|name| ui::measure_text_width(name, LabelSize::Small.px(), false, 400) + 17.0)
+                .sum();
+            let control = if needed <= available {
+                let choices: Vec<(u64, Option<IconKind>, &str)> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| (ENVIRONMENT_BASE + index as u64, None, *name))
+                    .collect();
+                toggle_button_group(&choices, self.environment)
+            } else {
+                self.environment_select(&names, available)
+            };
             row = row.child(
                 div()
                     .col()
                     .flex(1.0)
                     .gap(4.0)
                     .child(heading("Environment", "what the services point at"))
-                    .child(toggle_button_group(&choices, self.environment)),
+                    .child(control),
             );
             any = true;
         }
@@ -616,6 +636,77 @@ impl CreateWorkspaceModal {
             any = true;
         }
         any.then(|| row.into())
+    }
+
+    /// The profiles as a dropdown, when they are too many to sit side by side.
+    fn environment_select(&self, names: &[&str], width: f32) -> Node {
+        let colors = theme();
+        let hairline = colors.border.alpha(0.6);
+        let current = names.get(self.environment).copied().unwrap_or("local");
+        let mut trigger = div()
+            .row()
+            .h_px(SELECT_HEIGHT)
+            .px(10.0)
+            .gap(6.0)
+            .items_center()
+            .rounded(6.0)
+            .border(1.0, hairline)
+            .on_click(ENVIRONMENT_SELECT)
+            .child(
+                div().row().flex(1.0).items_center().child(
+                    label(current.to_string())
+                        .label_size(LabelSize::Small)
+                        .color(colors.text)
+                        .truncate(),
+                ),
+            )
+            .child(
+                icon(IconKind::ChevronDown)
+                    .size(10.0)
+                    .color(colors.icon_muted),
+            );
+        if self.environment_menu_open {
+            trigger = trigger.bg(colors.ghost_element_hover);
+        }
+        let mut column = div().col().child(trigger);
+        if self.environment_menu_open {
+            let mut menu = div()
+                .col()
+                .w_px(width)
+                .p(4.0)
+                .rounded(8.0)
+                .border(1.0, colors.border)
+                .bg(colors.elevated_surface_background)
+                .on_click(ENVIRONMENT_MENU_SURFACE);
+            for (index, name) in names.iter().enumerate() {
+                menu = menu.child(
+                    div()
+                        .row()
+                        .h_px(26.0)
+                        .px(8.0)
+                        .items_center()
+                        .rounded(4.0)
+                        .on_click(ENVIRONMENT_BASE + index as u64)
+                        .child(
+                            label(name.to_string())
+                                .label_size(LabelSize::Default)
+                                .color(if index == self.environment {
+                                    colors.text_accent
+                                } else {
+                                    colors.text
+                                })
+                                .truncate(),
+                        ),
+                );
+            }
+            column = column.child(
+                deferred(menu)
+                    .below_or_above(SELECT_HEIGHT, 4.0)
+                    .snap_to_window()
+                    .priority(1),
+            );
+        }
+        column.into()
     }
 
     /// What Create is about to make, in one line: repos, installs, databases, environment.
@@ -956,6 +1047,9 @@ impl WindowModal for CreateWorkspaceModal {
             }
             _ => self.picker = None,
         }
+        if id != ENVIRONMENT_SELECT && id != ENVIRONMENT_MENU_SURFACE {
+            self.environment_menu_open = false;
+        }
         let on_source_menu = id == SOURCE
             || id == SOURCE_MENU_SURFACE
             || (SOURCE_OPTION_BASE..SOURCE_OPTION_END).contains(&id);
@@ -1003,6 +1097,7 @@ impl WindowModal for CreateWorkspaceModal {
                     self.environment = index;
                 }
             }
+            ENVIRONMENT_SELECT => self.environment_menu_open = !self.environment_menu_open,
             DATA_FROM_MAIN => self.fresh_databases = false,
             DATA_FRESH => self.fresh_databases = true,
             id if (REPO_BASE..REPO_BASE + PER_REPO).contains(&id) => {
@@ -1022,6 +1117,10 @@ impl WindowModal for CreateWorkspaceModal {
     fn key(&mut self, key: EditKey, shift: bool) -> bool {
         if self.picker.is_some() {
             self.picker_key(key, shift);
+            return true;
+        }
+        if key == EditKey::Escape && self.environment_menu_open {
+            self.environment_menu_open = false;
             return true;
         }
         if key == EditKey::Escape {
@@ -1489,6 +1588,14 @@ mod tests {
     }
 
     fn tickets(only_mine: bool) -> TicketSource {
+        tickets_from(only_mine, None, Arc::new(|_| {}))
+    }
+
+    fn tickets_from(
+        only_mine: bool,
+        start: Option<crate::TicketList>,
+        remember: Arc<dyn Fn(crate::TicketList) + Send + Sync>,
+    ) -> TicketSource {
         let issue = |key: &str, summary: &str, mine: bool| pom_jira::SprintIssue {
             key: key.into(),
             summary: summary.into(),
@@ -1523,6 +1630,8 @@ mod tests {
                 })
             }),
             board: Some(9),
+            start,
+            remember,
             only_mine,
         }
     }
@@ -1620,6 +1729,56 @@ mod tests {
         );
         modal.key(EditKey::Escape, false);
         assert!(matches!(modal.take_result(), Some(ModalResult::Cancelled)));
+    }
+
+    #[test]
+    fn the_picked_list_is_remembered_and_opens_first_next_time() {
+        let picked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = picked.clone();
+        let mut modal =
+            CreateWorkspaceModal::new(Vec::new(), Vec::new(), namer()).with_tickets(tickets_from(
+                false,
+                None,
+                Arc::new(move |list| record.lock().expect("picked").push(list)),
+            ));
+        settle(&mut modal);
+        modal.click(SOURCE);
+        modal.click(SOURCE_OPTION_BASE + 3);
+        assert_eq!(
+            *picked.lock().expect("picked"),
+            [crate::TicketList::Assigned]
+        );
+
+        let mut reopened = CreateWorkspaceModal::new(Vec::new(), Vec::new(), namer()).with_tickets(
+            tickets_from(false, Some(crate::TicketList::Assigned), Arc::new(|_| {})),
+        );
+        settle(&mut reopened);
+        let text = painted_text(&mut reopened);
+        assert!(
+            text.contains("Assigned to me") && text.contains("Checkout total"),
+            "{text}"
+        );
+        assert!(!text.contains("Login page"), "{text}");
+    }
+
+    #[test]
+    fn many_environments_fold_into_a_dropdown() {
+        let names: Vec<String> = (1..=8).map(|index| format!("staging-{index}")).collect();
+        let mut modal = CreateWorkspaceModal::new(vec!["api".into()], Vec::new(), namer())
+            .with_options(names, vec!["api".into()]);
+        modal.text("feat-login");
+        let text = painted_text(&mut modal);
+        assert!(
+            text.contains("local") && !text.contains("staging-3"),
+            "{text}"
+        );
+        modal.click(ENVIRONMENT_SELECT);
+        assert!(painted_text(&mut modal).contains("staging-8"));
+        modal.click(ENVIRONMENT_BASE + 3);
+        assert!(!modal.environment_menu_open);
+        modal.key(EditKey::Enter, false);
+        let created = submitted::<CreateWorkspace>(modal.take_result()).expect("submitted");
+        assert_eq!(created.environment, "staging-3");
     }
 
     #[test]
