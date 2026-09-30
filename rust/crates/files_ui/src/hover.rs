@@ -650,6 +650,7 @@ mod tests {
         item.set_body_height(20.0 * edit_line_h());
         item.ensure_visible();
         item.diagnostics = vec![DiagnosticEntry {
+            server: None,
             range: 8..9,
             severity: DiagnosticSeverity::ERROR,
             message: "cannot find value `b`".into(),

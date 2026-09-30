@@ -1,6 +1,6 @@
 //! The language servers of one project folder: each started on first need (after the login-shell environment
-//! is known), sharing one server per adapter, with every open document mirrored to its server and the
-//! diagnostics it publishes handed back per file.
+//! is known), one per adapter and project root, with every open document mirrored to each of its language's
+//! servers, their diagnostics handed back per file and server, and requests answered by all of them together.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use lsp_types::{
 use ropey::Rope;
 use serde_json::{json, Value};
 
-use crate::adapters::adapter_for;
+use crate::adapters::{adapters_for, Adapter};
 use crate::install::{BinaryStatus, Found, Located};
 use crate::position::{char_to_position, position_to_char};
 use crate::{LanguageServer, ServerEvent, Waker};
@@ -24,6 +24,10 @@ use crate::{LanguageServer, ServerEvent, Waker};
 /// Versions of a document kept after sending them, so diagnostics a server computed for an older version can
 /// still be placed.
 const RETAINED_VERSIONS: usize = 10;
+
+/// One running (or stopped, or failed) server: an adapter in a project folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ServerId(pub u32);
 
 /// A document's text as sent to its server under `lsp_version`, and the buffer version it matched.
 #[derive(Clone, Debug)]
@@ -33,10 +37,11 @@ pub struct SyncedText {
     pub rope: Rope,
 }
 
-/// A file's latest diagnostics, with the text their positions refer to when the file is open.
+/// One server's latest diagnostics for a file, with the text their positions refer to when the file is open.
 #[derive(Clone, Debug)]
 pub struct DiagnosticsUpdate {
     pub path: PathBuf,
+    pub server: ServerId,
     pub diagnostics: Vec<Diagnostic>,
     pub synced: Option<SyncedText>,
 }
@@ -111,8 +116,10 @@ pub enum ServerStatus {
 #[derive(Clone, Debug)]
 pub struct ServerSummary {
     /// What the server is restarted and stopped by.
-    pub key: &'static str,
+    pub key: ServerId,
     pub name: &'static str,
+    /// The folder it runs in.
+    pub root: PathBuf,
     pub status: ServerStatus,
     pub message: Option<String>,
     pub version: Option<String>,
@@ -123,7 +130,7 @@ pub struct ServerSummary {
 /// Work a server reports progress on (`$/progress`).
 #[derive(Clone, Debug)]
 pub struct ServerWork {
-    pub server: &'static str,
+    pub server: ServerId,
     pub token: String,
     pub title: String,
     pub message: Option<String>,
@@ -175,6 +182,17 @@ impl Server {
             work: HashMap::new(),
         }
     }
+
+    fn running(&mut self) -> Option<(&mut LanguageServer, &ServerCapabilities)> {
+        match self {
+            Server {
+                server: Some(server),
+                state: ServerState::Running { capabilities },
+                ..
+            } => Some((server, capabilities)),
+            _ => None,
+        }
+    }
 }
 
 /// A server that could not be found or run: not retried until restarted or the settings allow others.
@@ -190,34 +208,72 @@ enum Environment {
     Ready(HashMap<String, String>),
 }
 
-struct Document {
-    uri: Url,
-    adapter: &'static str,
+/// What one server has of a document.
+struct DocumentServer {
+    id: ServerId,
     /// Oldest first; the last is what the server has now.
     versions: VecDeque<SyncedText>,
+}
+
+struct Document {
+    uri: Url,
+    servers: Vec<DocumentServer>,
+}
+
+impl Document {
+    fn server(&self, id: ServerId) -> Option<&DocumentServer> {
+        self.servers.iter().find(|server| server.id == id)
+    }
+}
+
+/// What a request asked of several servers has gathered so far.
+enum Gathered {
+    Hover {
+        markdown: Vec<String>,
+        range: Option<std::ops::Range<usize>>,
+    },
+    Completions {
+        offset: usize,
+        items: Vec<crate::LspCompletion>,
+        is_incomplete: bool,
+        timeout: Option<Duration>,
+    },
+    Definitions {
+        origin: Option<std::ops::Range<usize>>,
+        targets: Vec<DefinitionTarget>,
+    },
+}
+
+struct Pending {
+    gathered: Gathered,
+    waiting: usize,
+    synced: SyncedText,
+    started: Instant,
 }
 
 pub struct LspStore {
     root: PathBuf,
     waker: Waker,
     environment: Environment,
-    servers: HashMap<&'static str, Server>,
-    unavailable: HashMap<&'static str, Unavailable>,
-    /// Servers stopped from the menu, by adapter, with the name they had; started again only on restart.
-    stopped: HashMap<&'static str, &'static str>,
+    /// Each server's adapter and folder, by id; kept for good so an id always names the same server.
+    slots: Vec<(&'static str, PathBuf)>,
+    servers: HashMap<ServerId, Server>,
+    unavailable: HashMap<ServerId, Unavailable>,
+    /// Servers stopped from the menu, with the name they had; started again only on restart.
+    stopped: HashMap<ServerId, &'static str>,
     documents: HashMap<PathBuf, Document>,
-    /// Diagnostics for files that aren't open, delivered when they are.
-    unopened_diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
-    /// Every file's latest diagnostics as its server published them, open or not, by file.
-    published: HashMap<PathBuf, (&'static str, Vec<Diagnostic>)>,
+    /// Diagnostics for files not open on that server yet, delivered when they are.
+    unopened_diagnostics: HashMap<(PathBuf, ServerId), Vec<Diagnostic>>,
+    /// Every file's latest diagnostics as each server published them, open or not.
+    published: HashMap<PathBuf, HashMap<ServerId, Vec<Diagnostic>>>,
     /// Bumped whenever `published` changes, so a view of all diagnostics knows to refresh.
     published_generation: u64,
     updates: Vec<StoreEvent>,
-    hovers: HashMap<(&'static str, i64), (u64, SyncedText)>,
-    completions: HashMap<(&'static str, i64), (u64, SyncedText, usize)>,
-    summaries: HashMap<PathBuf, (&'static str, usize, usize)>,
-    resolves: HashMap<(&'static str, i64), (u64, SyncedText)>,
-    definitions: HashMap<(&'static str, i64), (u64, SyncedText)>,
+    /// Requests sent to a server, by the request they are part of.
+    calls: HashMap<(ServerId, i64), u64>,
+    pending: HashMap<u64, Pending>,
+    summaries: HashMap<(PathBuf, ServerId), (usize, usize)>,
+    resolves: HashMap<(ServerId, i64), (u64, SyncedText)>,
     next_request: u64,
 }
 
@@ -227,6 +283,7 @@ impl LspStore {
             root,
             waker,
             environment: Environment::Unrequested,
+            slots: Vec::new(),
             servers: HashMap::new(),
             unavailable: HashMap::new(),
             stopped: HashMap::new(),
@@ -235,11 +292,10 @@ impl LspStore {
             published: HashMap::new(),
             published_generation: 0,
             updates: Vec::new(),
-            hovers: HashMap::new(),
-            completions: HashMap::new(),
+            calls: HashMap::new(),
+            pending: HashMap::new(),
             summaries: HashMap::new(),
             resolves: HashMap::new(),
-            definitions: HashMap::new(),
             next_request: 0,
         }
     }
@@ -290,31 +346,48 @@ impl LspStore {
         }
     }
 
-    /// Start the adapter's server if it isn't running (finding its binary off-thread first); `true` once it
-    /// is initialized.
-    fn ensure_server(&mut self, adapter: crate::Adapter) -> bool {
+    /// The id of `adapter`'s server for `root`, new if there wasn't one.
+    fn server_id(&mut self, adapter: &'static str, root: &Path) -> ServerId {
+        let found = self
+            .slots
+            .iter()
+            .position(|(name, folder)| *name == adapter && folder == root);
+        let index = found.unwrap_or_else(|| {
+            self.slots.push((adapter, root.to_path_buf()));
+            self.slots.len() - 1
+        });
+        ServerId(index as u32)
+    }
+
+    fn slot(&self, id: ServerId) -> Option<&(&'static str, PathBuf)> {
+        self.slots.get(id.0 as usize)
+    }
+
+    /// Start the server if it isn't running (finding its binary off-thread first); `true` once it is
+    /// initialized.
+    fn ensure_server(&mut self, id: ServerId, adapter: &Adapter) -> bool {
         let candidates: Vec<&'static str> = adapter
             .candidates
             .iter()
             .map(|candidate| candidate.name)
             .collect();
-        if self.stopped.contains_key(adapter.name)
+        if self.stopped.contains_key(&id)
             || self
                 .unavailable
-                .get(adapter.name)
+                .get(&id)
                 .is_some_and(|unavailable| unavailable.candidates == candidates)
         {
             return false;
         }
-        self.unavailable.remove(adapter.name);
+        self.unavailable.remove(&id);
         if self
             .servers
-            .get(adapter.name)
+            .get(&id)
             .is_some_and(|server| server.candidates != candidates)
         {
-            self.drop_server(adapter.name);
+            self.drop_server(id);
         }
-        let located = match self.servers.get_mut(adapter.name) {
+        let located = match self.servers.get_mut(&id) {
             Some(Server {
                 state: ServerState::Running { .. },
                 ..
@@ -364,7 +437,7 @@ impl LspStore {
                     started: Instant::now(),
                 };
                 self.servers.insert(
-                    adapter.name,
+                    id,
                     Server::new(ServerState::Locating(locating), candidates, first),
                 );
                 return false;
@@ -374,18 +447,21 @@ impl LspStore {
             Ok(located) => located,
             Err(message) => {
                 eprintln!("lsp: {}: {message}", adapter.name);
-                self.fail(adapter.name, message);
+                self.fail(id, message);
                 return false;
             }
         };
-        let Some(env) = self.environment().cloned() else {
+        let (Some(env), Some(root)) = (
+            self.environment().cloned(),
+            self.slot(id).map(|(_, root)| root.clone()),
+        ) else {
             return false;
         };
         let mut server = match LanguageServer::spawn(
             located.name,
             &located.binary,
             &located.args,
-            &self.root,
+            &root,
             &env,
             self.waker.clone(),
         ) {
@@ -393,16 +469,19 @@ impl LspStore {
             Err(error) => {
                 let message = format!("could not start {}: {error}", located.binary.display());
                 eprintln!("lsp: {message}");
-                self.fail(adapter.name, message);
+                self.fail(id, message);
                 return false;
             }
         };
         server.set_configuration(crate::adapters::workspace_configuration(
             adapter.name,
-            &self.root,
+            &root,
         ));
-        let initialize_id = server.request("initialize", initialize_params(&self.root));
-        if let Some(entry) = self.servers.get_mut(adapter.name) {
+        let initialize_id = server.request(
+            "initialize",
+            initialize_params(&root, crate::adapters::initialization_options(adapter.name)),
+        );
+        if let Some(entry) = self.servers.get_mut(&id) {
             entry.name = located.name;
             entry.binary = Some(located);
             entry.server = Some(server);
@@ -448,15 +527,16 @@ impl LspStore {
         None
     }
 
-    fn fail(&mut self, key: &'static str, message: String) {
+    fn fail(&mut self, id: ServerId, message: String) {
+        let fallback = self.slot(id).map_or("server", |(name, _)| *name);
         let (candidates, name) = self
             .servers
-            .get(key)
+            .get(&id)
             .map(|server| (server.candidates.clone(), server.name))
-            .unwrap_or((Vec::new(), key));
-        self.drop_server(key);
+            .unwrap_or((Vec::new(), fallback));
+        self.drop_server(id);
         self.unavailable.insert(
-            key,
+            id,
             Unavailable {
                 candidates,
                 name,
@@ -465,31 +545,59 @@ impl LspStore {
         );
     }
 
-    /// Keep `path`'s document open on its language's server and in step with `buffer`: opened once the
-    /// server is up, then sent each change (just the edited ranges when the server accepts that).
+    /// Keep `path`'s document open on each of its language's servers and in step with `buffer`: opened once
+    /// a server is up, then sent each change (just the edited ranges when the server accepts that).
     pub fn sync_document(&mut self, path: &Path, lang: Lang, buffer: &EditorBuffer) {
-        let Some((adapter, language_id)) = adapter_for(lang) else {
-            if self.documents.contains_key(path) {
-                self.close_document(path);
-                self.clear_diagnostics(path.to_path_buf());
-            }
-            return;
-        };
-        if !self.ensure_server(adapter.clone()) {
+        let wanted: Vec<(ServerId, Adapter, &'static str)> = adapters_for(lang)
+            .into_iter()
+            .map(|(adapter, language_id)| {
+                let root = adapter.manifest.root_for(path, &self.root);
+                (self.server_id(adapter.name, &root), adapter, language_id)
+            })
+            .collect();
+        let dropped: Vec<ServerId> = self
+            .documents
+            .get(path)
+            .map(|document| {
+                document
+                    .servers
+                    .iter()
+                    .map(|server| server.id)
+                    .filter(|id| !wanted.iter().any(|(wanted, _, _)| wanted == id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for id in dropped {
+            self.close_on(path, id);
+            self.clear_diagnostics(path.to_path_buf(), id);
+        }
+        if wanted.is_empty() {
+            self.documents.remove(path);
             return;
         }
-        let Some(Server {
-            server: Some(server),
-            state: ServerState::Running { capabilities },
-            ..
-        }) = self.servers.get_mut(adapter.name)
+        for (id, adapter, language_id) in wanted {
+            if self.ensure_server(id, &adapter) {
+                self.sync_with(path, id, language_id, buffer);
+            }
+        }
+    }
+
+    fn sync_with(&mut self, path: &Path, id: ServerId, language_id: &str, buffer: &EditorBuffer) {
+        let Ok(uri) = Url::from_file_path(path) else {
+            return;
+        };
+        let Some((server, capabilities)) = self.servers.get_mut(&id).and_then(Server::running)
         else {
             return;
         };
-        let Some(document) = self.documents.get_mut(path) else {
-            let Ok(uri) = Url::from_file_path(path) else {
-                return;
-            };
+        let document = self
+            .documents
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Document {
+                uri: uri.clone(),
+                servers: Vec::new(),
+            });
+        let Some(synced) = document.servers.iter_mut().find(|server| server.id == id) else {
             server.notify(
                 "textDocument/didOpen",
                 json!({"textDocument": {
@@ -499,30 +607,27 @@ impl LspStore {
                     "text": buffer.rope.to_string(),
                 }}),
             );
-            let synced = SyncedText {
+            let text = SyncedText {
                 lsp_version: 0,
                 buffer_version: buffer.version(),
                 rope: buffer.rope.clone(),
             };
-            if let Some(diagnostics) = self.unopened_diagnostics.remove(path) {
+            document.servers.push(DocumentServer {
+                id,
+                versions: VecDeque::from([text.clone()]),
+            });
+            if let Some(diagnostics) = self.unopened_diagnostics.remove(&(path.to_path_buf(), id)) {
                 self.updates
                     .push(StoreEvent::Diagnostics(DiagnosticsUpdate {
                         path: path.to_path_buf(),
+                        server: id,
                         diagnostics,
-                        synced: Some(synced.clone()),
+                        synced: Some(text),
                     }));
             }
-            self.documents.insert(
-                path.to_path_buf(),
-                Document {
-                    uri,
-                    adapter: adapter.name,
-                    versions: VecDeque::from([synced]),
-                },
-            );
             return;
         };
-        let Some(last) = document.versions.back() else {
+        let Some(last) = synced.versions.back() else {
             return;
         };
         if last.buffer_version == buffer.version() {
@@ -545,53 +650,131 @@ impl LspStore {
                 }),
             );
         }
-        document.versions.push_back(SyncedText {
+        synced.versions.push_back(SyncedText {
             lsp_version: version,
             buffer_version: buffer.version(),
             rope: buffer.rope.clone(),
         });
-        while document.versions.len() > RETAINED_VERSIONS {
-            document.versions.pop_front();
+        while synced.versions.len() > RETAINED_VERSIONS {
+            synced.versions.pop_front();
         }
     }
 
-    /// Tell the server `path` was saved, with its text if it asked for that.
+    /// Tell each server `path` was saved, with its text if it asked for that.
     pub fn did_save(&mut self, path: &Path, buffer: &EditorBuffer) {
         let Some(document) = self.documents.get(path) else {
             return;
         };
-        let Some(Server {
-            server: Some(server),
-            state: ServerState::Running { capabilities },
-            ..
-        }) = self.servers.get_mut(document.adapter)
-        else {
-            return;
-        };
-        let Some(include_text) = save_includes_text(capabilities) else {
-            return;
-        };
-        let mut params = json!({"textDocument": {"uri": document.uri}});
-        if include_text {
-            params["text"] = Value::String(buffer.rope.to_string());
+        for id in document.servers.iter().map(|server| server.id) {
+            let Some((server, capabilities)) = self.servers.get_mut(&id).and_then(Server::running)
+            else {
+                continue;
+            };
+            let Some(include_text) = save_includes_text(capabilities) else {
+                continue;
+            };
+            let mut params = json!({"textDocument": {"uri": document.uri}});
+            if include_text {
+                params["text"] = Value::String(buffer.rope.to_string());
+            }
+            server.notify("textDocument/didSave", params);
         }
-        server.notify("textDocument/didSave", params);
     }
 
     pub fn close_document(&mut self, path: &Path) {
-        let Some(document) = self.documents.remove(path) else {
+        let ids: Vec<ServerId> = self
+            .documents
+            .get(path)
+            .map(|document| document.servers.iter().map(|server| server.id).collect())
+            .unwrap_or_default();
+        for id in ids {
+            self.close_on(path, id);
+        }
+        self.documents.remove(path);
+    }
+
+    /// Close `path` on one server.
+    fn close_on(&mut self, path: &Path, id: ServerId) {
+        let Some(document) = self.documents.get_mut(path) else {
             return;
         };
+        document.servers.retain(|server| server.id != id);
+        let uri = document.uri.clone();
         if let Some(server) = self
             .servers
-            .get_mut(document.adapter)
+            .get_mut(&id)
             .and_then(|server| server.server.as_mut())
         {
             server.notify(
                 "textDocument/didClose",
-                json!({"textDocument": {"uri": document.uri}}),
+                json!({"textDocument": {"uri": uri}}),
             );
         }
+    }
+
+    /// The servers `path` is open on, running and in step with `buffer`, with what they can do.
+    fn servers_in_step(&self, path: &Path, buffer: &EditorBuffer) -> Vec<(ServerId, SyncedText)> {
+        let Some(document) = self.documents.get(path) else {
+            return Vec::new();
+        };
+        document
+            .servers
+            .iter()
+            .filter_map(|server| {
+                let synced = server.versions.back()?;
+                (synced.buffer_version == buffer.version()).then(|| (server.id, synced.clone()))
+            })
+            .filter(|(id, _)| {
+                matches!(
+                    self.servers.get(id).map(|server| &server.state),
+                    Some(ServerState::Running { .. })
+                )
+            })
+            .collect()
+    }
+
+    fn capabilities(&self, id: ServerId) -> Option<&ServerCapabilities> {
+        match self.servers.get(&id).map(|server| &server.state) {
+            Some(ServerState::Running { capabilities }) => Some(capabilities),
+            _ => None,
+        }
+    }
+
+    /// Send `method` to each of `targets`, gathering their answers under one request.
+    fn ask(
+        &mut self,
+        targets: Vec<ServerId>,
+        method: &str,
+        params: Value,
+        gathered: Gathered,
+        synced: SyncedText,
+    ) -> Option<u64> {
+        if targets.is_empty() {
+            return None;
+        }
+        let request = self.next_request;
+        self.next_request += 1;
+        let mut waiting = 0;
+        for id in targets {
+            if let Some((server, _)) = self.servers.get_mut(&id).and_then(Server::running) {
+                let call = server.request(method, params.clone());
+                self.calls.insert((id, call), request);
+                waiting += 1;
+            }
+        }
+        if waiting == 0 {
+            return None;
+        }
+        self.pending.insert(
+            request,
+            Pending {
+                gathered,
+                waiting,
+                synced,
+                started: Instant::now(),
+            },
+        );
+        Some(request)
     }
 
     pub fn hover(
@@ -602,60 +785,54 @@ impl LspStore {
         offset: usize,
     ) -> Option<u64> {
         self.sync_document(path, lang, buffer);
-        let document = self.documents.get(path)?;
-        let synced = document.versions.back()?.clone();
-        if synced.buffer_version != buffer.version() {
-            return None;
-        }
-        let Some(Server {
-            server: Some(server),
-            state: ServerState::Running { capabilities },
-            ..
-        }) = self.servers.get_mut(document.adapter)
-        else {
-            return None;
+        let in_step = self.servers_in_step(path, buffer);
+        let synced = in_step.first()?.1.clone();
+        let targets: Vec<ServerId> = in_step
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| {
+                self.capabilities(*id).is_some_and(|capabilities| {
+                    matches!(
+                        capabilities.hover_provider,
+                        Some(
+                            HoverProviderCapability::Simple(true)
+                                | HoverProviderCapability::Options(_)
+                        )
+                    )
+                })
+            })
+            .collect();
+        let uri = self.documents.get(path)?.uri.clone();
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "position": char_to_position(&synced.rope, offset),
+        });
+        let gathered = Gathered::Hover {
+            markdown: Vec::new(),
+            range: None,
         };
-        let supported = matches!(
-            capabilities.hover_provider,
-            Some(HoverProviderCapability::Simple(true) | HoverProviderCapability::Options(_))
-        );
-        if !supported {
-            return None;
-        }
-        let id = server.request(
-            "textDocument/hover",
-            json!({
-                "textDocument": {"uri": document.uri},
-                "position": char_to_position(&synced.rope, offset),
-            }),
-        );
-        let request = self.next_request;
-        self.next_request += 1;
-        self.hovers
-            .insert((document.adapter, id), (request, synced));
-        Some(request)
+        self.ask(targets, "textDocument/hover", params, gathered, synced)
     }
 
-    fn document_server(
-        &mut self,
-        path: &Path,
-    ) -> Option<(&mut LanguageServer, &ServerCapabilities, &Document)> {
-        let document = self.documents.get(path)?;
-        match self.servers.get_mut(document.adapter) {
-            Some(Server {
-                server: Some(server),
-                state: ServerState::Running { capabilities },
-                ..
-            }) => Some((server, capabilities, document)),
-            _ => None,
-        }
-    }
-
-    /// `None` when no running server completes `path`; else the characters that ask it to without a word.
+    /// `None` when no running server completes `path`; else the characters that ask one to without a word.
     pub fn completion_triggers(&mut self, path: &Path) -> Option<Vec<String>> {
-        let (_, capabilities, _) = self.document_server(path)?;
-        let provider = capabilities.completion_provider.as_ref()?;
-        Some(provider.trigger_characters.clone().unwrap_or_default())
+        let document = self.documents.get(path)?;
+        let mut triggers: Option<Vec<String>> = None;
+        for server in &document.servers {
+            let Some(provider) = self
+                .capabilities(server.id)
+                .and_then(|capabilities| capabilities.completion_provider.as_ref())
+            else {
+                continue;
+            };
+            let all = triggers.get_or_insert_with(Vec::new);
+            for trigger in provider.trigger_characters.iter().flatten() {
+                if !all.contains(trigger) {
+                    all.push(trigger.clone());
+                }
+            }
+        }
+        triggers
     }
 
     pub fn completion(
@@ -667,42 +844,88 @@ impl LspStore {
         trigger: Option<&str>,
     ) -> Option<u64> {
         self.sync_document(path, lang, buffer);
-        if !crate::adapters::choice_for(lang).completions {
+        let choice = crate::adapters::choice_for(lang);
+        if !choice.completions {
             return None;
         }
-        let (server, capabilities, document) = self.document_server(path)?;
-        let triggers = capabilities
-            .completion_provider
-            .as_ref()?
-            .trigger_characters
-            .clone()
-            .unwrap_or_default();
-        let synced = document.versions.back()?.clone();
-        if synced.buffer_version != buffer.version() {
-            return None;
-        }
-        let context = match trigger.filter(|t| triggers.iter().any(|known| known == t)) {
-            Some(character) => json!({"triggerKind": 2, "triggerCharacter": character}),
-            None => json!({"triggerKind": 1}),
-        };
-        let adapter = document.adapter;
-        let id = server.request(
-            "textDocument/completion",
-            json!({
-                "textDocument": {"uri": document.uri},
-                "position": char_to_position(&synced.rope, offset),
-                "context": context,
-            }),
-        );
+        let in_step = self.servers_in_step(path, buffer);
+        let synced = in_step.first()?.1.clone();
+        let uri = self.documents.get(path)?.uri.clone();
         let request = self.next_request;
         self.next_request += 1;
-        self.completions
-            .insert((adapter, id), (request, synced, offset));
+        let mut waiting = 0;
+        for (id, _) in in_step {
+            let Some((server, capabilities)) = self.servers.get_mut(&id).and_then(Server::running)
+            else {
+                continue;
+            };
+            let Some(provider) = capabilities.completion_provider.as_ref() else {
+                continue;
+            };
+            let knows = |t: &&str| {
+                provider
+                    .trigger_characters
+                    .iter()
+                    .flatten()
+                    .any(|known| known == t)
+            };
+            // A character only one server triggers on is that server's to answer.
+            let context = match trigger {
+                Some(character) if knows(&character) => {
+                    json!({"triggerKind": 2, "triggerCharacter": character})
+                }
+                Some(_) => continue,
+                None => json!({"triggerKind": 1}),
+            };
+            let call = server.request(
+                "textDocument/completion",
+                json!({
+                    "textDocument": {"uri": uri},
+                    "position": char_to_position(&synced.rope, offset),
+                    "context": context,
+                }),
+            );
+            self.calls.insert((id, call), request);
+            waiting += 1;
+        }
+        if waiting == 0 {
+            return None;
+        }
+        let timeout = (choice.completion_timeout_ms > 0)
+            .then(|| Duration::from_millis(choice.completion_timeout_ms));
+        self.pending.insert(
+            request,
+            Pending {
+                gathered: Gathered::Completions {
+                    offset,
+                    items: Vec::new(),
+                    is_incomplete: false,
+                    timeout,
+                },
+                waiting,
+                synced,
+                started: Instant::now(),
+            },
+        );
         Some(request)
     }
 
-    pub fn resolve_completion(&mut self, path: &Path, raw: &Value) -> Option<u64> {
-        let (server, capabilities, document) = self.document_server(path)?;
+    /// Ask the server a completion came from to fill in the rest of it.
+    pub fn resolve_completion(
+        &mut self,
+        path: &Path,
+        server: ServerId,
+        raw: &Value,
+    ) -> Option<u64> {
+        let synced = self
+            .documents
+            .get(path)?
+            .server(server)?
+            .versions
+            .back()?
+            .clone();
+        let (language_server, capabilities) =
+            self.servers.get_mut(&server).and_then(Server::running)?;
         let resolves = capabilities
             .completion_provider
             .as_ref()?
@@ -711,12 +934,10 @@ impl LspStore {
         if !resolves {
             return None;
         }
-        let synced = document.versions.back()?.clone();
-        let adapter = document.adapter;
-        let id = server.request("completionItem/resolve", raw.clone());
+        let call = language_server.request("completionItem/resolve", raw.clone());
         let request = self.next_request;
         self.next_request += 1;
-        self.resolves.insert((adapter, id), (request, synced));
+        self.resolves.insert((server, call), (request, synced));
         Some(request)
     }
 
@@ -733,8 +954,9 @@ impl LspStore {
             TypeDefinitionProviderCapability,
         };
         self.sync_document(path, lang, buffer);
-        let (server, capabilities, document) = self.document_server(path)?;
-        let supported = match kind {
+        let in_step = self.servers_in_step(path, buffer);
+        let synced = in_step.first()?.1.clone();
+        let supported = |capabilities: &ServerCapabilities| match kind {
             DefinitionKind::Definition => !matches!(
                 capabilities.definition_provider,
                 None | Some(OneOf::Left(false))
@@ -752,72 +974,166 @@ impl LspStore {
                 None | Some(ImplementationProviderCapability::Simple(false))
             ),
         };
-        let synced = document.versions.back()?.clone();
-        if !supported || synced.buffer_version != buffer.version() {
-            return None;
-        }
-        let adapter = document.adapter;
-        let id = server.request(
-            kind.method(),
-            json!({
-                "textDocument": {"uri": document.uri},
-                "position": char_to_position(&synced.rope, offset),
-            }),
-        );
-        let request = self.next_request;
-        self.next_request += 1;
-        self.definitions.insert((adapter, id), (request, synced));
-        Some(request)
+        let targets: Vec<ServerId> = in_step
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| self.capabilities(*id).is_some_and(supported))
+            .collect();
+        let uri = self.documents.get(path)?.uri.clone();
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "position": char_to_position(&synced.rope, offset),
+        });
+        let gathered = Gathered::Definitions {
+            origin: None,
+            targets: Vec::new(),
+        };
+        self.ask(targets, kind.method(), params, gathered, synced)
     }
 
     pub fn poll(&mut self) -> Vec<StoreEvent> {
-        let names: Vec<&'static str> = self.servers.keys().copied().collect();
-        for name in names {
+        let ids: Vec<ServerId> = self.servers.keys().copied().collect();
+        for id in ids {
             let events = match self
                 .servers
-                .get_mut(name)
+                .get_mut(&id)
                 .and_then(|server| server.server.as_mut())
             {
                 Some(server) => server.poll(),
                 None => continue,
             };
             for event in events {
-                self.handle_event(name, event);
+                self.handle_event(id, event);
             }
         }
+        self.expire_completions();
         std::mem::take(&mut self.updates)
     }
 
-    fn handle_event(&mut self, name: &'static str, event: ServerEvent) {
+    /// Completions still waiting on a server past the settings' timeout go out with what has come.
+    fn expire_completions(&mut self) {
+        let expired: Vec<u64> = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| {
+                matches!(
+                    pending.gathered,
+                    Gathered::Completions { timeout: Some(timeout), .. }
+                        if pending.started.elapsed() >= timeout
+                )
+            })
+            .map(|(request, _)| *request)
+            .collect();
+        for request in expired {
+            self.calls.retain(|_, waiting_on| *waiting_on != request);
+            self.finish(request);
+        }
+    }
+
+    /// One server's answer (or its absence) to a gathered request; the last one sends the whole.
+    fn answered(&mut self, id: ServerId, call: i64, result: Option<Value>) -> bool {
+        let Some(request) = self.calls.remove(&(id, call)) else {
+            return false;
+        };
+        let Some(pending) = self.pending.get_mut(&request) else {
+            return true;
+        };
+        let rope = pending.synced.rope.clone();
+        match &mut pending.gathered {
+            Gathered::Hover { markdown, range } => {
+                let hover = result
+                    .and_then(|value| serde_json::from_value::<Option<Hover>>(value).ok())
+                    .flatten();
+                if let Some(hover) = hover {
+                    if range.is_none() {
+                        *range = hover.range.map(|found| {
+                            position_to_char(&rope, found.start)..position_to_char(&rope, found.end)
+                        });
+                    }
+                    let text = combine_hover_contents(hover.contents);
+                    if !text.trim().is_empty() && !markdown.contains(&text) {
+                        markdown.push(text);
+                    }
+                }
+            }
+            Gathered::Completions {
+                offset,
+                items,
+                is_incomplete,
+                ..
+            } => {
+                let (mut found, incomplete) = crate::completion::parse_completions(
+                    result.unwrap_or(Value::Null),
+                    &rope,
+                    *offset,
+                );
+                for item in &mut found {
+                    item.server = Some(id);
+                }
+                items.extend(found);
+                *is_incomplete |= incomplete;
+            }
+            Gathered::Definitions { origin, targets } => {
+                let (found_origin, found) = parse_definitions(result, &rope);
+                if origin.is_none() {
+                    *origin = found_origin;
+                }
+                for target in found {
+                    if !targets.contains(&target) {
+                        targets.push(target);
+                    }
+                }
+            }
+        }
+        pending.waiting = pending.waiting.saturating_sub(1);
+        if pending.waiting == 0 {
+            self.finish(request);
+        }
+        true
+    }
+
+    fn finish(&mut self, request: u64) {
+        let Some(pending) = self.pending.remove(&request) else {
+            return;
+        };
+        let synced = pending.synced;
+        self.updates.push(match pending.gathered {
+            Gathered::Hover { markdown, range } => StoreEvent::Hover(HoverResponse {
+                request,
+                markdown: (!markdown.is_empty()).then(|| markdown.join("\n\n---\n\n")),
+                range,
+                synced,
+            }),
+            Gathered::Completions {
+                items,
+                is_incomplete,
+                ..
+            } => StoreEvent::Completions(crate::CompletionsResponse {
+                request,
+                items,
+                is_incomplete,
+                synced,
+            }),
+            Gathered::Definitions { origin, targets } => {
+                StoreEvent::Definitions(DefinitionsResponse {
+                    request,
+                    origin,
+                    targets,
+                    synced,
+                })
+            }
+        });
+    }
+
+    fn handle_event(&mut self, id: ServerId, event: ServerEvent) {
         match event {
-            ServerEvent::Response { id, result, .. } => {
-                if let Some((request, synced, offset)) = self.completions.remove(&(name, id)) {
-                    let (items, is_incomplete) = crate::completion::parse_completions(
-                        result.unwrap_or(Value::Null),
-                        &synced.rope,
-                        offset,
-                    );
-                    self.updates
-                        .push(StoreEvent::Completions(crate::CompletionsResponse {
-                            request,
-                            items,
-                            is_incomplete,
-                            synced,
-                        }));
+            ServerEvent::Response {
+                id: call, result, ..
+            } => {
+                if self.answered(id, call, result.as_ref().ok().cloned()) {
                     return;
                 }
-                if let Some((request, synced)) = self.definitions.remove(&(name, id)) {
-                    let (origin, targets) = parse_definitions(result.ok(), &synced.rope);
-                    self.updates
-                        .push(StoreEvent::Definitions(DefinitionsResponse {
-                            request,
-                            origin,
-                            targets,
-                            synced,
-                        }));
-                    return;
-                }
-                if let Some((request, synced)) = self.resolves.remove(&(name, id)) {
+                if let Some((request, synced)) = self.resolves.remove(&(id, call)) {
                     let result = result.ok();
                     let documentation = result
                         .as_ref()
@@ -851,33 +1167,13 @@ impl LspStore {
                         }));
                     return;
                 }
-                if let Some((request, synced)) = self.hovers.remove(&(name, id)) {
-                    let hover = result
-                        .ok()
-                        .and_then(|value| serde_json::from_value::<Option<Hover>>(value).ok())
-                        .flatten();
-                    let range = hover.as_ref().and_then(|hover| hover.range).map(|range| {
-                        position_to_char(&synced.rope, range.start)
-                            ..position_to_char(&synced.rope, range.end)
-                    });
-                    let markdown = hover
-                        .map(|hover| combine_hover_contents(hover.contents))
-                        .filter(|markdown| !markdown.trim().is_empty());
-                    self.updates.push(StoreEvent::Hover(HoverResponse {
-                        request,
-                        markdown,
-                        range,
-                        synced,
-                    }));
-                    return;
-                }
-                let Some(server) = self.servers.get_mut(name) else {
+                let Some(server) = self.servers.get_mut(&id) else {
                     return;
                 };
                 let ServerState::Starting { initialize_id } = server.state else {
                     return;
                 };
-                if id != initialize_id {
+                if call != initialize_id {
                     return;
                 }
                 let result = result.ok();
@@ -900,69 +1196,92 @@ impl LspStore {
                         };
                     }
                     _ => {
-                        eprintln!("lsp: {name} failed to initialize");
-                        self.server_gone(name, "failed to initialize");
+                        eprintln!("lsp: {} failed to initialize", server.name);
+                        self.server_gone(id, "failed to initialize");
                     }
                 }
             }
             ServerEvent::Notification { method, params } => {
                 if method == "textDocument/publishDiagnostics" {
                     match serde_json::from_value::<PublishDiagnosticsParams>(params) {
-                        Ok(params) => self.receive_diagnostics(name, params),
-                        Err(error) => eprintln!("lsp: bad diagnostics from {name}: {error}"),
+                        Ok(params) => self.receive_diagnostics(id, params),
+                        Err(error) => eprintln!("lsp: bad diagnostics: {error}"),
                     }
                 } else if method == "$/progress" {
-                    self.receive_progress(name, &params);
+                    self.receive_progress(id, &params);
                 }
             }
             ServerEvent::ProgressCreated { token } => {
-                if let Some(server) = self.servers.get_mut(name) {
+                if let Some(server) = self.servers.get_mut(&id) {
                     server.progress_tokens.insert(token);
                 }
             }
             ServerEvent::Exited => {
+                let name = self.servers.get(&id).map_or("server", |server| server.name);
                 eprintln!("lsp: {name} exited");
-                self.server_gone(name, "the server exited");
+                self.server_gone(id, "the server exited");
             }
         }
     }
 
     /// A server that exited or failed: dropped with the diagnostics it had shown, and not retried.
-    fn server_gone(&mut self, name: &'static str, message: &str) {
-        self.fail(name, message.to_string());
+    fn server_gone(&mut self, id: ServerId, message: &str) {
+        self.fail(id, message.to_string());
     }
 
     /// Stop a server and forget its documents and diagnostics; its files open on it again on their next sync.
-    fn drop_server(&mut self, name: &'static str) {
-        if let Some(server) = self.servers.remove(name).and_then(|server| server.server) {
+    fn drop_server(&mut self, id: ServerId) {
+        if let Some(server) = self.servers.remove(&id).and_then(|server| server.server) {
             server.shutdown();
         }
-        self.summaries.retain(|_, (adapter, _, _)| *adapter != name);
-        let before = self.published.len();
-        self.published.retain(|_, (adapter, _)| *adapter != name);
-        if self.published.len() != before {
-            self.published_generation += 1;
+        let answered: Vec<i64> = self
+            .calls
+            .keys()
+            .filter(|(server, _)| *server == id)
+            .map(|(_, call)| *call)
+            .collect();
+        for call in answered {
+            self.answered(id, call, None);
         }
-        let closed: Vec<PathBuf> = self
+        self.resolves.retain(|(server, _), _| *server != id);
+        let paths: Vec<PathBuf> = self
             .documents
             .iter()
-            .filter(|(_, document)| document.adapter == name)
+            .filter(|(_, document)| document.server(id).is_some())
             .map(|(path, _)| path.clone())
             .collect();
-        for path in closed {
-            self.documents.remove(&path);
-            self.clear_diagnostics(path);
+        for path in &paths {
+            if let Some(document) = self.documents.get_mut(path) {
+                document.servers.retain(|server| server.id != id);
+            }
         }
+        let published: Vec<PathBuf> = self
+            .published
+            .iter()
+            .filter(|(_, by_server)| by_server.contains_key(&id))
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in paths.into_iter().chain(published) {
+            self.clear_diagnostics(path, id);
+        }
+        self.unopened_diagnostics
+            .retain(|(_, server), _| *server != id);
     }
 
     /// Every server this folder has started, stopped or failed to find, by name.
     pub fn servers(&self) -> Vec<ServerSummary> {
+        let root_of = |id: &ServerId| {
+            self.slot(*id)
+                .map(|(_, root)| root.clone())
+                .unwrap_or_else(|| self.root.clone())
+        };
         let mut summaries: Vec<ServerSummary> = self
             .servers
             .iter()
-            .map(|(key, server)| ServerSummary {
-                key,
+            .map(|(id, server)| ServerSummary {
+                key: *id,
                 name: server.name,
+                root: root_of(id),
                 status: match &server.state {
                     ServerState::Locating(Locating {
                         status: Some(BinaryStatus::CheckingForUpdate),
@@ -983,9 +1302,10 @@ impl LspStore {
                 process_id: server.server.as_ref().and_then(LanguageServer::process_id),
             })
             .collect();
-        summaries.extend(self.stopped.iter().map(|(key, name)| ServerSummary {
-            key,
+        summaries.extend(self.stopped.iter().map(|(id, name)| ServerSummary {
+            key: *id,
             name,
+            root: root_of(id),
             status: ServerStatus::Stopped,
             message: None,
             version: None,
@@ -995,9 +1315,10 @@ impl LspStore {
         summaries.extend(
             self.unavailable
                 .iter()
-                .map(|(key, unavailable)| ServerSummary {
-                    key,
+                .map(|(id, unavailable)| ServerSummary {
+                    key: *id,
                     name: unavailable.name,
+                    root: root_of(id),
                     status: ServerStatus::Failed,
                     message: Some(unavailable.message.clone()),
                     version: None,
@@ -1005,7 +1326,7 @@ impl LspStore {
                     process_id: None,
                 }),
         );
-        summaries.sort_by_key(|summary| summary.name);
+        summaries.sort_by(|a, b| (&a.root, a.name).cmp(&(&b.root, b.name)));
         summaries
     }
 
@@ -1021,75 +1342,71 @@ impl LspStore {
     }
 
     /// Start a server again: stopped, failed or running, it looks for its binary anew on the next sync.
-    pub fn restart_server(&mut self, key: &str) {
-        let Some(key) = self.known_key(key) else {
-            return;
-        };
-        self.drop_server(key);
-        self.stopped.remove(key);
-        self.unavailable.remove(key);
+    pub fn restart_server(&mut self, id: ServerId) {
+        self.drop_server(id);
+        self.stopped.remove(&id);
+        self.unavailable.remove(&id);
         (self.waker)();
     }
 
-    pub fn stop_server(&mut self, key: &str) {
-        let Some(key) = self.known_key(key) else {
-            return;
-        };
-        let name = self.servers.get(key).map_or(key, |server| server.name);
-        self.drop_server(key);
-        self.unavailable.remove(key);
-        self.stopped.insert(key, name);
+    pub fn stop_server(&mut self, id: ServerId) {
+        let name = self
+            .servers
+            .get(&id)
+            .map(|server| server.name)
+            .or_else(|| {
+                self.unavailable
+                    .get(&id)
+                    .map(|unavailable| unavailable.name)
+            })
+            .or_else(|| self.slot(id).map(|(name, _)| *name))
+            .unwrap_or("server");
+        self.drop_server(id);
+        self.unavailable.remove(&id);
+        self.stopped.insert(id, name);
     }
 
     pub fn restart_all(&mut self) {
-        for key in self.known_keys() {
-            self.restart_server(key);
+        for id in self.known_ids() {
+            self.restart_server(id);
         }
     }
 
     pub fn stop_all(&mut self) {
-        for key in self.known_keys() {
-            if !self.stopped.contains_key(key) {
-                self.stop_server(key);
+        for id in self.known_ids() {
+            if !self.stopped.contains_key(&id) {
+                self.stop_server(id);
             }
         }
     }
 
     /// Ask a server to cancel work it said can be (`window/workDoneProgress/cancel`).
-    pub fn cancel_work(&mut self, key: &str, token: &str) {
-        let Some(server) = self
+    pub fn cancel_work(&mut self, id: ServerId, token: &str) {
+        if let Some(server) = self
             .servers
-            .iter_mut()
-            .find(|(name, _)| **name == key)
-            .map(|(_, server)| server)
-        else {
-            return;
-        };
-        if let Some(language_server) = server.server.as_mut() {
-            language_server.notify("window/workDoneProgress/cancel", json!({"token": token}));
+            .get_mut(&id)
+            .and_then(|server| server.server.as_mut())
+        {
+            server.notify("window/workDoneProgress/cancel", json!({"token": token}));
         }
     }
 
-    fn known_keys(&self) -> Vec<&'static str> {
-        let mut keys: Vec<&'static str> = self
+    fn known_ids(&self) -> Vec<ServerId> {
+        let mut ids: Vec<ServerId> = self
             .servers
             .keys()
             .chain(self.stopped.keys())
             .chain(self.unavailable.keys())
             .copied()
             .collect();
-        keys.sort_unstable();
-        keys.dedup();
-        keys
-    }
-
-    fn known_key(&self, key: &str) -> Option<&'static str> {
-        self.known_keys().into_iter().find(|known| *known == key)
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     }
 
     /// Track a server's `$/progress`: begun, reported on (throttled) and ended, for tokens it created.
-    fn receive_progress(&mut self, name: &'static str, params: &Value) {
-        let Some(server) = self.servers.get_mut(name) else {
+    fn receive_progress(&mut self, id: ServerId, params: &Value) {
+        let Some(server) = self.servers.get_mut(&id) else {
             return;
         };
         let Some(token) = params.get("token").map(crate::progress_token) else {
@@ -1111,7 +1428,7 @@ impl LspStore {
                 server.work.insert(
                     token.clone(),
                     ServerWork {
-                        server: name,
+                        server: id,
                         title: text("title").unwrap_or_else(|| token.clone()),
                         token,
                         message: text("message"),
@@ -1146,25 +1463,38 @@ impl LspStore {
         }
     }
 
-    fn clear_diagnostics(&mut self, path: PathBuf) {
-        self.summaries.remove(&path);
-        if self.published.remove(&path).is_some() {
-            self.published_generation += 1;
+    /// Forget one server's diagnostics for `path`, and tell the file.
+    fn clear_diagnostics(&mut self, path: PathBuf, id: ServerId) {
+        self.summaries.remove(&(path.clone(), id));
+        if let Some(by_server) = self.published.get_mut(&path) {
+            if by_server.remove(&id).is_some() {
+                self.published_generation += 1;
+            }
+            if by_server.is_empty() {
+                self.published.remove(&path);
+            }
         }
         self.updates
             .push(StoreEvent::Diagnostics(DiagnosticsUpdate {
                 path,
+                server: id,
                 diagnostics: Vec::new(),
                 synced: None,
             }));
     }
 
-    /// Every file's latest diagnostics, open or not, sorted by path, with the generation they are at.
+    /// Every file's latest diagnostics from all its servers, open or not, sorted by path, with the generation
+    /// they are at.
     pub fn all_diagnostics(&self) -> (u64, Vec<(PathBuf, Vec<Diagnostic>)>) {
         let mut files: Vec<(PathBuf, Vec<Diagnostic>)> = self
             .published
             .iter()
-            .map(|(path, (_, diagnostics))| (path.clone(), diagnostics.clone()))
+            .map(|(path, by_server)| {
+                let mut diagnostics: Vec<Diagnostic> =
+                    by_server.values().flatten().cloned().collect();
+                diagnostics.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+                (path.clone(), diagnostics)
+            })
             .collect();
         files.sort_by(|a, b| a.0.cmp(&b.0));
         (self.published_generation, files)
@@ -1177,12 +1507,12 @@ impl LspStore {
     pub fn diagnostic_summary(&self) -> (usize, usize) {
         self.summaries
             .values()
-            .fold((0, 0), |(errors, warnings), (_, e, w)| {
+            .fold((0, 0), |(errors, warnings), (e, w)| {
                 (errors + e, warnings + w)
             })
     }
 
-    fn receive_diagnostics(&mut self, name: &'static str, params: PublishDiagnosticsParams) {
+    fn receive_diagnostics(&mut self, id: ServerId, params: PublishDiagnosticsParams) {
         let Ok(path) = params.uri.to_file_path() else {
             return;
         };
@@ -1198,10 +1528,10 @@ impl LspStore {
             count(lsp_types::DiagnosticSeverity::WARNING),
         );
         if errors + warnings == 0 {
-            self.summaries.remove(&path);
+            self.summaries.remove(&(path.clone(), id));
         } else {
             self.summaries
-                .insert(path.clone(), (name, errors, warnings));
+                .insert((path.clone(), id), (errors, warnings));
         }
         let mut diagnostics = params.diagnostics;
         diagnostics.sort_by(|a, b| {
@@ -1213,24 +1543,31 @@ impl LspStore {
                 })
                 .then_with(|| a.severity.cmp(&b.severity))
         });
+        let by_server = self.published.entry(path.clone()).or_default();
         if diagnostics.is_empty() {
-            self.published.remove(&path);
+            by_server.remove(&id);
         } else {
-            self.published
-                .insert(path.clone(), (name, diagnostics.clone()));
+            by_server.insert(id, diagnostics.clone());
+        }
+        if by_server.is_empty() {
+            self.published.remove(&path);
         }
         self.published_generation += 1;
-        let Some(document) = self.documents.get(&path) else {
-            self.unopened_diagnostics.insert(path, diagnostics);
+        let Some(synced_server) = self
+            .documents
+            .get(&path)
+            .and_then(|document| document.server(id))
+        else {
+            self.unopened_diagnostics.insert((path, id), diagnostics);
             return;
         };
         let synced = match params.version {
-            Some(version) => document
+            Some(version) => synced_server
                 .versions
                 .iter()
                 .find(|v| v.lsp_version == version)
                 .cloned(),
-            None => document.versions.back().cloned(),
+            None => synced_server.versions.back().cloned(),
         };
         // Diagnostics for a version no longer retained can't be placed; newer ones will follow.
         if synced.is_none() {
@@ -1239,6 +1576,7 @@ impl LspStore {
         self.updates
             .push(StoreEvent::Diagnostics(DiagnosticsUpdate {
                 path,
+                server: id,
                 diagnostics,
                 synced,
             }));
@@ -1429,7 +1767,7 @@ fn incremental_changes(
 }
 
 /// What the client supports, limited to the features it handles.
-fn initialize_params(root: &Path) -> Value {
+fn initialize_params(root: &Path, options: Value) -> Value {
     let root_uri = Url::from_directory_path(root).ok();
     let name = root
         .file_name()
@@ -1441,6 +1779,7 @@ fn initialize_params(root: &Path) -> Value {
         "rootUri": root_uri,
         "workspaceFolders": root_uri.as_ref().map(|uri| json!([{"uri": uri, "name": name}])),
         "clientInfo": {"name": "Pomelo", "version": env!("CARGO_PKG_VERSION")},
+        "initializationOptions": options,
         "capabilities": {
             "general": {"positionEncodings": ["utf-16"]},
             "workspace": {
@@ -1490,10 +1829,11 @@ fn initialize_params(root: &Path) -> Value {
 mod tests {
     use super::*;
 
-    fn store_with_running(key: &'static str) -> LspStore {
+    fn store_with_running(key: &'static str) -> (LspStore, ServerId) {
         let waker: Waker = std::sync::Arc::new(|| {});
         let mut store =
             LspStore::new(PathBuf::from("/tmp"), waker).with_environment(HashMap::new());
+        let id = store.server_id(key, Path::new("/tmp"));
         let (_, found) = channel();
         let mut server = Server::new(
             ServerState::Locating(Locating {
@@ -1506,19 +1846,19 @@ mod tests {
             "vtsls",
         );
         server.progress_tokens.insert("1".into());
-        store.servers.insert(key, server);
-        store
+        store.servers.insert(id, server);
+        (store, id)
     }
 
     #[test]
     fn progress_is_kept_from_begin_to_end_for_created_tokens() {
-        let mut store = store_with_running("typescript");
+        let (mut store, id) = store_with_running("typescript");
         store.receive_progress(
-            "typescript",
+            id,
             &json!({"token": 1, "value": {"kind": "begin", "title": "Indexing", "percentage": 5}}),
         );
         store.receive_progress(
-            "typescript",
+            id,
             &json!({"token": "other", "value": {"kind": "begin", "title": "Ignored"}}),
         );
         let work = store.work();
@@ -1527,24 +1867,128 @@ mod tests {
             (work[0].title.as_str(), work[0].percentage),
             ("Indexing", Some(5))
         );
-        store.receive_progress("typescript", &json!({"token": 1, "value": {"kind": "end"}}));
+        store.receive_progress(id, &json!({"token": 1, "value": {"kind": "end"}}));
         assert!(store.work().is_empty());
     }
 
     #[test]
     fn a_stopped_server_stays_stopped_until_restarted() {
-        let mut store = store_with_running("typescript");
+        let (mut store, id) = store_with_running("typescript");
         assert_eq!(store.servers()[0].status, ServerStatus::Downloading);
-        store.stop_server("typescript");
+        store.stop_server(id);
         let servers = store.servers();
         assert_eq!(
             (servers[0].name, servers[0].status),
             ("vtsls", ServerStatus::Stopped)
         );
-        store.restart_server("typescript");
+        store.restart_server(id);
         assert!(
             store.servers().is_empty(),
             "it looks for its binary again on the next sync"
+        );
+    }
+
+    #[test]
+    fn a_request_to_several_servers_answers_once_with_all_of_them() {
+        let (mut store, first) = store_with_running("typescript");
+        let second = store.server_id("tailwindcss", Path::new("/tmp"));
+        let synced = SyncedText {
+            lsp_version: 0,
+            buffer_version: 0,
+            rope: Rope::from_str("const a = 1;\n"),
+        };
+        store.calls.insert((first, 7), 1);
+        store.calls.insert((second, 3), 1);
+        store.pending.insert(
+            1,
+            Pending {
+                gathered: Gathered::Hover {
+                    markdown: Vec::new(),
+                    range: None,
+                },
+                waiting: 2,
+                synced,
+                started: Instant::now(),
+            },
+        );
+        store.answered(first, 7, Some(json!({"contents": "a number"})));
+        assert!(store.updates.is_empty(), "waits for the other server");
+        store.answered(second, 3, Some(json!({"contents": "a class"})));
+        match store.updates.as_slice() {
+            [StoreEvent::Hover(hover)] => assert_eq!(
+                hover.markdown.as_deref(),
+                Some("a number\n\n---\n\na class")
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn each_server_keeps_its_own_diagnostics_for_a_file() {
+        let (mut store, first) = store_with_running("typescript");
+        let second = store.server_id("tailwindcss", Path::new("/tmp"));
+        let publish = |store: &mut LspStore, id: ServerId, count: usize| {
+            let diagnostics = (0..count)
+                .map(|line| Diagnostic {
+                    range: lsp_types::Range::new(
+                        lsp_types::Position::new(line as u32, 0),
+                        lsp_types::Position::new(line as u32, 1),
+                    ),
+                    severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                    message: "bad".into(),
+                    ..Diagnostic::default()
+                })
+                .collect();
+            store.receive_diagnostics(
+                id,
+                PublishDiagnosticsParams {
+                    uri: Url::from_file_path("/tmp/a.ts").unwrap(),
+                    diagnostics,
+                    version: None,
+                },
+            );
+        };
+        publish(&mut store, first, 2);
+        publish(&mut store, second, 1);
+        assert_eq!(store.diagnostic_summary(), (3, 0));
+        publish(&mut store, first, 0);
+        assert_eq!(
+            store.diagnostic_summary(),
+            (1, 0),
+            "only the first server's went"
+        );
+        assert_eq!(store.all_diagnostics().1[0].1.len(), 1);
+    }
+
+    #[test]
+    fn a_manifest_picks_the_folder_a_server_runs_in() {
+        let workspace = tempfile::tempdir().expect("temp");
+        let root = workspace.path();
+        std::fs::create_dir_all(root.join("api/app/models")).unwrap();
+        std::fs::create_dir_all(root.join("web/apps/portal/src")).unwrap();
+        std::fs::write(root.join("api/Gemfile"), "").unwrap();
+        std::fs::write(root.join("web/package.json"), "{}").unwrap();
+        std::fs::write(root.join("web/apps/portal/package.json"), "{}").unwrap();
+        let gemfile = crate::adapters::Manifest {
+            names: &["Gemfile"],
+            outermost: false,
+        };
+        let node = crate::adapters::Manifest {
+            names: &["package.json"],
+            outermost: true,
+        };
+        assert_eq!(
+            gemfile.root_for(&root.join("api/app/models/user.rb"), root),
+            root.join("api")
+        );
+        assert_eq!(
+            node.root_for(&root.join("web/apps/portal/src/a.tsx"), root),
+            root.join("web"),
+            "one server for the monorepo"
+        );
+        assert_eq!(
+            gemfile.root_for(&root.join("web/x.rb"), root),
+            root.to_path_buf()
         );
     }
 

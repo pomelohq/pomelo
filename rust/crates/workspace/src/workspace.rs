@@ -641,6 +641,8 @@ pub enum ServerHealth {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LanguageServerRow {
+    /// The folder it runs in: the menu groups servers under it.
+    pub group: String,
     pub name: String,
     pub health: ServerHealth,
     pub message: Option<String>,
@@ -767,24 +769,36 @@ impl LanguageServers {
 
     /// The language-server menu: the folder, each server with its submenu, then restart and stop for all.
     pub fn menu_items(&self) -> Vec<MenuItem> {
-        let mut items = vec![MenuItem {
-            header: true,
-            ..MenuItem::new(0, self.folder.clone())
-        }];
-        items.extend(
-            self.servers
-                .iter()
-                .enumerate()
-                .take(LANGUAGE_SERVER_LIMIT as usize)
-                .map(|(index, server)| MenuItem {
-                    icon: Some(ui::IconKind::Circle),
-                    color: Some(health_color(server.health)),
-                    ..MenuItem::new(
-                        LANGUAGE_SERVER_SUBMENU_BASE + index as u64,
-                        server.name.clone(),
-                    )
-                }),
-        );
+        let mut items = Vec::new();
+        let mut group: Option<&str> = None;
+        for (index, server) in self
+            .servers
+            .iter()
+            .enumerate()
+            .take(LANGUAGE_SERVER_LIMIT as usize)
+        {
+            if group != Some(server.group.as_str()) {
+                group = Some(server.group.as_str());
+                let title = if server.group.is_empty() {
+                    self.folder.clone()
+                } else {
+                    server.group.clone()
+                };
+                items.push(MenuItem {
+                    header: true,
+                    sep: index > 0,
+                    ..MenuItem::new(0, title)
+                });
+            }
+            items.push(MenuItem {
+                icon: Some(ui::IconKind::Circle),
+                color: Some(health_color(server.health)),
+                ..MenuItem::new(
+                    LANGUAGE_SERVER_SUBMENU_BASE + index as u64,
+                    server.name.clone(),
+                )
+            });
+        }
         if self.can_stop_all || self.can_restart_all {
             items.push(MenuItem {
                 sep: true,

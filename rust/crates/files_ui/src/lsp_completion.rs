@@ -26,6 +26,7 @@ pub(crate) struct PendingCompletion {
 }
 
 pub(crate) struct PendingResolve {
+    server: lsp::ServerId,
     raw: Value,
     request: Option<u64>,
 }
@@ -373,7 +374,8 @@ impl FileItem {
         if !item.additional_edits.is_empty() {
             self.apply_additional_edits(&item.additional_edits, synced_version);
         } else if !item.raw.is_null() {
-            self.pending_resolve = Some(PendingResolve {
+            self.pending_resolve = item.server.map(|server| PendingResolve {
+                server,
                 raw: item.raw.clone(),
                 request: None,
             });
@@ -394,9 +396,12 @@ impl FileItem {
         b.replace_ranges(mapped);
     }
 
-    pub(crate) fn resolve_due(&self) -> Option<Value> {
+    pub(crate) fn resolve_due(&self) -> Option<(lsp::ServerId, Value)> {
         let pending = self.pending_resolve.as_ref()?;
-        pending.request.is_none().then(|| pending.raw.clone())
+        pending
+            .request
+            .is_none()
+            .then(|| (pending.server, pending.raw.clone()))
     }
 
     pub(crate) fn resolve_requested(&mut self, token: Option<u64>) {
@@ -407,7 +412,7 @@ impl FileItem {
     }
 
     /// The selected server item, to ask for its documentation, when the server wasn't asked about it yet.
-    pub(crate) fn doc_resolve_due(&self) -> Option<Value> {
+    pub(crate) fn doc_resolve_due(&self) -> Option<(lsp::ServerId, Value)> {
         let menu = self.completions.as_ref()?;
         let candidate = menu.selected_candidate()?;
         if menu.doc_resolved.contains(&candidate)
@@ -416,7 +421,9 @@ impl FileItem {
             return None;
         }
         match &menu.completion_at(menu.selected)?.kind {
-            CompletionKind::Lsp { item, .. } if !item.raw.is_null() => Some(item.raw.clone()),
+            CompletionKind::Lsp { item, .. } if !item.raw.is_null() => {
+                Some((item.server?, item.raw.clone()))
+            }
             _ => None,
         }
     }
@@ -504,6 +511,7 @@ mod tests {
             additional_edits: Vec::new(),
             documentation: None,
             raw: Value::Null,
+            server: Some(lsp::ServerId(0)),
         }
     }
 

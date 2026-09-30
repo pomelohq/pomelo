@@ -840,6 +840,8 @@ pub fn scratch_editor(
 /// A problem a language server reported, over a char range of the buffer.
 #[derive(Clone, Debug, PartialEq)]
 struct DiagnosticEntry {
+    /// The server that reported it, whose next report replaces it.
+    server: Option<lsp::ServerId>,
     range: Range<usize>,
     severity: lsp::lsp_types::DiagnosticSeverity,
     message: String,
@@ -1063,6 +1065,7 @@ impl FileItem {
                 max_severity > 0 && severity_rank(severity) <= max_severity
             })
             .map(|diagnostic| DiagnosticEntry {
+                server: Some(update.server),
                 range: lsp::diagnostic_char_range(rope, diagnostic.range),
                 severity: diagnostic
                     .severity
@@ -1085,7 +1088,11 @@ impl FileItem {
                 }
             }
         }
-        self.diagnostics = entries;
+        self.diagnostics
+            .retain(|entry| entry.server != Some(update.server));
+        self.diagnostics.extend(entries);
+        self.diagnostics
+            .sort_by_key(|entry| (entry.range.start, entry.range.end));
         self.refresh_active_diagnostic();
     }
 
@@ -6828,12 +6835,12 @@ impl FilesView {
                     .and_then(|b| lsp.completion(&path, file.lang, b, offset, trigger.as_deref()));
                 file.completion_requested(token);
             }
-            if let Some(raw) = file.resolve_due() {
-                let token = lsp.resolve_completion(&path, &raw);
+            if let Some((server, raw)) = file.resolve_due() {
+                let token = lsp.resolve_completion(&path, server, &raw);
                 file.resolve_requested(token);
             }
-            if let Some(raw) = file.doc_resolve_due() {
-                let token = lsp.resolve_completion(&path, &raw);
+            if let Some((server, raw)) = file.doc_resolve_due() {
+                let token = lsp.resolve_completion(&path, server, &raw);
                 file.doc_resolve_requested(token);
             }
             while let Some((offset, kind)) = file.definition_request_due() {
@@ -9317,6 +9324,7 @@ mod indent_guide_tests {
             Some("const a = 1;\nconst b = 2;\n".into()),
         );
         item.diagnostics.push(DiagnosticEntry {
+            server: None,
             range: 16..17,
             severity: lsp::lsp_types::DiagnosticSeverity::ERROR,
             message: "b is never read\nmore".into(),
@@ -10447,6 +10455,7 @@ mod diagnostic_tests {
         item.buffer.as_mut().unwrap().place_cursor(0);
         item.input_text("// x\n");
         item.set_diagnostics(&lsp::DiagnosticsUpdate {
+            server: lsp::ServerId(0),
             path: PathBuf::from("/nonexistent/a.rs"),
             diagnostics: vec![diagnostic(1, 8, 9, DiagnosticSeverity::ERROR)],
             synced: Some(synced),
@@ -10465,6 +10474,7 @@ mod diagnostic_tests {
     fn visible_diagnostics_draw_wavy_underlines_in_their_color() {
         let mut item = item("let a = b;\n");
         item.set_diagnostics(&lsp::DiagnosticsUpdate {
+            server: lsp::ServerId(0),
             path: PathBuf::from("/nonexistent/a.rs"),
             diagnostics: vec![
                 diagnostic(0, 4, 5, DiagnosticSeverity::WARNING),

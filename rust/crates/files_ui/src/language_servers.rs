@@ -19,7 +19,7 @@ const MEMORY_CACHE: Duration = Duration::from_secs(5);
 /// measured lately.
 #[derive(Default)]
 pub(crate) struct ServerStatusState {
-    dismissed: HashSet<(&'static str, ServerStatus)>,
+    dismissed: HashSet<(lsp::ServerId, ServerStatus)>,
     memory: RefCell<HashMap<u32, (Instant, Option<u64>)>>,
 }
 
@@ -29,6 +29,7 @@ impl ServerStatusState {
         let servers = summaries
             .iter()
             .map(|summary| LanguageServerRow {
+                group: folder_name(&summary.root),
                 name: summary.name.to_string(),
                 health: health(summary.status),
                 message: summary.message.clone(),
@@ -53,10 +54,7 @@ impl ServerStatusState {
             )
         });
         LanguageServers {
-            folder: root
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            folder: folder_name(root),
             servers,
             activity: self.activity(store, &summaries),
             can_restart_all: !transitioning,
@@ -202,6 +200,12 @@ impl ServerStatusState {
         cache.insert(pid, (now, bytes));
         bytes
     }
+}
+
+fn folder_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn health(status: ServerStatus) -> ServerHealth {

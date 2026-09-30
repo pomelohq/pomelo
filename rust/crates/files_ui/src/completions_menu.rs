@@ -780,6 +780,7 @@ mod tests {
             additional_edits: Vec::new(),
             documentation: None,
             raw: serde_json::Value::Null,
+            server: None,
         };
         let runs = lsp_row_runs(&item, &[0], 10_000.0);
         let label_alpha = runs[0].1.a;

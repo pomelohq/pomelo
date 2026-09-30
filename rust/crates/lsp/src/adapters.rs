@@ -8,10 +8,49 @@ use editor::Lang;
 /// A server for some languages, and how to find and start it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Adapter {
-    /// Also the key one running server is shared under.
+    /// With the folder it runs in, the key one running server is shared under.
     pub name: &'static str,
     /// Binaries to look for, in order.
     pub candidates: std::borrow::Cow<'static, [Candidate]>,
+    /// Where it runs: the folder holding the file's project manifest.
+    pub manifest: Manifest,
+}
+
+/// The files that mark a project for a server, and whether the outermost one wins (one server for a
+/// monorepo or a Cargo workspace) or the nearest (one per project).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Manifest {
+    pub names: &'static [&'static str],
+    pub outermost: bool,
+}
+
+const NODE_PROJECT: Manifest = Manifest {
+    names: &["package.json", "tsconfig.json", "jsconfig.json"],
+    outermost: true,
+};
+
+impl Manifest {
+    /// The folder a server for `file` runs in: the manifest's, within `workspace`, else `workspace` itself.
+    pub fn root_for(&self, file: &Path, workspace: &Path) -> std::path::PathBuf {
+        let mut found = None;
+        let mut dir = file.parent();
+        while let Some(folder) = dir {
+            if !folder.starts_with(workspace) {
+                break;
+            }
+            if self.names.iter().any(|name| folder.join(name).is_file()) {
+                found = Some(folder);
+                if !self.outermost {
+                    break;
+                }
+            }
+            if folder == workspace {
+                break;
+            }
+            dir = folder.parent();
+        }
+        found.unwrap_or(workspace).to_path_buf()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +120,10 @@ const fn from_npm(
 
 const RUST: Adapter = Adapter {
     name: "rust-analyzer",
+    manifest: Manifest {
+        names: &["Cargo.toml"],
+        outermost: true,
+    },
     candidates: std::borrow::Cow::Borrowed(&[Candidate {
         name: "rust-analyzer",
         binary: "rust-analyzer",
@@ -92,14 +135,32 @@ const RUST: Adapter = Adapter {
 };
 const CLANGD: Adapter = Adapter {
     name: "clangd",
+    manifest: Manifest {
+        names: &["compile_commands.json", "CMakeLists.txt", ".clangd"],
+        outermost: false,
+    },
     candidates: std::borrow::Cow::Borrowed(&[candidate("clangd", "clangd", &[])]),
 };
 const GOPLS: Adapter = Adapter {
     name: "gopls",
+    manifest: Manifest {
+        names: &["go.work", "go.mod"],
+        outermost: true,
+    },
     candidates: std::borrow::Cow::Borrowed(&[candidate("gopls", "gopls", &[])]),
 };
 const PYTHON: Adapter = Adapter {
     name: "python",
+    manifest: Manifest {
+        names: &[
+            "pyproject.toml",
+            "setup.py",
+            "setup.cfg",
+            "requirements.txt",
+            "pyrightconfig.json",
+        ],
+        outermost: false,
+    },
     candidates: std::borrow::Cow::Borrowed(&[
         from_npm(
             "basedpyright",
@@ -120,13 +181,29 @@ const PYTHON: Adapter = Adapter {
 };
 const RUBY: Adapter = Adapter {
     name: "ruby",
+    manifest: Manifest {
+        names: &["Gemfile"],
+        outermost: false,
+    },
     candidates: std::borrow::Cow::Borrowed(&[
         candidate("solargraph", "solargraph", &["stdio"]),
         opt_in("ruby-lsp", "ruby-lsp", &[]),
     ]),
 };
+const TAILWIND: Adapter = Adapter {
+    name: "tailwindcss",
+    manifest: NODE_PROJECT,
+    candidates: std::borrow::Cow::Borrowed(&[from_npm(
+        "tailwindcss-language-server",
+        "tailwindcss-language-server",
+        &["--stdio"],
+        "@tailwindcss/language-server",
+        "node_modules/.bin/tailwindcss-language-server",
+    )]),
+};
 const TYPESCRIPT: Adapter = Adapter {
     name: "typescript",
+    manifest: NODE_PROJECT,
     candidates: std::borrow::Cow::Borrowed(&[
         from_npm(
             "vtsls",
@@ -207,24 +284,72 @@ fn chosen(defaults: &[Candidate], servers: &[String]) -> Vec<Candidate> {
     out
 }
 
-/// The adapter for `lang`, with the servers the settings choose, and the language id its documents are
+/// The adapters for `lang`, each with the servers the settings choose, and the language id its documents are
 /// opened with; none when the settings turn its servers off.
-pub fn adapter_for(lang: Lang) -> Option<(Adapter, &'static str)> {
-    let (mut adapter, language_id) = default_adapter_for(lang)?;
+pub fn adapters_for(lang: Lang) -> Vec<(Adapter, &'static str)> {
     let choice = choice_for(lang);
     if !choice.enabled {
-        return None;
+        return Vec::new();
     }
-    let candidates = chosen(&adapter.candidates, &choice.servers);
-    if candidates.is_empty() {
-        return None;
+    default_adapters_for(lang)
+        .into_iter()
+        .filter_map(|(mut adapter, language_id)| {
+            let candidates = chosen(&adapter.candidates, &choice.servers);
+            if candidates.is_empty() {
+                return None;
+            }
+            adapter.candidates = std::borrow::Cow::Owned(candidates);
+            Some((adapter, language_id))
+        })
+        .collect()
+}
+
+/// The language's main server: the first of its adapters.
+pub fn adapter_for(lang: Lang) -> Option<(Adapter, &'static str)> {
+    adapters_for(lang).into_iter().next()
+}
+
+/// What a server is given at `initialize` (`initializationOptions`), by adapter.
+pub fn initialization_options(adapter: &str) -> serde_json::Value {
+    if adapter == TAILWIND.name {
+        return serde_json::json!({"provideFormatter": true});
     }
-    adapter.candidates = std::borrow::Cow::Owned(candidates);
-    Some((adapter, language_id))
+    serde_json::Value::Null
+}
+
+fn default_adapters_for(lang: Lang) -> Vec<(Adapter, &'static str)> {
+    let tailwind = |language_id| (TAILWIND, language_id);
+    let mut adapters: Vec<(Adapter, &'static str)> =
+        default_adapter_for(lang).into_iter().collect();
+    match lang {
+        Lang::TypeScript => adapters.push(tailwind("typescript")),
+        Lang::Tsx => adapters.push(tailwind("typescriptreact")),
+        Lang::JavaScript => adapters.push(tailwind("javascript")),
+        Lang::Css => adapters.push(tailwind("css")),
+        Lang::Html => adapters.push(tailwind("html")),
+        Lang::Svelte => adapters.push(tailwind("svelte")),
+        Lang::Php => adapters.push(tailwind("php")),
+        _ => {}
+    }
+    adapters
 }
 
 /// What a server is told when it asks for its settings (`workspace/configuration`), by adapter.
 pub fn workspace_configuration(adapter: &str, root: &Path) -> serde_json::Value {
+    if adapter == TAILWIND.name {
+        return serde_json::json!({
+            "tailwindCSS": {
+                "emmetCompletions": true,
+                "includeLanguages": {
+                    "html": "html",
+                    "css": "css",
+                    "javascript": "javascript",
+                    "typescript": "typescript",
+                    "typescriptreact": "typescriptreact",
+                },
+            },
+        });
+    }
     if adapter != TYPESCRIPT.name {
         return serde_json::Value::Null;
     }

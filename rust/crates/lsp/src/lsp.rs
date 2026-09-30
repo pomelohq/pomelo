@@ -19,7 +19,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-pub use adapters::{adapter_for, choice_for, set_server_choice, Adapter, ServerChoice};
+pub use adapters::{
+    adapter_for, adapters_for, choice_for, set_server_choice, Adapter, ServerChoice,
+};
 pub use completion::{
     CompletionDocumentation, CompletionsResponse, LspCompletion, ResolvedCompletion,
 };
@@ -29,7 +31,7 @@ pub use position::{char_to_position, diagnostic_char_range, position_to_char};
 pub use shell_env::capture_login_env;
 pub use store::{
     DefinitionKind, DefinitionTarget, DefinitionsResponse, DiagnosticsUpdate, HoverResponse,
-    LspStore, ServerStatus, ServerSummary, ServerWork, StoreEvent, SyncedText,
+    LspStore, ServerId, ServerStatus, ServerSummary, ServerWork, StoreEvent, SyncedText,
 };
 
 const CONTENT_LENGTH: &str = "Content-Length: ";
