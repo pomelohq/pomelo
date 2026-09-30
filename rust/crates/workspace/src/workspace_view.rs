@@ -1174,6 +1174,14 @@ impl WorkspaceView {
         });
     }
 
+    /// The open page has an animation running and wants every frame.
+    pub fn animating(&self) -> bool {
+        self.page
+            .as_ref()
+            .and_then(|page| page.open.first())
+            .is_some_and(|item| item.animating())
+    }
+
     pub fn ticking(&self) -> bool {
         self.toast.is_some()
             || self.upkeep_done_at.is_some()

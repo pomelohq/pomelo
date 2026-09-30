@@ -1544,6 +1544,10 @@ impl Item for StorePage {
         }
     }
 
+    fn animating(&self) -> bool {
+        self.shared.borrow().animating()
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

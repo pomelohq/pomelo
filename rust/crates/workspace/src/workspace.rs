@@ -920,6 +920,10 @@ pub trait Item: 'static {
     fn take_open_request(&mut self) -> Option<TerminalOpenTarget> {
         None
     }
+    /// While true the window redraws every frame, for an item's own animation.
+    fn animating(&self) -> bool {
+        false
+    }
     fn link_hovered(&self) -> bool {
         false
     }
