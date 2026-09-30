@@ -97,8 +97,8 @@ fn nav_item_box(active: bool, hovered: bool) -> Div {
 // gets a disclosure chevron and expands to show them (indented, with a guide line).
 // The Appearance page's section headers, in order. Single source of truth: the navbar lists them as jump
 // entries and `appearance_page` emits the same headers, so the two never drift.
-const APPEARANCE_SECTIONS: [&str; 2] = ["Theme", "UI Font"];
 const WINDOW_LAYOUT_SECTIONS: [&str; 3] = ["Status Bar", "Title Bar", "Docks"];
+const APPEARANCE_SECTIONS: [&str; 3] = ["Theme", "UI Font", "Cursor"];
 
 const INTEGRATIONS_SECTIONS: [&str; 2] = ["Jira", "Main Workspace"];
 const GENERAL_SECTIONS: [&str; 2] = ["Startup", "Updates"];
@@ -235,6 +235,7 @@ pub const CTRL_MODULES_DAYS_DEC: u64 = 325;
 pub const CTRL_MODULES_DAYS_INC: u64 = 326;
 pub const CTRL_MODULES_DAYS_EDIT: u64 = 327;
 pub const CTRL_OPEN_STORE: u64 = 328;
+pub const CTRL_HIDE_MOUSE: u64 = 330;
 pub const CTRL_START_AT_LOGIN: u64 = 260;
 pub const CTRL_AUTO_UPDATE: u64 = 261;
 pub const CTRL_CHECK_UPDATES: u64 = 262;
@@ -281,6 +282,12 @@ pub const CTRL_REPO_LIMIT: u64 = 1_000;
 pub const PORT_MIN: u16 = 1024;
 pub const MODULES_LIMIT_MAX_GB: u64 = 1024;
 pub const MODULES_DAYS_MAX: u64 = 365;
+/// When the pointer hides until the mouse moves, as (setting value, label).
+const HIDE_MOUSE: [(&str, &str); 3] = [
+    ("never", "Never"),
+    ("on_typing", "On Typing"),
+    ("on_typing_and_action", "On Typing and Action"),
+];
 /// Where a copy-on-write clone is impossible, as (setting value, label); `module_store::Fallback` reads them.
 const MODULES_FALLBACKS: [(&str, &str); 3] = [
     ("hardlink", "Hard Links"),
@@ -395,6 +402,7 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_DIFF_VIEW
             | CTRL_EXTERNAL_EDITOR
             | CTRL_MODULES_FALLBACK
+            | CTRL_HIDE_MOUSE
     ) || sound_event(id).is_some()
 }
 
@@ -433,6 +441,10 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
             .iter()
             .map(|(_, label)| label.to_string())
             .collect(),
+        CTRL_HIDE_MOUSE => HIDE_MOUSE
+            .iter()
+            .map(|(_, label)| label.to_string())
+            .collect(),
         CTRL_EXTERNAL_EDITOR => std::iter::once("Auto")
             .chain(EXTERNAL_EDITORS)
             .map(str::to_string)
@@ -463,6 +475,11 @@ pub fn control_value(id: u64, s: &Settings) -> String {
         CTRL_TERMINAL_SIDE => cap(&s.terminal_side),
         CTRL_SOFT_WRAP => if s.soft_wrap { "Editor Width" } else { "None" }.to_string(),
         CTRL_DIFF_VIEW => if s.split_diff { "Split" } else { "Unified" }.to_string(),
+        CTRL_HIDE_MOUSE => HIDE_MOUSE
+            .iter()
+            .find(|(value, _)| *value == s.hide_mouse)
+            .map_or(HIDE_MOUSE[2].1, |(_, label)| label)
+            .to_string(),
         CTRL_MODULES_FALLBACK => MODULES_FALLBACKS
             .iter()
             .find(|(value, _)| *value == s.modules_fallback)
@@ -502,6 +519,12 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
         CTRL_TERMINAL_SIDE => s.terminal_side = val.to_lowercase(),
         CTRL_SOFT_WRAP => s.soft_wrap = val == "Editor Width",
         CTRL_DIFF_VIEW => s.split_diff = val == "Split",
+        CTRL_HIDE_MOUSE => {
+            let Some((value, _)) = HIDE_MOUSE.iter().find(|(_, label)| label == val) else {
+                return false;
+            };
+            s.hide_mouse = value.to_string();
+        }
         CTRL_MODULES_FALLBACK => {
             let Some((value, _)) = MODULES_FALLBACKS.iter().find(|(_, label)| label == val) else {
                 return false;
@@ -580,6 +603,7 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_WEBHOOK_PORT_EDIT => s.webhook_port == d.webhook_port,
         CTRL_MODULES_ENABLED => s.modules_store_enabled == d.modules_store_enabled,
         CTRL_MODULES_FALLBACK => s.modules_fallback == d.modules_fallback,
+        CTRL_HIDE_MOUSE => s.hide_mouse == d.hide_mouse,
         CTRL_MODULES_LIMIT_EDIT => s.modules_size_limit_gb == d.modules_size_limit_gb,
         CTRL_MODULES_DAYS_EDIT => s.modules_unused_days == d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
@@ -634,6 +658,7 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_WEBHOOK_PORT_EDIT => s.webhook_port = d.webhook_port,
         CTRL_MODULES_ENABLED => s.modules_store_enabled = d.modules_store_enabled,
         CTRL_MODULES_FALLBACK => s.modules_fallback = d.modules_fallback.clone(),
+        CTRL_HIDE_MOUSE => s.hide_mouse = d.hide_mouse.clone(),
         CTRL_MODULES_LIMIT_EDIT => s.modules_size_limit_gb = d.modules_size_limit_gb,
         CTRL_MODULES_DAYS_EDIT => s.modules_unused_days = d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
@@ -1893,6 +1918,16 @@ fn appearance_page(s: &Settings) -> Page {
                 id: CTRL_FONT_FALLBACKS,
             },
             reset: None,
+        }),
+        PageItem::Header("Cursor"),
+        PageItem::Row(SettingRow {
+            title: "Hide Mouse".into(),
+            description: "When to hide the mouse cursor.".into(),
+            control: Control::Dropdown {
+                id: CTRL_HIDE_MOUSE,
+                value: control_value(CTRL_HIDE_MOUSE, s),
+            },
+            reset: reset_if_changed(CTRL_HIDE_MOUSE, s),
         }),
     ]);
     Page {
@@ -3633,6 +3668,16 @@ mod tests {
         assert!(!handle_control(CTRL_WEBHOOK_PORT_DEC, &mut s));
         assert!(handle_control(CTRL_WEBHOOK_ENABLED, &mut s));
         assert!(!s.webhook_enabled);
+    }
+
+    #[test]
+    fn hide_mouse_picks_when_the_pointer_hides() {
+        let mut s = Settings::default();
+        assert_eq!(control_value(CTRL_HIDE_MOUSE, &s), "On Typing and Action");
+        assert!(apply_choice(CTRL_HIDE_MOUSE, 0, &[], &mut s));
+        assert_eq!(s.hide_mouse, "never");
+        assert!(reset_to_default(CTRL_HIDE_MOUSE, &mut s));
+        assert_eq!(s.hide_mouse, "on_typing_and_action");
     }
 
     #[test]

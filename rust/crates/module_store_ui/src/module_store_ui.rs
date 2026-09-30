@@ -397,27 +397,29 @@ fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>)
         .child(
             label(format!("Optimize: {}", parts.join(", ")))
                 .size(13.0)
-                .color(colors.text),
+                .color(colors.text)
+                .wrap(OPTIMIZE_POPOVER_W - 24.0),
         )
-        .child(small(
-            format!(
-                "Frees up to {}. Each workspace keeps a working node_modules the whole time.",
-                format_size(plan_frees(overview, &steps))
-            ),
-            colors.text_muted,
-        ));
+        .child(
+            small(
+                format!(
+                    "Frees up to {}. Each workspace keeps a working node_modules the whole time.",
+                    format_size(plan_frees(overview, &steps))
+                ),
+                colors.text_muted,
+            )
+            .wrap(OPTIMIZE_POPOVER_W - 24.0),
+        );
     if !restarted.is_empty() {
         column = column.child(
-            div().row().child(
-                small(
-                    format!(
-                        "Services are stopped and started again in {}.",
-                        restarted.join(", ")
-                    ),
-                    colors.warning,
-                )
-                .truncate(),
-            ),
+            small(
+                format!(
+                    "Services are stopped and started again in {}.",
+                    restarted.join(", ")
+                ),
+                colors.warning,
+            )
+            .wrap(OPTIMIZE_POPOVER_W - 24.0),
         );
     }
     let choice = |id: u64, text: &str, primary: bool| {
@@ -799,19 +801,24 @@ fn confirm_strip(
         .child(
             label(format!("Use the shared copy in {workspace}?"))
                 .size(13.0)
-                .color(colors.text),
+                .color(colors.text)
+                .wrap(SWAP_POPOVER_W - 24.0),
         )
         .child(small(
             format!(
                 "Its node_modules is replaced by a clone of the stored copy; the old folder is kept until the new one is in place.{freed}"
             ),
             colors.text_muted,
-        ));
+        )
+        .wrap(SWAP_POPOVER_W - 24.0));
     if running {
-        column = column.child(small(
-            "Its services are running: they are stopped first and started again after.",
-            colors.warning,
-        ));
+        column = column.child(
+            small(
+                "Its services are running: they are stopped first and started again after.",
+                colors.warning,
+            )
+            .wrap(SWAP_POPOVER_W - 24.0),
+        );
     }
     let choice = |id: u64, text: &str, primary: bool| {
         let color = if primary {

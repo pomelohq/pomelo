@@ -67,6 +67,8 @@ pub struct Settings {
     pub modules_fallback: String,
     pub modules_size_limit_gb: u64,
     pub modules_unused_days: u64,
+    /// When the pointer hides until the mouse moves: "never", "on_typing" or "on_typing_and_action".
+    pub hide_mouse: String,
     pub notify_claude: bool,
     /// Also alert for the workspace on screen in the focused window.
     pub notify_when_focused: bool,
@@ -148,6 +150,7 @@ impl Default for Settings {
             modules_fallback: "hardlink".into(),
             modules_size_limit_gb: 20,
             modules_unused_days: 14,
+            hide_mouse: "on_typing_and_action".into(),
             notify_claude: true,
             notify_when_focused: false,
             sound_working: String::new(),

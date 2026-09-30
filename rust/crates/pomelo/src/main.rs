@@ -645,6 +645,8 @@ struct App {
     settings_pages_at: Option<Instant>,
     /// The main window last focused: Settings edits its project's Jira settings.
     focused_main: Option<WindowId>,
+    /// Hidden by a key press until the mouse next moves.
+    pointer_hidden: bool,
 }
 
 /// What each workspace's coding agent last reported, and the watcher that says when it changes.
@@ -1822,6 +1824,41 @@ impl App {
         }
     }
 
+    /// Hides the pointer until the mouse moves when typing (and, by default, on any other key), so a
+    /// list under a resting pointer is not hovered or clicked by mistake while the keyboard drives it.
+    fn hide_pointer_for_key(&mut self, key: &winit::event::KeyEvent) {
+        let modifier = matches!(
+            key.logical_key,
+            Key::Named(
+                NamedKey::Shift
+                    | NamedKey::Control
+                    | NamedKey::Alt
+                    | NamedKey::Super
+                    | NamedKey::Meta
+                    | NamedKey::CapsLock
+                    | NamedKey::Fn
+            )
+        );
+        if modifier || self.pointer_hidden {
+            return;
+        }
+        let typing = !self.super_down
+            && !self.ctrl_down
+            && key
+                .text
+                .as_ref()
+                .is_some_and(|text| text.chars().any(|c| !c.is_control()));
+        let hide = match self.settings.hide_mouse.as_str() {
+            "never" => false,
+            "on_typing" => typing,
+            _ => true,
+        };
+        if hide {
+            self.pointer_hidden = true;
+            hide_pointer_until_mouse_moves();
+        }
+    }
+
     /// Binds again after a port another instance held was freed.
     fn restart_dev_proxy(&mut self) {
         self.dev_proxy = None;
@@ -1846,7 +1883,14 @@ impl App {
             .map(|page| page.clone())
             .unwrap_or_default();
         let mut dev_services = self.dev_services_page();
-        dev_services.modules_method = self.module_store_method();
+        // The settings row has room for the method's name only; the store tab says the rest.
+        let method = self.module_store_method();
+        let name = method.split([',', ':']).next().unwrap_or_default().trim();
+        let mut name: Vec<char> = name.chars().collect();
+        if let Some(first) = name.first_mut() {
+            *first = first.to_ascii_uppercase();
+        }
+        dev_services.modules_method = name.into_iter().collect();
         let update = self.update_settings_row();
         let general = settings_ui::GeneralPage {
             start_at_login: start_at_login(),
@@ -3304,6 +3348,7 @@ impl ApplicationHandler for App {
         }
         if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
             if ke.state == ElementState::Pressed {
+                self.hide_pointer_for_key(ke);
                 let esc_on_settings = ke.logical_key == Key::Named(NamedKey::Escape)
                     && self.settings_window.as_ref().map(|w| w.id()) == Some(id);
                 let modifiers = terminal::Modifiers {
@@ -3807,6 +3852,7 @@ impl ApplicationHandler for App {
                 self.draw_main(id);
             }
             WindowEvent::CursorMoved { position, .. } => {
+                self.pointer_hidden = false;
                 if let Some(m) = self.mains.get_mut(&id) {
                     m.cursor = (position.x, position.y);
                 }
@@ -3950,6 +3996,15 @@ fn set_dock_icon() {
 
 /// Do what the system's "double-click a window's title bar" setting says: fill, zoom, minimize or nothing.
 #[cfg(target_os = "macos")]
+#[cfg(target_os = "macos")]
+fn hide_pointer_until_mouse_moves() {
+    // SAFETY: a class method taking a plain bool; AppKit shows the pointer again on the next move.
+    unsafe { objc2_app_kit::NSCursor::setHiddenUntilMouseMoves(true) };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hide_pointer_until_mouse_moves() {}
+
 fn titlebar_double_click(window: &Window) {
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send, sel};
