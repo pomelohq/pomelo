@@ -1816,6 +1816,7 @@ impl SidePanelView for DatabasePanel {
 
     fn restore_item(&mut self, item: &SerializedItem) -> Option<Box<dyn Item>> {
         restore_console(&self.context, item)
+            .or_else(|| crate::table_item::restore_table(&self.context, item))
     }
 
     fn take_requests(&mut self) -> Vec<PanelRequest> {

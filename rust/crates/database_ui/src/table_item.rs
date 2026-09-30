@@ -2050,9 +2050,92 @@ fn field() -> TextField {
     field
 }
 
+const TABLE_KIND: &str = "db-table";
+
+/// A table tab saved at quit, opened again the next session on the same database.
+pub(crate) fn restore_table(
+    context: &DatabaseContext,
+    item: &workspace::persistence::SerializedItem,
+) -> Option<Box<dyn Item>> {
+    if item.kind != TABLE_KIND {
+        return None;
+    }
+    let data = &item.data;
+    let name = data.get("database")?.as_str()?;
+    let database = context
+        .databases()
+        .into_iter()
+        .find(|database| database.name == name)?;
+    let table: Table = serde_json::from_value(data.get("table")?.clone()).ok()?;
+    let text = |key: &str| {
+        data.get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+    };
+    let mut restored = TableItem::filtered(context.clone(), database, table, text("filter"));
+    restored.order.set_text(text("order"));
+    if let Some(filters) = data
+        .get("column_filters")
+        .and_then(|value| value.as_object())
+    {
+        for (column, typed) in filters {
+            let mut filter = field();
+            filter.set_text(typed.as_str().unwrap_or_default());
+            restored.column_filters.insert(column.clone(), filter);
+        }
+    }
+    restored.view = match text("view") {
+        "structure" => View::Structure,
+        "ddl" => View::Ddl,
+        _ => View::Data,
+    };
+    restored.details = data
+        .get("details")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    restored.side = if text("side") == "row" {
+        Side::Row
+    } else {
+        Side::Value
+    };
+    if let Some(size) = data.get("page_size").and_then(|value| value.as_u64()) {
+        restored.page_size = size as usize;
+    }
+    restored.focus = Focus::Grid;
+    restored.run();
+    Some(Box::new(restored))
+}
+
 impl Item for TableItem {
     fn id(&self) -> Option<String> {
         Some(Self::item_id(&self.database, &self.table))
+    }
+
+    fn serialize(&self) -> Option<workspace::persistence::SerializedItem> {
+        let filters: serde_json::Map<String, serde_json::Value> = self
+            .column_filters
+            .iter()
+            .filter(|(_, field)| !field.text().is_empty())
+            .map(|(column, field)| (column.clone(), serde_json::Value::String(field.text())))
+            .collect();
+        Some(workspace::persistence::SerializedItem {
+            kind: TABLE_KIND.into(),
+            data: serde_json::json!({
+                "database": self.database.name,
+                "table": self.table,
+                "filter": self.filter.text(),
+                "order": self.order.text(),
+                "column_filters": filters,
+                "page_size": self.page_size,
+                "view": match self.view {
+                    View::Data => "data",
+                    View::Structure => "structure",
+                    View::Ddl => "ddl",
+                },
+                "details": self.details,
+                "side": if self.side == Side::Row { "row" } else { "value" },
+            }),
+        })
     }
 
     fn title(&self) -> String {
@@ -2719,5 +2802,52 @@ mod pointer_tests {
         let (x, y) = centre(&item, VIEW_STRUCTURE);
         item.pointer_down(x, y, 1, Modifiers::default());
         assert_eq!(item.view, View::Structure);
+    }
+}
+
+#[cfg(test)]
+mod saved_tests {
+    use super::*;
+
+    #[test]
+    fn a_table_tab_comes_back_with_its_filters_and_side() {
+        let context = crate::tests::context();
+        let database = context.context.databases().remove(0);
+        let table = Table {
+            schema: "public".into(),
+            name: "users".into(),
+            kind: TableKind::Table,
+            count: None,
+        };
+        let mut item =
+            TableItem::filtered(context.context.clone(), database.clone(), table, "id > 1");
+        item.order.set_text("id DESC");
+        item.set_column_filter("name", "= Ann");
+        item.side = Side::Row;
+        item.view = View::Structure;
+        let saved = item.serialize().expect("saved");
+        let restored = restore_table(&context.context, &saved).expect("restored");
+        let restored = restored
+            .as_any()
+            .and_then(|item| item.downcast_ref::<TableItem>())
+            .expect("a table tab");
+        assert_eq!(restored.id(), item.id());
+        assert_eq!(restored.filter.text(), "id > 1");
+        assert_eq!(restored.order.text(), "id DESC");
+        assert_eq!(
+            restored
+                .column_filters
+                .get("name")
+                .map(TextField::text)
+                .as_deref(),
+            Some("= Ann")
+        );
+        assert_eq!((restored.view, restored.side), (View::Structure, Side::Row));
+        let mut other = saved.clone();
+        other.data["database"] = "gone".into();
+        assert!(
+            restore_table(&context.context, &other).is_none(),
+            "a database no longer there"
+        );
     }
 }
