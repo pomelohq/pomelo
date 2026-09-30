@@ -440,6 +440,9 @@ impl FileItem {
                     if let Some(documentation) = resolved.documentation.clone() {
                         menu.set_documentation(candidate, documentation);
                     }
+                    if let Some(detail) = resolved.detail.clone() {
+                        menu.set_detail(candidate, detail);
+                    }
                     return;
                 }
             }
@@ -614,6 +617,7 @@ mod tests {
             request: 9,
             additional_edits: vec![(0..0, "use z;\n".into())],
             documentation: None,
+            detail: None,
             synced,
         });
         assert_eq!(text(&item), "use z;\nx.foo");
@@ -662,8 +666,16 @@ mod tests {
             documentation: Some(lsp::CompletionDocumentation::MultiLineMarkdown(
                 "Does foo.\n\n```rust\nfn foo()\n```".into(),
             )),
+            detail: Some("fn foo() -> u8".into()),
             synced,
         });
+        assert_eq!(
+            item.completions
+                .as_ref()
+                .and_then(|menu| menu.selected_detail()),
+            Some("fn foo() -> u8"),
+            "a detail sent on resolving shows after the label"
+        );
         let (menu_x, _, _) = item
             .completion_popover(content())
             .map(|(_, x, y)| (x, y, 0))

@@ -325,6 +325,26 @@ impl CompletionsMenu {
         self.entries.get(self.selected).map(|entry| entry.candidate)
     }
 
+    /// A detail the server sent on resolving, kept only where the item showed none.
+    pub fn set_detail(&mut self, candidate: usize, detail: String) {
+        if let Some(CompletionKind::Lsp { item, .. }) =
+            self.candidates.get_mut(candidate).map(|c| &mut c.kind)
+        {
+            if item.detail.is_none() && detail != item.label {
+                item.detail = Some(detail);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_detail(&self) -> Option<&str> {
+        let entry = self.entries.get(self.selected)?;
+        match &self.candidates.get(entry.candidate)?.kind {
+            CompletionKind::Lsp { item, .. } => item.detail.as_deref(),
+            _ => None,
+        }
+    }
+
     pub fn set_documentation(
         &mut self,
         candidate: usize,
@@ -621,6 +641,8 @@ fn sort_entries(candidates: &[Completion], entries: &mut [Entry]) {
 
 /// The row text available to a label and its detail, in design px.
 const ROW_TEXT_WIDTH: f32 = WIDTH - 8.0 - 12.0;
+/// How much of its color a label keeps past the matched part: the reference's `fade_out`.
+const LABEL_TAIL_FADE: f32 = 0.35;
 /// Space before an item's one-line documentation.
 const DOC_MARGIN: f32 = 16.0;
 /// Horizontal padding of the documentation panel.
@@ -675,6 +697,7 @@ fn lsp_row_runs(
     } else {
         chars
     };
+    let filter_end = filter_start + item.filter_text.chars().count();
     let mut runs: Vec<(String, Rgba, bool)> = Vec::new();
     for (index, c) in shown.iter().enumerate() {
         let color = if item.deprecated {
@@ -683,6 +706,12 @@ fn lsp_row_runs(
             label_color
         } else {
             colors.editor_foreground
+        };
+        // What follows the part typed against is faded, as the reference fades a label's tail.
+        let color = if index >= filter_end && !item.deprecated {
+            color.alpha(color.a * (1.0 - LABEL_TAIL_FADE))
+        } else {
+            color
         };
         let bold =
             index >= filter_start && positions.binary_search(&(index - filter_start)).is_ok();
@@ -732,6 +761,31 @@ mod tests {
             body: editor::snippet::Snippet::parse("x").unwrap(),
             description: None,
         })
+    }
+
+    #[test]
+    fn a_label_fades_past_the_part_matched() {
+        let item = lsp::LspCompletion {
+            label: "fooBar".into(),
+            detail: Some("u8".into()),
+            kind: None,
+            filter_text: "fooBar".into(),
+            sort_text: None,
+            new_text: "fooBar".into(),
+            is_snippet: false,
+            replace_range: 0..0,
+            insert_range: None,
+            insert_as_is: false,
+            deprecated: false,
+            additional_edits: Vec::new(),
+            documentation: None,
+            raw: serde_json::Value::Null,
+        };
+        let runs = lsp_row_runs(&item, &[0], 10_000.0);
+        let label_alpha = runs[0].1.a;
+        let tail = runs.last().expect("runs");
+        assert!(tail.0.ends_with("u8"));
+        assert!((tail.1.a - label_alpha * (1.0 - LABEL_TAIL_FADE)).abs() < 1e-4);
     }
 
     #[test]

@@ -80,6 +80,8 @@ pub struct ResolvedCompletion {
     pub request: u64,
     pub additional_edits: Vec<(Range<usize>, String)>,
     pub documentation: Option<CompletionDocumentation>,
+    /// Shown after the label when the item had nothing there yet (servers often send it only now).
+    pub detail: Option<String>,
     pub synced: SyncedText,
 }
 
