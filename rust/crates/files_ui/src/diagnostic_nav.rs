@@ -277,6 +277,7 @@ mod tests {
 
     fn entry(range: Range<usize>, severity: DiagnosticSeverity, message: &str) -> DiagnosticEntry {
         DiagnosticEntry {
+            server: Some(lsp::ServerId(0)),
             range,
             severity,
             message: message.into(),
@@ -381,6 +382,7 @@ mod tests {
         );
         item.input_key(EditKey::GoToDiagnostic, false);
         item.set_diagnostics(&lsp::DiagnosticsUpdate {
+            server: lsp::ServerId(0),
             path: std::path::PathBuf::from("/nonexistent/a.rs"),
             diagnostics: Vec::new(),
             synced: None,

@@ -35,6 +35,8 @@ pub struct LspCompletion {
     pub documentation: Option<CompletionDocumentation>,
     /// The item as the server sent it, to ask it to fill in the rest.
     pub raw: Value,
+    /// The server that sent it, to ask; set when the item is gathered.
+    pub server: Option<crate::ServerId>,
 }
 
 /// One line shows beside the item; more goes in a panel next to the menu.
@@ -308,6 +310,7 @@ fn to_completion(
             .clone()
             .map(CompletionDocumentation::from),
         raw,
+        server: None,
     }
 }
 
