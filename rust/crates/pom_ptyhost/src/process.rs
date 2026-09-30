@@ -302,11 +302,11 @@ mod tests {
     fn crash_log_header_decides_crashed() -> std::io::Result<()> {
         let temp = tempfile::tempdir()?;
         let dir = SocketDir::new(temp.path());
-        std::fs::write(dir.crash_log("a"), "CRASH\ta - exited: status 1\nboom\n")?;
+        std::fs::write(dir.crash_log("a"), "CRASH\ta - exited: status 1\nfailed\n")?;
         let info = dir.crash_info("a");
         assert!(info
             .as_ref()
-            .is_some_and(|i| i.crashed && i.output == b"boom\n"));
+            .is_some_and(|i| i.crashed && i.output == b"failed\n"));
         std::fs::write(dir.crash_log("b"), "STOP\tb - exited cleanly\n")?;
         assert!(dir.crash_info("b").is_some_and(|i| !i.crashed));
         Ok(())

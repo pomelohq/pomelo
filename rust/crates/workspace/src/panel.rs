@@ -2044,7 +2044,7 @@ mod tests {
             title: "feat-x".into(),
             status: crate::OpStatus::Failed,
             stages: vec![("databases".into(), crate::StageState::Failed)],
-            error: "web: boom".into(),
+            error: "web: failed".into(),
             retryable: true,
             fix_dir: "/work/myproject/feat-x/web".into(),
             skip: "no databases until they start".into(),

@@ -1384,7 +1384,7 @@ mod tests {
 
     #[test]
     fn truncating_label_shrinks_to_fit_its_row() {
-        let long = "crm-1079-tech-spike-inbound-call-routing-architecture-handoff";
+        let long = "proj-101-tech-spike-request-routing-and-architecture-handoff";
         let tree: Node = div()
             .row()
             .gap(8.0)
