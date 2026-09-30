@@ -48,6 +48,7 @@ mod list_scrollbar;
 mod lsp_completion;
 mod markdown_preview;
 mod outline_view;
+mod project_diagnostics;
 mod project_search;
 mod saved_state;
 pub use saved_state::flush_unsaved_writes;
@@ -7175,6 +7176,125 @@ impl FilesView {
         self.note_recent();
     }
 
+    /// Show the diagnostics tab, reusing one already open. From the status bar with only warnings, warnings
+    /// are turned on first, as the reference does.
+    fn deploy_project_diagnostics(&mut self, from_status: bool) {
+        let (errors, warnings) = self
+            .lsp
+            .as_ref()
+            .map_or((0, 0), |lsp| lsp.diagnostic_summary());
+        let only_warnings = from_status && errors == 0 && warnings > 0;
+        if self.panes.reveal_item(project_diagnostics::ITEM_ID) {
+            if only_warnings {
+                if let Some(view) = self
+                    .panes
+                    .active_item_mut()
+                    .and_then(|item| item.as_any_mut())
+                    .and_then(|any| any.downcast_mut::<project_diagnostics::ProjectDiagnostics>())
+                {
+                    view.set_include_warnings(true);
+                }
+            }
+            return;
+        }
+        let view = project_diagnostics::ProjectDiagnostics::new(true);
+        self.add_center_item(Box::new(view));
+        self.serve_project_diagnostics();
+    }
+
+    /// Feed the diagnostics tabs whatever changed since they last looked, and open the file a click asked for.
+    fn serve_project_diagnostics(&mut self) -> bool {
+        let Some(generation) = self.lsp.as_ref().map(lsp::LspStore::diagnostics_generation) else {
+            return false;
+        };
+        let mut opened = None;
+        let mut stale = false;
+        self.panes.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                if let Some(view) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<project_diagnostics::ProjectDiagnostics>())
+                {
+                    if let Some(request) = view.take_open() {
+                        opened = Some((pane.id, request));
+                    }
+                    stale |= view.take_refresh() || view.generation() != Some(generation);
+                }
+            }
+        });
+        if stale {
+            let sources = self.diagnostics_sources();
+            let now = std::time::Instant::now();
+            self.panes.group.for_each_pane_mut(&mut |pane| {
+                for item in pane.open.iter_mut() {
+                    if let Some(view) = item.as_any_mut().and_then(|any| {
+                        any.downcast_mut::<project_diagnostics::ProjectDiagnostics>()
+                    }) {
+                        view.update(generation, sources(), now);
+                    }
+                }
+            });
+        }
+        let changed = opened.is_some();
+        if let Some((pane_id, request)) = opened {
+            if let Some(path) = self.panes.group.path_of(pane_id) {
+                self.panes.active = path;
+            }
+            let full = self.root.join(&request.path);
+            self.open_file_at(&full, Some(request.row), Some(request.column));
+        }
+        changed
+    }
+
+    /// Every file's diagnostics with the text they point into: the open buffer's, or the file on disk.
+    fn diagnostics_sources(&mut self) -> impl Fn() -> Vec<project_diagnostics::DiagnosticsSource> {
+        let files = self
+            .lsp
+            .as_ref()
+            .map(|lsp| lsp.all_diagnostics().1)
+            .unwrap_or_default();
+        let mut open: HashMap<PathBuf, String> = HashMap::new();
+        self.panes.group.for_each_pane_mut(&mut |pane| {
+            for item in pane.open.iter_mut() {
+                if let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                {
+                    if let (Some(path), Some(b)) = (file.abs_path(), file.buffer.as_ref()) {
+                        open.insert(path, b.rope.to_string());
+                    }
+                }
+            }
+        });
+        let root = self.root.clone();
+        let sources: Vec<(String, Option<String>, Vec<lsp::lsp_types::Diagnostic>)> = files
+            .into_iter()
+            .map(|(path, diagnostics)| {
+                let text = open
+                    .get(&path)
+                    .cloned()
+                    .or_else(|| std::fs::read_to_string(&path).ok());
+                let relative = path
+                    .strip_prefix(&root)
+                    .map(|relative| relative.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| path.to_string_lossy().into_owned());
+                (relative, text, diagnostics)
+            })
+            .collect();
+        move || {
+            sources
+                .iter()
+                .map(
+                    |(relative, text, diagnostics)| project_diagnostics::DiagnosticsSource {
+                        relative: relative.clone(),
+                        text: text.clone(),
+                        diagnostics: diagnostics.clone(),
+                    },
+                )
+                .collect()
+        }
+    }
+
     fn deploy_project_search(&mut self) {
         let seed = self
             .panes
@@ -7430,6 +7550,14 @@ impl FilesView {
         if key == EditKey::DeployProjectSearch {
             self.go_to_line = None;
             self.deploy_project_search();
+            return true;
+        }
+        if matches!(
+            key,
+            EditKey::DeployDiagnostics | EditKey::DeployDiagnosticsFromStatus
+        ) {
+            self.go_to_line = None;
+            self.deploy_project_diagnostics(key == EditKey::DeployDiagnosticsFromStatus);
             return true;
         }
         if matches!(
@@ -8403,6 +8531,8 @@ impl FunctionView for FilesView {
                     | EditKey::ToggleCommandPalette
                     | EditKey::ToggleFileFinder
                     | EditKey::DeployProjectSearch
+                    | EditKey::DeployDiagnostics
+                    | EditKey::DeployDiagnosticsFromStatus
                     | EditKey::OpenMarkdownPreview
                     | EditKey::OpenMarkdownPreviewToTheSide
                     | EditKey::ToggleOutline
@@ -8527,6 +8657,7 @@ impl FunctionView for FilesView {
         outcome.changed |= self.poll_pending_opens();
         outcome.changed |= self.apply_disk_changes();
         outcome.changed |= self.serve_project_search();
+        outcome.changed |= self.serve_project_diagnostics();
         self.sync_markdown_previews();
         if let Some(check) = self.save_check.as_ref() {
             self.panes.for_each_item_mut(&mut |item| {

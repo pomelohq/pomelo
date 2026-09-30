@@ -2220,6 +2220,16 @@ fn main() -> anyhow::Result<()> {
                 render_total / count
             );
         }
+        // DIAGNOSTICS=1: open the project diagnostics tab once the servers had time to report.
+        if std::env::var("DIAGNOSTICS").is_ok() {
+            entity.update(app.app_mut(), |view, _| {
+                view.deploy_project_diagnostics(true)
+            });
+            for _ in 0..20 {
+                app.draw(handle).expect("frame");
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
         // DRAGBENCH=<x>: press the editor at x (a scrollbar or the minimap) and drag it down, timing each frame.
         if let Some(bench_x) = std::env::var("DRAGBENCH")
             .ok()

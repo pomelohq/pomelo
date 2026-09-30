@@ -613,6 +613,8 @@ pub const DIAGNOSTIC_MESSAGE: u64 = 12;
 /// The status bar's language-server button and the line of server activity beside it.
 pub const LANGUAGE_SERVERS_BUTTON: u64 = 23;
 pub const LANGUAGE_ACTIVITY: u64 = 24;
+/// The status bar's error and warning counts, which open the project diagnostics tab.
+pub const DIAGNOSTICS_BUTTON: u64 = 25;
 pub const LANGUAGE_SERVERS_MENU_TARGET: u64 = 857;
 pub const LANGUAGE_ACTIVITY_MENU_TARGET: u64 = 858;
 /// A server's row in the language-server menu, opening its submenu: base + its index.
@@ -1127,6 +1129,10 @@ pub trait Item: 'static {
     fn tab_icon(&self) -> Option<ui::IconKind> {
         None
     }
+    /// What the tab shows in place of its icon and title (counts with their icons, say).
+    fn tab_content(&self, _active: bool) -> Option<ui::Node> {
+        None
+    }
     /// The body's fill, which the active tab's bottom edge matches so the two read as one surface.
     fn body_background(&self) -> ui::Rgba {
         ui::theme().editor_background
@@ -1561,6 +1567,9 @@ pub enum EditKey {
     ToggleCommandPalette,
     ToggleFileFinder,
     DeployProjectSearch,
+    /// Open the project diagnostics tab; from the status bar it shows warnings when there are no errors.
+    DeployDiagnostics,
+    DeployDiagnosticsFromStatus,
     OpenMarkdownPreview,
     OpenMarkdownPreviewToTheSide,
     ToggleIncludeIgnored,
@@ -3303,7 +3312,18 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                             );
                     }
                 }
-                row = row.child(indicator);
+                let mut button = div()
+                    .row()
+                    .h_px(20.0)
+                    .px(4.0)
+                    .rounded(4.0)
+                    .items_center()
+                    .on_click(DIAGNOSTICS_BUTTON)
+                    .child(indicator);
+                if hovered == Some(DIAGNOSTICS_BUTTON) {
+                    button = button.bg(colors.ghost_element_hover);
+                }
+                row = row.child(button);
                 if let Some(message) = summary.current {
                     let mut button = div()
                         .h_px(20.0)
@@ -3619,6 +3639,11 @@ pub fn status_tooltip(id: u64) -> Option<(String, StatusKey)> {
         Some(("Next Diagnostic".into(), StatusKey::Fixed("f8")))
     } else if id == LANGUAGE_SERVERS_BUTTON {
         Some(("Language Servers".into(), StatusKey::None))
+    } else if id == DIAGNOSTICS_BUTTON {
+        Some((
+            "Project Diagnostics".into(),
+            StatusKey::Action(Action::ProjectDiagnostics),
+        ))
     } else if id == STATUS_TICKET {
         Some(("Jira Ticket".into(), StatusKey::None))
     } else if (FUNC_BASE..FUNC_BASE + PaneKind::ALL.len() as u64).contains(&id) {

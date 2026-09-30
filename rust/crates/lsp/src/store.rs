@@ -208,6 +208,10 @@ pub struct LspStore {
     documents: HashMap<PathBuf, Document>,
     /// Diagnostics for files that aren't open, delivered when they are.
     unopened_diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
+    /// Every file's latest diagnostics as its server published them, open or not, by file.
+    published: HashMap<PathBuf, (&'static str, Vec<Diagnostic>)>,
+    /// Bumped whenever `published` changes, so a view of all diagnostics knows to refresh.
+    published_generation: u64,
     updates: Vec<StoreEvent>,
     hovers: HashMap<(&'static str, i64), (u64, SyncedText)>,
     completions: HashMap<(&'static str, i64), (u64, SyncedText, usize)>,
@@ -228,6 +232,8 @@ impl LspStore {
             stopped: HashMap::new(),
             documents: HashMap::new(),
             unopened_diagnostics: HashMap::new(),
+            published: HashMap::new(),
+            published_generation: 0,
             updates: Vec::new(),
             hovers: HashMap::new(),
             completions: HashMap::new(),
@@ -932,6 +938,11 @@ impl LspStore {
             server.shutdown();
         }
         self.summaries.retain(|_, (adapter, _, _)| *adapter != name);
+        let before = self.published.len();
+        self.published.retain(|_, (adapter, _)| *adapter != name);
+        if self.published.len() != before {
+            self.published_generation += 1;
+        }
         let closed: Vec<PathBuf> = self
             .documents
             .iter()
@@ -1137,12 +1148,30 @@ impl LspStore {
 
     fn clear_diagnostics(&mut self, path: PathBuf) {
         self.summaries.remove(&path);
+        if self.published.remove(&path).is_some() {
+            self.published_generation += 1;
+        }
         self.updates
             .push(StoreEvent::Diagnostics(DiagnosticsUpdate {
                 path,
                 diagnostics: Vec::new(),
                 synced: None,
             }));
+    }
+
+    /// Every file's latest diagnostics, open or not, sorted by path, with the generation they are at.
+    pub fn all_diagnostics(&self) -> (u64, Vec<(PathBuf, Vec<Diagnostic>)>) {
+        let mut files: Vec<(PathBuf, Vec<Diagnostic>)> = self
+            .published
+            .iter()
+            .map(|(path, (_, diagnostics))| (path.clone(), diagnostics.clone()))
+            .collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        (self.published_generation, files)
+    }
+
+    pub fn diagnostics_generation(&self) -> u64 {
+        self.published_generation
     }
 
     pub fn diagnostic_summary(&self) -> (usize, usize) {
@@ -1184,6 +1213,13 @@ impl LspStore {
                 })
                 .then_with(|| a.severity.cmp(&b.severity))
         });
+        if diagnostics.is_empty() {
+            self.published.remove(&path);
+        } else {
+            self.published
+                .insert(path.clone(), (name, diagnostics.clone()));
+        }
+        self.published_generation += 1;
         let Some(document) = self.documents.get(&path) else {
             self.unopened_diagnostics.insert(path, diagnostics);
             return;
