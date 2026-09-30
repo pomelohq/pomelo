@@ -4,6 +4,19 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-09-30
+
+### Added
+- A macOS menu bar: Pomelo, File, Edit, View, Go, Window and Help, each command with the key bound to it now. (#119)
+- keymap.json accepts secondary- (Command on macOS, Control elsewhere) and ["pane::ActivateItem", n]; tab switching can be rebound. (#118)
+
+### Changed
+- Window commands use Command on macOS: Git cmd-shift-c, Services cmd-shift-s, Database cmd-shift-d, Pull Requests cmd-shift-r, Switch Workspace cmd-alt-o, tabs cmd-1 to cmd-9 and cmd-0 for the last. (#118)
+- The app icon is sized like other Mac apps in the Dock and cmd-tab. (#116)
+
+### Fixed
+- Cmd+? opens the agent. (#117)
+
 ## [0.7.4] - 2026-09-30
 
 ### Added
