@@ -1039,6 +1039,8 @@ impl GitPanel {
                         danger: false,
                         icon: None,
                         hint: None,
+                        color: None,
+                        header: false,
                     },
                     action,
                 )

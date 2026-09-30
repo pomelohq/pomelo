@@ -36,6 +36,8 @@ fn main() -> anyhow::Result<()> {
             danger: false,
             icon: None,
             hint: None,
+            color: None,
+            header: false,
         };
         let mut items = vec![
             item(workspace::MENU_EDIT_CUT, "Cut", false, false),

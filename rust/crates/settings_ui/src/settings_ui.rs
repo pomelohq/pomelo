@@ -613,6 +613,7 @@ pub fn chrome_flags(s: &Settings) -> ui::ChromeFlags {
         language: s.show_language,
         branch: s.show_branch,
         session_name: s.show_session_name,
+        language_servers: s.global_lsp_settings.button,
     }
 }
 

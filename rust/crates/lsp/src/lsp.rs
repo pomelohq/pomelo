@@ -4,6 +4,7 @@
 
 mod adapters;
 mod completion;
+mod install;
 mod position;
 mod shell_env;
 mod store;
@@ -22,12 +23,13 @@ pub use adapters::{adapter_for, choice_for, set_server_choice, Adapter, ServerCh
 pub use completion::{
     CompletionDocumentation, CompletionsResponse, LspCompletion, ResolvedCompletion,
 };
+pub use install::{languages_dir, BinaryStatus, Located};
 pub use lsp_types;
 pub use position::{char_to_position, diagnostic_char_range, position_to_char};
 pub use shell_env::capture_login_env;
 pub use store::{
     DefinitionKind, DefinitionTarget, DefinitionsResponse, DiagnosticsUpdate, HoverResponse,
-    LspStore, StoreEvent, SyncedText,
+    LspStore, ServerStatus, ServerSummary, ServerWork, StoreEvent, SyncedText,
 };
 
 const CONTENT_LENGTH: &str = "Content-Length: ";
@@ -73,6 +75,10 @@ pub enum ServerEvent {
         method: String,
         params: Value,
     },
+    /// The server will report progress under this token (`window/workDoneProgress/create`).
+    ProgressCreated {
+        token: String,
+    },
     /// The server's output closed: it exited or crashed.
     Exited,
 }
@@ -85,6 +91,8 @@ pub struct LanguageServer {
     next_id: i64,
     pending: HashMap<i64, String>,
     root_uri: Option<lsp_types::Url>,
+    /// Answers `workspace/configuration`, by dotted section.
+    configuration: Value,
     exited: bool,
 }
 
@@ -130,6 +138,7 @@ impl LanguageServer {
             next_id: 0,
             pending: HashMap::new(),
             root_uri: lsp_types::Url::from_directory_path(root).ok(),
+            configuration: Value::Null,
             exited: false,
         })
     }
@@ -140,6 +149,14 @@ impl LanguageServer {
 
     pub fn has_exited(&self) -> bool {
         self.exited
+    }
+
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
+    }
+
+    pub fn set_configuration(&mut self, configuration: Value) {
+        self.configuration = configuration;
     }
 
     fn send(&mut self, message: Value) {
@@ -190,6 +207,11 @@ impl LanguageServer {
                     events.push(ServerEvent::Notification { method, params });
                 }
                 Ok(Incoming::Request { id, method, params }) => {
+                    if method == "window/workDoneProgress/create" {
+                        if let Some(token) = params.get("token").map(progress_token) {
+                            events.push(ServerEvent::ProgressCreated { token });
+                        }
+                    }
                     let reply = self.answer(&method, &params);
                     self.respond(id, reply);
                 }
@@ -209,11 +231,20 @@ impl LanguageServer {
     fn answer(&self, method: &str, params: &Value) -> Result<Value, ResponseError> {
         match method {
             "workspace/configuration" => {
-                let count = params
+                let items = params
                     .get("items")
                     .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
-                Ok(Value::Array(vec![Value::Null; count]))
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(Value::Array(
+                    items
+                        .iter()
+                        .map(|item| {
+                            let section = item.get("section").and_then(Value::as_str);
+                            configuration_section(&self.configuration, section)
+                        })
+                        .collect(),
+                ))
             }
             "workspace/workspaceFolders" => Ok(self.root_uri.as_ref().map_or(
                 Value::Null,
@@ -270,6 +301,62 @@ impl Drop for LanguageServer {
     fn drop(&mut self) {
         self.kill();
     }
+}
+
+/// The resident memory of a process and everything it started, in bytes, as `ps` reports it.
+pub fn process_memory(pid: u32) -> Option<u64> {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,rss="])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    let table: Vec<(u32, u32, u64)> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().map(str::parse::<u64>);
+            let (Some(Ok(pid)), Some(Ok(parent)), Some(Ok(kilobytes))) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                return None;
+            };
+            Some((pid as u32, parent as u32, kilobytes))
+        })
+        .collect();
+    table.iter().any(|(id, _, _)| *id == pid).then(|| {
+        let mut family = vec![pid];
+        let mut total = 0;
+        while let Some(parent) = family.pop() {
+            for (id, of, kilobytes) in &table {
+                if *id == parent {
+                    total += kilobytes * 1024;
+                }
+                if *of == parent && *id != parent {
+                    family.push(*id);
+                }
+            }
+        }
+        total
+    })
+}
+
+/// A progress token as text, whether the server sent a number or a string.
+pub fn progress_token(token: &Value) -> String {
+    match token {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The part of `configuration` a dotted `section` names; all of it for none, null when it isn't there.
+fn configuration_section(configuration: &Value, section: Option<&str>) -> Value {
+    let Some(section) = section.filter(|section| !section.is_empty()) else {
+        return configuration.clone();
+    };
+    section
+        .split('.')
+        .try_fold(configuration, |value, key| value.get(key))
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 fn folder_name(uri: &lsp_types::Url) -> String {

@@ -107,6 +107,8 @@ pub enum IconKind {
     RotateCw,
     Download,
     LoadCircle,
+    Circle,
+    BoltOutlined,
     SquarePlus,
     SquareDot,
     SquareMinus,

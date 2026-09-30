@@ -263,6 +263,8 @@ impl MenuBuilder {
             danger: false,
             icon,
             hint: hint.map(|hint| hint.to_string().into()),
+            color: None,
+            header: false,
         };
         self.next += 1;
         self.items.push((item, action));
@@ -295,6 +297,8 @@ impl MenuBuilder {
                 danger: false,
                 icon: Some(icon),
                 hint: (!hint.is_empty()).then(|| hint.to_string().into()),
+                color: None,
+                header: false,
             },
             MenuAction::Nothing,
         ));

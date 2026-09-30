@@ -2,9 +2,10 @@
 //! is known), sharing one server per adapter, with every open document mirrored to its server and the
 //! diagnostics it publishes handed back per file.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
 use editor::{EditorBuffer, Lang};
 use lsp_types::{
@@ -16,6 +17,7 @@ use ropey::Rope;
 use serde_json::{json, Value};
 
 use crate::adapters::adapter_for;
+use crate::install::{BinaryStatus, Found, Located};
 use crate::position::{char_to_position, position_to_char};
 use crate::{LanguageServer, ServerEvent, Waker};
 
@@ -90,9 +92,55 @@ pub struct HoverResponse {
 }
 
 const MAX_HOVER_BYTES: usize = 100_000;
+/// How long a newer download may keep a server waiting when there is a copy already downloaded.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10);
+/// A server's progress reports closer together than this are skipped.
+const PROGRESS_THROTTLE: Duration = Duration::from_millis(100);
+
+/// Where a server is in its life, as the language-server menu shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ServerStatus {
+    CheckingForUpdate,
+    Downloading,
+    Starting,
+    Running,
+    Stopped,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub struct ServerSummary {
+    /// What the server is restarted and stopped by.
+    pub key: &'static str,
+    pub name: &'static str,
+    pub status: ServerStatus,
+    pub message: Option<String>,
+    pub version: Option<String>,
+    pub binary: Option<Located>,
+    pub process_id: Option<u32>,
+}
+
+/// Work a server reports progress on (`$/progress`).
+#[derive(Clone, Debug)]
+pub struct ServerWork {
+    pub server: &'static str,
+    pub token: String,
+    pub title: String,
+    pub message: Option<String>,
+    pub percentage: Option<u32>,
+    pub cancellable: bool,
+    pub updated: Instant,
+}
+
+struct Locating {
+    found: Receiver<Found>,
+    fallback: Option<Located>,
+    status: Option<BinaryStatus>,
+    started: Instant,
+}
 
 enum ServerState {
-    Locating(Receiver<Option<(PathBuf, Vec<String>)>>),
+    Locating(Locating),
     Starting {
         initialize_id: i64,
     },
@@ -106,6 +154,34 @@ struct Server {
     state: ServerState,
     /// The servers the settings allowed when it started, to restart it when they change.
     candidates: Vec<&'static str>,
+    /// The candidate it is, once known; its first until then.
+    name: &'static str,
+    binary: Option<Located>,
+    version: Option<String>,
+    progress_tokens: HashSet<String>,
+    work: HashMap<String, ServerWork>,
+}
+
+impl Server {
+    fn new(state: ServerState, candidates: Vec<&'static str>, name: &'static str) -> Self {
+        Server {
+            server: None,
+            state,
+            candidates,
+            name,
+            binary: None,
+            version: None,
+            progress_tokens: HashSet::new(),
+            work: HashMap::new(),
+        }
+    }
+}
+
+/// A server that could not be found or run: not retried until restarted or the settings allow others.
+struct Unavailable {
+    candidates: Vec<&'static str>,
+    name: &'static str,
+    message: String,
 }
 
 enum Environment {
@@ -126,9 +202,9 @@ pub struct LspStore {
     waker: Waker,
     environment: Environment,
     servers: HashMap<&'static str, Server>,
-    /// Adapters with no binary on the PATH, or whose server failed, by the servers they were allowed; not
-    /// retried until the settings allow others.
-    unavailable: HashMap<&'static str, Vec<&'static str>>,
+    unavailable: HashMap<&'static str, Unavailable>,
+    /// Servers stopped from the menu, by adapter, with the name they had; started again only on restart.
+    stopped: HashMap<&'static str, &'static str>,
     documents: HashMap<PathBuf, Document>,
     /// Diagnostics for files that aren't open, delivered when they are.
     unopened_diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
@@ -149,6 +225,7 @@ impl LspStore {
             environment: Environment::Unrequested,
             servers: HashMap::new(),
             unavailable: HashMap::new(),
+            stopped: HashMap::new(),
             documents: HashMap::new(),
             unopened_diagnostics: HashMap::new(),
             updates: Vec::new(),
@@ -215,78 +292,171 @@ impl LspStore {
             .iter()
             .map(|candidate| candidate.name)
             .collect();
-        if self.unavailable.get(adapter.name) == Some(&candidates) {
+        if self.stopped.contains_key(adapter.name)
+            || self
+                .unavailable
+                .get(adapter.name)
+                .is_some_and(|unavailable| unavailable.candidates == candidates)
+        {
             return false;
         }
+        self.unavailable.remove(adapter.name);
         if self
             .servers
             .get(adapter.name)
             .is_some_and(|server| server.candidates != candidates)
         {
-            self.drop_server(adapter.name, false);
+            self.drop_server(adapter.name);
         }
-        let located = match self.servers.get(adapter.name).map(|server| &server.state) {
-            Some(ServerState::Running { .. }) => return true,
-            Some(ServerState::Starting { .. }) => return false,
-            Some(ServerState::Locating(receiver)) => match receiver.try_recv() {
-                Ok(located) => located,
-                Err(TryRecvError::Empty) => return false,
-                Err(TryRecvError::Disconnected) => None,
+        let located = match self.servers.get_mut(adapter.name) {
+            Some(Server {
+                state: ServerState::Running { .. },
+                ..
+            }) => return true,
+            Some(Server {
+                state: ServerState::Starting { .. },
+                ..
+            }) => return false,
+            Some(Server {
+                state: ServerState::Locating(locating),
+                name,
+                ..
+            }) => match Self::take_located(locating, name) {
+                Some(located) => located,
+                None => return false,
             },
             None => {
                 let Some(env) = self.environment().cloned() else {
                     return false;
                 };
-                let (sender, receiver) = channel();
+                let (sender, found) = channel();
                 let waker = self.waker.clone();
                 let finder = adapter.clone();
                 std::thread::spawn(move || {
-                    if sender.send(finder.locate(&env)).is_ok() {
-                        waker();
-                    }
+                    let downloads = crate::install::languages_dir();
+                    crate::install::locate(
+                        &finder.candidates,
+                        &env,
+                        downloads.as_deref(),
+                        &|event| {
+                            if sender.send(event).is_ok() {
+                                waker();
+                            }
+                        },
+                    );
                 });
+                let waker = self.waker.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(DOWNLOAD_TIMEOUT);
+                    waker();
+                });
+                let first = candidates.first().copied().unwrap_or(adapter.name);
+                let locating = Locating {
+                    found,
+                    fallback: None,
+                    status: None,
+                    started: Instant::now(),
+                };
                 self.servers.insert(
                     adapter.name,
-                    Server {
-                        server: None,
-                        state: ServerState::Locating(receiver),
-                        candidates,
-                    },
+                    Server::new(ServerState::Locating(locating), candidates, first),
                 );
                 return false;
             }
         };
-        let (Some((binary, args)), Some(env)) = (located, self.environment().cloned()) else {
-            self.servers.remove(adapter.name);
-            self.unavailable.insert(adapter.name, candidates);
+        let located = match located {
+            Ok(located) => located,
+            Err(message) => {
+                eprintln!("lsp: {}: {message}", adapter.name);
+                self.fail(adapter.name, message);
+                return false;
+            }
+        };
+        let Some(env) = self.environment().cloned() else {
             return false;
         };
         let mut server = match LanguageServer::spawn(
-            adapter.name,
-            &binary,
-            &args,
+            located.name,
+            &located.binary,
+            &located.args,
             &self.root,
             &env,
             self.waker.clone(),
         ) {
             Ok(server) => server,
             Err(error) => {
-                eprintln!("lsp: could not start {}: {error}", binary.display());
-                self.servers.remove(adapter.name);
-                self.unavailable.insert(adapter.name, candidates);
+                let message = format!("could not start {}: {error}", located.binary.display());
+                eprintln!("lsp: {message}");
+                self.fail(adapter.name, message);
                 return false;
             }
         };
-        let initialize_id = server.request("initialize", initialize_params(&self.root));
-        self.servers.insert(
+        server.set_configuration(crate::adapters::workspace_configuration(
             adapter.name,
-            Server {
-                server: Some(server),
-                state: ServerState::Starting { initialize_id },
+            &self.root,
+        ));
+        let initialize_id = server.request("initialize", initialize_params(&self.root));
+        if let Some(entry) = self.servers.get_mut(adapter.name) {
+            entry.name = located.name;
+            entry.binary = Some(located);
+            entry.server = Some(server);
+            entry.state = ServerState::Starting { initialize_id };
+        }
+        false
+    }
+
+    /// What the search for a binary came to, once it has: its answer, or the copy downloaded before when
+    /// the answer failed or is taking too long.
+    fn take_located(
+        locating: &mut Locating,
+        name: &mut &'static str,
+    ) -> Option<Result<Located, String>> {
+        loop {
+            match locating.found.try_recv() {
+                Ok(Found::Status(candidate, status)) => {
+                    *name = candidate;
+                    locating.status = Some(status);
+                }
+                Ok(Found::Fallback(located)) => {
+                    *name = located.name;
+                    locating.fallback = Some(located);
+                }
+                Ok(Found::Done(Ok(located))) => return Some(Ok(located)),
+                Ok(Found::Done(Err(message))) => {
+                    return Some(locating.fallback.take().ok_or(message))
+                }
+                Err(TryRecvError::Disconnected) => {
+                    return Some(
+                        locating
+                            .fallback
+                            .take()
+                            .ok_or_else(|| "the search for a binary stopped".to_string()),
+                    )
+                }
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+        if locating.started.elapsed() >= DOWNLOAD_TIMEOUT {
+            return locating.fallback.take().map(Ok);
+        }
+        None
+    }
+
+    fn fail(&mut self, key: &'static str, message: String) {
+        let (candidates, name) = self
+            .servers
+            .get(key)
+            .map(|server| (server.candidates.clone(), server.name))
+            .unwrap_or((Vec::new(), key));
+        self.drop_server(key);
+        self.unavailable.insert(
+            key,
+            Unavailable {
                 candidates,
+                name,
+                message,
             },
         );
-        false
     }
 
     /// Keep `path`'s document open on its language's server and in step with `buffer`: opened once the
@@ -697,7 +867,13 @@ impl LspStore {
                 if id != initialize_id {
                     return;
                 }
-                let capabilities = result.ok().and_then(|result| {
+                let result = result.ok();
+                server.version = result
+                    .as_ref()
+                    .and_then(|result| result.pointer("/serverInfo/version"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let capabilities = result.and_then(|result| {
                     serde_json::from_value::<ServerCapabilities>(
                         result.get("capabilities")?.clone(),
                     )
@@ -712,7 +888,7 @@ impl LspStore {
                     }
                     _ => {
                         eprintln!("lsp: {name} failed to initialize");
-                        self.server_gone(name);
+                        self.server_gone(name, "failed to initialize");
                     }
                 }
             }
@@ -722,29 +898,31 @@ impl LspStore {
                         Ok(params) => self.receive_diagnostics(name, params),
                         Err(error) => eprintln!("lsp: bad diagnostics from {name}: {error}"),
                     }
+                } else if method == "$/progress" {
+                    self.receive_progress(name, &params);
+                }
+            }
+            ServerEvent::ProgressCreated { token } => {
+                if let Some(server) = self.servers.get_mut(name) {
+                    server.progress_tokens.insert(token);
                 }
             }
             ServerEvent::Exited => {
                 eprintln!("lsp: {name} exited");
-                self.server_gone(name);
+                self.server_gone(name, "the server exited");
             }
         }
     }
 
-    /// Drop a server that exited or failed, and the diagnostics it had shown.
-    fn server_gone(&mut self, name: &'static str) {
-        self.drop_server(name, true);
+    /// A server that exited or failed: dropped with the diagnostics it had shown, and not retried.
+    fn server_gone(&mut self, name: &'static str, message: &str) {
+        self.fail(name, message.to_string());
     }
 
     /// Stop a server and forget its documents and diagnostics; its files open on it again on their next sync.
-    fn drop_server(&mut self, name: &'static str, failed: bool) {
-        if let Some(server) = self.servers.remove(name) {
-            if failed {
-                self.unavailable.insert(name, server.candidates);
-            }
-            if let Some(server) = server.server {
-                server.shutdown();
-            }
+    fn drop_server(&mut self, name: &'static str) {
+        if let Some(server) = self.servers.remove(name).and_then(|server| server.server) {
+            server.shutdown();
         }
         self.summaries.retain(|_, (adapter, _, _)| *adapter != name);
         let closed: Vec<PathBuf> = self
@@ -756,6 +934,197 @@ impl LspStore {
         for path in closed {
             self.documents.remove(&path);
             self.clear_diagnostics(path);
+        }
+    }
+
+    /// Every server this folder has started, stopped or failed to find, by name.
+    pub fn servers(&self) -> Vec<ServerSummary> {
+        let mut summaries: Vec<ServerSummary> = self
+            .servers
+            .iter()
+            .map(|(key, server)| ServerSummary {
+                key,
+                name: server.name,
+                status: match &server.state {
+                    ServerState::Locating(Locating {
+                        status: Some(BinaryStatus::CheckingForUpdate),
+                        ..
+                    }) => ServerStatus::CheckingForUpdate,
+                    ServerState::Locating(Locating {
+                        status: Some(BinaryStatus::Downloading),
+                        ..
+                    }) => ServerStatus::Downloading,
+                    ServerState::Locating(_) | ServerState::Starting { .. } => {
+                        ServerStatus::Starting
+                    }
+                    ServerState::Running { .. } => ServerStatus::Running,
+                },
+                message: None,
+                version: server.version.clone(),
+                binary: server.binary.clone(),
+                process_id: server.server.as_ref().and_then(LanguageServer::process_id),
+            })
+            .collect();
+        summaries.extend(self.stopped.iter().map(|(key, name)| ServerSummary {
+            key,
+            name,
+            status: ServerStatus::Stopped,
+            message: None,
+            version: None,
+            binary: None,
+            process_id: None,
+        }));
+        summaries.extend(
+            self.unavailable
+                .iter()
+                .map(|(key, unavailable)| ServerSummary {
+                    key,
+                    name: unavailable.name,
+                    status: ServerStatus::Failed,
+                    message: Some(unavailable.message.clone()),
+                    version: None,
+                    binary: None,
+                    process_id: None,
+                }),
+        );
+        summaries.sort_by_key(|summary| summary.name);
+        summaries
+    }
+
+    /// The work servers report progress on, the most recently updated first.
+    pub fn work(&self) -> Vec<ServerWork> {
+        let mut work: Vec<ServerWork> = self
+            .servers
+            .values()
+            .flat_map(|server| server.work.values().cloned())
+            .collect();
+        work.sort_by_key(|work| std::cmp::Reverse(work.updated));
+        work
+    }
+
+    /// Start a server again: stopped, failed or running, it looks for its binary anew on the next sync.
+    pub fn restart_server(&mut self, key: &str) {
+        let Some(key) = self.known_key(key) else {
+            return;
+        };
+        self.drop_server(key);
+        self.stopped.remove(key);
+        self.unavailable.remove(key);
+        (self.waker)();
+    }
+
+    pub fn stop_server(&mut self, key: &str) {
+        let Some(key) = self.known_key(key) else {
+            return;
+        };
+        let name = self.servers.get(key).map_or(key, |server| server.name);
+        self.drop_server(key);
+        self.unavailable.remove(key);
+        self.stopped.insert(key, name);
+    }
+
+    pub fn restart_all(&mut self) {
+        for key in self.known_keys() {
+            self.restart_server(key);
+        }
+    }
+
+    pub fn stop_all(&mut self) {
+        for key in self.known_keys() {
+            if !self.stopped.contains_key(key) {
+                self.stop_server(key);
+            }
+        }
+    }
+
+    /// Ask a server to cancel work it said can be (`window/workDoneProgress/cancel`).
+    pub fn cancel_work(&mut self, key: &str, token: &str) {
+        let Some(server) = self
+            .servers
+            .iter_mut()
+            .find(|(name, _)| **name == key)
+            .map(|(_, server)| server)
+        else {
+            return;
+        };
+        if let Some(language_server) = server.server.as_mut() {
+            language_server.notify("window/workDoneProgress/cancel", json!({"token": token}));
+        }
+    }
+
+    fn known_keys(&self) -> Vec<&'static str> {
+        let mut keys: Vec<&'static str> = self
+            .servers
+            .keys()
+            .chain(self.stopped.keys())
+            .chain(self.unavailable.keys())
+            .copied()
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        keys
+    }
+
+    fn known_key(&self, key: &str) -> Option<&'static str> {
+        self.known_keys().into_iter().find(|known| *known == key)
+    }
+
+    /// Track a server's `$/progress`: begun, reported on (throttled) and ended, for tokens it created.
+    fn receive_progress(&mut self, name: &'static str, params: &Value) {
+        let Some(server) = self.servers.get_mut(name) else {
+            return;
+        };
+        let Some(token) = params.get("token").map(crate::progress_token) else {
+            return;
+        };
+        if !server.progress_tokens.contains(&token) {
+            return;
+        }
+        let value = params.get("value").cloned().unwrap_or(Value::Null);
+        let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+        let percentage = value
+            .get("percentage")
+            .and_then(Value::as_u64)
+            .map(|percentage| percentage as u32);
+        let cancellable = value.get("cancellable").and_then(Value::as_bool);
+        let now = Instant::now();
+        match value.get("kind").and_then(Value::as_str) {
+            Some("begin") => {
+                server.work.insert(
+                    token.clone(),
+                    ServerWork {
+                        server: name,
+                        title: text("title").unwrap_or_else(|| token.clone()),
+                        token,
+                        message: text("message"),
+                        percentage,
+                        cancellable: cancellable.unwrap_or(false),
+                        updated: now,
+                    },
+                );
+            }
+            Some("report") => {
+                if let Some(work) = server.work.get_mut(&token) {
+                    if now.duration_since(work.updated) < PROGRESS_THROTTLE {
+                        return;
+                    }
+                    if let Some(message) = text("message") {
+                        work.message = Some(message);
+                    }
+                    if percentage.is_some() {
+                        work.percentage = percentage;
+                    }
+                    if let Some(cancellable) = cancellable {
+                        work.cancellable = cancellable;
+                    }
+                    work.updated = now;
+                }
+            }
+            Some("end") => {
+                server.work.remove(&token);
+                server.progress_tokens.remove(&token);
+            }
+            _ => {}
         }
     }
 
@@ -1077,6 +1446,64 @@ fn initialize_params(root: &Path) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn store_with_running(key: &'static str) -> LspStore {
+        let waker: Waker = std::sync::Arc::new(|| {});
+        let mut store =
+            LspStore::new(PathBuf::from("/tmp"), waker).with_environment(HashMap::new());
+        let (_, found) = channel();
+        let mut server = Server::new(
+            ServerState::Locating(Locating {
+                found,
+                fallback: None,
+                status: Some(BinaryStatus::Downloading),
+                started: Instant::now(),
+            }),
+            vec!["vtsls"],
+            "vtsls",
+        );
+        server.progress_tokens.insert("1".into());
+        store.servers.insert(key, server);
+        store
+    }
+
+    #[test]
+    fn progress_is_kept_from_begin_to_end_for_created_tokens() {
+        let mut store = store_with_running("typescript");
+        store.receive_progress(
+            "typescript",
+            &json!({"token": 1, "value": {"kind": "begin", "title": "Indexing", "percentage": 5}}),
+        );
+        store.receive_progress(
+            "typescript",
+            &json!({"token": "other", "value": {"kind": "begin", "title": "Ignored"}}),
+        );
+        let work = store.work();
+        assert_eq!(work.len(), 1, "a token the server never created is ignored");
+        assert_eq!(
+            (work[0].title.as_str(), work[0].percentage),
+            ("Indexing", Some(5))
+        );
+        store.receive_progress("typescript", &json!({"token": 1, "value": {"kind": "end"}}));
+        assert!(store.work().is_empty());
+    }
+
+    #[test]
+    fn a_stopped_server_stays_stopped_until_restarted() {
+        let mut store = store_with_running("typescript");
+        assert_eq!(store.servers()[0].status, ServerStatus::Downloading);
+        store.stop_server("typescript");
+        let servers = store.servers();
+        assert_eq!(
+            (servers[0].name, servers[0].status),
+            ("vtsls", ServerStatus::Stopped)
+        );
+        store.restart_server("typescript");
+        assert!(
+            store.servers().is_empty(),
+            "it looks for its binary again on the next sync"
+        );
+    }
 
     fn synced(buffer: &EditorBuffer) -> SyncedText {
         SyncedText {

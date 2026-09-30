@@ -82,6 +82,7 @@ pub struct Settings {
     pub reduce_motion: String,
     /// Language servers start for the languages they serve; off, none does.
     pub enable_language_server: bool,
+    pub global_lsp_settings: GlobalLspSettings,
     /// Which servers a language uses, in order: a name turns one on, `!name` off, `...` stands for the rest
     /// of its defaults.
     pub language_servers: Vec<String>,
@@ -184,6 +185,7 @@ impl Default for Settings {
             cursor_shape: "bar".into(),
             reduce_motion: "off".into(),
             enable_language_server: true,
+            global_lsp_settings: GlobalLspSettings::default(),
             language_servers: vec!["...".into()],
             completions: Completions::default(),
             go_to_definition_scroll_strategy: "center".into(),
@@ -217,6 +219,20 @@ impl Default for Settings {
             terminal_shell: String::new(),
             terminal_scrollback: 10_000,
         }
+    }
+}
+
+/// What all language servers share.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GlobalLspSettings {
+    /// The language-server button shows in the status bar.
+    pub button: bool,
+}
+
+impl Default for GlobalLspSettings {
+    fn default() -> Self {
+        GlobalLspSettings { button: true }
     }
 }
 

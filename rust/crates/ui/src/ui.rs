@@ -1096,6 +1096,8 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::RotateCw => svg!("rotate_cw.svg"),
         IconKind::Download => svg!("download.svg"),
         IconKind::LoadCircle => svg!("load_circle.svg"),
+        IconKind::Circle => svg!("circle.svg"),
+        IconKind::BoltOutlined => svg!("bolt_outlined.svg"),
         IconKind::SquarePlus => svg!("square_plus.svg"),
         IconKind::SquareDot => svg!("square_dot.svg"),
         IconKind::SquareMinus => svg!("square_minus.svg"),

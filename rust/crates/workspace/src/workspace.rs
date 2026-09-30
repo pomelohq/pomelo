@@ -610,6 +610,276 @@ pub struct DiagnosticSummary {
 
 pub const CURSOR_POSITION: u64 = 11;
 pub const DIAGNOSTIC_MESSAGE: u64 = 12;
+/// The status bar's language-server button and the line of server activity beside it.
+pub const LANGUAGE_SERVERS_BUTTON: u64 = 23;
+pub const LANGUAGE_ACTIVITY: u64 = 24;
+pub const LANGUAGE_SERVERS_MENU_TARGET: u64 = 857;
+pub const LANGUAGE_ACTIVITY_MENU_TARGET: u64 = 858;
+/// A server's row in the language-server menu, opening its submenu: base + its index.
+pub const LANGUAGE_SERVER_SUBMENU_BASE: u64 = 1700;
+const LANGUAGE_SERVER_LIMIT: u64 = 16;
+/// A server's submenu entries: base + index * stride + which.
+pub const LANGUAGE_SERVER_ACTION_BASE: u64 = 1900;
+const LANGUAGE_SERVER_ACTION_STRIDE: u64 = 4;
+pub const LANGUAGE_SERVERS_RESTART_ALL: u64 = 1890;
+pub const LANGUAGE_SERVERS_STOP_ALL: u64 = 1891;
+/// Cancel the activity menu's work at this index: base + index.
+pub const LANGUAGE_WORK_CANCEL_BASE: u64 = 1970;
+/// The status-bar item names this keeps the line of server activity to, before trailing off.
+pub const ACTIVITY_MESSAGE_LIMIT: usize = 50;
+
+/// How a language server is doing, by the color its dot shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerHealth {
+    Starting,
+    Running,
+    Stopped,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LanguageServerRow {
+    pub name: String,
+    pub health: ServerHealth,
+    pub message: Option<String>,
+    pub version: Option<String>,
+    pub memory: Option<String>,
+    /// What runs it, for the tooltip of its details.
+    pub binary: Option<String>,
+    pub can_stop: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivityIcon {
+    Loading,
+    Download,
+    Warning,
+}
+
+/// The one line of server activity the status bar shows: what it says, and what clicking it does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Activity {
+    pub icon: ActivityIcon,
+    pub message: String,
+    pub click: ActivityClick,
+    /// The work in progress that can be cancelled, by title, when clicking lists it.
+    pub cancellable: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivityClick {
+    ListWork,
+    ShowError,
+    Dismiss,
+}
+
+/// The language servers of the files view's folder, and what they are doing.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LanguageServers {
+    pub folder: String,
+    pub servers: Vec<LanguageServerRow>,
+    pub activity: Option<Activity>,
+    pub can_restart_all: bool,
+    pub can_stop_all: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LanguageServerAction {
+    ViewMessage(usize),
+    Restart(usize),
+    Stop(usize),
+    RestartAll,
+    StopAll,
+    CancelWork(usize),
+    ShowError,
+    DismissActivity,
+}
+
+/// What a click in the language-server menus asks for.
+pub fn language_server_action(id: u64) -> Option<LanguageServerAction> {
+    match id {
+        LANGUAGE_SERVERS_RESTART_ALL => return Some(LanguageServerAction::RestartAll),
+        LANGUAGE_SERVERS_STOP_ALL => return Some(LanguageServerAction::StopAll),
+        _ => {}
+    }
+    if let Some(index) = id
+        .checked_sub(LANGUAGE_WORK_CANCEL_BASE)
+        .filter(|index| *index < LANGUAGE_SERVER_LIMIT)
+    {
+        return Some(LanguageServerAction::CancelWork(index as usize));
+    }
+    let offset = id.checked_sub(LANGUAGE_SERVER_ACTION_BASE)?;
+    let index = (offset / LANGUAGE_SERVER_ACTION_STRIDE) as usize;
+    if index as u64 >= LANGUAGE_SERVER_LIMIT {
+        return None;
+    }
+    match offset % LANGUAGE_SERVER_ACTION_STRIDE {
+        0 => Some(LanguageServerAction::ViewMessage(index)),
+        1 => Some(LanguageServerAction::Restart(index)),
+        2 => Some(LanguageServerAction::Stop(index)),
+        _ => None,
+    }
+}
+
+fn language_server_action_id(index: usize, which: u64) -> u64 {
+    LANGUAGE_SERVER_ACTION_BASE + index as u64 * LANGUAGE_SERVER_ACTION_STRIDE + which
+}
+
+fn health_color(health: ServerHealth) -> Rgba {
+    let colors = theme();
+    match health {
+        ServerHealth::Starting => colors.version_control_modified,
+        ServerHealth::Running => colors.success,
+        ServerHealth::Stopped => colors.text_disabled,
+        ServerHealth::Error => colors.error,
+    }
+}
+
+fn health_label(health: ServerHealth) -> &'static str {
+    match health {
+        ServerHealth::Starting => "Starting...",
+        ServerHealth::Running => "Running",
+        ServerHealth::Stopped => "Stopped",
+        ServerHealth::Error => "Error",
+    }
+}
+
+impl LanguageServers {
+    /// The dot on the status-bar button, and what its tooltip says of the servers.
+    pub fn health(&self) -> (Option<Rgba>, &'static str) {
+        if self
+            .servers
+            .iter()
+            .any(|server| server.health == ServerHealth::Error)
+        {
+            (Some(theme().error), "Server with errors")
+        } else if self.servers.iter().any(|server| server.message.is_some()) {
+            (
+                Some(theme().version_control_modified),
+                "Server with notifications",
+            )
+        } else {
+            (None, "All Servers Operational")
+        }
+    }
+
+    /// The language-server menu: the folder, each server with its submenu, then restart and stop for all.
+    pub fn menu_items(&self) -> Vec<MenuItem> {
+        let mut items = vec![MenuItem {
+            header: true,
+            ..MenuItem::new(0, self.folder.clone())
+        }];
+        items.extend(
+            self.servers
+                .iter()
+                .enumerate()
+                .take(LANGUAGE_SERVER_LIMIT as usize)
+                .map(|(index, server)| MenuItem {
+                    icon: Some(ui::IconKind::Circle),
+                    color: Some(health_color(server.health)),
+                    ..MenuItem::new(
+                        LANGUAGE_SERVER_SUBMENU_BASE + index as u64,
+                        server.name.clone(),
+                    )
+                }),
+        );
+        if self.can_stop_all || self.can_restart_all {
+            items.push(MenuItem {
+                sep: true,
+                ..MenuItem::new(LANGUAGE_SERVERS_RESTART_ALL, "Restart All Servers")
+            });
+        }
+        if self.can_stop_all {
+            items.push(MenuItem::new(LANGUAGE_SERVERS_STOP_ALL, "Stop All Servers"));
+        }
+        items
+    }
+
+    /// A server's submenu: its message, restart, stop, and a line of how it is.
+    pub fn submenu_items(&self, id: u64) -> Vec<MenuItem> {
+        let Some(index) = id
+            .checked_sub(LANGUAGE_SERVER_SUBMENU_BASE)
+            .map(|index| index as usize)
+        else {
+            return Vec::new();
+        };
+        let Some(server) = self.servers.get(index) else {
+            return Vec::new();
+        };
+        let mut items = Vec::new();
+        if server.message.is_some() {
+            items.push(MenuItem::new(
+                language_server_action_id(index, 0),
+                "View Message",
+            ));
+        }
+        items.push(MenuItem::new(
+            language_server_action_id(index, 1),
+            "Restart Server",
+        ));
+        if server.can_stop {
+            items.push(MenuItem::new(
+                language_server_action_id(index, 2),
+                "Stop Server",
+            ));
+        }
+        let details = std::iter::once(health_label(server.health).to_string())
+            .chain(server.version.iter().map(|version| format!("v{version}")))
+            .chain(server.memory.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" - ");
+        items.push(MenuItem {
+            sep: true,
+            disabled: true,
+            icon: Some(ui::IconKind::Circle),
+            color: Some(health_color(server.health)),
+            ..MenuItem::new(language_server_action_id(index, 3), details)
+        });
+        if let Some(message) = &server.message {
+            items.push(MenuItem {
+                disabled: true,
+                ..MenuItem::new(language_server_action_id(index, 3), message.clone())
+            });
+        }
+        items
+    }
+
+    /// The details row a hovered submenu entry stands for: the binary that runs the server.
+    pub fn details_tooltip(&self, id: u64) -> Option<String> {
+        let offset = id.checked_sub(LANGUAGE_SERVER_ACTION_BASE)?;
+        if offset % LANGUAGE_SERVER_ACTION_STRIDE != 3 {
+            return None;
+        }
+        self.servers
+            .get((offset / LANGUAGE_SERVER_ACTION_STRIDE) as usize)?
+            .binary
+            .clone()
+    }
+
+    /// The activity menu: the work that can be cancelled.
+    pub fn activity_items(&self) -> Vec<MenuItem> {
+        self.activity
+            .iter()
+            .flat_map(|activity| activity.cancellable.iter().enumerate())
+            .map(|(index, title)| MenuItem {
+                icon: Some(ui::IconKind::Close),
+                ..MenuItem::new(
+                    LANGUAGE_WORK_CANCEL_BASE + index as u64,
+                    format!("Cancel {title}"),
+                )
+            })
+            .collect()
+    }
+}
+
+/// `text` cut to `limit` characters with a trailing `...` when longer.
+pub fn trail_off(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(limit).collect();
+    format!("{kept}...")
+}
 /// Agent right-click menu item ids.
 pub const MENU_DOCK_LEFT: u64 = 810;
 pub const MENU_DOCK_RIGHT: u64 = 811;
@@ -725,6 +995,8 @@ pub struct Prompt {
 
 pub fn is_submenu(id: u64) -> bool {
     (MENU_SUBMENU_BASE..MENU_SUBMENU_BASE + 10).contains(&id)
+        || (LANGUAGE_SERVER_SUBMENU_BASE..LANGUAGE_SERVER_SUBMENU_BASE + LANGUAGE_SERVER_LIMIT)
+            .contains(&id)
 }
 
 pub fn menu_key(id: u64) -> &'static str {
@@ -820,6 +1092,8 @@ pub struct Layout {
     /// The window fills the screen: macOS hides the traffic lights, so the header needs no room for them.
     pub fullscreen: bool,
     pub files_view: Option<Box<dyn FunctionView>>,
+    /// The files view's language servers as the status bar shows them, taken each frame.
+    pub language_servers: LanguageServers,
     pub terminal_view: Option<Box<dyn TerminalPanelView>>,
     /// Agent sessions, shown in the agent dock rather than among the terminals.
     pub agent_view: Option<Box<dyn TerminalPanelView>>,
@@ -1648,6 +1922,11 @@ pub trait FunctionView: ItemInput + 'static {
     fn diagnostic_summary(&self) -> Option<DiagnosticSummary> {
         None
     }
+    /// The folder's language servers; `details` also measures what each uses, for the open menu.
+    fn language_servers(&self, _details: bool) -> Option<LanguageServers> {
+        None
+    }
+    fn language_server_action(&mut self, _action: LanguageServerAction) {}
     fn tree_menu_state(&self, _path: Option<&str>) -> TreeMenuState {
         TreeMenuState::default()
     }
@@ -1883,6 +2162,7 @@ impl Default for Layout {
             session_scroll: 0.0,
             fullscreen: false,
             files_view: None,
+            language_servers: LanguageServers::default(),
             terminal_view: None,
             agent_view: None,
             services_running: false,
@@ -2952,6 +3232,36 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             if let Some(g) = dock_group(DockPosition::Left) {
                 row = row.child(g).child(vsep());
             }
+            let servers = &layout.language_servers;
+            if ui::chrome().language_servers && !servers.servers.is_empty() {
+                let (dot, _) = servers.health();
+                let mut glyph = div().row().gap(1.0).child(
+                    ui::icon(ui::IconKind::BoltOutlined)
+                        .size(14.0)
+                        .color(theme().icon_muted),
+                );
+                if let Some(dot) = dot {
+                    glyph = glyph.child(
+                        div()
+                            .col()
+                            .h_px(14.0)
+                            .justify_end()
+                            .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(dot)),
+                    );
+                }
+                let mut button = div()
+                    .w_px(26.0)
+                    .h_px(20.0)
+                    .rounded(5.0)
+                    .items_center()
+                    .justify_center()
+                    .on_click(LANGUAGE_SERVERS_BUTTON)
+                    .child(glyph);
+                if hovered == Some(LANGUAGE_SERVERS_BUTTON) {
+                    button = button.bg(theme().element_hover);
+                }
+                row = row.child(button);
+            }
             if ui::chrome().diagnostics {
                 let summary = layout
                     .files_view
@@ -3005,6 +3315,31 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                     }
                     row = row.child(button);
                 }
+            }
+            if let Some(activity) = &layout.language_servers.activity {
+                let icon = match activity.icon {
+                    ActivityIcon::Loading => ui::IconKind::LoadCircle,
+                    ActivityIcon::Download => ui::IconKind::Download,
+                    ActivityIcon::Warning => ui::IconKind::Warning,
+                };
+                let mut button = div()
+                    .row()
+                    .h_px(20.0)
+                    .px(4.0)
+                    .gap(4.0)
+                    .rounded(4.0)
+                    .items_center()
+                    .on_click(LANGUAGE_ACTIVITY)
+                    .child(ui::icon(icon).size(14.0).color(theme().icon_muted))
+                    .child(
+                        label(trail_off(&activity.message, ACTIVITY_MESSAGE_LIMIT))
+                            .size(12.0)
+                            .color(theme().text),
+                    );
+                if hovered == Some(LANGUAGE_ACTIVITY) {
+                    button = button.bg(theme().ghost_element_hover);
+                }
+                row = row.child(button);
             }
             row
         })
@@ -3072,6 +3407,27 @@ pub struct MenuItem {
     pub icon: Option<ui::IconKind>,
     /// Muted text at the right: its key, or what a submenu is set to.
     pub hint: Option<std::borrow::Cow<'static, str>>,
+    /// The icon's color, over the default for its kind.
+    pub color: Option<Rgba>,
+    /// A group's title: small, muted and not clickable.
+    pub header: bool,
+}
+
+impl MenuItem {
+    pub fn new(id: u64, label: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        MenuItem {
+            id,
+            label: label.into(),
+            checked: false,
+            sep: false,
+            disabled: false,
+            danger: false,
+            icon: None,
+            hint: None,
+            color: None,
+            header: false,
+        }
+    }
 }
 
 /// A right-click context menu anchored above `(ax, ay)`, clamped to stay inside `viewport_w`.
@@ -3149,6 +3505,16 @@ pub fn context_menu(
                     .child(div().h_px(1.0).w_px(mw - 2.0 * pad).bg(theme().border)),
             );
         }
+        if item.header {
+            col = col.child(
+                div().row().h_px(row_h).px(8.0).items_center().child(
+                    label(item.label.to_string())
+                        .size(12.0)
+                        .color(theme().text_muted),
+                ),
+            );
+            continue;
+        }
         let mut row = div()
             .row()
             .h_px(row_h)
@@ -3169,15 +3535,21 @@ pub fn context_menu(
         };
         let mark = match (item.checked, item.icon) {
             (true, _) => ui::check_icon().size(12.0),
-            (false, Some(kind)) => ui::icon(kind).size(12.0).color(if item.disabled {
-                theme().text_disabled
-            } else if item.danger {
-                theme().error
-            } else if kind == ui::IconKind::Sparkle {
-                theme().icon_accent
-            } else {
-                theme().icon_muted
-            }),
+            (false, Some(kind)) => {
+                ui::icon(kind)
+                    .size(12.0)
+                    .color(if let Some(color) = item.color {
+                        color
+                    } else if item.disabled {
+                        theme().text_disabled
+                    } else if item.danger {
+                        theme().error
+                    } else if kind == ui::IconKind::Sparkle {
+                        theme().icon_accent
+                    } else {
+                        theme().icon_muted
+                    })
+            }
             (false, None) => ui::icon(ui::IconKind::Check)
                 .size(12.0)
                 .color(Rgba::TRANSPARENT),
@@ -3243,6 +3615,8 @@ pub fn status_tooltip(id: u64) -> Option<(String, StatusKey)> {
         Some(("Go to Line/Column".into(), StatusKey::Fixed("ctrl-g")))
     } else if id == DIAGNOSTIC_MESSAGE {
         Some(("Next Diagnostic".into(), StatusKey::Fixed("f8")))
+    } else if id == LANGUAGE_SERVERS_BUTTON {
+        Some(("Language Servers".into(), StatusKey::None))
     } else if id == STATUS_TICKET {
         Some(("Jira Ticket".into(), StatusKey::None))
     } else if (FUNC_BASE..FUNC_BASE + PaneKind::ALL.len() as u64).contains(&id) {
