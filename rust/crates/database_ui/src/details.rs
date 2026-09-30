@@ -18,7 +18,6 @@ pub(crate) const OPEN_IN_TAB: u64 = 36;
 pub(crate) const EXPAND_ALL: u64 = 37;
 pub(crate) const COLLAPSE: u64 = 38;
 pub(crate) const OPEN_TARGET: u64 = 39;
-pub(crate) const EDIT_VALUE: u64 = 40;
 pub(crate) const SAVE_VALUE: u64 = 41;
 pub(crate) const CANCEL_VALUE: u64 = 42;
 pub(crate) const COPY_DDL: u64 = 44;
@@ -31,6 +30,11 @@ pub(crate) const REFERENCE_BASE: u64 = 5000;
 pub(crate) const STRUCTURE_REFERENCE_BASE: u64 = 5500;
 pub(crate) const STRUCTURE_LINK_BASE: u64 = 6000;
 pub(crate) const RANGE_END: u64 = 6500;
+pub(crate) const ROW_EXPAND_BASE: u64 = 6500;
+pub(crate) const ROW_COLLAPSE_BASE: u64 = 6700;
+pub(crate) const ROW_COPY_BASE: u64 = 6900;
+pub(crate) const ROW_OPEN_BASE: u64 = 7100;
+pub(crate) const ROW_END: u64 = 7300;
 
 const JSON_LINE_H: f32 = 18.0;
 /// Children an open object or array lists before "show N more".
@@ -104,6 +108,26 @@ impl Pane {
         let scale = ui::ui_text_scale();
         (self.scroll / scale, self.view_h / scale)
     }
+}
+
+/// Drops what spilled past `right` (a grid's last column under the side beside it).
+pub(crate) fn clip_right(painted: &mut ui::Painted, right: f32) {
+    painted.rects.retain_mut(|rect| {
+        if rect.x >= right {
+            return false;
+        }
+        rect.w = rect.w.min(right - rect.x);
+        true
+    });
+    painted.texts.retain(|text| text.x < right - 4.0);
+    painted.icons.retain(|quad| quad.x + quad.w <= right + 1.0);
+    painted.hits.retain_mut(|(rect, _)| {
+        if rect.x >= right {
+            return false;
+        }
+        rect.w = rect.w.min(right - rect.x);
+        true
+    });
 }
 
 pub(crate) fn merge(into: &mut ui::Painted, part: ui::Painted) {
@@ -193,29 +217,38 @@ impl JsonFold {
     }
 }
 
-/// A click inside the tree, by the id its line was drawn with.
+/// A click inside a value's tree, by the id its line was drawn with; `column` is the Row side's field the tree
+/// belongs to (the Value side has one tree).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum FoldTarget {
+pub(crate) struct FoldTarget {
+    pub column: Option<usize>,
+    pub action: FoldAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FoldAction {
     Toggle(String, bool),
     More(String),
 }
 
 struct JsonLine {
     depth: usize,
+    /// The fold arrow: in the gutter for the root, right after the key for a nested object or array.
     toggle: Option<(String, bool)>,
+    key: Option<(String, &'static str)>,
     parts: Vec<(String, &'static str)>,
     more: Option<(String, usize)>,
 }
 
 fn json_lines(value: &Json, fold: &JsonFold) -> Vec<JsonLine> {
     let mut lines = Vec::new();
-    push_lines(value, "$".into(), 0, None, true, fold, &mut lines);
+    push_lines(value, "$".into(), 0, None, fold, &mut lines);
     lines
 }
 
 fn scalar(value: &Json) -> (String, &'static str) {
     match value {
-        Json::Null => ("null".into(), "constant.builtin"),
+        Json::Null => ("null".into(), "constant"),
         Json::Bool(value) => (value.to_string(), "boolean"),
         Json::Number(number) => (number.clone(), "number"),
         Json::String(text) => (json::quote(text), "string"),
@@ -228,16 +261,16 @@ fn push_lines(
     path: String,
     depth: usize,
     key: Option<(String, &'static str)>,
-    last: bool,
     fold: &JsonFold,
     lines: &mut Vec<JsonLine>,
 ) {
-    let comma = if last { "" } else { "," };
-    let mut parts: Vec<(String, &'static str)> = Vec::new();
-    if let Some(key) = key {
-        parts.push(key);
-        parts.push((": ".into(), "punctuation.delimiter"));
-    }
+    let line = |toggle, parts| JsonLine {
+        depth,
+        toggle,
+        key: key.clone(),
+        parts,
+        more: None,
+    };
     let (children, open_mark, close_mark): (Vec<(Option<String>, &Json)>, &str, &str) = match value
     {
         Json::Object(entries) if !entries.is_empty() => (
@@ -252,58 +285,27 @@ fn push_lines(
             (items.iter().map(|child| (None, child)).collect(), "[", "]")
         }
         Json::Object(_) => {
-            parts.push(("{}".into(), "punctuation.bracket"));
-            parts.push((comma.into(), "punctuation.delimiter"));
-            lines.push(JsonLine {
-                depth,
-                toggle: None,
-                parts,
-                more: None,
-            });
+            lines.push(line(None, vec![("{}".into(), "")]));
             return;
         }
         Json::Array(_) => {
-            parts.push(("[]".into(), "punctuation.bracket"));
-            parts.push((comma.into(), "punctuation.delimiter"));
-            lines.push(JsonLine {
-                depth,
-                toggle: None,
-                parts,
-                more: None,
-            });
+            lines.push(line(None, vec![("[]".into(), "")]));
             return;
         }
         scalar_value => {
-            parts.push(scalar(scalar_value));
-            parts.push((comma.into(), "punctuation.delimiter"));
-            lines.push(JsonLine {
-                depth,
-                toggle: None,
-                parts,
-                more: None,
-            });
+            lines.push(line(None, vec![scalar(scalar_value)]));
             return;
         }
     };
-    let open = fold.is_open(&path, depth);
-    if !open {
-        parts.push((json::summary(value).unwrap_or_default(), ""));
-        parts.push((comma.into(), "punctuation.delimiter"));
-        lines.push(JsonLine {
-            depth,
-            toggle: Some((path, false)),
-            parts,
-            more: None,
-        });
+    if !fold.is_open(&path, depth) {
+        let summary = json::summary(value).unwrap_or_default();
+        lines.push(line(Some((path, false)), vec![(summary, "summary")]));
         return;
     }
-    parts.push((open_mark.into(), "punctuation.bracket"));
-    lines.push(JsonLine {
-        depth,
-        toggle: Some((path.clone(), true)),
-        parts,
-        more: None,
-    });
+    lines.push(line(
+        Some((path.clone(), true)),
+        vec![(open_mark.into(), "")],
+    ));
     let shown = if fold.more.contains(&path) {
         children.len()
     } else {
@@ -314,23 +316,14 @@ fn push_lines(
             Some(key) => format!("{path}.{key}"),
             None => format!("{path}.{index}"),
         };
-        let label = key
-            .as_ref()
-            .map(|key| (json::quote(key), "property.json_key"));
-        push_lines(
-            child,
-            child_path,
-            depth + 1,
-            label,
-            index + 1 == children.len(),
-            fold,
-            lines,
-        );
+        let label = key.as_ref().map(|key| (json::quote(key), "property"));
+        push_lines(child, child_path, depth + 1, label, fold, lines);
     }
     if shown < children.len() {
         lines.push(JsonLine {
             depth: depth + 1,
             toggle: None,
+            key: None,
             parts: Vec::new(),
             more: Some((path, children.len() - shown)),
         });
@@ -338,10 +331,8 @@ fn push_lines(
     lines.push(JsonLine {
         depth,
         toggle: None,
-        parts: vec![
-            (close_mark.into(), "punctuation.bracket"),
-            (comma.into(), "punctuation.delimiter"),
-        ],
+        key: None,
+        parts: vec![(close_mark.into(), "")],
         more: None,
     });
 }
@@ -352,6 +343,7 @@ pub(crate) fn json_tree(
     value: &Json,
     fold: &JsonFold,
     window: (f32, f32),
+    column: Option<usize>,
     targets: &mut Vec<FoldTarget>,
     hovered: Option<u64>,
 ) -> Node {
@@ -368,11 +360,38 @@ pub(crate) fn json_tree(
     };
     let lines = json_lines(value, fold);
     let first = ((window.0 / JSON_LINE_H).floor().max(0.0) as usize).min(lines.len());
-    let count = (window.1 / JSON_LINE_H).ceil() as usize + 2;
+    let count = ((window.1 / JSON_LINE_H).ceil() as usize).saturating_add(2);
     let last = (first + count).min(lines.len());
+    let arrow = |path: &str, open: bool, targets: &mut Vec<FoldTarget>| -> Node {
+        let id = FOLD_BASE + targets.len() as u64;
+        targets.push(FoldTarget {
+            column,
+            action: FoldAction::Toggle(path.to_string(), open),
+        });
+        div()
+            .row()
+            .w_px(12.0)
+            .h_px(JSON_LINE_H)
+            .items_center()
+            .on_click(id)
+            .child(
+                icon(if open {
+                    IconKind::ChevronDown
+                } else {
+                    IconKind::ChevronRight
+                })
+                .size(9.0)
+                .color(if hovered == Some(id) {
+                    colors.icon
+                } else {
+                    colors.icon_muted
+                }),
+            )
+            .into()
+    };
     let mut tree = div()
         .col()
-        .py(4.0)
+        .py(6.0)
         .child(div().h_px(first as f32 * JSON_LINE_H));
     for line in &lines[first..last] {
         let mut row = div()
@@ -380,53 +399,69 @@ pub(crate) fn json_tree(
             .h_px(JSON_LINE_H)
             .items_center()
             .pl(line.depth as f32 * 14.0);
-        match &line.toggle {
-            Some((path, open)) => {
-                let id = FOLD_BASE + targets.len() as u64;
-                targets.push(FoldTarget::Toggle(path.clone(), *open));
-                row = row.child(
-                    div()
-                        .row()
-                        .w_px(14.0)
-                        .h_px(JSON_LINE_H)
-                        .items_center()
-                        .on_click(id)
-                        .child(
-                            icon(if *open {
-                                IconKind::ChevronDown
-                            } else {
-                                IconKind::ChevronRight
-                            })
-                            .size(10.0)
-                            .color(if hovered == Some(id) {
-                                colors.icon
-                            } else {
-                                colors.icon_muted
-                            }),
-                        ),
-                );
+        match (&line.toggle, line.depth) {
+            (Some((path, open)), 0) => row = row.child(arrow(path, *open, targets)),
+            _ => row = row.child(div().w_px(12.0)),
+        }
+        if let Some((key, capture)) = &line.key {
+            row = row
+                .child(label(key.clone()).size(TEXT).mono().color(syntax(capture)))
+                .child(label(": ").size(TEXT).mono().color(colors.text));
+        }
+        if let (Some((path, open)), depth) = (&line.toggle, line.depth) {
+            if depth > 0 {
+                row = row.child(arrow(path, *open, targets));
             }
-            None => row = row.child(div().w_px(14.0)),
         }
         if let Some((path, hidden)) = &line.more {
             let id = FOLD_BASE + targets.len() as u64;
-            targets.push(FoldTarget::More(path.clone()));
+            targets.push(FoldTarget {
+                column,
+                action: FoldAction::More(path.clone()),
+            });
             row = row.child(link(id, &format!("show {hidden} more"), hovered));
         }
         for (text, capture) in &line.parts {
-            if text.is_empty() {
-                continue;
-            }
-            let color = if capture.is_empty() {
-                colors.text_placeholder
-            } else {
-                syntax(capture)
+            let color = match *capture {
+                "" => colors.text,
+                "summary" => colors.text_placeholder,
+                capture => syntax(capture),
             };
             row = row.child(label(text.clone()).size(TEXT).mono().color(color));
         }
         tree = tree.child(row);
     }
     tree.child(div().h_px((lines.len() - last) as f32 * JSON_LINE_H))
+        .into()
+}
+
+/// The tree inside its box, with a bar above it: `head` on the left, then the folds' and the value's actions.
+pub(crate) fn json_box(
+    tree: Node,
+    head: String,
+    actions: &[(u64, &str)],
+    hovered: Option<u64>,
+) -> Node {
+    let colors = theme();
+    let mut bar = div()
+        .row()
+        .h_px(26.0)
+        .px(8.0)
+        .gap(4.0)
+        .items_center()
+        .child(small(head, colors.text_placeholder))
+        .child(div().row().flex(1.0));
+    for (id, text) in actions {
+        bar = bar.child(link(*id, text, hovered));
+    }
+    div()
+        .col()
+        .rounded(6.0)
+        .border(1.0, colors.border_variant)
+        .bg(colors.editor_background)
+        .child(bar)
+        .child(div().h_px(1.0).bg(colors.border_variant))
+        .child(div().col().pl(8.0).pr(6.0).child(tree))
         .into()
 }
 
@@ -447,21 +482,15 @@ pub(crate) struct CellView<'a> {
     pub primary_key: bool,
     pub value: Option<&'a str>,
     pub edited: bool,
-    pub row: usize,
+    /// The row's primary key value (else its number), as the side's corner names it.
+    pub row_name: String,
     /// Why the value can't be changed here, when it can't.
     pub read_only: Option<&'static str>,
     pub references: Option<&'a (String, String)>,
     pub target: &'a Target,
-    pub json: Option<&'a Json>,
 }
 
-/// The Value side's top: which cell, its value (a text box while editing), what can be done with it.
-pub(crate) fn value_head(
-    cell: &CellView<'_>,
-    editor: Option<Node>,
-    width: f32,
-    hovered: Option<u64>,
-) -> Node {
+pub(crate) fn value_title(cell: &CellView<'_>) -> Node {
     let colors = theme();
     let mut head = div()
         .row()
@@ -480,61 +509,70 @@ pub(crate) fn value_head(
                 .color(colors.text_placeholder),
         );
     if cell.primary_key {
-        head = head.child(small("primary key", colors.warning));
-    }
-    head = head.child(div().row().flex(1.0)).child(small(
-        format!("row {}", cell.row + 1),
-        colors.text_placeholder,
-    ));
-    let mut column = div().col().gap(8.0).child(head);
-    if let Some(editor) = editor {
-        column = column.child(editor).child(
+        head = head.child(
             div()
                 .row()
-                .gap(4.0)
+                .px(6.0)
+                .h_px(16.0)
                 .items_center()
-                .child(small(
-                    "cmd-enter keeps it, escape drops it",
-                    colors.text_placeholder,
-                ))
-                .child(div().row().flex(1.0))
-                .child(link(CANCEL_VALUE, "Cancel", hovered))
-                .child(link(SAVE_VALUE, "Keep", hovered)),
-        );
-        return column.into();
-    }
-    if cell.json.is_none() {
-        let body: Node = match cell.value {
-            None => label("NULL")
-                .size(TEXT)
-                .mono()
-                .italic()
-                .color(colors.text_placeholder)
-                .into(),
-            Some(text) => label(text.to_string())
-                .size(TEXT)
-                .mono()
-                .color(if cell.edited {
-                    colors.warning
-                } else {
-                    colors.text
-                })
-                .wrap(width - 22.0)
-                .into(),
-        };
-        column = column.child(
-            div()
-                .col()
-                .p(8.0)
-                .rounded(6.0)
+                .rounded(8.0)
                 .border(1.0, colors.border_variant)
-                .bg(colors.editor_background)
-                .on_click(VALUE_AREA)
-                .child(body),
+                .child(label("primary key").size(10.5).color(colors.warning)),
         );
     }
+    head.child(div().row().flex(1.0))
+        .child(small(
+            format!("row {}", cell.row_name),
+            colors.text_placeholder,
+        ))
+        .into()
+}
+
+/// A text value in its box (a text box while editing).
+pub(crate) fn value_box(cell: &CellView<'_>, editor: Option<Node>, width: f32) -> Node {
+    let colors = theme();
+    if let Some(editor) = editor {
+        return editor;
+    }
+    let body: Node = match cell.value {
+        None => label("NULL")
+            .size(TEXT)
+            .mono()
+            .italic()
+            .color(colors.text_placeholder)
+            .into(),
+        Some(text) => label(text.to_string())
+            .size(TEXT)
+            .mono()
+            .color(if cell.edited {
+                colors.warning
+            } else {
+                colors.text
+            })
+            .wrap(width - 22.0)
+            .into(),
+    };
+    div()
+        .col()
+        .p(10.0)
+        .rounded(6.0)
+        .border(1.0, colors.border_variant)
+        .bg(colors.editor_background)
+        .on_click(VALUE_AREA)
+        .child(body)
+        .into()
+}
+
+/// Under the value: its size, and what can be done with it.
+pub(crate) fn value_actions(
+    cell: &CellView<'_>,
+    editing: bool,
+    json: bool,
+    hovered: Option<u64>,
+) -> Node {
+    let colors = theme();
     let size = match cell.value {
-        Some(text) if cell.json.is_some() => pom_db::object_storage::format_size(text.len() as u64),
+        Some(text) if json => pom_db::object_storage::format_size(text.len() as u64),
         Some(text) => format!("{} chars", text.chars().count()),
         None => String::new(),
     };
@@ -547,10 +585,16 @@ pub(crate) fn value_head(
         actions = actions.child(small("  edited", colors.warning));
     }
     actions = actions.child(div().row().flex(1.0));
+    if editing {
+        return actions
+            .child(small("cmd-enter keeps it", colors.text_placeholder))
+            .child(link(CANCEL_VALUE, "Cancel", hovered))
+            .child(link(SAVE_VALUE, "Keep", hovered))
+            .into();
+    }
     match cell.read_only {
         Some(reason) => actions = actions.child(small(reason, colors.text_placeholder)),
         None => {
-            actions = actions.child(link(EDIT_VALUE, "Edit", hovered));
             if !cell.primary_key && cell.value.is_some() {
                 actions = actions.child(link(SET_NULL, "Set NULL", hovered));
             }
@@ -559,59 +603,68 @@ pub(crate) fn value_head(
             }
         }
     }
-    if cell.value.is_some() {
+    if cell.value.is_some() && !json {
         actions = actions.child(link(OPEN_IN_TAB, "Open in tab", hovered));
     }
-    column = column.child(actions.child(link(COPY_VALUE, "Copy", hovered)));
-    if let Some(json_value) = cell.json {
-        column = column.child(
-            div()
-                .row()
-                .gap(2.0)
-                .items_center()
-                .child(small(
-                    json::summary(json_value).unwrap_or_default(),
-                    colors.text_placeholder,
-                ))
-                .child(div().row().flex(1.0))
-                .child(link(EXPAND_ALL, "Expand all", hovered))
-                .child(link(COLLAPSE, "Collapse", hovered)),
-        );
-    }
-    if let Some((table, _)) = cell.references {
-        match cell.target {
-            Target::None => {}
-            Target::Loading => {
-                column = column
-                    .child(section(&format!("{table} row")))
-                    .child(small("Loading...", colors.text_muted));
-            }
-            Target::Missing(reason) => {
-                column = column
-                    .child(section(&format!("{table} row")))
-                    .child(small(reason.clone(), colors.text_muted));
-            }
-            Target::Found { table, fields } => {
-                let mut record = div().col().child(section(&format!("{table} row")));
-                for (name, value) in fields.iter().take(6) {
-                    record = record.child(field_line(
-                        name,
-                        value.as_deref(),
-                        None,
-                        false,
-                        None,
-                        hovered,
-                    ));
-                }
-                column = column.child(record).child(div().row().pt(4.0).child(link(
-                    OPEN_TARGET,
-                    &format!("Open this {table} row"),
+    actions.child(link(COPY_VALUE, "Copy", hovered)).into()
+}
+
+/// The row a foreign key points at: a few of its fields and a way to open it.
+pub(crate) fn value_target(cell: &CellView<'_>, hovered: Option<u64>) -> Option<Node> {
+    let colors = theme();
+    let (table, target) = cell.references?;
+    let value = cell.value?;
+    let heading = section(&format!("{table} where {target} = {value}"));
+    Some(match cell.target {
+        Target::None => return None,
+        Target::Loading => div()
+            .col()
+            .child(heading)
+            .child(small("Loading...", colors.text_muted))
+            .into(),
+        Target::Missing(reason) => div()
+            .col()
+            .child(heading)
+            .child(small(reason.clone(), colors.text_muted))
+            .into(),
+        Target::Found { table, fields } => {
+            let mut record = div().col().child(heading);
+            for (name, value) in fields.iter().take(4) {
+                record = record.child(field_line(
+                    name,
+                    value.as_deref(),
+                    None,
+                    false,
+                    None,
+                    false,
                     hovered,
-                )));
+                ));
             }
+            let mut open = div()
+                .row()
+                .h_px(26.0)
+                .px(4.0)
+                .items_center()
+                .rounded(4.0)
+                .on_click(OPEN_TARGET)
+                .child(
+                    div().row().flex(1.0).items_center().child(
+                        label(format!("Open {table} #{value}"))
+                            .size(12.0)
+                            .color(colors.hint),
+                    ),
+                )
+                .child(
+                    icon(IconKind::ArrowUpRight)
+                        .size(10.0)
+                        .color(colors.icon_muted),
+                );
+            if hovered == Some(OPEN_TARGET) {
+                open = open.bg(colors.ghost_element_hover);
+            }
+            record.child(open).into()
         }
-    }
-    column.into()
+    })
 }
 
 fn field_line(
@@ -620,6 +673,7 @@ fn field_line(
     id: Option<u64>,
     focused: bool,
     link_id: Option<u64>,
+    edited: bool,
     hovered: Option<u64>,
 ) -> Node {
     let colors = theme();
@@ -632,7 +686,9 @@ fn field_line(
             .into(),
         Some(text) => {
             let color = if link_id.is_some() {
-                colors.text_accent
+                colors.hint
+            } else if edited {
+                colors.warning
             } else {
                 colors.text
             };
@@ -644,24 +700,27 @@ fn field_line(
                     .truncate(),
             );
             if let Some(link_id) = link_id {
-                line = line.on_click(link_id).child(
-                    icon(IconKind::ArrowUpRight)
-                        .size(10.0)
-                        .color(colors.text_accent),
-                );
+                line = line
+                    .on_click(link_id)
+                    .child(icon(IconKind::ArrowUpRight).size(10.0).color(colors.hint));
             }
             line.into()
         }
     };
     let mut row = div()
         .row()
-        .h_px(24.0)
-        .px(4.0)
+        .h_px(26.0)
+        .pr(4.0)
         .gap(8.0)
         .items_center()
         .rounded(4.0)
+        .child(div().w_px(2.0).h_px(26.0).bg(if focused {
+            colors.text_accent
+        } else {
+            Rgba::TRANSPARENT
+        }))
         .child(
-            div().row().w_px(120.0).items_center().child(
+            div().row().w_px(110.0).items_center().child(
                 label(name.to_string())
                     .size(TEXT)
                     .mono()
@@ -674,6 +733,8 @@ fn field_line(
         row = row.on_click(id);
         if focused {
             row = row.bg(colors.element_selected);
+        } else if edited {
+            row = row.bg(colors.warning.alpha(0.12));
         } else if hovered == Some(id) {
             row = row.bg(colors.ghost_element_hover);
         }
@@ -681,43 +742,66 @@ fn field_line(
     row.into()
 }
 
-pub(crate) struct RowField<'a> {
-    pub name: &'a str,
-    pub value: Option<&'a str>,
+pub(crate) struct RowField {
+    pub name: String,
+    pub value: Option<String>,
     pub edited: bool,
-    pub linked: bool,
-    pub summary: Option<String>,
+    /// `2 - Globex (orgs)` for a foreign key whose row was found.
+    pub link: Option<String>,
+    /// A JSON value's tree in its box, drawn under the field's name.
+    pub json: Option<Node>,
 }
 
 /// The selected row as a record: every field, the chosen column's lit; then the tables whose foreign keys
 /// point at it with how many of their rows do.
 pub(crate) fn row_view(
-    fields: &[RowField<'_>],
+    fields: Vec<RowField>,
     focused: Option<usize>,
     references: &[(String, Option<u64>)],
     hovered: Option<u64>,
 ) -> Node {
     let colors = theme();
-    let mut column = div().col();
-    for (index, field) in fields.iter().enumerate() {
-        let shown = field.summary.as_deref().or(field.value);
-        let mut line = field_line(
-            field.name,
-            shown,
-            Some(FIELD_BASE + index as u64),
-            focused == Some(index),
-            field.linked.then_some(FIELD_LINK_BASE + index as u64),
-            hovered,
-        );
-        if field.edited {
-            line = div()
+    let mut column = div().col().gap(2.0);
+    for (index, field) in fields.into_iter().enumerate() {
+        let id = FIELD_BASE + index as u64;
+        if let Some(tree) = field.json {
+            let mut name = div()
                 .row()
-                .bg(colors.warning.alpha(0.12))
+                .h_px(26.0)
+                .items_center()
                 .rounded(4.0)
-                .child(line)
-                .into();
+                .on_click(id)
+                .child(div().w_px(2.0).h_px(26.0).bg(if focused == Some(index) {
+                    colors.text_accent
+                } else {
+                    Rgba::TRANSPARENT
+                }))
+                .child(
+                    div().row().pl(8.0).items_center().child(
+                        label(field.name.clone())
+                            .size(TEXT)
+                            .mono()
+                            .color(colors.text_muted),
+                    ),
+                );
+            if focused == Some(index) {
+                name = name.bg(colors.element_selected);
+            }
+            column = column
+                .child(name)
+                .child(div().col().pl(10.0).pb(4.0).child(tree));
+            continue;
         }
-        column = column.child(line);
+        let linked = field.link.is_some();
+        column = column.child(field_line(
+            &field.name,
+            field.link.as_deref().or(field.value.as_deref()),
+            Some(id),
+            focused == Some(index),
+            linked.then_some(FIELD_LINK_BASE + index as u64),
+            field.edited,
+            hovered,
+        ));
     }
     if !references.is_empty() {
         column = column.child(section("Referenced by"));
@@ -730,8 +814,8 @@ pub(crate) fn row_view(
             };
             let mut line = div()
                 .row()
-                .h_px(24.0)
-                .px(4.0)
+                .h_px(28.0)
+                .px(6.0)
                 .gap(8.0)
                 .items_center()
                 .rounded(4.0)
@@ -745,7 +829,16 @@ pub(crate) fn row_view(
                             .truncate(),
                     ),
                 )
-                .child(small(counted, colors.text_placeholder))
+                .child(
+                    div()
+                        .row()
+                        .px(7.0)
+                        .h_px(18.0)
+                        .items_center()
+                        .rounded(9.0)
+                        .border(1.0, colors.border_variant)
+                        .child(label(counted).size(10.5).color(colors.text_muted)),
+                )
                 .child(
                     icon(IconKind::ArrowUpRight)
                         .size(10.0)
@@ -759,7 +852,7 @@ pub(crate) fn row_view(
     }
     column
         .child(div().row().pt(10.0).child(small(
-            "Double-click a cell to edit it; shift-enter hides this side.",
+            "Double-click a value to edit it.",
             colors.text_placeholder,
         )))
         .into()
@@ -921,8 +1014,128 @@ pub(crate) fn structure_view(structure: &TableStructure, hovered: Option<u64>) -
     view.into()
 }
 
+const SQL_KEYWORDS: [&str; 44] = [
+    "create",
+    "table",
+    "view",
+    "index",
+    "unique",
+    "on",
+    "using",
+    "not",
+    "null",
+    "default",
+    "constraint",
+    "primary",
+    "key",
+    "foreign",
+    "references",
+    "check",
+    "as",
+    "select",
+    "from",
+    "where",
+    "and",
+    "or",
+    "in",
+    "is",
+    "cascade",
+    "restrict",
+    "set",
+    "delete",
+    "update",
+    "no",
+    "action",
+    "with",
+    "without",
+    "time",
+    "zone",
+    "varying",
+    "if",
+    "exists",
+    "alter",
+    "add",
+    "column",
+    "generated",
+    "always",
+    "identity",
+];
+
+/// A line of SQL as the editor colors it: keywords, strings, numbers, quoted names.
+fn sql_line(line: &str, syntax: &dyn Fn(&str) -> Rgba, plain: Rgba) -> Node {
+    let mut row = div().row().h_px(18.0).items_center();
+    let bytes = line.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        let start = at;
+        let capture = match bytes[at] {
+            b'\'' | b'"' => {
+                let quote = bytes[at];
+                at += 1;
+                while at < bytes.len() && bytes[at] != quote {
+                    at += 1;
+                }
+                at = (at + 1).min(bytes.len());
+                if quote == b'\'' {
+                    "string"
+                } else {
+                    "property"
+                }
+            }
+            byte if byte.is_ascii_digit() => {
+                while at < bytes.len() && (bytes[at].is_ascii_digit() || bytes[at] == b'.') {
+                    at += 1;
+                }
+                "number"
+            }
+            byte if byte.is_ascii_alphabetic() || byte == b'_' => {
+                while at < bytes.len() && (bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_') {
+                    at += 1;
+                }
+                if SQL_KEYWORDS.contains(&line[start..at].to_ascii_lowercase().as_str()) {
+                    "keyword"
+                } else {
+                    ""
+                }
+            }
+            _ => {
+                at += 1;
+                while at < bytes.len()
+                    && !bytes[at].is_ascii_alphanumeric()
+                    && !matches!(bytes[at], b'\'' | b'"' | b'_')
+                {
+                    at += 1;
+                }
+                ""
+            }
+        };
+        let color = if capture.is_empty() {
+            plain
+        } else {
+            syntax(capture)
+        };
+        row = row.child(
+            label(line[start..at].to_string())
+                .size(TEXT)
+                .mono()
+                .color(color),
+        );
+    }
+    row.into()
+}
+
 pub(crate) fn ddl_view(ddl: &str, hovered: Option<u64>) -> Node {
     let colors = theme();
+    let palette = workspace::syntax_theme();
+    let syntax = |capture: &str| {
+        let [r, g, b] = palette.syntax_color(capture).0;
+        Rgba::new(
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+            1.0,
+        )
+    };
     let mut code = div()
         .col()
         .p(10.0)
@@ -930,26 +1143,20 @@ pub(crate) fn ddl_view(ddl: &str, hovered: Option<u64>) -> Node {
         .border(1.0, colors.border_variant)
         .bg(colors.panel_background);
     for line in ddl.lines() {
-        code = code.child(
-            div()
-                .row()
-                .h_px(18.0)
-                .items_center()
-                .child(label(line.to_string()).size(TEXT).mono().color(colors.text)),
-        );
+        code = code.child(sql_line(line, &syntax, colors.text));
     }
     div()
         .col()
         .p(12.0)
         .gap(8.0)
+        .child(code)
         .child(
             div()
                 .row()
+                .gap(4.0)
                 .items_center()
-                .child(div().row().flex(1.0))
                 .child(link(COPY_DDL, "Copy", hovered)),
         )
-        .child(code)
         .into()
 }
 
@@ -973,6 +1180,10 @@ mod tests {
             "open root, three children folded, closing brace"
         );
         assert!(lines[2].parts.iter().any(|(text, _)| text == "{ 1 key }"));
+        assert!(
+            lines[1].parts.iter().all(|(text, _)| !text.ends_with(',')),
+            "no commas"
+        );
         fold.open.insert("$.list".into());
         let lines = json_lines(&value, &fold);
         assert!(lines

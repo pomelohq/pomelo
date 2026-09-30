@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 
-const HEADER_H: f32 = 26.0;
-pub const ROW_H: f32 = 22.0;
+const HEADER_H: f32 = 30.0;
+pub const ROW_H: f32 = 26.0;
 const CELL_PAD: f32 = 4.0;
 const FONT: f32 = 12.0;
 const MIN_WIDTH: f32 = 40.0;
@@ -71,6 +71,14 @@ pub struct Grid {
     pub edited: HashSet<(usize, usize)>,
     /// The cell being edited, drawn with the editor node `render` is handed.
     pub editing: Option<(usize, usize)>,
+    /// Each column's type, shown muted after its name.
+    pub types: Vec<String>,
+    /// Columns in the primary key, marked with a key.
+    pub primary: Vec<bool>,
+    /// Height (design px) of the row `render` puts under the header, such as filter boxes.
+    pub below_header: f32,
+    /// Per column, a foreign key value's name in the table it points at (`1` reads `1 Acme`).
+    pub labels: Vec<HashMap<String, String>>,
     summaries: HashMap<(usize, usize), Option<String>>,
 }
 
@@ -95,6 +103,10 @@ impl Default for Grid {
             links: Vec::new(),
             edited: HashSet::new(),
             editing: None,
+            types: Vec::new(),
+            primary: Vec::new(),
+            below_header: 0.0,
+            labels: Vec::new(),
             summaries: HashMap::new(),
         }
     }
@@ -201,10 +213,30 @@ impl Grid {
                     .take(SAMPLE_ROWS)
                     .filter_map(|row| row.get(column).cloned().flatten())
                     .map(|text| text_width(text.lines().next().unwrap_or_default()))
-                    .fold(text_width(&self.columns[column]) + 16.0, f32::max);
+                    .fold(self.header_width(column), f32::max);
                 (widest + 2.0 * CELL_PAD + 12.0).clamp(AUTO_MIN, AUTO_MAX)
             })
             .collect()
+    }
+
+    fn header_width(&self, column: usize) -> f32 {
+        let marker = if self.primary.get(column).copied().unwrap_or(false)
+            || self.links.get(column).copied().unwrap_or(false)
+        {
+            14.0
+        } else {
+            0.0
+        };
+        let kind = self.types.get(column).map_or(0.0, |kind| {
+            ui::measure_text_width(kind, FONT - 1.5, true, 400) + 6.0
+        });
+        text_width(&self.columns[column]) + kind + marker + 16.0
+    }
+
+    /// Widths again from the header and the loaded values (once the column types arrive).
+    pub fn refit(&mut self) {
+        self.initial = self.auto_widths();
+        self.widths = self.initial.clone();
     }
 
     fn row_number_width(&self) -> f32 {
@@ -214,9 +246,13 @@ impl Grid {
 
     /// Whole rows that fit below the header.
     pub fn visible_rows(&self) -> usize {
-        ((self.area.h / scale() - HEADER_H) / ROW_H)
+        ((self.area.h / scale() - self.rows_top()) / ROW_H)
             .floor()
             .max(0.0) as usize
+    }
+
+    fn rows_top(&self) -> f32 {
+        HEADER_H + self.below_header
     }
 
     fn total_width(&self) -> f32 {
@@ -269,7 +305,10 @@ impl Grid {
             }
         }
         let local_x = (x - area.x) / scale() - self.row_number_width();
-        let row = self.first_row + ((local_y - HEADER_H) / ROW_H).floor().max(0.0) as usize;
+        if local_y >= HEADER_H && local_y < self.rows_top() {
+            return Region::Outside;
+        }
+        let row = self.first_row + ((local_y - self.rows_top()) / ROW_H).floor().max(0.0) as usize;
         if local_x < 0.0 {
             return if local_y < HEADER_H || row >= self.rows.len() {
                 Region::Outside
@@ -443,20 +482,51 @@ impl Grid {
         self.selected
     }
 
-    /// The grid laid into `area` (window px), with `editor` drawn in the cell being edited.
-    pub fn render(&mut self, area: Rect, mut editor: Option<Node>) -> Node {
+    /// The grid laid into `area` (window px), with `editor` drawn in the cell being edited and `below` (of
+    /// `below_header` height) under the header.
+    pub fn render(&mut self, area: Rect, mut editor: Option<Node>, below: Option<Node>) -> Node {
         self.set_area(area);
         let colors = theme();
         let number_width = self.row_number_width();
         let columns = self.visible_columns();
 
-        let mut header = div().row().h_px(HEADER_H).items_center().child(
-            div()
-                .w_px(number_width)
-                .h_px(HEADER_H)
-                .bg(colors.panel_background),
-        );
+        let mut header = div()
+            .row()
+            .h_px(HEADER_H)
+            .items_center()
+            .bg(colors.panel_background)
+            .child(
+                div()
+                    .w_px(number_width)
+                    .h_px(HEADER_H)
+                    .bg(colors.panel_background),
+            );
         for (column, _, width) in &columns {
+            let mut title = div().row().flex(1.0).gap(5.0).items_center();
+            if self.primary.get(*column).copied().unwrap_or(false) {
+                title = title.child(icon(IconKind::Key).size(10.0).color(colors.warning));
+            } else if self.links.get(*column).copied().unwrap_or(false) {
+                title = title.child(
+                    icon(IconKind::ArrowUpRight)
+                        .size(10.0)
+                        .color(colors.text_accent),
+                );
+            }
+            title = title.child(
+                label(self.columns[*column].clone())
+                    .size(FONT)
+                    .mono()
+                    .color(colors.text_muted),
+            );
+            if let Some(kind) = self.types.get(*column).filter(|kind| !kind.is_empty()) {
+                title = title.child(
+                    label(kind.clone())
+                        .size(FONT - 1.5)
+                        .mono()
+                        .color(colors.text_placeholder)
+                        .truncate(),
+                );
+            }
             let mut name = div()
                 .row()
                 .items_center()
@@ -464,15 +534,7 @@ impl Grid {
                 .w_px((width - 1.0).max(0.0))
                 .h_px(HEADER_H)
                 .px(CELL_PAD)
-                .child(
-                    div().row().flex(1.0).items_center().child(
-                        label(self.columns[*column].clone())
-                            .size(FONT)
-                            .mono()
-                            .color(colors.text_muted)
-                            .truncate(),
-                    ),
-                );
+                .child(title);
             if let Some((_, ascending)) = self.sort.filter(|(sorted, _)| sorted == column) {
                 name = name.child(
                     icon(if ascending {
@@ -499,38 +561,58 @@ impl Grid {
             .col()
             .child(header)
             .child(div().h_px(1.0).bg(colors.border_variant));
+        if let Some(below) = below {
+            grid = grid
+                .child(below)
+                .child(div().h_px(1.0).bg(colors.border_variant));
+        }
 
         let last = (self.first_row + self.visible_rows()).min(self.rows.len());
+        let palette = workspace::syntax_theme();
+        let [r, g, b] = palette.syntax_color("string").0;
+        let json_color = Rgba::new(
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+            1.0,
+        );
         for row in self.first_row..last {
-            let background = if self.hover_row == Some(row) {
-                colors.element_hover.alpha(0.6)
-            } else if row % 2 == 1 {
-                colors.text.alpha(0.05)
+            let chosen_row = self.selected.is_some_and(|(selected, _)| selected == row);
+            let background = if chosen_row {
+                colors.element_selected
+            } else if self.hover_row == Some(row) {
+                colors.text.alpha(0.025)
             } else {
                 Rgba::TRANSPARENT
             };
-            let mut line = div().row().h_px(ROW_H).items_center().bg(background).child(
-                div()
-                    .row()
-                    .w_px(number_width)
-                    .h_px(ROW_H)
-                    .items_center()
-                    .justify_center()
-                    .bg(colors.panel_background)
-                    .child(
-                        label((row + 1).to_string())
-                            .size(FONT - 1.0)
-                            .mono()
-                            .color(colors.text_muted),
-                    ),
-            );
+            let mut line = div()
+                .row()
+                .h_px(ROW_H - 1.0)
+                .items_center()
+                .bg(background)
+                .child(
+                    div()
+                        .row()
+                        .w_px(number_width)
+                        .h_px(ROW_H - 1.0)
+                        .pr(8.0)
+                        .items_center()
+                        .justify_end()
+                        .child(
+                            label((row + 1).to_string())
+                                .size(FONT - 1.0)
+                                .mono()
+                                .color(colors.text_placeholder),
+                        ),
+                );
             for (column, _, width) in &columns {
                 let (column, width) = (*column, *width);
                 let mut cell = div()
                     .row()
                     .w_px(width)
-                    .h_px(ROW_H)
-                    .px(CELL_PAD)
+                    .h_px(ROW_H - 1.0)
+                    .px(CELL_PAD + 4.0)
+                    .gap(6.0)
                     .items_center();
                 if self.editing == Some((row, column)) {
                     if let Some(editor) = editor.take() {
@@ -541,43 +623,76 @@ impl Grid {
                 let value = self.rows[row].get(column).cloned().flatten();
                 let selected = self.selected == Some((row, column));
                 let edited = self.edited.contains(&(row, column));
+                let linked = self.links.get(column).copied().unwrap_or(false);
+                let json = self
+                    .types
+                    .get(column)
+                    .is_some_and(|kind| kind.contains("json"));
                 let summary = self.summary(row, column);
+                let color = if edited {
+                    colors.warning
+                } else if linked {
+                    colors.hint
+                } else if json {
+                    json_color
+                } else {
+                    colors.text
+                };
                 let text = match (&value, summary) {
                     (Some(_), Some(summary)) => label(summary)
                         .size(FONT)
                         .mono()
-                        .color(colors.text_muted)
+                        .color(colors.text_placeholder)
                         .truncate(),
                     (Some(text), None) => {
-                        label(text.lines().next().unwrap_or_default().to_string())
+                        let mut text = label(text.lines().next().unwrap_or_default().to_string())
                             .size(FONT)
                             .mono()
-                            .color(if edited { colors.warning } else { colors.text })
-                            .truncate()
+                            .color(color)
+                            .truncate();
+                        if linked {
+                            text = text.underline(colors.hint.alpha(0.5));
+                        }
+                        text
                     }
-                    (None, _) => label("NULL").size(FONT).mono().color(if edited {
-                        colors.warning
-                    } else {
-                        colors.text_disabled
-                    }),
+                    (None, _) => label("NULL")
+                        .size(FONT)
+                        .mono()
+                        .italic()
+                        .color(if edited {
+                            colors.warning
+                        } else {
+                            colors.text_placeholder
+                        })
+                        .truncate(),
                 };
-                cell = cell.child(div().row().flex(1.0).items_center().child(text));
-                let linked = self.links.get(column).copied().unwrap_or(false) && value.is_some();
-                if linked && (selected || self.hover_row == Some(row)) {
-                    cell = cell.child(
-                        icon(IconKind::ArrowUpRight)
-                            .size(10.0)
-                            .color(colors.text_accent),
+                let mut content = div().row().flex(1.0).gap(6.0).items_center().child(text);
+                if let Some(name) = value
+                    .as_ref()
+                    .and_then(|value| self.labels.get(column)?.get(value))
+                {
+                    content = content.child(
+                        label(name.clone())
+                            .size(FONT)
+                            .mono()
+                            .color(colors.text_placeholder)
+                            .truncate(),
                     );
                 }
+                cell = cell.child(content);
+                if linked && value.is_some() && (selected || self.hover_row == Some(row)) {
+                    cell = cell.child(icon(IconKind::ArrowUpRight).size(10.0).color(colors.hint));
+                }
                 if selected {
-                    cell = cell.bg(colors.element_selected);
+                    cell = cell.border(1.0, colors.text_accent).rounded(2.0);
                 } else if edited {
-                    cell = cell.bg(colors.warning.alpha(0.12));
+                    cell = cell.bg(colors.warning.alpha(0.13));
                 }
                 line = line.child(cell);
             }
-            grid = grid.child(line);
+            grid = grid
+                .child(line)
+                .child(div().h_px(1.0).bg(colors.border_variant));
         }
         grid.into()
     }
@@ -609,6 +724,7 @@ mod tests {
                 (HEADER_H + 10.0 * ROW_H) * scale(),
                 Rgba::TRANSPARENT,
             ),
+            None,
             None,
         );
         grid

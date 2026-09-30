@@ -737,6 +737,7 @@ fn main() -> anyhow::Result<()> {
                     },
                 ],
             });
+            item.show_labels(3, &[("1", "Acme"), ("2", "Globex"), ("3", "Initech")]);
             if std::env::var_os("EDITS").is_some() {
                 item.edit_cell(3, 4, Some("admin"));
                 item.edit_cell(6, 2, Some("Gus QA"));
