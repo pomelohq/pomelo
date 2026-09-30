@@ -1,6 +1,10 @@
+mod bucket_item;
 mod console;
+mod details;
 mod failure;
 mod grid;
+mod json;
+mod keyspace_item;
 mod menu;
 mod object_item;
 mod panel;
@@ -18,8 +22,10 @@ use pom_db::{Connector, Database};
 use pom_paths::StateDir;
 use pom_services::ServiceRunner;
 
+pub use bucket_item::BucketItem;
 pub use console::{new_console, ConsoleFooter};
 pub use grid::{Grid, GridEvent, Region};
+pub use keyspace_item::KeyspaceItem;
 pub use object_item::ObjectItem;
 pub use panel::DatabasePanel;
 pub use pom_db::object_storage::CurlTransport;
@@ -39,6 +45,8 @@ pub struct DatabaseContext {
     pub waker: Arc<dyn Fn() + Send + Sync>,
     /// How object storage is reached (curl in the app, canned answers in tests).
     pub objects: Arc<dyn HttpTransport>,
+    /// The system file picker (files to upload); called on the main thread.
+    pub choose_files: Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
 }
 
 impl DatabaseContext {
@@ -231,6 +239,7 @@ pub(crate) mod tests {
                 objects: Arc::new(pom_db::object_storage::CurlTransport {
                     program: "/nonexistent".into(),
                 }),
+                choose_files: Arc::new(Vec::new),
             },
             _dir: dir,
         }

@@ -157,6 +157,35 @@ fn choose_bundle_file() -> Option<std::path::PathBuf> {
     unsafe { url.path() }.map(|path| std::path::PathBuf::from(path.to_string()))
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn choose_upload_files() -> Vec<std::path::PathBuf> {
+    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::{MainThreadMarker, NSString};
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Vec::new();
+    };
+    let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    unsafe {
+        panel.setCanChooseFiles(true);
+        panel.setCanChooseDirectories(false);
+        panel.setAllowsMultipleSelection(true);
+        panel.setPrompt(Some(&NSString::from_str("Upload")));
+    }
+    if unsafe { panel.runModal() } != NSModalResponseOK {
+        return Vec::new();
+    }
+    let urls = unsafe { panel.URLs() };
+    urls.iter()
+        .filter_map(|url| unsafe { url.path() })
+        .map(|path| std::path::PathBuf::from(path.to_string()))
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn choose_upload_files() -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+
 #[cfg(not(target_os = "macos"))]
 fn choose_bundle_file() -> Option<std::path::PathBuf> {
     None

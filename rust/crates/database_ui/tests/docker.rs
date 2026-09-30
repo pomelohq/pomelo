@@ -33,7 +33,7 @@ fn settle(item: &mut TableItem) {
 }
 
 #[test]
-fn a_table_tab_pages_sorts_and_filters() {
+fn a_table_tab_pages_sorts_filters_and_saves_edits() {
     if std::env::var_os("POM_DOCKER_TEST").is_none() {
         eprintln!("skipped: set POM_DOCKER_TEST=1 to run against Docker");
         return;
@@ -90,7 +90,11 @@ fn a_table_tab_pages_sorts_and_filters() {
     };
     let deadline = Instant::now() + Duration::from_secs(60);
     while connector
-        .query(&database, "create table if not exists people (id int, name text); truncate people; insert into people select g, 'p' || g from generate_series(1, 30) g", 1)
+        .query(&database, "drop table if exists people; drop table if exists teams; \
+            create table teams (id int primary key, name text); \
+            insert into teams select g, 'team ' || g from generate_series(1, 3) g; \
+            create table people (id int primary key, name text, team_id int references teams(id), prefs jsonb); \
+            insert into people select g, 'p' || g, g % 3 + 1, '{\"theme\": \"dark\"}' from generate_series(1, 30) g", 1)
         .is_err()
     {
         assert!(Instant::now() < deadline, "postgres never came up");
@@ -107,6 +111,7 @@ fn a_table_tab_pages_sorts_and_filters() {
         config_path: temp.path().join("pom.yml"),
         waker: Arc::new(|| {}),
         objects: Arc::new(database_ui::CurlTransport::default()),
+        choose_files: Arc::new(Vec::new),
     };
     let table = pom_db::Table {
         schema: "public".into(),
@@ -114,7 +119,7 @@ fn a_table_tab_pages_sorts_and_filters() {
         kind: TableKind::Table,
         count: None,
     };
-    let mut item = TableItem::new(context, database, table);
+    let mut item = TableItem::new(context, database.clone(), table);
     settle(&mut item);
     let (rows, total, first) = item.page_summary();
     assert_eq!((rows, total), (30, Some(30)));
@@ -134,5 +139,61 @@ fn a_table_tab_pages_sorts_and_filters() {
     settle(&mut item);
     assert_eq!(item.page_summary().0, 5);
     assert_eq!(item.page_summary().1, Some(5));
+
+    let structure = item.structure().expect("structure read").clone();
+    assert_eq!(structure.primary_key(), ["id"]);
+    assert_eq!(
+        structure
+            .column("team_id")
+            .and_then(|column| column.references.clone()),
+        Some(("teams".into(), "id".into()))
+    );
+    assert!(structure.indexes.iter().any(|index| index.primary));
+    let teams = connector
+        .table_structure(
+            &database,
+            &pom_db::Table {
+                schema: "public".into(),
+                name: "teams".into(),
+                kind: TableKind::Table,
+                count: None,
+            },
+        )
+        .expect("teams");
+    assert_eq!(teams.referenced_by[0].table, "people");
+    assert_eq!(teams.referenced_by[0].column, "team_id");
+
+    item.set_column_filter("name", "= p3");
+    settle(&mut item);
+    assert_eq!(
+        item.page_summary().0,
+        1,
+        "the column filter joins the WHERE"
+    );
+    item.edit_cell(0, 1, Some("Ann O'Neil"));
+    item.apply_edits();
+    settle(&mut item);
+    let saved = connector
+        .query(&database, "select name from people where id = 3", 1)
+        .expect("read back");
+    assert_eq!(saved.rows[0][0].as_deref(), Some("Ann O'Neil"));
+    assert!(item.pending_statements().is_empty());
+
+    let failed = connector.apply(
+        &database,
+        &[
+            "update people set name = 'kept' where id = 4".into(),
+            "update people set team_id = 99 where id = 5".into(),
+        ],
+    );
+    assert!(failed.is_err(), "the foreign key refuses team 99");
+    let untouched = connector
+        .query(&database, "select name from people where id = 4", 1)
+        .expect("read back");
+    assert_eq!(
+        untouched.rows[0][0].as_deref(),
+        Some("p4"),
+        "a failed statement saves none of them"
+    );
     drop(container);
 }

@@ -19,8 +19,8 @@ mod welcome;
 mod workspace_view;
 pub use form::{
     checkbox, is_window_modal_id, modal_button, modal_footer, modal_frame, modal_header,
-    modal_section, outlined_button, progress_bar, status_line, toggle_button_group, InputField,
-    ModalResult, WindowModal, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
+    modal_section, outlined_button, progress_bar, segmented, status_line, toggle_button_group,
+    InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
 };
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
@@ -920,6 +920,10 @@ pub trait Item: 'static {
     /// Background work to bring in before drawing (a shell's output); `close` asks for the tab to close.
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
         ItemTick::default()
+    }
+    /// Things the tab asks the workspace to do (open another tab, a file); drained every frame.
+    fn take_requests(&mut self) -> Vec<PanelRequest> {
+        Vec::new()
     }
     fn take_open_request(&mut self) -> Option<TerminalOpenTarget> {
         None

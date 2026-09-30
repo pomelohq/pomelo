@@ -5,7 +5,7 @@ use pom_proxy::{Delivery, Payload, ProxyLogEntry, RequestKind};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, label, theme, ButtonStyle, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{segmented, EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 pub const TAB_ID: &str = "dev-requests";
 
@@ -375,36 +375,6 @@ fn cell(text: impl Into<String>, width: f32, color: Rgba) -> Node {
         .w_px(width)
         .child(small(text, color).truncate())
         .into()
-}
-
-fn segmented(options: &[(u64, &str)], selected: usize, hovered: Option<u64>) -> Node {
-    let colors = theme();
-    let mut row = div()
-        .row()
-        .p(2.0)
-        .gap(2.0)
-        .rounded(5.0)
-        .bg(colors.element_background);
-    for (index, (id, text)) in options.iter().enumerate() {
-        let on = index == selected;
-        let mut part = div()
-            .row()
-            .px(10.0)
-            .py(3.0)
-            .rounded(4.0)
-            .on_click(*id)
-            .child(small(
-                *text,
-                if on { colors.text } else { colors.text_muted },
-            ));
-        if on {
-            part = part.bg(colors.element_selected);
-        } else if hovered == Some(*id) {
-            part = part.bg(colors.ghost_element_hover);
-        }
-        row = row.child(part);
-    }
-    row.into()
 }
 
 fn server_dot(server: &ServerStatus, served_elsewhere: bool) -> Node {

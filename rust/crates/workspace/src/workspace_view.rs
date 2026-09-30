@@ -3513,6 +3513,18 @@ impl WorkspaceView {
         for (kind, request) in requests {
             self.apply_request(kind, request);
         }
+        let mut from_tabs = Vec::new();
+        if let Some(group) = self
+            .layout
+            .files_view
+            .as_mut()
+            .and_then(|view| view.pane_group_mut())
+        {
+            group.for_each_item_mut(&mut |item| from_tabs.extend(item.take_requests()));
+        }
+        for request in from_tabs {
+            self.apply_request(PaneKind::Database, request);
+        }
     }
 
     fn apply_request(&mut self, kind: PaneKind, request: crate::PanelRequest) {

@@ -363,6 +363,38 @@ pub fn progress_bar(value: f32) -> Node {
         .into()
 }
 
+/// Compact mutually exclusive choices on a tinted track, for toolbars; the chosen one sits on a raised chip.
+pub fn segmented(options: &[(u64, &str)], selected: usize, hovered: Option<u64>) -> Node {
+    let colors = theme();
+    let mut row = div()
+        .row()
+        .p(2.0)
+        .gap(2.0)
+        .rounded(5.0)
+        .bg(colors.element_background);
+    for (index, (id, text)) in options.iter().enumerate() {
+        let on = index == selected;
+        let mut part = div()
+            .row()
+            .px(10.0)
+            .py(3.0)
+            .rounded(4.0)
+            .on_click(*id)
+            .child(
+                label(text.to_string())
+                    .label_size(LabelSize::Small)
+                    .color(if on { colors.text } else { colors.text_muted }),
+            );
+        if on {
+            part = part.bg(colors.element_selected);
+        } else if hovered == Some(*id) {
+            part = part.bg(colors.ghost_element_hover);
+        }
+        row = row.child(part);
+    }
+    row.into()
+}
+
 /// A small muted status line: a leading icon and truncated text.
 /// A row of mutually exclusive choices, one outlined box split by hairlines; the chosen one is tinted accent.
 /// `choices` are (click id, leading icon, label).

@@ -325,8 +325,169 @@ impl ObjectItem {
     }
 }
 
+impl ObjectItem {
+    /// The object as a folder tab's side shows it: name, preview, a few facts, then its actions.
+    pub(crate) fn side(&self, width: f32, height: f32) -> Node {
+        let colors = theme();
+        let inner = width - 2.0 * 12.0;
+        let preview: Node = match &self.preview {
+            Preview::Loading => label("Loading...")
+                .size(12.0)
+                .color(colors.text_muted)
+                .into(),
+            Preview::None(text) => label(text.clone())
+                .size(12.0)
+                .color(colors.text_placeholder)
+                .wrap(inner)
+                .into(),
+            Preview::Image { id } => div()
+                .col()
+                .w_px(inner)
+                .h_px((height * 0.4).clamp(120.0, 260.0))
+                .rounded(6.0)
+                .border(1.0, colors.border_variant)
+                .image(*id)
+                .into(),
+            Preview::Text(lines) => {
+                let first = (self.scroll / LINE_H) as usize;
+                let mut text = div()
+                    .col()
+                    .w_px(inner)
+                    .px(8.0)
+                    .py(6.0)
+                    .rounded(6.0)
+                    .bg(colors.editor_background)
+                    .border(1.0, colors.border_variant);
+                for line in lines
+                    .iter()
+                    .skip(first)
+                    .take(((height * 0.5) / LINE_H) as usize)
+                {
+                    text = text.child(
+                        div().row().h_px(LINE_H).items_center().child(
+                            label(line.clone())
+                                .size(11.5)
+                                .mono()
+                                .color(colors.editor_foreground)
+                                .truncate(),
+                        ),
+                    );
+                }
+                text.into()
+            }
+        };
+        let mut facts = div().col().gap(2.0);
+        for (name, value) in self.facts().into_iter().filter(|(name, _)| *name != "path") {
+            facts = facts.child(
+                div()
+                    .row()
+                    .h_px(22.0)
+                    .gap(8.0)
+                    .items_center()
+                    .child(
+                        div()
+                            .w_px(90.0)
+                            .child(label(name).size(12.0).color(colors.text_placeholder)),
+                    )
+                    .child(
+                        div()
+                            .row()
+                            .flex(1.0)
+                            .child(label(value).size(12.0).mono().color(colors.text).truncate()),
+                    ),
+            );
+        }
+        let actions: Node = if self.confirming {
+            div()
+                .col()
+                .gap(6.0)
+                .child(
+                    label("Delete it from the bucket? It cannot be recovered.")
+                        .size(12.0)
+                        .color(colors.error)
+                        .wrap(inner),
+                )
+                .child(
+                    div()
+                        .row()
+                        .gap(6.0)
+                        .child(button(CONFIRM_DELETE, "Delete", ButtonStyle::Outlined))
+                        .child(button(CANCEL_DELETE, "Cancel", ButtonStyle::Subtle)),
+                )
+                .into()
+        } else if self.deleted {
+            div().into()
+        } else {
+            div()
+                .col()
+                .gap(6.0)
+                .child(
+                    div()
+                        .row()
+                        .gap(6.0)
+                        .child(button(DOWNLOAD, "Download", ButtonStyle::Outlined))
+                        .child(button(COPY_URL, "Copy URL (1 hour)", ButtonStyle::Subtle)),
+                )
+                .child(
+                    div()
+                        .row()
+                        .gap(6.0)
+                        .child(button(COPY_PATH, "Copy Path", ButtonStyle::Subtle))
+                        .child(button(DELETE, "Delete...", ButtonStyle::Outlined)),
+                )
+                .into()
+        };
+        let mut side = div()
+            .col()
+            .p(12.0)
+            .gap(8.0)
+            .child(
+                label(self.object.name().to_string())
+                    .size(12.5)
+                    .mono()
+                    .color(colors.text)
+                    .truncate(),
+            )
+            .child(preview)
+            .child(crate::details::section("Details"))
+            .child(facts)
+            .child(div().h_px(4.0))
+            .child(actions);
+        if let Some((text, error)) = &self.status {
+            side = side.child(
+                label(text.clone())
+                    .size(12.0)
+                    .color(if *error {
+                        colors.error
+                    } else {
+                        colors.text_muted
+                    })
+                    .wrap(inner),
+            );
+        }
+        side.into()
+    }
+
+    pub(crate) fn press(&mut self, id: u64) {
+        self.click(id);
+    }
+
+    pub(crate) fn scroll_preview(&mut self, delta_y: f32) -> bool {
+        self.pointer_scroll(0.0, 0.0, delta_y, Modifiers::default())
+    }
+
+    /// Deleted and the storage has confirmed it.
+    pub(crate) fn gone(&self) -> bool {
+        self.deleted && !self.working.busy()
+    }
+
+    pub(crate) fn key(&self) -> &str {
+        &self.object.key
+    }
+}
+
 /// `2026-09-27T18:42:00.000Z` -> `2026-09-27 18:42`.
-fn readable_time(stamp: &str) -> String {
+pub(crate) fn readable_time(stamp: &str) -> String {
     let text = stamp.replace('T', " ");
     text.get(..16).map_or(text.clone(), str::to_string)
 }

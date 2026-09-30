@@ -541,6 +541,7 @@ impl ProjectServices {
                 config_path: project.config_path.clone(),
                 waker: Arc::new(ui::wake),
                 objects: Arc::new(database_ui::CurlTransport::default()),
+                choose_files: Arc::new(config_bundle::choose_upload_files),
             },
         ))
     }

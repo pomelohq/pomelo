@@ -429,7 +429,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             line.into()
         }
         Row::Bucket { bucket, open, .. } => row_base(panel, index, row)
-            .child(chevron(None, *open))
+            .child(chevron(Some(id + CHEVRON), *open))
             .child(
                 icon(if *open {
                     IconKind::FolderOpen
@@ -449,7 +449,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             ..
         } => {
             let mut line = row_base(panel, index, row)
-                .child(chevron(None, *open))
+                .child(chevron(Some(id + CHEVRON), *open))
                 .child(
                     icon(if *open {
                         IconKind::FolderOpen

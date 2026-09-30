@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::sigv4::{self, Credentials, EMPTY_PAYLOAD};
+use crate::sigv4::{self, Credentials, EMPTY_PAYLOAD, UNSIGNED_PAYLOAD};
 
 pub const PAGE_SIZE: usize = 50;
 /// Folder totals come from at most this many objects, so a huge prefix still answers.
@@ -25,6 +25,8 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     /// Stream the body to this file instead of answering it.
     pub output: Option<PathBuf>,
+    /// Send this file as the body.
+    pub input: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -126,13 +128,18 @@ impl CurlTransport {
 impl HttpTransport for CurlTransport {
     fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
         let mut config = curl_block(request);
-        let timeout = match &request.output {
-            Some(path) => {
-                config.push_str(&format!("output = {}\n", quoted(&path.to_string_lossy())));
-                TRANSFER_TIMEOUT
-            }
-            None => LIST_TIMEOUT,
-        };
+        let mut timeout = LIST_TIMEOUT;
+        if let Some(path) = &request.output {
+            config.push_str(&format!("output = {}\n", quoted(&path.to_string_lossy())));
+            timeout = TRANSFER_TIMEOUT;
+        }
+        if let Some(path) = &request.input {
+            config.push_str(&format!(
+                "upload-file = {}\n",
+                quoted(&path.to_string_lossy())
+            ));
+            timeout = TRANSFER_TIMEOUT;
+        }
         let stdout = self.run(timeout, &["-D", "-"], &config)?;
         parse_response(&stdout)
     }
@@ -282,7 +289,7 @@ impl ObjectStore {
         query: &[(String, String)],
         headers: &[(String, String)],
     ) -> HttpRequest {
-        self.request_at(method, path, query, headers, now())
+        self.request_at(method, path, query, headers, EMPTY_PAYLOAD, now())
     }
 
     fn request_at(
@@ -291,6 +298,7 @@ impl ObjectStore {
         path: &str,
         query: &[(String, String)],
         headers: &[(String, String)],
+        payload_hash: &str,
         unix_seconds: u64,
     ) -> HttpRequest {
         let signed = sigv4::sign(
@@ -300,7 +308,7 @@ impl ObjectStore {
                 path,
                 query,
                 headers,
-                payload_hash: EMPTY_PAYLOAD,
+                payload_hash,
             },
             &self.credentials,
             unix_seconds,
@@ -325,6 +333,7 @@ impl ObjectStore {
             url,
             headers: signed,
             output: None,
+            input: None,
         }
     }
 
@@ -433,6 +442,27 @@ impl ObjectStore {
             size,
             bytes: response.body,
         })
+    }
+
+    /// Puts the file at `path` into the bucket as `key`; the body is streamed, so it goes unsigned.
+    pub fn upload(
+        &self,
+        transport: &dyn HttpTransport,
+        bucket: &str,
+        key: &str,
+        path: &Path,
+    ) -> Result<(), String> {
+        let mut request = self.request_at(
+            "PUT",
+            &Self::object_path(bucket, key),
+            &[],
+            &[],
+            UNSIGNED_PAYLOAD,
+            now(),
+        );
+        request.input = Some(path.to_path_buf());
+        let response = transport.send(&request)?;
+        check(&response, &format!("upload {key}"))
     }
 
     pub fn download(
@@ -780,6 +810,7 @@ pub(crate) mod tests {
             url: "http://localhost:9000/files/a\"b".into(),
             headers: vec![("authorization".into(), "AWS4 x\\y".into())],
             output: None,
+            input: None,
         });
         assert_eq!(
             block,

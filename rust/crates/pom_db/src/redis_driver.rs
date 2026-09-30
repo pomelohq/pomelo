@@ -167,6 +167,150 @@ fn scan(connection: &mut Connection, pattern: &str, limit: usize) -> Result<Quer
     }
 }
 
+/// A key as a keyspace tab lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedisKey {
+    pub key: String,
+    pub kind: String,
+    /// Seconds left; `None` when the key never expires.
+    pub ttl: Option<i64>,
+}
+
+/// A key's value read the way its type stores it; lists and sets stop at `VALUE_ITEMS`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RedisValue {
+    Text(String),
+    Hash(Vec<(String, String)>),
+    List(Vec<String>),
+    Set(Vec<String>),
+    Sorted(Vec<(String, String)>),
+    Missing,
+    Other(String),
+}
+
+/// How many items a list, set, hash or sorted set is read up to.
+pub const VALUE_ITEMS: usize = 1000;
+
+/// Keys matching `pattern` with their type and TTL, at most `limit` (the second part says more exist).
+pub(crate) fn keys(
+    connection: &mut Connection,
+    pattern: &str,
+    limit: usize,
+) -> Result<(Vec<RedisKey>, bool), String> {
+    let mut found = Vec::new();
+    let mut cursor = 0;
+    loop {
+        let (next, page) = scan_page(connection, cursor, pattern, 500)?;
+        for key in page {
+            if found.len() >= limit {
+                return Ok((found, true));
+            }
+            let kind: String = redis::cmd("TYPE")
+                .arg(&key)
+                .query(connection)
+                .map_err(|error| error.to_string())?;
+            let ttl: i64 = redis::cmd("TTL")
+                .arg(&key)
+                .query(connection)
+                .map_err(|error| error.to_string())?;
+            found.push(RedisKey {
+                key,
+                kind,
+                ttl: (ttl >= 0).then_some(ttl),
+            });
+        }
+        cursor = next;
+        if cursor == 0 {
+            found.sort_by(|a, b| a.key.cmp(&b.key));
+            return Ok((found, false));
+        }
+    }
+}
+
+fn texts(value: &Value) -> Vec<String> {
+    match value {
+        Value::Array(items) | Value::Set(items) => items.iter().map(display).collect(),
+        Value::Nil => Vec::new(),
+        other => vec![display(other)],
+    }
+}
+
+fn paired(value: &Value) -> Vec<(String, String)> {
+    match value {
+        Value::Map(entries) => entries
+            .iter()
+            .map(|(key, value)| (display(key), display(value)))
+            .collect(),
+        other => texts(other)
+            .chunks(2)
+            .map(|pair| (pair[0].clone(), pair.get(1).cloned().unwrap_or_default()))
+            .collect(),
+    }
+}
+
+pub(crate) fn value(connection: &mut Connection, key: &str) -> Result<RedisValue, String> {
+    let run = |command: &mut redis::Cmd, connection: &mut Connection| -> Result<Value, String> {
+        command.query(connection).map_err(|error| error.to_string())
+    };
+    let kind: String = redis::cmd("TYPE")
+        .arg(key)
+        .query(connection)
+        .map_err(|error| error.to_string())?;
+    let last = VALUE_ITEMS as isize - 1;
+    Ok(match kind.as_str() {
+        "none" => RedisValue::Missing,
+        "string" => RedisValue::Text(display(&run(redis::cmd("GET").arg(key), connection)?)),
+        "list" => RedisValue::List(texts(&run(
+            redis::cmd("LRANGE").arg(key).arg(0).arg(last),
+            connection,
+        )?)),
+        "set" => {
+            let mut members = texts(&run(redis::cmd("SMEMBERS").arg(key), connection)?);
+            members.sort();
+            members.truncate(VALUE_ITEMS);
+            RedisValue::Set(members)
+        }
+        "zset" => RedisValue::Sorted(paired(&run(
+            redis::cmd("ZRANGE")
+                .arg(key)
+                .arg(0)
+                .arg(last)
+                .arg("WITHSCORES"),
+            connection,
+        )?)),
+        "hash" => {
+            let mut fields = paired(&run(redis::cmd("HGETALL").arg(key), connection)?);
+            fields.truncate(VALUE_ITEMS);
+            RedisValue::Hash(fields)
+        }
+        other => RedisValue::Other(format!("a {other} key; read it in redis-cli")),
+    })
+}
+
+/// Sets the key's TTL in seconds, or makes it permanent with `None`.
+pub(crate) fn expire(
+    connection: &mut Connection,
+    key: &str,
+    seconds: Option<i64>,
+) -> Result<(), String> {
+    let command = match seconds {
+        Some(seconds) => redis::cmd("EXPIRE").arg(key).arg(seconds).clone(),
+        None => redis::cmd("PERSIST").arg(key).clone(),
+    };
+    command
+        .query::<Value>(connection)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn delete(connection: &mut Connection, key: &str) -> Result<(), String> {
+    redis::cmd("UNLINK")
+        .arg(key)
+        .query::<u64>(connection)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 /// `3723` -> `1h2m3s`.
 pub(crate) fn format_ttl(seconds: i64) -> String {
     let (hours, minutes, rest) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
