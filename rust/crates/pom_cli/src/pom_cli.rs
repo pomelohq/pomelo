@@ -53,8 +53,9 @@ services
                      volumes (database data), --worktrees deletes the branch workspaces
 
 workspaces
-  ws create <branch> [--repos a,b] [--env name] [--no-seed] [--from-stage n]
-                     new workspace: worktrees, databases, env files, setup and seed
+  ws create <branch> [--repos a,b] [--env name] [--no-seed] [--fresh-db] [--from-stage n]
+                     new workspace: worktrees, databases, env files, setup and seed;
+                     --fresh-db starts every database empty instead of copying main's
   ws delete <branch> [--from-stage n]
                      stop it and remove its worktrees, databases and folder; the local
                      branch goes too only when it is pushed or merged

@@ -1330,13 +1330,24 @@ fn main() -> anyhow::Result<()> {
                 ],
                 vec!["main".into(), "feat-login".into()],
                 namer.clone(),
-            );
+            )
+            .with_options(vec!["staging".into()], vec!["api".into()])
+            .with_modules(std::sync::Arc::new(|repo: &str| match repo {
+                "api" => module_store::Outlook::FromStore,
+                "web" => module_store::Outlook::InstallsOnce,
+                _ => module_store::Outlook::SelfManaged("pnpm"),
+            }));
             if mode == "wsticket" {
                 let issue =
                     |key: &str, summary: &str, status: &str, mine: bool| pom_jira::SprintIssue {
                         key: key.into(),
                         summary: summary.into(),
                         status: status.into(),
+                        category: if status == "In Progress" {
+                            "indeterminate".into()
+                        } else {
+                            "new".into()
+                        },
                         mine,
                         ..pom_jira::SprintIssue::default()
                     };
@@ -1368,7 +1379,7 @@ fn main() -> anyhow::Result<()> {
                             },
                         ])
                     }),
-                    sprint: std::sync::Arc::new(move |_| Ok(issues.clone())),
+                    issues: std::sync::Arc::new(move |_| Ok(issues.clone())),
                     board: None,
                     only_mine: false,
                 });

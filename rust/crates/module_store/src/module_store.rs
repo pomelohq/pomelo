@@ -177,6 +177,18 @@ pub enum Restored {
     SelfManaged(&'static str),
 }
 
+/// What a new workspace of a repo will get for `node_modules`, told before it is created.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outlook {
+    FromStore,
+    /// Nothing stored for this lockfile yet: this install is kept for the next workspace.
+    InstallsOnce,
+    /// The store is off or cannot link here, so every workspace installs.
+    Installs,
+    SelfManaged(&'static str),
+    NotNode,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pruned {
     pub removed: usize,
@@ -448,6 +460,29 @@ impl Store {
         import::import(&stored, &target, method, &[])?;
         self.touch(repo, &key, worktree)?;
         Ok(Restored::FromStore(method))
+    }
+
+    /// What `restore` will do for a workspace branched from `main`, assuming it keeps main's lockfile.
+    pub fn outlook(
+        &self,
+        repo: &str,
+        main: &Path,
+        node: Option<&str>,
+        options: &Options,
+    ) -> Outlook {
+        let key = match self.key_for(main, node) {
+            Ok((_, key)) => key,
+            Err(Restored::SelfManaged(name)) => return Outlook::SelfManaged(name),
+            Err(_) => return Outlook::NotNode,
+        };
+        if !options.enabled || options.method(probe(&self.root, main)).is_none() {
+            return Outlook::Installs;
+        }
+        if self.entry_dir(repo, &key).is_dir() || main.join(MODULES).is_dir() {
+            Outlook::FromStore
+        } else {
+            Outlook::InstallsOnce
+        }
     }
 
     /// Keeps a freshly installed `node_modules` for the next workspace with the same lockfile.

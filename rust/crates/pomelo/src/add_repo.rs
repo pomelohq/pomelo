@@ -288,6 +288,7 @@ impl App {
                 repos,
                 environment: String::new(),
                 skip_seed: false,
+                fresh_databases: false,
                 from_stage: 0,
                 repo_branches: Default::default(),
             }),

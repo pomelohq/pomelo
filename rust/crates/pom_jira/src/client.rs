@@ -155,6 +155,8 @@ pub struct SprintIssue {
     pub key: String,
     pub summary: String,
     pub status: String,
+    /// Jira's status category: `new`, `indeterminate` or `done`.
+    pub category: String,
     pub assignee: String,
     pub sprint: String,
     /// Assigned to the account the token belongs to.
@@ -278,21 +280,29 @@ impl Client {
             )) else {
                 continue;
             };
-            for issue in body["issues"].as_array().into_iter().flatten() {
-                let fields = &issue["fields"];
-                let assignee = &fields["assignee"];
-                let account = text(&assignee["accountId"]);
-                issues.push(SprintIssue {
-                    key: text(&issue["key"]),
-                    summary: text(&fields["summary"]),
-                    status: text(&fields["status"]["name"]),
-                    assignee: text(&assignee["displayName"]),
-                    sprint: name.clone(),
-                    mine: !me.is_empty() && account == me,
-                });
-            }
+            issues.extend(sprint_issues(&body, &name, &me));
         }
         Ok(issues)
+    }
+
+    /// Tickets in the board's backlog (not in any sprint).
+    pub fn backlog_issues(&self, board: i64) -> Result<Vec<SprintIssue>, JiraError> {
+        let me = self.account_id().unwrap_or_default();
+        let body = self.get(&format!(
+            "/rest/agile/1.0/board/{board}/backlog?maxResults=100&fields=summary,status,assignee"
+        ))?;
+        Ok(sprint_issues(&body, "Backlog", &me))
+    }
+
+    /// Open tickets assigned to this account on any board, most recently updated first.
+    pub fn assigned_issues(&self) -> Result<Vec<SprintIssue>, JiraError> {
+        let me = self.account_id().unwrap_or_default();
+        let jql = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
+        let body = self.get(&format!(
+            "/rest/api/3/search/jql?fields=summary,status,assignee&maxResults=100&jql={}",
+            url_escape(jql)
+        ))?;
+        Ok(sprint_issues(&body, "", &me))
     }
 
     pub fn search_by_keys(&self, keys: &[String]) -> Result<Vec<Issue>, JiraError> {
@@ -381,6 +391,29 @@ impl Client {
             web_links,
         })
     }
+}
+
+/// The `issues` of an agile or search response, each marked when it is assigned to `me`.
+fn sprint_issues(body: &Value, sprint: &str, me: &str) -> Vec<SprintIssue> {
+    body["issues"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|issue| {
+            let fields = &issue["fields"];
+            let assignee = &fields["assignee"];
+            let account = text(&assignee["accountId"]);
+            SprintIssue {
+                key: text(&issue["key"]),
+                summary: text(&fields["summary"]),
+                status: text(&fields["status"]["name"]),
+                category: text(&fields["status"]["statusCategory"]["key"]),
+                assignee: text(&assignee["displayName"]),
+                sprint: sprint.to_string(),
+                mine: !me.is_empty() && account == me,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

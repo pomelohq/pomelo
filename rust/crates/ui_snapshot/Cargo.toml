@@ -34,6 +34,7 @@ services_ui = { path = "../services_ui" }
 onboarding_ui = { path = "../onboarding_ui" }
 agent_usage_ui = { path = "../agent_usage_ui" }
 dev_services_ui = { path = "../dev_services_ui" }
+module_store = { path = "../module_store" }
 module_store_ui = { path = "../module_store_ui" }
 onboarding = { path = "../onboarding" }
 pom_core = { path = "../pom_core" }

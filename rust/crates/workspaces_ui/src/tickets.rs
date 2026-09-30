@@ -10,11 +10,21 @@ use pom_paths::StateDir;
 
 const REFRESH_EVERY: Duration = Duration::from_secs(60);
 
+/// Which tickets the new-workspace form lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TicketList {
+    Sprint(i64),
+    Backlog(i64),
+    Assigned,
+}
+
+type Issues = Arc<dyn Fn(TicketList) -> Result<Vec<SprintIssue>, String> + Send + Sync>;
+
 /// Where the new-workspace form gets its tickets from.
 #[derive(Clone)]
 pub struct TicketSource {
     pub boards: Arc<dyn Fn() -> Result<Vec<Board>, String> + Send + Sync>,
-    pub sprint: Arc<dyn Fn(i64) -> Result<Vec<SprintIssue>, String> + Send + Sync>,
+    pub issues: Issues,
     /// The board picked last time, if any.
     pub board: Option<i64>,
     pub only_mine: bool,
@@ -29,13 +39,16 @@ impl TicketSource {
         only_mine: bool,
     ) -> Option<TicketSource> {
         let client = Arc::new(pom_jira::resolve(state, session)?);
-        let for_sprint = client.clone();
+        let for_issues = client.clone();
         Some(TicketSource {
             boards: Arc::new(move || client.boards().map_err(|error| error.to_string())),
-            sprint: Arc::new(move |board| {
-                for_sprint
-                    .current_sprint_issues(board)
-                    .map_err(|error| error.to_string())
+            issues: Arc::new(move |list| {
+                match list {
+                    TicketList::Sprint(board) => for_issues.current_sprint_issues(board),
+                    TicketList::Backlog(board) => for_issues.backlog_issues(board),
+                    TicketList::Assigned => for_issues.assigned_issues(),
+                }
+                .map_err(|error| error.to_string())
             }),
             board,
             only_mine,

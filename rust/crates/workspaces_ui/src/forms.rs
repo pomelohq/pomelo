@@ -3,13 +3,16 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
+use module_store::Outlook;
 use pom_agent::NameSuggestion;
 use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::{
     checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section,
-    outlined_button, status_line, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
+    outlined_button, status_line, toggle_button_group, EditKey, InputField, ModalResult,
+    WindowModal, WINDOW_MODAL_BASE,
 };
 
 use crate::repo_branch_picker::{
@@ -17,15 +20,18 @@ use crate::repo_branch_picker::{
     PICKER_REFRESH, PICKER_SURFACE, TRIGGER_HEIGHT,
 };
 use crate::ticket_picker::{
-    TicketPicker, BOARD, BOARD_MENU_SURFACE, BOARD_OPTION_BASE, BOARD_OPTION_END, SUGGESTION_BASE,
-    TICKET_FIELD,
+    TicketPicker, SOURCE, SOURCE_MENU_SURFACE, SOURCE_OPTION_BASE, SOURCE_OPTION_END,
+    SUGGESTIONS_SURFACE, SUGGESTION_BASE, TICKET_FIELD,
 };
 use crate::{humanize_branch, slugify, Namer, TicketSource};
 
-/// The reference's form modals are 34rem wide.
 /// The repo name column of the create form's repo rows.
 const REPO_NAME_W: f32 = 168.0;
+const MODULES_W: f32 = 130.0;
 const WIDTH: f32 = 544.0;
+/// The create form also lays out each repo's node_modules and the environment and data choices.
+const CREATE_WIDTH: f32 = 720.0;
+const SECTION_PADDING: f32 = 12.0;
 
 const CLOSE: u64 = WINDOW_MODAL_BASE + 1;
 const NAME_FIELD: u64 = WINDOW_MODAL_BASE + 2;
@@ -37,6 +43,10 @@ const FORM_SURFACE: u64 = WINDOW_MODAL_BASE + 12;
 const REPO_BASE: u64 = WINDOW_MODAL_BASE + 100;
 const BRANCH_BOX_BASE: u64 = WINDOW_MODAL_BASE + 300;
 const RESET_BASE: u64 = WINDOW_MODAL_BASE + 400;
+const ENVIRONMENT_BASE: u64 = WINDOW_MODAL_BASE + 20;
+const ENVIRONMENT_END: u64 = WINDOW_MODAL_BASE + 40;
+const DATA_FROM_MAIN: u64 = WINDOW_MODAL_BASE + 41;
+const DATA_FRESH: u64 = WINDOW_MODAL_BASE + 42;
 const PER_REPO: u64 = 100;
 
 /// What the create form submits.
@@ -50,7 +60,14 @@ pub struct CreateWorkspace {
     pub board: Option<i64>,
     /// Repo -> the branch it checks out instead of `branch`.
     pub repo_branches: IndexMap<String, String>,
+    /// The environment profile; empty keeps `local`.
+    pub environment: String,
+    /// Start every database empty and run the seeds instead of copying main's.
+    pub fresh_databases: bool,
 }
+
+/// What a new workspace of each repo will get for `node_modules`, asked off the UI thread.
+pub type ModulesOutlook = Arc<dyn Fn(&str) -> Outlook + Send + Sync>;
 
 /// What the rename form submits.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,6 +100,15 @@ impl Refining {
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => Some(Err("Claude stopped".into())),
         }
+    }
+}
+
+/// `one` for a count of 1, else `many`.
+fn verb(count: usize, one: &'static str, many: &'static str) -> &'static str {
+    if count == 1 {
+        one
+    } else {
+        many
     }
 }
 
@@ -130,6 +156,14 @@ pub struct CreateWorkspaceModal {
     tickets: Option<TicketPicker>,
     /// The ticket summary last filled into the name, so a later pick may replace it.
     auto_name: Option<String>,
+    outlooks: HashMap<String, Outlook>,
+    outlook_receiver: Option<Receiver<(String, Outlook)>>,
+    /// The project's environment profiles besides `local`.
+    environments: Vec<String>,
+    environment: usize,
+    /// Repos whose databases start as a copy of main's.
+    seeded_from_main: Vec<String>,
+    fresh_databases: bool,
 }
 
 impl CreateWorkspaceModal {
@@ -159,6 +193,63 @@ impl CreateWorkspaceModal {
             result: None,
             tickets: None,
             auto_name: None,
+            outlooks: HashMap::new(),
+            outlook_receiver: None,
+            environments: Vec::new(),
+            environment: 0,
+            seeded_from_main: Vec::new(),
+            fresh_databases: false,
+        }
+    }
+
+    /// Offers the project's environment profiles and, when some repos copy main's databases, the choice
+    /// to start them empty.
+    pub fn with_options(
+        mut self,
+        environments: Vec<String>,
+        seeded_from_main: Vec<String>,
+    ) -> CreateWorkspaceModal {
+        self.environments = environments
+            .into_iter()
+            .filter(|name| name != "local")
+            .collect();
+        self.seeded_from_main = seeded_from_main;
+        self
+    }
+
+    /// Shows on each repo row whether its node_modules come from the shared store.
+    pub fn with_modules(mut self, outlook: ModulesOutlook) -> CreateWorkspaceModal {
+        let (sender, receiver) = mpsc::channel();
+        let repos: Vec<String> = self.repos.iter().map(|row| row.name.clone()).collect();
+        std::thread::spawn(move || {
+            for repo in repos {
+                let found = outlook(&repo);
+                if sender.send((repo, found)).is_err() {
+                    return;
+                }
+            }
+        });
+        self.outlook_receiver = Some(receiver);
+        self
+    }
+
+    fn poll_outlooks(&mut self) -> bool {
+        let Some(receiver) = &self.outlook_receiver else {
+            return false;
+        };
+        let mut changed = false;
+        loop {
+            match receiver.try_recv() {
+                Ok((repo, outlook)) => {
+                    self.outlooks.insert(repo, outlook);
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => return changed,
+                Err(TryRecvError::Disconnected) => {
+                    self.outlook_receiver = None;
+                    return true;
+                }
+            }
         }
     }
 
@@ -441,7 +532,156 @@ impl CreateWorkspaceModal {
             board: self.tickets.as_ref().and_then(TicketPicker::board),
             repo_branches,
             branch,
+            environment: self.environment_name().unwrap_or_default().to_string(),
+            fresh_databases: self.offers_data_choice() && self.fresh_databases,
         })));
+    }
+
+    /// The chosen profile, `None` for `local`.
+    fn environment_name(&self) -> Option<&str> {
+        self.environment
+            .checked_sub(1)
+            .and_then(|index| self.environments.get(index))
+            .map(String::as_str)
+    }
+
+    fn offers_data_choice(&self) -> bool {
+        self.repos
+            .iter()
+            .any(|row| row.picked && self.seeded_from_main.contains(&row.name))
+    }
+
+    /// The ticket a still-untouched field was filled from.
+    fn filled_from(&self, untouched: bool) -> Option<String> {
+        let ticket = self.ticket_text().to_uppercase();
+        (untouched && !ticket.is_empty()).then(|| format!("from {ticket}"))
+    }
+
+    fn options_row(&self) -> Option<Node> {
+        let colors = theme();
+        let heading = |title: &str, hint: &str| {
+            div()
+                .row()
+                .gap(6.0)
+                .child(
+                    label(title.to_string())
+                        .label_size(LabelSize::Small)
+                        .color(colors.text),
+                )
+                .child(
+                    div().row().flex(1.0).items_center().child(
+                        label(hint.to_string())
+                            .label_size(LabelSize::Small)
+                            .color(colors.text_muted)
+                            .truncate(),
+                    ),
+                )
+        };
+        let mut row = div().row().gap(12.0);
+        let mut any = false;
+        if !self.environments.is_empty() {
+            let names: Vec<&str> = std::iter::once("local")
+                .chain(self.environments.iter().map(String::as_str))
+                .collect();
+            let choices: Vec<(u64, Option<IconKind>, &str)> = names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (ENVIRONMENT_BASE + index as u64, None, *name))
+                .collect();
+            row = row.child(
+                div()
+                    .col()
+                    .flex(1.0)
+                    .gap(4.0)
+                    .child(heading("Environment", "what the services point at"))
+                    .child(toggle_button_group(&choices, self.environment)),
+            );
+            any = true;
+        }
+        if self.offers_data_choice() {
+            row = row.child(
+                div()
+                    .col()
+                    .flex(1.0)
+                    .gap(4.0)
+                    .child(heading("Data", "the workspace's databases"))
+                    .child(toggle_button_group(
+                        &[
+                            (DATA_FROM_MAIN, None, "Copy from main"),
+                            (DATA_FRESH, None, "Empty, run seeds"),
+                        ],
+                        usize::from(self.fresh_databases),
+                    )),
+            );
+            any = true;
+        }
+        any.then(|| row.into())
+    }
+
+    /// What Create is about to make, in one line: repos, installs, databases, environment.
+    fn summary(&self) -> Node {
+        let colors = theme();
+        let picked: Vec<&RepoRow> = self.repos.iter().filter(|row| row.picked).collect();
+        let mut parts = Vec::new();
+        let outlook_of = |row: &&RepoRow| self.outlooks.get(&row.name).copied();
+        let once = picked
+            .iter()
+            .filter(|row| outlook_of(row) == Some(Outlook::InstallsOnce))
+            .count();
+        let every_time = picked
+            .iter()
+            .filter(|row| outlook_of(row) == Some(Outlook::Installs))
+            .count();
+        let instant = picked
+            .iter()
+            .filter(|row| outlook_of(row) == Some(Outlook::FromStore))
+            .count();
+        if once > 0 {
+            parts.push(format!("{once} {} once", verb(once, "installs", "install")));
+        }
+        if every_time > 0 {
+            parts.push(format!(
+                "{every_time} {}",
+                verb(every_time, "installs", "install")
+            ));
+        }
+        if once + every_time == 0 && instant > 0 && self.outlook_receiver.is_none() {
+            parts.push("all instant".into());
+        }
+        if self.offers_data_choice() {
+            parts.push(if self.fresh_databases {
+                "databases seeded empty".into()
+            } else {
+                "databases copied from main".into()
+            });
+        }
+        if !self.environments.is_empty() {
+            parts.push(self.environment_name().unwrap_or("local").to_string());
+        }
+        let count = if self.repos.is_empty() {
+            String::new()
+        } else {
+            format!("{} {}", picked.len(), verb(picked.len(), "repo", "repos"))
+        };
+        let rest = parts
+            .iter()
+            .map(|part| format!(" - {part}"))
+            .collect::<String>();
+        div()
+            .row()
+            .flex(1.0)
+            .items_center()
+            .px(4.0)
+            .child(label(count).label_size(LabelSize::Small).color(colors.text))
+            .child(
+                div().row().flex(1.0).items_center().child(
+                    label(rest)
+                        .label_size(LabelSize::Small)
+                        .color(colors.text_muted)
+                        .truncate(),
+                ),
+            )
+            .into()
     }
 
     fn repos_list(&self) -> Node {
@@ -592,13 +832,34 @@ impl CreateWorkspaceModal {
                     ),
             );
         }
-        line.into()
+        line.child(self.modules_cell(row)).into()
+    }
+
+    fn modules_cell(&self, row: &RepoRow) -> Node {
+        let colors = theme();
+        let shown = match (row.picked, self.outlooks.get(&row.name)) {
+            (false, _) | (_, None | Some(Outlook::NotNode)) => None,
+            (_, Some(Outlook::FromStore)) => Some(("node_modules instant".into(), colors.success)),
+            (_, Some(Outlook::InstallsOnce)) => Some(("installs once".into(), colors.warning)),
+            (_, Some(Outlook::Installs)) => Some(("installs".into(), colors.text_muted)),
+            (_, Some(Outlook::SelfManaged(name))) => Some((name.to_string(), colors.text_muted)),
+        };
+        let mut cell = div().row().w_px(MODULES_W).items_center().justify_end();
+        if let Some((text, color)) = shown {
+            cell = cell.child(
+                label(text)
+                    .label_size(LabelSize::XSmall)
+                    .color(color)
+                    .truncate(),
+            );
+        }
+        cell.into()
     }
 }
 
 impl WindowModal for CreateWorkspaceModal {
     fn width(&self) -> f32 {
-        WIDTH
+        CREATE_WIDTH
     }
 
     fn render(&mut self) -> Node {
@@ -615,26 +876,45 @@ impl WindowModal for CreateWorkspaceModal {
         }
         let mut section = modal_section(10.0);
         if let Some(tickets) = &self.tickets {
-            section = section.child(tickets.render(self.focus == CreateFocus::Ticket));
+            section = section.child(tickets.render(
+                self.focus == CreateFocus::Ticket,
+                CREATE_WIDTH - 2.0 * SECTION_PADDING,
+            ));
         }
+        let name_from = self.filled_from(
+            self.auto_name.is_some()
+                && self.auto_name.as_deref() == Some(self.name.text().as_str()),
+        );
+        let branch_from = self.filled_from(!self.branch_edited);
         let names = div()
             .row()
             .gap(12.0)
             .child(div().col().flex(1.0).child(self.name.render(
                 NAME_FIELD,
                 self.focus == CreateFocus::Name,
-                None,
+                name_from.as_deref(),
                 None,
             )))
-            .child(div().col().flex(1.0).child(self.branch.render(
-                BRANCH_FIELD,
-                self.focus == CreateFocus::Branch,
-                Some("of every repo, unless set below"),
-                branch_error.as_deref(),
-            )));
+            .child(
+                div().col().flex(1.0).child(
+                    self.branch.render(
+                        BRANCH_FIELD,
+                        self.focus == CreateFocus::Branch,
+                        Some(
+                            branch_from
+                                .as_deref()
+                                .unwrap_or("of every repo, unless set below"),
+                        ),
+                        branch_error.as_deref(),
+                    ),
+                ),
+            );
         section = section.child(names).child(refine_row);
         if !self.repos.is_empty() {
             section = section.child(self.repos_list());
+        }
+        if let Some(options) = self.options_row() {
+            section = section.child(options);
         }
         let buttons = div()
             .row()
@@ -647,11 +927,11 @@ impl WindowModal for CreateWorkspaceModal {
                 Some("enter"),
                 self.can_create(),
             ));
-        modal_frame(WIDTH)
+        modal_frame(CREATE_WIDTH)
             .on_click(FORM_SURFACE)
             .child(modal_header("Create Workspace", Some(CLOSE)))
             .child(section)
-            .child(modal_footer(None, buttons.into()))
+            .child(modal_footer(Some(self.summary()), buttons.into()))
             .into()
     }
 
@@ -676,29 +956,35 @@ impl WindowModal for CreateWorkspaceModal {
             }
             _ => self.picker = None,
         }
-        let on_board_menu = id == BOARD
-            || id == BOARD_MENU_SURFACE
-            || (BOARD_OPTION_BASE..BOARD_OPTION_END).contains(&id);
-        if !on_board_menu {
+        let on_source_menu = id == SOURCE
+            || id == SOURCE_MENU_SURFACE
+            || (SOURCE_OPTION_BASE..SOURCE_OPTION_END).contains(&id);
+        if !on_source_menu {
             if let Some(tickets) = self.tickets.as_mut() {
-                tickets.close_board_menu();
+                tickets.close_menu();
             }
         }
         match id {
             CLOSE | CANCEL => self.result = Some(ModalResult::Cancelled),
             NAME_FIELD => self.focus = CreateFocus::Name,
             BRANCH_FIELD => self.focus = CreateFocus::Branch,
-            TICKET_FIELD => self.focus = CreateFocus::Ticket,
-            BOARD => {
+            TICKET_FIELD => {
+                self.focus = CreateFocus::Ticket;
                 if let Some(tickets) = self.tickets.as_mut() {
-                    tickets.toggle_board_menu();
+                    tickets.open_list();
                 }
             }
-            BOARD_MENU_SURFACE => {}
-            id if (BOARD_OPTION_BASE..BOARD_OPTION_END).contains(&id) => {
+            SOURCE => {
                 if let Some(tickets) = self.tickets.as_mut() {
-                    tickets.pick_board((id - BOARD_OPTION_BASE) as usize);
+                    tickets.toggle_menu();
                 }
+            }
+            SOURCE_MENU_SURFACE | SUGGESTIONS_SURFACE => {}
+            id if (SOURCE_OPTION_BASE..SOURCE_OPTION_END).contains(&id) => {
+                if let Some(tickets) = self.tickets.as_mut() {
+                    tickets.pick_source((id - SOURCE_OPTION_BASE) as usize);
+                }
+                self.focus = CreateFocus::Ticket;
             }
             id if (SUGGESTION_BASE..SUGGESTION_BASE + 100).contains(&id) => {
                 let picked = self
@@ -711,6 +997,14 @@ impl WindowModal for CreateWorkspaceModal {
             }
             REFINE => self.refine(),
             CONFIRM => self.submit(),
+            id if (ENVIRONMENT_BASE..ENVIRONMENT_END).contains(&id) => {
+                let index = (id - ENVIRONMENT_BASE) as usize;
+                if index <= self.environments.len() {
+                    self.environment = index;
+                }
+            }
+            DATA_FROM_MAIN => self.fresh_databases = false,
+            DATA_FRESH => self.fresh_databases = true,
             id if (REPO_BASE..REPO_BASE + PER_REPO).contains(&id) => {
                 if let Some(row) = self.repos.get_mut((id - REPO_BASE) as usize) {
                     row.picked = !row.picked;
@@ -730,14 +1024,16 @@ impl WindowModal for CreateWorkspaceModal {
             self.picker_key(key, shift);
             return true;
         }
-        if let Some(tickets) = self
-            .tickets
-            .as_mut()
-            .filter(|tickets| tickets.board_menu_open())
-        {
-            if key == EditKey::Escape {
-                tickets.close_board_menu();
-                return true;
+        if key == EditKey::Escape {
+            if let Some(tickets) = self.tickets.as_mut() {
+                if tickets.menu_open() {
+                    tickets.close_menu();
+                    return true;
+                }
+                if self.focus == CreateFocus::Ticket && tickets.list_open() {
+                    tickets.close_list();
+                    return true;
+                }
             }
         }
         match key {
@@ -807,6 +1103,7 @@ impl WindowModal for CreateWorkspaceModal {
     fn tick(&mut self) -> bool {
         let mut loaded = self.tickets.as_mut().is_some_and(TicketPicker::poll);
         loaded |= self.poll_listing();
+        loaded |= self.poll_outlooks();
         if let Some(picker) = self.picker.as_mut() {
             loaded |= picker.poll(&mut self.known_branches);
         }
@@ -834,6 +1131,7 @@ impl WindowModal for CreateWorkspaceModal {
     fn busy(&self) -> bool {
         self.refining.is_some()
             || self.listing.is_some()
+            || self.outlook_receiver.is_some()
             || self.picker.as_ref().is_some_and(BranchPicker::busy)
             || self.tickets.as_ref().is_some_and(TicketPicker::busy)
     }
@@ -1003,7 +1301,6 @@ impl WindowModal for RenameWorkspaceModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     fn namer() -> Namer {
         Arc::new(|seed: &str, _: &str| {
@@ -1055,6 +1352,8 @@ mod tests {
                 repos: vec!["web".into()],
                 board: None,
                 repo_branches: IndexMap::new(),
+                environment: String::new(),
+                fresh_databases: false,
             })
         );
     }
@@ -1214,11 +1513,13 @@ mod tests {
                     },
                 ])
             }),
-            sprint: Arc::new(move |board| {
-                Ok(if board == 9 {
-                    issues.clone()
-                } else {
-                    Vec::new()
+            issues: Arc::new(move |list| {
+                Ok(match list {
+                    crate::TicketList::Sprint(9) => issues.clone(),
+                    crate::TicketList::Assigned => {
+                        issues.iter().filter(|issue| issue.mine).cloned().collect()
+                    }
+                    _ => Vec::new(),
                 })
             }),
             board: Some(9),
@@ -1282,6 +1583,106 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Mobile"), "the remembered board: {text}");
+    }
+
+    #[test]
+    fn the_source_menu_switches_to_my_tickets_and_escape_closes_the_list_first() {
+        let mut modal =
+            CreateWorkspaceModal::new(Vec::new(), Vec::new(), namer()).with_tickets(tickets(false));
+        settle(&mut modal);
+        let text = painted_text(&mut modal);
+        assert!(
+            text.contains("Login page") && text.contains("Mobile"),
+            "{text}"
+        );
+        modal.click(SOURCE);
+        let text = painted_text(&mut modal);
+        assert!(
+            text.contains("Backlog") && text.contains("Assigned to me") && text.contains("Web"),
+            "{text}"
+        );
+        modal.click(SOURCE_OPTION_BASE + 3);
+        settle(&mut modal);
+        let text = painted_text(&mut modal);
+        assert!(
+            text.contains("Assigned to me") && text.contains("Checkout total"),
+            "{text}"
+        );
+        assert!(!text.contains("Login page"), "only mine: {text}");
+
+        modal.key(EditKey::Escape, false);
+        assert!(!painted_text(&mut modal).contains("Checkout total"));
+        assert!(modal.take_result().is_none(), "escape closed the list only");
+        modal.key(EditKey::Enter, false);
+        assert!(
+            modal.take_result().is_none(),
+            "enter with the list closed picks nothing and there is no branch yet"
+        );
+        modal.key(EditKey::Escape, false);
+        assert!(matches!(modal.take_result(), Some(ModalResult::Cancelled)));
+    }
+
+    #[test]
+    fn a_ticket_fills_name_and_branch_and_says_so() {
+        let mut modal =
+            CreateWorkspaceModal::new(Vec::new(), Vec::new(), namer()).with_tickets(tickets(false));
+        settle(&mut modal);
+        modal.key(EditKey::Enter, false);
+        let text = painted_text(&mut modal);
+        assert_eq!(text.matches("from PROJ-2").count(), 2, "{text}");
+        modal.key(EditKey::Backspace, false);
+        let text = painted_text(&mut modal);
+        assert_eq!(
+            text.matches("from PROJ-2").count(),
+            1,
+            "the edited name drops it: {text}"
+        );
+    }
+
+    #[test]
+    fn options_and_modules_shape_the_summary_and_the_request() {
+        let outlook: ModulesOutlook = Arc::new(|repo: &str| match repo {
+            "api" => Outlook::FromStore,
+            "web" => Outlook::InstallsOnce,
+            _ => Outlook::NotNode,
+        });
+        let mut modal = CreateWorkspaceModal::new(
+            vec!["api".into(), "web".into(), "infra".into()],
+            Vec::new(),
+            namer(),
+        )
+        .with_options(vec!["local".into(), "staging".into()], vec!["api".into()])
+        .with_modules(outlook);
+        settle(&mut modal);
+        modal.text("feat-login");
+        let text = painted_text(&mut modal);
+        assert!(
+            text.contains("node_modules instant") && text.contains("installs once"),
+            "{text}"
+        );
+        assert!(
+            text.contains("3 repos - 1 installs once - databases copied from main - local"),
+            "{text}"
+        );
+        modal.click(ENVIRONMENT_BASE + 1);
+        modal.click(DATA_FRESH);
+        modal.click(REPO_BASE + 1);
+        let text = painted_text(&mut modal);
+        assert!(
+            text.contains("2 repos - all instant - databases seeded empty - staging"),
+            "{text}"
+        );
+        modal.click(REPO_BASE);
+        assert!(
+            !painted_text(&mut modal).contains("Copy from main"),
+            "no picked repo copies main"
+        );
+        modal.click(REPO_BASE);
+        modal.key(EditKey::Enter, false);
+        let created = submitted::<CreateWorkspace>(modal.take_result()).expect("submitted");
+        assert_eq!(created.environment, "staging");
+        assert!(created.fresh_databases);
+        assert_eq!(created.repos, ["api", "infra"]);
     }
 
     #[test]

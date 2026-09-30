@@ -129,6 +129,39 @@ fn run_install_fallback_and_disabled_store_leave_the_install_alone() {
 }
 
 #[test]
+fn the_outlook_tells_instant_from_installing_before_create() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::at(dir.path().join("store"));
+    let installed = repo_with(&dir.path().join("api"), "v1", true);
+    let bare = repo_with(&dir.path().join("web"), "v1", false);
+    let on = options(Fallback::Copy);
+    assert_eq!(
+        store.outlook("api", &installed, None, &on),
+        Outlook::FromStore
+    );
+    assert_eq!(
+        store.outlook("web", &bare, None, &on),
+        Outlook::InstallsOnce
+    );
+    let off = Options {
+        enabled: false,
+        ..on
+    };
+    assert_eq!(
+        store.outlook("api", &installed, None, &off),
+        Outlook::Installs
+    );
+    fs::write(bare.join("pnpm-lock.yaml"), "").unwrap();
+    assert_eq!(
+        store.outlook("web", &bare, None, &on),
+        Outlook::SelfManaged("pnpm")
+    );
+    let empty = dir.path().join("docs");
+    fs::create_dir_all(&empty).unwrap();
+    assert_eq!(store.outlook("docs", &empty, None, &on), Outlook::NotNode);
+}
+
+#[test]
 fn hard_linked_copies_are_read_only_and_shared() {
     use std::os::unix::fs::MetadataExt;
     let dir = tempfile::tempdir().unwrap();

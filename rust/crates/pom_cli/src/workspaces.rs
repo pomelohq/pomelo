@@ -83,7 +83,7 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
         .ok_or("ws needs create, delete, rename or list")?;
     match (*action, rest) {
         ("create", [branch]) => {
-            allow(&["repos", "env", "no-seed", "from-stage"])?;
+            allow(&["repos", "env", "no-seed", "fresh-db", "from-stage"])?;
             let repos: Vec<String> = value("repos")
                 .unwrap_or("")
                 .split(',')
@@ -101,6 +101,7 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
                 repos,
                 environment: value("env").unwrap_or("").to_string(),
                 skip_seed: has("no-seed"),
+                fresh_databases: has("fresh-db"),
                 from_stage: from_stage()?,
                 repo_branches: Default::default(),
             }))
@@ -376,12 +377,15 @@ mod tests {
     #[test]
     fn workspace_commands_parse() {
         assert_eq!(
-            parsed("create feat-x --repos api,web --env=staging --no-seed --from-stage 4"),
+            parsed(
+                "create feat-x --repos api,web --env=staging --no-seed --fresh-db --from-stage 4"
+            ),
             Ok(WorkspaceCommand::Create(CreateRequest {
                 branch: "feat-x".into(),
                 repos: vec!["api".into(), "web".into()],
                 environment: "staging".into(),
                 skip_seed: true,
+                fresh_databases: true,
                 from_stage: 3,
                 repo_branches: Default::default(),
             }))
