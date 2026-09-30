@@ -12,11 +12,13 @@ pub struct Adapter {
     /// Also the key one running server is shared under.
     pub name: &'static str,
     /// Binaries to look for, in order.
-    pub candidates: &'static [Candidate],
+    pub candidates: std::borrow::Cow<'static, [Candidate]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
+    /// What `language_servers` in the settings calls it.
+    pub name: &'static str,
     pub binary: &'static str,
     pub args: &'static [&'static str],
     /// Arguments of a trial run that must succeed before the binary is trusted, for launchers that exist
@@ -24,8 +26,13 @@ pub struct Candidate {
     pub probe: Option<&'static [&'static str]>,
 }
 
-const fn candidate(binary: &'static str, args: &'static [&'static str]) -> Candidate {
+const fn candidate(
+    name: &'static str,
+    binary: &'static str,
+    args: &'static [&'static str],
+) -> Candidate {
     Candidate {
+        name,
         binary,
         args,
         probe: None,
@@ -34,38 +41,122 @@ const fn candidate(binary: &'static str, args: &'static [&'static str]) -> Candi
 
 const RUST: Adapter = Adapter {
     name: "rust-analyzer",
-    candidates: &[Candidate {
+    candidates: std::borrow::Cow::Borrowed(&[Candidate {
+        name: "rust-analyzer",
         binary: "rust-analyzer",
         args: &[],
         probe: Some(&["--help"]),
-    }],
+    }]),
 };
 const CLANGD: Adapter = Adapter {
     name: "clangd",
-    candidates: &[candidate("clangd", &[])],
+    candidates: std::borrow::Cow::Borrowed(&[candidate("clangd", "clangd", &[])]),
 };
 const GOPLS: Adapter = Adapter {
     name: "gopls",
-    candidates: &[candidate("gopls", &[])],
+    candidates: std::borrow::Cow::Borrowed(&[candidate("gopls", "gopls", &[])]),
 };
 const PYTHON: Adapter = Adapter {
     name: "python",
-    candidates: &[
-        candidate("basedpyright-langserver", &["--stdio"]),
-        candidate("pyright-langserver", &["--stdio"]),
-        candidate("ty", &["server"]),
-    ],
+    candidates: std::borrow::Cow::Borrowed(&[
+        candidate("basedpyright", "basedpyright-langserver", &["--stdio"]),
+        candidate("pyright", "pyright-langserver", &["--stdio"]),
+        candidate("ty", "ty", &["server"]),
+    ]),
 };
 const TYPESCRIPT: Adapter = Adapter {
     name: "typescript",
-    candidates: &[
-        candidate("vtsls", &["--stdio"]),
-        candidate("typescript-language-server", &["--stdio"]),
-    ],
+    candidates: std::borrow::Cow::Borrowed(&[
+        candidate("vtsls", "vtsls", &["--stdio"]),
+        candidate(
+            "typescript-language-server",
+            "typescript-language-server",
+            &["--stdio"],
+        ),
+    ]),
 };
 
-/// The adapter for `lang` and the language id its documents are opened with.
+/// Whether a language uses servers at all, which (`language_servers` syntax), and how it asks them for
+/// completions, as the settings say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerChoice {
+    pub enabled: bool,
+    pub servers: Vec<String>,
+    pub completions: bool,
+    /// 0 waits for them.
+    pub completion_timeout_ms: u64,
+}
+
+impl Default for ServerChoice {
+    fn default() -> Self {
+        ServerChoice {
+            enabled: true,
+            servers: vec!["...".into()],
+            completions: true,
+            completion_timeout_ms: 0,
+        }
+    }
+}
+
+type ChoiceOf = dyn Fn(&str) -> ServerChoice + Send + Sync;
+
+static CHOICE: std::sync::RwLock<Option<std::sync::Arc<ChoiceOf>>> = std::sync::RwLock::new(None);
+
+/// How the settings choose a language's servers, by language name ("Rust", "TSX").
+pub fn set_server_choice(choice: impl Fn(&str) -> ServerChoice + Send + Sync + 'static) {
+    if let Ok(mut slot) = CHOICE.write() {
+        *slot = Some(std::sync::Arc::new(choice));
+    }
+}
+
+pub fn choice_for(lang: Lang) -> ServerChoice {
+    let choice = CHOICE.read().ok().and_then(|slot| slot.clone());
+    choice.map_or_else(ServerChoice::default, |choice| choice(lang.name()))
+}
+
+/// `defaults` ordered and filtered by a `language_servers` list: names listed first, in order, `...` for the
+/// defaults not named, `!name` left out; with no `...`, only the named ones.
+fn chosen(defaults: &[Candidate], servers: &[String]) -> Vec<Candidate> {
+    let named = |name: &str| {
+        servers
+            .iter()
+            .any(|entry| entry == name || entry == &format!("!{name}"))
+    };
+    let mut out: Vec<Candidate> = Vec::new();
+    for entry in servers {
+        if entry == "..." {
+            out.extend(
+                defaults
+                    .iter()
+                    .filter(|candidate| !named(candidate.name))
+                    .cloned(),
+            );
+        } else if !entry.starts_with('!') {
+            if let Some(candidate) = defaults.iter().find(|candidate| candidate.name == entry) {
+                out.push(candidate.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The adapter for `lang`, with the servers the settings choose, and the language id its documents are
+/// opened with; none when the settings turn its servers off.
 pub fn adapter_for(lang: Lang) -> Option<(Adapter, &'static str)> {
+    let (mut adapter, language_id) = default_adapter_for(lang)?;
+    let choice = choice_for(lang);
+    if !choice.enabled {
+        return None;
+    }
+    let candidates = chosen(&adapter.candidates, &choice.servers);
+    if candidates.is_empty() {
+        return None;
+    }
+    adapter.candidates = std::borrow::Cow::Owned(candidates);
+    Some((adapter, language_id))
+}
+
+fn default_adapter_for(lang: Lang) -> Option<(Adapter, &'static str)> {
     Some(match lang {
         Lang::Rust => (RUST, "rust"),
         Lang::C => (CLANGD, "c"),
@@ -124,6 +215,26 @@ fn which(binary: &str, path: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_settings_order_and_turn_off_a_languages_servers() {
+        let defaults = &PYTHON.candidates;
+        let names = |servers: &[&str]| -> Vec<&str> {
+            let servers: Vec<String> = servers.iter().map(|name| name.to_string()).collect();
+            chosen(defaults, &servers)
+                .iter()
+                .map(|candidate| candidate.name)
+                .collect()
+        };
+        assert_eq!(names(&["..."]), ["basedpyright", "pyright", "ty"]);
+        assert_eq!(names(&["ty", "!basedpyright", "..."]), ["ty", "pyright"]);
+        assert_eq!(
+            names(&["pyright"]),
+            ["pyright"],
+            "no ... keeps only the named"
+        );
+        assert!(names(&["!ty", "unknown"]).is_empty());
+    }
 
     #[test]
     fn languages_share_a_server_and_keep_their_ids() {

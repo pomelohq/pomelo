@@ -110,6 +110,14 @@ const APPEARANCE_SECTIONS: [&str; 6] = [
 const INTEGRATIONS_SECTIONS: [&str; 2] = ["Jira", "Main Workspace"];
 const GENERAL_SECTIONS: [&str; 2] = ["Startup", "Updates"];
 const EDITOR_SECTIONS: [&str; 1] = ["Behavior"];
+const LANGUAGES_TOOLS_SECTIONS: [&str; 6] = [
+    "LSP",
+    "LSP Completions",
+    "File Types",
+    "Diagnostics",
+    "Inline Diagnostics",
+    "Languages",
+];
 const TERMINAL_SECTIONS: [&str; 1] = ["Shell"];
 const KEYMAP_SECTIONS: [&str; 1] = ["Bindings"];
 const AGENT_SECTIONS: [&str; 2] = ["Command", "Claude Code"];
@@ -122,11 +130,12 @@ const DEV_SERVICES_SECTIONS: [&str; 4] = [
 ];
 const PROJECT_SECTIONS: [&str; 3] = ["Repositories", "Config", "Config Bundle"];
 
-const CATEGORIES: [(&str, &[&str]); 11] = [
+const CATEGORIES: [(&str, &[&str]); 12] = [
     ("General", &GENERAL_SECTIONS),
     ("Appearance", &APPEARANCE_SECTIONS),
     ("Window & Layout", &WINDOW_LAYOUT_SECTIONS),
     ("Editor", &EDITOR_SECTIONS),
+    ("Languages & Tools", &LANGUAGES_TOOLS_SECTIONS),
     ("Terminal", &TERMINAL_SECTIONS),
     ("Keymap", &KEYMAP_SECTIONS),
     ("Agent", &AGENT_SECTIONS),
@@ -139,13 +148,14 @@ const CATEGORIES: [(&str, &[&str]); 11] = [
 pub const GENERAL: usize = 0;
 pub const WINDOW_LAYOUT: usize = 2;
 pub const EDITOR: usize = 3;
-pub const TERMINAL: usize = 4;
-pub const KEYMAP: usize = 5;
-pub const AGENT: usize = 6;
-pub const NOTIFICATIONS: usize = 7;
-pub const DEV_SERVICES: usize = 8;
-pub const INTEGRATIONS: usize = 9;
-pub const PROJECT: usize = 10;
+pub const LANGUAGES_TOOLS: usize = 4;
+pub const TERMINAL: usize = 5;
+pub const KEYMAP: usize = 6;
+pub const AGENT: usize = 7;
+pub const NOTIFICATIONS: usize = 8;
+pub const DEV_SERVICES: usize = 9;
+pub const INTEGRATIONS: usize = 10;
+pub const PROJECT: usize = 11;
 
 /// Index of the Appearance category (the only page with real content for now).
 pub const APPEARANCE: usize = 1;
@@ -248,6 +258,37 @@ pub const CTRL_CURSOR_BLINK: u64 = 333;
 pub const CTRL_CURSOR_ANIMATION: u64 = 334;
 pub const CTRL_CURSOR_SHAPE: u64 = 335;
 pub const CTRL_REDUCE_MOTION: u64 = 336;
+pub const CTRL_ENABLE_LANGUAGE_SERVER: u64 = 350;
+pub const CTRL_LANGUAGE_SERVERS: u64 = 351;
+pub const CTRL_DEFINITION_SCROLL: u64 = 352;
+pub const CTRL_LSP_COMPLETIONS: u64 = 353;
+pub const CTRL_COMPLETION_TIMEOUT_DEC: u64 = 354;
+pub const CTRL_COMPLETION_TIMEOUT_INC: u64 = 355;
+pub const CTRL_COMPLETION_TIMEOUT_EDIT: u64 = 356;
+pub const CTRL_FILE_TYPES: u64 = 357;
+pub const CTRL_DIAGNOSTICS_SEVERITY: u64 = 358;
+pub const CTRL_INLINE_DIAGNOSTICS: u64 = 359;
+pub const CTRL_INLINE_PADDING_DEC: u64 = 360;
+pub const CTRL_INLINE_PADDING_INC: u64 = 361;
+pub const CTRL_INLINE_PADDING_EDIT: u64 = 362;
+pub const CTRL_INLINE_COLUMN_DEC: u64 = 370;
+pub const CTRL_INLINE_COLUMN_INC: u64 = 371;
+pub const CTRL_INLINE_COLUMN_EDIT: u64 = 372;
+pub const CTRL_LANGUAGE_BACK: u64 = 380;
+/// A language's Configure button, by its index in `language_names`.
+pub const LANGUAGE_OPEN_BASE: u64 = 29_000;
+/// A language's own controls: `LANGUAGE_CTRL_BASE + index * LANGUAGE_CTRL_STRIDE + field`.
+pub const LANGUAGE_CTRL_BASE: u64 = 30_000;
+const LANGUAGE_CTRL_STRIDE: u64 = 8;
+const LANGUAGE_ENABLE: u64 = 0;
+const LANGUAGE_SERVERS: u64 = 1;
+const LANGUAGE_COMPLETIONS: u64 = 2;
+const LANGUAGE_TIMEOUT_DEC: u64 = 3;
+const LANGUAGE_TIMEOUT_INC: u64 = 4;
+const LANGUAGE_TIMEOUT_EDIT: u64 = 5;
+pub const COMPLETION_TIMEOUT_MAX: u64 = 60_000;
+const COMPLETION_TIMEOUT_STEP: i64 = 100;
+pub const INLINE_COLUMNS_MAX: u64 = 1_000;
 pub const CTRL_START_AT_LOGIN: u64 = 260;
 pub const CTRL_AUTO_UPDATE: u64 = 261;
 pub const CTRL_CHECK_UPDATES: u64 = 262;
@@ -306,6 +347,189 @@ const CURSOR_SHAPES: [(&str, &str); 4] = [
     ("hollow", "Hollow"),
 ];
 const REDUCE_MOTION: [(&str, &str); 2] = [("off", "Off"), ("on", "On")];
+const DEFINITION_SCROLLS: [(&str, &str); 4] = [
+    ("center", "Center"),
+    ("minimum", "Minimum"),
+    ("top", "Top"),
+    ("preserve", "Preserve"),
+];
+const DIAGNOSTIC_SEVERITIES: [(&str, &str); 6] = [
+    ("off", "Off"),
+    ("error", "Error"),
+    ("warning", "Warning"),
+    ("info", "Info"),
+    ("hint", "Hint"),
+    ("all", "All"),
+];
+
+/// Every language a file can be, by name, as the Languages section lists them.
+pub fn language_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = editor::Lang::LANGUAGES
+        .iter()
+        .map(|lang| lang.name())
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names
+}
+
+/// The language a per-language control belongs to, and which of its controls it is.
+fn language_control(id: u64) -> Option<(&'static str, u64)> {
+    let offset = id.checked_sub(LANGUAGE_CTRL_BASE)?;
+    let name = *language_names().get((offset / LANGUAGE_CTRL_STRIDE) as usize)?;
+    Some((name, offset % LANGUAGE_CTRL_STRIDE))
+}
+
+fn language_control_id(index: usize, field: u64) -> u64 {
+    LANGUAGE_CTRL_BASE + index as u64 * LANGUAGE_CTRL_STRIDE + field
+}
+
+/// The language whose page a Configure button opens.
+pub fn language_to_open(id: u64) -> Option<usize> {
+    let index = id.checked_sub(LANGUAGE_OPEN_BASE)? as usize;
+    (index < language_names().len()).then_some(index)
+}
+
+/// A number field on the Languages & Tools pages: its value as the field starts editing.
+pub fn language_number(id: u64, s: &Settings) -> Option<String> {
+    let value = match id {
+        CTRL_COMPLETION_TIMEOUT_EDIT => s.completions.lsp_fetch_timeout_ms,
+        CTRL_INLINE_PADDING_EDIT => u64::from(s.diagnostics.inline.padding),
+        CTRL_INLINE_COLUMN_EDIT => u64::from(s.diagnostics.inline.min_column),
+        id => match language_control(id)? {
+            (name, LANGUAGE_TIMEOUT_EDIT) => s.language_server_settings(name).completion_timeout_ms,
+            _ => return None,
+        },
+    };
+    Some(value.to_string())
+}
+
+/// Store a number typed into a Languages & Tools field; returns whether it changed.
+pub fn set_language_number(id: u64, value: f32, s: &mut Settings) -> bool {
+    let value = value.max(0.0) as u64;
+    match id {
+        CTRL_COMPLETION_TIMEOUT_EDIT => {
+            let next = value.min(COMPLETION_TIMEOUT_MAX);
+            std::mem::replace(&mut s.completions.lsp_fetch_timeout_ms, next) != next
+        }
+        CTRL_INLINE_PADDING_EDIT | CTRL_INLINE_COLUMN_EDIT => {
+            let next = value.min(INLINE_COLUMNS_MAX) as u32;
+            let slot = if id == CTRL_INLINE_PADDING_EDIT {
+                &mut s.diagnostics.inline.padding
+            } else {
+                &mut s.diagnostics.inline.min_column
+            };
+            std::mem::replace(slot, next) != next
+        }
+        id => match language_control(id) {
+            Some((name, LANGUAGE_TIMEOUT_EDIT)) => {
+                let next = value.min(COMPLETION_TIMEOUT_MAX);
+                let changed = s.language_server_settings(name).completion_timeout_ms != next;
+                language_completions(s, name).lsp_fetch_timeout_ms = Some(next);
+                changed
+            }
+            _ => false,
+        },
+    }
+}
+
+fn language_entry<'a>(s: &'a mut Settings, name: &str) -> &'a mut settings::LanguageSettings {
+    s.languages.entry(name.to_string()).or_default()
+}
+
+fn language_completions<'a>(
+    s: &'a mut Settings,
+    name: &str,
+) -> &'a mut settings::LanguageCompletions {
+    language_entry(s, name)
+        .completions
+        .get_or_insert_with(Default::default)
+}
+
+/// Drop a language's entry once nothing in it is set, so the file keeps no empty objects.
+fn prune_language(s: &mut Settings, name: &str) {
+    if let Some(own) = s.languages.get_mut(name) {
+        if own
+            .completions
+            .as_ref()
+            .is_some_and(|completions| *completions == Default::default())
+        {
+            own.completions = None;
+        }
+        if own.is_empty() {
+            s.languages.remove(name);
+        }
+    }
+}
+
+fn step_completion_timeout(value: u64, step: i64) -> u64 {
+    (value as i64 + step).clamp(0, COMPLETION_TIMEOUT_MAX as i64) as u64
+}
+
+/// A per-language control clicked: its own value flips or steps, over the shared one.
+fn handle_language_control(id: u64, s: &mut Settings) -> bool {
+    let Some((name, field)) = language_control(id) else {
+        return false;
+    };
+    let current = s.language_server_settings(name);
+    match field {
+        LANGUAGE_ENABLE => language_entry(s, name).enable_language_server = Some(!current.enabled),
+        LANGUAGE_COMPLETIONS => language_completions(s, name).lsp = Some(!current.completions),
+        LANGUAGE_TIMEOUT_DEC | LANGUAGE_TIMEOUT_INC => {
+            let step = if field == LANGUAGE_TIMEOUT_INC {
+                COMPLETION_TIMEOUT_STEP
+            } else {
+                -COMPLETION_TIMEOUT_STEP
+            };
+            let next = step_completion_timeout(current.completion_timeout_ms, step);
+            if next == current.completion_timeout_ms {
+                return false;
+            }
+            language_completions(s, name).lsp_fetch_timeout_ms = Some(next);
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// Whether a per-language control is left to the shared setting.
+fn language_is_default(id: u64, s: &Settings) -> Option<bool> {
+    let (name, field) = language_control(id)?;
+    let own = s.languages.get(name);
+    let completions = own.and_then(|own| own.completions.as_ref());
+    Some(match field {
+        LANGUAGE_ENABLE => own.is_none_or(|own| own.enable_language_server.is_none()),
+        LANGUAGE_SERVERS => own.is_none_or(|own| own.language_servers.is_none()),
+        LANGUAGE_COMPLETIONS => completions.is_none_or(|completions| completions.lsp.is_none()),
+        LANGUAGE_TIMEOUT_EDIT => {
+            completions.is_none_or(|completions| completions.lsp_fetch_timeout_ms.is_none())
+        }
+        _ => true,
+    })
+}
+
+fn language_reset(id: u64, s: &mut Settings) -> Option<bool> {
+    let (name, field) = language_control(id)?;
+    let changed = !language_is_default(id, s)?;
+    if let Some(own) = s.languages.get_mut(name) {
+        match field {
+            LANGUAGE_ENABLE => own.enable_language_server = None,
+            LANGUAGE_SERVERS => own.language_servers = None,
+            LANGUAGE_COMPLETIONS => {
+                if let Some(completions) = own.completions.as_mut() {
+                    completions.lsp = None;
+                }
+            }
+            LANGUAGE_TIMEOUT_EDIT => {
+                if let Some(completions) = own.completions.as_mut() {
+                    completions.lsp_fetch_timeout_ms = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    prune_language(s, name);
+    Some(changed)
+}
 
 fn labels(choices: &[(&str, &str)]) -> Vec<String> {
     choices.iter().map(|(_, label)| label.to_string()).collect()
@@ -441,6 +665,8 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_MULTI_CURSOR_MODIFIER
             | CTRL_CURSOR_SHAPE
             | CTRL_REDUCE_MOTION
+            | CTRL_DEFINITION_SCROLL
+            | CTRL_DIAGNOSTICS_SEVERITY
     ) || sound_event(id).is_some()
 }
 
@@ -488,6 +714,8 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
         CTRL_MULTI_CURSOR_MODIFIER => labels(&MULTI_CURSOR_MODIFIERS),
         CTRL_CURSOR_SHAPE => labels(&CURSOR_SHAPES),
         CTRL_REDUCE_MOTION => labels(&REDUCE_MOTION),
+        CTRL_DEFINITION_SCROLL => labels(&DEFINITION_SCROLLS),
+        CTRL_DIAGNOSTICS_SEVERITY => labels(&DIAGNOSTIC_SEVERITIES),
         CTRL_EXTERNAL_EDITOR => std::iter::once("Auto")
             .chain(EXTERNAL_EDITORS)
             .map(str::to_string)
@@ -528,6 +756,10 @@ pub fn control_value(id: u64, s: &Settings) -> String {
         CTRL_MULTI_CURSOR_MODIFIER => label_of(&MULTI_CURSOR_MODIFIERS, &s.multi_cursor_modifier),
         CTRL_CURSOR_SHAPE => label_of(&CURSOR_SHAPES, &s.cursor_shape),
         CTRL_REDUCE_MOTION => label_of(&REDUCE_MOTION, &s.reduce_motion),
+        CTRL_DEFINITION_SCROLL => {
+            label_of(&DEFINITION_SCROLLS, &s.go_to_definition_scroll_strategy)
+        }
+        CTRL_DIAGNOSTICS_SEVERITY => label_of(&DIAGNOSTIC_SEVERITIES, &s.diagnostics_max_severity),
         CTRL_MODULES_FALLBACK => MODULES_FALLBACKS
             .iter()
             .find(|(value, _)| *value == s.modules_fallback)
@@ -576,12 +808,23 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
             };
             s.agent_tab_close = value.to_string();
         }
-        CTRL_MULTI_CURSOR_MODIFIER | CTRL_CURSOR_SHAPE | CTRL_REDUCE_MOTION => {
+        CTRL_MULTI_CURSOR_MODIFIER
+        | CTRL_CURSOR_SHAPE
+        | CTRL_REDUCE_MOTION
+        | CTRL_DEFINITION_SCROLL
+        | CTRL_DIAGNOSTICS_SEVERITY => {
             let (choices, slot) = match id {
                 CTRL_MULTI_CURSOR_MODIFIER => {
                     (&MULTI_CURSOR_MODIFIERS[..], &mut s.multi_cursor_modifier)
                 }
                 CTRL_CURSOR_SHAPE => (&CURSOR_SHAPES[..], &mut s.cursor_shape),
+                CTRL_DEFINITION_SCROLL => (
+                    &DEFINITION_SCROLLS[..],
+                    &mut s.go_to_definition_scroll_strategy,
+                ),
+                CTRL_DIAGNOSTICS_SEVERITY => {
+                    (&DIAGNOSTIC_SEVERITIES[..], &mut s.diagnostics_max_severity)
+                }
                 _ => (&REDUCE_MOTION[..], &mut s.reduce_motion),
             };
             let Some((value, _)) = choices.iter().find(|(_, label)| label == val) else {
@@ -690,6 +933,21 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_SCROLLBACK_EDIT => s.terminal_scrollback == d.terminal_scrollback,
         CTRL_NOTIFY => s.notify_claude == d.notify_claude,
         CTRL_NOTIFY_FOCUSED => s.notify_when_focused == d.notify_when_focused,
+        CTRL_ENABLE_LANGUAGE_SERVER => s.enable_language_server == d.enable_language_server,
+        CTRL_DEFINITION_SCROLL => {
+            s.go_to_definition_scroll_strategy == d.go_to_definition_scroll_strategy
+        }
+        CTRL_LSP_COMPLETIONS => s.completions.lsp == d.completions.lsp,
+        CTRL_COMPLETION_TIMEOUT_EDIT => {
+            s.completions.lsp_fetch_timeout_ms == d.completions.lsp_fetch_timeout_ms
+        }
+        CTRL_DIAGNOSTICS_SEVERITY => s.diagnostics_max_severity == d.diagnostics_max_severity,
+        CTRL_INLINE_DIAGNOSTICS => s.diagnostics.inline.enabled == d.diagnostics.inline.enabled,
+        CTRL_INLINE_PADDING_EDIT => s.diagnostics.inline.padding == d.diagnostics.inline.padding,
+        CTRL_INLINE_COLUMN_EDIT => {
+            s.diagnostics.inline.min_column == d.diagnostics.inline.min_column
+        }
+        id if language_control(id).is_some() => language_is_default(id, s).unwrap_or(true),
         id => sound_event(id).is_none_or(|event| s.sound_for(event) == d.sound_for(event)),
     }
 }
@@ -751,6 +1009,21 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_SCROLLBACK_EDIT => s.terminal_scrollback = d.terminal_scrollback,
         CTRL_NOTIFY => s.notify_claude = d.notify_claude,
         CTRL_NOTIFY_FOCUSED => s.notify_when_focused = d.notify_when_focused,
+        CTRL_ENABLE_LANGUAGE_SERVER => s.enable_language_server = d.enable_language_server,
+        CTRL_DEFINITION_SCROLL => {
+            s.go_to_definition_scroll_strategy = d.go_to_definition_scroll_strategy
+        }
+        CTRL_LSP_COMPLETIONS => s.completions.lsp = d.completions.lsp,
+        CTRL_COMPLETION_TIMEOUT_EDIT => {
+            s.completions.lsp_fetch_timeout_ms = d.completions.lsp_fetch_timeout_ms
+        }
+        CTRL_DIAGNOSTICS_SEVERITY => s.diagnostics_max_severity = d.diagnostics_max_severity,
+        CTRL_INLINE_DIAGNOSTICS => s.diagnostics.inline.enabled = d.diagnostics.inline.enabled,
+        CTRL_INLINE_PADDING_EDIT => s.diagnostics.inline.padding = d.diagnostics.inline.padding,
+        CTRL_INLINE_COLUMN_EDIT => {
+            s.diagnostics.inline.min_column = d.diagnostics.inline.min_column
+        }
+        id if language_control(id).is_some() => return language_reset(id, s).unwrap_or(false),
         id => {
             let Some(event) = sound_event(id) else {
                 return false;
@@ -916,6 +1189,44 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
             s.notify_when_focused = !s.notify_when_focused;
             true
         }
+        CTRL_ENABLE_LANGUAGE_SERVER => {
+            s.enable_language_server = !s.enable_language_server;
+            true
+        }
+        CTRL_LSP_COMPLETIONS => {
+            s.completions.lsp = !s.completions.lsp;
+            true
+        }
+        CTRL_COMPLETION_TIMEOUT_DEC | CTRL_COMPLETION_TIMEOUT_INC => {
+            let step = if id == CTRL_COMPLETION_TIMEOUT_INC {
+                COMPLETION_TIMEOUT_STEP
+            } else {
+                -COMPLETION_TIMEOUT_STEP
+            };
+            let next = step_completion_timeout(s.completions.lsp_fetch_timeout_ms, step);
+            std::mem::replace(&mut s.completions.lsp_fetch_timeout_ms, next) != next
+        }
+        CTRL_INLINE_DIAGNOSTICS => {
+            s.diagnostics.inline.enabled = !s.diagnostics.inline.enabled;
+            true
+        }
+        CTRL_INLINE_PADDING_DEC
+        | CTRL_INLINE_PADDING_INC
+        | CTRL_INLINE_COLUMN_DEC
+        | CTRL_INLINE_COLUMN_INC => {
+            let slot = if matches!(id, CTRL_INLINE_PADDING_DEC | CTRL_INLINE_PADDING_INC) {
+                &mut s.diagnostics.inline.padding
+            } else {
+                &mut s.diagnostics.inline.min_column
+            };
+            let next = if matches!(id, CTRL_INLINE_PADDING_INC | CTRL_INLINE_COLUMN_INC) {
+                (*slot + 1).min(INLINE_COLUMNS_MAX as u32)
+            } else {
+                slot.saturating_sub(1)
+            };
+            std::mem::replace(slot, next) != next
+        }
+        id if language_control(id).is_some() => handle_language_control(id, s),
         _ => false,
     }
 }
@@ -1016,7 +1327,9 @@ pub fn is_edit_in_json(id: u64) -> bool {
             | CTRL_BUFFER_FALLBACKS
             | CTRL_TERM_FEATURES
             | CTRL_TERM_FALLBACKS
-    )
+            | CTRL_LANGUAGE_SERVERS
+            | CTRL_FILE_TYPES
+    ) || language_control(id).is_some_and(|(_, field)| field == LANGUAGE_SERVERS)
 }
 
 fn set_clamped(field: &mut f32, delta: f32, min: f32, max: f32) -> bool {
@@ -1365,9 +1678,13 @@ pub fn chrome(
     search_active: bool,
     nav_scroll: f32,
     project: &str,
+    language: Option<usize>,
 ) -> Chrome {
     let project_scope =
         (matches!(selected, PROJECT | INTEGRATIONS) && !project.is_empty()).then_some(project);
+    let sub_page = language
+        .filter(|_| selected == LANGUAGES_TOOLS)
+        .and_then(|index| language_names().get(index).copied());
     let x = rem(SIDEBAR_W);
     let mut out = render(
         &sidebar_head(search, search_active),
@@ -1398,7 +1715,12 @@ pub fn chrome(
         .bg(bg_c())
         .px(CONTENT_PAD)
         .child(div().h_px(CONTENT_TOP))
-        .child(toolbar(project_scope))
+        .child(match sub_page {
+            Some(name) => {
+                sub_page_header(&["User", CATEGORIES[LANGUAGES_TOOLS].0, "Languages", name])
+            }
+            None => toolbar(project_scope),
+        })
         .into();
     let sp = render(
         &strip,
@@ -1452,6 +1774,20 @@ pub fn page(
         render_page(&general_page(s, &state.general), search, editing, w)
     } else if selected == EDITOR {
         render_page(&editor_page(s), search, editing, w)
+    } else if selected == LANGUAGES_TOOLS {
+        match state
+            .language
+            .and_then(|index| Some((index, *language_names().get(index)?)))
+        {
+            Some((index, name)) => render_page_under(
+                div().into(),
+                &language_page(s, index, name),
+                search,
+                editing,
+                w,
+            ),
+            None => render_page(&languages_tools_page(s), search, editing, w),
+        }
     } else if selected == TERMINAL {
         render_page(&terminal_page(s), search, editing, w)
     } else if selected == KEYMAP {
@@ -1547,6 +1883,7 @@ pub fn panel(
         search_active,
         0.0,
         &state.project.session,
+        state.language,
     );
     for part in [ch.fixed, ch.nav] {
         out.rects.extend(part.rects);
@@ -1691,6 +2028,7 @@ fn page_for(cat: usize) -> Option<Page> {
         AGENT => Some(agent_page(&Settings::default(), &AgentPage::default())),
         GENERAL => Some(general_page(&Settings::default(), &GeneralPage::default())),
         EDITOR => Some(editor_page(&Settings::default())),
+        LANGUAGES_TOOLS => Some(languages_tools_page(&Settings::default())),
         TERMINAL => Some(terminal_page(&Settings::default())),
         KEYMAP => Some(keymap_page(&KeymapPage::default())),
         NOTIFICATIONS => Some(notifications_page(&Settings::default())),
@@ -1867,6 +2205,10 @@ enum Control {
     /// A key binding, drawn as key glyphs: `cmd-k cmd-s` is two keystrokes.
     Keys {
         binding: String,
+    },
+    /// Opens a page of its own.
+    SubPage {
+        id: u64,
     },
 }
 
@@ -2292,6 +2634,8 @@ pub struct PageState {
     pub dev_services: DevServicesPage,
     pub general: GeneralPage,
     pub keymap: KeymapPage,
+    /// The language whose own page is open over Languages & Tools, by its index in `language_names`.
+    pub language: Option<usize>,
 }
 
 fn registration_text(registration: &Registration, done: &str) -> String {
@@ -2419,6 +2763,265 @@ fn editor_page(s: &Settings) -> Page {
             }),
         ],
     }
+}
+
+fn toggle_row(
+    title: &'static str,
+    description: &'static str,
+    id: u64,
+    on: bool,
+    s: &Settings,
+) -> PageItem {
+    PageItem::Row(SettingRow {
+        title: title.into(),
+        description: description.into(),
+        control: Control::Toggle { id, on },
+        reset: reset_if_changed(id, s),
+    })
+}
+
+fn stepper_row(
+    title: &'static str,
+    description: &'static str,
+    (dec, inc, edit): (u64, u64, u64),
+    value: u64,
+    s: &Settings,
+) -> PageItem {
+    PageItem::Row(SettingRow {
+        title: title.into(),
+        description: description.into(),
+        control: Control::Stepper {
+            dec,
+            inc,
+            edit,
+            value: value.to_string(),
+        },
+        reset: reset_if_changed(edit, s),
+    })
+}
+
+const ENABLE_LANGUAGE_SERVER: (&str, &str) = (
+    "Enable Language Server",
+    "Whether to use language servers to provide code intelligence.",
+);
+const LANGUAGE_SERVERS_ROW: (&str, &str) = (
+    "Language Servers",
+    "The list of language servers to use (or disable) for this language.",
+);
+const LSP_COMPLETIONS_ROW: (&str, &str) = ("Enabled", "Whether to fetch LSP completions or not.");
+const COMPLETION_TIMEOUT_ROW: (&str, &str) = (
+    "Fetch Timeout (milliseconds)",
+    "When fetching LSP completions, determines how long to wait for a response of a particular server (set to 0 to wait indefinitely).",
+);
+
+fn languages_tools_page(s: &Settings) -> Page {
+    let inline = &s.diagnostics.inline;
+    let mut items = vec![
+        PageItem::Header("LSP"),
+        toggle_row(
+            ENABLE_LANGUAGE_SERVER.0,
+            ENABLE_LANGUAGE_SERVER.1,
+            CTRL_ENABLE_LANGUAGE_SERVER,
+            s.enable_language_server,
+            s,
+        ),
+        PageItem::Row(SettingRow {
+            title: LANGUAGE_SERVERS_ROW.0.into(),
+            description: LANGUAGE_SERVERS_ROW.1.into(),
+            control: Control::EditInJson {
+                id: CTRL_LANGUAGE_SERVERS,
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "Go To Definition Scroll Strategy".into(),
+            description:
+                "How to scroll the target into view when navigating to a definition or reference."
+                    .into(),
+            control: Control::Dropdown {
+                id: CTRL_DEFINITION_SCROLL,
+                value: control_value(CTRL_DEFINITION_SCROLL, s),
+            },
+            reset: reset_if_changed(CTRL_DEFINITION_SCROLL, s),
+        }),
+        PageItem::Header("LSP Completions"),
+        toggle_row(
+            LSP_COMPLETIONS_ROW.0,
+            LSP_COMPLETIONS_ROW.1,
+            CTRL_LSP_COMPLETIONS,
+            s.completions.lsp,
+            s,
+        ),
+        stepper_row(
+            COMPLETION_TIMEOUT_ROW.0,
+            COMPLETION_TIMEOUT_ROW.1,
+            (
+                CTRL_COMPLETION_TIMEOUT_DEC,
+                CTRL_COMPLETION_TIMEOUT_INC,
+                CTRL_COMPLETION_TIMEOUT_EDIT,
+            ),
+            s.completions.lsp_fetch_timeout_ms,
+            s,
+        ),
+        PageItem::Header("File Types"),
+        PageItem::Row(SettingRow {
+            title: "File Type Associations".into(),
+            description: "A mapping from languages to files and file extensions that should be treated as that language.".into(),
+            control: Control::EditInJson { id: CTRL_FILE_TYPES },
+            reset: None,
+        }),
+        PageItem::Header("Diagnostics"),
+        PageItem::Row(SettingRow {
+            title: "Max Severity".into(),
+            description: "Which level to use to filter out diagnostics displayed in the editor."
+                .into(),
+            control: Control::Dropdown {
+                id: CTRL_DIAGNOSTICS_SEVERITY,
+                value: control_value(CTRL_DIAGNOSTICS_SEVERITY, s),
+            },
+            reset: reset_if_changed(CTRL_DIAGNOSTICS_SEVERITY, s),
+        }),
+        PageItem::Header("Inline Diagnostics"),
+        toggle_row(
+            "Enabled",
+            "Whether to show diagnostics inline or not.",
+            CTRL_INLINE_DIAGNOSTICS,
+            inline.enabled,
+            s,
+        ),
+        stepper_row(
+            "Padding",
+            "The amount of padding between the end of the source line and the start of the inline diagnostic.",
+            (
+                CTRL_INLINE_PADDING_DEC,
+                CTRL_INLINE_PADDING_INC,
+                CTRL_INLINE_PADDING_EDIT,
+            ),
+            u64::from(inline.padding),
+            s,
+        ),
+        stepper_row(
+            "Minimum Column",
+            "The minimum column at which to display inline diagnostics.",
+            (
+                CTRL_INLINE_COLUMN_DEC,
+                CTRL_INLINE_COLUMN_INC,
+                CTRL_INLINE_COLUMN_EDIT,
+            ),
+            u64::from(inline.min_column),
+            s,
+        ),
+        PageItem::Header("Languages"),
+    ];
+    items.extend(
+        language_names()
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                PageItem::Row(SettingRow {
+                    title: name.into(),
+                    description: "".into(),
+                    control: Control::SubPage {
+                        id: LANGUAGE_OPEN_BASE + index as u64,
+                    },
+                    reset: None,
+                })
+            }),
+    );
+    Page {
+        title: "Languages & Tools",
+        items,
+    }
+}
+
+/// One language's page: what it sets over the shared language-server settings.
+fn language_page(s: &Settings, index: usize, name: &str) -> Page {
+    let chosen = s.language_server_settings(name);
+    let id = |field| language_control_id(index, field);
+    Page {
+        title: "Languages & Tools",
+        items: vec![
+            PageItem::Header("LSP"),
+            toggle_row(
+                ENABLE_LANGUAGE_SERVER.0,
+                ENABLE_LANGUAGE_SERVER.1,
+                id(LANGUAGE_ENABLE),
+                chosen.enabled,
+                s,
+            ),
+            PageItem::Row(SettingRow {
+                title: LANGUAGE_SERVERS_ROW.0.into(),
+                description: LANGUAGE_SERVERS_ROW.1.into(),
+                control: Control::EditInJson {
+                    id: id(LANGUAGE_SERVERS),
+                },
+                reset: reset_if_changed(id(LANGUAGE_SERVERS), s),
+            }),
+            PageItem::Header("LSP Completions"),
+            toggle_row(
+                LSP_COMPLETIONS_ROW.0,
+                LSP_COMPLETIONS_ROW.1,
+                id(LANGUAGE_COMPLETIONS),
+                chosen.completions,
+                s,
+            ),
+            stepper_row(
+                COMPLETION_TIMEOUT_ROW.0,
+                COMPLETION_TIMEOUT_ROW.1,
+                (
+                    id(LANGUAGE_TIMEOUT_DEC),
+                    id(LANGUAGE_TIMEOUT_INC),
+                    id(LANGUAGE_TIMEOUT_EDIT),
+                ),
+                chosen.completion_timeout_ms,
+                s,
+            ),
+        ],
+    }
+}
+
+/// The header over a page opened from another: a back button, then where it sits, muted.
+fn sub_page_header(trail: &[&str]) -> Node {
+    let mut crumbs = div().row().items_center().gap(4.0);
+    for (index, part) in trail.iter().enumerate() {
+        if index > 0 {
+            crumbs = crumbs.child(label("/").color(dim_c()));
+        }
+        crumbs = crumbs.child(label(part.to_string()).color(dim_c()));
+    }
+    div()
+        .row()
+        .h_px(30.0)
+        .items_center()
+        .justify_between()
+        .child(
+            div()
+                .row()
+                .items_center()
+                .gap(4.0)
+                .child(
+                    div()
+                        .w_px(22.0)
+                        .h_px(22.0)
+                        .rounded(4.0)
+                        .items_center()
+                        .justify_center()
+                        .on_click(CTRL_LANGUAGE_BACK)
+                        .child(
+                            ui::icon(ui::IconKind::ArrowLeft)
+                                .size(14.0)
+                                .color(title_c()),
+                        ),
+                )
+                .child(crumbs),
+        )
+        .child(ui::button_sized(
+            CTRL_OPEN_JSON,
+            "Edit in settings.json",
+            ButtonStyle::OutlinedGhost,
+            ui::ButtonSize::Default,
+        ))
+        .into()
 }
 
 /// The terminal's font: its rows sit under Appearance with the other fonts.
@@ -3077,6 +3680,20 @@ fn row_matches(row: &SettingRow, q: &str) -> bool {
 /// Render a page from its data, filtering rows by `query` (title/description substring) and dropping section
 /// headers whose section has no visible row, like the reference's settings search.
 fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -> Node {
+    let heading = label(page.title)
+        .label_size(LabelSize::Large)
+        .color(title_c())
+        .into();
+    render_page_under(heading, page, query, editing, w)
+}
+
+fn render_page_under(
+    heading: Node,
+    page: &Page,
+    query: &str,
+    editing: Option<(u64, &str)>,
+    w: f32,
+) -> Node {
     // The title+description column is capped (like the reference's max_w_2_3) so descriptions wrap instead of
     // running under the control. Widths are in design px (the element builders re-apply the UI scale).
     let scale = ui::ui_text_scale();
@@ -3108,14 +3725,7 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
         }
     }
 
-    let mut col = div()
-        .col()
-        .child(
-            label(page.title)
-                .label_size(LabelSize::Large)
-                .color(title_c()),
-        )
-        .child(div().h_px(16.0));
+    let mut col = div().col().child(heading).child(div().h_px(16.0));
 
     if !q.is_empty() && visible.iter().all(|v| !v) {
         return col
@@ -3184,6 +3794,7 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
                     Control::Status { running } => status_chip(*running),
                     Control::Value { text } => value_text(text),
                     Control::Keys { binding } => keys(binding),
+                    Control::SubPage { id } => sub_page_button(*id),
                 };
                 col = col.child(row_frame(
                     &row.title,
@@ -3235,12 +3846,10 @@ fn row_frame(title: &str, desc: &str, control: Node, reset: Option<u64>, left_co
     if let Some(primary) = reset {
         title_row = title_row.child(reset_button(primary + RESET_OFFSET));
     }
-    let left = div()
-        .col()
-        .w_px(left_col_w)
-        .gap(5.0)
-        .child(title_row)
-        .child(description_node(desc, left_col_w));
+    let mut left = div().col().w_px(left_col_w).gap(5.0).child(title_row);
+    if !desc.is_empty() {
+        left = left.child(description_node(desc, left_col_w));
+    }
     div()
         .row()
         .py(14.0)
@@ -3484,6 +4093,21 @@ fn value_text(text: &str) -> Node {
     label(text).size(12.0).mono().color(title_c()).into()
 }
 
+fn sub_page_button(id: u64) -> Node {
+    ui::button_sized(
+        id,
+        "Configure",
+        ui::ButtonStyle::OutlinedGhost,
+        ui::ButtonSize::Medium,
+    )
+    .child(
+        ui::icon(ui::IconKind::ChevronRight)
+            .size(14.0)
+            .color(dim_c()),
+    )
+    .into()
+}
+
 /// The reference renders `.unimplemented()` fields as an Outlined, Medium "Edit in settings.json" button.
 fn edit_in_json_button(id: u64) -> Node {
     ui::button_sized(
@@ -3526,6 +4150,36 @@ fn step_seg(sym: &str, id: u64) -> Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_language_page_sets_its_own_values_and_reset_hands_them_back() {
+        let mut s = Settings::default();
+        let rust = language_names()
+            .iter()
+            .position(|name| *name == "Rust")
+            .expect("Rust is listed");
+        assert_eq!(
+            language_to_open(LANGUAGE_OPEN_BASE + rust as u64),
+            Some(rust)
+        );
+        let enable = language_control_id(rust, LANGUAGE_ENABLE);
+        assert!(is_default(enable, &s));
+        assert!(handle_control(enable, &mut s));
+        assert!(!s.language_server_settings("Rust").enabled);
+        assert!(
+            s.language_server_settings("Go").enabled,
+            "other languages keep the shared value"
+        );
+        assert!(!is_default(enable, &s));
+
+        let timeout = language_control_id(rust, LANGUAGE_TIMEOUT_EDIT);
+        assert!(set_language_number(timeout, 250.0, &mut s));
+        assert_eq!(language_number(timeout, &s).as_deref(), Some("250"));
+        assert!(reset_to_default(timeout, &mut s));
+        assert!(reset_to_default(enable, &mut s));
+        assert!(s.languages.is_empty(), "nothing set leaves no entry behind");
+        assert!(is_edit_in_json(language_control_id(rust, LANGUAGE_SERVERS)));
+    }
 
     #[test]
     fn navbar_sections_match_page_section_headers() {

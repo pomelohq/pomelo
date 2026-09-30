@@ -2,7 +2,7 @@
 //! is known), sharing one server per adapter, with every open document mirrored to its server and the
 //! diagnostics it publishes handed back per file.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 
@@ -104,6 +104,8 @@ enum ServerState {
 struct Server {
     server: Option<LanguageServer>,
     state: ServerState,
+    /// The servers the settings allowed when it started, to restart it when they change.
+    candidates: Vec<&'static str>,
 }
 
 enum Environment {
@@ -124,8 +126,9 @@ pub struct LspStore {
     waker: Waker,
     environment: Environment,
     servers: HashMap<&'static str, Server>,
-    /// Adapters with no binary on the PATH, or whose server failed; not retried.
-    unavailable: HashSet<&'static str>,
+    /// Adapters with no binary on the PATH, or whose server failed, by the servers they were allowed; not
+    /// retried until the settings allow others.
+    unavailable: HashMap<&'static str, Vec<&'static str>>,
     documents: HashMap<PathBuf, Document>,
     /// Diagnostics for files that aren't open, delivered when they are.
     unopened_diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
@@ -145,7 +148,7 @@ impl LspStore {
             waker,
             environment: Environment::Unrequested,
             servers: HashMap::new(),
-            unavailable: HashSet::new(),
+            unavailable: HashMap::new(),
             documents: HashMap::new(),
             unopened_diagnostics: HashMap::new(),
             updates: Vec::new(),
@@ -207,8 +210,20 @@ impl LspStore {
     /// Start the adapter's server if it isn't running (finding its binary off-thread first); `true` once it
     /// is initialized.
     fn ensure_server(&mut self, adapter: crate::Adapter) -> bool {
-        if self.unavailable.contains(adapter.name) {
+        let candidates: Vec<&'static str> = adapter
+            .candidates
+            .iter()
+            .map(|candidate| candidate.name)
+            .collect();
+        if self.unavailable.get(adapter.name) == Some(&candidates) {
             return false;
+        }
+        if self
+            .servers
+            .get(adapter.name)
+            .is_some_and(|server| server.candidates != candidates)
+        {
+            self.drop_server(adapter.name, false);
         }
         let located = match self.servers.get(adapter.name).map(|server| &server.state) {
             Some(ServerState::Running { .. }) => return true,
@@ -235,6 +250,7 @@ impl LspStore {
                     Server {
                         server: None,
                         state: ServerState::Locating(receiver),
+                        candidates,
                     },
                 );
                 return false;
@@ -242,7 +258,7 @@ impl LspStore {
         };
         let (Some((binary, args)), Some(env)) = (located, self.environment().cloned()) else {
             self.servers.remove(adapter.name);
-            self.unavailable.insert(adapter.name);
+            self.unavailable.insert(adapter.name, candidates);
             return false;
         };
         let mut server = match LanguageServer::spawn(
@@ -257,7 +273,7 @@ impl LspStore {
             Err(error) => {
                 eprintln!("lsp: could not start {}: {error}", binary.display());
                 self.servers.remove(adapter.name);
-                self.unavailable.insert(adapter.name);
+                self.unavailable.insert(adapter.name, candidates);
                 return false;
             }
         };
@@ -267,6 +283,7 @@ impl LspStore {
             Server {
                 server: Some(server),
                 state: ServerState::Starting { initialize_id },
+                candidates,
             },
         );
         false
@@ -276,6 +293,10 @@ impl LspStore {
     /// server is up, then sent each change (just the edited ranges when the server accepts that).
     pub fn sync_document(&mut self, path: &Path, lang: Lang, buffer: &EditorBuffer) {
         let Some((adapter, language_id)) = adapter_for(lang) else {
+            if self.documents.contains_key(path) {
+                self.close_document(path);
+                self.clear_diagnostics(path.to_path_buf());
+            }
             return;
         };
         if !self.ensure_server(adapter.clone()) {
@@ -284,6 +305,7 @@ impl LspStore {
         let Some(Server {
             server: Some(server),
             state: ServerState::Running { capabilities },
+            ..
         }) = self.servers.get_mut(adapter.name)
         else {
             return;
@@ -365,6 +387,7 @@ impl LspStore {
         let Some(Server {
             server: Some(server),
             state: ServerState::Running { capabilities },
+            ..
         }) = self.servers.get_mut(document.adapter)
         else {
             return;
@@ -411,6 +434,7 @@ impl LspStore {
         let Some(Server {
             server: Some(server),
             state: ServerState::Running { capabilities },
+            ..
         }) = self.servers.get_mut(document.adapter)
         else {
             return None;
@@ -445,6 +469,7 @@ impl LspStore {
             Some(Server {
                 server: Some(server),
                 state: ServerState::Running { capabilities },
+                ..
             }) => Some((server, capabilities, document)),
             _ => None,
         }
@@ -466,6 +491,9 @@ impl LspStore {
         trigger: Option<&str>,
     ) -> Option<u64> {
         self.sync_document(path, lang, buffer);
+        if !crate::adapters::choice_for(lang).completions {
+            return None;
+        }
         let (server, capabilities, document) = self.document_server(path)?;
         let triggers = capabilities
             .completion_provider
@@ -705,9 +733,20 @@ impl LspStore {
 
     /// Drop a server that exited or failed, and the diagnostics it had shown.
     fn server_gone(&mut self, name: &'static str) {
-        self.servers.remove(name);
+        self.drop_server(name, true);
+    }
+
+    /// Stop a server and forget its documents and diagnostics; its files open on it again on their next sync.
+    fn drop_server(&mut self, name: &'static str, failed: bool) {
+        if let Some(server) = self.servers.remove(name) {
+            if failed {
+                self.unavailable.insert(name, server.candidates);
+            }
+            if let Some(server) = server.server {
+                server.shutdown();
+            }
+        }
         self.summaries.retain(|_, (adapter, _, _)| *adapter != name);
-        self.unavailable.insert(name);
         let closed: Vec<PathBuf> = self
             .documents
             .iter()
@@ -716,13 +755,18 @@ impl LspStore {
             .collect();
         for path in closed {
             self.documents.remove(&path);
-            self.updates
-                .push(StoreEvent::Diagnostics(DiagnosticsUpdate {
-                    path,
-                    diagnostics: Vec::new(),
-                    synced: None,
-                }));
+            self.clear_diagnostics(path);
         }
+    }
+
+    fn clear_diagnostics(&mut self, path: PathBuf) {
+        self.summaries.remove(&path);
+        self.updates
+            .push(StoreEvent::Diagnostics(DiagnosticsUpdate {
+                path,
+                diagnostics: Vec::new(),
+                synced: None,
+            }));
     }
 
     pub fn diagnostic_summary(&self) -> (usize, usize) {
