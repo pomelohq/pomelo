@@ -481,6 +481,78 @@ pub fn open_url(url: &str) {
     }
 }
 
+fn replayed_strokes() -> Vec<(String, NSEventModifierFlags)> {
+    menus()
+        .into_iter()
+        .flat_map(|(_, entries)| entries)
+        .filter_map(|entry| match entry {
+            Entry::Keys(_, keys) => {
+                let stroke = Keystroke::parse(keys)?;
+                Some((stroke.key.to_lowercase(), modifier_flags(&stroke)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+static REPLAYED: Mutex<Vec<(String, NSEventModifierFlags)>> = Mutex::new(Vec::new());
+
+pub fn route_edit_keys_to_window(window: &winit::window::Window) {
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Imp};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    if let Ok(mut replayed) = REPLAYED.lock() {
+        if replayed.is_empty() {
+            *replayed = replayed_strokes();
+        }
+    }
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    extern "C" fn perform_key_equivalent(this: &AnyObject, _: Sel, event: &NSEvent) -> Bool {
+        let relevant = NSEventModifierFlags::NSEventModifierFlagCommand
+            | NSEventModifierFlags::NSEventModifierFlagShift
+            | NSEventModifierFlags::NSEventModifierFlagOption
+            | NSEventModifierFlags::NSEventModifierFlagControl;
+        let (key, flags) = unsafe {
+            let key = event
+                .charactersIgnoringModifiers()
+                .map(|key| key.to_string().to_lowercase())
+                .unwrap_or_default();
+            (key, event.modifierFlags() & relevant)
+        };
+        let ours = REPLAYED
+            .lock()
+            .is_ok_and(|replayed| replayed.iter().any(|(k, f)| *k == key && *f == flags));
+        if ours {
+            unsafe {
+                let _: () = objc2::msg_send![this, keyDown: event];
+            }
+            return Bool::YES;
+        }
+        Bool::NO
+    }
+    unsafe {
+        let view = handle.ns_view.as_ptr() as *mut AnyObject;
+        let class: *const AnyClass = objc2::ffi::object_getClass(view.cast()).cast();
+        if class.is_null() {
+            return;
+        }
+        let imp: Imp = std::mem::transmute(
+            perform_key_equivalent as extern "C" fn(&AnyObject, Sel, &NSEvent) -> Bool,
+        );
+        objc2::ffi::class_addMethod(
+            class as *mut _,
+            sel!(performKeyEquivalent:).as_ptr(),
+            Some(imp),
+            c"c@:@".as_ptr(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +578,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_edit_keys_are_taken_before_the_menu_bar() {
+        let strokes = replayed_strokes();
+        let command = NSEventModifierFlags::NSEventModifierFlagCommand;
+        let shift = NSEventModifierFlags::NSEventModifierFlagShift;
+        assert!(strokes.contains(&("v".to_string(), command)));
+        assert!(strokes.contains(&("z".to_string(), command | shift)));
+        assert!(
+            !strokes.iter().any(|(key, _)| key == "q"),
+            "window commands stay with the menu"
+        );
     }
 }

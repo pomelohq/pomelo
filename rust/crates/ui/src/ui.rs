@@ -331,20 +331,17 @@ fn earclip(poly: &[(f32, f32)], color: Rgba) -> Vec<Tri> {
 
 type IconDraw = (IconTexKey, u32, u32);
 
-/// Present each frame inside the window's Core Animation transaction, so a live resize never shows a frame
-/// sized for the previous window size.
 #[cfg(target_os = "macos")]
-fn present_with_transaction(surface: &wgpu::Surface<'static>) {
-    // SAFETY: the Metal surface was just created on this thread and outlives the call.
+fn present_with_transaction(surface: &wgpu::Surface<'static>, on: bool) {
     unsafe {
         if let Some(metal) = surface.as_hal::<wgpu::hal::api::Metal>() {
-            metal.render_layer().lock().setPresentsWithTransaction(true);
+            metal.render_layer().lock().setPresentsWithTransaction(on);
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn present_with_transaction(_surface: &wgpu::Surface<'static>) {}
+fn present_with_transaction(_surface: &wgpu::Surface<'static>, _on: bool) {}
 
 fn ui_config(width: u32, height: u32) -> SurfaceConfiguration {
     SurfaceConfiguration {
@@ -1205,8 +1202,13 @@ impl UiRenderer {
 
         let config = ui_config(size.width, size.height);
         surface.configure(&device, &config);
-        present_with_transaction(&surface);
         Self::from_parts(device, queue, config, scale, Some(surface), None)
+    }
+
+    pub fn set_resizing(&mut self, resizing: bool) {
+        if let Some(surface) = self.surface.as_ref() {
+            present_with_transaction(surface, resizing);
+        }
     }
 
     /// Headless renderer that draws to an offscreen texture (for the UI snapshot tool). Sizes are physical.
