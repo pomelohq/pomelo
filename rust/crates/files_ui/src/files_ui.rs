@@ -224,6 +224,26 @@ const TOOLBAR_CONTROLS: u64 = 3;
 /// Menu entries: selection commands from here (by `SELECTION_COMMANDS` index), then the controls.
 const TOOLBAR_SELECTION_BASE: u64 = 8;
 const TOOLBAR_CONTROL_BASE: u64 = 40;
+/// The minimap draws the text at this size, heaviest weight, so each glyph reads as a block.
+const MINIMAP_FONT: f32 = 2.0;
+const MINIMAP_WIDTH_SHARE: f32 = 0.15;
+const MINIMAP_MAX_COLUMNS: f32 = 80.0;
+/// Narrower than this many columns, the minimap is left out.
+const MINIMAP_MIN_COLUMNS: f32 = 20.0;
+const MINIMAP_PADDING: f32 = 4.0;
+
+/// Where the minimap sat last frame, in body-local px, and how its lines map onto the text.
+#[derive(Clone, Copy)]
+struct MinimapLayout {
+    area: Rect,
+    /// The text line at its top, fractional.
+    top: f32,
+    line_h: f32,
+    thumb_top: f32,
+    thumb_h: f32,
+    total_lines: f32,
+}
+
 /// Columns between a line's end and its inline diagnostic, as the reference pads it.
 const INLINE_DIAGNOSTIC_PADDING: f32 = 4.0;
 
@@ -249,6 +269,7 @@ const SELECTION_COMMANDS: [(&str, EditKey, bool); 15] = [
 /// The Editor Controls menu entries, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EditorControl {
+    Minimap,
     Diagnostics,
     InlineDiagnostics,
     LineNumbers,
@@ -256,8 +277,9 @@ enum EditorControl {
     SoftWrap,
 }
 
-const EDITOR_CONTROLS: [(EditorControl, &str, bool); 5] = [
-    (EditorControl::Diagnostics, "Diagnostics", false),
+const EDITOR_CONTROLS: [(EditorControl, &str, bool); 6] = [
+    (EditorControl::Minimap, "Minimap", false),
+    (EditorControl::Diagnostics, "Diagnostics", true),
     (
         EditorControl::InlineDiagnostics,
         "Inline Diagnostics",
@@ -585,6 +607,11 @@ struct FileItem {
     /// A caret is mid-glide, so the next frame is wanted right away.
     caret_gliding: bool,
     /// What the toolbar's Editor Controls show or hide in this editor.
+    minimap: bool,
+    /// The minimap as last drawn, for pointer presses and drags on it.
+    minimap_layout: Option<MinimapLayout>,
+    /// The pointer's last y while a press on the minimap drags it.
+    minimap_drag: Option<f32>,
     show_diagnostics: bool,
     inline_diagnostics: bool,
     line_numbers: bool,
@@ -892,6 +919,9 @@ impl FileItem {
             active_indent: RefCell::default(),
             glides: caret_glide::Glides::default(),
             caret_gliding: false,
+            minimap: false,
+            minimap_layout: None,
+            minimap_drag: None,
             show_diagnostics: true,
             inline_diagnostics: false,
             line_numbers: true,
@@ -1272,6 +1302,7 @@ impl FileItem {
                 id: self.toolbar_ids + TOOLBAR_CONTROL_BASE + index as u64,
                 label: (*text).into(),
                 checked: match control {
+                    EditorControl::Minimap => self.minimap,
                     EditorControl::Diagnostics => self.show_diagnostics,
                     EditorControl::InlineDiagnostics => self.inline_diagnostics,
                     EditorControl::LineNumbers => self.line_numbers,
@@ -2225,7 +2256,37 @@ impl FileItem {
 
     /// The text viewport width (px): the body minus the padding and the fixed gutter.
     fn text_viewport_w(&self) -> f32 {
-        (self.body_w - self.gutter_dims().full_width() - SCROLLBAR_WIDTH).max(0.0)
+        (self.body_w - self.gutter_dims().full_width() - SCROLLBAR_WIDTH - self.minimap_width())
+            .max(0.0)
+    }
+
+    /// How wide the minimap is: a share of the text's width up to a column count, none when too narrow.
+    fn minimap_width(&self) -> f32 {
+        if !self.minimap || self.buffer.is_none() {
+            return 0.0;
+        }
+        let column = char_advance() * MINIMAP_FONT / edit_font();
+        let text_w = (self.body_w - self.gutter_dims().full_width()).max(0.0);
+        let width = (text_w * MINIMAP_WIDTH_SHARE).min(column * MINIMAP_MAX_COLUMNS);
+        if width >= column * MINIMAP_MIN_COLUMNS {
+            width
+        } else {
+            0.0
+        }
+    }
+
+    /// Where the minimap's top line sits: it scrolls through the text as far as the editor has.
+    fn minimap_top(
+        total_lines: f32,
+        visible_lines: f32,
+        minimap_lines: f32,
+        scroll_lines: f32,
+    ) -> f32 {
+        let hidden = (total_lines - visible_lines).max(0.0);
+        if hidden == 0.0 {
+            return 0.0;
+        }
+        (scroll_lines / hidden).clamp(0.0, 1.0) * (total_lines - minimap_lines).max(0.0)
     }
 
     /// Total text width (px) of the widest line, plus a trailing column so the last glyph isn't flush to the edge.
@@ -4381,6 +4442,14 @@ impl Item for FileItem {
     }
 
     fn drag_select(&mut self, x: f32, y: f32, body: Rect) {
+        if let (Some(last), Some(layout)) = (self.minimap_drag, self.minimap_layout) {
+            let local_y = y - body.y;
+            let per_line = (layout.area.h / layout.total_lines.max(1.0)).min(layout.line_h);
+            let lines = (local_y - last) / per_line.max(0.01);
+            self.set_scroll_y(self.scroll_y + lines * edit_line_h());
+            self.minimap_drag = Some(local_y);
+            return;
+        }
         let text_bottom = body.y + body.h;
         let vertical_margin = edit_line_h().min(body.h / 3.0);
         let delta_rows = if y < body.y + vertical_margin {
@@ -4975,6 +5044,111 @@ impl Item for FileItem {
         true
     }
 
+    fn minimap(&mut self, content: Rect) -> Option<ui::Painted> {
+        let width = self.minimap_width();
+        if width <= 0.0 {
+            self.minimap_layout = None;
+            return None;
+        }
+        let colors = theme();
+        let line_h = edit_line_h();
+        let mini_line_h = MINIMAP_FONT * line_h / edit_font();
+        let column = char_advance() * MINIMAP_FONT / edit_font();
+        let area = Rect::new(
+            content.x + content.w - SCROLLBAR_WIDTH - width,
+            content.y,
+            width,
+            content.h,
+            colors.editor_background,
+        );
+        let total_lines = self.disp_count() as f32;
+        let visible_lines = self.body_h / line_h;
+        let minimap_lines = area.h / mini_line_h;
+        let scroll_lines = self.scroll_y / line_h;
+        let top = Self::minimap_top(total_lines, visible_lines, minimap_lines, scroll_lines);
+        let mut painted = ui::Painted::default();
+        painted.rects.push(area);
+        let syntax_colors = syntax_theme();
+        let first = top.floor() as usize;
+        let last = ((top + minimap_lines).ceil() as usize + 1).min(self.line_count());
+        for line in first..last {
+            let y = area.y + (line as f32 - top) * mini_line_h;
+            let mut x = area.x + MINIMAP_PADDING;
+            for (text, color) in self.line_segments(line, &syntax_colors) {
+                if x >= area.x + area.w {
+                    break;
+                }
+                let columns = text.chars().count() as f32;
+                if !text.trim().is_empty() {
+                    painted.texts.push(ui::Text {
+                        x,
+                        y,
+                        size: MINIMAP_FONT,
+                        color,
+                        text,
+                        font: ui::TextFont::Buffer,
+                        weight: 900,
+                        italic: false,
+                        wrap: 0.0,
+                        scale: 1.0,
+                    });
+                }
+                x += columns * column;
+            }
+        }
+        let thumb_top = area.y + (scroll_lines - top) * mini_line_h;
+        let thumb_h = visible_lines * mini_line_h;
+        let mut thumb_color = colors.scrollbar_thumb_background;
+        thumb_color.a = thumb_color.a.min(0.7);
+        if self.minimap_drag.is_some() {
+            thumb_color = colors.scrollbar_thumb_hover_background;
+        }
+        let border = colors.scrollbar_thumb_border;
+        // Open on the left, where the thumb meets the text: borders on its top, bottom and right.
+        painted.rects.extend([
+            Rect::new(area.x, thumb_top, width, thumb_h, thumb_color),
+            Rect::new(area.x, thumb_top, width, 1.0, border),
+            Rect::new(area.x, thumb_top + thumb_h - 1.0, width, 1.0, border),
+            Rect::new(area.x + width - 1.0, thumb_top, 1.0, thumb_h, border),
+        ]);
+        self.minimap_layout = Some(MinimapLayout {
+            area: Rect::new(
+                area.x - content.x,
+                area.y - content.y,
+                area.w,
+                area.h,
+                Rgba::TRANSPARENT,
+            ),
+            top,
+            line_h: mini_line_h,
+            thumb_top: thumb_top - content.y,
+            thumb_h,
+            total_lines,
+        });
+        Some(painted)
+    }
+
+    fn minimap_press(&mut self, local_x: f32, local_y: f32) -> bool {
+        let Some(layout) = self.minimap_layout.filter(|layout| {
+            local_x >= layout.area.x
+                && local_x < layout.area.x + layout.area.w
+                && local_y >= layout.area.y
+                && local_y < layout.area.y + layout.area.h
+        }) else {
+            self.minimap_drag = None;
+            return false;
+        };
+        let on_thumb = local_y >= layout.thumb_top && local_y < layout.thumb_top + layout.thumb_h;
+        if !on_thumb {
+            // The thumb centers on the press.
+            let top_position = (local_y - layout.area.y - layout.thumb_h / 2.0).max(0.0);
+            let lines = (layout.top + top_position / layout.line_h).min(layout.total_lines);
+            self.set_scroll_y(lines * edit_line_h());
+        }
+        self.minimap_drag = Some(local_y);
+        true
+    }
+
     fn toolbar(&self, _width: f32) -> Option<Node> {
         self.buffer.as_ref()?;
         let colors = theme();
@@ -5082,6 +5256,11 @@ impl Item for FileItem {
             return;
         };
         match control {
+            EditorControl::Minimap => {
+                self.minimap = !self.minimap;
+                self.minimap_layout = None;
+                self.rows = None;
+            }
             EditorControl::Diagnostics => self.show_diagnostics = !self.show_diagnostics,
             EditorControl::InlineDiagnostics => self.inline_diagnostics = !self.inline_diagnostics,
             EditorControl::LineNumbers => {
@@ -8721,6 +8900,7 @@ mod indent_guide_tests {
         assert_eq!(
             checked,
             [
+                ("Minimap", false),
                 ("Diagnostics", true),
                 ("Inline Diagnostics", false),
                 ("Line Numbers", true),
@@ -8729,18 +8909,18 @@ mod indent_guide_tests {
             ]
         );
         assert_eq!(item.inline_diagnostic(1), None);
-        item.menu_pick(menu[1].id);
+        item.menu_pick(menu[2].id);
         assert_eq!(
             item.inline_diagnostic(1).map(|(text, _)| text).as_deref(),
             Some("b is never read")
         );
         let wide = item.gutter_dims().full_width();
-        item.menu_pick(menu[2].id);
+        item.menu_pick(menu[3].id);
         assert!(
             item.gutter_dims().full_width() < wide,
             "the number column goes"
         );
-        item.menu_pick(menu[0].id);
+        item.menu_pick(menu[1].id);
         assert_eq!(
             item.inline_diagnostic(1),
             None,
@@ -8754,6 +8934,45 @@ mod indent_guide_tests {
         assert_eq!(item.take_view_key(), Some(EditKey::ToggleOutline));
         assert!(item.toolbar_click(base + TOOLBAR_SEARCH));
         assert!(item.take_find_request());
+    }
+
+    #[test]
+    fn the_minimap_follows_the_scroll_and_a_press_scrolls_there() {
+        assert_eq!(
+            FileItem::minimap_top(100.0, 20.0, 200.0, 40.0),
+            0.0,
+            "it all fits"
+        );
+        assert_eq!(FileItem::minimap_top(1000.0, 20.0, 200.0, 0.0), 0.0);
+        assert_eq!(FileItem::minimap_top(1000.0, 20.0, 200.0, 980.0), 800.0);
+        let text: String = (0..400)
+            .map(|line| format!("let line_{line} = {line};\n"))
+            .collect();
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "a.rs", Some(text));
+        let content = Rect::new(0.0, 0.0, 1200.0, 600.0, Rgba::TRANSPARENT);
+        item.set_body_height(content.h);
+        item.set_body_width(content.w);
+        assert!(item.minimap(content).is_none(), "off until turned on");
+        let viewport = item.text_viewport_w();
+        item.minimap = true;
+        let painted = item.minimap(content).expect("drawn");
+        assert!(painted.texts.iter().all(|text| text.size == MINIMAP_FONT));
+        assert!(item.text_viewport_w() < viewport, "the text leaves it room");
+        let layout = item.minimap_layout.expect("laid out");
+        assert!(
+            !item.minimap_press(layout.area.x - 5.0, 100.0),
+            "left of it is the text"
+        );
+        assert!(item.minimap_press(layout.area.x + 5.0, layout.area.h - 10.0));
+        assert!(
+            item.scroll_y > 0.0,
+            "a press below the thumb scrolls down to it"
+        );
+        item.set_body_width(200.0);
+        assert!(
+            item.minimap(content).is_none(),
+            "too narrow for twenty columns"
+        );
     }
 
     #[test]

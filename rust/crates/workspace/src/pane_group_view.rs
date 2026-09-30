@@ -1742,6 +1742,13 @@ impl ItemInput for PaneGroupView {
             if let Some(pane) = group.active_pane_mut() {
                 pane.search.focus = None;
             }
+            if !extend
+                && group
+                    .editable_item_mut()
+                    .is_some_and(|item| item.minimap_press(local_x, local_y))
+            {
+                return true;
+            }
             match group.editable_item_mut() {
                 Some(item) if add_caret && !extend => {
                     item.toggle_cursor_at(local_x, local_y);
@@ -2252,6 +2259,7 @@ fn layout_body(
         back: Vec::new(),
         back_tris: Vec::new(),
         carets: ui::Painted::default(),
+        minimap: None,
         scrollbar: Vec::new(),
         h_scrollbar: Vec::new(),
     };
@@ -2325,6 +2333,7 @@ fn layout_body(
         placement.back = item.back_rects(body_rect);
         placement.back_tris = item.selection_tris(body_rect);
         placement.carets = item.carets(body_rect);
+        placement.minimap = item.minimap(body_rect);
         placement.scrollbar = item.scrollbar(body_rect);
         placement.h_scrollbar = item.h_scrollbar(body_rect);
         y_offset = item.body_y_offset();
