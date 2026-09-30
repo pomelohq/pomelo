@@ -46,8 +46,36 @@ pub struct DiagnosticsUpdate {
     pub synced: Option<SyncedText>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageLevel {
+    Error,
+    Warning,
+    Info,
+}
+
+/// Another server to run for a language instead of one that said it cannot work here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServerSwitch {
+    pub language: &'static str,
+    pub from: &'static str,
+    pub to: &'static str,
+}
+
+/// A server's `window/showMessage`, or a `window/showMessageRequest` waiting for one of `actions`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServerMessage {
+    pub server: ServerId,
+    pub name: &'static str,
+    pub level: MessageLevel,
+    pub message: String,
+    pub actions: Vec<String>,
+    pub request: Option<Value>,
+    pub switch: Option<ServerSwitch>,
+}
+
 #[derive(Clone, Debug)]
 pub enum StoreEvent {
+    Message(ServerMessage),
     Diagnostics(DiagnosticsUpdate),
     Hover(HoverResponse),
     Completions(crate::CompletionsResponse),
@@ -1209,7 +1237,12 @@ impl LspStore {
                     }
                 } else if method == "$/progress" {
                     self.receive_progress(id, &params);
+                } else if method == "window/showMessage" {
+                    self.receive_message(id, &params, None);
                 }
+            }
+            ServerEvent::MessageRequest { id: call, params } => {
+                self.receive_message(id, &params, Some(call));
             }
             ServerEvent::ProgressCreated { token } => {
                 if let Some(server) = self.servers.get_mut(&id) {
@@ -1381,6 +1414,52 @@ impl LspStore {
     }
 
     /// Ask a server to cancel work it said can be (`window/workDoneProgress/cancel`).
+    fn receive_message(&mut self, id: ServerId, params: &Value, request: Option<Value>) {
+        let name = self.servers.get(&id).map_or("server", |server| server.name);
+        let message = params
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let level = match params.get("type").and_then(Value::as_u64) {
+            Some(1) => MessageLevel::Error,
+            Some(2) => MessageLevel::Warning,
+            _ => MessageLevel::Info,
+        };
+        let actions = params
+            .get("actions")
+            .and_then(Value::as_array)
+            .map(|actions| {
+                actions
+                    .iter()
+                    .filter_map(|action| action.get("title")?.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let switch = suggested_switch(name, &message);
+        self.updates.push(StoreEvent::Message(ServerMessage {
+            server: id,
+            name,
+            level,
+            message,
+            actions,
+            request,
+            switch,
+        }));
+    }
+
+    /// Answers a `window/showMessageRequest` with the action picked, or none when it was dismissed.
+    pub fn answer_message(&mut self, id: ServerId, request: Value, action: Option<&str>) {
+        if let Some(server) = self
+            .servers
+            .get_mut(&id)
+            .and_then(|server| server.server.as_mut())
+        {
+            let result = action.map_or(Value::Null, |title| json!({"title": title}));
+            server.reply(request, result);
+        }
+    }
+
     pub fn cancel_work(&mut self, id: ServerId, token: &str) {
         if let Some(server) = self
             .servers
@@ -1825,6 +1904,15 @@ fn initialize_params(root: &Path, options: Value) -> Value {
     })
 }
 
+/// solargraph stops indexing past its file limit, so nothing resolves; ruby-lsp has no such limit.
+fn suggested_switch(name: &str, message: &str) -> Option<ServerSwitch> {
+    (name == "solargraph" && message.contains("too large to index")).then_some(ServerSwitch {
+        language: "Ruby",
+        from: "solargraph",
+        to: "ruby-lsp",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1848,6 +1936,57 @@ mod tests {
         server.progress_tokens.insert("1".into());
         store.servers.insert(id, server);
         (store, id)
+    }
+
+    #[test]
+    fn server_messages_and_questions_reach_the_ui() {
+        let (mut store, id) = store_with_running("typescript");
+        store.handle_event(
+            id,
+            ServerEvent::Notification {
+                method: "window/showMessage".into(),
+                params: json!({"type": 2, "message": "Using the bundled TypeScript"}),
+            },
+        );
+        store.handle_event(
+            id,
+            ServerEvent::MessageRequest {
+                id: json!(4),
+                params: json!({"type": 1, "message": "Reload?", "actions": [{"title": "Yes"}, {"title": "No"}]}),
+            },
+        );
+        let messages: Vec<&ServerMessage> = store
+            .updates
+            .iter()
+            .filter_map(|event| match event {
+                StoreEvent::Message(message) => Some(message),
+                _ => None,
+            })
+            .collect();
+        match messages.as_slice() {
+            [told, asked] => {
+                assert_eq!(
+                    (told.name, told.level, told.request.clone()),
+                    ("vtsls", MessageLevel::Warning, None)
+                );
+                assert!(told.actions.is_empty());
+                assert_eq!(asked.level, MessageLevel::Error);
+                assert_eq!(asked.actions, ["Yes", "No"]);
+                assert_eq!(asked.request, Some(json!(4)));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_workspace_too_large_for_solargraph_suggests_ruby_lsp() {
+        let message = "The workspace is too large to index (5716 files, 5000 max)";
+        assert_eq!(
+            suggested_switch("solargraph", message).map(|switch| switch.to),
+            Some("ruby-lsp")
+        );
+        assert_eq!(suggested_switch("solargraph", "Indexing"), None);
+        assert_eq!(suggested_switch("vtsls", message), None);
     }
 
     #[test]

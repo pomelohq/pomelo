@@ -1823,6 +1823,26 @@ impl App {
         self.open_in_editor(&path);
     }
 
+    fn switch_language_server(&mut self, switch: workspace::ServerSwitch) {
+        let language = self
+            .settings
+            .languages
+            .entry(switch.language.to_string())
+            .or_default();
+        language.language_servers = Some(vec![
+            switch.to.to_string(),
+            format!("!{}", switch.from),
+            "...".to_string(),
+        ]);
+        if let Err(error) = self.settings.save() {
+            eprintln!("settings: save: {error}");
+        }
+        let settings = self.settings.clone();
+        self.with_settings_view(|view, _| view.replace_settings(settings));
+        self.settings_dirty = true;
+        self.apply_editor_defaults();
+    }
+
     fn edit_settings_json(&mut self) {
         let Some(path) = settings::Settings::path() else {
             return;
@@ -3176,6 +3196,9 @@ impl App {
         }
         if effects.restart_stale {
             self.restart_stale(id);
+        }
+        if let Some(switch) = effects.switch_language_server {
+            self.switch_language_server(switch);
         }
         if let Some(action) = effects.action {
             self.run_app_action(id, action, event_loop);

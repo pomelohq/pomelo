@@ -73,6 +73,7 @@ pub struct WorkspaceEffects {
     pub fix_setup: bool,
     /// Restart the services still running with the previous config.
     pub restart_stale: bool,
+    pub switch_language_server: Option<crate::ServerSwitch>,
     /// A command palette pick the app runs (settings, projects, themes...).
     pub action: Option<crate::keymap::Action>,
     /// The usage card's Refresh Now.
@@ -143,12 +144,15 @@ fn clipped_hits(painted: &Painted, clip: Rect) -> Vec<(Rect, u64)> {
 
 const SETUP_TITLE: &str = "Project setup needs attention";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Notification {
     title: String,
     message: String,
     primary: Option<String>,
     action: Option<NotificationAction>,
+    level: Option<crate::NoticeLevel>,
+    buttons: Vec<String>,
+    copy: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,6 +161,7 @@ enum NotificationAction {
     FixSetup,
     RestartStale,
     ReleaseNotes,
+    Server(crate::ServerNotice),
 }
 
 /// A zoomed group drawn over the workspace: its frame (with the border on `sides`) and the content inside it.
@@ -319,6 +324,7 @@ pub struct WorkspaceView {
     menu_terminal: Option<(InputGroup, Vec<usize>, crate::TerminalContext)>,
     toast: Option<Toast>,
     notification: Option<Notification>,
+    server_notices: std::collections::VecDeque<crate::ServerNotice>,
     shown_problem: Option<String>,
     /// How far the WORKSPACES list (or rail) is scrolled, and how far it can go.
     workspace_scroll: f32,
@@ -400,6 +406,7 @@ impl WorkspaceView {
             titlebar_click: None,
             toast: None,
             notification: None,
+            server_notices: std::collections::VecDeque::new(),
             shown_problem: None,
             workspace_scroll: 0.0,
             workspace_scroll_max: 0.0,
@@ -1041,6 +1048,7 @@ impl WorkspaceView {
                 config_path.to_path_buf(),
                 line,
             )),
+            ..Notification::default()
         });
     }
 
@@ -1091,6 +1099,7 @@ impl WorkspaceView {
             message: names.join(", "),
             primary: Some("Restart".into()),
             action: Some(NotificationAction::RestartStale),
+            ..Notification::default()
         });
     }
 
@@ -1100,6 +1109,7 @@ impl WorkspaceView {
             message,
             primary: Some(button.into()),
             action: Some(NotificationAction::ReleaseNotes),
+            ..Notification::default()
         });
     }
 
@@ -1142,6 +1152,7 @@ impl WorkspaceView {
             message,
             primary: Some(button.into()),
             action: Some(NotificationAction::OpenFile(path, line)),
+            ..Notification::default()
         });
     }
 
@@ -1180,6 +1191,7 @@ impl WorkspaceView {
                     message,
                     primary: Some(primary.into()),
                     action: Some(action),
+                    ..Notification::default()
                 });
             }
             None if showing => self.notification = None,
@@ -2084,6 +2096,7 @@ impl WorkspaceView {
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
         }
+        self.pull_server_notices();
         self.layout.language_servers = self
             .layout
             .files_view
@@ -6492,6 +6505,24 @@ impl WorkspaceView {
         }
     }
 
+    fn pull_server_notices(&mut self) {
+        if let Some(view) = self.layout.files_view.as_mut() {
+            self.server_notices.extend(view.take_server_notices());
+        }
+        if self.notification.is_some() {
+            return;
+        }
+        if let Some(notice) = self.server_notices.pop_front() {
+            self.notification = Some(server_notification(notice));
+        }
+    }
+
+    fn answer_server_notice(&mut self, notice: &crate::ServerNotice, action: Option<usize>) {
+        if let Some(view) = self.layout.files_view.as_mut() {
+            view.answer_server_notice(notice.token, action);
+        }
+    }
+
     fn show_view_toast(&mut self) {
         let message = self.layout.files_view.as_mut().and_then(|v| v.take_toast());
         if let Some(message) = message {
@@ -7075,6 +7106,28 @@ impl WorkspaceView {
                 if closed.title == SETUP_TITLE {
                     self.dismissed_setup = Some(closed.message);
                 }
+                if let Some(NotificationAction::Server(notice)) = &closed.action {
+                    self.answer_server_notice(notice, None);
+                }
+            }
+        } else if id == crate::NOTIFICATION_COPY {
+            if let Some(notification) = &self.notification {
+                Self::clip_set(&notification.message);
+            }
+        } else if (crate::NOTIFICATION_BUTTON_BASE..crate::NOTIFICATION_BUTTON_END).contains(&id) {
+            let index = (id - crate::NOTIFICATION_BUTTON_BASE) as usize;
+            if let Some(NotificationAction::Server(notice)) = self
+                .notification
+                .take()
+                .and_then(|notification| notification.action)
+            {
+                let switch_buttons = usize::from(notice.switch.is_some());
+                if index < switch_buttons {
+                    self.pending.switch_language_server = notice.switch;
+                    self.answer_server_notice(&notice, None);
+                } else {
+                    self.answer_server_notice(&notice, Some(index - switch_buttons));
+                }
             }
         } else if id == crate::NOTIFICATION_PRIMARY {
             match self
@@ -7092,7 +7145,7 @@ impl WorkspaceView {
                 Some(NotificationAction::ReleaseNotes) => {
                     self.pending.update = Some(crate::UpdateAction::ReleaseNotes)
                 }
-                None => {}
+                Some(NotificationAction::Server(_)) | None => {}
             }
         }
     }
@@ -7478,6 +7531,46 @@ const NOTIFICATION_MARGIN: f32 = 12.0;
 const NOTIFICATION_PAD: f32 = 12.0;
 const NOTIFICATION_MAX_LINES: usize = 12;
 
+fn server_notification(notice: crate::ServerNotice) -> Notification {
+    let mut message = notice.message.clone();
+    let mut buttons = Vec::new();
+    if let Some(switch) = &notice.switch {
+        message.push_str(&format!(
+            "\n\n{} can index this project instead. It keeps its index in a .{} folder in the project.",
+            switch.to, switch.to
+        ));
+        buttons.push(format!("Use {}", switch.to));
+    }
+    buttons.extend(notice.actions.iter().cloned());
+    Notification {
+        title: notice.server.clone(),
+        message,
+        level: Some(notice.level),
+        buttons,
+        copy: true,
+        action: Some(NotificationAction::Server(notice)),
+        ..Notification::default()
+    }
+}
+
+fn notice_button(id: u64, text: &str, hovered: Option<u64>) -> ui::Div {
+    let mut button = ui::div()
+        .h_px(22.0)
+        .px(4.0)
+        .items_center()
+        .rounded(4.0)
+        .on_click(id)
+        .child(
+            ui::label(text.to_string())
+                .label_size(ui::LabelSize::Small)
+                .color(ui::theme().text),
+        );
+    if hovered == Some(id) {
+        button = button.bg(ui::theme().ghost_element_hover);
+    }
+    button
+}
+
 fn notification_card(notification: &Notification, w: f32, h: f32, hovered: Option<u64>) -> Painted {
     let scale = ui::ui_text_scale();
     let card_w = (NOTIFICATION_W * scale)
@@ -7517,22 +7610,45 @@ fn notification_card(notification: &Notification, w: f32, h: f32, hovered: Optio
     if hovered == Some(crate::NOTIFICATION_CLOSE) {
         close = close.bg(ui::theme().ghost_element_hover);
     }
+    let mut title = ui::div().row().items_center().gap(8.0);
+    if let Some(level) = notification.level {
+        let (kind, color) = match level {
+            crate::NoticeLevel::Error => (IconKind::XCircle, ui::theme().error),
+            crate::NoticeLevel::Warning => (IconKind::Warning, ui::theme().warning),
+            crate::NoticeLevel::Info => (IconKind::Info, ui::theme().icon_muted),
+        };
+        title = title.child(ui::icon(kind).size(14.0).color(color));
+    }
+    let title = title.child(
+        ui::label(notification.title.clone())
+            .label_size(ui::LabelSize::Default)
+            .color(ui::theme().text),
+    );
+    let mut controls = ui::div().row().gap(4.0);
+    if notification.copy {
+        let mut copy = ui::div()
+            .w_px(close_w)
+            .h_px(close_w)
+            .rounded(4.0)
+            .items_center()
+            .justify_center()
+            .on_click(crate::NOTIFICATION_COPY)
+            .child(
+                ui::icon(IconKind::Copy)
+                    .size(12.0)
+                    .color(ui::theme().icon_muted),
+            );
+        if hovered == Some(crate::NOTIFICATION_COPY) {
+            copy = copy.bg(ui::theme().ghost_element_hover);
+        }
+        controls = controls.child(copy);
+    }
     let header = ui::div()
         .row()
         .justify_between()
         .gap(16.0)
-        .child(
-            ui::div()
-                .col()
-                .gap(2.0)
-                .child(
-                    ui::label(notification.title.clone())
-                        .label_size(ui::LabelSize::Default)
-                        .color(ui::theme().text),
-                )
-                .child(message),
-        )
-        .child(close);
+        .child(ui::div().col().gap(2.0).child(title).child(message))
+        .child(controls.child(close));
     let mut card = ui::div()
         .col()
         .p(NOTIFICATION_PAD)
@@ -7542,21 +7658,21 @@ fn notification_card(notification: &Notification, w: f32, h: f32, hovered: Optio
         .border(1.0, ui::theme().border)
         .child(header);
     if let Some(primary) = &notification.primary {
-        let mut button = ui::div()
-            .h_px(22.0)
-            .px(4.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(crate::NOTIFICATION_PRIMARY)
-            .child(
-                ui::label(primary.clone())
-                    .label_size(ui::LabelSize::Small)
-                    .color(ui::theme().text),
-            );
-        if hovered == Some(crate::NOTIFICATION_PRIMARY) {
-            button = button.bg(ui::theme().ghost_element_hover);
+        card = card.child(ui::div().row().child(notice_button(
+            crate::NOTIFICATION_PRIMARY,
+            primary,
+            hovered,
+        )));
+    }
+    if !notification.buttons.is_empty() {
+        let mut row = ui::div().row().gap(4.0);
+        for (index, text) in notification.buttons.iter().enumerate() {
+            let id = crate::NOTIFICATION_BUTTON_BASE + index as u64;
+            if id < crate::NOTIFICATION_BUTTON_END {
+                row = row.child(notice_button(id, text, hovered));
+            }
         }
-        card = card.child(ui::div().row().child(button));
+        card = card.child(row);
     }
     let node: ui::Node = ui::div().col().child(card).into();
     let probe = ui::render(&node, Rect::new(0.0, 0.0, card_w, h, Rgba::TRANSPARENT));
@@ -7638,6 +7754,45 @@ fn union_rect(a: Rect, b: &Rect) -> Rect {
 mod tests {
     use super::*;
     use ui::Application;
+
+    #[test]
+    fn server_notices_wait_their_turn_and_offer_a_switch() {
+        let mut view = WorkspaceView::new(Layout::default());
+        let switch = crate::ServerSwitch {
+            language: "Ruby",
+            from: "solargraph",
+            to: "ruby-lsp",
+        };
+        view.server_notices.extend([
+            crate::ServerNotice {
+                token: 0,
+                server: "solargraph".into(),
+                level: crate::NoticeLevel::Warning,
+                message: "The workspace is too large to index".into(),
+                actions: Vec::new(),
+                switch: Some(switch),
+            },
+            crate::ServerNotice {
+                token: 1,
+                server: "vtsls".into(),
+                level: crate::NoticeLevel::Info,
+                message: "Ready".into(),
+                actions: vec!["OK".into()],
+                switch: None,
+            },
+        ]);
+        view.pull_server_notices();
+        let shown = view.notification.clone().expect("first notice");
+        assert_eq!(shown.title, "solargraph");
+        assert_eq!(shown.buttons, ["Use ruby-lsp"]);
+        view.header_click(crate::NOTIFICATION_BUTTON_BASE);
+        assert_eq!(view.take_effects().switch_language_server, Some(switch));
+        view.pull_server_notices();
+        assert_eq!(view.notification_text(), Some(("vtsls", "Ready")));
+        view.header_click(crate::NOTIFICATION_CLOSE);
+        view.pull_server_notices();
+        assert!(view.notification_text().is_none());
+    }
 
     #[test]
     fn setup_problems_offer_a_fix_and_stay_closed_once_dismissed() {

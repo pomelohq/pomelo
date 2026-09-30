@@ -1086,6 +1086,7 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Ellipsis => svg!("ellipsis.svg"),
         IconKind::Pause => svg!("pause.svg"),
         IconKind::HelpCircle => svg!("help_circle.svg"),
+        IconKind::Info => svg!("info.svg"),
         IconKind::Messages => svg!("messages.svg"),
         IconKind::Wrench => svg!("wrench.svg"),
         IconKind::Archive => svg!("archive.svg"),
