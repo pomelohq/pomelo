@@ -13,4 +13,5 @@ pom_proxy = { path = "../pom_proxy" }
 serde_json.workspace = true
 terminal = { path = "../terminal" }
 ui = { path = "../ui" }
+editor = { package = "pomelo-editor", path = "../editor" }
 workspace = { path = "../workspace" }

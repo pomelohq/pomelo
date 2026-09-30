@@ -222,6 +222,91 @@ pub fn body_text(
     text.map(|text| (text.to_string(), label))
 }
 
+/// One line of pretty-printed JSON cut into runs, each with the highlight capture it is colored by.
+fn json_runs(line: &str) -> Vec<(&str, &'static str)> {
+    let mut runs = Vec::new();
+    let bytes = line.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        let start = at;
+        let capture = match bytes[at] {
+            b' ' | b'\t' => {
+                while at < bytes.len() && matches!(bytes[at], b' ' | b'\t') {
+                    at += 1;
+                }
+                ""
+            }
+            b'"' => {
+                at += 1;
+                let mut escaped = false;
+                while at < bytes.len() {
+                    let byte = bytes[at];
+                    at += 1;
+                    match byte {
+                        _ if escaped => escaped = false,
+                        b'\\' => escaped = true,
+                        b'"' => break,
+                        _ => {}
+                    }
+                }
+                let rest = line[at..].trim_start();
+                if rest.starts_with(':') {
+                    "property.json_key"
+                } else {
+                    "string"
+                }
+            }
+            b'{' | b'}' | b'[' | b']' => {
+                at += 1;
+                "punctuation.bracket"
+            }
+            b',' | b':' => {
+                at += 1;
+                "punctuation.delimiter"
+            }
+            _ => {
+                while at < bytes.len()
+                    && !matches!(
+                        bytes[at],
+                        b' ' | b'\t' | b',' | b':' | b'"' | b'{' | b'}' | b'[' | b']'
+                    )
+                {
+                    at += 1;
+                }
+                match &line[start..at] {
+                    "true" | "false" => "boolean",
+                    "null" => "constant.builtin",
+                    word if word.starts_with(|c: char| c == '-' || c.is_ascii_digit()) => "number",
+                    _ => "",
+                }
+            }
+        };
+        runs.push((&line[start..at], capture));
+    }
+    runs
+}
+
+/// A body line colored like the editor colors JSON.
+fn json_line(line: &str, syntax: &editor::Theme) -> Node {
+    let mut row = div().row().items_center();
+    for (text, capture) in json_runs(line) {
+        let color = if capture.is_empty() {
+            syntax.foreground
+        } else {
+            syntax.syntax_color(capture)
+        };
+        let [r, g, b] = color.0;
+        let color = Rgba::new(
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+            1.0,
+        );
+        row = row.child(small(text.to_string(), color).mono().truncate());
+    }
+    row.into()
+}
+
 /// Re-indents valid JSON keeping its keys in the order they were sent.
 fn pretty_json(text: &str) -> String {
     let mut out = String::with_capacity(text.len() * 2);
@@ -576,7 +661,8 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
     for note in notes {
         column = column.child(small(note, colors.text_muted));
     }
-    if let Some((text, _)) = shown.filter(|(text, _)| !text.is_empty()) {
+    if let Some((text, kind)) = shown.filter(|(text, _)| !text.is_empty()) {
+        let syntax = (kind == "JSON").then(workspace::syntax_theme);
         let mut code = div()
             .col()
             .p(10.0)
@@ -585,7 +671,13 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
             .bg(colors.panel_background);
         let lines: Vec<&str> = text.lines().collect();
         for line in lines.iter().take(BODY_LINES_SHOWN) {
-            code = code.child(small(line.to_string(), colors.text).mono().truncate());
+            code = code.child(match &syntax {
+                Some(syntax) => json_line(line, syntax),
+                None => small(line.to_string(), colors.text)
+                    .mono()
+                    .truncate()
+                    .into(),
+            });
         }
         if lines.len() > BODY_LINES_SHOWN {
             code = code.child(small(

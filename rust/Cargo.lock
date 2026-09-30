@@ -935,6 +935,7 @@ name = "dev_services_ui"
 version = "0.7.6"
 dependencies = [
  "pom_proxy",
+ "pomelo-editor",
  "serde_json",
  "terminal",
  "ui",
