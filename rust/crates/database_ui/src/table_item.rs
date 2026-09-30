@@ -1215,47 +1215,67 @@ impl TableItem {
             .into()
     }
 
-    /// Where this is (repo / database / table, on the workspace's branch) and what the tab shows.
-    fn toolbar(&self) -> Node {
+    /// Where this is (repo / database / table, on the workspace's branch) and what the tab shows; in a
+    /// narrow tab the branch goes first, then the repo, then the database, and the table always stays.
+    fn toolbar(&self, width: f32) -> Node {
         let colors = theme();
+        let text_w =
+            |text: &str, size: f32, mono: bool| ui::measure_text_width(text, size, mono, 400);
+        let controls = if self.is_redis() { 0.0 } else { 196.0 }
+            + if self.view == View::Data { 130.0 } else { 0.0 }
+            + 22.0
+            + 44.0;
+        let mut room = width - controls - 20.0 - text_w(&self.table.qualified(), 12.5, false);
+        let mut take = |w: f32| {
+            let fits = w <= room;
+            if fits {
+                room -= w;
+            }
+            fits
+        };
+        let slash_w = text_w("/", 12.5, false) + 12.0;
+        let show_label = take(text_w(&self.database.label, 12.5, false) + slash_w);
+        let show_repo = show_label
+            && !self.database.repo.is_empty()
+            && take(text_w(&self.database.repo, 12.5, false) + slash_w);
+        let show_branch = !self.context.branch.is_empty()
+            && take(text_w("on", 12.0, false) + text_w(&self.context.branch, 12.0, true) + 34.0);
         let muted = |text: String| label(text).size(12.5).color(colors.text_muted);
         let slash = || label("/").size(12.5).color(colors.text_placeholder);
         let mut crumb = div()
             .row()
+            .flex(1.0)
             .gap(6.0)
             .items_center()
             .child(icon(IconKind::Table).size(12.0).color(colors.icon_muted));
-        if !self.database.repo.is_empty() {
+        if show_repo {
             crumb = crumb
                 .child(muted(self.database.repo.clone()))
                 .child(slash());
         }
-        crumb = crumb
-            .child(muted(self.database.label.clone()))
-            .child(slash())
-            .child(
-                label(self.table.qualified())
-                    .size(12.5)
-                    .medium()
-                    .color(colors.text),
-            );
-        if !self.context.branch.is_empty() {
-            crumb = crumb.child(
-                div()
-                    .row()
-                    .gap(4.0)
-                    .pl(8.0)
-                    .items_center()
-                    .child(label("on").size(12.0).color(colors.text_placeholder))
-                    .child(icon(IconKind::Branch).size(11.0).color(colors.text_accent))
-                    .child(
-                        label(self.context.branch.clone())
-                            .size(12.0)
-                            .mono()
-                            .color(colors.text_accent)
-                            .truncate(),
-                    ),
-            );
+        if show_label {
+            crumb = crumb
+                .child(muted(self.database.label.clone()))
+                .child(slash());
+        }
+        crumb = crumb.child(
+            label(self.table.qualified())
+                .size(12.5)
+                .medium()
+                .color(colors.text)
+                .truncate(),
+        );
+        if show_branch {
+            crumb = crumb
+                .child(div().w_px(2.0))
+                .child(label("on").size(12.0).color(colors.text_placeholder))
+                .child(icon(IconKind::Branch).size(11.0).color(colors.text_accent))
+                .child(
+                    label(self.context.branch.clone())
+                        .size(12.0)
+                        .mono()
+                        .color(colors.text_accent),
+                );
         }
         let mut bar = div()
             .row()
@@ -1263,7 +1283,7 @@ impl TableItem {
             .px(10.0)
             .gap(8.0)
             .items_center()
-            .child(div().row().flex(1.0).items_center().child(crumb));
+            .child(crumb);
         if !self.is_redis() {
             let views = [
                 (VIEW_DATA, "Data"),
@@ -1303,7 +1323,7 @@ impl TableItem {
                 ORDER_FIELD,
                 "ORDER BY",
                 &self.order,
-                "created_at DESC",
+                "id DESC",
                 self.focus == Focus::Order,
             ))
             .child(self.text_button(PAGE_SIZE, format!("{} rows", self.page_size), false))
@@ -2063,7 +2083,7 @@ impl Item for TableItem {
             .w_px(main.w / scale)
             .h_px(main.h / scale)
             .bg(colors.editor_background)
-            .child(self.toolbar())
+            .child(self.toolbar(main.w / scale))
             .child(div().h_px(1.0).bg(colors.border_variant));
         if querying {
             tree = tree

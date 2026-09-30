@@ -352,7 +352,13 @@ fn main() -> anyhow::Result<()> {
         } else if which == "console" {
             (900.0_f32, 280.0_f32)
         } else if which == "table" {
-            (1240.0_f32, 620.0_f32)
+            (
+                std::env::var("SNAPW")
+                    .ok()
+                    .and_then(|width| width.parse().ok())
+                    .unwrap_or(1240.0_f32),
+                620.0_f32,
+            )
         } else {
             (900.0_f32, 460.0_f32)
         };

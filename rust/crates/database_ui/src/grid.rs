@@ -516,9 +516,17 @@ impl Grid {
                 label(self.columns[*column].clone())
                     .size(FONT)
                     .mono()
-                    .color(colors.text_muted),
+                    .color(colors.text_muted)
+                    .truncate(),
             );
-            if let Some(kind) = self.types.get(*column).filter(|kind| !kind.is_empty()) {
+            // The type goes first when the column is too narrow for both, so the name stays readable.
+            let room = width - 2.0 * CELL_PAD - 14.0 - text_width(&self.columns[*column]);
+            if let Some(kind) = self
+                .types
+                .get(*column)
+                .filter(|kind| !kind.is_empty())
+                .filter(|kind| ui::measure_text_width(kind, FONT - 1.5, true, 400) + 6.0 <= room)
+            {
                 title = title.child(
                     label(kind.clone())
                         .size(FONT - 1.5)
