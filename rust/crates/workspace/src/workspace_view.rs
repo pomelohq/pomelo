@@ -5181,9 +5181,12 @@ impl WorkspaceView {
                         self.input(group)
                             .is_some_and(|input| input.editor_double_click(x, y))
                     } else {
+                        // Shift alone extends the selection to the click, as the reference does.
+                        let extend =
+                            modifiers.shift && !modifiers.ctrl && !modifiers.alt && !modifiers.cmd;
                         let placed = self
                             .input(group)
-                            .is_some_and(|input| input.editor_click(x, y, false));
+                            .is_some_and(|input| input.editor_click(x, y, extend));
                         if placed {
                             self.dragging = Drag::EditorSel(group);
                         }

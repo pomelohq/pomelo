@@ -5073,6 +5073,8 @@ impl Item for FileItem {
         };
         if let Some(b) = self.buffer.as_mut() {
             if extend {
+                let tail = b.newest().tail();
+                b.place_cursor(tail);
                 b.extend_cursor(off);
             } else {
                 b.place_cursor(off);
@@ -9058,6 +9060,38 @@ mod wrap_tests {
         assert_eq!(item.disp_count(), 4);
         item.input_key(EditKey::ToggleSoftWrap, false);
         assert_eq!(item.disp_count(), 2);
+    }
+}
+
+#[cfg(test)]
+mod shift_click_tests {
+    use super::*;
+
+    #[test]
+    fn shift_click_extends_from_the_newest_selection_to_the_click() {
+        let mut item = FileItem::new(
+            std::path::PathBuf::from("/nonexistent"),
+            "a.txt",
+            Some("one\ntwo\nthree\n".into()),
+        );
+        workspace::Item::set_body_height(&mut item, 10.0 * edit_line_h());
+        let b = item.buffer.as_mut().unwrap();
+        b.place_cursor(1);
+        b.add_cursor(9);
+        let x = item.gutter_dims().full_width() + 2.0 * char_advance() + 1.0;
+        let y = 2.0 * edit_line_h() + 1.0;
+        item.place_cursor(x, y, true);
+        let b = item.buffer.as_ref().unwrap();
+        let selections: Vec<(usize, usize)> = b
+            .selections()
+            .iter()
+            .map(|s| (s.tail(), s.head()))
+            .collect();
+        assert_eq!(
+            selections,
+            vec![(9, 10)],
+            "one selection from the newest one's start"
+        );
     }
 }
 
