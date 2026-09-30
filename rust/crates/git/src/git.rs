@@ -55,6 +55,10 @@ pub fn load_bases(path: &Path) -> Option<DiffBases> {
     if inside.trim_ascii() != b"true" {
         return None;
     }
+    // An ignored file isn't in git's picture at all: no diff, rather than every line added.
+    if git(dir, &["check-ignore", "-q", name]).is_some() {
+        return None;
+    }
     let show = |spec: String| git(dir, &["show", &spec]).and_then(text_of);
     Some(DiffBases {
         head: show(format!("HEAD:./{name}")),
@@ -450,6 +454,14 @@ mod tests {
         );
         write_index(&nested, None).unwrap();
         assert_eq!(load_bases(&nested).and_then(|b| b.index), None);
+        std::fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        let ignored = root.join("node_modules").join("types.d.ts");
+        std::fs::write(&ignored, "export {};\n").unwrap();
+        assert!(
+            load_bases(&ignored).is_none(),
+            "an ignored file has no diff"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
