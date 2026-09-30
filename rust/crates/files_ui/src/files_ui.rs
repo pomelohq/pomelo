@@ -43,6 +43,7 @@ mod fuzzy;
 mod git_diff;
 mod go_to_line;
 mod hover;
+mod language_servers;
 mod list_scrollbar;
 mod lsp_completion;
 mod markdown_preview;
@@ -1380,6 +1381,8 @@ impl FileItem {
                 danger: false,
                 icon: None,
                 hint: command_palette::key_hint(*key).map(Into::into),
+                color: None,
+                header: false,
             })
             .collect()
     }
@@ -1404,6 +1407,8 @@ impl FileItem {
                 danger: false,
                 icon: None,
                 hint: None,
+                color: None,
+                header: false,
             })
             .collect()
     }
@@ -6335,6 +6340,7 @@ pub struct FilesView {
     window_size: (f32, f32),
     /// The project's language servers; none in tests, which must not start real servers.
     lsp: Option<lsp::LspStore>,
+    server_status: language_servers::ServerStatusState,
     tree_ops: tree_actions::TreeOps,
     request: Option<workspace::ViewRequest>,
 }
@@ -6484,6 +6490,7 @@ impl FilesView {
             outline_preview: outline_view::PreviewLayout::Hidden,
             window_size: (1200.0, 800.0),
             lsp,
+            server_status: language_servers::ServerStatusState::default(),
             tree_ops: tree_actions::TreeOps::default(),
             request: None,
             click_targets: Vec::new(),
@@ -7865,6 +7872,20 @@ impl FunctionView for FilesView {
             width: go_to_line::WIDTH,
             elevation: Elevation::Elevated,
         })
+    }
+
+    fn language_servers(&self, details: bool) -> Option<workspace::LanguageServers> {
+        let lsp = self.lsp.as_ref()?;
+        Some(self.server_status.summary(lsp, &self.root, details))
+    }
+
+    fn language_server_action(&mut self, action: workspace::LanguageServerAction) {
+        let Some(lsp) = self.lsp.as_mut() else {
+            return;
+        };
+        if let Some((name, text)) = self.server_status.act(lsp, action) {
+            self.add_center_item(text_tab(format!("language-server-{name}"), name, &text));
+        }
     }
 
     fn diagnostic_summary(&self) -> Option<workspace::DiagnosticSummary> {

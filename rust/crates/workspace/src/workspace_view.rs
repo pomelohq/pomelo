@@ -2073,6 +2073,12 @@ impl WorkspaceView {
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
         }
+        self.layout.language_servers = self
+            .layout
+            .files_view
+            .as_ref()
+            .and_then(|view| view.language_servers(false))
+            .unwrap_or_default();
         let status = ui::render(
             &status_bar(&self.layout, self.session_menu_hover),
             self.layout.status_region(w, h),
@@ -2080,7 +2086,12 @@ impl WorkspaceView {
         let status_hits = status.hits.clone();
         blit(status);
         let status_tip = self.session_menu_hover.and_then(|hv| {
-            let (text, key) = status_tooltip(hv)?;
+            let (text, key) = status_tooltip(hv).or_else(|| {
+                let activity = self.layout.language_servers.activity.as_ref()?;
+                (hv == crate::LANGUAGE_ACTIVITY
+                    && activity.message.chars().count() > crate::ACTIVITY_MESSAGE_LIMIT)
+                    .then(|| (activity.message.clone(), crate::StatusKey::None))
+            })?;
             let rect = status_hits
                 .iter()
                 .find(|(_, id)| *id == hv)
@@ -2735,6 +2746,8 @@ impl WorkspaceView {
                 danger: false,
                 icon: None,
                 hint: hint.map(Into::into),
+                color: None,
+                header: false,
             }
         };
         let selected = context.selection.is_some();
@@ -2914,6 +2927,8 @@ impl WorkspaceView {
             danger: false,
             icon: None,
             hint: None,
+            color: None,
+            header: false,
         };
         let mut items = vec![
             entry(crate::MENU_TAB_CLOSE, "Close", false, false),
@@ -3083,6 +3098,8 @@ impl WorkspaceView {
             danger: false,
             icon: None,
             hint: None,
+            color: None,
+            header: false,
         };
         let mut items = vec![item(crate::MENU_WS_RENAME, "Rename...", false)];
         if project
@@ -3210,6 +3227,23 @@ impl WorkspaceView {
         if target == crate::TAB_MENU_TARGET {
             return self.tab_menu_items();
         }
+        if target == crate::LANGUAGE_SERVERS_MENU_TARGET
+            || target == crate::LANGUAGE_ACTIVITY_MENU_TARGET
+            || (crate::LANGUAGE_SERVER_SUBMENU_BASE..crate::LANGUAGE_SERVER_ACTION_BASE)
+                .contains(&target)
+        {
+            let servers = self
+                .layout
+                .files_view
+                .as_ref()
+                .and_then(|view| view.language_servers(true))
+                .unwrap_or_default();
+            return match target {
+                crate::LANGUAGE_SERVERS_MENU_TARGET => servers.menu_items(),
+                crate::LANGUAGE_ACTIVITY_MENU_TARGET => servers.activity_items(),
+                submenu => servers.submenu_items(submenu),
+            };
+        }
         if is_submenu(target) {
             if let Some(items) = self
                 .layout
@@ -3239,6 +3273,8 @@ impl WorkspaceView {
             danger: false,
             icon: None,
             hint: None,
+            color: None,
+            header: false,
         };
         let item = |id: u64, label: &'static str, sep: bool| MenuItem {
             id,
@@ -3249,6 +3285,8 @@ impl WorkspaceView {
             danger: false,
             icon: None,
             hint: None,
+            color: None,
+            header: false,
         };
         let disabled = |id: u64, label: &'static str, sep: bool, disabled: bool| MenuItem {
             id,
@@ -3259,6 +3297,8 @@ impl WorkspaceView {
             danger: false,
             icon: None,
             hint: None,
+            color: None,
+            header: false,
         };
         if target == MENU_SUBMENU_COPY {
             return vec![
@@ -3359,6 +3399,8 @@ impl WorkspaceView {
                         danger: false,
                         icon: None,
                         hint: None,
+                        color: None,
+                        header: false,
                     }),
             )
             .collect();
@@ -3376,6 +3418,8 @@ impl WorkspaceView {
                     danger: false,
                     icon: None,
                     hint: None,
+                    color: None,
+                    header: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -3386,6 +3430,8 @@ impl WorkspaceView {
                     danger: false,
                     icon: None,
                     hint: None,
+                    color: None,
+                    header: false,
                 },
             ]
         } else if target == AGENT_TOGGLE {
@@ -3400,6 +3446,8 @@ impl WorkspaceView {
                     danger: false,
                     icon: None,
                     hint: None,
+                    color: None,
+                    header: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -3410,6 +3458,8 @@ impl WorkspaceView {
                     danger: false,
                     icon: None,
                     hint: None,
+                    color: None,
+                    header: false,
                 },
                 hide,
             ]
@@ -3425,6 +3475,8 @@ impl WorkspaceView {
                     danger: false,
                     icon: None,
                     hint: None,
+                    color: None,
+                    header: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -3435,6 +3487,8 @@ impl WorkspaceView {
                     danger: false,
                     icon: None,
                     hint: None,
+                    color: None,
+                    header: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_BOTTOM,
@@ -3445,6 +3499,8 @@ impl WorkspaceView {
                     danger: false,
                     icon: None,
                     hint: None,
+                    color: None,
+                    header: false,
                 },
                 hide,
             ]
@@ -3465,6 +3521,8 @@ impl WorkspaceView {
                     danger: false,
                     icon: None,
                     hint: None,
+                    color: None,
+                    header: false,
                 },
                 MenuItem {
                     id: MENU_DOCK_RIGHT,
@@ -3475,6 +3533,8 @@ impl WorkspaceView {
                     danger: false,
                     icon: None,
                     hint: None,
+                    color: None,
+                    header: false,
                 },
                 hide,
             ]
@@ -3864,6 +3924,23 @@ impl WorkspaceView {
         self.usage_popover = Some((over_status, anchor));
     }
 
+    /// Open (or close, when it is open) a menu over the status-bar item just pressed, left-aligned to it.
+    fn toggle_status_menu(&mut self, target: u64) {
+        let open = self.menu.is_some_and(|menu| menu.3 == target);
+        self.menu = None;
+        self.submenu = None;
+        self.usage_popover = None;
+        if open {
+            return;
+        }
+        let (x, y) = self.press;
+        if let Some((_, rect)) = self.hit_with_rect(x, y) {
+            self.menu = Some((rect.x, rect.y, rect.y + rect.h, target));
+            self.menu_path = None;
+            self.menu_editor_anchor = None;
+        }
+    }
+
     pub fn show_app_menu(&mut self, anchor: Rect) {
         self.menu = Some((
             anchor.x + anchor.w,
@@ -3943,6 +4020,8 @@ impl WorkspaceView {
             danger: false,
             icon: None,
             hint: hint.map(Into::into),
+            color: None,
+            header: false,
         };
         let mut items = Vec::new();
         if let Some(account) = &self.layout.usage.account {
@@ -4018,6 +4097,8 @@ impl WorkspaceView {
             danger: false,
             icon: None,
             hint: None,
+            color: None,
+            header: false,
         };
         vec![
             entry(MENU_DOCK_RIGHT, "Agent on the Right", !left),
@@ -4031,6 +4112,17 @@ impl WorkspaceView {
     }
 
     fn apply_menu(&mut self, target: u64, item: u64) {
+        if target == crate::LANGUAGE_SERVERS_MENU_TARGET
+            || target == crate::LANGUAGE_ACTIVITY_MENU_TARGET
+        {
+            if let (Some(action), Some(view)) = (
+                crate::language_server_action(item),
+                self.layout.files_view.as_mut(),
+            ) {
+                view.language_server_action(action);
+            }
+            return;
+        }
         if target == crate::ITEM_MENU_TARGET {
             if let Some(view) = self.layout.files_view.as_mut() {
                 view.menu_pick(item);
@@ -6764,6 +6856,31 @@ impl WorkspaceView {
             self.toggle_usage_popover(false);
         } else if id == crate::USAGE_STATUS {
             self.toggle_usage_popover(true);
+        } else if id == crate::LANGUAGE_SERVERS_BUTTON {
+            self.toggle_status_menu(crate::LANGUAGE_SERVERS_MENU_TARGET);
+        } else if id == crate::LANGUAGE_ACTIVITY {
+            let click = self
+                .layout
+                .language_servers
+                .activity
+                .as_ref()
+                .map(|activity| (activity.click, activity.cancellable.is_empty()));
+            match click {
+                Some((crate::ActivityClick::ListWork, false)) => {
+                    self.toggle_status_menu(crate::LANGUAGE_ACTIVITY_MENU_TARGET)
+                }
+                Some((crate::ActivityClick::ShowError, _)) => {
+                    if let Some(view) = self.layout.files_view.as_mut() {
+                        view.language_server_action(crate::LanguageServerAction::ShowError);
+                    }
+                }
+                Some((crate::ActivityClick::Dismiss, _)) => {
+                    if let Some(view) = self.layout.files_view.as_mut() {
+                        view.language_server_action(crate::LanguageServerAction::DismissActivity);
+                    }
+                }
+                _ => {}
+            }
         } else if id == crate::USAGE_OPEN {
             self.usage_popover = None;
             self.pending.action = Some(crate::keymap::Action::OpenAgentUsage);

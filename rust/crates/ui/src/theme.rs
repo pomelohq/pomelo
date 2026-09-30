@@ -641,6 +641,7 @@ pub struct ChromeFlags {
     pub language: bool,
     pub branch: bool,
     pub session_name: bool,
+    pub language_servers: bool,
 }
 
 static CHROME: RwLock<ChromeFlags> = RwLock::new(ChromeFlags {
@@ -649,6 +650,7 @@ static CHROME: RwLock<ChromeFlags> = RwLock::new(ChromeFlags {
     language: true,
     branch: true,
     session_name: true,
+    language_servers: true,
 });
 
 pub fn chrome() -> ChromeFlags {
@@ -658,6 +660,7 @@ pub fn chrome() -> ChromeFlags {
         language: true,
         branch: true,
         session_name: true,
+        language_servers: true,
     })
 }
 

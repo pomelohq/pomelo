@@ -1,8 +1,7 @@
-//! Which server handles a language: the first of its candidate binaries found on the PATH. Nothing is
-//! downloaded; a missing server just means no language features for that language.
+//! Which server handles a language, and the binaries that can be it: found on the PATH, or for servers
+//! published to npm, downloaded (see `install`).
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use editor::Lang;
 
@@ -24,6 +23,15 @@ pub struct Candidate {
     /// Arguments of a trial run that must succeed before the binary is trusted, for launchers that exist
     /// on the PATH without the server behind them (a toolchain proxy whose component isn't installed).
     pub probe: Option<&'static [&'static str]>,
+    /// The npm package it is downloaded from when it isn't on the PATH.
+    pub npm: Option<NpmPackage>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NpmPackage {
+    pub name: &'static str,
+    /// The script node runs, relative to the folder the package is installed in.
+    pub script: &'static str,
 }
 
 const fn candidate(
@@ -36,6 +44,23 @@ const fn candidate(
         binary,
         args,
         probe: None,
+        npm: None,
+    }
+}
+
+const fn from_npm(
+    name: &'static str,
+    binary: &'static str,
+    args: &'static [&'static str],
+    package: &'static str,
+    script: &'static str,
+) -> Candidate {
+    Candidate {
+        npm: Some(NpmPackage {
+            name: package,
+            script,
+        }),
+        ..candidate(name, binary, args)
     }
 }
 
@@ -46,6 +71,7 @@ const RUST: Adapter = Adapter {
         binary: "rust-analyzer",
         args: &[],
         probe: Some(&["--help"]),
+        npm: None,
     }]),
 };
 const CLANGD: Adapter = Adapter {
@@ -59,15 +85,33 @@ const GOPLS: Adapter = Adapter {
 const PYTHON: Adapter = Adapter {
     name: "python",
     candidates: std::borrow::Cow::Borrowed(&[
-        candidate("basedpyright", "basedpyright-langserver", &["--stdio"]),
-        candidate("pyright", "pyright-langserver", &["--stdio"]),
+        from_npm(
+            "basedpyright",
+            "basedpyright-langserver",
+            &["--stdio"],
+            "basedpyright",
+            "node_modules/basedpyright/langserver.index.js",
+        ),
+        from_npm(
+            "pyright",
+            "pyright-langserver",
+            &["--stdio"],
+            "pyright",
+            "node_modules/pyright/langserver.index.js",
+        ),
         candidate("ty", "ty", &["server"]),
     ]),
 };
 const TYPESCRIPT: Adapter = Adapter {
     name: "typescript",
     candidates: std::borrow::Cow::Borrowed(&[
-        candidate("vtsls", "vtsls", &["--stdio"]),
+        from_npm(
+            "vtsls",
+            "vtsls",
+            &["--stdio"],
+            "@vtsls/language-server",
+            "node_modules/@vtsls/language-server/bin/vtsls.js",
+        ),
         candidate(
             "typescript-language-server",
             "typescript-language-server",
@@ -156,6 +200,35 @@ pub fn adapter_for(lang: Lang) -> Option<(Adapter, &'static str)> {
     Some((adapter, language_id))
 }
 
+/// What a server is told when it asks for its settings (`workspace/configuration`), by adapter.
+pub fn workspace_configuration(adapter: &str, root: &Path) -> serde_json::Value {
+    if adapter != TYPESCRIPT.name {
+        return serde_json::Value::Null;
+    }
+    // TypeScript 7+ ships no tsserver.js, which vtsls needs; then it keeps its own.
+    let tsdk = [".yarn/sdks/typescript/lib", "node_modules/typescript/lib"]
+        .into_iter()
+        .find(|tsdk| root.join(tsdk).join("tsserver.js").is_file());
+    let config = serde_json::json!({
+        "tsdk": tsdk,
+        "suggest": {"completeFunctionCalls": true},
+        "tsserver": {"maxTsServerMemory": 8192},
+    });
+    serde_json::json!({
+        "typescript": config,
+        "javascript": config,
+        "vtsls": {
+            "experimental": {"completion": {"enableServerSideFuzzyMatch": true, "entriesLimit": 5000}},
+            "autoUseWorkspaceTsdk": true,
+        },
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn python_candidates() -> Vec<Candidate> {
+    PYTHON.candidates.to_vec()
+}
+
 fn default_adapter_for(lang: Lang) -> Option<(Adapter, &'static str)> {
     Some(match lang {
         Lang::Rust => (RUST, "rust"),
@@ -168,48 +241,6 @@ fn default_adapter_for(lang: Lang) -> Option<(Adapter, &'static str)> {
         Lang::JavaScript => (TYPESCRIPT, "javascript"),
         _ => return None,
     })
-}
-
-impl Adapter {
-    /// The first candidate on `env`'s PATH that passes its probe, with its arguments. May run the probes,
-    /// so call it off the UI thread.
-    pub fn locate(&self, env: &HashMap<String, String>) -> Option<(PathBuf, Vec<String>)> {
-        let path = env.get("PATH")?;
-        self.candidates.iter().find_map(|candidate| {
-            let found = which(candidate.binary, path)?;
-            if let Some(probe) = candidate.probe {
-                let works = std::process::Command::new(&found)
-                    .args(probe)
-                    .env_clear()
-                    .envs(env)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .is_ok_and(|status| status.success());
-                if !works {
-                    eprintln!("lsp: {} is on the PATH but doesn't run", found.display());
-                    return None;
-                }
-            }
-            Some((
-                found,
-                candidate.args.iter().map(|a| a.to_string()).collect(),
-            ))
-        })
-    }
-}
-
-fn which(binary: &str, path: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    path.split(':')
-        .filter(|dir| !dir.is_empty())
-        .map(|dir| Path::new(dir).join(binary))
-        .find(|candidate| {
-            candidate
-                .metadata()
-                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
 }
 
 #[cfg(test)]
@@ -243,23 +274,5 @@ mod tests {
         assert_eq!(ts.name, tsx.name);
         assert_eq!((ts_id, tsx_id), ("typescript", "typescriptreact"));
         assert!(adapter_for(Lang::Markdown).is_none());
-    }
-
-    #[test]
-    fn finds_the_first_executable_candidate() {
-        let dir = std::env::temp_dir().join(format!("pomelo-which-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let binary = dir.join("pyright-langserver");
-        std::fs::write(&binary, "#!/bin/sh\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let env = HashMap::from([(
-            "PATH".to_string(),
-            format!("/nonexistent:{}", dir.display()),
-        )]);
-        let (found, args) = PYTHON.locate(&env).unwrap();
-        assert_eq!(found, binary);
-        assert_eq!(args, vec!["--stdio"]);
-        assert!(RUST.locate(&HashMap::new()).is_none());
     }
 }
