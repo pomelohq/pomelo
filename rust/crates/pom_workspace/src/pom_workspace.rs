@@ -5,7 +5,6 @@
 mod create;
 mod delete;
 mod git;
-mod node_modules;
 mod prepare;
 mod repo_branch;
 
@@ -314,6 +313,25 @@ impl Run<'_> {
 }
 
 /// Runs a shell command in `cwd` with the tool PATH and `env`; on failure, the tail of its output.
+/// `node --version` as the workspace's login shell resolves it (nvm, volta, asdf...).
+pub(crate) fn node_version(cwd: &Path, env: &[(String, String)]) -> Option<String> {
+    let output = Command::new("zsh")
+        .arg("-lc")
+        .arg("node --version")
+        .current_dir(cwd)
+        .env("PATH", pom_services::tool_path())
+        .envs(
+            env.iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 pub fn run_shell(
     login: bool,
     command: &str,

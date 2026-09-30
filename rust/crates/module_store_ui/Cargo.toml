@@ -1,0 +1,15 @@
+[package]
+name = "module_store_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The node_modules Store tab: every stored copy, its size and workspaces, with delete, prune and clear."
+
+[lib]
+path = "src/module_store_ui.rs"
+
+[dependencies]
+module_store = { path = "../module_store" }
+terminal = { path = "../terminal" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }

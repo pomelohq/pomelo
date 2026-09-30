@@ -86,10 +86,13 @@ fn main() -> anyhow::Result<()> {
     }
 
     let usage_page = std::env::var("USAGEPAGE").is_ok();
-    if usage_page || std::env::var("DEVREQUESTS").is_ok() {
+    let store_page = std::env::var("MODULESTORE").is_ok();
+    if usage_page || store_page || std::env::var("DEVREQUESTS").is_ok() {
         use workspace::Item;
         let mut page: Box<dyn Item> = if usage_page {
             Box::new(agent_usage_ui::preview_page())
+        } else if store_page {
+            Box::new(module_store_ui::preview_page())
         } else {
             Box::new(dev_services_ui::preview_page())
         };

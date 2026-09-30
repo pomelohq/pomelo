@@ -12,6 +12,7 @@ mod config_bundle;
 mod dev_services;
 #[cfg(target_os = "macos")]
 mod key_equivalents;
+mod module_store_tabs;
 mod notifications;
 mod onboarding;
 mod updates;
@@ -639,6 +640,7 @@ struct App {
     keymap_checked: Option<Instant>,
     dev_proxy: Option<pom_proxy::DevProxy>,
     dev_requests: dev_services::DevRequestsTabs,
+    module_store: module_store_tabs::ModuleStoreTabs,
     agent_registration: Arc<std::sync::Mutex<settings_ui::AgentPage>>,
     settings_pages_at: Option<Instant>,
     /// The main window last focused: Settings edits its project's Jira settings.
@@ -1843,7 +1845,8 @@ impl App {
             .lock()
             .map(|page| page.clone())
             .unwrap_or_default();
-        let dev_services = self.dev_services_page();
+        let mut dev_services = self.dev_services_page();
+        dev_services.modules_method = self.module_store_method();
         let update = self.update_settings_row();
         let general = settings_ui::GeneralPage {
             start_at_login: start_at_login(),
@@ -2420,6 +2423,7 @@ impl App {
             Action::CloneMissingRepos => self.clone_missing_repos(id),
             Action::OpenAgentUsage => self.open_agent_usage(id),
             Action::OpenDevRequests => self.open_dev_requests(id),
+            Action::OpenModuleStore => self.open_module_store(id),
             Action::SetUpProjectWithAi => {
                 if claude_installed() {
                     self.open_project_config(id);
@@ -2792,6 +2796,19 @@ impl App {
         } else {
             self.apply_dev_services_settings();
         }
+        self.forget_module_store_method();
+        if effects.open_module_store {
+            let target = self
+                .focused_main
+                .filter(|id| self.mains.contains_key(id))
+                .or_else(|| self.mains.keys().next().copied());
+            if let Some(id) = target {
+                self.open_module_store(id);
+                if let Some(main) = self.mains.get(&id) {
+                    main.window.focus_window();
+                }
+            }
+        }
         if effects.open_dev_requests {
             let target = self
                 .focused_main
@@ -3099,6 +3116,7 @@ impl ApplicationHandler for App {
         self.poll_usage();
         self.poll_usage_pages();
         self.poll_dev_requests();
+        self.poll_module_store();
         self.poll_updates();
         self.poll_add_repo();
         self.poll_clone_repos();

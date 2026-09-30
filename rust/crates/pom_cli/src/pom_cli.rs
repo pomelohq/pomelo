@@ -8,6 +8,7 @@ mod db;
 mod env;
 mod lifecycle;
 mod machine;
+mod modules;
 mod onboard;
 mod proxy;
 mod run;
@@ -94,6 +95,8 @@ projects and machine
                      Claude writes a runnable pom.yml with you, in this terminal
   ps [--watch]       CPU and memory of every holder Pomelo started
   disk               disk used by the registered projects
+  modules [list|prune|clear]
+                     the shared node_modules store: its copies, drop unused ones, or empty it
   mcp [--branch b]   MCP server on stdio for a coding agent working in this workspace
   completion bash|zsh|fish
   version
@@ -122,6 +125,7 @@ enum Command {
     Onboard(OnboardCommand),
     Ps { watch: bool },
     Disk,
+    Modules(modules::ModulesCommand),
     Completion(String),
     Doctor,
     Version,
@@ -163,6 +167,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Onboard(ref command) => onboard::execute(command, cwd, out),
             Command::Ps { watch } => machine::ps(watch, out),
             Command::Disk => machine::disk(&StateDir::from_env(), out),
+            Command::Modules(command) => modules::execute(command, &StateDir::from_env(), out),
             Command::Completion(ref shell) => completion::print(shell, out),
             ref command => Session::open(&invocation, cwd)
                 .and_then(|session| session.execute(command, out, err)),
@@ -271,6 +276,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             _ => return Err("usage: pom ps [--watch]".into()),
         },
         "disk" => none().map(|_| Command::Disk)?,
+        "modules" => Command::Modules(modules::parse(rest)?),
         "completion" => Command::Completion(one("a shell (bash, zsh or fish)")?),
         "doctor" => none().map(|_| Command::Doctor)?,
         "version" => Command::Version,
@@ -430,6 +436,7 @@ impl Session {
             | Command::Onboard(_)
             | Command::Ps { .. }
             | Command::Disk
+            | Command::Modules(_)
             | Command::Completion(_)
             | Command::Doctor
             | Command::Version

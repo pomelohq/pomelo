@@ -38,6 +38,7 @@ pub enum Action {
     CloneMissingRepos,
     OpenAgentUsage,
     OpenDevRequests,
+    OpenModuleStore,
     /// The tab at this 0-based position in the focused pane.
     ActivateTab(u8),
     ActivateLastTab,
@@ -46,7 +47,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 47] = [
+    pub const ALL: [Action; 48] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -82,6 +83,7 @@ impl Action {
         Action::CloneMissingRepos,
         Action::OpenAgentUsage,
         Action::OpenDevRequests,
+        Action::OpenModuleStore,
         Action::ActivateTab(0),
         Action::ActivateTab(1),
         Action::ActivateTab(2),
@@ -134,6 +136,7 @@ impl Action {
             Action::CloneMissingRepos => "pomelo::CloneMissingRepos",
             Action::OpenAgentUsage => "pomelo::OpenAgentUsage",
             Action::OpenDevRequests => "pomelo::OpenDevRequests",
+            Action::OpenModuleStore => "pomelo::OpenModuleStore",
             Action::ActivateTab(_) => "pane::ActivateItem",
             Action::ActivateLastTab => "pane::ActivateLastItem",
             Action::ActivatePreviousTab => "pane::ActivatePreviousItem",
@@ -179,6 +182,7 @@ impl Action {
             Action::CloneMissingRepos => "Clone Missing Repos into Main",
             Action::OpenAgentUsage => "Agent Usage",
             Action::OpenDevRequests => "Dev Requests",
+            Action::OpenModuleStore => "node_modules Store",
             Action::ActivateTab(index) => match index {
                 0 => "Go to Tab 1",
                 1 => "Go to Tab 2",
