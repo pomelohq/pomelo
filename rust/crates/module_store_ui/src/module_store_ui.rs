@@ -1544,6 +1544,10 @@ impl Item for StorePage {
         }
     }
 
+    fn is_busy(&self) -> bool {
+        self.shared.borrow().animating()
+    }
+
     fn animating(&self) -> bool {
         self.shared.borrow().animating()
     }

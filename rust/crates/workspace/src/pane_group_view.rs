@@ -560,6 +560,14 @@ impl PaneGroupView {
         busy
     }
 
+    pub fn animating(&self) -> bool {
+        let mut animating = false;
+        self.group.for_each_pane(&mut |pane| {
+            animating |= pane.active_item().is_some_and(|item| item.animating())
+        });
+        animating
+    }
+
     pub fn for_each_item_mut(&mut self, f: &mut dyn FnMut(&mut dyn Item)) {
         self.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {

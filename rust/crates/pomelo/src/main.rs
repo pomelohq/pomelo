@@ -3164,22 +3164,6 @@ impl ApplicationHandler for App {
         for id in &ticking {
             self.draw_main(*id);
         }
-        let animating: Vec<WindowId> = match self.main_app.as_ref() {
-            Some(a) => self
-                .mains
-                .iter()
-                .filter(|(id, m)| !ticking.contains(id) && m.entity.read(a.app()).animating())
-                .map(|(id, _)| *id)
-                .collect(),
-            None => Vec::new(),
-        };
-        for id in &animating {
-            self.draw_main(*id);
-        }
-        if !animating.is_empty() {
-            let at = Instant::now() + FRAME_INTERVAL;
-            next_frame = Some(next_frame.map_or(at, |due| due.min(at)));
-        }
         let editor_windows: Vec<WindowId> = match self.main_app.as_ref() {
             Some(a) => self
                 .mains
@@ -3208,8 +3192,18 @@ impl ApplicationHandler for App {
             self.draw_settings();
         }
         let now = Instant::now();
+        let animating = match self.main_app.as_ref() {
+            Some(a) => ticking.iter().any(|id| {
+                self.mains
+                    .get(id)
+                    .is_some_and(|m| m.entity.read(a.app()).animating())
+            }),
+            None => false,
+        };
         let mut wake = if ticking.is_empty() {
             None
+        } else if animating {
+            Some(now + FRAME_INTERVAL)
         } else {
             Some(now + Duration::from_millis(33))
         };

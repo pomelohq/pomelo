@@ -920,10 +920,6 @@ pub trait Item: 'static {
     fn take_open_request(&mut self) -> Option<TerminalOpenTarget> {
         None
     }
-    /// While true the window redraws every frame, for an item's own animation.
-    fn animating(&self) -> bool {
-        false
-    }
     fn link_hovered(&self) -> bool {
         false
     }
@@ -1121,6 +1117,10 @@ pub trait Item: 'static {
     }
     fn refresh_disk_state(&mut self) {}
     fn is_busy(&self) -> bool {
+        false
+    }
+    /// Wants every frame (not just the busy tick rate) for an animation of its own.
+    fn animating(&self) -> bool {
         false
     }
     fn right_press(&mut self, _local_x: f32, _local_y: f32) {}
@@ -1761,6 +1761,9 @@ pub trait FunctionView: ItemInput + 'static {
     fn open_path(&mut self, _path: &str) {}
     fn refresh_disk_state(&mut self) {}
     fn is_busy(&self) -> bool {
+        false
+    }
+    fn animating(&self) -> bool {
         false
     }
 }

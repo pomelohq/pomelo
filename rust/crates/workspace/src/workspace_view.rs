@@ -1174,16 +1174,26 @@ impl WorkspaceView {
         });
     }
 
-    /// The open page has an animation running and wants every frame.
+    /// An item on screen runs an animation and wants every frame.
     pub fn animating(&self) -> bool {
         self.page
             .as_ref()
-            .and_then(|page| page.open.first())
+            .and_then(|page| page.active_item())
             .is_some_and(|item| item.animating())
+            || self
+                .layout
+                .files_view
+                .as_ref()
+                .is_some_and(|view| view.animating())
     }
 
     pub fn ticking(&self) -> bool {
         self.toast.is_some()
+            || self
+                .page
+                .as_ref()
+                .and_then(|page| page.active_item())
+                .is_some_and(|item| item.is_busy())
             || self.upkeep_done_at.is_some()
             || self.window_modal.as_ref().is_some_and(|modal| modal.busy())
             || self.panes_write_at.is_some()
