@@ -71,6 +71,15 @@ pub struct Settings {
     pub modules_unused_days: u64,
     /// When the pointer hides until the mouse moves: "never", "on_typing" or "on_typing_and_action".
     pub hide_mouse: String,
+    /// The key held to add a caret with a click: "alt", or "cmd_or_ctrl" (which leaves Alt-click the
+    /// go-to-definition Cmd-click otherwise is).
+    pub multi_cursor_modifier: String,
+    pub cursor_blink: bool,
+    pub cursor_animation: CursorAnimation,
+    /// "bar", "block", "underline" or "hollow".
+    pub cursor_shape: String,
+    /// "on" holds loading shimmers, pulsing placeholders and the caret's glide still; "off" lets them move.
+    pub reduce_motion: String,
     pub notify_claude: bool,
     /// Also alert for the workspace on screen in the focused window.
     pub notify_when_focused: bool,
@@ -154,6 +163,11 @@ impl Default for Settings {
             modules_size_limit_gb: 20,
             modules_unused_days: 14,
             hide_mouse: "on_typing_and_action".into(),
+            multi_cursor_modifier: "alt".into(),
+            cursor_blink: true,
+            cursor_animation: CursorAnimation::default(),
+            cursor_shape: "bar".into(),
+            reduce_motion: "off".into(),
             notify_claude: true,
             notify_when_focused: false,
             sound_working: String::new(),
@@ -181,6 +195,13 @@ impl Default for Settings {
             terminal_scrollback: 10_000,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CursorAnimation {
+    /// The caret glides to where it moves instead of jumping.
+    pub enabled: bool,
 }
 
 pub const AGENT_EVENTS: [(&str, &str); 4] = [

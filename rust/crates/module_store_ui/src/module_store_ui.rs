@@ -493,6 +493,9 @@ fn section_label(text: &str) -> ui::Label {
 
 /// 0..1, repeating every `period` seconds.
 fn wave(clock: f32, period: f32) -> f32 {
+    if ui::reduce_motion() {
+        return 1.0;
+    }
     ((clock / period).fract() * std::f32::consts::TAU).sin() * 0.5 + 0.5
 }
 

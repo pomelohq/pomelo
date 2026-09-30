@@ -1691,7 +1691,13 @@ impl ItemInput for PaneGroupView {
             let Some((path, local_x, local_y)) = group.body_point(x, y) else {
                 return false;
             };
-            if ui::modifiers().cmd && !extend {
+            let modifiers = ui::modifiers();
+            let (to_definition, add_caret) = if ui::caret_style().add_with_cmd {
+                (modifiers.alt, modifiers.cmd)
+            } else {
+                (modifiers.cmd, modifiers.alt)
+            };
+            if to_definition && !extend {
                 group.active = path.clone();
                 if group
                     .active_item_mut()
@@ -1707,6 +1713,10 @@ impl ItemInput for PaneGroupView {
                 pane.search.focus = None;
             }
             match group.editable_item_mut() {
+                Some(item) if add_caret && !extend => {
+                    item.toggle_cursor_at(local_x, local_y);
+                    true
+                }
                 Some(item) => {
                     item.place_cursor(local_x, local_y, extend);
                     true
@@ -2211,7 +2221,7 @@ fn layout_body(
         body: None,
         back: Vec::new(),
         back_tris: Vec::new(),
-        carets: Vec::new(),
+        carets: ui::Painted::default(),
         scrollbar: Vec::new(),
         h_scrollbar: Vec::new(),
     };

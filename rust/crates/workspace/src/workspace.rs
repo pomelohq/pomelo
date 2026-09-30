@@ -1032,6 +1032,10 @@ pub trait Item: 'static {
     }
     fn input_key(&mut self, _key: EditKey, _shift: bool) {}
     fn place_cursor(&mut self, _local_x: f32, _local_y: f32, _extend: bool) {}
+    /// A click with the multi-cursor modifier: adds a caret there, or drops the one already there.
+    fn toggle_cursor_at(&mut self, local_x: f32, local_y: f32) {
+        self.place_cursor(local_x, local_y, false);
+    }
     /// A selection drag to window point `(x, y)` over the body at `body`; items that scroll may autoscroll when
     /// the point is near or past an edge.
     fn drag_select(&mut self, x: f32, y: f32, body: ui::Rect) {
@@ -1049,8 +1053,9 @@ pub trait Item: 'static {
     fn scroll_by(&mut self, _dy: f32) -> bool {
         false
     }
-    fn carets(&self, _content: ui::Rect) -> Vec<ui::Rect> {
-        Vec::new()
+    /// The carets over the body: bars or boxes, a gliding caret's trail, a block caret's letter.
+    fn carets(&mut self, _content: ui::Rect) -> ui::Painted {
+        ui::Painted::default()
     }
     fn back_rects(&self, _content: ui::Rect) -> Vec<ui::Rect> {
         Vec::new()
@@ -1339,7 +1344,7 @@ pub struct PanePlacement {
     pub body: Option<PaneBody>,
     pub back: Vec<ui::Rect>,
     pub back_tris: Vec<ui::Tri>,
-    pub carets: Vec<ui::Rect>,
+    pub carets: ui::Painted,
     pub scrollbar: Vec<ui::Rect>,
     pub h_scrollbar: Vec<ui::Rect>,
 }

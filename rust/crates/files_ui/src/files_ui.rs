@@ -33,6 +33,7 @@ use workspace::pane_group_view::{
 use workspace::search_bar::Searchable;
 use workspace::text_field;
 
+mod caret_glide;
 mod command_palette;
 mod completions_menu;
 mod definition;
@@ -479,6 +480,9 @@ struct FileItem {
     premeasured: bool,
     unsaved_queued: std::cell::Cell<Option<u64>>,
     active_indent: RefCell<Option<ActiveIndent>>,
+    glides: caret_glide::Glides,
+    /// A caret is mid-glide, so the next frame is wanted right away.
+    caret_gliding: bool,
 }
 
 struct Footer {
@@ -773,6 +777,8 @@ impl FileItem {
             premeasured: false,
             unsaved_queued: std::cell::Cell::new(None),
             active_indent: RefCell::default(),
+            glides: caret_glide::Glides::default(),
+            caret_gliding: false,
         }
     }
 
@@ -4579,32 +4585,151 @@ impl Item for FileItem {
         self.buffer.as_ref().and_then(|b| b.selected_text())
     }
 
-    fn carets(&self, content: Rect) -> Vec<Rect> {
-        // Hidden when unfocused or during the caret's off blink phase.
-        if !self.focused || !ui::caret_phase() {
-            return Vec::new();
-        }
+    fn carets(&mut self, content: Rect) -> ui::Painted {
+        let style = ui::caret_style();
+        let glide = style.animate
+            && !ui::reduce_motion()
+            && matches!(style.shape, ui::CaretShape::Bar | ui::CaretShape::Block);
+        let mut painted = ui::Painted::default();
+        self.caret_gliding = false;
         let Some(b) = self.buffer.as_ref() else {
-            return Vec::new();
+            return painted;
         };
+        // Hidden when unfocused or during the caret's off blink phase.
+        if !self.focused || (style.blink && !ui::caret_phase()) {
+            if !self.focused {
+                self.glides.clear();
+            }
+            return painted;
+        }
+        let colors = theme();
+        let line_h = edit_line_h();
+        let column_w = char_advance();
         let gw = gutter_width(self.line_count());
-        b.selections()
-            .iter()
-            .filter_map(|s| {
-                let (row, x) = self.position(s.head());
-                let y = content.y + row as f32 * edit_line_h() - self.scroll_y;
-                if y + edit_line_h() <= content.y || y >= content.y + self.body_h {
-                    return None;
+        let view = caret_glide::TextView {
+            scroll_x: self.scroll_x,
+            scroll_y: self.scroll_y,
+            origin_x: content.x + gw,
+            origin_y: content.y,
+            line_h,
+            column_w,
+        };
+        let now = std::time::Instant::now();
+        if glide {
+            self.glides.newest_is(b.newest().id);
+        } else {
+            self.glides.clear();
+        }
+        let selections: Vec<editor::buffer::Selection> = b.selections().to_vec();
+        let mut drawn = Vec::with_capacity(selections.len());
+        for selection in selections {
+            let head = selection.head();
+            let (row, x) = self.position(head);
+            let y = content.y + row as f32 * line_h - self.scroll_y;
+            if y + line_h <= content.y || y >= content.y + self.body_h {
+                continue;
+            }
+            let left = content.x + gw + x - self.scroll_x;
+            let letter = self
+                .buffer
+                .as_ref()
+                .filter(|b| head < b.rope.len_chars())
+                .map(|b| b.rope.char(head))
+                .filter(|c| *c != '\n' && *c != '\r');
+            let mut cell_w = column_w;
+            if let Some(letter) = letter.filter(|c| !c.is_whitespace()) {
+                cell_w = cell_w.max(ui::measure_text_width(
+                    &letter.to_string(),
+                    edit_font(),
+                    true,
+                    400,
+                ));
+            }
+            let caret = match style.shape {
+                ui::CaretShape::Bar => (left, y, CARET_W, line_h),
+                ui::CaretShape::Block | ui::CaretShape::Hollow => (left, y, cell_w, line_h),
+                ui::CaretShape::Underline => (left, y + line_h - 2.0, cell_w, 2.0),
+            };
+            let corners = if glide {
+                drawn.push(selection.id);
+                self.glides.frame(
+                    selection.id,
+                    (row, head),
+                    caret_glide::CaretBox {
+                        x: caret.0,
+                        y: caret.1,
+                        w: caret.2,
+                        h: caret.3,
+                    },
+                    view,
+                    now,
+                )
+            } else {
+                None
+            };
+            let color = colors.player_cursor;
+            if let Some([a, b, c, d]) = corners {
+                self.caret_gliding = true;
+                let point = |(x, y): (f32, f32)| [x, y];
+                painted.tris.push(ui::Tri {
+                    p: [point(a), point(b), point(c)],
+                    color,
+                });
+                painted.tris.push(ui::Tri {
+                    p: [point(a), point(c), point(d)],
+                    color,
+                });
+                continue;
+            }
+            let (cx, cy, cw, ch) = caret;
+            if style.shape == ui::CaretShape::Hollow {
+                painted.rects.extend([
+                    Rect::new(cx, cy, cw, 1.0, color),
+                    Rect::new(cx, cy + ch - 1.0, cw, 1.0, color),
+                    Rect::new(cx, cy, 1.0, ch, color),
+                    Rect::new(cx + cw - 1.0, cy, 1.0, ch, color),
+                ]);
+                continue;
+            }
+            painted.rects.push(Rect::new(cx, cy, cw, ch, color));
+            if style.shape == ui::CaretShape::Block {
+                if let Some(letter) = letter.filter(|c| !c.is_whitespace()) {
+                    // The letter under a block caret shows through it in the background's color.
+                    let node: ui::Node = div()
+                        .row()
+                        .h_px(line_h)
+                        .items_center()
+                        .child(
+                            label(letter.to_string())
+                                .size(edit_font())
+                                .mono()
+                                .color(colors.editor_background),
+                        )
+                        .into();
+                    let lettered = ui::render(&node, Rect::new(cx, cy, cw, ch, Rgba::TRANSPARENT));
+                    painted.texts.extend(lettered.texts);
                 }
-                Some(Rect::new(
-                    content.x + gw + x - self.scroll_x,
-                    y,
-                    CARET_W,
-                    edit_line_h(),
-                    theme().player_cursor,
-                ))
-            })
-            .collect()
+            }
+        }
+        if glide {
+            self.glides.keep_only(&drawn);
+        }
+        painted
+    }
+
+    fn toggle_cursor_at(&mut self, local_x: f32, local_y: f32) {
+        self.hide_hover();
+        self.close_completions();
+        let Some(off) = self.offset_at_local(local_x, local_y) else {
+            return;
+        };
+        if let Some(b) = self.buffer.as_mut() {
+            b.toggle_cursor(off);
+        }
+    }
+
+    fn animating(&self) -> bool {
+        self.caret_gliding
     }
 
     fn back_rects(&self, content: Rect) -> Vec<Rect> {

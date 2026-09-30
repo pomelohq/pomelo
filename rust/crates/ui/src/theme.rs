@@ -823,6 +823,68 @@ pub fn set_caret_phase(on: bool) {
     }
 }
 
+/// How the editor draws its caret.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaretShape {
+    #[default]
+    Bar,
+    /// Fills the character after it, which shows through in the background color.
+    Block,
+    Underline,
+    /// A frame around the character after it.
+    Hollow,
+}
+
+/// The editor's caret settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaretStyle {
+    pub shape: CaretShape,
+    pub blink: bool,
+    /// The caret glides to where it moves instead of jumping.
+    pub animate: bool,
+    /// Cmd-click adds a caret (and Alt-click goes to definition) instead of the other way round.
+    pub add_with_cmd: bool,
+}
+
+impl Default for CaretStyle {
+    fn default() -> Self {
+        CaretStyle {
+            shape: CaretShape::Bar,
+            blink: true,
+            animate: false,
+            add_with_cmd: false,
+        }
+    }
+}
+
+static CARET_STYLE: RwLock<CaretStyle> = RwLock::new(CaretStyle {
+    shape: CaretShape::Bar,
+    blink: true,
+    animate: false,
+    add_with_cmd: false,
+});
+
+pub fn caret_style() -> CaretStyle {
+    CARET_STYLE.read().map(|g| *g).unwrap_or_default()
+}
+
+pub fn set_caret_style(style: CaretStyle) {
+    if let Ok(mut g) = CARET_STYLE.write() {
+        *g = style;
+    }
+}
+
+static REDUCE_MOTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Non-essential motion (loading shimmers, pulsing placeholders, the gliding caret) stays still.
+pub fn reduce_motion() -> bool {
+    REDUCE_MOTION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_reduce_motion(reduce: bool) {
+    REDUCE_MOTION.store(reduce, std::sync::atomic::Ordering::Relaxed);
+}
+
 static CURRENT: RwLock<Option<ThemeColors>> = RwLock::new(None);
 
 /// The active theme (defaults to One Dark until `set_theme` is called).

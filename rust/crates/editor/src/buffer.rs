@@ -1225,6 +1225,29 @@ impl EditorBuffer {
         self.select(next);
     }
 
+    /// A multi-cursor click at `off`: drops the caret or selection already there (unless it is the only
+    /// one), else adds a caret.
+    pub fn toggle_cursor(&mut self, off: usize) {
+        let hit = self
+            .selections
+            .iter()
+            .find(|s| s.start <= off && off <= s.end)
+            .map(|s| s.id);
+        match hit {
+            Some(id) if self.selections.len() > 1 => {
+                let rest = self
+                    .selections
+                    .iter()
+                    .copied()
+                    .filter(|s| s.id != id)
+                    .collect();
+                self.select(rest);
+            }
+            Some(_) => {}
+            None => self.add_cursor(off),
+        }
+    }
+
     pub fn collapse_cursors(&mut self) {
         let mut oldest = self.oldest();
         if self.selections.len() == 1 {
@@ -3720,6 +3743,18 @@ mod tests {
         assert_eq!(b.heads(), vec![5]);
         b.redo();
         assert_eq!(b.heads(), vec![6]);
+    }
+
+    #[test]
+    fn a_multi_cursor_click_adds_a_caret_or_drops_the_one_there() {
+        let mut b = EditorBuffer::from_text("hello world");
+        b.place_cursor(0);
+        b.toggle_cursor(6);
+        assert_eq!(b.selections().len(), 2);
+        b.toggle_cursor(6);
+        assert_eq!(b.selections().len(), 1);
+        b.toggle_cursor(0);
+        assert_eq!(b.selections().len(), 1, "the only caret stays");
     }
 
     #[test]

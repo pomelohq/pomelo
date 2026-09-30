@@ -522,6 +522,7 @@ impl TicketPicker {
 /// A grey bar pulsing where a ticket row will be; rows pulse a beat apart so the wave runs down the list.
 fn placeholder_row(seconds: f32, row: usize, summary_width: f32) -> Node {
     let colors = theme();
+    let seconds = if ui::reduce_motion() { 0.0 } else { seconds };
     let phase = (seconds / PULSE_SECONDS - row as f32 * 0.12) * std::f32::consts::TAU;
     let fill = colors
         .text_muted
