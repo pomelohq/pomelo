@@ -2282,19 +2282,28 @@ fn layout_body(
     } else {
         (body_rect, None)
     };
-    item.set_body_height(body_rect.h);
-    item.set_body_width(body_rect.w);
-    placement.back = item.back_rects(body_rect);
-    placement.back_tris = item.selection_tris(body_rect);
-    placement.carets = item.carets(body_rect);
-    placement.scrollbar = item.scrollbar(body_rect);
-    placement.h_scrollbar = item.h_scrollbar(body_rect);
-    let y_offset = item.body_y_offset();
-    let x_offset = item.body_x_offset();
-    let gutter_w = item.gutter_w();
-    let gutter = item.gutter(fold_base);
-    let background = item.body_background();
-    let node = item.render();
+    let scale = item.fixed_scale().then_some(1.0);
+    let within = |f: &mut dyn FnMut()| match scale {
+        Some(scale) => ui::with_ui_scale(scale, f),
+        None => f(),
+    };
+    let (mut y_offset, mut x_offset, mut gutter_w) = (0.0, 0.0, 0.0);
+    let (mut gutter, mut background, mut node) = (None, Rgba::TRANSPARENT, ui::div().into());
+    within(&mut || {
+        item.set_body_height(body_rect.h);
+        item.set_body_width(body_rect.w);
+        placement.back = item.back_rects(body_rect);
+        placement.back_tris = item.selection_tris(body_rect);
+        placement.carets = item.carets(body_rect);
+        placement.scrollbar = item.scrollbar(body_rect);
+        placement.h_scrollbar = item.h_scrollbar(body_rect);
+        y_offset = item.body_y_offset();
+        x_offset = item.body_x_offset();
+        gutter_w = item.gutter_w();
+        gutter = item.gutter(fold_base);
+        background = item.body_background();
+        node = item.render();
+    });
     if let Some(area) = companion {
         if let Some(mut painted) = item.paint_companion(area) {
             painted.rects.push(Rect::new(
@@ -2357,6 +2366,7 @@ fn layout_body(
         text_clip,
         gutter,
         gutter_clip,
+        scale,
     });
     (None, placement)
 }

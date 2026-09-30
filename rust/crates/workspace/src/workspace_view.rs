@@ -7163,8 +7163,12 @@ fn push_pane_group(
                 b.rect.h - b.y_offset + 64.0,
                 Rgba::TRANSPARENT,
             );
+            let render = |node: &ui::Node, area: Rect| match b.scale {
+                Some(scale) => ui::with_ui_scale(scale, || ui::render(node, area)),
+                None => ui::render(node, area),
+            };
             overlays.push(Overlay {
-                painted: ui::render(&b.node, area),
+                painted: render(&b.node, area),
                 clip: Some(text_clip),
             });
             if let Some(g) = &b.gutter {
@@ -7175,7 +7179,7 @@ fn push_pane_group(
                     b.rect.h - b.y_offset + 64.0,
                     Rgba::TRANSPARENT,
                 );
-                let gpainted = ui::render(g, garea);
+                let gpainted = render(g, garea);
                 for (r, id) in gpainted.hits.iter().copied() {
                     if r.y + r.h > b.gutter_clip.y && r.y < b.gutter_clip.y + b.gutter_clip.h {
                         hits.push((r, id));

@@ -594,7 +594,24 @@ static TEXT_SCALE: RwLock<f32> = RwLock::new(1.0);
 /// Global UI text scale (`ui_font_size / UI_FONT_BASE`): every rendered text size and its measured extent are
 /// multiplied by this, so changing the UI font size zooms all interface text like the reference does.
 pub fn ui_text_scale() -> f32 {
+    if let Some(scale) = SCALE_OVERRIDE.with(std::cell::Cell::get) {
+        return scale;
+    }
     TEXT_SCALE.read().map(|g| *g).unwrap_or(1.0)
+}
+
+thread_local! {
+    static SCALE_OVERRIDE: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` as if the UI text scale were `scale`: what it builds, lays out and measures is sized at it, and
+/// the text it renders keeps that size when drawn. The editor lays out at 1 so its text follows the buffer
+/// font size alone, not the UI font size.
+pub fn with_ui_scale<R>(scale: f32, f: impl FnOnce() -> R) -> R {
+    let before = SCALE_OVERRIDE.with(|cell| cell.replace(Some(scale)));
+    let result = f();
+    SCALE_OVERRIDE.with(|cell| cell.set(before));
+    result
 }
 
 pub fn set_ui_text_scale(scale: f32) {

@@ -124,7 +124,12 @@ const TAB_COLS: usize = 4; // indent-guide spacing: one guide per this many lead
 
 /// The monospace advance of one column at the editor font (Lilex is monospace, so every column is this wide).
 fn char_advance() -> f32 {
-    ui::measure_text_width("M", edit_font(), true, 400)
+    measure(|| ui::measure_text_width("M", edit_font(), true, 400))
+}
+
+/// The editor's text is sized by the buffer font alone, so it measures (and lays out) at a UI scale of 1.
+fn measure<R>(f: impl FnOnce() -> R) -> R {
+    ui::with_ui_scale(1.0, f)
 }
 
 /// Gutter layout: `left_padding` (room for run/breakpoint markers), right-aligned line numbers, `right_padding`
@@ -2290,7 +2295,7 @@ impl FileItem {
         let colors = syntax_theme();
         let mut layout = LineLayout::default();
         for (segment, _) in self.line_segments(line, &colors) {
-            let (glyphs, width) = ui::measure_glyphs(&segment, edit_font(), true, 400);
+            let (glyphs, width) = measure(|| ui::measure_glyphs(&segment, edit_font(), true, 400));
             let (base_index, base_x) = (layout.len, layout.width);
             layout
                 .glyphs
@@ -4638,12 +4643,9 @@ impl Item for FileItem {
                 .filter(|c| *c != '\n' && *c != '\r');
             let mut cell_w = column_w;
             if let Some(letter) = letter.filter(|c| !c.is_whitespace()) {
-                cell_w = cell_w.max(ui::measure_text_width(
-                    &letter.to_string(),
-                    edit_font(),
-                    true,
-                    400,
-                ));
+                cell_w = cell_w.max(measure(|| {
+                    ui::measure_text_width(&letter.to_string(), edit_font(), true, 400)
+                }));
             }
             let caret = match style.shape {
                 ui::CaretShape::Bar => (left, y, CARET_W, line_h),
@@ -4715,6 +4717,10 @@ impl Item for FileItem {
             self.glides.keep_only(&drawn);
         }
         painted
+    }
+
+    fn fixed_scale(&self) -> bool {
+        true
     }
 
     fn toggle_cursor_at(&mut self, local_x: f32, local_y: f32) {
@@ -5247,9 +5253,9 @@ fn wrap_boundaries(
         if c.is_ascii() {
             return em;
         }
-        *widths
-            .entry(c)
-            .or_insert_with(|| ui::measure_text_width(&c.to_string(), edit_font(), true, 400))
+        *widths.entry(c).or_insert_with(|| {
+            measure(|| ui::measure_text_width(&c.to_string(), edit_font(), true, 400))
+        })
     };
     editor::wrap::wrap_line(&text, wrap_width, width_of).into()
 }
@@ -8269,6 +8275,27 @@ mod indent_guide_tests {
         assert_eq!(FileItem::enclosing_indent(&b, 2), Some((1, 2, 4)));
         assert_eq!(FileItem::enclosing_indent(&b, 4), Some((0, 4, 0)));
         assert_eq!(FileItem::enclosing_indent(&b, 1), Some((1, 2, 4)));
+    }
+
+    #[test]
+    fn the_editor_measures_the_same_at_any_ui_font_size() {
+        let at = |scale: f32| {
+            ui::with_ui_scale(scale, || {
+                let mut item = FileItem::new(
+                    PathBuf::from("/nonexistent"),
+                    "a.ts",
+                    Some("const a = 1;\n".into()),
+                );
+                // As a pane lays out and draws an item with a fixed scale.
+                assert!(item.fixed_scale());
+                let texts = ui::with_ui_scale(1.0, || {
+                    let body = item.render();
+                    ui::render(&body, Rect::new(0.0, 0.0, 800.0, 400.0, Rgba::TRANSPARENT)).texts
+                });
+                (char_advance(), texts.first().map(|t| (t.size, t.scale)))
+            })
+        };
+        assert_eq!(at(0.9375), at(1.0));
     }
 
     #[test]

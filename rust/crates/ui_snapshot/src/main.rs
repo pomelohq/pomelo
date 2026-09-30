@@ -1306,6 +1306,9 @@ fn main() -> anyhow::Result<()> {
     let mut r = ui::UiRenderer::new_headless((lw * scale) as u32, (lh * scale) as u32, scale)?;
 
     if let Ok(mode) = std::env::var("MAINVIEW") {
+        if let Ok(size) = std::env::var("FONTSIZE").unwrap_or_default().parse::<f32>() {
+            ui::set_ui_text_scale(size / ui::UI_FONT_BASE);
+        }
         let sessions: Vec<workspace::Session> = ["myproject", "api", "web", "old"]
             .iter()
             .map(|name| workspace::Session {
@@ -1509,6 +1512,26 @@ fn main() -> anyhow::Result<()> {
                     let mut files = files_ui::FilesView::new(root);
                     for path in &paths {
                         workspace::FunctionView::open_file_at(&mut files, path, None, None);
+                    }
+                    if let Some((line, column, lines)) =
+                        std::env::var("SELECT").ok().and_then(|spec| {
+                            let parts: Vec<usize> = spec
+                                .split(',')
+                                .filter_map(|part| part.parse().ok())
+                                .collect();
+                            Some((*parts.first()?, *parts.get(1)?, *parts.get(2)?))
+                        })
+                    {
+                        use workspace::ItemInput;
+                        for _ in 0..line {
+                            files.editor_key(workspace::EditKey::Down, false);
+                        }
+                        for _ in 0..column {
+                            files.editor_key(workspace::EditKey::Right, false);
+                        }
+                        for _ in 0..lines {
+                            files.editor_key(workspace::EditKey::Down, true);
+                        }
                     }
                     // MDPREVIEW=1: preview the last (markdown) file beside its editor.
                     if std::env::var("MDPREVIEW").is_ok() {

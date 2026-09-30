@@ -1126,6 +1126,10 @@ pub trait Item: 'static {
     fn is_dirty(&self) -> bool {
         false
     }
+    /// The body is text in its own font, sized apart from the UI font: it lays out at a UI scale of 1.
+    fn fixed_scale(&self) -> bool {
+        false
+    }
     /// What the tab's menu calls ending the program behind it, when closing the tab only hides it.
     fn stop_label(&self) -> Option<&'static str> {
         None
@@ -1360,6 +1364,8 @@ pub struct PaneBody {
     pub text_clip: ui::Rect,
     pub gutter: Option<Node>,
     pub gutter_clip: ui::Rect,
+    /// The UI text scale the body and gutter lay out at: 1 for the editor, whose text follows its own font.
+    pub scale: Option<f32>,
 }
 
 pub struct DividerPlacement {
