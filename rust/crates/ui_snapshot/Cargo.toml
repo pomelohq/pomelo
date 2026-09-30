@@ -10,6 +10,7 @@ name = "ui_snapshot"
 path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
 pom_secrets = { path = "../pom_secrets" }
 environment_ui = { path = "../environment_ui" }
 pom_forge = { path = "../pom_forge" }

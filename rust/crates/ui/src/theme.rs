@@ -698,6 +698,117 @@ pub fn set_active_ui_font(name: Option<String>) {
     }
 }
 
+/// Which configured font a run of text is drawn in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextFont {
+    #[default]
+    Ui,
+    /// The code editor's font.
+    Buffer,
+    Terminal,
+}
+
+impl From<bool> for TextFont {
+    /// `true` is the monospace code font, as the older `mono` flag meant.
+    fn from(mono: bool) -> Self {
+        if mono {
+            TextFont::Buffer
+        } else {
+            TextFont::Ui
+        }
+    }
+}
+
+impl TextFont {
+    fn index(self) -> usize {
+        match self {
+            TextFont::Ui => 0,
+            TextFont::Buffer => 1,
+            TextFont::Terminal => 2,
+        }
+    }
+
+    pub fn is_mono(self) -> bool {
+        self != TextFont::Ui
+    }
+}
+
+/// One font's settings: its family (`None` = the bundled default), the weight regular text uses, OpenType
+/// features (tag and value) and the families tried, in order, for characters the family lacks.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FontSettings {
+    pub family: Option<String>,
+    pub weight: Option<u16>,
+    pub features: Vec<([u8; 4], u32)>,
+    pub fallbacks: Vec<String>,
+}
+
+static FONT_SETTINGS: RwLock<[Option<FontSettings>; 3]> = RwLock::new([None, None, None]);
+static FONT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn font_settings(font: TextFont) -> FontSettings {
+    FONT_SETTINGS
+        .read()
+        .ok()
+        .and_then(|fonts| fonts[font.index()].clone())
+        .unwrap_or_default()
+}
+
+pub fn set_font_settings(font: TextFont, settings: FontSettings) {
+    if let Ok(mut fonts) = FONT_SETTINGS.write() {
+        if fonts[font.index()].as_ref() != Some(&settings) {
+            fonts[font.index()] = Some(settings);
+            FONT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// Bumped whenever a font's settings change, so shaped and measured text is keyed to the fonts it used.
+pub fn font_generation() -> u64 {
+    FONT_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `{"calt": false, "ss01": true, "cv01": 2}` as feature tags and values; the problems say what was skipped.
+pub fn parse_font_features(value: &serde_json::Value) -> (Vec<([u8; 4], u32)>, Vec<String>) {
+    let mut features = Vec::new();
+    let mut problems = Vec::new();
+    let Some(object) = value.as_object() else {
+        if !value.is_null() {
+            problems.push("font features must be an object like {\"calt\": false}".into());
+        }
+        return (features, problems);
+    };
+    for (tag, value) in object {
+        let bytes = tag.as_bytes();
+        let Ok(tag_bytes) = <[u8; 4]>::try_from(bytes) else {
+            problems.push(format!("font feature \"{tag}\" is not a four-letter tag"));
+            continue;
+        };
+        let value = match value {
+            serde_json::Value::Bool(on) => u32::from(*on),
+            serde_json::Value::Number(number) => {
+                match number.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                    Some(number) => number,
+                    None => {
+                        problems.push(format!(
+                            "font feature \"{tag}\" needs true, false or a whole number"
+                        ));
+                        continue;
+                    }
+                }
+            }
+            _ => {
+                problems.push(format!(
+                    "font feature \"{tag}\" needs true, false or a whole number"
+                ));
+                continue;
+            }
+        };
+        features.push((tag_bytes, value));
+    }
+    (features, problems)
+}
+
 static CARET_PHASE: RwLock<bool> = RwLock::new(true);
 
 /// Whether the text caret is in its visible blink phase. Caret-drawing code gates on this; the app toggles it
@@ -745,6 +856,16 @@ pub fn by_name(name: &str) -> ThemeColors {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_features_read_like_the_settings_file() {
+        let (features, problems) = parse_font_features(
+            &serde_json::json!({"calt": false, "ss01": true, "cv01": 2, "toolong": 1}),
+        );
+        assert_eq!(features, vec![(*b"calt", 0), (*b"cv01", 2), (*b"ss01", 1)]);
+        assert_eq!(problems.len(), 1);
+        assert!(parse_font_features(&serde_json::Value::Null).1.is_empty());
+    }
 
     #[test]
     fn hex_parses_rgb_and_rgba() {

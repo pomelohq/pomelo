@@ -67,7 +67,18 @@ pub(crate) fn defaults() -> &'static std::sync::Mutex<Defaults> {
     DEFAULTS.get_or_init(Default::default)
 }
 /// The "standard" terminal line height (the comfortable one is 1.618).
-pub const LINE_HEIGHT: f32 = 1.3;
+/// Line height as thousandths of the font size; "standard" (1.3) unless the settings say otherwise.
+static LINE_HEIGHT_MILLI: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1300);
+
+pub fn line_height() -> f32 {
+    LINE_HEIGHT_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+}
+
+/// Set the terminal's line height as a multiple of its font size; returns whether it changed.
+pub fn set_line_height(ratio: f32) -> bool {
+    let milli = (ratio.clamp(1.0, 3.0) * 1000.0).round() as u32;
+    LINE_HEIGHT_MILLI.swap(milli, std::sync::atomic::Ordering::Relaxed) != milli
+}
 pub const MINIMUM_CONTRAST: f32 = 45.0;
 const DIM_ALPHA: f32 = 0.7;
 const BOLD_WEIGHT: u16 = 700;
@@ -84,7 +95,7 @@ impl GridMetrics {
     pub fn measure(font_size: f32, line_height: f32) -> Self {
         let scale = ui::ui_text_scale();
         Self {
-            cell_width: ui::measure_text_width("m", font_size, true, 400) / scale,
+            cell_width: ui::measure_text_width("m", font_size, ui::TextFont::Terminal, 400) / scale,
             line_height: font_size * line_height,
             font_size,
         }
@@ -443,7 +454,7 @@ impl GridPainter {
                 }
                 let mut text = label(run.text)
                     .size(metrics.font_size)
-                    .mono()
+                    .terminal_font()
                     .color(run.style.foreground);
                 if run.style.bold {
                     text = text.weight(BOLD_WEIGHT);

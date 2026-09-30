@@ -25,9 +25,11 @@ fn is_free_text(id: u64) -> bool {
         || id == settings_ui::CTRL_TERM_SHELL
 }
 
-const NUMBER_FIELDS: [u64; 4] = [
+const NUMBER_FIELDS: [u64; 6] = [
     settings_ui::CTRL_BUFFER_FONT_EDIT,
     settings_ui::CTRL_TERM_FONT_EDIT,
+    settings_ui::CTRL_BUFFER_WEIGHT_EDIT,
+    settings_ui::CTRL_TERM_WEIGHT_EDIT,
     settings_ui::CTRL_AGENT_FONT_EDIT,
     settings_ui::CTRL_SCROLLBACK_EDIT,
 ];
@@ -412,6 +414,16 @@ impl SettingsView {
                 settings_ui::CTRL_AGENT_FONT_EDIT => {
                     let next = value.clamp(settings_ui::FONT_SIZE_MIN, settings_ui::FONT_SIZE_MAX);
                     std::mem::replace(&mut self.settings.agent_font_size, next) != next
+                }
+                settings_ui::CTRL_BUFFER_WEIGHT_EDIT => {
+                    let next =
+                        value.clamp(settings_ui::FONT_WEIGHT_MIN, settings_ui::FONT_WEIGHT_MAX);
+                    std::mem::replace(&mut self.settings.buffer_font_weight, next) != next
+                }
+                settings_ui::CTRL_TERM_WEIGHT_EDIT => {
+                    let next =
+                        value.clamp(settings_ui::FONT_WEIGHT_MIN, settings_ui::FONT_WEIGHT_MAX);
+                    std::mem::replace(&mut self.settings.terminal_font_weight, next) != next
                 }
                 _ => {
                     let next = (value as u32)
@@ -847,7 +859,7 @@ impl SettingsView {
             }
             return;
         }
-        if id == settings_ui::CTRL_OPEN_JSON {
+        if id == settings_ui::CTRL_OPEN_JSON || settings_ui::is_edit_in_json(id) {
             self.commit_edit();
             self.close_popover();
             if let Some(path) = settings::Settings::path() {
@@ -937,6 +949,12 @@ impl SettingsView {
                 }
                 settings_ui::CTRL_AGENT_FONT_EDIT => {
                     format!("{:.0}", self.settings.agent_font_size)
+                }
+                settings_ui::CTRL_BUFFER_WEIGHT_EDIT => {
+                    format!("{:.0}", self.settings.buffer_font_weight)
+                }
+                settings_ui::CTRL_TERM_WEIGHT_EDIT => {
+                    format!("{:.0}", self.settings.terminal_font_weight)
                 }
                 _ => self.settings.terminal_scrollback.to_string(),
             };

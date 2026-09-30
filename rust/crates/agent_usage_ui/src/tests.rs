@@ -116,7 +116,7 @@ fn many_workspaces_wrap_the_legend_and_fold_into_others() {
     );
     assert!(painted.texts.iter().any(|text| text.text == "3 others"));
     for text in &painted.texts {
-        let text_w = ui::measure_text_width(&text.text, text.size, text.mono, text.weight);
+        let text_w = ui::measure_text_width(&text.text, text.size, text.font, text.weight);
         assert!(
             text.x + text_w <= width + 0.5,
             "{} ends at {}",
