@@ -97,13 +97,20 @@ fn nav_item_box(active: bool, hovered: bool) -> Div {
 // gets a disclosure chevron and expands to show them (indented, with a guide line).
 // The Appearance page's section headers, in order. Single source of truth: the navbar lists them as jump
 // entries and `appearance_page` emits the same headers, so the two never drift.
-const WINDOW_LAYOUT_SECTIONS: [&str; 3] = ["Status Bar", "Title Bar", "Docks"];
-const APPEARANCE_SECTIONS: [&str; 3] = ["Theme", "UI Font", "Cursor"];
+const WINDOW_LAYOUT_SECTIONS: [&str; 2] = ["Status Bar", "Title Bar"];
+const APPEARANCE_SECTIONS: [&str; 6] = [
+    "Theme",
+    "Buffer Font",
+    "UI Font",
+    "Agent Panel Font",
+    "Terminal Font",
+    "Cursor",
+];
 
 const INTEGRATIONS_SECTIONS: [&str; 2] = ["Jira", "Main Workspace"];
 const GENERAL_SECTIONS: [&str; 2] = ["Startup", "Updates"];
-const EDITOR_SECTIONS: [&str; 2] = ["Buffer Font", "Behavior"];
-const TERMINAL_SECTIONS: [&str; 2] = ["Font", "Shell"];
+const EDITOR_SECTIONS: [&str; 1] = ["Behavior"];
+const TERMINAL_SECTIONS: [&str; 1] = ["Shell"];
 const KEYMAP_SECTIONS: [&str; 1] = ["Bindings"];
 const AGENT_SECTIONS: [&str; 2] = ["Command", "Claude Code"];
 const NOTIFICATIONS_SECTIONS: [&str; 2] = ["Delivery", "Alert Sounds"];
@@ -1955,6 +1962,7 @@ fn theme_items(s: &Settings) -> Vec<PageItem> {
 
 fn appearance_page(s: &Settings) -> Page {
     let mut items = theme_items(s);
+    items.extend(buffer_font_items(s));
     items.extend(vec![
         PageItem::Header("UI Font"),
         PageItem::Row(SettingRow {
@@ -2004,6 +2012,10 @@ fn appearance_page(s: &Settings) -> Page {
             },
             reset: None,
         }),
+    ]);
+    items.extend(agent_font_items(s));
+    items.extend(terminal_font_items(s));
+    items.extend(vec![
         PageItem::Header("Cursor"),
         PageItem::Row(SettingRow {
             title: "Multi Cursor Modifier".into(),
@@ -2338,129 +2350,136 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
     }
 }
 
+/// The editor's font: its rows sit under Appearance with the other fonts.
+fn buffer_font_items(s: &Settings) -> Vec<PageItem> {
+    vec![PageItem::Header("Buffer Font")]
+        .into_iter()
+        .chain(font_rows(
+            s,
+            FontRows {
+                family: CTRL_BUFFER_FAMILY,
+                family_value: s.buffer_font_family.clone(),
+                size: (
+                    CTRL_BUFFER_FONT_DEC,
+                    CTRL_BUFFER_FONT_INC,
+                    CTRL_BUFFER_FONT_EDIT,
+                ),
+                size_value: s.buffer_font_size,
+                size_description: "Text size of the code editor.",
+                weight: (
+                    CTRL_BUFFER_WEIGHT_DEC,
+                    CTRL_BUFFER_WEIGHT_INC,
+                    CTRL_BUFFER_WEIGHT_EDIT,
+                ),
+                weight_value: s.buffer_font_weight,
+                line_height: Some((
+                    CTRL_BUFFER_LINE_HEIGHT,
+                    line_height_label(&s.buffer_line_height),
+                )),
+                features: CTRL_BUFFER_FEATURES,
+                fallbacks: CTRL_BUFFER_FALLBACKS,
+                what: "the code editor",
+            },
+        ))
+        .collect()
+}
+
 fn editor_page(s: &Settings) -> Page {
     Page {
         title: "Editor",
-        items: vec![PageItem::Header("Buffer Font")]
-            .into_iter()
-            .chain(font_rows(
-                s,
-                FontRows {
-                    family: CTRL_BUFFER_FAMILY,
-                    family_value: s.buffer_font_family.clone(),
-                    size: (
-                        CTRL_BUFFER_FONT_DEC,
-                        CTRL_BUFFER_FONT_INC,
-                        CTRL_BUFFER_FONT_EDIT,
-                    ),
-                    size_value: s.buffer_font_size,
-                    size_description: "Text size of the code editor.",
-                    weight: (
-                        CTRL_BUFFER_WEIGHT_DEC,
-                        CTRL_BUFFER_WEIGHT_INC,
-                        CTRL_BUFFER_WEIGHT_EDIT,
-                    ),
-                    weight_value: s.buffer_font_weight,
-                    line_height: Some((
-                        CTRL_BUFFER_LINE_HEIGHT,
-                        line_height_label(&s.buffer_line_height),
-                    )),
-                    features: CTRL_BUFFER_FEATURES,
-                    fallbacks: CTRL_BUFFER_FALLBACKS,
-                    what: "the code editor",
+        items: vec![
+            PageItem::Header("Behavior"),
+            PageItem::Row(SettingRow {
+                title: "Soft Wrap".into(),
+                description: "How newly opened files wrap long lines.".into(),
+                control: Control::Dropdown {
+                    id: CTRL_SOFT_WRAP,
+                    value: control_value(CTRL_SOFT_WRAP, s),
                 },
-            ))
-            .chain(vec![
-                PageItem::Header("Behavior"),
-                PageItem::Row(SettingRow {
-                    title: "Soft Wrap".into(),
-                    description: "How newly opened files wrap long lines.".into(),
-                    control: Control::Dropdown {
-                        id: CTRL_SOFT_WRAP,
-                        value: control_value(CTRL_SOFT_WRAP, s),
-                    },
-                    reset: reset_if_changed(CTRL_SOFT_WRAP, s),
-                }),
-                PageItem::Row(SettingRow {
-                    title: "Diff View".into(),
-                    description: "Side by side when the pane is wide enough, or one column.".into(),
-                    control: Control::Dropdown {
-                        id: CTRL_DIFF_VIEW,
-                        value: control_value(CTRL_DIFF_VIEW, s),
-                    },
-                    reset: reset_if_changed(CTRL_DIFF_VIEW, s),
-                }),
-                PageItem::Row(SettingRow {
-                    title: "External Editor".into(),
-                    description:
-                        "What \"Open in External Editor\" uses; Auto picks the first installed."
-                            .into(),
-                    control: Control::Dropdown {
-                        id: CTRL_EXTERNAL_EDITOR,
-                        value: control_value(CTRL_EXTERNAL_EDITOR, s),
-                    },
-                    reset: reset_if_changed(CTRL_EXTERNAL_EDITOR, s),
-                }),
-            ])
-            .collect(),
+                reset: reset_if_changed(CTRL_SOFT_WRAP, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Diff View".into(),
+                description: "Side by side when the pane is wide enough, or one column.".into(),
+                control: Control::Dropdown {
+                    id: CTRL_DIFF_VIEW,
+                    value: control_value(CTRL_DIFF_VIEW, s),
+                },
+                reset: reset_if_changed(CTRL_DIFF_VIEW, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "External Editor".into(),
+                description:
+                    "What \"Open in External Editor\" uses; Auto picks the first installed.".into(),
+                control: Control::Dropdown {
+                    id: CTRL_EXTERNAL_EDITOR,
+                    value: control_value(CTRL_EXTERNAL_EDITOR, s),
+                },
+                reset: reset_if_changed(CTRL_EXTERNAL_EDITOR, s),
+            }),
+        ],
     }
+}
+
+/// The terminal's font: its rows sit under Appearance with the other fonts.
+fn terminal_font_items(s: &Settings) -> Vec<PageItem> {
+    vec![PageItem::Header("Terminal Font")]
+        .into_iter()
+        .chain(font_rows(
+            s,
+            FontRows {
+                family: CTRL_TERM_FAMILY,
+                family_value: s.terminal_font_family.clone(),
+                size: (CTRL_TERM_FONT_DEC, CTRL_TERM_FONT_INC, CTRL_TERM_FONT_EDIT),
+                size_value: s.terminal_font_size,
+                size_description:
+                    "Text size of terminals (the agent has its own, under Agent Panel Font).",
+                weight: (
+                    CTRL_TERM_WEIGHT_DEC,
+                    CTRL_TERM_WEIGHT_INC,
+                    CTRL_TERM_WEIGHT_EDIT,
+                ),
+                weight_value: s.terminal_font_weight,
+                line_height: Some((
+                    CTRL_TERM_LINE_HEIGHT,
+                    line_height_label(&s.terminal_line_height),
+                )),
+                features: CTRL_TERM_FEATURES,
+                fallbacks: CTRL_TERM_FALLBACKS,
+                what: "terminals",
+            },
+        ))
+        .collect()
 }
 
 fn terminal_page(s: &Settings) -> Page {
     Page {
         title: "Terminal",
-        items: vec![PageItem::Header("Font")]
-            .into_iter()
-            .chain(font_rows(
-                s,
-                FontRows {
-                    family: CTRL_TERM_FAMILY,
-                    family_value: s.terminal_font_family.clone(),
-                    size: (CTRL_TERM_FONT_DEC, CTRL_TERM_FONT_INC, CTRL_TERM_FONT_EDIT),
-                    size_value: s.terminal_font_size,
-                    size_description:
-                        "Text size of terminals (the agent has its own, under Agent).",
-                    weight: (
-                        CTRL_TERM_WEIGHT_DEC,
-                        CTRL_TERM_WEIGHT_INC,
-                        CTRL_TERM_WEIGHT_EDIT,
-                    ),
-                    weight_value: s.terminal_font_weight,
-                    line_height: Some((
-                        CTRL_TERM_LINE_HEIGHT,
-                        line_height_label(&s.terminal_line_height),
-                    )),
-                    features: CTRL_TERM_FEATURES,
-                    fallbacks: CTRL_TERM_FALLBACKS,
-                    what: "terminals",
+        items: vec![
+            PageItem::Header("Shell"),
+            PageItem::Row(SettingRow {
+                title: "Shell".into(),
+                description: "What new terminals run; empty runs your login shell.".into(),
+                control: Control::TextInput {
+                    id: CTRL_TERM_SHELL,
+                    value: s.terminal_shell.clone(),
+                    placeholder: "login shell",
+                    masked: false,
                 },
-            ))
-            .chain(vec![
-                PageItem::Header("Shell"),
-                PageItem::Row(SettingRow {
-                    title: "Shell".into(),
-                    description: "What new terminals run; empty runs your login shell.".into(),
-                    control: Control::TextInput {
-                        id: CTRL_TERM_SHELL,
-                        value: s.terminal_shell.clone(),
-                        placeholder: "login shell",
-                        masked: false,
-                    },
-                    reset: reset_if_changed(CTRL_TERM_SHELL, s),
-                }),
-                PageItem::Row(SettingRow {
-                    title: "Scrollback".into(),
-                    description: "Lines of history each new terminal keeps.".into(),
-                    control: Control::Stepper {
-                        dec: CTRL_SCROLLBACK_DEC,
-                        inc: CTRL_SCROLLBACK_INC,
-                        edit: CTRL_SCROLLBACK_EDIT,
-                        value: s.terminal_scrollback.to_string(),
-                    },
-                    reset: reset_if_changed(CTRL_SCROLLBACK_EDIT, s),
-                }),
-            ])
-            .collect(),
+                reset: reset_if_changed(CTRL_TERM_SHELL, s),
+            }),
+            PageItem::Row(SettingRow {
+                title: "Scrollback".into(),
+                description: "Lines of history each new terminal keeps.".into(),
+                control: Control::Stepper {
+                    dec: CTRL_SCROLLBACK_DEC,
+                    inc: CTRL_SCROLLBACK_INC,
+                    edit: CTRL_SCROLLBACK_EDIT,
+                    value: s.terminal_scrollback.to_string(),
+                },
+                reset: reset_if_changed(CTRL_SCROLLBACK_EDIT, s),
+            }),
+        ],
     }
 }
 
@@ -2512,6 +2531,24 @@ fn keymap_page(keymap: &KeymapPage) -> Page {
     }
 }
 
+/// The agent's tabs' text size, apart from terminals.
+fn agent_font_items(s: &Settings) -> Vec<PageItem> {
+    vec![
+        PageItem::Header("Agent Panel Font"),
+        PageItem::Row(SettingRow {
+            title: "Font Size".into(),
+            description: "Text size of the agent's tabs, apart from terminals.".into(),
+            control: Control::Stepper {
+                dec: CTRL_AGENT_FONT_DEC,
+                inc: CTRL_AGENT_FONT_INC,
+                edit: CTRL_AGENT_FONT_EDIT,
+                value: format!("{:.0}", s.agent_font_size),
+            },
+            reset: reset_if_changed(CTRL_AGENT_FONT_EDIT, s),
+        }),
+    ]
+}
+
 fn agent_page(s: &Settings, agent: &AgentPage) -> Page {
     let can_reinstall = !matches!(agent.mcp, Registration::Pending | Registration::Skipped);
     Page {
@@ -2528,17 +2565,6 @@ fn agent_page(s: &Settings, agent: &AgentPage) -> Page {
                     masked: false,
                 },
                 reset: reset_if_changed(CTRL_AGENT_COMMAND, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Font Size".into(),
-                description: "Text size of the agent's tabs, apart from terminals.".into(),
-                control: Control::Stepper {
-                    dec: CTRL_AGENT_FONT_DEC,
-                    inc: CTRL_AGENT_FONT_INC,
-                    edit: CTRL_AGENT_FONT_EDIT,
-                    value: format!("{:.0}", s.agent_font_size),
-                },
-                reset: reset_if_changed(CTRL_AGENT_FONT_EDIT, s),
             }),
             PageItem::Row(SettingRow {
                 title: "Closing an Agent Tab".into(),
@@ -3963,9 +3989,21 @@ mod tests {
             assert!(general.iter().any(|t| t.text == expected), "{expected}");
         }
         let editor = texts_of(EDITOR, &state, &settings);
-        for expected in ["15", "None", "Split", "Auto"] {
+        for expected in ["None", "Split", "Auto"] {
             assert!(editor.iter().any(|t| t.text == expected), "{expected}");
         }
+        // Every font sits under Appearance, as in the reference.
+        let appearance = texts_of(1, &state, &settings);
+        for expected in [
+            "Buffer Font",
+            "UI Font",
+            "Agent Panel Font",
+            "Terminal Font",
+            "Cursor",
+        ] {
+            assert!(appearance.iter().any(|t| t.text == expected), "{expected}");
+        }
+        assert!(!editor.iter().any(|t| t.text == "Buffer Font"));
         let terminal = texts_of(TERMINAL, &state, &settings);
         assert!(terminal.iter().any(|t| t.text == "10000"));
         let keymap = texts_of(KEYMAP, &state, &settings);
