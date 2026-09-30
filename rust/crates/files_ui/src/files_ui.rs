@@ -231,6 +231,11 @@ const MINIMAP_MAX_COLUMNS: f32 = 80.0;
 /// Narrower than this many columns, the minimap is left out.
 const MINIMAP_MIN_COLUMNS: f32 = 20.0;
 const MINIMAP_PADDING: f32 = 4.0;
+/// Lines of minimap colors kept at most, so scrolling a huge file does not grow them for good.
+const MINIMAP_CACHED_LINES: usize = 20_000;
+
+/// The minimap's colored runs by line, and the (buffer version, tree still parsing) they were read at.
+type MinimapLines = (Option<(u64, bool)>, HashMap<usize, Vec<(String, Rgba)>>);
 
 /// Where the minimap sat last frame, in body-local px, and how its lines map onto the text.
 #[derive(Clone, Copy)]
@@ -612,6 +617,12 @@ struct FileItem {
     minimap_layout: Option<MinimapLayout>,
     /// The pointer's last y while a press on the minimap drags it.
     minimap_drag: Option<f32>,
+    /// A scrollbar thumb being dragged: vertical or not, and the pointer's last position along it.
+    scrollbar_drag: Option<(bool, f32)>,
+    /// The pointer is over a scrollbar, which keeps them shown.
+    scrollbar_hovered: bool,
+    /// The minimap's colored runs by line, kept while the text and its tree stay the same.
+    minimap_lines: RefCell<MinimapLines>,
     show_diagnostics: bool,
     inline_diagnostics: bool,
     line_numbers: bool,
@@ -922,6 +933,9 @@ impl FileItem {
             minimap: false,
             minimap_layout: None,
             minimap_drag: None,
+            scrollbar_drag: None,
+            scrollbar_hovered: false,
+            minimap_lines: RefCell::default(),
             show_diagnostics: true,
             inline_diagnostics: false,
             line_numbers: true,
@@ -1912,8 +1926,10 @@ impl FileItem {
     }
 
     fn scrollbars_revealed(&self) -> bool {
-        self.scrolled_at
-            .is_some_and(|at| at.elapsed() < SCROLLBAR_SHOW_INTERVAL)
+        self.scrollbar_hovered
+            || self
+                .scrolled_at
+                .is_some_and(|at| at.elapsed() < SCROLLBAR_SHOW_INTERVAL)
     }
 
     fn set_scroll_y(&mut self, scroll_y: f32) {
@@ -2258,6 +2274,67 @@ impl FileItem {
     fn text_viewport_w(&self) -> f32 {
         (self.body_w - self.gutter_dims().full_width() - SCROLLBAR_WIDTH - self.minimap_width())
             .max(0.0)
+    }
+
+    /// A scrollbar's thumb length and track pixels per row (vertical) or column, when it can scroll.
+    fn scrollbar_metrics(&self, vertical: bool) -> Option<(f32, f32)> {
+        if vertical {
+            let page = self.body_h / edit_line_h();
+            let total = (self.content_h() + self.body_h) / edit_line_h();
+            thumb_metrics(self.body_h, page, total)
+        } else {
+            let em = char_advance();
+            let track = (self.body_w - self.gutter_dims().full_width() - SCROLLBAR_WIDTH).max(0.0);
+            thumb_metrics(track, self.text_viewport_w() / em, self.content_w() / em)
+        }
+    }
+
+    /// Which scrollbar a body point is on (true: the vertical one), when it can scroll.
+    fn scrollbar_under(&self, local_x: f32, local_y: f32) -> Option<bool> {
+        self.buffer.as_ref()?;
+        let on_vertical = local_x >= self.body_w - SCROLLBAR_WIDTH && local_x < self.body_w;
+        let gutter = self.gutter_dims().full_width();
+        let on_horizontal = local_y >= self.body_h - SCROLLBAR_WIDTH
+            && local_y < self.body_h
+            && local_x >= gutter
+            && local_x < self.body_w - SCROLLBAR_WIDTH;
+        if on_vertical && self.scrollbar_metrics(true).is_some() {
+            Some(true)
+        } else if on_horizontal && self.scrollbar_metrics(false).is_some() {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// A press on a scrollbar at `along` (px from its track's start): off the thumb it jumps so the view
+    /// centers there, and either way a drag follows.
+    fn scrollbar_press(&mut self, vertical: bool, along: f32) {
+        let Some((thumb, unit)) = self.scrollbar_metrics(vertical) else {
+            return;
+        };
+        let (start, step) = if vertical {
+            (0.0, edit_line_h())
+        } else {
+            (self.gutter_dims().full_width(), char_advance())
+        };
+        let offset = if vertical {
+            self.scroll_y
+        } else {
+            self.scroll_x
+        };
+        let thumb_at = start + offset / step * unit;
+        if along < thumb_at || along > thumb_at + thumb {
+            let target =
+                (along - start - thumb / 2.0).max(0.0) / unit.max(f32::MIN_POSITIVE) * step;
+            if vertical {
+                self.set_scroll_y(target);
+            } else {
+                self.scroll_x = target.clamp(0.0, self.max_scroll_x());
+            }
+        }
+        self.scrolled_at = Some(std::time::Instant::now());
+        self.scrollbar_drag = Some((vertical, along));
     }
 
     /// How wide the minimap is: a share of the text's width up to a column count, none when too narrow.
@@ -4233,7 +4310,14 @@ impl Item for FileItem {
     }
 
     fn pointer_moved(&mut self, local: Option<(f32, f32)>, window: (f32, f32)) -> bool {
-        self.hover_pointer(local, window)
+        // Over a scrollbar it shows, as the reference reveals its scrollbars on hover.
+        let over_scrollbar = local.is_some_and(|(x, y)| self.scrollbar_under(x, y).is_some());
+        let changed = over_scrollbar != self.scrollbar_hovered;
+        self.scrollbar_hovered = over_scrollbar;
+        if over_scrollbar {
+            return changed | self.hover_pointer(None, window);
+        }
+        changed | self.hover_pointer(local, window)
     }
 
     fn hover_popovers(&self, content: Rect) -> Vec<(Node, f32, f32)> {
@@ -4442,10 +4526,26 @@ impl Item for FileItem {
     }
 
     fn drag_select(&mut self, x: f32, y: f32, body: Rect) {
+        if let Some((vertical, last)) = self.scrollbar_drag {
+            let along = if vertical { y - body.y } else { x - body.x };
+            if let Some((_, unit)) = self.scrollbar_metrics(vertical) {
+                // A huge file puts thousands of rows on each pixel, so no floor beyond zero here.
+                let moved = (along - last) / unit.max(f32::MIN_POSITIVE);
+                if vertical {
+                    self.set_scroll_y(self.scroll_y + moved * edit_line_h());
+                } else {
+                    let scroll_x = self.scroll_x + moved * char_advance();
+                    self.scroll_x = scroll_x.clamp(0.0, self.max_scroll_x());
+                }
+                self.scrolled_at = Some(std::time::Instant::now());
+            }
+            self.scrollbar_drag = Some((vertical, along));
+            return;
+        }
         if let (Some(last), Some(layout)) = (self.minimap_drag, self.minimap_layout) {
             let local_y = y - body.y;
             let per_line = (layout.area.h / layout.total_lines.max(1.0)).min(layout.line_h);
-            let lines = (local_y - last) / per_line.max(0.01);
+            let lines = (local_y - last) / per_line.max(f32::MIN_POSITIVE);
             self.set_scroll_y(self.scroll_y + lines * edit_line_h());
             self.minimap_drag = Some(local_y);
             return;
@@ -5071,42 +5171,80 @@ impl Item for FileItem {
         let syntax_colors = syntax_theme();
         let first = top.floor() as usize;
         let last = ((top + minimap_lines).ceil() as usize + 1).min(self.line_count());
-        for line in first..last {
-            let y = area.y + (line as f32 - top) * mini_line_h;
-            let mut x = area.x + MINIMAP_PADDING;
-            for (text, color) in self.line_segments(line, &syntax_colors) {
-                if x >= area.x + area.w {
-                    break;
-                }
-                let columns = text.chars().count() as f32;
-                if !text.trim().is_empty() {
-                    painted.texts.push(ui::Text {
-                        x,
-                        y,
-                        size: MINIMAP_FONT,
-                        color,
-                        text,
-                        font: ui::TextFont::Buffer,
-                        weight: 900,
-                        italic: false,
-                        wrap: 0.0,
-                        scale: 1.0,
-                    });
-                }
-                x += columns * column;
-            }
+        // Highlighting every line it shows each frame is what made scrolling it stutter.
+        let key = self.buffer.as_ref().map(|b| {
+            (
+                b.version(),
+                self.syntax.as_ref().is_some_and(Syntax::is_parsing),
+            )
+        });
+        let mut cache = self.minimap_lines.borrow_mut();
+        if cache.0 != key || cache.1.len() > MINIMAP_CACHED_LINES {
+            *cache = (key, HashMap::new());
         }
         let thumb_top = area.y + (scroll_lines - top) * mini_line_h;
         let thumb_h = visible_lines * mini_line_h;
-        let mut thumb_color = colors.scrollbar_thumb_background;
-        thumb_color.a = thumb_color.a.min(0.7);
-        if self.minimap_drag.is_some() {
-            thumb_color = colors.scrollbar_thumb_hover_background;
+        // Blended here rather than drawn translucent: the renderer mixes in linear light, which darkens a
+        // light thumb over the dark editor next to the reference's.
+        let thumb = colors.scrollbar_thumb_background;
+        let alpha = thumb.a.min(0.7);
+        let behind = colors.editor_background;
+        let mix = |over: f32, under: f32| over * alpha + under * (1.0 - alpha);
+        let thumb_fill = if self.minimap_drag.is_some() {
+            colors.scrollbar_thumb_hover_background
+        } else {
+            Rgba::new(
+                mix(thumb.r, behind.r),
+                mix(thumb.g, behind.g),
+                mix(thumb.b, behind.b),
+                1.0,
+            )
+        };
+        painted
+            .rects
+            .push(Rect::new(area.x, thumb_top, width, thumb_h, thumb_fill));
+        // At this size a glyph is a smudge of its color, so each run of letters is drawn as one bar: shaping
+        // hundreds of fresh lines a frame made dragging through a large file fall behind the pointer.
+        let ink_h = MINIMAP_FONT * 0.75;
+        for line in first..last {
+            let y = area.y + (line as f32 - top) * mini_line_h + (mini_line_h - ink_h) / 2.0;
+            let mut x = area.x + MINIMAP_PADDING;
+            let segments = cache
+                .1
+                .entry(line)
+                .or_insert_with(|| self.line_segments(line, &syntax_colors))
+                .clone();
+            'segments: for (text, color) in segments {
+                let ink = color.alpha(color.a * 0.75);
+                let mut run_start: Option<f32> = None;
+                for ch in text.chars() {
+                    if x >= area.x + area.w {
+                        break 'segments;
+                    }
+                    let is_ink = !ch.is_whitespace() && !ch.is_ascii_punctuation();
+                    match (is_ink, run_start) {
+                        (true, None) => run_start = Some(x),
+                        (false, Some(start)) => {
+                            painted
+                                .rects
+                                .push(Rect::new(start, y, x - start, ink_h, ink));
+                            run_start = None;
+                        }
+                        _ => {}
+                    }
+                    x += column;
+                }
+                if let Some(start) = run_start {
+                    let end = x.min(area.x + area.w);
+                    painted
+                        .rects
+                        .push(Rect::new(start, y, end - start, ink_h, ink));
+                }
+            }
         }
         let border = colors.scrollbar_thumb_border;
         // Open on the left, where the thumb meets the text: borders on its top, bottom and right.
         painted.rects.extend([
-            Rect::new(area.x, thumb_top, width, thumb_h, thumb_color),
             Rect::new(area.x, thumb_top, width, 1.0, border),
             Rect::new(area.x, thumb_top + thumb_h - 1.0, width, 1.0, border),
             Rect::new(area.x + width - 1.0, thumb_top, 1.0, thumb_h, border),
@@ -5129,6 +5267,12 @@ impl Item for FileItem {
     }
 
     fn minimap_press(&mut self, local_x: f32, local_y: f32) -> bool {
+        self.scrollbar_drag = None;
+        if let Some(vertical) = self.scrollbar_under(local_x, local_y) {
+            self.minimap_drag = None;
+            self.scrollbar_press(vertical, if vertical { local_y } else { local_x });
+            return true;
+        }
         let Some(layout) = self.minimap_layout.filter(|layout| {
             local_x >= layout.area.x
                 && local_x < layout.area.x + layout.area.w
@@ -8956,7 +9100,8 @@ mod indent_guide_tests {
         let viewport = item.text_viewport_w();
         item.minimap = true;
         let painted = item.minimap(content).expect("drawn");
-        assert!(painted.texts.iter().all(|text| text.size == MINIMAP_FONT));
+        assert!(painted.texts.is_empty(), "drawn as bars, nothing to shape");
+        assert!(painted.rects.len() > 100);
         assert!(item.text_viewport_w() < viewport, "the text leaves it room");
         let layout = item.minimap_layout.expect("laid out");
         assert!(
@@ -8972,6 +9117,54 @@ mod indent_guide_tests {
         assert!(
             item.minimap(content).is_none(),
             "too narrow for twenty columns"
+        );
+    }
+
+    #[test]
+    fn the_scrollbar_jumps_where_pressed_and_its_thumb_drags() {
+        let text: String = (0..400).map(|line| format!("line {line}\n")).collect();
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "a.txt", Some(text));
+        item.set_body_height(600.0);
+        item.set_body_width(900.0);
+        let x = 900.0 - SCROLLBAR_WIDTH / 2.0;
+        assert_eq!(item.scrollbar_under(400.0, 300.0), None, "the text");
+        assert_eq!(item.scrollbar_under(x, 300.0), Some(true));
+        assert!(!item.scrollbars_revealed());
+        item.pointer_moved(Some((x, 300.0)), (0.0, 0.0));
+        assert!(item.scrollbars_revealed(), "hovering shows it");
+        assert!(
+            item.minimap_press(x, 590.0),
+            "a press on the track is the scrollbar's"
+        );
+        let jumped = item.scroll_y;
+        assert!(jumped > 0.0, "below the thumb it jumps down");
+        let body = Rect::new(0.0, 0.0, 900.0, 600.0, Rgba::TRANSPARENT);
+        item.drag_select(x, 500.0, body);
+        assert!(item.scroll_y < jumped, "dragging up scrolls up");
+        assert!(!item.minimap_press(400.0, 300.0));
+        assert!(
+            item.scrollbar_drag.is_none(),
+            "a press on the text ends the drag"
+        );
+    }
+
+    #[test]
+    fn dragging_through_a_huge_file_keeps_up_with_the_pointer() {
+        let text = "x\n".repeat(300_000);
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "a.txt", Some(text));
+        item.set_body_height(600.0);
+        item.set_body_width(900.0);
+        let x = 900.0 - SCROLLBAR_WIDTH / 2.0;
+        let (thumb, unit) = item.scrollbar_metrics(true).expect("scrolls");
+        assert!(unit < 0.01, "hundreds of rows a pixel");
+        assert!(item.minimap_press(x, thumb / 2.0), "on the thumb");
+        let body = Rect::new(0.0, 0.0, 900.0, 600.0, Rgba::TRANSPARENT);
+        item.drag_select(x, thumb / 2.0 + 10.0, body);
+        let rows = item.scroll_y / edit_line_h();
+        let expected = 10.0 / unit;
+        assert!(
+            (rows - expected).abs() < expected * 0.01,
+            "{rows} rows for {expected}"
         );
     }
 
