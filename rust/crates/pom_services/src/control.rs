@@ -382,7 +382,7 @@ impl ServiceRunner {
         Some(format!(
             "http://{}:{}",
             pom_env::service_host(&target.service, alias(&target.repo, dir), &target.branch),
-            pom_env::DEFAULT_PROXY_PORT
+            pom_env::dev_ports().proxy
         ))
     }
 
@@ -685,6 +685,10 @@ impl EnvSources for ServiceRunner {
                 None
             }
         }
+    }
+
+    fn proxy_port(&self) -> u16 {
+        pom_env::dev_ports().proxy
     }
 }
 

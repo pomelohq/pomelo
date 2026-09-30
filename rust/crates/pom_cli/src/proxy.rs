@@ -49,7 +49,8 @@ pub(crate) fn serve(state: &StateDir, out: &mut dyn Write) -> Result<(), String>
         state: state.clone(),
         holders: pom_ptyhost::SocketDir::from_env(),
     };
-    let proxy = DevProxy::start(Box::new(machine), ports).map_err(|error| error.to_string())?;
+    let proxy = DevProxy::start(Box::new(machine), ports, pom_proxy::Serve::default())
+        .map_err(|error| error.to_string())?;
     if !proxy.proxy_running() {
         return Err(format!("could not listen on port {}", ports.proxy));
     }

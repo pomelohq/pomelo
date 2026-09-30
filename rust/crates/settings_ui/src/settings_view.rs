@@ -25,13 +25,15 @@ fn is_free_text(id: u64) -> bool {
         || id == settings_ui::CTRL_TERM_SHELL
 }
 
-const NUMBER_FIELDS: [u64; 6] = [
+const NUMBER_FIELDS: [u64; 8] = [
     settings_ui::CTRL_BUFFER_FONT_EDIT,
     settings_ui::CTRL_TERM_FONT_EDIT,
     settings_ui::CTRL_BUFFER_WEIGHT_EDIT,
     settings_ui::CTRL_TERM_WEIGHT_EDIT,
     settings_ui::CTRL_AGENT_FONT_EDIT,
     settings_ui::CTRL_SCROLLBACK_EDIT,
+    settings_ui::CTRL_PROXY_PORT_EDIT,
+    settings_ui::CTRL_WEBHOOK_PORT_EDIT,
 ];
 
 /// Cross-window work the shell must do after an input the view handled: re-apply the UI font to every window's
@@ -43,6 +45,7 @@ pub struct SideEffects {
     pub reinstall_agents: bool,
     pub test_notification: bool,
     pub start_servers: bool,
+    pub open_dev_requests: bool,
     pub play_sound: Option<String>,
     pub toggle_login_item: bool,
     pub check_updates: bool,
@@ -193,9 +196,9 @@ impl SettingsView {
             .map(|repo| repo.name.clone())
     }
 
-    pub fn set_network_page(&mut self, network: settings_ui::NetworkPage) -> bool {
-        let changed = self.pages.network != network;
-        self.pages.network = network;
+    pub fn set_dev_services_page(&mut self, services: settings_ui::DevServicesPage) -> bool {
+        let changed = self.pages.dev_services != services;
+        self.pages.dev_services = services;
         changed
     }
 
@@ -424,6 +427,16 @@ impl SettingsView {
                     let next =
                         value.clamp(settings_ui::FONT_WEIGHT_MIN, settings_ui::FONT_WEIGHT_MAX);
                     std::mem::replace(&mut self.settings.terminal_font_weight, next) != next
+                }
+                settings_ui::CTRL_PROXY_PORT_EDIT | settings_ui::CTRL_WEBHOOK_PORT_EDIT => {
+                    let next =
+                        value.clamp(f32::from(settings_ui::PORT_MIN), f32::from(u16::MAX)) as u16;
+                    let port = if id == settings_ui::CTRL_PROXY_PORT_EDIT {
+                        &mut self.settings.dev_proxy_port
+                    } else {
+                        &mut self.settings.webhook_port
+                    };
+                    std::mem::replace(port, next) != next
                 }
                 _ => {
                     let next = (value as u32)
@@ -956,6 +969,8 @@ impl SettingsView {
                 settings_ui::CTRL_TERM_WEIGHT_EDIT => {
                     format!("{:.0}", self.settings.terminal_font_weight)
                 }
+                settings_ui::CTRL_PROXY_PORT_EDIT => self.settings.dev_proxy_port.to_string(),
+                settings_ui::CTRL_WEBHOOK_PORT_EDIT => self.settings.webhook_port.to_string(),
                 _ => self.settings.terminal_scrollback.to_string(),
             };
             self.editing = Some((id, seed));
@@ -1002,6 +1017,9 @@ impl SettingsView {
         } else if id == settings_ui::CTRL_START_SERVERS {
             self.commit_edit();
             self.pending.start_servers = true;
+        } else if id == settings_ui::CTRL_OPEN_REQUESTS {
+            self.commit_edit();
+            self.pending.open_dev_requests = true;
         } else if JIRA_FIELDS.contains(&id) {
             self.commit_edit();
             let seed = match id {
@@ -1279,8 +1297,18 @@ mod tests {
         view.click(settings_ui::CTRL_TEST_NOTIFICATION);
         view.click(settings_ui::CTRL_REINSTALL_AGENTS);
         view.click(settings_ui::CTRL_START_SERVERS);
+        view.click(settings_ui::CTRL_OPEN_REQUESTS);
         let effects = view.take_side_effects();
         assert!(effects.test_notification && effects.reinstall_agents && effects.start_servers);
+        assert!(effects.open_dev_requests);
+        view.click(settings_ui::CTRL_PROXY_PORT_EDIT);
+        assert_eq!(
+            view.editing.as_ref().map(|(_, text)| text.as_str()),
+            Some("8767")
+        );
+        view.editing = Some((settings_ui::CTRL_PROXY_PORT_EDIT, "80".into()));
+        view.commit_edit();
+        assert_eq!(view.settings.dev_proxy_port, settings_ui::PORT_MIN);
         assert!(!view.take_side_effects().test_notification);
         view.click(settings_ui::CTRL_AGENT_COMMAND);
         assert_eq!(
@@ -1292,11 +1320,11 @@ mod tests {
             view.editing.as_ref().map(|(_, text)| text.as_str()),
             Some("claude-x")
         );
-        assert!(view.set_network_page(settings_ui::NetworkPage {
+        assert!(view.set_dev_services_page(settings_ui::DevServicesPage {
             proxy_port: 8767,
             ..Default::default()
         }));
-        assert!(!view.set_network_page(settings_ui::NetworkPage {
+        assert!(!view.set_dev_services_page(settings_ui::DevServicesPage {
             proxy_port: 8767,
             ..Default::default()
         }));

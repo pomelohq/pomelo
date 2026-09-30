@@ -9,7 +9,7 @@ use std::time::Duration;
 use pom_config::{Config, Dir, Service, SharedServiceDef};
 use pom_layout::WorkspaceState;
 use pom_ports::{Lease, PortState};
-use pom_proxy::{DevProxy, Machine, Ports, ProjectRoute};
+use pom_proxy::{DevProxy, Machine, Ports, ProjectRoute, RequestKind, Serve};
 
 struct FakeMachine {
     leases: Vec<Lease>,
@@ -156,7 +156,12 @@ fn start(leases: Vec<Lease>, envs: HashMap<String, WorkspaceState>) -> (DevProxy
         webhook: free_port(),
         proxy: free_port(),
     };
-    let proxy = DevProxy::start(Box::new(FakeMachine { leases, envs }), ports).expect("start");
+    let proxy = DevProxy::start(
+        Box::new(FakeMachine { leases, envs }),
+        ports,
+        Serve::default(),
+    )
+    .expect("start");
     proxy.set_projects(vec![ProjectRoute {
         root: "/tmp/demo".into(),
         config: Arc::new(RwLock::new(Some(Arc::new(config())))),
@@ -203,6 +208,17 @@ fn routes_hosts_and_dev_paths_rewriting_cookies_and_logging() {
     assert_eq!(log[0].path, "/_pom_dev/api/server/v1/me");
     assert_eq!((log[0].profile.as_str(), log[0].status), ("local", 200));
     assert_eq!(log[0].target, format!("127.0.0.1:{backend}"));
+    assert!(log[0]
+        .request_headers
+        .iter()
+        .any(|(name, value)| name == "host" && value.starts_with("web.web.feat-login")));
+    let (sent, answered) = proxy.payloads(log[0].seq).expect("payloads");
+    assert!(sent.complete && sent.bytes.is_empty());
+    assert!(
+        String::from_utf8_lossy(&answered.bytes).contains("GET /v1/me HTTP/1.1"),
+        "{answered:?}"
+    );
+    assert_eq!(answered.total, answered.bytes.len() as u64);
 
     let response = request(
         ports.proxy,
@@ -236,6 +252,7 @@ fn a_remote_profile_sends_dev_paths_to_its_url() {
             envs: config_envs,
         }),
         ports,
+        Serve::default(),
     )
     .expect("start");
     let mut config = config();
@@ -294,7 +311,7 @@ fn webhooks_fan_out_to_every_running_workspace() {
     let (sender, seen) = mpsc::channel();
     let main = echo_backend(sender.clone());
     let branch = echo_backend(sender);
-    let (_proxy, ports) = start(
+    let (proxy, ports) = start(
         vec![
             service_lease("main", main),
             service_lease("feat-login", branch),
@@ -321,6 +338,30 @@ fn webhooks_fan_out_to_every_running_workspace() {
         assert!(delivered.ends_with("{\"a\":1}"), "{delivered}");
         assert!(!delivered.to_ascii_lowercase().contains("host: relay"));
     }
+    let logged = (0..50)
+        .find_map(|_| {
+            let entries = proxy.log(10);
+            let hit = entries
+                .into_iter()
+                .find(|entry| entry.kind == RequestKind::Webhook && entry.deliveries.len() == 2);
+            if hit.is_none() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            hit
+        })
+        .expect("the webhook is logged with both deliveries");
+    assert_eq!(logged.path, "/hooks/stripe?id=7");
+    assert_eq!(logged.status, 200);
+    let (sent, acked) = proxy.payloads(logged.seq).expect("payloads");
+    assert_eq!(sent.bytes, b"{\"a\":1}");
+    assert!(String::from_utf8_lossy(&acked.bytes).contains("\"fanout\":2"));
+    let mut workspaces: Vec<&str> = logged
+        .deliveries
+        .iter()
+        .map(|delivery| delivery.workspace.as_str())
+        .collect();
+    workspaces.sort_unstable();
+    assert_eq!(workspaces, ["feat-login", "main"]);
     let response = request(
         ports.webhook,
         "POST /nope HTTP/1.1\r\nHost: relay\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",

@@ -17,9 +17,67 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::routing::{rewrite_external_cookie, rewrite_local_cookie, Route, Router};
-use crate::{clock, ProxyLog, ProxyLogEntry};
+use crate::{
+    capture_of, clock, finish, record, Capture, Delivery, ProxyLog, ProxyLogEntry, RequestKind,
+};
 
 pub(crate) type Body = BoxBody<Bytes, hyper::Error>;
+
+/// Passes a body through untouched while copying what flows into `capture`.
+struct Tee<B> {
+    inner: B,
+    capture: Capture,
+}
+
+impl<B> hyper::body::Body for Tee<B>
+where
+    B: hyper::body::Body<Data = Bytes> + Unpin,
+{
+    type Data = Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        let this = self.get_mut();
+        let polled = std::pin::Pin::new(&mut this.inner).poll_frame(context);
+        match &polled {
+            std::task::Poll::Ready(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref() {
+                    record(&this.capture, data);
+                }
+            }
+            std::task::Poll::Ready(None) => finish(&this.capture),
+            _ => {}
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        let ended = self.inner.is_end_stream();
+        if ended {
+            finish(&self.capture);
+        }
+        ended
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+fn header_list(headers: &HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect()
+}
 
 const WEBHOOK_BODY_CAP: usize = 32 << 20;
 const WEBHOOK_FORWARD_TIMEOUT: Duration = Duration::from_secs(20);
@@ -188,6 +246,16 @@ async fn handle_proxy(
     let path = request.uri().path().to_string();
     let query = request.uri().query().map(str::to_string);
     let method = request.method().to_string();
+    let request_headers = header_list(request.headers());
+    let request_capture = Capture::default();
+    let (request_parts, request_body) = request.into_parts();
+    let request = Request::from_parts(
+        request_parts,
+        Tee {
+            inner: request_body,
+            capture: request_capture.clone(),
+        },
+    );
     let router = shared.router.clone();
     let (lookup_host, lookup_path) = (host, path.clone());
     let decision = match tokio::task::spawn_blocking(move || {
@@ -235,25 +303,48 @@ async fn handle_proxy(
             _ => text_response(502, &format!("dev-proxy: bad env override URL: {url}")),
         },
     };
+    let response_headers = header_list(response.headers());
+    let response_capture = Capture::default();
+    let (response_parts, response_body) = response.into_parts();
+    let response = Response::from_parts(
+        response_parts,
+        Tee {
+            inner: response_body,
+            capture: response_capture.clone(),
+        }
+        .boxed(),
+    );
     if let Some(logged) = decision.logged {
-        shared.log.add(ProxyLogEntry {
-            time: clock(),
-            method,
-            path,
-            repo: logged.repo,
-            service: logged.service,
-            profile: logged.profile,
-            target: logged.target,
-            status: response.status().as_u16(),
-            ms: started.elapsed().as_millis() as u64,
-        });
+        let logged_path = match &query {
+            Some(query) => format!("{path}?{query}"),
+            None => path,
+        };
+        shared.log.add(
+            ProxyLogEntry {
+                kind: RequestKind::Proxy,
+                time: clock(),
+                method,
+                path: logged_path,
+                repo: logged.repo,
+                service: logged.service,
+                profile: logged.profile,
+                target: logged.target,
+                status: response.status().as_u16(),
+                ms: started.elapsed().as_millis() as u64,
+                request_headers,
+                response_headers,
+                ..ProxyLogEntry::default()
+            },
+            request_capture,
+            response_capture,
+        );
     }
     response
 }
 
 async fn forward(
     shared: &Shared,
-    mut request: Request<Incoming>,
+    mut request: Request<Tee<Incoming>>,
     upstream: Upstream,
     path: &str,
     query: Option<&str>,
@@ -454,10 +545,14 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
             Bytes::new()
         }
     };
+    let started = Instant::now();
+    let time = clock();
+    let request_headers = header_list(&parts.headers);
+    let request_capture = capture_of(&body);
     let mut live = Vec::new();
-    for port in ports {
+    for (workspace, port) in ports {
         if listening(port).await {
-            live.push(port);
+            live.push((workspace, port));
         }
     }
     let mut response = Response::new(full(format!(
@@ -468,15 +563,25 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
     response
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let response_headers = header_list(response.headers());
+    let ack = format!(
+        "{{\"ok\":true,\"service\":{},\"fanout\":{}}}",
+        json_string(&target),
+        live.len()
+    );
+    let response_capture = capture_of(ack.as_bytes());
     let client = shared.local.clone();
+    let log = shared.log.clone();
     let mut headers = parts.headers;
     headers.remove(HOST);
+    let logged_path = match &query {
+        Some(query) => format!("{forward_path}?{query}"),
+        None => forward_path.clone(),
+    };
     tokio::spawn(async move {
-        for port in live {
-            let url = match &query {
-                Some(query) => format!("http://127.0.0.1:{port}{forward_path}?{query}"),
-                None => format!("http://127.0.0.1:{port}{forward_path}"),
-            };
+        let mut deliveries = Vec::new();
+        for (workspace, port) in live {
+            let url = format!("http://127.0.0.1:{port}{logged_path}");
             let Ok(uri) = url.parse::<Uri>() else {
                 continue;
             };
@@ -484,12 +589,49 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
             *outgoing.method_mut() = method.clone();
             *outgoing.uri_mut() = uri;
             *outgoing.headers_mut() = headers.clone();
+            let mut delivery = Delivery {
+                workspace,
+                port,
+                ..Delivery::default()
+            };
+            let sent = Instant::now();
             match tokio::time::timeout(WEBHOOK_FORWARD_TIMEOUT, client.request(outgoing)).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => eprintln!("webhook fanout > :{port} {forward_path}: {error}"),
-                Err(_) => eprintln!("webhook fanout > :{port} {forward_path}: timed out"),
+                Ok(Ok(answer)) => delivery.status = Some(answer.status().as_u16()),
+                Ok(Err(error)) => delivery.error = error.to_string(),
+                Err(_) => delivery.error = "timed out".into(),
             }
+            delivery.ms = sent.elapsed().as_millis() as u64;
+            deliveries.push(delivery);
         }
+        let failed = deliveries
+            .iter()
+            .any(|delivery| delivery.status.is_none_or(|status| status >= 400));
+        log.add(
+            ProxyLogEntry {
+                kind: RequestKind::Webhook,
+                time,
+                method: method.to_string(),
+                path: logged_path,
+                repo,
+                service,
+                profile: String::new(),
+                target: format!("{} workspaces", deliveries.len()),
+                status: if deliveries.is_empty() {
+                    404
+                } else if failed {
+                    502
+                } else {
+                    200
+                },
+                ms: started.elapsed().as_millis() as u64,
+                deliveries,
+                request_headers,
+                response_headers,
+                ..ProxyLogEntry::default()
+            },
+            request_capture,
+            response_capture,
+        );
     });
     response
 }

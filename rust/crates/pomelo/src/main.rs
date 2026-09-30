@@ -9,6 +9,7 @@ mod add_repo;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod config_bundle;
+mod dev_services;
 #[cfg(target_os = "macos")]
 mod key_equivalents;
 mod notifications;
@@ -637,6 +638,7 @@ struct App {
     themes_checked_at: Option<Instant>,
     keymap_checked: Option<Instant>,
     dev_proxy: Option<pom_proxy::DevProxy>,
+    dev_requests: dev_services::DevRequestsTabs,
     agent_registration: Arc<std::sync::Mutex<settings_ui::AgentPage>>,
     settings_pages_at: Option<Instant>,
     /// The main window last focused: Settings edits its project's Jira settings.
@@ -1828,7 +1830,6 @@ impl App {
     /// servers' state and traffic. Throttled, since it runs on every loop turn.
     fn refresh_settings_pages(&mut self) {
         const INTERVAL: Duration = Duration::from_millis(500);
-        const REQUESTS_SHOWN: usize = 50;
         if self.settings_entity.is_none()
             || self
                 .settings_pages_at
@@ -1842,43 +1843,7 @@ impl App {
             .lock()
             .map(|page| page.clone())
             .unwrap_or_default();
-        let ports = self
-            .dev_proxy
-            .as_ref()
-            .map_or_else(pom_proxy::Ports::from_env, pom_proxy::DevProxy::ports);
-        let network = settings_ui::NetworkPage {
-            proxy_running: self
-                .dev_proxy
-                .as_ref()
-                .is_some_and(pom_proxy::DevProxy::proxy_running),
-            webhook_running: self
-                .dev_proxy
-                .as_ref()
-                .is_some_and(pom_proxy::DevProxy::webhook_running),
-            proxy_port: ports.proxy,
-            webhook_port: ports.webhook,
-            served_elsewhere: !self
-                .dev_proxy
-                .as_ref()
-                .is_some_and(pom_proxy::DevProxy::proxy_running)
-                && pom_proxy::listening(ports.proxy),
-            requests: self
-                .dev_proxy
-                .as_ref()
-                .map(|proxy| proxy.log(REQUESTS_SHOWN))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|entry| settings_ui::RequestRow {
-                    time: entry.time,
-                    method: entry.method,
-                    path: entry.path,
-                    profile: entry.profile,
-                    target: entry.target,
-                    status: entry.status,
-                    ms: entry.ms,
-                })
-                .collect(),
-        };
+        let dev_services = self.dev_services_page();
         let update = self.update_settings_row();
         let general = settings_ui::GeneralPage {
             start_at_login: start_at_login(),
@@ -1906,7 +1871,7 @@ impl App {
             let agent_changed = view.set_agent_page(agent);
             let general_changed = view.set_general_page(general);
             let keymap_changed = view.set_keymap_page(keymap);
-            view.set_network_page(network)
+            view.set_dev_services_page(dev_services)
                 || agent_changed
                 || general_changed
                 || keymap_changed
@@ -1930,12 +1895,14 @@ impl App {
                 })
             })
             .collect();
-        if self.dev_proxy.is_none() && !projects.is_empty() {
+        let serve = self.desired_serve();
+        if self.dev_proxy.is_none() && !projects.is_empty() && (serve.proxy || serve.webhook) {
             let machine = pom_proxy::SystemMachine {
                 state: pom_paths::StateDir::from_env(),
                 holders: pom_ptyhost::SocketDir::from_env(),
             };
-            match pom_proxy::DevProxy::start(Box::new(machine), pom_proxy::Ports::from_env()) {
+            match pom_proxy::DevProxy::start(Box::new(machine), pom_proxy::Ports::from_env(), serve)
+            {
                 Ok(proxy) => self.dev_proxy = Some(proxy),
                 Err(error) => eprintln!("dev proxy failed to start: {error}"),
             }
@@ -2452,6 +2419,7 @@ impl App {
             Action::AddRepository => self.open_add_repo(id),
             Action::CloneMissingRepos => self.clone_missing_repos(id),
             Action::OpenAgentUsage => self.open_agent_usage(id),
+            Action::OpenDevRequests => self.open_dev_requests(id),
             Action::SetUpProjectWithAi => {
                 if claude_installed() {
                     self.open_project_config(id);
@@ -2821,6 +2789,20 @@ impl App {
         }
         if effects.start_servers {
             self.restart_dev_proxy();
+        } else {
+            self.apply_dev_services_settings();
+        }
+        if effects.open_dev_requests {
+            let target = self
+                .focused_main
+                .filter(|id| self.mains.contains_key(id))
+                .or_else(|| self.mains.keys().next().copied());
+            if let Some(id) = target {
+                self.open_dev_requests(id);
+                if let Some(main) = self.mains.get(&id) {
+                    main.window.focus_window();
+                }
+            }
         }
         if effects.reinstall_agents || effects.start_servers {
             self.settings_pages_at = None;
@@ -3116,6 +3098,7 @@ impl ApplicationHandler for App {
         self.poll_machine();
         self.poll_usage();
         self.poll_usage_pages();
+        self.poll_dev_requests();
         self.poll_updates();
         self.poll_add_repo();
         self.poll_clone_repos();

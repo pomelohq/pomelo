@@ -46,6 +46,7 @@ onboarding = { path = "../onboarding" }
 onboarding_ui = { path = "../onboarding_ui" }
 agent_usage = { path = "../agent_usage" }
 agent_usage_ui = { path = "../agent_usage_ui" }
+dev_services_ui = { path = "../dev_services_ui" }
 libc = "0.2"
 serde.workspace = true
 serde_json.workspace = true

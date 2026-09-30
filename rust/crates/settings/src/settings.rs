@@ -56,6 +56,11 @@ pub struct Settings {
     pub group_workspaces: bool,
     /// New projects are finished by the coding agent (else the user reviews the drafted pom.yml).
     pub onboard_with_ai: bool,
+    pub dev_proxy_enabled: bool,
+    pub webhook_enabled: bool,
+    /// Also read by `pom_env::dev_ports` (service URLs, the CLI); keep the key names in step.
+    pub dev_proxy_port: u16,
+    pub webhook_port: u16,
     pub notify_claude: bool,
     /// Also alert for the workspace on screen in the focused window.
     pub notify_when_focused: bool,
@@ -129,6 +134,10 @@ impl Default for Settings {
             jira_board: 0,
             group_workspaces: false,
             onboard_with_ai: true,
+            dev_proxy_enabled: true,
+            webhook_enabled: true,
+            dev_proxy_port: 8767,
+            webhook_port: 8766,
             notify_claude: true,
             notify_when_focused: false,
             sound_working: String::new(),
