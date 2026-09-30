@@ -444,6 +444,38 @@ pub const HIGHLIGHT_NAMES: &[&str] = &[
     "variant",
 ];
 
+// These grammars extend another and ship only what they add, so their queries go after the ones they build
+// on (the later pattern wins), as each grammar's own tree-sitter.json lists them.
+static JAVASCRIPT_HIGHLIGHTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    [
+        tree_sitter_javascript::HIGHLIGHT_QUERY,
+        tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+    ]
+    .join("\n")
+});
+static TYPESCRIPT_HIGHLIGHTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    [
+        tree_sitter_javascript::HIGHLIGHT_QUERY,
+        tree_sitter_typescript::HIGHLIGHTS_QUERY,
+    ]
+    .join("\n")
+});
+static TSX_HIGHLIGHTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    [
+        tree_sitter_javascript::HIGHLIGHT_QUERY,
+        tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+        tree_sitter_typescript::HIGHLIGHTS_QUERY,
+    ]
+    .join("\n")
+});
+static CPP_HIGHLIGHTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    [
+        tree_sitter_c::HIGHLIGHT_QUERY,
+        tree_sitter_cpp::HIGHLIGHT_QUERY,
+    ]
+    .join("\n")
+});
+
 pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, &'static str)> {
     let (language, highlights): (tree_sitter::Language, &'static str) = match lang {
         Lang::Rust => (
@@ -452,15 +484,15 @@ pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, &'static str)> {
         ),
         Lang::TypeScript => (
             tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            TYPESCRIPT_HIGHLIGHTS.as_str(),
         ),
         Lang::Tsx => (
             tree_sitter_typescript::LANGUAGE_TSX.into(),
-            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            TSX_HIGHLIGHTS.as_str(),
         ),
         Lang::JavaScript => (
             tree_sitter_javascript::LANGUAGE.into(),
-            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            JAVASCRIPT_HIGHLIGHTS.as_str(),
         ),
         Lang::Go => (
             tree_sitter_go::LANGUAGE.into(),
@@ -478,10 +510,7 @@ pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, &'static str)> {
             tree_sitter_c::LANGUAGE.into(),
             tree_sitter_c::HIGHLIGHT_QUERY,
         ),
-        Lang::Cpp => (
-            tree_sitter_cpp::LANGUAGE.into(),
-            tree_sitter_cpp::HIGHLIGHT_QUERY,
-        ),
+        Lang::Cpp => (tree_sitter_cpp::LANGUAGE.into(), CPP_HIGHLIGHTS.as_str()),
         Lang::Bash => (
             tree_sitter_bash::LANGUAGE.into(),
             tree_sitter_bash::HIGHLIGHT_QUERY,
