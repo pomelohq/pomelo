@@ -594,20 +594,7 @@ impl CreateWorkspaceModal {
             } else {
                 content
             };
-            let needed: f32 = names
-                .iter()
-                .map(|name| ui::measure_text_width(name, LabelSize::Small.px(), false, 400) + 17.0)
-                .sum();
-            let control = if needed <= available {
-                let choices: Vec<(u64, Option<IconKind>, &str)> = names
-                    .iter()
-                    .enumerate()
-                    .map(|(index, name)| (ENVIRONMENT_BASE + index as u64, None, *name))
-                    .collect();
-                toggle_button_group(&choices, self.environment)
-            } else {
-                self.environment_select(&names, available)
-            };
+            let control = self.environment_select(&names, available);
             row = row.child(
                 div()
                     .col()
@@ -638,7 +625,7 @@ impl CreateWorkspaceModal {
         any.then(|| row.into())
     }
 
-    /// The profiles as a dropdown, when they are too many to sit side by side.
+    /// The profiles as a dropdown, so any number of them fits.
     fn environment_select(&self, names: &[&str], width: f32) -> Node {
         let colors = theme();
         let hairline = colors.border.alpha(0.6);
@@ -1762,7 +1749,7 @@ mod tests {
     }
 
     #[test]
-    fn many_environments_fold_into_a_dropdown() {
+    fn the_environment_is_picked_from_a_dropdown() {
         let names: Vec<String> = (1..=8).map(|index| format!("staging-{index}")).collect();
         let mut modal = CreateWorkspaceModal::new(vec!["api".into()], Vec::new(), namer())
             .with_options(names, vec!["api".into()]);

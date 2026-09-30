@@ -1331,7 +1331,7 @@ fn main() -> anyhow::Result<()> {
                 vec!["main".into(), "feat-login".into()],
                 namer.clone(),
             )
-            // ENVS=n: that many environment profiles, to see them fold into a dropdown.
+            // ENVS=n: that many environment profiles.
             .with_options(
                 match std::env::var("ENVS")
                     .ok()
