@@ -5180,47 +5180,69 @@ impl Item for FileItem {
         if cache.0 != key || cache.1.len() > MINIMAP_CACHED_LINES {
             *cache = (key, HashMap::new());
         }
+        let thumb_top = area.y + (scroll_lines - top) * mini_line_h;
+        let thumb_h = visible_lines * mini_line_h;
+        // Blended here rather than drawn translucent: the renderer mixes in linear light, which darkens a
+        // light thumb over the dark editor next to the reference's.
+        let thumb = colors.scrollbar_thumb_background;
+        let alpha = thumb.a.min(0.7);
+        let behind = colors.editor_background;
+        let mix = |over: f32, under: f32| over * alpha + under * (1.0 - alpha);
+        let thumb_fill = if self.minimap_drag.is_some() {
+            colors.scrollbar_thumb_hover_background
+        } else {
+            Rgba::new(
+                mix(thumb.r, behind.r),
+                mix(thumb.g, behind.g),
+                mix(thumb.b, behind.b),
+                1.0,
+            )
+        };
+        painted
+            .rects
+            .push(Rect::new(area.x, thumb_top, width, thumb_h, thumb_fill));
+        // At this size a glyph is a smudge of its color, so each run of letters is drawn as one bar: shaping
+        // hundreds of fresh lines a frame made dragging through a large file fall behind the pointer.
+        let ink_h = MINIMAP_FONT * 0.75;
         for line in first..last {
-            let y = area.y + (line as f32 - top) * mini_line_h;
+            let y = area.y + (line as f32 - top) * mini_line_h + (mini_line_h - ink_h) / 2.0;
             let mut x = area.x + MINIMAP_PADDING;
             let segments = cache
                 .1
                 .entry(line)
                 .or_insert_with(|| self.line_segments(line, &syntax_colors))
                 .clone();
-            for (text, color) in segments {
-                if x >= area.x + area.w {
-                    break;
+            'segments: for (text, color) in segments {
+                let ink = color.alpha(color.a * 0.75);
+                let mut run_start: Option<f32> = None;
+                for ch in text.chars() {
+                    if x >= area.x + area.w {
+                        break 'segments;
+                    }
+                    let is_ink = !ch.is_whitespace() && !ch.is_ascii_punctuation();
+                    match (is_ink, run_start) {
+                        (true, None) => run_start = Some(x),
+                        (false, Some(start)) => {
+                            painted
+                                .rects
+                                .push(Rect::new(start, y, x - start, ink_h, ink));
+                            run_start = None;
+                        }
+                        _ => {}
+                    }
+                    x += column;
                 }
-                let columns = text.chars().count() as f32;
-                if !text.trim().is_empty() {
-                    painted.texts.push(ui::Text {
-                        x,
-                        y,
-                        size: MINIMAP_FONT,
-                        color,
-                        text,
-                        font: ui::TextFont::Buffer,
-                        weight: 900,
-                        italic: false,
-                        wrap: 0.0,
-                        scale: 1.0,
-                    });
+                if let Some(start) = run_start {
+                    let end = x.min(area.x + area.w);
+                    painted
+                        .rects
+                        .push(Rect::new(start, y, end - start, ink_h, ink));
                 }
-                x += columns * column;
             }
-        }
-        let thumb_top = area.y + (scroll_lines - top) * mini_line_h;
-        let thumb_h = visible_lines * mini_line_h;
-        let mut thumb_color = colors.scrollbar_thumb_background;
-        thumb_color.a = thumb_color.a.min(0.7);
-        if self.minimap_drag.is_some() {
-            thumb_color = colors.scrollbar_thumb_hover_background;
         }
         let border = colors.scrollbar_thumb_border;
         // Open on the left, where the thumb meets the text: borders on its top, bottom and right.
         painted.rects.extend([
-            Rect::new(area.x, thumb_top, width, thumb_h, thumb_color),
             Rect::new(area.x, thumb_top, width, 1.0, border),
             Rect::new(area.x, thumb_top + thumb_h - 1.0, width, 1.0, border),
             Rect::new(area.x + width - 1.0, thumb_top, 1.0, thumb_h, border),
@@ -9076,7 +9098,8 @@ mod indent_guide_tests {
         let viewport = item.text_viewport_w();
         item.minimap = true;
         let painted = item.minimap(content).expect("drawn");
-        assert!(painted.texts.iter().all(|text| text.size == MINIMAP_FONT));
+        assert!(painted.texts.is_empty(), "drawn as bars, nothing to shape");
+        assert!(painted.rects.len() > 100);
         assert!(item.text_viewport_w() < viewport, "the text leaves it room");
         let layout = item.minimap_layout.expect("laid out");
         assert!(
