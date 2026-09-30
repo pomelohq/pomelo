@@ -7508,6 +7508,10 @@ impl FunctionView for FilesView {
         self.panes.refresh_disk_state();
     }
 
+    fn animating(&self) -> bool {
+        self.panes.animating()
+    }
+
     fn is_busy(&self) -> bool {
         // A picker's scrollbar keeps fading out until it's gone.
         let busy = self

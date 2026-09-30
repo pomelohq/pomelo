@@ -10,6 +10,7 @@ path = "src/pom_workspace.rs"
 
 [dependencies]
 indexmap = { version = "2", features = ["serde"] }
+module_store = { path = "../module_store" }
 pom_config = { path = "../pom_config" }
 pom_env = { path = "../pom_env" }
 pom_layout = { path = "../pom_layout" }
@@ -17,7 +18,6 @@ pom_paths = { path = "../pom_paths" }
 pom_services = { path = "../pom_services" }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
 
 [dev-dependencies]
 pom_ptyhost = { path = "../pom_ptyhost" }

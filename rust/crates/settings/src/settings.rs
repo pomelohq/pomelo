@@ -61,6 +61,14 @@ pub struct Settings {
     /// Also read by `pom_env::dev_ports` (service URLs, the CLI); keep the key names in step.
     pub dev_proxy_port: u16,
     pub webhook_port: u16,
+    /// Also read by `module_store::Options` (workspace creation, the CLI); keep the key names in step.
+    pub modules_store_enabled: bool,
+    /// Where a copy-on-write clone is impossible: "hardlink", "copy" or "install".
+    pub modules_fallback: String,
+    pub modules_size_limit_gb: u64,
+    pub modules_unused_days: u64,
+    /// When the pointer hides until the mouse moves: "never", "on_typing" or "on_typing_and_action".
+    pub hide_mouse: String,
     pub notify_claude: bool,
     /// Also alert for the workspace on screen in the focused window.
     pub notify_when_focused: bool,
@@ -138,6 +146,11 @@ impl Default for Settings {
             webhook_enabled: true,
             dev_proxy_port: 8767,
             webhook_port: 8766,
+            modules_store_enabled: true,
+            modules_fallback: "hardlink".into(),
+            modules_size_limit_gb: 20,
+            modules_unused_days: 14,
+            hide_mouse: "on_typing_and_action".into(),
             notify_claude: true,
             notify_when_focused: false,
             sound_working: String::new(),

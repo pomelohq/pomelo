@@ -25,7 +25,7 @@ fn is_free_text(id: u64) -> bool {
         || id == settings_ui::CTRL_TERM_SHELL
 }
 
-const NUMBER_FIELDS: [u64; 8] = [
+const NUMBER_FIELDS: [u64; 10] = [
     settings_ui::CTRL_BUFFER_FONT_EDIT,
     settings_ui::CTRL_TERM_FONT_EDIT,
     settings_ui::CTRL_BUFFER_WEIGHT_EDIT,
@@ -34,6 +34,8 @@ const NUMBER_FIELDS: [u64; 8] = [
     settings_ui::CTRL_SCROLLBACK_EDIT,
     settings_ui::CTRL_PROXY_PORT_EDIT,
     settings_ui::CTRL_WEBHOOK_PORT_EDIT,
+    settings_ui::CTRL_MODULES_LIMIT_EDIT,
+    settings_ui::CTRL_MODULES_DAYS_EDIT,
 ];
 
 /// Cross-window work the shell must do after an input the view handled: re-apply the UI font to every window's
@@ -46,6 +48,7 @@ pub struct SideEffects {
     pub test_notification: bool,
     pub start_servers: bool,
     pub open_dev_requests: bool,
+    pub open_module_store: bool,
     pub play_sound: Option<String>,
     pub toggle_login_item: bool,
     pub check_updates: bool,
@@ -427,6 +430,14 @@ impl SettingsView {
                     let next =
                         value.clamp(settings_ui::FONT_WEIGHT_MIN, settings_ui::FONT_WEIGHT_MAX);
                     std::mem::replace(&mut self.settings.terminal_font_weight, next) != next
+                }
+                settings_ui::CTRL_MODULES_LIMIT_EDIT => {
+                    let next = (value.max(1.0) as u64).min(settings_ui::MODULES_LIMIT_MAX_GB);
+                    std::mem::replace(&mut self.settings.modules_size_limit_gb, next) != next
+                }
+                settings_ui::CTRL_MODULES_DAYS_EDIT => {
+                    let next = (value.max(0.0) as u64).min(settings_ui::MODULES_DAYS_MAX);
+                    std::mem::replace(&mut self.settings.modules_unused_days, next) != next
                 }
                 settings_ui::CTRL_PROXY_PORT_EDIT | settings_ui::CTRL_WEBHOOK_PORT_EDIT => {
                     let next =
@@ -969,6 +980,12 @@ impl SettingsView {
                 settings_ui::CTRL_TERM_WEIGHT_EDIT => {
                     format!("{:.0}", self.settings.terminal_font_weight)
                 }
+                settings_ui::CTRL_MODULES_LIMIT_EDIT => {
+                    self.settings.modules_size_limit_gb.to_string()
+                }
+                settings_ui::CTRL_MODULES_DAYS_EDIT => {
+                    self.settings.modules_unused_days.to_string()
+                }
                 settings_ui::CTRL_PROXY_PORT_EDIT => self.settings.dev_proxy_port.to_string(),
                 settings_ui::CTRL_WEBHOOK_PORT_EDIT => self.settings.webhook_port.to_string(),
                 _ => self.settings.terminal_scrollback.to_string(),
@@ -1020,6 +1037,9 @@ impl SettingsView {
         } else if id == settings_ui::CTRL_OPEN_REQUESTS {
             self.commit_edit();
             self.pending.open_dev_requests = true;
+        } else if id == settings_ui::CTRL_OPEN_STORE {
+            self.commit_edit();
+            self.pending.open_module_store = true;
         } else if JIRA_FIELDS.contains(&id) {
             self.commit_edit();
             let seed = match id {
@@ -1301,6 +1321,8 @@ mod tests {
         let effects = view.take_side_effects();
         assert!(effects.test_notification && effects.reinstall_agents && effects.start_servers);
         assert!(effects.open_dev_requests);
+        view.click(settings_ui::CTRL_OPEN_STORE);
+        assert!(view.take_side_effects().open_module_store);
         view.click(settings_ui::CTRL_PROXY_PORT_EDIT);
         assert_eq!(
             view.editing.as_ref().map(|(_, text)| text.as_str()),

@@ -570,6 +570,8 @@ pub struct CommandPalette {
     /// The click id under the pointer.
     pub hovered: Option<u64>,
     placeholder: &'static str,
+    /// The query the matches were made for; a new one puts the selection back on the best match.
+    matched_query: String,
 }
 
 /// Move a row list's first visible row by a wheel delta (positive = toward the top), carrying partial rows over
@@ -655,6 +657,7 @@ impl CommandPalette {
             scrollbar: Default::default(),
             hovered: None,
             placeholder: PLACEHOLDER,
+            matched_query: String::new(),
         };
         palette.update_matches();
         palette
@@ -667,7 +670,8 @@ impl CommandPalette {
 
     pub fn update_matches(&mut self) {
         let names: Vec<&str> = self.commands.iter().map(|c| c.name.as_str()).collect();
-        let mut matches = fuzzy_match(&names, &normalize_action_query(&self.field.text()));
+        let query = self.field.text();
+        let mut matches = fuzzy_match(&names, &normalize_action_query(&query));
         let used_count = self.used_count;
         matches.sort_by_key(|m| {
             if m.candidate < used_count {
@@ -677,6 +681,12 @@ impl CommandPalette {
             }
         });
         self.matches = matches;
+        if query != self.matched_query {
+            self.selected = 0;
+            self.scroll_top = 0;
+            self.scroll_remainder = 0.0;
+            self.matched_query = query;
+        }
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
         self.scroll_to_selected();
     }
@@ -1043,5 +1053,21 @@ mod tests {
         palette.update_matches();
         assert!(palette.matches().is_empty());
         assert_eq!(palette.confirm(&mut memory), None);
+    }
+
+    #[test]
+    fn typing_puts_the_selection_back_on_the_best_match() {
+        let mut memory = PaletteMemory::default();
+        let mut palette = CommandPalette::new(&memory);
+        palette.field.insert("e");
+        palette.update_matches();
+        palette.select_next(&mut memory);
+        palette.select_next(&mut memory);
+        assert_eq!(palette.selected(), 2);
+        palette.update_matches();
+        assert_eq!(palette.selected(), 2, "the same query keeps the selection");
+        palette.field.insert("d");
+        palette.update_matches();
+        assert_eq!(palette.selected(), 0);
     }
 }

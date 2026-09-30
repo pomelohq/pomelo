@@ -870,6 +870,10 @@ pub trait Item: 'static {
     fn paint_body(&mut self, _body: ui::Rect, _focused: bool) -> Option<ui::Painted> {
         None
     }
+    /// A popover floated over the body, drawn as a separate layer so the body's text stays beneath it.
+    fn paint_popover(&mut self, _body: ui::Rect) -> Option<ui::Painted> {
+        None
+    }
     /// Whether key presses should reach this item raw (`keystroke`) rather than as editor commands.
     fn wants_keystrokes(&self) -> bool {
         false
@@ -1119,6 +1123,10 @@ pub trait Item: 'static {
     fn is_busy(&self) -> bool {
         false
     }
+    /// Wants every frame (not just the busy tick rate) for an animation of its own.
+    fn animating(&self) -> bool {
+        false
+    }
     fn right_press(&mut self, _local_x: f32, _local_y: f32) {}
     fn buffer_line_at(&self, _local_y: f32) -> Option<usize> {
         None
@@ -1316,6 +1324,8 @@ pub struct PanePlacement {
     /// A text body's companion view (the old side of a split diff), drawn over the body's left.
     pub companion: Option<(ui::Painted, ui::Rect)>,
     pub footer: Option<(ui::Painted, ui::Rect)>,
+    /// A popover the item floats over its body, drawn as its own layer after the body.
+    pub popover: Option<(ui::Painted, ui::Rect)>,
     pub body: Option<PaneBody>,
     pub back: Vec<ui::Rect>,
     pub back_tris: Vec<ui::Tri>,
@@ -1757,6 +1767,9 @@ pub trait FunctionView: ItemInput + 'static {
     fn open_path(&mut self, _path: &str) {}
     fn refresh_disk_state(&mut self) {}
     fn is_busy(&self) -> bool {
+        false
+    }
+    fn animating(&self) -> bool {
         false
     }
 }

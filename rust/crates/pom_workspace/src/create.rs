@@ -6,7 +6,7 @@ use pom_layout::WorkspaceState;
 
 use crate::repo_branch::checked_out_message;
 use crate::{
-    git, node_modules, repo_alias, run_shell, EventSink, Operation, Outcome, PipelineError, Run,
+    git, node_version, repo_alias, run_shell, EventSink, Operation, Outcome, PipelineError, Run,
     StageResult, StageScope, WorkspaceContext,
 };
 
@@ -27,8 +27,6 @@ const SOURCE: usize = 3;
 const CONFIGURE: usize = 4;
 const SETUP: usize = 5;
 const SEED: usize = 6;
-
-const PNPM_LOCK: &str = "pnpm-lock.yaml";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CreateRequest {
@@ -402,20 +400,38 @@ impl Creation<'_> {
     fn setup(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
         let config = self.context.config;
         let env = self.context.runner.workspace_env(config, self.branch());
+        let store = module_store::Store::new(self.context.state);
+        let store_options = module_store::Options::from_settings_file();
+        let (store, store_options) = (&store, &store_options);
         std::thread::scope(|threads| {
             for repo in self.repos.iter().filter(|repo| repo.worktree.is_dir()) {
                 let repo_env = env.repo_env(&repo.name);
                 threads.spawn(move || {
-                    let from_store = !repo.worktree.join(PNPM_LOCK).exists()
-                        && node_modules::restore(
-                            self.context.state,
+                    let node = matches!(
+                        module_store::detect(&repo.worktree),
+                        module_store::Detection::Store { .. }
+                    )
+                    .then(|| node_version(&repo.worktree, &repo_env))
+                    .flatten();
+                    let restored = store
+                        .restore(
                             &repo.name,
                             &repo.worktree,
                             &repo.main,
-                        );
-                    if from_store {
-                        scope
-                            .progress(format!("{}: node_modules from the shared store", repo.name));
+                            node.as_deref(),
+                            store_options,
+                        )
+                        .unwrap_or_else(|error| {
+                            scope.warn(format!("{}: shared node_modules ({error})", repo.name));
+                            module_store::Restored::Install
+                        });
+                    let from_store = matches!(restored, module_store::Restored::FromStore(_));
+                    if let module_store::Restored::FromStore(method) = restored {
+                        scope.progress(format!(
+                            "{}: node_modules from the shared store ({})",
+                            repo.name,
+                            method.label().to_lowercase()
+                        ));
                     }
                     let Some(dir) = config
                         .repos
@@ -433,11 +449,17 @@ impl Creation<'_> {
                         Ok(()) => {
                             // A failed install may leave a partial node_modules; only a good one is shared.
                             if !from_store {
-                                node_modules::snapshot(
-                                    self.context.state,
+                                if let Err(error) = store.snapshot(
                                     &repo.name,
                                     &repo.worktree,
-                                );
+                                    node.as_deref(),
+                                    store_options,
+                                ) {
+                                    eprintln!(
+                                        "workspace: keep node_modules for {}: {error}",
+                                        repo.name
+                                    );
+                                }
                             }
                             scope.progress(format!("{}: setup done", repo.name));
                         }
@@ -446,6 +468,9 @@ impl Creation<'_> {
                 });
             }
         });
+        if let Err(error) = store.prune(store_options) {
+            eprintln!("workspace: prune the node_modules store: {error}");
+        }
         Ok(StageResult::Done)
     }
 

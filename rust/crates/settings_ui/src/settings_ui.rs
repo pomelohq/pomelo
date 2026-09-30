@@ -97,8 +97,8 @@ fn nav_item_box(active: bool, hovered: bool) -> Div {
 // gets a disclosure chevron and expands to show them (indented, with a guide line).
 // The Appearance page's section headers, in order. Single source of truth: the navbar lists them as jump
 // entries and `appearance_page` emits the same headers, so the two never drift.
-const APPEARANCE_SECTIONS: [&str; 2] = ["Theme", "UI Font"];
 const WINDOW_LAYOUT_SECTIONS: [&str; 3] = ["Status Bar", "Title Bar", "Docks"];
+const APPEARANCE_SECTIONS: [&str; 3] = ["Theme", "UI Font", "Cursor"];
 
 const INTEGRATIONS_SECTIONS: [&str; 2] = ["Jira", "Main Workspace"];
 const GENERAL_SECTIONS: [&str; 2] = ["Startup", "Updates"];
@@ -107,7 +107,12 @@ const TERMINAL_SECTIONS: [&str; 2] = ["Font", "Shell"];
 const KEYMAP_SECTIONS: [&str; 1] = ["Bindings"];
 const AGENT_SECTIONS: [&str; 2] = ["Command", "Claude Code"];
 const NOTIFICATIONS_SECTIONS: [&str; 2] = ["Delivery", "Alert Sounds"];
-const DEV_SERVICES_SECTIONS: [&str; 3] = ["Reverse Proxy", "Webhook Fan-out", "Servers"];
+const DEV_SERVICES_SECTIONS: [&str; 4] = [
+    "Reverse Proxy",
+    "Webhook Fan-out",
+    "Shared node_modules",
+    "Servers",
+];
 const PROJECT_SECTIONS: [&str; 3] = ["Repositories", "Config", "Config Bundle"];
 
 const CATEGORIES: [(&str, &[&str]); 11] = [
@@ -221,6 +226,16 @@ pub const CTRL_WEBHOOK_PORT_DEC: u64 = 315;
 pub const CTRL_WEBHOOK_PORT_INC: u64 = 316;
 pub const CTRL_WEBHOOK_PORT_EDIT: u64 = 317;
 pub const CTRL_OPEN_REQUESTS: u64 = 318;
+pub const CTRL_MODULES_ENABLED: u64 = 320;
+pub const CTRL_MODULES_FALLBACK: u64 = 321;
+pub const CTRL_MODULES_LIMIT_DEC: u64 = 322;
+pub const CTRL_MODULES_LIMIT_INC: u64 = 323;
+pub const CTRL_MODULES_LIMIT_EDIT: u64 = 324;
+pub const CTRL_MODULES_DAYS_DEC: u64 = 325;
+pub const CTRL_MODULES_DAYS_INC: u64 = 326;
+pub const CTRL_MODULES_DAYS_EDIT: u64 = 327;
+pub const CTRL_OPEN_STORE: u64 = 328;
+pub const CTRL_HIDE_MOUSE: u64 = 330;
 pub const CTRL_START_AT_LOGIN: u64 = 260;
 pub const CTRL_AUTO_UPDATE: u64 = 261;
 pub const CTRL_CHECK_UPDATES: u64 = 262;
@@ -265,6 +280,20 @@ pub const CTRL_REPO_RENAME_BASE: u64 = 20_000;
 pub const CTRL_REPO_REMOVE_BASE: u64 = 21_000;
 pub const CTRL_REPO_LIMIT: u64 = 1_000;
 pub const PORT_MIN: u16 = 1024;
+pub const MODULES_LIMIT_MAX_GB: u64 = 1024;
+pub const MODULES_DAYS_MAX: u64 = 365;
+/// When the pointer hides until the mouse moves, as (setting value, label).
+const HIDE_MOUSE: [(&str, &str); 3] = [
+    ("never", "Never"),
+    ("on_typing", "On Typing"),
+    ("on_typing_and_action", "On Typing and Action"),
+];
+/// Where a copy-on-write clone is impossible, as (setting value, label); `module_store::Fallback` reads them.
+const MODULES_FALLBACKS: [(&str, &str); 3] = [
+    ("hardlink", "Hard Links"),
+    ("copy", "Copy"),
+    ("install", "Run Install"),
+];
 pub const SCROLLBACK_MIN: u32 = 1_000;
 pub const SCROLLBACK_MAX: u32 = 100_000;
 
@@ -287,6 +316,12 @@ pub const FONT_SIZE_MAX: f32 = 72.0;
 /// Font-weight bounds, matching the reference's `FontWeight` stepper (CSS weights 100-900).
 pub const FONT_WEIGHT_MIN: f32 = 100.0;
 pub const FONT_WEIGHT_MAX: f32 = 900.0;
+
+/// Step a whole-number setting within `min..=max`; returns true if it changed.
+pub fn step_u64(value: &mut u64, step: i64, min: u64, max: u64) -> bool {
+    let next = (*value as i64 + step).clamp(min as i64, max as i64) as u64;
+    std::mem::replace(value, next) != next
+}
 
 /// Step or set a listening port, kept out of the privileged range; returns true if it changed.
 pub fn set_port(port: &mut u16, step: i32) -> bool {
@@ -366,6 +401,8 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_SOFT_WRAP
             | CTRL_DIFF_VIEW
             | CTRL_EXTERNAL_EDITOR
+            | CTRL_MODULES_FALLBACK
+            | CTRL_HIDE_MOUSE
     ) || sound_event(id).is_some()
 }
 
@@ -400,6 +437,14 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
         CTRL_TERMINAL_SIDE => sv(&["Left", "Right", "Bottom"]),
         CTRL_SOFT_WRAP => sv(&["None", "Editor Width"]),
         CTRL_DIFF_VIEW => sv(&["Split", "Unified"]),
+        CTRL_MODULES_FALLBACK => MODULES_FALLBACKS
+            .iter()
+            .map(|(_, label)| label.to_string())
+            .collect(),
+        CTRL_HIDE_MOUSE => HIDE_MOUSE
+            .iter()
+            .map(|(_, label)| label.to_string())
+            .collect(),
         CTRL_EXTERNAL_EDITOR => std::iter::once("Auto")
             .chain(EXTERNAL_EDITORS)
             .map(str::to_string)
@@ -430,6 +475,16 @@ pub fn control_value(id: u64, s: &Settings) -> String {
         CTRL_TERMINAL_SIDE => cap(&s.terminal_side),
         CTRL_SOFT_WRAP => if s.soft_wrap { "Editor Width" } else { "None" }.to_string(),
         CTRL_DIFF_VIEW => if s.split_diff { "Split" } else { "Unified" }.to_string(),
+        CTRL_HIDE_MOUSE => HIDE_MOUSE
+            .iter()
+            .find(|(value, _)| *value == s.hide_mouse)
+            .map_or(HIDE_MOUSE[2].1, |(_, label)| label)
+            .to_string(),
+        CTRL_MODULES_FALLBACK => MODULES_FALLBACKS
+            .iter()
+            .find(|(value, _)| *value == s.modules_fallback)
+            .map_or(MODULES_FALLBACKS[0].1, |(_, label)| label)
+            .to_string(),
         CTRL_EXTERNAL_EDITOR => external_editor_label(&s.external_editor),
         id => match sound_event(id) {
             Some(event) => sound_label(s.sound_for(event)),
@@ -464,6 +519,18 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
         CTRL_TERMINAL_SIDE => s.terminal_side = val.to_lowercase(),
         CTRL_SOFT_WRAP => s.soft_wrap = val == "Editor Width",
         CTRL_DIFF_VIEW => s.split_diff = val == "Split",
+        CTRL_HIDE_MOUSE => {
+            let Some((value, _)) = HIDE_MOUSE.iter().find(|(_, label)| label == val) else {
+                return false;
+            };
+            s.hide_mouse = value.to_string();
+        }
+        CTRL_MODULES_FALLBACK => {
+            let Some((value, _)) = MODULES_FALLBACKS.iter().find(|(_, label)| label == val) else {
+                return false;
+            };
+            s.modules_fallback = value.to_string();
+        }
         CTRL_EXTERNAL_EDITOR => {
             s.external_editor = if val == "Auto" {
                 String::new()
@@ -534,6 +601,11 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_WEBHOOK_ENABLED => s.webhook_enabled == d.webhook_enabled,
         CTRL_PROXY_PORT_EDIT => s.dev_proxy_port == d.dev_proxy_port,
         CTRL_WEBHOOK_PORT_EDIT => s.webhook_port == d.webhook_port,
+        CTRL_MODULES_ENABLED => s.modules_store_enabled == d.modules_store_enabled,
+        CTRL_MODULES_FALLBACK => s.modules_fallback == d.modules_fallback,
+        CTRL_HIDE_MOUSE => s.hide_mouse == d.hide_mouse,
+        CTRL_MODULES_LIMIT_EDIT => s.modules_size_limit_gb == d.modules_size_limit_gb,
+        CTRL_MODULES_DAYS_EDIT => s.modules_unused_days == d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
         CTRL_AUTO_UPDATE => s.auto_update == d.auto_update,
         CTRL_BUFFER_FONT_EDIT => s.buffer_font_size == d.buffer_font_size,
@@ -584,6 +656,11 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_WEBHOOK_ENABLED => s.webhook_enabled = d.webhook_enabled,
         CTRL_PROXY_PORT_EDIT => s.dev_proxy_port = d.dev_proxy_port,
         CTRL_WEBHOOK_PORT_EDIT => s.webhook_port = d.webhook_port,
+        CTRL_MODULES_ENABLED => s.modules_store_enabled = d.modules_store_enabled,
+        CTRL_MODULES_FALLBACK => s.modules_fallback = d.modules_fallback.clone(),
+        CTRL_HIDE_MOUSE => s.hide_mouse = d.hide_mouse.clone(),
+        CTRL_MODULES_LIMIT_EDIT => s.modules_size_limit_gb = d.modules_size_limit_gb,
+        CTRL_MODULES_DAYS_EDIT => s.modules_unused_days = d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
         CTRL_AUTO_UPDATE => s.auto_update = d.auto_update,
         CTRL_BUFFER_FONT_EDIT => s.buffer_font_size = d.buffer_font_size,
@@ -665,6 +742,18 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         CTRL_PROXY_PORT_INC => set_port(&mut s.dev_proxy_port, 1),
         CTRL_WEBHOOK_PORT_DEC => set_port(&mut s.webhook_port, -1),
         CTRL_WEBHOOK_PORT_INC => set_port(&mut s.webhook_port, 1),
+        CTRL_MODULES_ENABLED => {
+            s.modules_store_enabled = !s.modules_store_enabled;
+            true
+        }
+        CTRL_MODULES_LIMIT_DEC => {
+            step_u64(&mut s.modules_size_limit_gb, -5, 1, MODULES_LIMIT_MAX_GB)
+        }
+        CTRL_MODULES_LIMIT_INC => {
+            step_u64(&mut s.modules_size_limit_gb, 5, 1, MODULES_LIMIT_MAX_GB)
+        }
+        CTRL_MODULES_DAYS_DEC => step_u64(&mut s.modules_unused_days, -1, 0, MODULES_DAYS_MAX),
+        CTRL_MODULES_DAYS_INC => step_u64(&mut s.modules_unused_days, 1, 0, MODULES_DAYS_MAX),
         CTRL_NOTIFY => {
             s.notify_claude = !s.notify_claude;
             true
@@ -1830,6 +1919,16 @@ fn appearance_page(s: &Settings) -> Page {
             },
             reset: None,
         }),
+        PageItem::Header("Cursor"),
+        PageItem::Row(SettingRow {
+            title: "Hide Mouse".into(),
+            description: "When to hide the mouse cursor.".into(),
+            control: Control::Dropdown {
+                id: CTRL_HIDE_MOUSE,
+                value: control_value(CTRL_HIDE_MOUSE, s),
+            },
+            reset: reset_if_changed(CTRL_HIDE_MOUSE, s),
+        }),
     ]);
     Page {
         title: "Appearance",
@@ -2015,6 +2114,8 @@ pub struct DevServicesPage {
     pub served_elsewhere: bool,
     /// `POM_WEB_PORT` overrides the configured ports.
     pub port_from_env: bool,
+    /// How the node_modules store reaches project folders on this drive (empty until checked).
+    pub modules_method: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2486,6 +2587,65 @@ fn dev_services_page(s: &Settings, services: &DevServicesPage) -> Page {
                 value: s.webhook_port.to_string(),
             },
             reset: reset_if_changed(CTRL_WEBHOOK_PORT_EDIT, s),
+        }),
+        PageItem::Header("Shared node_modules"),
+        PageItem::Row(SettingRow {
+            title: "Enabled".into(),
+            description: "A new workspace whose lockfile matches a stored one takes its node_modules instead of installing. pnpm and Yarn's hard-link or Plug'n'Play modes share packages themselves and are left alone.".into(),
+            control: Control::Toggle {
+                id: CTRL_MODULES_ENABLED,
+                on: s.modules_store_enabled,
+            },
+            reset: reset_if_changed(CTRL_MODULES_ENABLED, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Import Method".into(),
+            description: "What this drive allows between the store and your projects: a copy-on-write clone takes no extra space.".into(),
+            control: Control::Value {
+                text: if services.modules_method.is_empty() {
+                    "-".into()
+                } else {
+                    services.modules_method.clone()
+                },
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "When Cloning Is Unsupported".into(),
+            description: "Hard links share the files (they are made read-only, so a tool editing one in place fails instead of changing it for every workspace); a copy takes the full size again; Run Install skips the store.".into(),
+            control: Control::Dropdown {
+                id: CTRL_MODULES_FALLBACK,
+                value: control_value(CTRL_MODULES_FALLBACK, s),
+            },
+            reset: reset_if_changed(CTRL_MODULES_FALLBACK, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Size Limit".into(),
+            description: "GB kept at most; the least recently used copies go first.".into(),
+            control: Control::Stepper {
+                dec: CTRL_MODULES_LIMIT_DEC,
+                inc: CTRL_MODULES_LIMIT_INC,
+                edit: CTRL_MODULES_LIMIT_EDIT,
+                value: s.modules_size_limit_gb.to_string(),
+            },
+            reset: reset_if_changed(CTRL_MODULES_LIMIT_EDIT, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Remove Unused After".into(),
+            description: "Days a copy is kept without a workspace taking it (0 keeps them until the size limit).".into(),
+            control: Control::Stepper {
+                dec: CTRL_MODULES_DAYS_DEC,
+                inc: CTRL_MODULES_DAYS_INC,
+                edit: CTRL_MODULES_DAYS_EDIT,
+                value: s.modules_unused_days.to_string(),
+            },
+            reset: reset_if_changed(CTRL_MODULES_DAYS_EDIT, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Stored Copies".into(),
+            description: "See each copy, its size and the workspaces using it; delete or prune them.".into(),
+            control: Control::Buttons(vec![(CTRL_OPEN_STORE, "Open Store")]),
+            reset: None,
         }),
         PageItem::Header("Servers"),
     ];
@@ -3508,6 +3668,40 @@ mod tests {
         assert!(!handle_control(CTRL_WEBHOOK_PORT_DEC, &mut s));
         assert!(handle_control(CTRL_WEBHOOK_ENABLED, &mut s));
         assert!(!s.webhook_enabled);
+    }
+
+    #[test]
+    fn hide_mouse_picks_when_the_pointer_hides() {
+        let mut s = Settings::default();
+        assert_eq!(control_value(CTRL_HIDE_MOUSE, &s), "On Typing and Action");
+        assert!(apply_choice(CTRL_HIDE_MOUSE, 0, &[], &mut s));
+        assert_eq!(s.hide_mouse, "never");
+        assert!(reset_to_default(CTRL_HIDE_MOUSE, &mut s));
+        assert_eq!(s.hide_mouse, "on_typing_and_action");
+    }
+
+    #[test]
+    fn the_store_rows_edit_their_settings() {
+        let mut s = Settings::default();
+        assert_eq!(control_value(CTRL_MODULES_FALLBACK, &s), "Hard Links");
+        assert!(apply_choice(CTRL_MODULES_FALLBACK, 2, &[], &mut s));
+        assert_eq!(s.modules_fallback, "install");
+        assert!(!is_default(CTRL_MODULES_FALLBACK, &s));
+        assert!(handle_control(CTRL_MODULES_LIMIT_INC, &mut s));
+        assert_eq!(s.modules_size_limit_gb, 25);
+        s.modules_unused_days = 0;
+        assert!(!handle_control(CTRL_MODULES_DAYS_DEC, &mut s));
+        assert!(handle_control(CTRL_MODULES_ENABLED, &mut s));
+        assert!(!s.modules_store_enabled);
+        let p = dev_services_panel(
+            &Settings::default(),
+            DevServicesPage {
+                modules_method: "Copy-on-write clone".into(),
+                ..DevServicesPage::default()
+            },
+        );
+        assert!(p.texts.iter().any(|t| t.text == "Copy-on-write clone"));
+        assert!(p.hits.iter().any(|(_, id)| *id == CTRL_OPEN_STORE));
     }
 
     #[test]

@@ -2335,6 +2335,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "module_store"
+version = "0.7.6"
+dependencies = [
+ "libc",
+ "pom_paths",
+ "serde",
+ "serde_json",
+ "settings",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "module_store_ui"
+version = "0.7.6"
+dependencies = [
+ "module_store",
+ "terminal",
+ "ui",
+ "workspace",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3185,6 +3208,7 @@ dependencies = [
 name = "pom_cli"
 version = "0.7.6"
 dependencies = [
+ "module_store",
  "pom_agent",
  "pom_bundle",
  "pom_config",
@@ -3442,6 +3466,7 @@ name = "pom_workspace"
 version = "0.7.6"
 dependencies = [
  "indexmap",
+ "module_store",
  "pom_config",
  "pom_env",
  "pom_layout",
@@ -3450,7 +3475,6 @@ dependencies = [
  "pom_services",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
 ]
 
@@ -3472,6 +3496,8 @@ dependencies = [
  "git_ui",
  "jira_ui",
  "libc",
+ "module_store",
+ "module_store_ui",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
@@ -5432,6 +5458,7 @@ dependencies = [
  "files_ui",
  "git_ui",
  "jira_ui",
+ "module_store_ui",
  "onboarding",
  "onboarding_ui",
  "png 0.17.16",

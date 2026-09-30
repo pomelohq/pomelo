@@ -841,7 +841,7 @@ pub struct IconQuad {
     pub image: Option<u64>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Painted {
     pub rects: Vec<Rect>,
     pub tris: Vec<Tri>,

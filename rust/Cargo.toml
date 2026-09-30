@@ -56,6 +56,8 @@ members = [
     "crates/pom_db",
     "crates/database_ui",
     "crates/dev_services_ui",
+    "crates/module_store",
+    "crates/module_store_ui",
 ]
 
 [workspace.package]

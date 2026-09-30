@@ -74,6 +74,7 @@ impl App {
             webhook_port: webhook.port,
             served_elsewhere,
             port_from_env: std::env::var_os("POM_WEB_PORT").is_some(),
+            modules_method: String::new(),
         }
     }
 
