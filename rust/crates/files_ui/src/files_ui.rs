@@ -4775,8 +4775,13 @@ impl Item for FileItem {
             if bottom < top || self.buf_of(top) != s {
                 continue;
             }
+            let x = content.x + gw + (depth * unit) as f32 * cw - self.scroll_x;
+            // Scrolled sideways past it: the back layer is not clipped to the text, so it would sit in the gutter.
+            if x < content.x + gw {
+                continue;
+            }
             rects.push(Rect::new(
-                content.x + gw + (depth * unit) as f32 * cw - self.scroll_x,
+                x,
                 row_y(top),
                 1.0,
                 (bottom + 1 - top) as f32 * edit_line_h(),
@@ -8139,6 +8144,25 @@ mod indent_guide_tests {
         assert_eq!(FileItem::enclosing_indent(&b, 2), Some((1, 2, 4)));
         assert_eq!(FileItem::enclosing_indent(&b, 4), Some((0, 4, 0)));
         assert_eq!(FileItem::enclosing_indent(&b, 1), Some((1, 2, 4)));
+    }
+
+    #[test]
+    fn a_sideways_scroll_keeps_guides_out_of_the_gutter() {
+        let mut item = FileItem::new(
+            PathBuf::from("/nonexistent"),
+            "a.ts",
+            Some("export {\n  a,\n  b,\n};\n".into()),
+        );
+        let content = Rect::new(0.0, 0.0, 600.0, 400.0, Rgba::TRANSPARENT);
+        let text_left = content.x + gutter_width(item.line_count());
+        let guide = |rect: &Rect| rect.w == 1.0 && rect.h >= edit_line_h();
+        assert!(item.back_rects(content).iter().any(guide));
+        item.scroll_x = 40.0;
+        assert!(item
+            .back_rects(content)
+            .iter()
+            .filter(|rect| guide(rect))
+            .all(|rect| rect.x >= text_left));
     }
 
     #[test]
