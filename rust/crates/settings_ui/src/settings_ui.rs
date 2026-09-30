@@ -143,6 +143,10 @@ pub const CATEGORY_COUNT: usize = CATEGORIES.len();
 // Control click ids (>= 100 so they never collide with category ids). The app routes these to
 // `handle_control`, which mutates the setting like the reference's enum-variant/stepper write.
 pub const CTRL_THEME: u64 = 101;
+pub const CTRL_THEME_SELECTION: u64 = 105;
+pub const CTRL_THEME_LIGHT: u64 = 106;
+pub const CTRL_THEME_DARK: u64 = 107;
+pub const CTRL_OPEN_THEMES: u64 = 109;
 pub const CTRL_FONT_FAMILY: u64 = 102;
 /// The sidebar search box; clicking it focuses text entry that filters the page.
 pub const CTRL_SEARCH: u64 = 103;
@@ -292,10 +296,25 @@ pub fn chrome_flags(s: &Settings) -> ui::ChromeFlags {
 
 const THEMES: [&str; 4] = ["One Dark", "One Light", "Ayu Mirage", "Gruvbox Dark"];
 
+/// The built-in themes, then the user's (a user theme named like a built-in one replaces it).
+pub fn theme_names() -> Vec<String> {
+    let mut names: Vec<String> = THEMES.iter().map(|name| name.to_string()).collect();
+    for name in ui::theme_file::user_theme_names() {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 /// The theme after `current` in the theme list, wrapping around.
-pub fn next_theme(current: &str) -> &'static str {
-    let at = THEMES.iter().position(|theme| *theme == current);
-    THEMES[at.map_or(0, |at| (at + 1) % THEMES.len())]
+pub fn next_theme(current: &str) -> String {
+    let names = theme_names();
+    let at = names.iter().position(|theme| *theme == current);
+    names
+        .get(at.map_or(0, |at| (at + 1) % names.len()))
+        .cloned()
+        .unwrap_or_else(|| THEMES[0].to_string())
 }
 
 /// Popover-item click ids start here (an item's id = POPOVER_BASE + its index in the option list).
@@ -306,6 +325,9 @@ pub fn is_dropdown(id: u64) -> bool {
     matches!(
         id,
         CTRL_THEME
+            | CTRL_THEME_SELECTION
+            | CTRL_THEME_LIGHT
+            | CTRL_THEME_DARK
             | CTRL_FONT_FAMILY
             | CTRL_MODE
             | CTRL_SIDEBAR_SIDE
@@ -336,9 +358,10 @@ fn cap(s: &str) -> String {
 pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
     let sv = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect();
     match id {
-        CTRL_THEME => THEMES.iter().map(|s| s.to_string()).collect(),
+        CTRL_THEME | CTRL_THEME_LIGHT | CTRL_THEME_DARK => theme_names(),
+        CTRL_THEME_SELECTION => sv(&["Static", "Dynamic"]),
         CTRL_FONT_FAMILY => fonts.to_vec(),
-        CTRL_MODE => sv(&["System", "Light", "Dark"]),
+        CTRL_MODE => sv(&["Light", "Dark", "System"]),
         CTRL_SIDEBAR_SIDE | CTRL_AGENT_SIDE => sv(&["Left", "Right"]),
         CTRL_TERMINAL_SIDE => sv(&["Left", "Right", "Bottom"]),
         CTRL_SOFT_WRAP => sv(&["None", "Editor Width"]),
@@ -359,6 +382,9 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
 pub fn control_value(id: u64, s: &Settings) -> String {
     match id {
         CTRL_THEME => s.theme.clone(),
+        CTRL_THEME_SELECTION => cap(&s.theme_selection),
+        CTRL_THEME_LIGHT => s.theme_light.clone(),
+        CTRL_THEME_DARK => s.theme_dark.clone(),
         CTRL_FONT_FAMILY => s.ui_font.clone(),
         CTRL_MODE => cap(&s.theme_mode),
         CTRL_SIDEBAR_SIDE => cap(&s.sidebar_side),
@@ -382,6 +408,9 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
     };
     match id {
         CTRL_THEME => s.theme = val.clone(),
+        CTRL_THEME_SELECTION => s.theme_selection = val.to_lowercase(),
+        CTRL_THEME_LIGHT => s.theme_light = val.clone(),
+        CTRL_THEME_DARK => s.theme_dark = val.clone(),
         CTRL_FONT_FAMILY => s.ui_font = val.clone(),
         CTRL_MODE => s.theme_mode = val.to_lowercase(),
         CTRL_SIDEBAR_SIDE => s.sidebar_side = val.to_lowercase(),
@@ -430,6 +459,9 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
     let d = Settings::default();
     match id {
         CTRL_THEME => s.theme == d.theme,
+        CTRL_THEME_SELECTION => s.theme_selection == d.theme_selection,
+        CTRL_THEME_LIGHT => s.theme_light == d.theme_light,
+        CTRL_THEME_DARK => s.theme_dark == d.theme_dark,
         CTRL_FONT_FAMILY => s.ui_font == d.ui_font,
         CTRL_FONT_SIZE_EDIT => s.ui_font_size == d.ui_font_size,
         CTRL_FONT_WEIGHT_EDIT => s.ui_font_weight == d.ui_font_weight,
@@ -469,6 +501,9 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
     let changed = !is_default(id, s);
     match id {
         CTRL_THEME => s.theme = d.theme,
+        CTRL_THEME_SELECTION => s.theme_selection = d.theme_selection,
+        CTRL_THEME_LIGHT => s.theme_light = d.theme_light,
+        CTRL_THEME_DARK => s.theme_dark = d.theme_dark,
         CTRL_FONT_FAMILY => s.ui_font = d.ui_font,
         CTRL_FONT_SIZE_EDIT => s.ui_font_size = d.ui_font_size,
         CTRL_FONT_WEIGHT_EDIT => s.ui_font_weight = d.ui_font_weight,
@@ -1474,69 +1509,130 @@ fn reset_if_changed(id: u64, s: &Settings) -> Option<u64> {
     (!is_default(id, s)).then_some(id)
 }
 
+fn theme_items(s: &Settings) -> Vec<PageItem> {
+    let dropdown = |title: &str, description: &str, id: u64, value: String| {
+        PageItem::Row(SettingRow {
+            title: title.to_string().into(),
+            description: description.to_string().into(),
+            control: Control::Dropdown { id, value },
+            reset: reset_if_changed(id, s),
+        })
+    };
+    let mut items = vec![
+        PageItem::Header("Theme"),
+        dropdown(
+            "Theme Mode",
+            "Choose a static, fixed theme or dynamically select themes based on appearance and light/dark modes.",
+            CTRL_THEME_SELECTION,
+            cap(&s.theme_selection),
+        ),
+    ];
+    if s.theme_selection == "dynamic" {
+        items.push(dropdown(
+            "Mode",
+            "Choose whether to use the selected light or dark theme or to follow your OS appearance configuration.",
+            CTRL_MODE,
+            cap(&s.theme_mode),
+        ));
+        items.push(dropdown(
+            "Light Theme",
+            "The theme used when light mode is active.",
+            CTRL_THEME_LIGHT,
+            s.theme_light.clone(),
+        ));
+        items.push(dropdown(
+            "Dark Theme",
+            "The theme used when dark mode is active.",
+            CTRL_THEME_DARK,
+            s.theme_dark.clone(),
+        ));
+    } else {
+        items.push(dropdown(
+            "Theme Name",
+            "The name of your selected theme.",
+            CTRL_THEME,
+            s.theme.clone(),
+        ));
+    }
+    items.push(PageItem::Row(SettingRow {
+        title: "Your Themes".into(),
+        description: "Theme files in ~/.config/pomelo/themes, read again whenever they change."
+            .into(),
+        control: Control::Button {
+            id: CTRL_OPEN_THEMES,
+            label: "Open Themes Folder",
+            enabled: true,
+        },
+        reset: None,
+    }));
+    for problem in ui::theme_file::theme_problems() {
+        items.push(PageItem::Row(SettingRow {
+            title: "Problem".into(),
+            description: problem.into(),
+            control: Control::Value {
+                text: String::new(),
+            },
+            reset: None,
+        }));
+    }
+    items
+}
+
 fn appearance_page(s: &Settings) -> Page {
+    let mut items = theme_items(s);
+    items.extend(vec![
+        PageItem::Header("UI Font"),
+        PageItem::Row(SettingRow {
+            title: "Font Family".into(),
+            description: "Font family used for interface text.".into(),
+            control: Control::Dropdown {
+                id: CTRL_FONT_FAMILY,
+                value: s.ui_font.clone(),
+            },
+            reset: reset_if_changed(CTRL_FONT_FAMILY, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Font Size".into(),
+            description: "Font size for UI elements.".into(),
+            control: Control::Stepper {
+                dec: CTRL_FONT_SIZE_DEC,
+                inc: CTRL_FONT_SIZE_INC,
+                edit: CTRL_FONT_SIZE_EDIT,
+                value: format!("{:.0}", s.ui_font_size),
+            },
+            reset: reset_if_changed(CTRL_FONT_SIZE_EDIT, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Font Weight".into(),
+            description: "Font weight for UI elements (100-900).".into(),
+            control: Control::Stepper {
+                dec: CTRL_FONT_WEIGHT_DEC,
+                inc: CTRL_FONT_WEIGHT_INC,
+                edit: CTRL_FONT_WEIGHT_EDIT,
+                value: format!("{:.0}", s.ui_font_weight),
+            },
+            reset: reset_if_changed(CTRL_FONT_WEIGHT_EDIT, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Font Features".into(),
+            description: "The OpenType features to enable for rendering in UI elements.".into(),
+            control: Control::EditInJson {
+                id: CTRL_FONT_FEATURES,
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "Font Fallbacks".into(),
+            description: "The font fallbacks to use for rendering in the UI.".into(),
+            control: Control::EditInJson {
+                id: CTRL_FONT_FALLBACKS,
+            },
+            reset: None,
+        }),
+    ]);
     Page {
         title: "Appearance",
-        items: vec![
-            PageItem::Header("Theme"),
-            PageItem::Row(SettingRow {
-                title: "Theme".into(),
-                description: "Color theme applied across the whole app.".into(),
-                control: Control::Dropdown {
-                    id: CTRL_THEME,
-                    value: s.theme.clone(),
-                },
-                reset: reset_if_changed(CTRL_THEME, s),
-            }),
-            PageItem::Header("UI Font"),
-            PageItem::Row(SettingRow {
-                title: "Font Family".into(),
-                description: "Font family used for interface text.".into(),
-                control: Control::Dropdown {
-                    id: CTRL_FONT_FAMILY,
-                    value: s.ui_font.clone(),
-                },
-                reset: reset_if_changed(CTRL_FONT_FAMILY, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Font Size".into(),
-                description: "Font size for UI elements.".into(),
-                control: Control::Stepper {
-                    dec: CTRL_FONT_SIZE_DEC,
-                    inc: CTRL_FONT_SIZE_INC,
-                    edit: CTRL_FONT_SIZE_EDIT,
-                    value: format!("{:.0}", s.ui_font_size),
-                },
-                reset: reset_if_changed(CTRL_FONT_SIZE_EDIT, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Font Weight".into(),
-                description: "Font weight for UI elements (100-900).".into(),
-                control: Control::Stepper {
-                    dec: CTRL_FONT_WEIGHT_DEC,
-                    inc: CTRL_FONT_WEIGHT_INC,
-                    edit: CTRL_FONT_WEIGHT_EDIT,
-                    value: format!("{:.0}", s.ui_font_weight),
-                },
-                reset: reset_if_changed(CTRL_FONT_WEIGHT_EDIT, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Font Features".into(),
-                description: "The OpenType features to enable for rendering in UI elements.".into(),
-                control: Control::EditInJson {
-                    id: CTRL_FONT_FEATURES,
-                },
-                reset: None,
-            }),
-            PageItem::Row(SettingRow {
-                title: "Font Fallbacks".into(),
-                description: "The font fallbacks to use for rendering in the UI.".into(),
-                control: Control::EditInJson {
-                    id: CTRL_FONT_FALLBACKS,
-                },
-                reset: None,
-            }),
-        ],
+        items,
     }
 }
 

@@ -1931,6 +1931,16 @@ fn main() -> anyhow::Result<()> {
         settings.ui_font_size = fs;
         ui::set_ui_text_scale(fs / ui::UI_FONT_BASE);
     }
+    // THEMEFILE=path: a user theme family file, loaded before THEME picks a name from it.
+    if let Ok(path) = std::env::var("THEMEFILE") {
+        let text = std::fs::read_to_string(&path)?;
+        let (themes, problems) = ui::theme_file::parse_family(&text, &path);
+        ui::theme_file::set_user_themes(themes);
+        ui::theme_file::set_theme_problems(problems);
+    }
+    if let Ok(mode) = std::env::var("THEMESELECTION") {
+        settings.theme_selection = mode;
+    }
     if let Ok(t) = std::env::var("THEME") {
         if t == "light" {
             ui::set_theme(ui::one_light());

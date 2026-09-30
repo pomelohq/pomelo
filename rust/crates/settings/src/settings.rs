@@ -10,7 +10,14 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
+    /// "static" uses `theme`; "dynamic" picks `theme_light` or `theme_dark` by `theme_mode`.
+    pub theme_selection: String,
+    /// In dynamic selection: "light", "dark" or "system" (follow the OS appearance).
     pub theme_mode: String,
+    pub theme_light: String,
+    pub theme_dark: String,
+    /// Per theme name, color tokens laid over that theme: `{"One Dark": {"editor.background": "#1e2127"}}`.
+    pub theme_overrides: serde_json::Value,
     pub ui_font: String,
     pub ui_font_size: f32,
     pub ui_font_weight: f32,
@@ -76,7 +83,11 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "One Dark".into(),
-            theme_mode: "Dark".into(),
+            theme_selection: "static".into(),
+            theme_mode: "system".into(),
+            theme_light: "One Light".into(),
+            theme_dark: "One Dark".into(),
+            theme_overrides: serde_json::Value::Object(serde_json::Map::new()),
             ui_font: ".PomeloSans".into(),
             ui_font_size: 16.0,
             ui_font_weight: 400.0,
@@ -149,6 +160,41 @@ pub const SYSTEM_SOUNDS: [&str; 14] = [
 ];
 
 impl Settings {
+    /// The theme to show, given whether the OS is in dark mode.
+    pub fn active_theme(&self, system_dark: bool) -> &str {
+        if self.theme_selection != "dynamic" {
+            return &self.theme;
+        }
+        let dark = match self.theme_mode.as_str() {
+            "light" => false,
+            "dark" => true,
+            _ => system_dark,
+        };
+        if dark {
+            &self.theme_dark
+        } else {
+            &self.theme_light
+        }
+    }
+
+    /// Make `name` the theme shown now: the static theme, or the dynamic slot currently in use.
+    pub fn set_active_theme(&mut self, name: String, system_dark: bool) {
+        if self.theme_selection != "dynamic" {
+            self.theme = name;
+            return;
+        }
+        let dark = match self.theme_mode.as_str() {
+            "light" => false,
+            "dark" => true,
+            _ => system_dark,
+        };
+        if dark {
+            self.theme_dark = name;
+        } else {
+            self.theme_light = name;
+        }
+    }
+
     pub fn sound_for(&self, event: &str) -> &str {
         match event {
             "working" => &self.sound_working,
