@@ -346,36 +346,12 @@ fn pane_key(
             _ => None,
         };
     }
-    if cmd && alt && !ctrl && !shift {
-        match arrow {
-            Some(SplitDirection::Left) => return Some(PaneCommand::ActivatePreviousItem),
-            Some(SplitDirection::Right) => return Some(PaneCommand::ActivateNextItem),
-            _ => {}
-        }
-    }
     if context == PaneKeyContext::Terminal && ctrl && alt && !cmd && !shift {
         if let Some(direction) = arrow {
             return Some(PaneCommand::Split(direction));
         }
     }
     let plain = plain?;
-    if ctrl && !cmd && !alt && !shift {
-        return match plain.as_str() {
-            "0" => Some(PaneCommand::ActivateLastItem),
-            digit => digit
-                .parse::<usize>()
-                .ok()
-                .filter(|n| (1..=9).contains(n))
-                .map(|n| PaneCommand::ActivateItem(n - 1)),
-        };
-    }
-    if cmd && shift && !alt && !ctrl {
-        return match plain.as_str() {
-            "[" => Some(PaneCommand::ActivatePreviousItem),
-            "]" => Some(PaneCommand::ActivateNextItem),
-            _ => None,
-        };
-    }
     if cmd && !shift && !alt && !ctrl {
         return match (context, plain.as_str()) {
             (PaneKeyContext::Editor { .. }, "\\") => {
