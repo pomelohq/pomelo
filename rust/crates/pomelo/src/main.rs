@@ -1692,6 +1692,23 @@ impl App {
 
     fn apply_editor_defaults(&mut self) {
         ui::set_chrome(settings_ui::chrome_flags(&self.settings));
+        let (agent_hidden, terminal_hidden, func_hidden) = (
+            self.settings.agent_hidden,
+            self.settings.terminal_hidden,
+            self.settings.func_hidden.clone(),
+        );
+        let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+        for id in windows {
+            let changed = self.with_workspace_view(id, |view, _| {
+                view.set_buttons_hidden(agent_hidden, terminal_hidden, &func_hidden)
+            });
+            if changed == Some(true) {
+                if let Some(main) = self.mains.get_mut(&id) {
+                    main.dirty = true;
+                    main.window.request_redraw();
+                }
+            }
+        }
         let fonts_changed = self.apply_fonts();
         let font_changed = files_ui::set_editor_defaults(
             self.settings.buffer_font_size,
@@ -2964,6 +2981,11 @@ impl App {
             read_dock_settings(&mut self.settings, view.layout());
             drop(view);
             let _ = self.settings.save();
+            let settings = self.settings.clone();
+            self.with_settings_view(|view, cx| {
+                view.sync_placement(&settings);
+                cx.notify();
+            });
         }
         if let Some(index) = effects.open_new_window {
             if let Some((_, path)) = self.session_path(id, index) {

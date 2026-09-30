@@ -182,11 +182,10 @@ pub const CTRL_FONT_FEATURES: u64 = 206;
 pub const CTRL_FONT_FALLBACKS: u64 = 207;
 pub const CTRL_OPEN_JSON: u64 = 108;
 pub const CTRL_MODE: u64 = 210;
-pub const CTRL_SIDEBAR_SIDE: u64 = 211;
-pub const CTRL_AGENT_SIDE: u64 = 212;
-pub const CTRL_TERMINAL_SIDE: u64 = 213;
 pub const CTRL_SHOW_AGENT: u64 = 214;
 pub const CTRL_SHOW_TERMINAL: u64 = 215;
+/// One toggle per function button, `FUNCTION_BUTTONS` long.
+pub const CTRL_SHOW_FUNCTION_BASE: u64 = 340;
 pub const CTRL_WIN_W_DEC: u64 = 216;
 pub const CTRL_WIN_W_INC: u64 = 217;
 pub const CTRL_WIN_W_EDIT: u64 = 218;
@@ -426,9 +425,6 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_BUFFER_LINE_HEIGHT
             | CTRL_TERM_LINE_HEIGHT
             | CTRL_MODE
-            | CTRL_SIDEBAR_SIDE
-            | CTRL_AGENT_SIDE
-            | CTRL_TERMINAL_SIDE
             | CTRL_SOFT_WRAP
             | CTRL_DIFF_VIEW
             | CTRL_EXTERNAL_EDITOR
@@ -468,8 +464,6 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
             .collect(),
         CTRL_BUFFER_LINE_HEIGHT | CTRL_TERM_LINE_HEIGHT => sv(&["Comfortable", "Standard"]),
         CTRL_MODE => sv(&["Light", "Dark", "System"]),
-        CTRL_SIDEBAR_SIDE | CTRL_AGENT_SIDE => sv(&["Left", "Right"]),
-        CTRL_TERMINAL_SIDE => sv(&["Left", "Right", "Bottom"]),
         CTRL_SOFT_WRAP => sv(&["None", "Editor Width"]),
         CTRL_DIFF_VIEW => sv(&["Split", "Unified"]),
         CTRL_MODULES_FALLBACK => MODULES_FALLBACKS
@@ -512,9 +506,6 @@ pub fn control_value(id: u64, s: &Settings) -> String {
         CTRL_BUFFER_LINE_HEIGHT => line_height_label(&s.buffer_line_height),
         CTRL_TERM_LINE_HEIGHT => line_height_label(&s.terminal_line_height),
         CTRL_MODE => cap(&s.theme_mode),
-        CTRL_SIDEBAR_SIDE => cap(&s.sidebar_side),
-        CTRL_AGENT_SIDE => cap(&s.agent_side),
-        CTRL_TERMINAL_SIDE => cap(&s.terminal_side),
         CTRL_SOFT_WRAP => if s.soft_wrap { "Editor Width" } else { "None" }.to_string(),
         CTRL_DIFF_VIEW => if s.split_diff { "Split" } else { "Unified" }.to_string(),
         CTRL_HIDE_MOUSE => HIDE_MOUSE
@@ -564,9 +555,6 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
             s.terminal_line_height = serde_json::Value::String(val.to_lowercase())
         }
         CTRL_MODE => s.theme_mode = val.to_lowercase(),
-        CTRL_SIDEBAR_SIDE => s.sidebar_side = val.to_lowercase(),
-        CTRL_AGENT_SIDE => s.agent_side = val.to_lowercase(),
-        CTRL_TERMINAL_SIDE => s.terminal_side = val.to_lowercase(),
         CTRL_SOFT_WRAP => s.soft_wrap = val == "Editor Width",
         CTRL_DIFF_VIEW => s.split_diff = val == "Split",
         CTRL_HIDE_MOUSE => {
@@ -654,10 +642,12 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_FONT_SIZE_EDIT => s.ui_font_size == d.ui_font_size,
         CTRL_FONT_WEIGHT_EDIT => s.ui_font_weight == d.ui_font_weight,
         CTRL_MODE => s.theme_mode == d.theme_mode,
-        CTRL_SIDEBAR_SIDE => s.sidebar_side == d.sidebar_side,
-        CTRL_AGENT_SIDE => s.agent_side == d.agent_side,
-        CTRL_TERMINAL_SIDE => s.terminal_side == d.terminal_side,
         CTRL_SHOW_AGENT => s.agent_hidden == d.agent_hidden,
+        id if function_button(id).is_some() => {
+            let index = function_button(id).unwrap_or_default();
+            s.func_hidden.get(index).copied().unwrap_or(false)
+                == d.func_hidden.get(index).copied().unwrap_or(false)
+        }
         CTRL_SHOW_TERMINAL => s.terminal_hidden == d.terminal_hidden,
         CTRL_SHOW_DIAGNOSTICS => s.show_diagnostics == d.show_diagnostics,
         CTRL_SHOW_CURSOR => s.show_cursor_position == d.show_cursor_position,
@@ -715,10 +705,10 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_BUFFER_LINE_HEIGHT => s.buffer_line_height = d.buffer_line_height,
         CTRL_TERM_LINE_HEIGHT => s.terminal_line_height = d.terminal_line_height,
         CTRL_MODE => s.theme_mode = d.theme_mode,
-        CTRL_SIDEBAR_SIDE => s.sidebar_side = d.sidebar_side,
-        CTRL_AGENT_SIDE => s.agent_side = d.agent_side,
-        CTRL_TERMINAL_SIDE => s.terminal_side = d.terminal_side,
         CTRL_SHOW_AGENT => s.agent_hidden = d.agent_hidden,
+        id if function_button(id).is_some() => {
+            set_function_hidden(s, function_button(id).unwrap_or_default(), false)
+        }
         CTRL_SHOW_TERMINAL => s.terminal_hidden = d.terminal_hidden,
         CTRL_SHOW_DIAGNOSTICS => s.show_diagnostics = d.show_diagnostics,
         CTRL_SHOW_CURSOR => s.show_cursor_position = d.show_cursor_position,
@@ -775,6 +765,12 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         CTRL_FONT_SIZE_INC => set_font_size(s, s.ui_font_size + 1.0),
         CTRL_FONT_WEIGHT_DEC => set_font_weight(s, s.ui_font_weight - 100.0),
         CTRL_FONT_WEIGHT_INC => set_font_weight(s, s.ui_font_weight + 100.0),
+        id if function_button(id).is_some() => {
+            let index = function_button(id).unwrap_or_default();
+            let hidden = s.func_hidden.get(index).copied().unwrap_or(false);
+            set_function_hidden(s, index, !hidden);
+            true
+        }
         CTRL_SHOW_AGENT => {
             s.agent_hidden = !s.agent_hidden;
             true
@@ -2070,104 +2066,108 @@ fn appearance_page(s: &Settings) -> Page {
     }
 }
 
+/// Which function button's toggle `id` is.
+fn function_button(id: u64) -> Option<usize> {
+    let index = id.checked_sub(CTRL_SHOW_FUNCTION_BASE)? as usize;
+    (index < FUNCTION_BUTTONS.len()).then_some(index)
+}
+
+fn set_function_hidden(s: &mut Settings, index: usize, hidden: bool) {
+    if s.func_hidden.len() <= index {
+        s.func_hidden.resize(FUNCTION_BUTTONS.len(), false);
+    }
+    s.func_hidden[index] = hidden;
+}
+
+/// The status bar's function buttons, in `PaneKind::ALL` order (the index into `func_hidden`).
+pub const FUNCTION_BUTTONS: [&str; 4] = ["Files", "Services", "Git", "Database"];
+
 fn window_layout_page(s: &Settings) -> Page {
+    let mut items = vec![PageItem::Header("Status Bar")];
+    for (index, name) in FUNCTION_BUTTONS.iter().enumerate() {
+        let id = CTRL_SHOW_FUNCTION_BASE + index as u64;
+        items.push(PageItem::Row(SettingRow {
+            title: format!("{name} Button").into(),
+            description: format!("Show the {} button in the status bar.", name.to_lowercase())
+                .into(),
+            control: Control::Toggle {
+                id,
+                on: !s.func_hidden.get(index).copied().unwrap_or(false),
+            },
+            reset: reset_if_changed(id, s),
+        }));
+    }
     Page {
         title: "Window & Layout",
-        items: vec![
-            PageItem::Header("Status Bar"),
-            PageItem::Row(SettingRow {
-                title: "Show Diagnostics".into(),
-                description: "Show the error/warning count in the status bar.".into(),
-                control: Control::Toggle {
-                    id: CTRL_SHOW_DIAGNOSTICS,
-                    on: s.show_diagnostics,
-                },
-                reset: reset_if_changed(CTRL_SHOW_DIAGNOSTICS, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Show Cursor Position".into(),
-                description: "Show the line and column of the cursor in the status bar.".into(),
-                control: Control::Toggle {
-                    id: CTRL_SHOW_CURSOR,
-                    on: s.show_cursor_position,
-                },
-                reset: reset_if_changed(CTRL_SHOW_CURSOR, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Show Language".into(),
-                description: "Show the active language of the editor in the status bar.".into(),
-                control: Control::Toggle {
-                    id: CTRL_SHOW_LANGUAGE,
-                    on: s.show_language,
-                },
-                reset: reset_if_changed(CTRL_SHOW_LANGUAGE, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Show Agent Button".into(),
-                description: "Show the agent toggle in the status bar.".into(),
-                control: Control::Toggle {
-                    id: CTRL_SHOW_AGENT,
-                    on: !s.agent_hidden,
-                },
-                reset: reset_if_changed(CTRL_SHOW_AGENT, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Show Terminal Button".into(),
-                description: "Show the terminal toggle in the status bar.".into(),
-                control: Control::Toggle {
-                    id: CTRL_SHOW_TERMINAL,
-                    on: !s.terminal_hidden,
-                },
-                reset: reset_if_changed(CTRL_SHOW_TERMINAL, s),
-            }),
-            PageItem::Header("Title Bar"),
-            PageItem::Row(SettingRow {
-                title: "Show Branch Name".into(),
-                description: "Show the active workspace's branch in the title bar.".into(),
-                control: Control::Toggle {
-                    id: CTRL_SHOW_BRANCH,
-                    on: s.show_branch,
-                },
-                reset: reset_if_changed(CTRL_SHOW_BRANCH, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Show Session Name".into(),
-                description: "Show the current session name in the title bar.".into(),
-                control: Control::Toggle {
-                    id: CTRL_SHOW_SESSION,
-                    on: s.show_session_name,
-                },
-                reset: reset_if_changed(CTRL_SHOW_SESSION, s),
-            }),
-            PageItem::Header("Docks"),
-            PageItem::Row(SettingRow {
-                title: "Sidebar Side".into(),
-                description: "Which side the WORKSPACES sidebar docks on.".into(),
-                control: Control::Dropdown {
-                    id: CTRL_SIDEBAR_SIDE,
-                    value: cap(&s.sidebar_side),
-                },
-                reset: reset_if_changed(CTRL_SIDEBAR_SIDE, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Agent Dock Side".into(),
-                description: "Which side of the editor the agent dock renders on.".into(),
-                control: Control::Dropdown {
-                    id: CTRL_AGENT_SIDE,
-                    value: cap(&s.agent_side),
-                },
-                reset: reset_if_changed(CTRL_AGENT_SIDE, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Terminal Dock Side".into(),
-                description: "Which content area the terminal renders in.".into(),
-                control: Control::Dropdown {
-                    id: CTRL_TERMINAL_SIDE,
-                    value: cap(&s.terminal_side),
-                },
-                reset: reset_if_changed(CTRL_TERMINAL_SIDE, s),
-            }),
-        ],
+        items: items
+            .into_iter()
+            .chain([
+                PageItem::Row(SettingRow {
+                    title: "Show Diagnostics".into(),
+                    description: "Show the error/warning count in the status bar.".into(),
+                    control: Control::Toggle {
+                        id: CTRL_SHOW_DIAGNOSTICS,
+                        on: s.show_diagnostics,
+                    },
+                    reset: reset_if_changed(CTRL_SHOW_DIAGNOSTICS, s),
+                }),
+                PageItem::Row(SettingRow {
+                    title: "Show Cursor Position".into(),
+                    description: "Show the line and column of the cursor in the status bar.".into(),
+                    control: Control::Toggle {
+                        id: CTRL_SHOW_CURSOR,
+                        on: s.show_cursor_position,
+                    },
+                    reset: reset_if_changed(CTRL_SHOW_CURSOR, s),
+                }),
+                PageItem::Row(SettingRow {
+                    title: "Show Language".into(),
+                    description: "Show the active language of the editor in the status bar.".into(),
+                    control: Control::Toggle {
+                        id: CTRL_SHOW_LANGUAGE,
+                        on: s.show_language,
+                    },
+                    reset: reset_if_changed(CTRL_SHOW_LANGUAGE, s),
+                }),
+                PageItem::Row(SettingRow {
+                    title: "Terminal Button".into(),
+                    description: "Show the terminal button in the status bar.".into(),
+                    control: Control::Toggle {
+                        id: CTRL_SHOW_TERMINAL,
+                        on: !s.terminal_hidden,
+                    },
+                    reset: reset_if_changed(CTRL_SHOW_TERMINAL, s),
+                }),
+                PageItem::Row(SettingRow {
+                    title: "Agent Button".into(),
+                    description: "Show the agent button in the status bar.".into(),
+                    control: Control::Toggle {
+                        id: CTRL_SHOW_AGENT,
+                        on: !s.agent_hidden,
+                    },
+                    reset: reset_if_changed(CTRL_SHOW_AGENT, s),
+                }),
+                PageItem::Header("Title Bar"),
+                PageItem::Row(SettingRow {
+                    title: "Show Branch Name".into(),
+                    description: "Show the active workspace's branch in the title bar.".into(),
+                    control: Control::Toggle {
+                        id: CTRL_SHOW_BRANCH,
+                        on: s.show_branch,
+                    },
+                    reset: reset_if_changed(CTRL_SHOW_BRANCH, s),
+                }),
+                PageItem::Row(SettingRow {
+                    title: "Show Session Name".into(),
+                    description: "Show the current session name in the title bar.".into(),
+                    control: Control::Toggle {
+                        id: CTRL_SHOW_SESSION,
+                        on: s.show_session_name,
+                    },
+                    reset: reset_if_changed(CTRL_SHOW_SESSION, s),
+                }),
+            ])
+            .collect(),
     }
 }
 
@@ -3840,6 +3840,23 @@ mod tests {
         let saved: Settings =
             serde_json::from_str(r#"{"cursor_animation": {"enabled": true}}"#).expect("json");
         assert!(saved.cursor_animation.enabled);
+    }
+
+    #[test]
+    fn each_status_bar_button_has_a_toggle() {
+        let mut s = Settings::default();
+        let git = CTRL_SHOW_FUNCTION_BASE + 2;
+        assert!(handle_control(git, &mut s));
+        assert_eq!(s.func_hidden.get(2), Some(&true));
+        assert!(reset_if_changed(git, &s).is_some());
+        assert!(handle_control(CTRL_SHOW_TERMINAL, &mut s));
+        assert!(s.terminal_hidden);
+        assert!(reset_to_default(git, &mut s));
+        assert_eq!(s.func_hidden.get(2), Some(&false));
+        assert_eq!(
+            function_button(CTRL_SHOW_FUNCTION_BASE + FUNCTION_BUTTONS.len() as u64),
+            None
+        );
     }
 
     #[test]
