@@ -35,7 +35,7 @@ touching anything here. These override defaults.
 ## The gate — run before calling anything done
 
 `make check` = `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test`. All must pass.
-Our crates must be warning-clean; vendored deps are cap-lint-allowed so their warnings don't fail the gate.
+Our crates must be warning-clean.
 
 ## Build / run / release (macOS, Apple Silicon only)
 
@@ -50,11 +50,11 @@ Our crates must be warning-clean; vendored deps are cap-lint-allowed so their wa
   verifies against the Sparkle public key. `.github/workflows/ci.yml` runs `make check` on every push/PR
   touching `rust/**`; its `CI Gate` is the required check.
 
-## Vendored deps
+## Smooth resize
 
-- `vendor/wgpu-hal` is a **one-line change**: `present_with_transaction: true` so live-resize frames swap
-  atomically with the window (smooth resize). Re-apply the same edit if wgpu is upgraded. See
-  `vendor/wgpu-hal/src/metal/surface.rs`.
+- The window's CAMetalLayer presents inside the Core Animation transaction (`presentsWithTransaction`), so
+  live-resize frames swap atomically with the window. `ui::present_with_transaction` sets it on the layer
+  right after the surface is configured; wgpu reads it from the layer, so keep it after any wgpu upgrade.
 
 ## Assets
 
