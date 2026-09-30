@@ -221,6 +221,20 @@ pub const CTRL_BUFFER_FONT_EDIT: u64 = 265;
 pub const CTRL_SOFT_WRAP: u64 = 266;
 pub const CTRL_DIFF_VIEW: u64 = 267;
 pub const CTRL_EXTERNAL_EDITOR: u64 = 268;
+pub const CTRL_BUFFER_FAMILY: u64 = 290;
+pub const CTRL_BUFFER_WEIGHT_DEC: u64 = 291;
+pub const CTRL_BUFFER_WEIGHT_INC: u64 = 292;
+pub const CTRL_BUFFER_WEIGHT_EDIT: u64 = 293;
+pub const CTRL_BUFFER_LINE_HEIGHT: u64 = 294;
+pub const CTRL_BUFFER_FEATURES: u64 = 295;
+pub const CTRL_BUFFER_FALLBACKS: u64 = 296;
+pub const CTRL_TERM_FAMILY: u64 = 297;
+pub const CTRL_TERM_WEIGHT_DEC: u64 = 298;
+pub const CTRL_TERM_WEIGHT_INC: u64 = 299;
+pub const CTRL_TERM_WEIGHT_EDIT: u64 = 300;
+pub const CTRL_TERM_LINE_HEIGHT: u64 = 301;
+pub const CTRL_TERM_FEATURES: u64 = 302;
+pub const CTRL_TERM_FALLBACKS: u64 = 303;
 pub const CTRL_TERM_FONT_DEC: u64 = 269;
 pub const CTRL_TERM_FONT_INC: u64 = 270;
 pub const CTRL_TERM_FONT_EDIT: u64 = 271;
@@ -329,6 +343,10 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_THEME_LIGHT
             | CTRL_THEME_DARK
             | CTRL_FONT_FAMILY
+            | CTRL_BUFFER_FAMILY
+            | CTRL_TERM_FAMILY
+            | CTRL_BUFFER_LINE_HEIGHT
+            | CTRL_TERM_LINE_HEIGHT
             | CTRL_MODE
             | CTRL_SIDEBAR_SIDE
             | CTRL_AGENT_SIDE
@@ -361,6 +379,10 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
         CTRL_THEME | CTRL_THEME_LIGHT | CTRL_THEME_DARK => theme_names(),
         CTRL_THEME_SELECTION => sv(&["Static", "Dynamic"]),
         CTRL_FONT_FAMILY => fonts.to_vec(),
+        CTRL_BUFFER_FAMILY | CTRL_TERM_FAMILY => std::iter::once(".PomeloMono".to_string())
+            .chain(fonts.iter().filter(|font| *font != ".PomeloMono").cloned())
+            .collect(),
+        CTRL_BUFFER_LINE_HEIGHT | CTRL_TERM_LINE_HEIGHT => sv(&["Comfortable", "Standard"]),
         CTRL_MODE => sv(&["Light", "Dark", "System"]),
         CTRL_SIDEBAR_SIDE | CTRL_AGENT_SIDE => sv(&["Left", "Right"]),
         CTRL_TERMINAL_SIDE => sv(&["Left", "Right", "Bottom"]),
@@ -386,6 +408,10 @@ pub fn control_value(id: u64, s: &Settings) -> String {
         CTRL_THEME_LIGHT => s.theme_light.clone(),
         CTRL_THEME_DARK => s.theme_dark.clone(),
         CTRL_FONT_FAMILY => s.ui_font.clone(),
+        CTRL_BUFFER_FAMILY => s.buffer_font_family.clone(),
+        CTRL_TERM_FAMILY => s.terminal_font_family.clone(),
+        CTRL_BUFFER_LINE_HEIGHT => line_height_label(&s.buffer_line_height),
+        CTRL_TERM_LINE_HEIGHT => line_height_label(&s.terminal_line_height),
         CTRL_MODE => cap(&s.theme_mode),
         CTRL_SIDEBAR_SIDE => cap(&s.sidebar_side),
         CTRL_AGENT_SIDE => cap(&s.agent_side),
@@ -412,6 +438,14 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
         CTRL_THEME_LIGHT => s.theme_light = val.clone(),
         CTRL_THEME_DARK => s.theme_dark = val.clone(),
         CTRL_FONT_FAMILY => s.ui_font = val.clone(),
+        CTRL_BUFFER_FAMILY => s.buffer_font_family = val.clone(),
+        CTRL_TERM_FAMILY => s.terminal_font_family = val.clone(),
+        CTRL_BUFFER_LINE_HEIGHT => {
+            s.buffer_line_height = serde_json::Value::String(val.to_lowercase())
+        }
+        CTRL_TERM_LINE_HEIGHT => {
+            s.terminal_line_height = serde_json::Value::String(val.to_lowercase())
+        }
         CTRL_MODE => s.theme_mode = val.to_lowercase(),
         CTRL_SIDEBAR_SIDE => s.sidebar_side = val.to_lowercase(),
         CTRL_AGENT_SIDE => s.agent_side = val.to_lowercase(),
@@ -463,6 +497,12 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_THEME_LIGHT => s.theme_light == d.theme_light,
         CTRL_THEME_DARK => s.theme_dark == d.theme_dark,
         CTRL_FONT_FAMILY => s.ui_font == d.ui_font,
+        CTRL_BUFFER_FAMILY => s.buffer_font_family == d.buffer_font_family,
+        CTRL_TERM_FAMILY => s.terminal_font_family == d.terminal_font_family,
+        CTRL_BUFFER_WEIGHT_EDIT => s.buffer_font_weight == d.buffer_font_weight,
+        CTRL_TERM_WEIGHT_EDIT => s.terminal_font_weight == d.terminal_font_weight,
+        CTRL_BUFFER_LINE_HEIGHT => s.buffer_line_height == d.buffer_line_height,
+        CTRL_TERM_LINE_HEIGHT => s.terminal_line_height == d.terminal_line_height,
         CTRL_FONT_SIZE_EDIT => s.ui_font_size == d.ui_font_size,
         CTRL_FONT_WEIGHT_EDIT => s.ui_font_weight == d.ui_font_weight,
         CTRL_MODE => s.theme_mode == d.theme_mode,
@@ -507,6 +547,12 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_FONT_FAMILY => s.ui_font = d.ui_font,
         CTRL_FONT_SIZE_EDIT => s.ui_font_size = d.ui_font_size,
         CTRL_FONT_WEIGHT_EDIT => s.ui_font_weight = d.ui_font_weight,
+        CTRL_BUFFER_FAMILY => s.buffer_font_family = d.buffer_font_family,
+        CTRL_TERM_FAMILY => s.terminal_font_family = d.terminal_font_family,
+        CTRL_BUFFER_WEIGHT_EDIT => s.buffer_font_weight = d.buffer_font_weight,
+        CTRL_TERM_WEIGHT_EDIT => s.terminal_font_weight = d.terminal_font_weight,
+        CTRL_BUFFER_LINE_HEIGHT => s.buffer_line_height = d.buffer_line_height,
+        CTRL_TERM_LINE_HEIGHT => s.terminal_line_height = d.terminal_line_height,
         CTRL_MODE => s.theme_mode = d.theme_mode,
         CTRL_SIDEBAR_SIDE => s.sidebar_side = d.sidebar_side,
         CTRL_AGENT_SIDE => s.agent_side = d.agent_side,
@@ -603,6 +649,30 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
             s.auto_update = !s.auto_update;
             true
         }
+        CTRL_BUFFER_WEIGHT_DEC => set_clamped(
+            &mut s.buffer_font_weight,
+            -100.0,
+            FONT_WEIGHT_MIN,
+            FONT_WEIGHT_MAX,
+        ),
+        CTRL_BUFFER_WEIGHT_INC => set_clamped(
+            &mut s.buffer_font_weight,
+            100.0,
+            FONT_WEIGHT_MIN,
+            FONT_WEIGHT_MAX,
+        ),
+        CTRL_TERM_WEIGHT_DEC => set_clamped(
+            &mut s.terminal_font_weight,
+            -100.0,
+            FONT_WEIGHT_MIN,
+            FONT_WEIGHT_MAX,
+        ),
+        CTRL_TERM_WEIGHT_INC => set_clamped(
+            &mut s.terminal_font_weight,
+            100.0,
+            FONT_WEIGHT_MIN,
+            FONT_WEIGHT_MAX,
+        ),
         CTRL_BUFFER_FONT_DEC => {
             set_clamped(&mut s.buffer_font_size, -1.0, FONT_SIZE_MIN, FONT_SIZE_MAX)
         }
@@ -643,6 +713,105 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         }
         _ => false,
     }
+}
+
+/// A line height setting as the dropdown shows it; a number or `{"custom": n}` is Custom.
+fn line_height_label(value: &serde_json::Value) -> String {
+    match value.as_str() {
+        Some("comfortable") => "Comfortable".into(),
+        Some("standard") => "Standard".into(),
+        _ => "Custom".into(),
+    }
+}
+
+/// The rows every font section has, as the reference lays them out: family, size, weight, line height (not
+/// for the UI font), features and fallbacks.
+struct FontRows {
+    family: u64,
+    family_value: String,
+    size: (u64, u64, u64),
+    size_value: f32,
+    size_description: &'static str,
+    weight: (u64, u64, u64),
+    weight_value: f32,
+    line_height: Option<(u64, String)>,
+    features: u64,
+    fallbacks: u64,
+    what: &'static str,
+}
+
+fn font_rows(s: &Settings, rows: FontRows) -> Vec<PageItem> {
+    let mut items = vec![
+        PageItem::Row(SettingRow {
+            title: "Font Family".into(),
+            description: format!("Font family used for {}.", rows.what).into(),
+            control: Control::Dropdown {
+                id: rows.family,
+                value: rows.family_value,
+            },
+            reset: reset_if_changed(rows.family, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Font Size".into(),
+            description: rows.size_description.into(),
+            control: Control::Stepper {
+                dec: rows.size.0,
+                inc: rows.size.1,
+                edit: rows.size.2,
+                value: format!("{:.0}", rows.size_value),
+            },
+            reset: reset_if_changed(rows.size.2, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Font Weight".into(),
+            description: format!("Font weight for {} (100-900).", rows.what).into(),
+            control: Control::Stepper {
+                dec: rows.weight.0,
+                inc: rows.weight.1,
+                edit: rows.weight.2,
+                value: format!("{:.0}", rows.weight_value),
+            },
+            reset: reset_if_changed(rows.weight.2, s),
+        }),
+    ];
+    if let Some((id, value)) = rows.line_height {
+        items.push(PageItem::Row(SettingRow {
+            title: "Line Height".into(),
+            description: format!("Line height for {}.", rows.what).into(),
+            control: Control::Dropdown { id, value },
+            reset: reset_if_changed(id, s),
+        }));
+    }
+    items.push(PageItem::Row(SettingRow {
+        title: "Font Features".into(),
+        description: format!(
+            "The OpenType features to enable for rendering in {}.",
+            rows.what
+        )
+        .into(),
+        control: Control::EditInJson { id: rows.features },
+        reset: None,
+    }));
+    items.push(PageItem::Row(SettingRow {
+        title: "Font Fallbacks".into(),
+        description: format!("The font fallbacks to use for rendering in {}.", rows.what).into(),
+        control: Control::EditInJson { id: rows.fallbacks },
+        reset: None,
+    }));
+    items
+}
+
+/// Whether `id` is one of the "Edit in settings.json" buttons, which all open the settings file.
+pub fn is_edit_in_json(id: u64) -> bool {
+    matches!(
+        id,
+        CTRL_FONT_FEATURES
+            | CTRL_FONT_FALLBACKS
+            | CTRL_BUFFER_FEATURES
+            | CTRL_BUFFER_FALLBACKS
+            | CTRL_TERM_FEATURES
+            | CTRL_TERM_FALLBACKS
+    )
 }
 
 fn set_clamped(field: &mut f32, delta: f32, min: f32, max: f32) -> bool {
@@ -1940,92 +2109,126 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
 fn editor_page(s: &Settings) -> Page {
     Page {
         title: "Editor",
-        items: vec![
-            PageItem::Header("Buffer Font"),
-            PageItem::Row(SettingRow {
-                title: "Font Size".into(),
-                description: "Text size of the code editor.".into(),
-                control: Control::Stepper {
-                    dec: CTRL_BUFFER_FONT_DEC,
-                    inc: CTRL_BUFFER_FONT_INC,
-                    edit: CTRL_BUFFER_FONT_EDIT,
-                    value: format!("{:.0}", s.buffer_font_size),
+        items: vec![PageItem::Header("Buffer Font")]
+            .into_iter()
+            .chain(font_rows(
+                s,
+                FontRows {
+                    family: CTRL_BUFFER_FAMILY,
+                    family_value: s.buffer_font_family.clone(),
+                    size: (
+                        CTRL_BUFFER_FONT_DEC,
+                        CTRL_BUFFER_FONT_INC,
+                        CTRL_BUFFER_FONT_EDIT,
+                    ),
+                    size_value: s.buffer_font_size,
+                    size_description: "Text size of the code editor.",
+                    weight: (
+                        CTRL_BUFFER_WEIGHT_DEC,
+                        CTRL_BUFFER_WEIGHT_INC,
+                        CTRL_BUFFER_WEIGHT_EDIT,
+                    ),
+                    weight_value: s.buffer_font_weight,
+                    line_height: Some((
+                        CTRL_BUFFER_LINE_HEIGHT,
+                        line_height_label(&s.buffer_line_height),
+                    )),
+                    features: CTRL_BUFFER_FEATURES,
+                    fallbacks: CTRL_BUFFER_FALLBACKS,
+                    what: "the code editor",
                 },
-                reset: reset_if_changed(CTRL_BUFFER_FONT_EDIT, s),
-            }),
-            PageItem::Header("Behavior"),
-            PageItem::Row(SettingRow {
-                title: "Soft Wrap".into(),
-                description: "How newly opened files wrap long lines.".into(),
-                control: Control::Dropdown {
-                    id: CTRL_SOFT_WRAP,
-                    value: control_value(CTRL_SOFT_WRAP, s),
-                },
-                reset: reset_if_changed(CTRL_SOFT_WRAP, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Diff View".into(),
-                description: "Side by side when the pane is wide enough, or one column.".into(),
-                control: Control::Dropdown {
-                    id: CTRL_DIFF_VIEW,
-                    value: control_value(CTRL_DIFF_VIEW, s),
-                },
-                reset: reset_if_changed(CTRL_DIFF_VIEW, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "External Editor".into(),
-                description:
-                    "What \"Open in External Editor\" uses; Auto picks the first installed.".into(),
-                control: Control::Dropdown {
-                    id: CTRL_EXTERNAL_EDITOR,
-                    value: control_value(CTRL_EXTERNAL_EDITOR, s),
-                },
-                reset: reset_if_changed(CTRL_EXTERNAL_EDITOR, s),
-            }),
-        ],
+            ))
+            .chain(vec![
+                PageItem::Header("Behavior"),
+                PageItem::Row(SettingRow {
+                    title: "Soft Wrap".into(),
+                    description: "How newly opened files wrap long lines.".into(),
+                    control: Control::Dropdown {
+                        id: CTRL_SOFT_WRAP,
+                        value: control_value(CTRL_SOFT_WRAP, s),
+                    },
+                    reset: reset_if_changed(CTRL_SOFT_WRAP, s),
+                }),
+                PageItem::Row(SettingRow {
+                    title: "Diff View".into(),
+                    description: "Side by side when the pane is wide enough, or one column.".into(),
+                    control: Control::Dropdown {
+                        id: CTRL_DIFF_VIEW,
+                        value: control_value(CTRL_DIFF_VIEW, s),
+                    },
+                    reset: reset_if_changed(CTRL_DIFF_VIEW, s),
+                }),
+                PageItem::Row(SettingRow {
+                    title: "External Editor".into(),
+                    description:
+                        "What \"Open in External Editor\" uses; Auto picks the first installed."
+                            .into(),
+                    control: Control::Dropdown {
+                        id: CTRL_EXTERNAL_EDITOR,
+                        value: control_value(CTRL_EXTERNAL_EDITOR, s),
+                    },
+                    reset: reset_if_changed(CTRL_EXTERNAL_EDITOR, s),
+                }),
+            ])
+            .collect(),
     }
 }
 
 fn terminal_page(s: &Settings) -> Page {
     Page {
         title: "Terminal",
-        items: vec![
-            PageItem::Header("Font"),
-            PageItem::Row(SettingRow {
-                title: "Font Size".into(),
-                description: "Text size of terminals (the agent has its own, under Agent).".into(),
-                control: Control::Stepper {
-                    dec: CTRL_TERM_FONT_DEC,
-                    inc: CTRL_TERM_FONT_INC,
-                    edit: CTRL_TERM_FONT_EDIT,
-                    value: format!("{:.0}", s.terminal_font_size),
+        items: vec![PageItem::Header("Font")]
+            .into_iter()
+            .chain(font_rows(
+                s,
+                FontRows {
+                    family: CTRL_TERM_FAMILY,
+                    family_value: s.terminal_font_family.clone(),
+                    size: (CTRL_TERM_FONT_DEC, CTRL_TERM_FONT_INC, CTRL_TERM_FONT_EDIT),
+                    size_value: s.terminal_font_size,
+                    size_description:
+                        "Text size of terminals (the agent has its own, under Agent).",
+                    weight: (
+                        CTRL_TERM_WEIGHT_DEC,
+                        CTRL_TERM_WEIGHT_INC,
+                        CTRL_TERM_WEIGHT_EDIT,
+                    ),
+                    weight_value: s.terminal_font_weight,
+                    line_height: Some((
+                        CTRL_TERM_LINE_HEIGHT,
+                        line_height_label(&s.terminal_line_height),
+                    )),
+                    features: CTRL_TERM_FEATURES,
+                    fallbacks: CTRL_TERM_FALLBACKS,
+                    what: "terminals",
                 },
-                reset: reset_if_changed(CTRL_TERM_FONT_EDIT, s),
-            }),
-            PageItem::Header("Shell"),
-            PageItem::Row(SettingRow {
-                title: "Shell".into(),
-                description: "What new terminals run; empty runs your login shell.".into(),
-                control: Control::TextInput {
-                    id: CTRL_TERM_SHELL,
-                    value: s.terminal_shell.clone(),
-                    placeholder: "login shell",
-                    masked: false,
-                },
-                reset: reset_if_changed(CTRL_TERM_SHELL, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: "Scrollback".into(),
-                description: "Lines of history each new terminal keeps.".into(),
-                control: Control::Stepper {
-                    dec: CTRL_SCROLLBACK_DEC,
-                    inc: CTRL_SCROLLBACK_INC,
-                    edit: CTRL_SCROLLBACK_EDIT,
-                    value: s.terminal_scrollback.to_string(),
-                },
-                reset: reset_if_changed(CTRL_SCROLLBACK_EDIT, s),
-            }),
-        ],
+            ))
+            .chain(vec![
+                PageItem::Header("Shell"),
+                PageItem::Row(SettingRow {
+                    title: "Shell".into(),
+                    description: "What new terminals run; empty runs your login shell.".into(),
+                    control: Control::TextInput {
+                        id: CTRL_TERM_SHELL,
+                        value: s.terminal_shell.clone(),
+                        placeholder: "login shell",
+                        masked: false,
+                    },
+                    reset: reset_if_changed(CTRL_TERM_SHELL, s),
+                }),
+                PageItem::Row(SettingRow {
+                    title: "Scrollback".into(),
+                    description: "Lines of history each new terminal keeps.".into(),
+                    control: Control::Stepper {
+                        dec: CTRL_SCROLLBACK_DEC,
+                        inc: CTRL_SCROLLBACK_INC,
+                        edit: CTRL_SCROLLBACK_EDIT,
+                        value: s.terminal_scrollback.to_string(),
+                    },
+                    reset: reset_if_changed(CTRL_SCROLLBACK_EDIT, s),
+                }),
+            ])
+            .collect(),
     }
 }
 
@@ -3184,7 +3387,7 @@ mod tests {
         let headers: Vec<_> = texts
             .iter()
             .filter(|t| t.text == "Delivery" || t.text == "Alert Sounds")
-            .filter(|t| t.mono)
+            .filter(|t| t.font.is_mono())
             .collect();
         assert_eq!(headers.len(), 2, "section headers are mono");
     }

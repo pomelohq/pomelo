@@ -14,6 +14,17 @@ fn main() -> anyhow::Result<()> {
         .nth(2)
         .and_then(|s| s.parse().ok())
         .unwrap_or(settings_ui::APPEARANCE);
+    // BUFFERFEATURES='{"calt": false}': OpenType features for the code font.
+    if let Ok(features) = std::env::var("BUFFERFEATURES") {
+        let value: serde_json::Value = serde_json::from_str(&features)?;
+        ui::set_font_settings(
+            ui::TextFont::Buffer,
+            ui::FontSettings {
+                features: ui::parse_font_features(&value).0,
+                ..Default::default()
+            },
+        );
+    }
 
     if std::env::var("MENUKEYS").is_ok() {
         let item = |id: u64, text: &'static str, sep: bool, disabled: bool| workspace::MenuItem {

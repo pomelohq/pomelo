@@ -1612,12 +1612,72 @@ impl App {
     }
 
     /// Pushes the editor and terminal settings to their crates; open files lay out again when the font changed.
+    /// Hand each font's family, weight, features and fallbacks to the renderer; returns whether any changed.
+    fn apply_fonts(&self) -> bool {
+        let generation = ui::font_generation();
+        let settings = &self.settings;
+        let font = |family: Option<&str>,
+                    weight: Option<f32>,
+                    features: &serde_json::Value,
+                    fallbacks: &[String]| {
+            ui::FontSettings {
+                family: family
+                    .filter(|family| !family.is_empty())
+                    .map(str::to_string),
+                weight: weight.map(|weight| weight.clamp(100.0, 900.0) as u16),
+                features: ui::parse_font_features(features).0,
+                fallbacks: fallbacks
+                    .iter()
+                    .filter(|family| !family.is_empty())
+                    .cloned()
+                    .collect(),
+            }
+        };
+        ui::set_font_settings(
+            ui::TextFont::Ui,
+            font(
+                None,
+                None,
+                &settings.ui_font_features,
+                &settings.ui_font_fallbacks,
+            ),
+        );
+        ui::set_font_settings(
+            ui::TextFont::Buffer,
+            font(
+                Some(&settings.buffer_font_family),
+                Some(settings.buffer_font_weight),
+                &settings.buffer_font_features,
+                &settings.buffer_font_fallbacks,
+            ),
+        );
+        ui::set_font_settings(
+            ui::TextFont::Terminal,
+            font(
+                Some(&settings.terminal_font_family),
+                Some(settings.terminal_font_weight),
+                &settings.terminal_font_features,
+                &settings.terminal_font_fallbacks,
+            ),
+        );
+        let buffer_line = files_ui::set_buffer_line_height(settings::line_height_ratio(
+            &settings.buffer_line_height,
+            1.618,
+        ));
+        let terminal_line = terminal_ui::set_line_height(settings::line_height_ratio(
+            &settings.terminal_line_height,
+            1.3,
+        ));
+        generation != ui::font_generation() || buffer_line || terminal_line
+    }
+
     fn apply_editor_defaults(&mut self) {
+        let fonts_changed = self.apply_fonts();
         let font_changed = files_ui::set_editor_defaults(
             self.settings.buffer_font_size,
             self.settings.soft_wrap,
             self.settings.split_diff,
-        );
+        ) || fonts_changed;
         terminal_ui::set_terminal_defaults(
             self.settings.terminal_font_size,
             &self.settings.terminal_shell,

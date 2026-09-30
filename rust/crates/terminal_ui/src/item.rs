@@ -12,7 +12,7 @@ use ui::{div, theme, IconKind, Node, Painted, Rect, Rgba};
 use workspace::search_bar::{SearchSupport, Searchable};
 use workspace::{ClipboardSlice, Item, ItemTick, TerminalKeyOutcome, TerminalOpenTarget};
 
-use crate::{anchor_to_bottom, font_size, GridMetrics, GridOptions, GridPainter, LINE_HEIGHT};
+use crate::{anchor_to_bottom, font_size, line_height, GridMetrics, GridOptions, GridPainter};
 
 pub(crate) struct Host<'a> {
     pub(crate) palette: Palette,
@@ -413,7 +413,7 @@ impl TerminalItem {
         } else {
             font_size()
         };
-        let metrics = GridMetrics::measure(size, LINE_HEIGHT);
+        let metrics = GridMetrics::measure(size, line_height());
         let body_h = (body.h / scale).max(metrics.line_height);
         self.terminal
             .set_size(metrics.bounds(body.w / scale, body_h));

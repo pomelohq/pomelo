@@ -361,7 +361,7 @@ pub struct Label {
     pub text: String,
     pub size: f32,
     pub color: Rgba,
-    pub mono: bool,
+    pub font: crate::TextFont,
     pub weight: u16,
     pub italic: bool,
     pub underline: Option<Rgba>,
@@ -402,7 +402,7 @@ pub fn label(text: impl Into<String>) -> Label {
         text: text.into(),
         size: 13.0,
         color: theme().text,
-        mono: false,
+        font: crate::TextFont::Ui,
         weight: crate::ui_font_weight(),
         italic: false,
         underline: None,
@@ -422,8 +422,15 @@ impl Label {
         self.color = c;
         self
     }
+    /// The terminal's font instead of the UI font.
+    pub fn terminal_font(mut self) -> Self {
+        self.font = crate::TextFont::Terminal;
+        self
+    }
+
+    /// The code editor's font instead of the UI font.
     pub fn mono(mut self) -> Self {
-        self.mono = true;
+        self.font = crate::TextFont::Buffer;
         self
     }
     pub fn weight(mut self, weight: u16) -> Self {
@@ -466,7 +473,7 @@ impl Label {
             return crate::measure_wrapped(
                 &self.text,
                 self.size,
-                self.mono,
+                self.font,
                 self.weight,
                 self.wrap,
             );
@@ -475,7 +482,7 @@ impl Label {
             crate::measure_text_width_styled(
                 &self.text,
                 self.size,
-                self.mono,
+                self.font,
                 self.weight,
                 self.italic,
             ),
@@ -1007,14 +1014,14 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
             // A cut label without room even for its ellipsis shows nothing rather than spill over a neighbor.
             if l.truncate
                 && lw > area.w + 0.5
-                && area.w + 0.5 < crate::measure_text_width("...", l.size, l.mono, l.weight)
+                && area.w + 0.5 < crate::measure_text_width("...", l.size, l.font, l.weight)
             {
                 return;
             }
             let text = if l.truncate_start && lw > area.w + 0.5 {
-                truncate_start_to_width(&l.text, area.w, l.size, l.mono, l.weight)
+                truncate_start_to_width(&l.text, area.w, l.size, l.font, l.weight)
             } else if l.truncate && lw > area.w + 0.5 {
-                truncate_to_width(&l.text, area.w, l.size, l.mono, l.weight)
+                truncate_to_width(&l.text, area.w, l.size, l.font, l.weight)
             } else {
                 l.text.clone()
             };
@@ -1024,7 +1031,7 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                     continue;
                 };
                 let width =
-                    crate::measure_text_width_styled(&text, l.size, l.mono, l.weight, l.italic)
+                    crate::measure_text_width_styled(&text, l.size, l.font, l.weight, l.italic)
                         .min(area.w);
                 out.rects.push(Rect::new(
                     area.x,
@@ -1040,7 +1047,7 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                 size: l.size,
                 color: l.color,
                 text,
-                mono: l.mono,
+                font: l.font,
                 weight: l.weight,
                 italic: l.italic,
                 wrap: l.wrap,
@@ -1269,8 +1276,14 @@ fn layout_children(
 const TRUNCATION_MARK: &str = "...";
 
 /// The longest prefix of `text` that fits `width` with the mark appended (the mark alone if nothing fits).
-fn truncate_to_width(text: &str, width: f32, size: f32, mono: bool, weight: u16) -> String {
-    let measure = |candidate: &str| crate::measure_text_width(candidate, size, mono, weight);
+fn truncate_to_width(
+    text: &str,
+    width: f32,
+    size: f32,
+    font: crate::TextFont,
+    weight: u16,
+) -> String {
+    let measure = |candidate: &str| crate::measure_text_width(candidate, size, font, weight);
     let boundaries: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
     // Binary search on char boundaries: text widths only grow as characters are added.
     let (mut low, mut high) = (0usize, boundaries.len());
@@ -1287,8 +1300,14 @@ fn truncate_to_width(text: &str, width: f32, size: f32, mono: bool, weight: u16)
     format!("{}{TRUNCATION_MARK}", text[..end].trim_end())
 }
 
-fn truncate_start_to_width(text: &str, width: f32, size: f32, mono: bool, weight: u16) -> String {
-    let measure = |candidate: &str| crate::measure_text_width(candidate, size, mono, weight);
+fn truncate_start_to_width(
+    text: &str,
+    width: f32,
+    size: f32,
+    font: crate::TextFont,
+    weight: u16,
+) -> String {
+    let measure = |candidate: &str| crate::measure_text_width(candidate, size, font, weight);
     let boundaries: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
     // The fewest leading characters to drop so the rest plus the mark fits.
     let (mut low, mut high) = (0usize, boundaries.len());

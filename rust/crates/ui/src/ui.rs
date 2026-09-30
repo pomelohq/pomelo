@@ -106,7 +106,7 @@ pub struct Text {
     pub size: f32,
     pub color: Rgba,
     pub text: String,
-    pub mono: bool,
+    pub font: TextFont,
     /// OpenType weight (400 = regular, 500 = medium, 700 = bold). Most UI text is regular, matching the
     /// reference; only emphasized runs bump this.
     pub weight: u16,
@@ -392,6 +392,7 @@ pub struct UiRenderer {
     ui_font: Option<String>,     // active family used for rendering
     sans_family: Option<String>, // resolves ".PomeloSans"
     mono_family: Option<String>, // resolves ".PomeloMono"
+    families: FamilyCache,
     // Icons: real SVGs rasterized to an alpha mask (cached per size) and drawn tinted.
     icon_pipeline: wgpu::RenderPipeline,
     icon_bgl: wgpu::BindGroupLayout,
@@ -511,6 +512,192 @@ fn text_attrs(family: Family<'_>, weight: u16, italic: bool) -> Attrs<'_> {
     }
 }
 
+/// The family `font` is drawn in: its configured family when installed, else the bundled font of its kind.
+fn family_for(
+    font: TextFont,
+    font_system: &FontSystem,
+    sans: &Option<String>,
+    mono: &Option<String>,
+) -> Option<String> {
+    if font == TextFont::Ui {
+        return theme::active_ui_font().or_else(|| sans.clone());
+    }
+    match theme::font_settings(font).family.as_deref() {
+        None | Some(".PomeloMono") => mono.clone(),
+        Some(".PomeloSans") => sans.clone(),
+        Some(name)
+            if font_system
+                .db()
+                .faces()
+                .any(|face| face.families.iter().any(|(family, _)| family == name)) =>
+        {
+            Some(name.to_string())
+        }
+        Some(_) => mono.clone(),
+    }
+}
+
+/// `family_for` per font, looked up once per font settings generation (finding an installed family walks the
+/// whole font database).
+#[derive(Default)]
+struct FamilyCache {
+    generation: u64,
+    resolved: [Option<Option<String>>; 2],
+}
+
+impl FamilyCache {
+    fn get(
+        &mut self,
+        font: TextFont,
+        font_system: &FontSystem,
+        sans: &Option<String>,
+        mono: &Option<String>,
+    ) -> Option<String> {
+        let slot = match font {
+            TextFont::Ui => return family_for(font, font_system, sans, mono),
+            TextFont::Buffer => 0,
+            TextFont::Terminal => 1,
+        };
+        let generation = theme::font_generation();
+        if generation != self.generation {
+            self.resolved = [None, None];
+            self.generation = generation;
+        }
+        self.resolved[slot]
+            .get_or_insert_with(|| family_for(font, font_system, sans, mono))
+            .clone()
+    }
+}
+
+/// Regular text takes the font's configured weight; emphasized runs keep their own.
+fn effective_weight(font: TextFont, family: Option<&str>, weight: u16) -> u16 {
+    let weight = if weight == 400 {
+        theme::font_settings(font).weight.unwrap_or(400)
+    } else {
+        weight
+    };
+    theme::snap_weight(family, weight)
+}
+
+/// A character that belongs to the one before it (combining marks, joiners, variation selectors, skin tones),
+/// so a fallback switch never splits a cluster.
+fn joins_previous(ch: char) -> bool {
+    matches!(ch as u32, 0x0300..=0x036F | 0x200C | 0x200D | 0xFE00..=0xFE0F | 0x1F3FB..=0x1F3FF | 0xE0100..=0xE01EF)
+}
+
+/// Slices of `text` and the font each is drawn in: `None` for the primary family, `Some(ix)` for
+/// `fallbacks[ix]`. A character stays in the primary font when it has a glyph there, then in the fallback in
+/// use, else the first fallback that has one; characters none cover stay primary for the system fallback.
+fn fallback_spans(
+    font_system: &mut FontSystem,
+    text: &str,
+    primary: Option<&str>,
+    fallbacks: &[String],
+    weight: u16,
+) -> Vec<(std::ops::Range<usize>, Option<usize>)> {
+    let mut load = |name: &str| {
+        let id = font_system.db().query(&glyphon::fontdb::Query {
+            families: &[glyphon::fontdb::Family::Name(name)],
+            weight: Weight(weight),
+            ..Default::default()
+        })?;
+        font_system.get_font(id, Weight(weight))
+    };
+    let primary_font = primary.and_then(&mut load);
+    let fallback_fonts: Vec<Option<std::sync::Arc<glyphon::Font>>> =
+        fallbacks.iter().map(|name| load(name)).collect();
+    let covers = |font: &Option<std::sync::Arc<glyphon::Font>>, ch: char| {
+        font.as_ref()
+            .is_some_and(|font| font.as_swash().charmap().map(ch) != 0)
+    };
+    spans_by_coverage(
+        text,
+        |ch| covers(&primary_font, ch),
+        |ix, ch| covers(&fallback_fonts[ix], ch),
+        fallback_fonts.len(),
+    )
+}
+
+/// The span splitting behind `fallback_spans`, given which fonts have a glyph for a character.
+fn spans_by_coverage(
+    text: &str,
+    primary_covers: impl Fn(char) -> bool,
+    fallback_covers: impl Fn(usize, char) -> bool,
+    fallbacks: usize,
+) -> Vec<(std::ops::Range<usize>, Option<usize>)> {
+    let mut spans: Vec<(std::ops::Range<usize>, Option<usize>)> = Vec::new();
+    let mut current: Option<usize> = None;
+    for (at, ch) in text.char_indices() {
+        let slot = if ch.is_ascii() || primary_covers(ch) {
+            None
+        } else if joins_previous(ch) || current.is_some_and(|ix| fallback_covers(ix, ch)) {
+            current
+        } else {
+            (0..fallbacks).find(|ix| fallback_covers(*ix, ch))
+        };
+        let end = at + ch.len_utf8();
+        match spans.last_mut() {
+            Some((range, last)) if *last == slot => range.end = end,
+            _ => spans.push((at..end, slot)),
+        }
+        current = slot;
+    }
+    spans
+}
+
+/// How a run of text is drawn: which configured font, its resolved family, weight, slant and color.
+struct RunStyle<'a> {
+    font: TextFont,
+    family: Option<&'a str>,
+    weight: u16,
+    italic: bool,
+    color: Option<Color>,
+}
+
+/// Put `text` into `buffer` in its font (its features, and its fallback families for what the family lacks)
+/// and shape it.
+fn shape_text(buffer: &mut Buffer, font_system: &mut FontSystem, text: &str, style: RunStyle<'_>) {
+    let RunStyle {
+        font,
+        family,
+        weight,
+        italic,
+        color,
+    } = style;
+    use glyphon::cosmic_text::{FeatureTag, FontFeatures};
+    let settings = theme::font_settings(font);
+    let mut features = FontFeatures::new();
+    for (tag, value) in &settings.features {
+        features.set(FeatureTag::new(tag), *value);
+    }
+    let primary = family.map_or(Family::SansSerif, Family::Name);
+    let mut attrs = text_attrs(primary, weight, italic).font_features(features.clone());
+    if let Some(color) = color {
+        attrs = attrs.color(color);
+    }
+    if settings.fallbacks.is_empty() || text.is_ascii() {
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+    } else {
+        let spans = fallback_spans(font_system, text, family, &settings.fallbacks, weight);
+        let runs = spans.into_iter().map(|(range, slot)| {
+            let attrs = match slot {
+                None => attrs.clone(),
+                Some(ix) => {
+                    let attrs = text_attrs(Family::Name(&settings.fallbacks[ix]), weight, italic)
+                        .font_features(features.clone());
+                    match color {
+                        Some(color) => attrs.color(color),
+                        None => attrs,
+                    }
+                }
+            };
+            (&text[range], attrs)
+        });
+        buffer.set_rich_text(runs, &attrs, Shaping::Advanced, None);
+    }
+    buffer.shape_until_scroll(font_system, false);
+}
+
 /// Bundle our UI fonts (IBM Plex Sans + Mono, OFL) and return their real family names. We expose them under
 /// the aliases ".PomeloSans" / ".PomeloMono". All static weights
 /// (Thin 100 .. Bold 700) are registered so the Font Weight control spans the family's real range.
@@ -546,10 +733,45 @@ struct Measurer {
     mono: Option<String>,
     // Shaping a buffer per label per frame is expensive and dominates layout while scrolling; cache widths
     // keyed by (text, quarter-px size, mono) so repeated labels across frames are free.
-    cache: std::collections::HashMap<(String, u32, bool), f32>,
+    cache: std::collections::HashMap<(String, u32, TextFont), f32>,
     // Wrapped (width, height) keyed additionally by wrap width (half-px buckets).
-    wrap_cache: std::collections::HashMap<(String, u32, bool, u32), (f32, f32)>,
-    glyph_cache: std::collections::HashMap<(String, u32, bool), GlyphOffsets>,
+    wrap_cache: std::collections::HashMap<(String, u32, TextFont, u32), (f32, f32)>,
+    glyph_cache: std::collections::HashMap<(String, u32, TextFont), GlyphOffsets>,
+    /// The font settings the caches were filled with.
+    generation: u64,
+    families: FamilyCache,
+}
+
+impl Measurer {
+    fn new() -> Self {
+        // System fonts too (not just bundled Plex): the user can pick any installed family, and measurement must
+        // shape in that same family or laid-out boxes won't match the rendered glyphs.
+        let mut font_system = FontSystem::new();
+        let (sans, mono) = load_ui_fonts(&mut font_system);
+        Measurer {
+            font_system,
+            sans,
+            mono,
+            cache: std::collections::HashMap::new(),
+            wrap_cache: std::collections::HashMap::new(),
+            glyph_cache: std::collections::HashMap::new(),
+            generation: theme::font_generation(),
+            families: FamilyCache::default(),
+        }
+    }
+
+    /// Drop what was measured with fonts that have since changed.
+    fn current(&mut self) -> &mut Self {
+        let generation = theme::font_generation();
+        if generation != self.generation {
+            self.cache.clear();
+            self.wrap_cache.clear();
+            self.glyph_cache.clear();
+            self.families = FamilyCache::default();
+            self.generation = generation;
+        }
+        self
+    }
 }
 
 /// Each glyph's starting byte index into the shaped text with its x offset, plus the total advance.
@@ -563,44 +785,28 @@ thread_local! {
 
 /// Width in logical px of `text` shaped at `size` in the sans (or mono) UI font. Used by the element tree's
 /// intrinsic sizing so a label's box matches its real glyph extent.
-pub fn measure_text_width(text: &str, size: f32, mono: bool, weight: u16) -> f32 {
-    measure_text_width_styled(text, size, mono, weight, false)
+pub fn measure_text_width(text: &str, size: f32, font: impl Into<TextFont>, weight: u16) -> f32 {
+    measure_text_width_styled(text, size, font, weight, false)
 }
 
 /// `measure_text_width` for italic text too.
 pub fn measure_text_width_styled(
     text: &str,
     size: f32,
-    mono: bool,
+    font: impl Into<TextFont>,
     weight: u16,
     italic: bool,
 ) -> f32 {
+    let font = font.into();
     if text.is_empty() {
         return 0.0;
     }
     let size = size * theme::ui_text_scale();
     MEASURER.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let m = slot.get_or_insert_with(|| {
-            // System fonts too (not just bundled Plex): the user can pick any installed family as the UI font,
-            // and measurement must shape in that same family or laid-out boxes won't match the rendered glyphs.
-            let mut font_system = FontSystem::new();
-            let (sans, mono) = load_ui_fonts(&mut font_system);
-            Measurer {
-                font_system,
-                sans,
-                mono,
-                cache: std::collections::HashMap::new(),
-                wrap_cache: std::collections::HashMap::new(),
-                glyph_cache: std::collections::HashMap::new(),
-            }
-        });
-        let family_name = if mono {
-            m.mono.clone()
-        } else {
-            theme::active_ui_font().or_else(|| m.sans.clone())
-        };
-        let weight = theme::snap_weight(family_name.as_deref(), weight);
+        let m = slot.get_or_insert_with(Measurer::new).current();
+        let family_name = m.families.get(font, &m.font_system, &m.sans, &m.mono);
+        let weight = effective_weight(font, family_name.as_deref(), weight);
         let key = (
             format!(
                 "{}\u{0}{}\u{0}{}\u{0}{}",
@@ -610,25 +816,25 @@ pub fn measure_text_width_styled(
                 text
             ),
             (size * 4.0).round() as u32,
-            mono,
+            font,
         );
         if let Some(w) = m.cache.get(&key) {
             return *w;
         }
-        let family = match &family_name {
-            Some(name) => Family::Name(name),
-            None => Family::SansSerif,
-        };
         let mut buffer = Buffer::new(&mut m.font_system, Metrics::new(size, size * 1.3));
         buffer.set_size(None, None);
-        buffer.set_text(
+        shape_text(
+            &mut buffer,
+            &mut m.font_system,
             text,
-            &text_attrs(family, weight, italic),
-            Shaping::Advanced,
-            None,
+            RunStyle {
+                font,
+                family: family_name.as_deref(),
+                weight,
+                italic,
+                color: None,
+            },
         );
-        buffer.shape_until_scroll(&mut m.font_system, false);
-        buffer.shape_until_scroll(&mut m.font_system, false);
         let width = buffer
             .layout_runs()
             .map(|run| run.line_w)
@@ -643,19 +849,8 @@ pub fn mono_descent(size: f32) -> f32 {
     let size = size * theme::ui_text_scale();
     MEASURER.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let m = slot.get_or_insert_with(|| {
-            let mut font_system = FontSystem::new();
-            let (sans, mono) = load_ui_fonts(&mut font_system);
-            Measurer {
-                font_system,
-                sans,
-                mono,
-                cache: std::collections::HashMap::new(),
-                wrap_cache: std::collections::HashMap::new(),
-                glyph_cache: std::collections::HashMap::new(),
-            }
-        });
-        let Some(name) = m.mono.clone() else {
+        let m = slot.get_or_insert_with(Measurer::new).current();
+        let Some(name) = family_for(TextFont::Buffer, &m.font_system, &m.sans, &m.mono) else {
             return 0.0;
         };
         let id = m.font_system.db().query(&glyphon::fontdb::Query {
@@ -676,31 +871,22 @@ pub fn mono_descent(size: f32) -> f32 {
 /// Glyph offsets of `text` shaped exactly like a single-line label (same font, size, weight, scale as
 /// `measure_text_width`): each glyph's starting byte index with its x, and the total advance. A ligature is one
 /// glyph, so indices inside it have no entry of their own.
-pub fn measure_glyphs(text: &str, size: f32, mono: bool, weight: u16) -> GlyphOffsets {
+pub fn measure_glyphs(
+    text: &str,
+    size: f32,
+    font: impl Into<TextFont>,
+    weight: u16,
+) -> GlyphOffsets {
+    let font = font.into();
     if text.is_empty() {
         return (std::rc::Rc::from(Vec::new()), 0.0);
     }
     let size = size * theme::ui_text_scale();
     MEASURER.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let m = slot.get_or_insert_with(|| {
-            let mut font_system = FontSystem::new();
-            let (sans, mono) = load_ui_fonts(&mut font_system);
-            Measurer {
-                font_system,
-                sans,
-                mono,
-                cache: std::collections::HashMap::new(),
-                wrap_cache: std::collections::HashMap::new(),
-                glyph_cache: std::collections::HashMap::new(),
-            }
-        });
-        let family_name = if mono {
-            m.mono.clone()
-        } else {
-            theme::active_ui_font().or_else(|| m.sans.clone())
-        };
-        let weight = theme::snap_weight(family_name.as_deref(), weight);
+        let m = slot.get_or_insert_with(Measurer::new).current();
+        let family_name = m.families.get(font, &m.font_system, &m.sans, &m.mono);
+        let weight = effective_weight(font, family_name.as_deref(), weight);
         let key = (
             format!(
                 "{}\u{0}{}\u{0}{}",
@@ -709,25 +895,25 @@ pub fn measure_glyphs(text: &str, size: f32, mono: bool, weight: u16) -> GlyphOf
                 text
             ),
             (size * 4.0).round() as u32,
-            mono,
+            font,
         );
         if let Some(hit) = m.glyph_cache.get(&key) {
             return hit.clone();
         }
-        let family = match &family_name {
-            Some(name) => Family::Name(name),
-            None => Family::SansSerif,
-        };
         let mut buffer = Buffer::new(&mut m.font_system, Metrics::new(size, size * 1.3));
         buffer.set_size(None, None);
-        buffer.set_text(
+        shape_text(
+            &mut buffer,
+            &mut m.font_system,
             text,
-            &Attrs::new().family(family).weight(Weight(weight)),
-            Shaping::Advanced,
-            None,
+            RunStyle {
+                font,
+                family: family_name.as_deref(),
+                weight,
+                italic: false,
+                color: None,
+            },
         );
-        buffer.shape_until_scroll(&mut m.font_system, false);
-        buffer.shape_until_scroll(&mut m.font_system, false);
         let mut glyphs = Vec::new();
         let mut width = 0.0_f32;
         for run in buffer.layout_runs() {
@@ -743,7 +929,14 @@ pub fn measure_glyphs(text: &str, size: f32, mono: bool, weight: u16) -> GlyphOf
 
 /// Shaped size of `text` wrapped to `max_w` logical (design) px at `size`, as (widest line, total height).
 /// Used to lay out multi-line setting descriptions.
-pub fn measure_wrapped(text: &str, size: f32, mono: bool, weight: u16, max_w: f32) -> (f32, f32) {
+pub fn measure_wrapped(
+    text: &str,
+    size: f32,
+    font: impl Into<TextFont>,
+    weight: u16,
+    max_w: f32,
+) -> (f32, f32) {
+    let font = font.into();
     let scale = theme::ui_text_scale();
     let size = size * scale;
     let max_w = max_w * scale;
@@ -752,26 +945,9 @@ pub fn measure_wrapped(text: &str, size: f32, mono: bool, weight: u16, max_w: f3
     }
     MEASURER.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let m = slot.get_or_insert_with(|| {
-            // System fonts too (not just bundled Plex): the user can pick any installed family as the UI font,
-            // and measurement must shape in that same family or laid-out boxes won't match the rendered glyphs.
-            let mut font_system = FontSystem::new();
-            let (sans, mono) = load_ui_fonts(&mut font_system);
-            Measurer {
-                font_system,
-                sans,
-                mono,
-                cache: std::collections::HashMap::new(),
-                wrap_cache: std::collections::HashMap::new(),
-                glyph_cache: std::collections::HashMap::new(),
-            }
-        });
-        let family_name = if mono {
-            m.mono.clone()
-        } else {
-            theme::active_ui_font().or_else(|| m.sans.clone())
-        };
-        let weight = theme::snap_weight(family_name.as_deref(), weight);
+        let m = slot.get_or_insert_with(Measurer::new).current();
+        let family_name = m.families.get(font, &m.font_system, &m.sans, &m.mono);
+        let weight = effective_weight(font, family_name.as_deref(), weight);
         let key = (
             format!(
                 "{}\u{0}{}\u{0}{}",
@@ -780,26 +956,26 @@ pub fn measure_wrapped(text: &str, size: f32, mono: bool, weight: u16, max_w: f3
                 text
             ),
             (size * 4.0).round() as u32,
-            mono,
+            font,
             (max_w * 2.0).round() as u32,
         );
         if let Some(v) = m.wrap_cache.get(&key) {
             return *v;
         }
-        let family = match &family_name {
-            Some(name) => Family::Name(name),
-            None => Family::SansSerif,
-        };
         let mut buffer = Buffer::new(&mut m.font_system, Metrics::new(size, size * 1.3));
         buffer.set_size(Some(max_w), None);
-        buffer.set_text(
+        shape_text(
+            &mut buffer,
+            &mut m.font_system,
             text,
-            &Attrs::new().family(family).weight(Weight(weight)),
-            Shaping::Advanced,
-            None,
+            RunStyle {
+                font,
+                family: family_name.as_deref(),
+                weight,
+                italic: false,
+                color: None,
+            },
         );
-        buffer.shape_until_scroll(&mut m.font_system, false);
-        buffer.shape_until_scroll(&mut m.font_system, false);
         let mut lines = 0usize;
         let mut w = 0.0_f32;
         for run in buffer.layout_runs() {
@@ -1382,6 +1558,7 @@ impl UiRenderer {
             ui_font,
             sans_family,
             mono_family,
+            families: FamilyCache::default(),
             icon_pipeline,
             icon_bgl,
             icon_sampler,
@@ -1585,32 +1762,35 @@ impl UiRenderer {
             right: self.config.width as i32,
             bottom: self.config.height as i32,
         };
-        let sans = self.ui_font.clone();
-        let mono = self.mono_family.clone().or_else(|| sans.clone());
         let mut buffers: Vec<Buffer> = Vec::with_capacity(texts.len());
         for t in texts {
-            let fam = if t.mono { &mono } else { &sans };
-            let family = match fam {
-                Some(name) => Family::Name(name),
-                None => Family::SansSerif,
-            };
+            let fam = self.families.get(
+                t.font,
+                &self.font_system,
+                &self.sans_family,
+                &self.mono_family,
+            );
             let sz = t.size * theme::ui_text_scale();
             let wrap_w = if t.wrap > 0.0 {
                 t.wrap * theme::ui_text_scale()
             } else {
                 vw / self.scale
             };
-            let weight = theme::snap_weight(fam.as_deref(), t.weight);
+            let weight = effective_weight(t.font, fam.as_deref(), t.weight);
             let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
             buf.set_size(Some(wrap_w), None);
-            buf.set_text(
+            shape_text(
+                &mut buf,
+                &mut self.font_system,
                 &t.text,
-                &text_attrs(family, weight, t.italic).color(glyph_color(t.color)),
-                Shaping::Advanced,
-                None,
+                RunStyle {
+                    font: t.font,
+                    family: fam.as_deref(),
+                    weight,
+                    italic: t.italic,
+                    color: Some(glyph_color(t.color)),
+                },
             );
-            buf.shape_until_scroll(&mut self.font_system, false);
-            buf.shape_until_scroll(&mut self.font_system, false);
             buffers.push(buf);
         }
         self.viewport.update(
@@ -2082,19 +2262,23 @@ impl UiRenderer {
             right: self.config.width as i32,
             bottom: self.config.height as i32,
         };
-        let sans = self.ui_font.clone();
-        let mono = self.mono_family.clone().or_else(|| sans.clone());
         let scale_ui = theme::ui_text_scale();
 
         if self.shaped_cache.len() > 20_000 {
             self.shaped_cache.clear();
         }
+        let generation = theme::font_generation();
 
         let mut keys: Vec<u64> = Vec::with_capacity(texts.len());
         for t in texts {
-            let fam = if t.mono { &mono } else { &sans };
+            let fam = self.families.get(
+                t.font,
+                &self.font_system,
+                &self.sans_family,
+                &self.mono_family,
+            );
             let sz = t.size * scale_ui;
-            let weight = theme::snap_weight(fam.as_deref(), t.weight);
+            let weight = effective_weight(t.font, fam.as_deref(), t.weight);
             let wrap_w = if t.wrap > 0.0 {
                 Some(t.wrap * scale_ui)
             } else {
@@ -2107,27 +2291,28 @@ impl UiRenderer {
                 sz.to_bits().hash(&mut h);
                 weight.hash(&mut h);
                 t.italic.hash(&mut h);
-                t.mono.hash(&mut h);
+                t.font.hash(&mut h);
                 wrap_w.map(f32::to_bits).hash(&mut h);
                 fam.hash(&mut h);
+                generation.hash(&mut h);
                 h.finish()
             };
             keys.push(key);
             if !self.shaped_cache.contains_key(&key) {
-                let family = match fam {
-                    Some(name) => Family::Name(name),
-                    None => Family::SansSerif,
-                };
                 let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
                 buf.set_size(wrap_w, None);
-                buf.set_text(
+                shape_text(
+                    &mut buf,
+                    &mut self.font_system,
                     &t.text,
-                    &text_attrs(family, weight, t.italic),
-                    Shaping::Advanced,
-                    None,
+                    RunStyle {
+                        font: t.font,
+                        family: fam.as_deref(),
+                        weight,
+                        italic: t.italic,
+                        color: None,
+                    },
                 );
-                buf.shape_until_scroll(&mut self.font_system, false);
-                buf.shape_until_scroll(&mut self.font_system, false);
                 self.shaped_cache.insert(key, buf);
             }
         }
@@ -2180,6 +2365,39 @@ impl UiRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn characters_the_font_lacks_go_to_the_first_fallback_that_has_them() {
+        // Primary covers Latin; fallback 0 covers only Greek, fallback 1 Greek and CJK.
+        let primary = |ch: char| ch.is_ascii() || ch == 'é';
+        let fallback = |ix: usize, ch: char| match ix {
+            0 => ('α'..='ω').contains(&ch),
+            _ => ('α'..='ω').contains(&ch) || ch == '東',
+        };
+        let spans = spans_by_coverage("ab é αβ 東x", primary, fallback, 2);
+        let text = "ab é αβ 東x";
+        let labelled: Vec<(&str, Option<usize>)> = spans
+            .iter()
+            .map(|(range, slot)| (&text[range.clone()], *slot))
+            .collect();
+        assert_eq!(
+            labelled,
+            vec![
+                ("ab é ", None),
+                ("αβ", Some(0)),
+                (" ", None),
+                ("東", Some(1)),
+                ("x", None)
+            ]
+        );
+        let combining = "e\u{301}α\u{301}";
+        let spans = spans_by_coverage(combining, |ch| ch.is_ascii(), |_, ch| ch == 'α', 1);
+        assert_eq!(
+            spans,
+            vec![(0..3, None), (3..7, Some(0))],
+            "a combining mark stays in the font of the letter before it"
+        );
+    }
 
     #[test]
     fn measures_glyph_offsets() {

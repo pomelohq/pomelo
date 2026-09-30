@@ -71,9 +71,20 @@ pub(crate) fn edit_font() -> f32 {
     EDIT_FONT_HUNDREDTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }
 
-/// ~1.618 times the font ("comfortable" line height), snapped to a whole pixel: 24 at the default 15.
+/// Line height as thousandths of the font size; "comfortable" (1.618) unless the settings say otherwise.
+static EDIT_LINE_HEIGHT_MILLI: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(1618);
+
+/// The font size times the line height setting, snapped to a whole pixel: 24 at the default 15.
 pub(crate) fn edit_line_h() -> f32 {
-    (edit_font() * 1.618).round()
+    let ratio = EDIT_LINE_HEIGHT_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
+    (edit_font() * ratio).round()
+}
+
+/// Set the editor's line height as a multiple of its font size; returns whether it changed.
+pub fn set_buffer_line_height(ratio: f32) -> bool {
+    let milli = (ratio.clamp(1.0, 3.0) * 1000.0).round() as u32;
+    EDIT_LINE_HEIGHT_MILLI.swap(milli, std::sync::atomic::Ordering::Relaxed) != milli
 }
 
 /// The editor defaults from the app's settings: buffer font size, soft wrap for new files, and whether diffs

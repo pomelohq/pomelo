@@ -21,6 +21,10 @@ pub struct Settings {
     pub ui_font: String,
     pub ui_font_size: f32,
     pub ui_font_weight: f32,
+    /// OpenType features by tag, `{"calt": false, "ss01": true}`.
+    pub ui_font_features: serde_json::Value,
+    /// Families tried, in order, for characters the UI font lacks.
+    pub ui_font_fallbacks: Vec<String>,
     pub left_dock_width: f32,
     pub right_dock_width: f32,
     pub left_dock_collapsed: bool,
@@ -65,6 +69,12 @@ pub struct Settings {
     /// The installed app checks for a newer release on launch.
     pub auto_update: bool,
     pub buffer_font_size: f32,
+    pub buffer_font_family: String,
+    pub buffer_font_weight: f32,
+    /// "comfortable", "standard", `{"custom": 2.0}` or a number.
+    pub buffer_line_height: serde_json::Value,
+    pub buffer_font_features: serde_json::Value,
+    pub buffer_font_fallbacks: Vec<String>,
     /// New files wrap long lines at the editor's width.
     pub soft_wrap: bool,
     /// Diffs open side by side when wide enough (else unified).
@@ -72,6 +82,11 @@ pub struct Settings {
     /// The app "Open in External Editor" uses; empty picks the first one installed.
     pub external_editor: String,
     pub terminal_font_size: f32,
+    pub terminal_font_family: String,
+    pub terminal_font_weight: f32,
+    pub terminal_line_height: serde_json::Value,
+    pub terminal_font_features: serde_json::Value,
+    pub terminal_font_fallbacks: Vec<String>,
     /// Text size of the coding agent's tabs, apart from shells.
     pub agent_font_size: f32,
     /// The shell new terminals run (with its arguments); empty runs the login shell.
@@ -91,6 +106,8 @@ impl Default for Settings {
             ui_font: ".PomeloSans".into(),
             ui_font_size: 16.0,
             ui_font_weight: 400.0,
+            ui_font_features: serde_json::Value::Object(serde_json::Map::new()),
+            ui_font_fallbacks: Vec::new(),
             left_dock_width: 260.0,
             right_dock_width: 300.0,
             left_dock_collapsed: false,
@@ -124,10 +141,20 @@ impl Default for Settings {
             sound_compacting: String::new(),
             auto_update: true,
             buffer_font_size: 15.0,
+            buffer_font_family: ".PomeloMono".into(),
+            buffer_font_weight: 400.0,
+            buffer_line_height: serde_json::Value::String("comfortable".into()),
+            buffer_font_features: serde_json::Value::Object(serde_json::Map::new()),
+            buffer_font_fallbacks: Vec::new(),
             soft_wrap: false,
             split_diff: true,
             external_editor: String::new(),
             terminal_font_size: 15.0,
+            terminal_font_family: ".PomeloMono".into(),
+            terminal_font_weight: 400.0,
+            terminal_line_height: serde_json::Value::String("standard".into()),
+            terminal_font_features: serde_json::Value::Object(serde_json::Map::new()),
+            terminal_font_fallbacks: Vec::new(),
             agent_font_size: 12.0,
             terminal_shell: String::new(),
             terminal_scrollback: 10_000,
@@ -158,6 +185,21 @@ pub const SYSTEM_SOUNDS: [&str; 14] = [
     "Submarine",
     "Tink",
 ];
+
+/// A line height setting as a multiple of the font size: "comfortable" (1.618), "standard" (1.3), a number or
+/// `{"custom": n}`; anything else is `fallback`.
+pub fn line_height_ratio(value: &serde_json::Value, fallback: f32) -> f32 {
+    let custom = value
+        .get("custom")
+        .and_then(serde_json::Value::as_f64)
+        .or_else(|| value.as_f64());
+    match (value.as_str(), custom) {
+        (Some("comfortable"), _) => 1.618,
+        (Some("standard"), _) => 1.3,
+        (_, Some(ratio)) => (ratio as f32).clamp(1.0, 3.0),
+        _ => fallback,
+    }
+}
 
 impl Settings {
     /// The theme to show, given whether the OS is in dark mode.
