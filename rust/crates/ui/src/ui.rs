@@ -1150,6 +1150,8 @@ fn material_svg(m: MaterialIcon) -> &'static [u8] {
         MaterialIcon::Css => svg!("css.svg"),
         MaterialIcon::Sass => svg!("sass.svg"),
         MaterialIcon::Python => svg!("python.svg"),
+        MaterialIcon::Ruby => svg!("ruby.svg"),
+        MaterialIcon::Gemfile => svg!("gemfile.svg"),
         MaterialIcon::Lock => svg!("lock.svg"),
         MaterialIcon::Console => svg!("console.svg"),
         MaterialIcon::Document => svg!("document.svg"),
