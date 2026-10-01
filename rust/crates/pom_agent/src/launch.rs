@@ -8,6 +8,7 @@ use pom_paths::StateDir;
 use sha1::{Digest, Sha1};
 
 use crate::claude::mcp_config_json;
+use crate::identity::Identity;
 
 const CLAUDE_HOLDER: &str = "claude-raw";
 
@@ -186,9 +187,16 @@ pub fn claude_launch(context: &LaunchContext<'_>) -> AgentLaunch {
     let claude = resolve_claude(context.home, context.tool_path);
     let mcp = mcp_config_json(context.state, context.binary, context.branch);
     let image_cache = context.home.join(".claude/image-cache");
+    let holder = format!(
+        "ws-{}-{}-{CLAUDE_HOLDER}",
+        context.session.replace('/', "_"),
+        context.branch.replace('/', "_")
+    );
+    let identity = Identity::for_holder(&holder, context.session, context.branch);
     let script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {session_flag} {id} --mcp-config {mcp}{settings} --add-dir {images} --append-system-prompt {prompt}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {session_flag} {id} --mcp-config {mcp}{settings} --add-dir {images} --append-system-prompt {prompt}",
         path = shell_quote(context.tool_path),
+        identity = identity.exports(),
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
         mcp = shell_quote(&mcp),
@@ -197,11 +205,7 @@ pub fn claude_launch(context: &LaunchContext<'_>) -> AgentLaunch {
         prompt = shell_quote(&system_prompt()),
     );
     AgentLaunch {
-        holder: format!(
-            "ws-{}-{}-{CLAUDE_HOLDER}",
-            context.session.replace('/', "_"),
-            context.branch.replace('/', "_")
-        ),
+        holder,
         cwd: context.cwd.to_path_buf(),
         argv: vec!["zsh".into(), "-c".into(), script],
         title: "Claude".into(),
@@ -251,9 +255,16 @@ fn task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str, system: &s
     let id = session_id(&format!("{role}:{}:{stamp}", context.branch));
     let claude = resolve_claude(context.home, context.tool_path);
     let mcp = mcp_config_json(context.state, context.binary, context.branch);
+    let holder = format!(
+        "ws-{}-{}-{role}",
+        context.session.replace('/', "_"),
+        context.branch.replace('/', "_")
+    );
+    let identity = Identity::for_holder(&holder, context.session, context.branch);
     let script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --session-id {id} --mcp-config {mcp}{settings} --append-system-prompt {system} {prompt}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --session-id {id} --mcp-config {mcp}{settings} --append-system-prompt {system} {prompt}",
         path = shell_quote(context.tool_path),
+        identity = identity.exports(),
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
         mcp = shell_quote(&mcp),
@@ -262,11 +273,7 @@ fn task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str, system: &s
         prompt = shell_quote(prompt),
     );
     AgentLaunch {
-        holder: format!(
-            "ws-{}-{}-{role}",
-            context.session.replace('/', "_"),
-            context.branch.replace('/', "_")
-        ),
+        holder,
         cwd: context.cwd.to_path_buf(),
         argv: vec!["zsh".into(), "-c".into(), script],
         title: format!("Claude ({role})"),

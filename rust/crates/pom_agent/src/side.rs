@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::identity::Identity;
 use crate::launch::{
     main_session_key, resolve_claude, session_id, shell_quote, system_prompt, transcript_path,
     AgentLaunch, LaunchContext,
@@ -229,10 +230,18 @@ pub fn side_launch(
     } else {
         "acceptEdits"
     };
+    let holder = format!(
+        "ws-{}-{}-side-{}-{number}",
+        context.session.replace('/', "_"),
+        context.branch.replace('/', "_"),
+        role.holder_role()
+    );
+    let identity = Identity::for_holder(&holder, context.session, context.branch);
     let mut script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {side}=1; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {history} --permission-mode {mode} --mcp-config {mcp}{settings} --append-system-prompt {system}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {side}=1 {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {history} --permission-mode {mode} --mcp-config {mcp}{settings} --append-system-prompt {system}",
         path = shell_quote(context.tool_path),
         side = SIDE_AGENT_ENV,
+        identity = identity.exports(),
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
         mcp = shell_quote(&mcp),
@@ -245,12 +254,7 @@ pub fn side_launch(
     }
     SideLaunch {
         launch: AgentLaunch {
-            holder: format!(
-                "ws-{}-{}-side-{}-{number}",
-                context.session.replace('/', "_"),
-                context.branch.replace('/', "_"),
-                role.holder_role()
-            ),
+            holder,
             cwd: context.cwd.to_path_buf(),
             argv: vec!["zsh".into(), "-c".into(), script],
             title: role.title().into(),
@@ -487,10 +491,12 @@ pub fn side_resume(
     let claude = resolve_claude(context.home, context.tool_path);
     let mcp = mcp_config_json(context.state, context.binary, context.branch);
     let mode = if read_only { "plan" } else { "acceptEdits" };
+    let identity = Identity::for_holder(&record.holder, context.session, context.branch);
     let script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {side}=1; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --resume {session} --permission-mode {mode} --mcp-config {mcp}{settings}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {side}=1 {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --resume {session} --permission-mode {mode} --mcp-config {mcp}{settings}",
         path = shell_quote(context.tool_path),
         side = SIDE_AGENT_ENV,
+        identity = identity.exports(),
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
         session = shell_quote(&record.session),

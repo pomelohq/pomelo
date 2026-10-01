@@ -10,6 +10,9 @@ use pom_paths::StateDir;
 use serde_json::{json, Map, Value};
 
 use crate::claude::{read_object, write_object, write_wrapper, ClaudeHome, InstallError};
+use crate::identity::Identity;
+use crate::policy::{decide, hook_output, workspace_policy};
+use crate::sessions::{record_event as record_session_event, SessionEvent};
 
 const HOOK_WRAPPER: &str = "claude-hook";
 const HOOK_EVENTS: [&str; 8] = [
@@ -95,6 +98,54 @@ fn state_file(state: &StateDir, branch: &str) -> PathBuf {
         .join(format!("state-{}.json", branch.replace('/', "_")))
 }
 
+fn notification_kind(event: &str, input: &[u8], body: &Map<String, Value>) -> String {
+    if event == "Notification" {
+        let raw = String::from_utf8_lossy(input).to_lowercase();
+        if raw.contains("permission") || raw.contains("elicitation") {
+            "permission".into()
+        } else {
+            "idle".into()
+        }
+    } else {
+        body.get("notification_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+}
+
+/// The session-log event one hook invocation's stdin carries; `None` without a session id.
+pub fn session_event(input: &[u8]) -> Option<SessionEvent> {
+    let Ok(Value::Object(body)) = serde_json::from_slice::<Value>(input) else {
+        return None;
+    };
+    let field = |key: &str| body.get(key).and_then(Value::as_str).unwrap_or_default();
+    let session_id = field("session_id");
+    if session_id.is_empty() {
+        return None;
+    }
+    let event = field("hook_event_name");
+    let notification = notification_kind(event, input, &body);
+    let tool = body
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(SessionEvent {
+        session_id: session_id.to_string(),
+        event: event.to_string(),
+        state: event_state(event, &notification),
+        transcript: field("transcript_path").to_string(),
+        tool,
+        notification: (event == "Notification").then_some(notification),
+        detail: match event {
+            "UserPromptSubmit" => json!({ "prompt_chars": field("prompt").chars().count() }),
+            "Stop" => json!({ "stop_reason": "end_turn" }),
+            "PreCompact" => json!({ "trigger": field("trigger") }),
+            _ => Value::Null,
+        },
+    })
+}
+
 /// What one hook invocation's stdin means for its workspace; a session outside any workspace, or an
 /// event without a state, writes nothing.
 pub fn record_hook(
@@ -109,17 +160,8 @@ pub fn record_hook(
         return Ok(None);
     };
     let event = field("hook_event_name");
-    let notification = if event == "Notification" {
-        let raw = String::from_utf8_lossy(input).to_lowercase();
-        if raw.contains("permission") || raw.contains("elicitation") {
-            "permission"
-        } else {
-            "idle"
-        }
-    } else {
-        field("notification_type")
-    };
-    let Some(agent_state) = event_state(event, notification) else {
+    let notification = notification_kind(event, input, &body);
+    let Some(agent_state) = event_state(event, &notification) else {
         return Ok(None);
     };
     let path = state_file(state, &branch);
@@ -142,14 +184,41 @@ pub fn run(args: &[String]) -> Option<i32> {
         eprintln!("claude-hook: {error}");
         return Some(0);
     }
-    // A side agent works next to the main one; only the main agent's state is the workspace's.
-    if std::env::var_os(crate::SIDE_AGENT_ENV).is_some() {
-        return Some(0);
+    let state = StateDir::from_env();
+    let identity = Identity::from_env();
+    // A side agent works next to the main one; only the main agent's state is the workspace's dot.
+    if std::env::var_os(crate::SIDE_AGENT_ENV).is_none() {
+        if let Err(error) = record_hook(&state, &input) {
+            eprintln!("claude-hook: {error}");
+        }
     }
-    if let Err(error) = record_hook(&StateDir::from_env(), &input) {
-        eprintln!("claude-hook: {error}");
+    if let (Some(identity), Some(event)) = (&identity, session_event(&input)) {
+        if event.state.is_some() {
+            if let Err(error) = record_session_event(&state, identity, &event) {
+                eprintln!("claude-hook: {error}");
+            }
+        }
+    }
+    if let Some(output) = pre_tool_use_decision(&state, identity.as_ref(), &input) {
+        println!("{output}");
     }
     Some(0)
+}
+
+/// The workspace policy's answer to a tool call, as the hook's output; `None` for any other event or a
+/// workspace without a policy.
+fn pre_tool_use_decision(
+    state: &StateDir,
+    identity: Option<&Identity>,
+    input: &[u8],
+) -> Option<String> {
+    let body: Value = serde_json::from_slice(input).ok()?;
+    if body.get("hook_event_name").and_then(Value::as_str) != Some("PreToolUse") {
+        return None;
+    }
+    let cwd = body.get("cwd").and_then(Value::as_str)?;
+    let policy = workspace_policy(Path::new(cwd))?;
+    Some(hook_output(&decide(state, identity, &body, &policy)))
 }
 
 /// One workspace's agent as last reported.
@@ -344,6 +413,30 @@ mod tests {
                     state: AgentState::Idle
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_hook_payload_names_its_session_turn_boundary_and_transcript() {
+        let event = |body: Value| session_event(body.to_string().as_bytes());
+        let prompt = event(json!({"session_id": "s1", "hook_event_name": "UserPromptSubmit", "transcript_path": "/t/s1.jsonl", "prompt": "list the files"}))
+            .expect("event");
+        assert_eq!(prompt.state, Some(AgentState::Thinking));
+        assert_eq!(prompt.transcript, "/t/s1.jsonl");
+        assert_eq!(prompt.detail["prompt_chars"], 14);
+        let ask = event(json!({"session_id": "s1", "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash"}))
+            .expect("event");
+        assert_eq!(ask.state, Some(AgentState::AwaitingInput));
+        assert_eq!(ask.notification.as_deref(), Some("permission"));
+        let tool = event(
+            json!({"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "Read"}),
+        )
+        .expect("event");
+        assert_eq!(tool.tool.as_deref(), Some("Read"));
+        assert_eq!(
+            event(json!({"hook_event_name": "Stop"})),
+            None,
+            "no session id"
         );
     }
 

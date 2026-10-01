@@ -3530,9 +3530,12 @@ dependencies = [
 name = "pom_agent"
 version = "0.8.4"
 dependencies = [
+ "libc",
  "notify",
+ "pom_config",
  "pom_env",
  "pom_paths",
+ "pom_ptyhost",
  "serde",
  "serde_json",
  "sha1",

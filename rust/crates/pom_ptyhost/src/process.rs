@@ -187,6 +187,55 @@ fn is_zombie(pid: i32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
+/// The parent of `pid`, from the kernel's process table.
+pub fn parent_pid(pid: i32) -> Option<i32> {
+    if pid <= 0 {
+        return None;
+    }
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    // SAFETY: proc_pidinfo writes at most `size` bytes into `info`.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdshortinfo).cast(),
+            size,
+        )
+    };
+    (written == size && info.pbsi_ppid > 0).then_some(info.pbsi_ppid as i32)
+}
+
+/// `pid` and every process above it, nearest first, up to (not including) launchd.
+pub fn ancestors(pid: i32) -> Vec<i32> {
+    let mut out = Vec::new();
+    let mut current = Some(pid);
+    while let Some(next) = current.filter(|next| *next > 1 && !out.contains(next)) {
+        out.push(next);
+        current = parent_pid(next);
+    }
+    out
+}
+
+/// The process at the other end of a Unix socket, as the kernel saw it connect.
+pub fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
+    use std::os::fd::AsRawFd;
+    let mut pid: libc::pid_t = 0;
+    let mut length = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: LOCAL_PEERPID writes one pid_t into `pid`; `length` holds its size.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut length,
+        )
+    };
+    (result == 0 && pid > 0).then_some(pid)
+}
+
 fn children(pid: i32) -> Vec<i32> {
     let mut buffer = vec![0 as libc::pid_t; 256];
     loop {
@@ -244,6 +293,26 @@ fn kill_tree(pids: &[i32], grace: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_child_finds_this_process_among_its_ancestors_and_as_its_socket_peer() {
+        let me = std::process::id() as i32;
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .expect("sleep");
+        let pid = child.id() as i32;
+        assert_eq!(parent_pid(pid), Some(me));
+        let chain = ancestors(pid);
+        assert_eq!(chain.first(), Some(&pid));
+        assert!(chain.contains(&me), "{chain:?}");
+        child.kill().ok();
+        child.wait().ok();
+
+        let (left, right) = std::os::unix::net::UnixStream::pair().expect("pair");
+        assert_eq!(peer_pid(&left), Some(me));
+        drop(right);
+    }
 
     #[test]
     fn paths_match_the_previous_core() {

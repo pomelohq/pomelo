@@ -20,6 +20,7 @@ pub struct Config {
     pub code_agents: Option<CodeAgentsConfig>,
     pub ui: Option<UiConfig>,
     pub sync: Option<SyncConfig>,
+    pub agents: Option<AgentsConfig>,
     pub seed: Vec<String>,
     pub prepare_main: Vec<String>,
     /// Preset names whose services run at workspace level rather than inside a repo.
@@ -156,6 +157,14 @@ pub struct SyncConfig {
     pub refresh_interval_sec: i64,
 }
 
+/// How the workspace's coding agents may be driven: a policy command consulted before each tool call.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentsConfig {
+    pub policy: String,
+    pub policy_timeout_sec: i64,
+    pub ask_timeout_sec: i64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CodeAgentsConfig {
     pub disabled: bool,
@@ -215,6 +224,13 @@ impl Config {
                 interval_sec: decoder.int(key(node, Section::Sync, "interval_sec")),
                 refresh_main: decoder.bool(key(node, Section::Sync, "refresh_main")),
                 refresh_interval_sec: decoder.int(key(node, Section::Sync, "refresh_interval_sec")),
+            });
+        config.agents = field("agents")
+            .and_then(|node| decoder.fields(node, "AgentsConfig"))
+            .map(|node| AgentsConfig {
+                policy: decoder.string(key(node, Section::Agents, "policy")),
+                policy_timeout_sec: decoder.int(key(node, Section::Agents, "policy_timeout_sec")),
+                ask_timeout_sec: decoder.int(key(node, Section::Agents, "ask_timeout_sec")),
             });
         config.seed = decoder.strings(field("seed"));
         config.prepare_main = decoder.strings(field("prepare_main"));

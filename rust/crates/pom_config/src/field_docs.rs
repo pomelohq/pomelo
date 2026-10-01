@@ -15,12 +15,13 @@ pub enum Section {
     HealthCheck,
     Preset,
     Sync,
+    Agents,
     CodeAgents,
     Ui,
 }
 
 impl Section {
-    pub const ALL: [Section; 12] = [
+    pub const ALL: [Section; 13] = [
         Section::Root,
         Section::Repo,
         Section::Lifecycle,
@@ -31,6 +32,7 @@ impl Section {
         Section::HealthCheck,
         Section::Preset,
         Section::Sync,
+        Section::Agents,
         Section::CodeAgents,
         Section::Ui,
     ];
@@ -48,6 +50,7 @@ impl Section {
             Section::HealthCheck => "shared_services.<name>.healthcheck.",
             Section::Preset => "presets.<preset>.",
             Section::Sync => "sync.",
+            Section::Agents => "agents.",
             Section::CodeAgents => "code_agents.",
             Section::Ui => "ui.",
         }
@@ -65,6 +68,7 @@ impl Section {
             Section::HealthCheck => "Shared service healthcheck",
             Section::Preset => "Presets",
             Section::Sync => "Sync",
+            Section::Agents => "Agents",
             Section::CodeAgents => "code_agents (ignored)",
             Section::Ui => "ui (ignored)",
         }
@@ -82,6 +86,7 @@ impl Section {
             Section::HealthCheck => "When the shared service counts as up.",
             Section::Preset => "Each entry of `presets:` is a reusable repo fragment. A repo (or the workspace, with the top-level `preset:`) names presets; a preset only fills what the repo left unset. Inside a preset, write the lifecycle keys flat (`setup:`, `commands:`), not under `lifecycle:`.",
             Section::Sync => "Keep Main Fresh: pulling the main workspace on a schedule.",
+            Section::Agents => "What the workspace's coding agents may do: a policy command Pomelo asks before every tool call an agent makes.",
             Section::CodeAgents => "Read so older files load, but nothing uses it: agent behavior is in the app's Settings.",
             Section::Ui => "Read so older files load, but nothing uses it: the app's Settings hold this.",
         }
@@ -170,6 +175,7 @@ pub const FIELDS: &[FieldDoc] = &[
     field(Root, "seed", "list of commands", "", "Runs once in the workspace folder when a workspace is created, before each repo's seed.", "seed: [./scripts/seed-all.sh]"),
     field(Root, "prepare_main", "list", "reset, migrate, seed", "The phases Prepare Main runs, in order: `reset`, `migrate` and `seed`. Other names are skipped; a list with none of them runs only `reset`.", "prepare_main: [migrate, seed]"),
     field(Root, "sync", "map", "", "Keep Main Fresh; see Sync.", ""),
+    field(Root, "agents", "map", "", "A policy for the workspace's coding agents; see Agents.", ""),
     ignored(Root, "workspaces", "map", "Workspace groups; nothing reads them now."),
     ignored(Root, "combinations", "map", "Repo combinations; `config_normalize` deletes them."),
     ignored(Root, "code_agents", "map", "Agent switches; the app's Settings hold these now."),
@@ -183,6 +189,9 @@ pub const FIELDS: &[FieldDoc] = &[
     removed(Root, "e2e", "Removed with `exposes:` and `{{var:}}`."),
     removed(Root, "jira", "The app's Settings hold the Jira connection."),
     removed(Root, "archive", "Removed."),
+    field(Agents, "policy", "command", "", "Run before every tool call a coding agent in a workspace makes, in the workspace folder. It reads `{tool_name, tool_input, session_id, role, workspace, origin, driven_by}` as JSON on stdin and prints `{\"decision\": \"allow\" | \"deny\" | \"ask\", \"reason\": \"...\"}`. `ask` waits for `pom agent approve` or `deny`. A failure or a timeout denies the call. Without a policy, the agent's own permission prompts apply.", "agents:\n  policy: ./scripts/agent-policy.sh"),
+    field(Agents, "policy_timeout_sec", "int", "5", "How long the policy command may take before the tool call is denied.", "policy_timeout_sec: 10"),
+    field(Agents, "ask_timeout_sec", "int", "120", "How long an `ask` waits for an approval before the tool call is denied.", "ask_timeout_sec: 300"),
     field(Repo, "alias", "string", "the repo's key", "The short name hostnames and templates use for this repo (`{{<alias>.<service>.url}}`; the key works too). Rename Alias in Settings > Project rewrites the references.", "alias: api"),
     field(Repo, "default_branch", "string", "the top-level default_branch", "This repo's main branch, when it differs from the project's.", ""),
     field(Repo, "preset", "string or list", "", "Presets to apply; they only fill what the repo left unset, in order.", "preset: [rails]"),
@@ -380,6 +389,7 @@ mod tests {
     const EVERYTHING: &str = r#"
 session: myproject
 sync: { auto_push: false }
+agents: { policy: ./p.sh, policy_timeout_sec: 5, ask_timeout_sec: 60 }
 code_agents: { disabled: false }
 ui: { editor: code }
 repos:
