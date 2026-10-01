@@ -60,7 +60,10 @@ pub(crate) struct ServiceItem {
     /// Follows the service's output off screen; its lines are what the tab lists.
     terminal: Option<terminal::Terminal>,
     console: Option<terminal_ui::TerminalItem>,
+    /// Where the log list (or the console) starts, from the top of the tab, in logical px.
     console_top: f32,
+    /// The top of the tab's body on screen, so a wheel over the header leaves the log alone.
+    body_top: f32,
     focused: bool,
     lines: Vec<LogLine>,
     /// Lines shown while paused (the rest wait).
@@ -177,6 +180,7 @@ impl ServiceItem {
             terminal: None,
             console: None,
             console_top: 0.0,
+            body_top: 0.0,
             focused: false,
             lines: Vec::new(),
             paused_at: None,
@@ -335,6 +339,7 @@ impl ServiceItem {
         let top: Node = top.into();
         let used = ui::measure(&top).1;
         let list_h = (height - used).max(0.0);
+        self.console_top = used;
         div()
             .col()
             .w_px(width)
@@ -342,7 +347,6 @@ impl ServiceItem {
             .bg(colors.editor_background)
             .child(top)
             .child(if self.console_shown() {
-                self.console_top = used;
                 div().h_px(list_h).into()
             } else {
                 self.log_list(&shown, width, list_h)
@@ -1257,6 +1261,7 @@ impl Item for ServiceItem {
         let tree = self.tree(body.w / scale, body.h / scale);
         let mut painted = ui::render(&tree, body);
         self.hits = painted.hits.clone();
+        self.body_top = body.y;
         if self.console_shown() {
             let top = self.console_top * scale;
             let area = Rect::new(
@@ -1409,11 +1414,17 @@ impl Item for ServiceItem {
         }
     }
 
-    fn pointer_scroll_x(&mut self, _x: f32, _y: f32, delta_x: f32) -> bool {
+    fn pointer_scroll_x(&mut self, _x: f32, y: f32, delta_x: f32) -> bool {
+        if y < self.body_top + self.console_top * ui::ui_text_scale() {
+            return false;
+        }
         self.scroll_sideways(delta_x)
     }
 
     fn pointer_scroll(&mut self, x: f32, y: f32, delta_y: f32, modifiers: Modifiers) -> bool {
+        if y < self.body_top + self.console_top * ui::ui_text_scale() {
+            return false;
+        }
         if self.console_shown() {
             return self
                 .console
@@ -1747,4 +1758,60 @@ fn clock_now() -> String {
         return String::new();
     }
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wheel_over_the_header_leaves_the_log_alone() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().to_path_buf();
+        std::fs::write(
+            root.join("pom.yml"),
+            "session: myproject\nrepos:\n  api:\n    services:\n      server: bin/server\n",
+        )
+        .expect("pom.yml");
+        let config = pom_config::Config::load(&root.join("pom.yml")).expect("config");
+        let runner = pom_services::ServiceRunner::new(pom_services::RunnerOptions {
+            project_root: root.clone(),
+            session: "myproject".into(),
+            state: pom_paths::StateDir::new(root.join("state")),
+            holders: pom_ptyhost::SocketDir::new(root.join("s")),
+            binary: "/nonexistent".into(),
+            docker: "/nonexistent".into(),
+        });
+        let context = Arc::new(ServicesContext {
+            runner: Arc::new(runner),
+            config: Arc::new(std::sync::RwLock::new(Some(Arc::new(config)))),
+            branch: "feat-login".into(),
+            ticket: String::new(),
+            is_main: false,
+            waker: Arc::new(|| {}),
+        });
+        let target = ServiceTarget {
+            branch: "feat-login".into(),
+            is_main: false,
+            repo: "api".into(),
+            service: "server".into(),
+        };
+        let mut item = ServiceItem::new(context, Arc::default(), target, root);
+        item.lines = (0..200)
+            .map(|index| LogLine {
+                time: None,
+                text: format!("line {index}"),
+            })
+            .collect();
+        let body = Rect::new(0.0, 100.0, 900.0, 600.0, Rgba::TRANSPARENT);
+        item.paint_body(body, true);
+        item.follow = false;
+        item.top = 50;
+        let header_y = body.y + 10.0;
+        assert!(!item.pointer_scroll(10.0, header_y, 3.0 * LOG_ROW_H, Modifiers::default()));
+        assert_eq!(item.top, 50, "the header doesn't scroll the log");
+        let list_y = body.y + item.console_top * ui::ui_text_scale() + 40.0;
+        assert!(item.pointer_scroll(10.0, list_y, 3.0 * LOG_ROW_H, Modifiers::default()));
+        assert_eq!(item.top, 47);
+    }
 }
