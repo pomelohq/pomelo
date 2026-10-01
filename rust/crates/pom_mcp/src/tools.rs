@@ -973,15 +973,28 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "resolve_port_conflict",
-        "Move this workspace to a fresh, fully-free port region and regenerate its env - the self-heal when a service can't bind because something grabbed pom's port. Restart affected services afterward.",
+        "Move this workspace to a fresh, fully-free port region and regenerate its env - the self-heal when a service can't bind because something grabbed pom's port. Running services restart on their new ports.",
         None,
         false,
         Box::new(move |_| {
             let config = ws.config()?;
-            ws.runner
-                .relocate_workspace(&config, &ws.branch)
+            let is_main = ws.entry(&config).is_ok_and(|entry| entry.is_main);
+            let restarted = ws
+                .runner
+                .relocate_workspace(&config, &ws.branch, is_main)
                 .map_err(|error| error.to_string())?;
-            Ok("Relocated to a clean port region and regenerated env. Restart your services to pick up the new ports; call `ports` to see them.".into())
+            let restarted: Vec<String> = restarted
+                .iter()
+                .map(|target| format!("{}/{}", target.repo, target.service))
+                .collect();
+            Ok(if restarted.is_empty() {
+                "Relocated to a clean port region and regenerated env; call `ports` to see them.".into()
+            } else {
+                format!(
+                    "Relocated to a clean port region, regenerated env and restarted {}; call `ports` to see them.",
+                    restarted.join(", ")
+                )
+            })
         }),
     ));
 

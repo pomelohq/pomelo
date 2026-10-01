@@ -258,13 +258,29 @@ impl ServiceRunner {
     }
 
     /// Drops every port lease of the workspace and leases fresh ones, rewriting its env files: the way
-    /// out when something outside took the workspace's ports.
-    pub fn relocate_workspace(&self, config: &Config, branch: &str) -> Result<(), ServiceError> {
+    /// out when something outside took the workspace's ports. Its running services restart on their new
+    /// ports, so none keeps listening where no lease points; returns them.
+    pub fn relocate_workspace(
+        &self,
+        config: &Config,
+        branch: &str,
+        is_main: bool,
+    ) -> Result<Vec<ServiceTarget>, ServiceError> {
+        let running: Vec<ServiceTarget> = Self::service_targets(config, branch, is_main)
+            .into_iter()
+            .filter(|target| !target.is_workspace_level() && self.is_running(target))
+            .collect();
+        for target in &running {
+            self.stop(target)?;
+        }
         let ws_key = pom_env::port_ws_key(branch);
         self.ports.release_workspace(&ws_key);
         self.acquire_workspace_ports(config, &ws_key);
         self.workspace_env(config, branch).write_env_files()?;
-        Ok(())
+        for target in &running {
+            self.start(config, target)?;
+        }
+        Ok(running)
     }
 
     /// Gives back a deleted workspace's shared-service slots and port leases.

@@ -1,5 +1,5 @@
 use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -223,7 +223,7 @@ fn strip_hop_headers(headers: &mut HeaderMap, keep_upgrade: bool) {
 }
 
 enum Upstream {
-    Local(u16),
+    Local(SocketAddr),
     External { scheme: String, authority: String },
 }
 
@@ -268,11 +268,11 @@ async fn handle_proxy(
     };
     let response = match decision.route {
         Route::Error { status, message } => text_response(status, &message),
-        Route::Local { port, prefix } => {
+        Route::Local { address, prefix } => {
             forward(
                 shared,
                 request,
-                Upstream::Local(port),
+                Upstream::Local(address),
                 &decision.path,
                 query.as_deref(),
                 &prefix,
@@ -357,7 +357,7 @@ async fn forward(
         None => path.to_string(),
     };
     let (scheme, authority, external) = match &upstream {
-        Upstream::Local(port) => ("http".to_string(), format!("127.0.0.1:{port}"), false),
+        Upstream::Local(address) => ("http".to_string(), address.to_string(), false),
         Upstream::External { scheme, authority } => (scheme.clone(), authority.clone(), true),
     };
     let direct = upgrade && !external;
@@ -416,10 +416,13 @@ async fn forward(
             )
         }
         Err(error) => {
+            if let Upstream::Local(address) = upstream {
+                shared.router.forget(address);
+            }
             return text_response(
                 502,
                 &format!("dev-proxy: backend not reachable - is the service running? ({error})"),
-            )
+            );
         }
     };
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
@@ -503,15 +506,20 @@ fn json_string(text: &str) -> String {
     out
 }
 
-async fn listening(port: u16) -> bool {
-    matches!(
-        tokio::time::timeout(
-            LISTENING_PROBE_TIMEOUT,
-            TcpStream::connect(("127.0.0.1", port))
-        )
-        .await,
-        Ok(Ok(_))
-    )
+/// The loopback address a workspace's service answers on, if any.
+async fn listening(port: u16) -> Option<SocketAddr> {
+    for ip in [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ] {
+        let address = SocketAddr::new(ip, port);
+        if let Ok(Ok(_)) =
+            tokio::time::timeout(LISTENING_PROBE_TIMEOUT, TcpStream::connect(address)).await
+        {
+            return Some(address);
+        }
+    }
+    None
 }
 
 async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
@@ -551,8 +559,8 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
     let request_capture = capture_of(&body);
     let mut live = Vec::new();
     for (workspace, port) in ports {
-        if listening(port).await {
-            live.push((workspace, port));
+        if let Some(address) = listening(port).await {
+            live.push((workspace, address));
         }
     }
     let mut response = Response::new(full(format!(
@@ -580,8 +588,8 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
     };
     tokio::spawn(async move {
         let mut deliveries = Vec::new();
-        for (workspace, port) in live {
-            let url = format!("http://127.0.0.1:{port}{logged_path}");
+        for (workspace, address) in live {
+            let url = format!("http://{address}{logged_path}");
             let Ok(uri) = url.parse::<Uri>() else {
                 continue;
             };
@@ -591,7 +599,7 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
             *outgoing.headers_mut() = headers.clone();
             let mut delivery = Delivery {
                 workspace,
-                port,
+                port: address.port(),
                 ..Delivery::default()
             };
             let sent = Instant::now();

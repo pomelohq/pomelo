@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -13,6 +14,7 @@ pub const DEV_PREFIX: &str = "/_pom_dev/";
 const BRANCH_MAP_TTL: Duration = Duration::from_secs(5);
 const PORT_CACHE_TTL: Duration = Duration::from_secs(3);
 const LEASE_CACHE_TTL: Duration = Duration::from_secs(1);
+const REACH_TIMEOUT: Duration = Duration::from_millis(200);
 
 pub type ConfigSource = Arc<RwLock<Option<Arc<Config>>>>;
 
@@ -32,9 +34,9 @@ impl ProjectRoute {
 /// Where a request should go.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
-    /// A local `127.0.0.1:<port>` backend; `prefix` was stripped from the path and is re-added to cookie paths.
+    /// A local loopback backend; `prefix` was stripped from the path and is re-added to cookie paths.
     Local {
-        port: u16,
+        address: SocketAddr,
         prefix: String,
     },
     /// A remote environment's base URL.
@@ -136,10 +138,27 @@ pub fn branch_labels(branches: &[String]) -> HashMap<String, String> {
     labels
 }
 
-/// A lease wins over a live scan: the service is told to bind exactly it, and scanning while it builds can
-/// latch onto a passing bundler socket.
-pub fn pick_port(allocated: Option<u16>, live_scan: impl FnOnce() -> Option<u16>) -> Option<u16> {
-    allocated.filter(|port| *port > 0).or_else(live_scan)
+/// The loopback address something listens on at `port`: dev servers bind `localhost`, which may be `::1`
+/// only.
+pub fn reachable(port: u16) -> Option<SocketAddr> {
+    [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ]
+    .into_iter()
+    .map(|ip| SocketAddr::new(ip, port))
+    .find(|address| TcpStream::connect_timeout(address, REACH_TIMEOUT).is_ok())
+}
+
+/// Why a workspace service has no address to forward to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unavailable {
+    /// Its holder runs but nothing listens yet (building).
+    Starting,
+    /// It has a port but no holder and nothing listens.
+    Stopped,
+    /// Nothing is known about it.
+    Unknown,
 }
 
 struct CookieRules {
@@ -221,7 +240,8 @@ fn strip_prefix(path: &str, prefix: &str) -> String {
 pub trait Machine: Send + Sync {
     fn branches(&self, project: &ProjectRoute, config: &Config) -> Vec<String>;
     fn leases(&self, session: &str) -> Vec<Lease>;
-    fn live_port(&self, holder: &str) -> Option<u16>;
+    /// Every TCP port the holder's process tree listens on.
+    fn live_ports(&self, holder: &str) -> Vec<u16>;
     fn holder_alive(&self, holder: &str) -> bool;
     fn service_envs(&self, project_root: &Path, branch: &str) -> pom_layout::WorkspaceState;
 }
@@ -236,7 +256,7 @@ pub struct Router {
     projects: RwLock<Vec<ProjectRoute>>,
     branch_maps: Mutex<HashMap<PathBuf, BranchMap>>,
     leases: Mutex<HashMap<String, LeaseCache>>,
-    ports: Mutex<HashMap<String, (Instant, u16)>>,
+    ports: Mutex<HashMap<String, (Instant, SocketAddr)>>,
 }
 
 impl Router {
@@ -308,29 +328,62 @@ impl Router {
     }
 
     fn lease_port(&self, session: &str, key: &str) -> Option<u16> {
-        self.session_leases(session)
-            .into_iter()
-            .find(|lease| lease.key == key)
+        let leases = self.session_leases(session);
+        pom_ports::preferred_lease(leases.iter().filter(|lease| lease.key == key))
             .map(|lease| lease.port)
     }
 
-    fn service_port(&self, config: &Config, branch: &str, service_key: &str) -> Option<u16> {
+    /// Forgets a cached address that just refused a connection, so the next request looks again.
+    pub fn forget(&self, address: SocketAddr) {
+        if let Ok(mut ports) = self.ports.lock() {
+            ports.retain(|_, (_, cached)| *cached != address);
+        }
+    }
+
+    /// Where the service really listens: its leased port when something answers there, else whatever its
+    /// holder's processes listen on (a server that ignores $PORT, or one moved without a restart).
+    fn service_address(
+        &self,
+        config: &Config,
+        branch: &str,
+        service_key: &str,
+    ) -> Result<SocketAddr, Unavailable> {
         let cache_key = format!("{}\0{branch}\0{service_key}", config.session);
         let now = Instant::now();
-        if let Some((at, port)) = self.ports.lock().ok()?.get(&cache_key) {
-            if now.duration_since(*at) < PORT_CACHE_TTL {
-                return Some(*port);
+        if let Some((at, address)) = self
+            .ports
+            .lock()
+            .ok()
+            .and_then(|ports| ports.get(&cache_key).copied())
+        {
+            if now.duration_since(at) < PORT_CACHE_TTL {
+                return Ok(address);
             }
         }
         let lease_key = pom_ports::service_key(&pom_env::port_ws_key(branch), service_key);
-        let port = pick_port(self.lease_port(&config.session, &lease_key), || {
+        let leased = self.lease_port(&config.session, &lease_key);
+        let holder = service_holder(config, branch, service_key);
+        let alive = holder
+            .as_deref()
+            .is_some_and(|holder| self.machine.holder_alive(holder));
+        let found = leased.and_then(reachable).or_else(|| {
+            let holder = holder.as_deref().filter(|_| alive)?;
             self.machine
-                .live_port(&service_holder(config, branch, service_key)?)
-        })?;
+                .live_ports(holder)
+                .into_iter()
+                .find_map(reachable)
+        });
+        let Some(address) = found else {
+            return Err(match (alive, leased) {
+                (true, _) => Unavailable::Starting,
+                (false, Some(_)) => Unavailable::Stopped,
+                (false, None) => Unavailable::Unknown,
+            });
+        };
         if let Ok(mut ports) = self.ports.lock() {
-            ports.insert(cache_key, (now, port));
+            ports.insert(cache_key, (now, address));
         }
-        Some(port)
+        Ok(address)
     }
 
     /// Every listening-capable port the service has across the session's workspaces.
@@ -361,25 +414,24 @@ impl Router {
         let Some(service_key) = resolve_service_key(config, target) else {
             return no_route(branch, target);
         };
-        match self.service_port(config, branch, &service_key) {
-            Some(port) => Route::Local {
-                port,
+        match self.service_address(config, branch, &service_key) {
+            Ok(address) => Route::Local {
+                address,
                 prefix: prefix.to_string(),
             },
-            None => {
-                let starting = service_holder(config, branch, &service_key)
-                    .is_some_and(|holder| self.machine.holder_alive(&holder));
-                if starting {
-                    Route::Error {
-                        status: 503,
-                        message: format!(
-                            "dev-proxy: {target} is still starting (building, not listening yet) - retry shortly"
-                        ),
-                    }
-                } else {
-                    no_route(branch, target)
-                }
-            }
+            Err(Unavailable::Starting) => Route::Error {
+                status: 503,
+                message: format!(
+                    "dev-proxy: {target} is still starting (building, not listening yet) - retry shortly"
+                ),
+            },
+            Err(Unavailable::Stopped) => Route::Error {
+                status: 503,
+                message: format!(
+                    "dev-proxy: {target} is not running in {branch} - start it in Pomelo or with `pom start`"
+                ),
+            },
+            Err(Unavailable::Unknown) => no_route(branch, target),
         }
     }
 
@@ -490,10 +542,7 @@ impl Router {
                     };
                 }
                 let route = self.workspace_route(&config, &branch, &target, &prefix);
-                logged.target = match &route {
-                    Route::Local { port, .. } => format!("127.0.0.1:{port}"),
-                    _ => "(no local port)".into(),
-                };
+                logged.target = logged_target(&route);
                 return Decision {
                     route,
                     path: stripped,
@@ -507,7 +556,17 @@ impl Router {
                 Some((_, config, branch)) => self.workspace_route(&config, &branch, &target, ""),
                 None => no_route(&branch_label, &target),
             };
-            return unrouted(route);
+            let logged = Logged {
+                repo: labels[1].clone(),
+                service: labels[0].clone(),
+                profile: "local".into(),
+                target: logged_target(&route),
+            };
+            return Decision {
+                route,
+                path: path.to_string(),
+                logged: Some(logged),
+            };
         }
         unrouted(no_route_for(host, path))
     }
@@ -517,9 +576,17 @@ impl Router {
             .lease_port(&config.session, &pom_ports::shared_key(name, 0))
             .unwrap_or_else(|| pom_env::stable_shared_port(&config.session, name));
         Route::Local {
-            port,
+            address: reachable(port)
+                .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)),
             prefix: String::new(),
         }
+    }
+}
+
+fn logged_target(route: &Route) -> String {
+    match route {
+        Route::Local { address, .. } => address.to_string(),
+        _ => "(no local port)".into(),
     }
 }
 
@@ -580,8 +647,6 @@ mod tests {
                 .map(String::as_str),
             Some("PROJ-101-login")
         );
-        assert_eq!(pick_port(Some(4000), || Some(5000)), Some(4000));
-        assert_eq!(pick_port(None, || Some(5000)), Some(5000));
         assert_eq!(
             strip_prefix("/_pom_dev/api/server", "/_pom_dev/api/server"),
             "/"

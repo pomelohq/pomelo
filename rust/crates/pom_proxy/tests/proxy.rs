@@ -27,8 +27,8 @@ impl Machine for FakeMachine {
             .cloned()
             .collect()
     }
-    fn live_port(&self, _holder: &str) -> Option<u16> {
-        None
+    fn live_ports(&self, _holder: &str) -> Vec<u16> {
+        Vec::new()
     }
     fn holder_alive(&self, _holder: &str) -> bool {
         false
@@ -204,15 +204,24 @@ fn routes_hosts_and_dev_paths_rewriting_cookies_and_logging() {
         "{response}"
     );
     let log = proxy.log(10);
-    assert_eq!(log.len(), 1);
-    assert_eq!(log[0].path, "/_pom_dev/api/server/v1/me");
-    assert_eq!((log[0].profile.as_str(), log[0].status), ("local", 200));
-    assert_eq!(log[0].target, format!("127.0.0.1:{backend}"));
-    assert!(log[0]
+    assert_eq!(
+        log.len(),
+        2,
+        "both the host and the dev path request are logged"
+    );
+    assert!(log.iter().any(|entry| entry.path == "/health?x=1"));
+    let dev = log
+        .iter()
+        .find(|entry| entry.path.starts_with("/_pom_dev/"))
+        .expect("the dev path request");
+    assert_eq!(dev.path, "/_pom_dev/api/server/v1/me");
+    assert_eq!((dev.profile.as_str(), dev.status), ("local", 200));
+    assert_eq!(dev.target, format!("127.0.0.1:{backend}"));
+    assert!(dev
         .request_headers
         .iter()
         .any(|(name, value)| name == "host" && value.starts_with("web.web.feat-login")));
-    let (sent, answered) = proxy.payloads(log[0].seq).expect("payloads");
+    let (sent, answered) = proxy.payloads(dev.seq).expect("payloads");
     assert!(sent.complete && sent.bytes.is_empty());
     assert!(
         String::from_utf8_lossy(&answered.bytes).contains("GET /v1/me HTTP/1.1"),
