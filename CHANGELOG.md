@@ -4,6 +4,14 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4] - 2026-10-02
+
+### Added
+- Pick the active file's language from the status bar, `cmd-k m` or the command palette ("Select a language..."); a language that comes as a package installs first. (#198)
+
+### Changed
+- Service tab controls light up on hover and press, and the pointer turns into a hand over them. (#199)
+
 ## [0.8.3] - 2026-10-02
 
 ### Added
