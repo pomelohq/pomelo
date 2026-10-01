@@ -79,6 +79,9 @@ pub(crate) struct ServiceItem {
     top: usize,
     visible_rows: usize,
     hits: Vec<(Rect, u64)>,
+    /// The clickable control under the pointer and the one held down, for their hover and pressed looks.
+    hovered: Option<u64>,
+    pressed: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,6 +201,8 @@ impl ServiceItem {
             top: 0,
             visible_rows: 0,
             hits: Vec::new(),
+            hovered: None,
+            pressed: None,
             context,
             shared,
             target,
@@ -620,8 +625,8 @@ impl ServiceItem {
     }
 
     fn link(id: u64, text: &str) -> Node {
-        div()
-            .on_click(id)
+        view::ghost(id)
+            .px(3.0)
             .child(
                 label(text.to_string())
                     .size(12.5)
@@ -662,6 +667,8 @@ impl ServiceItem {
                     .items_center()
                     .rounded(3.0)
                     .on_click(self.base + base + index as u64)
+                    .hover_bg(colors.ghost_element_hover)
+                    .active_bg(colors.ghost_element_active)
                     .bg(if pressed {
                         colors.element_selected
                     } else {
@@ -802,14 +809,10 @@ impl ServiceItem {
             row = row.child(button);
         }
         row.child(
-            div()
-                .row()
+            view::ghost(self.base + MORE)
                 .w_px(24.0)
                 .h_px(24.0)
-                .items_center()
-                .justify_center()
                 .rounded(4.0)
-                .on_click(self.base + MORE)
                 .child(
                     icon(IconKind::Ellipsis)
                         .size(14.0)
@@ -959,11 +962,7 @@ impl ServiceItem {
                     .gap(6.0)
                     .items_center()
                     .child(label(url).size(12.5).mono().color(colors.text_accent))
-                    .child(
-                        div()
-                            .on_click(self.base + COPY_URL)
-                            .child(icon(IconKind::Copy).size(11.0).color(colors.icon_muted)),
-                    )
+                    .child(view::icon_button(self.base + COPY_URL, IconKind::Copy))
                     .into(),
             ));
         }
@@ -1055,11 +1054,7 @@ impl ServiceItem {
                                 .w_px(natural.min(width - 60.0))
                                 .child(text.truncate())
                         })
-                        .child(
-                            div()
-                                .on_click(self.base + COPY_COMMAND)
-                                .child(icon(IconKind::Copy).size(11.0).color(colors.icon_muted)),
-                        )
+                        .child(view::icon_button(self.base + COPY_COMMAND, IconKind::Copy))
                         .into(),
                 ));
             }
@@ -1101,11 +1096,7 @@ impl ServiceItem {
                     .gap(6.0)
                     .items_center()
                     .child(label(def.cmd.clone()).size(12.5).mono().color(colors.text))
-                    .child(
-                        div()
-                            .on_click(self.base + COPY_COMMAND)
-                            .child(icon(IconKind::Copy).size(11.0).color(colors.icon_muted)),
-                    )
+                    .child(view::icon_button(self.base + COPY_COMMAND, IconKind::Copy))
                     .into(),
             ));
             let folder = self.context.runner.shared_command_dir(config, def);
@@ -1143,11 +1134,7 @@ impl ServiceItem {
                     .gap(6.0)
                     .items_center()
                     .child(label(connection).size(12.5).mono().color(colors.text))
-                    .child(
-                        div()
-                            .on_click(self.base + COPY_URL)
-                            .child(icon(IconKind::Copy).size(11.0).color(colors.icon_muted)),
-                    )
+                    .child(view::icon_button(self.base + COPY_URL, IconKind::Copy))
                     .into(),
             ));
         }
@@ -1326,7 +1313,11 @@ impl Item for ServiceItem {
     fn paint_body(&mut self, body: Rect, focused: bool) -> Option<ui::Painted> {
         let scale = ui::ui_text_scale();
         let tree = self.tree(body.w / scale, body.h / scale);
-        let mut painted = ui::render(&tree, body);
+        let interaction = ui::Interaction {
+            hovered: self.hovered,
+            pressed: self.pressed,
+        };
+        let mut painted = ui::render_interactive(&tree, body, interaction);
         self.hits = painted.hits.clone();
         self.body_top = body.y;
         if self.console_shown() {
@@ -1437,14 +1428,8 @@ impl Item for ServiceItem {
     }
 
     fn pointer_down(&mut self, x: f32, y: f32, click_count: u32, modifiers: Modifiers) -> bool {
-        let hit = self
-            .hits
-            .iter()
-            .rev()
-            .find(|(rect, _)| {
-                x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
-            })
-            .map(|(_, id)| *id);
+        let hit = ui::topmost_hit(&self.hits, x, y);
+        self.pressed = hit;
         match hit {
             Some(id) => self.click(id),
             None => {
@@ -1467,18 +1452,30 @@ impl Item for ServiceItem {
     }
 
     fn pointer_move(&mut self, x: f32, y: f32, modifiers: Modifiers, focused: bool) -> bool {
-        match self.console.as_mut() {
+        let hovered = ui::topmost_hit(&self.hits, x, y);
+        let changed = hovered != self.hovered;
+        self.hovered = hovered;
+        let console_changed = match self.console.as_mut() {
             Some(console) if self.filter.text().is_empty() => {
                 console.pointer_move(x, y, modifiers, focused)
             }
             _ => false,
-        }
+        };
+        changed || console_changed
     }
 
     fn pointer_up(&mut self, x: f32, y: f32, modifiers: Modifiers) {
+        if self.pressed.take().is_some() {
+            (self.context.waker)();
+        }
         if let Some(console) = self.console.as_mut() {
             console.pointer_up(x, y, modifiers);
         }
+    }
+
+    /// Over a control the pointer turns into a hand; the filter field is text, so it does not.
+    fn link_hovered(&self) -> bool {
+        self.hovered.is_some_and(|id| id != self.base + FILTER)
     }
 
     fn pointer_scroll_x(&mut self, _x: f32, y: f32, delta_x: f32) -> bool {
@@ -1607,11 +1604,7 @@ impl ServiceItem {
                     )),
             );
         if !self.filter.text().is_empty() {
-            field = field.child(
-                div()
-                    .on_click(self.base + CLEAR_FILTER)
-                    .child(icon(IconKind::Close).size(11.0).color(colors.icon_muted)),
-            );
+            field = field.child(view::icon_button(self.base + CLEAR_FILTER, IconKind::Close));
         }
         let toggle = |id: u64, kind: IconKind, text: String, on: bool| -> Node {
             div()
@@ -1622,6 +1615,12 @@ impl ServiceItem {
                 .items_center()
                 .rounded(4.0)
                 .on_click(self.base + id)
+                .hover_bg(if on {
+                    colors.element_selected
+                } else {
+                    colors.ghost_element_hover
+                })
+                .active_bg(colors.ghost_element_active)
                 .bg(if on {
                     colors.element_selected
                 } else {
@@ -1880,5 +1879,72 @@ mod tests {
         let list_y = body.y + item.console_top * ui::ui_text_scale() + 40.0;
         assert!(item.pointer_scroll(10.0, list_y, 3.0 * LOG_ROW_H, Modifiers::default()));
         assert_eq!(item.top, 47);
+    }
+
+    #[test]
+    fn header_controls_light_up_and_ask_for_a_pointing_hand() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().to_path_buf();
+        std::fs::write(
+            root.join("pom.yml"),
+            "session: myproject\nrepos:\n  api:\n    services:\n      server: bin/server\n",
+        )
+        .expect("pom.yml");
+        let config = pom_config::Config::load(&root.join("pom.yml")).expect("config");
+        let runner = pom_services::ServiceRunner::new(pom_services::RunnerOptions {
+            project_root: root.clone(),
+            session: "myproject".into(),
+            state: pom_paths::StateDir::new(root.join("state")),
+            holders: pom_ptyhost::SocketDir::new(root.join("s")),
+            binary: "/nonexistent".into(),
+            docker: "/nonexistent".into(),
+        });
+        let context = Arc::new(ServicesContext {
+            runner: Arc::new(runner),
+            config: Arc::new(std::sync::RwLock::new(Some(Arc::new(config)))),
+            branch: "feat-login".into(),
+            ticket: String::new(),
+            is_main: false,
+            waker: Arc::new(|| {}),
+        });
+        let target = ServiceTarget {
+            branch: "feat-login".into(),
+            is_main: false,
+            repo: "api".into(),
+            service: "server".into(),
+        };
+        let mut item = ServiceItem::new(context, Arc::default(), target, root);
+        let body = Rect::new(0.0, 100.0, 900.0, 600.0, Rgba::TRANSPARENT);
+        let painted = item.paint_body(body, true).expect("painted");
+        let (more, _) = *painted
+            .hits
+            .iter()
+            .find(|(_, id)| *id == item.base + MORE)
+            .expect("the ... button");
+        let resting = painted
+            .rects
+            .iter()
+            .find(|rect| rect.x == more.x && rect.y == more.y)
+            .map(|rect| rect.color);
+        let (x, y) = (more.x + more.w / 2.0, more.y + more.h / 2.0);
+        assert!(
+            item.pointer_move(x, y, Modifiers::default(), true),
+            "hover repaints"
+        );
+        assert!(item.link_hovered(), "the cursor turns into a hand");
+        let hovered = item.paint_body(body, true).expect("painted");
+        let lit = hovered
+            .rects
+            .iter()
+            .find(|rect| rect.x == more.x && rect.y == more.y)
+            .map(|rect| rect.color);
+        assert_eq!(lit, Some(theme().ghost_element_hover));
+        assert_ne!(lit, resting);
+        assert!(
+            !item.pointer_move(x, y, Modifiers::default(), true),
+            "no repaint without a change"
+        );
+        item.pointer_move(5.0, body.y + 590.0, Modifiers::default(), true);
+        assert!(!item.link_hovered(), "back to the arrow off the controls");
     }
 }

@@ -623,11 +623,7 @@ impl TerminalPanelView for TerminalPanel {
     fn link_hovered(&self) -> bool {
         let mut hovered = false;
         self.panes.group.for_each_pane(&mut |pane| {
-            hovered |= pane.active_item().is_some_and(|item| {
-                item.as_any()
-                    .and_then(|any| any.downcast_ref::<TerminalItem>())
-                    .is_some_and(TerminalItem::hovering_link)
-            });
+            hovered |= pane.active_item().is_some_and(|item| item.link_hovered());
         });
         hovered
     }

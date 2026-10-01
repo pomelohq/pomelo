@@ -331,6 +331,8 @@ pub struct Div {
     justify: Justify,
     items_center: bool,
     bg: Option<Rgba>,
+    hover_bg: Option<Rgba>,
+    active_bg: Option<Rgba>,
     radius: f32,
     border: f32,
     border_color: Rgba,
@@ -392,6 +394,8 @@ pub fn div() -> Div {
         justify: Justify::Start,
         items_center: false,
         bg: None,
+        hover_bg: None,
+        active_bg: None,
         radius: 0.0,
         border: 0.0,
         border_color: Rgba::TRANSPARENT,
@@ -590,6 +594,16 @@ impl Div {
     }
     pub fn on_click(mut self, id: u64) -> Self {
         self.click = Some(id);
+        self
+    }
+    /// The background while the pointer is over this clickable div (see `render_interactive`).
+    pub fn hover_bg(mut self, color: Rgba) -> Self {
+        self.hover_bg = Some(color);
+        self
+    }
+    /// The background while this clickable div is held down.
+    pub fn active_bg(mut self, color: Rgba) -> Self {
+        self.active_bg = Some(color);
         self
     }
     pub fn image(mut self, id: u64) -> Self {
@@ -960,6 +974,52 @@ pub fn paint_frame(node: &Node, area: Rect) -> Frame {
     }
 }
 
+/// The clickable ids under the pointer and held down, so divs show their hover and pressed backgrounds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Interaction {
+    pub hovered: Option<u64>,
+    pub pressed: Option<u64>,
+}
+
+thread_local! {
+    static INTERACTION: std::cell::Cell<Interaction> = const {
+        std::cell::Cell::new(Interaction {
+            hovered: None,
+            pressed: None,
+        })
+    };
+}
+
+/// `render`, painting the hovered and pressed clickable divs with their `hover_bg` / `active_bg`.
+pub fn render_interactive(node: &Node, area: Rect, interaction: Interaction) -> Painted {
+    let previous = INTERACTION.replace(interaction);
+    let painted = render(node, area);
+    INTERACTION.set(previous);
+    painted
+}
+
+/// The topmost clickable id at `(x, y)`, as hover and cursor checks need it.
+pub fn topmost_hit(hits: &[(Rect, u64)], x: f32, y: f32) -> Option<u64> {
+    hits.iter()
+        .rev()
+        .find(|(rect, _)| x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h)
+        .map(|(_, id)| *id)
+}
+
+fn div_background(d: &Div) -> Option<Rgba> {
+    let interaction = INTERACTION.get();
+    let state = d.click.and_then(|id| {
+        if interaction.pressed == Some(id) {
+            d.active_bg.or(d.hover_bg)
+        } else if interaction.hovered == Some(id) {
+            d.hover_bg
+        } else {
+            None
+        }
+    });
+    state.or(d.bg)
+}
+
 /// Flatten `node` into a single `Painted`. Overlays are appended after the base (kept for simple trees with no
 /// overlays; use `paint_frame` when overlays must composite as separate layers).
 pub fn render(node: &Node, area: Rect) -> Painted {
@@ -1062,13 +1122,14 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
             });
         }
         Node::Div(d) => {
-            if d.bg.is_some() || d.border > 0.0 {
+            let bg = div_background(d);
+            if bg.is_some() || d.border > 0.0 {
                 out.rects.push(Rect {
                     x: area.x,
                     y: area.y,
                     w: area.w,
                     h: area.h,
-                    color: d.bg.unwrap_or(Rgba::TRANSPARENT),
+                    color: bg.unwrap_or(Rgba::TRANSPARENT),
                     radius: d.radius,
                     border: d.border,
                     border_color: d.border_color,
@@ -1354,6 +1415,58 @@ impl Painted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clickable_div_shows_its_hover_and_pressed_background() {
+        let (rest, hover, active) = (
+            Rgba::new(0.1, 0.1, 0.1, 1.0),
+            Rgba::new(0.2, 0.2, 0.2, 1.0),
+            Rgba::new(0.3, 0.3, 0.3, 1.0),
+        );
+        let tree: Node = div()
+            .row()
+            .child(
+                div()
+                    .w_px(40.0)
+                    .h_px(20.0)
+                    .bg(rest)
+                    .hover_bg(hover)
+                    .active_bg(active)
+                    .on_click(7),
+            )
+            .child(div().w_px(40.0).h_px(20.0).bg(rest).hover_bg(hover))
+            .into();
+        let area = Rect::new(0.0, 0.0, 200.0, 20.0, Rgba::TRANSPARENT);
+        let first = |interaction: Interaction| {
+            render_interactive(&tree, area, interaction)
+                .rects
+                .first()
+                .map(|rect| rect.color)
+        };
+        assert_eq!(first(Interaction::default()), Some(rest));
+        let hovered = Interaction {
+            hovered: Some(7),
+            pressed: None,
+        };
+        assert_eq!(first(hovered), Some(hover));
+        let pressed = Interaction {
+            hovered: Some(7),
+            pressed: Some(7),
+        };
+        assert_eq!(first(pressed), Some(active));
+        let painted = render_interactive(&tree, area, hovered);
+        assert_eq!(
+            painted.rects[1].color, rest,
+            "a div without a click never lights up"
+        );
+        assert_eq!(
+            render(&tree, area).rects[0].color,
+            rest,
+            "plain render ignores the pointer"
+        );
+        assert_eq!(topmost_hit(&painted.hits, 10.0, 10.0), Some(7));
+        assert_eq!(topmost_hit(&painted.hits, 60.0, 10.0), None);
+    }
 
     #[test]
     fn a_popover_drops_below_its_trigger_or_flips_above_it() {
