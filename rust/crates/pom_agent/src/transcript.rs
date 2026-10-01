@@ -169,10 +169,17 @@ pub fn parse(text: &str) -> Vec<TurnContent> {
     let mut turns: Vec<TurnContent> = Vec::new();
     // One assistant message is written as several entries with the same id; its usage counts once.
     let mut usage_by_message: Vec<HashMap<String, Usage>> = Vec::new();
+    // A resumed or forked session can repeat entries; each `uuid` counts once.
+    let mut seen = std::collections::HashSet::new();
     for line in text.lines() {
         let Ok(entry) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        if let Some(uuid) = entry.get("uuid").and_then(Value::as_str) {
+            if !seen.insert(uuid.to_string()) {
+                continue;
+            }
+        }
         if flag(&entry, "isSidechain") {
             continue;
         }
@@ -326,6 +333,21 @@ mod tests {
         assert_eq!(second.prompt, "run the tests");
         assert!(second.tool_calls()[0].is_error);
         assert_eq!(second.ended_at, "2026-10-02T10:01:09.000Z");
+    }
+
+    #[test]
+    fn repeated_entries_count_once_and_unknown_lines_are_skipped() {
+        let text = concat!(
+            "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"hi\"}}\n",
+            "{\"type\":\"assistant\",\"uuid\":\"a1\",\"message\":{\"id\":\"m\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n",
+            "not json at all\n",
+            "{\"type\":\"brand-new-entry-kind\",\"uuid\":\"x1\"}\n",
+            "{\"type\":\"assistant\",\"uuid\":\"a1\",\"message\":{\"id\":\"m\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n",
+            "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"hi\"}}\n",
+        );
+        let turns = parse(text);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].text(), "hello");
     }
 
     #[test]

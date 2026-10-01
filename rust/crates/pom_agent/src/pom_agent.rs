@@ -1,5 +1,6 @@
 mod caller;
 mod claude;
+mod drive;
 mod driver;
 mod gate;
 mod hooks;
@@ -17,25 +18,27 @@ mod watch;
 
 pub use caller::Caller;
 pub use claude::{install_mcp, mcp_config_json, ClaudeHome, InstallError};
+pub use drive::{split_handle, watch_line, Drive, DriveError, SessionView};
 pub use driver::{driver, AgentDriver, ClaudeDriver, Keystrokes};
 pub use gate::{ApproveScope, Gate, Limits, Refusal, Workspace, REFUSED_EXIT};
 pub use hooks::{
-    branch_from_cwd, event_state, install_hooks, notification_for, read_states, record_hook, run,
-    session_event, AgentState, AgentStatus,
+    branch_from_cwd, event_state, notification_for, read_states, record_hook, run, session_event,
+    session_hooks, AgentState, AgentStatus,
 };
 pub use identity::{
     fresh_holder, holder_role, looks_like_agent_holder, role_of_kind, workspace_prefix, HolderRole,
     Identity, CLAUDE_DRIVER, NO_DRIVER,
 };
 pub use launch::{
-    claude_launch, claude_task_launch, is_agent_holder, main_session_id, onboard_launch,
-    onboard_system_prompt, resolve_claude, session_id, system_prompt, AgentLaunch, LaunchContext,
+    claude_launch, claude_launch_with, claude_task_launch, fresh_launch, is_agent_holder,
+    main_session_id, onboard_launch, onboard_system_prompt, resolve_claude, session_id,
+    system_prompt, AgentLaunch, LaunchContext, LaunchOptions,
 };
 pub use naming::{claude_available, naming_prompt, parse_suggestion, suggest_name, NameSuggestion};
 pub use onboard::{onboard_launch_with, AgentCli};
 pub use policy::{
-    answer_path, ask_policy, decide, hook_output, wait_for_answer, workspace_policy, write_answer,
-    Answer, Decision, Policy, Verdict,
+    answer_path, ask_policy, decide, hook_output, request_id, take_answer, workspace_policy,
+    write_answer, Answer, Decision, Driver, Policy, PolicyLookup, Verdict,
 };
 pub use sessions::{
     events, events_path, now_ms, project_sessions, read_state, record_event, session_dir,

@@ -4631,10 +4631,8 @@ fn register_with_agents(status: Arc<std::sync::Mutex<settings_ui::AgentPage>>) {
                 pom_agent::install_mcp(&claude, &state, &binary),
                 "register the MCP server with Claude Code",
             );
-            let hooks = outcome(
-                pom_agent::install_hooks(&claude, &state, &binary),
-                "install the Claude Code hooks",
-            );
+            // Hooks ride on each launch's own --settings, so the user's Claude settings are left alone.
+            let hooks = settings_ui::Registration::Done;
             report(settings_ui::AgentPage { mcp, hooks });
         });
     if let Err(error) = spawned {

@@ -1,6 +1,7 @@
 //! `pom`: a workspace's services from a terminal. It drives the same holders, leases and compose project as
 //! the app, so a service started here shows up in the app's Services panel and the other way round.
 
+mod agent;
 mod args;
 mod completion;
 mod config;
@@ -99,6 +100,20 @@ projects and machine
   modules [list|prune|clear]
                      the shared node_modules store: its copies, drop unused ones, or empty it
   mcp [--branch b]   MCP server on stdio for a coding agent working in this workspace
+
+agents (one workspace at a time; --json for stable output)
+  agent ls [workspace] [--all-workspaces]
+                     the workspace's agent sessions: role, state, turn, holder
+  agent start [workspace] [--role r] [--fresh] [--prompt text | --prompt-file f]
+              [--system-prompt-file f] [--tools t] [--allowed-tools t] [--disallowed-tools t]
+              [--permission-mode m] [--model m] [--extra-mcp-config f]
+                     start (or reuse) a session; --fresh starts role r on a new conversation
+  agent read <workspace/role> [--turn n | --since n] [--full]
+                     what the agent did in a turn (the last by default), from its transcript
+  agent watch [workspace] [--from-start] [--timeout d]
+                     stream the workspace's agent events as NDJSON
+  agent stop <workspace/role>
+                     end a session
   completion bash|zsh|fish
   version
 
@@ -129,6 +144,7 @@ enum Command {
     Modules(modules::ModulesCommand),
     Completion(String),
     Doctor,
+    Agent(agent::AgentCommand),
     Version,
     Help,
 }
@@ -170,6 +186,9 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Disk => machine::disk(&StateDir::from_env(), out),
             Command::Modules(command) => modules::execute(command, &StateDir::from_env(), out),
             Command::Completion(ref shell) => completion::print(shell, out),
+            Command::Agent(ref command) => {
+                return agent::execute(command, &invocation, cwd, out, err);
+            }
             ref command => Session::open(&invocation, cwd)
                 .and_then(|session| session.execute(command, out, err)),
         };
@@ -213,7 +232,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "release"
                         | "ps"
                         | "init"
-                        | "onboard")
+                        | "onboard"
+                        | "agent")
                 )
             )
         {
@@ -280,6 +300,13 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "modules" => Command::Modules(modules::parse(rest)?),
         "completion" => Command::Completion(one("a shell (bash, zsh or fish)")?),
         "doctor" => none().map(|_| Command::Doctor)?,
+        "agent" => {
+            let (command, named) = agent::parse(rest)?;
+            if workspace.is_none() {
+                workspace = named;
+            }
+            Command::Agent(command)
+        }
         "version" => Command::Version,
         "help" => Command::Help,
         other => return Err(format!("unknown command {other}")),
@@ -440,6 +467,7 @@ impl Session {
             | Command::Modules(_)
             | Command::Completion(_)
             | Command::Doctor
+            | Command::Agent(_)
             | Command::Version
             | Command::Help => Ok(()),
         }

@@ -9,12 +9,17 @@ use std::time::{Duration, SystemTime};
 use pom_paths::StateDir;
 use serde_json::{json, Map, Value};
 
-use crate::claude::{read_object, write_object, write_wrapper, ClaudeHome, InstallError};
+use crate::claude::write_wrapper;
 use crate::identity::Identity;
-use crate::policy::{decide, hook_output, workspace_policy};
+use crate::policy::{
+    decide, hook_output, workspace_policy, Decision, Driver, PolicyLookup, Verdict,
+};
 use crate::sessions::{record_event as record_session_event, SessionEvent};
 
 const HOOK_WRAPPER: &str = "claude-hook";
+const SESSION_WRAPPER: &str = "claude-session-hook";
+const POLICY_WRAPPER: &str = "claude-policy-hook";
+const SESSION_FLAG: &str = "--session";
 const HOOK_EVENTS: [&str; 8] = [
     "SessionStart",
     "UserPromptSubmit",
@@ -173,19 +178,31 @@ pub fn record_hook(
     Ok(Some((branch, agent_state)))
 }
 
-/// Handles `<binary> claude-hook`: the event arrives on stdin. Never fails the hook: a broken hook
-/// would show up as an error inside the user's Claude session.
+/// Handles `<binary> claude-hook [--session]`: the event arrives on stdin. Recording never fails the hook (a
+/// broken hook shows up as an error inside the user's Claude session); the policy fails closed.
+///
+/// `--session` is the hook a launch attaches through its own settings. Without it the call comes from a
+/// hook an older version installed in the user's settings: it only serves sessions that carry no identity,
+/// so a session Pomelo launched is never recorded twice.
 pub fn run(args: &[String]) -> Option<i32> {
     if args.get(1).map(String::as_str) != Some(HOOK_WRAPPER) {
         return None;
     }
+    let attached = args.get(2).map(String::as_str) == Some(SESSION_FLAG);
     let mut input = Vec::new();
     if let Err(error) = std::io::stdin().read_to_end(&mut input) {
         eprintln!("claude-hook: {error}");
-        return Some(0);
+        return Some(if attached && is_pre_tool_use(&input) {
+            2
+        } else {
+            0
+        });
     }
     let state = StateDir::from_env();
     let identity = Identity::from_env();
+    if identity.is_some() && !attached {
+        return Some(0);
+    }
     // A side agent works next to the main one; only the main agent's state is the workspace's dot.
     if std::env::var_os(crate::SIDE_AGENT_ENV).is_none() {
         if let Err(error) = record_hook(&state, &input) {
@@ -199,10 +216,74 @@ pub fn run(args: &[String]) -> Option<i32> {
             }
         }
     }
-    if let Some(output) = pre_tool_use_decision(&state, identity.as_ref(), &input) {
-        println!("{output}");
+    let decided = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pre_tool_use_decision(&state, identity.as_ref(), &input)
+    }));
+    match decided {
+        Ok(Some(output)) => println!("{output}"),
+        Ok(None) => {}
+        Err(_) => {
+            println!(
+                "{}",
+                hook_output(&Decision {
+                    verdict: Verdict::Deny,
+                    reason: "the agent policy check failed".into(),
+                })
+            );
+        }
     }
     Some(0)
+}
+
+fn is_pre_tool_use(input: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(input)
+        .is_ok_and(|body| body.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse"))
+}
+
+/// The hooks a launched session gets through its `--settings`, never written into the user's settings.
+/// `PreToolUse` runs through a wrapper that blocks the call when pom itself cannot run or fails, because
+/// a hook that merely errors lets the tool run.
+pub fn session_hooks(state: &StateDir, binary: &Path) -> Option<Value> {
+    let quoted = |path: PathBuf| format!("sh '{}'", path.to_string_lossy().replace('\'', r"'\''"));
+    let recorder = write_wrapper(
+        state,
+        SESSION_WRAPPER,
+        binary,
+        &format!("{HOOK_WRAPPER} {SESSION_FLAG}"),
+    )
+    .map_err(|error| eprintln!("agent: hook wrapper: {error}"))
+    .ok()?;
+    let guard = write_policy_wrapper(state, binary)
+        .map_err(|error| eprintln!("agent: policy wrapper: {error}"))
+        .ok()?;
+    let mut hooks = Map::new();
+    for event in HOOK_EVENTS {
+        let command = if event == "PreToolUse" {
+            quoted(guard.clone())
+        } else {
+            quoted(recorder.clone())
+        };
+        hooks.insert(
+            event.to_string(),
+            json!([{ "matcher": "", "hooks": [{ "type": "command", "command": command }] }]),
+        );
+    }
+    Some(Value::Object(hooks))
+}
+
+fn write_policy_wrapper(state: &StateDir, binary: &Path) -> std::io::Result<PathBuf> {
+    let path = state.path(POLICY_WRAPPER);
+    let quoted = binary.to_string_lossy().replace('\'', r"'\''");
+    let body = format!(
+        "#!/bin/sh\nBIN='{quoted}'\nif [ ! -x \"$BIN\" ]; then echo 'Pomelo is not reachable to check this tool call' >&2; exit 2; fi\n\"$BIN\" {HOOK_WRAPPER} {SESSION_FLAG} || {{ echo 'the agent policy check failed' >&2; exit 2; }}\n"
+    );
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        pom_paths::write_atomic(&path, body.as_bytes(), 0o755)?;
+    }
+    Ok(path)
 }
 
 /// The workspace policy's answer to a tool call, as the hook's output; `None` for any other event or a
@@ -217,8 +298,12 @@ fn pre_tool_use_decision(
         return None;
     }
     let cwd = body.get("cwd").and_then(Value::as_str)?;
-    let policy = workspace_policy(Path::new(cwd))?;
-    Some(hook_output(&decide(state, identity, &body, &policy)))
+    let decision = match workspace_policy(Path::new(cwd)) {
+        PolicyLookup::None => return None,
+        PolicyLookup::Unreadable(reason) => Decision::deny(reason),
+        PolicyLookup::Found(policy) => decide(state, identity, &body, &policy, Driver::Person),
+    };
+    Some(hook_output(&decision))
 }
 
 /// One workspace's agent as last reported.
@@ -286,77 +371,6 @@ pub fn notification_for(
         }
         _ => None,
     }
-}
-
-/// Adds pom's hook to every tracked Claude Code event in `~/.claude/settings.json`, replacing an older
-/// pom hook and keeping everyone else's. Rewrites only when something changed.
-pub fn install_hooks(
-    claude: &ClaudeHome,
-    state: &StateDir,
-    binary: &Path,
-) -> Result<bool, InstallError> {
-    let wrapper = write_wrapper(state, HOOK_WRAPPER, binary, HOOK_WRAPPER)?;
-    let command = format!("sh {}", wrapper.to_string_lossy());
-    let path = claude.home.join(".claude/settings.json");
-    let original = read_object(&path)?;
-    let mut root = original.clone();
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !hooks.is_object() {
-        *hooks = Value::Object(Map::new());
-    }
-    let Some(hooks) = hooks.as_object_mut() else {
-        return Ok(false);
-    };
-    let ours = json!({ "matcher": "", "hooks": [{ "type": "command", "command": command }] });
-    for event in HOOK_EVENTS {
-        let list = hooks
-            .get(event)
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let mut kept = without_our_hooks(list);
-        kept.push(ours.clone());
-        hooks.insert(event.to_string(), Value::Array(kept));
-    }
-    if root == original {
-        return Ok(false);
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    write_object(&path, root)?;
-    Ok(true)
-}
-
-/// Drops pom's hook commands from a hook list, and entries left with no command.
-fn without_our_hooks(list: Vec<Value>) -> Vec<Value> {
-    list.into_iter()
-        .filter_map(|entry| {
-            let Value::Object(mut entry) = entry else {
-                return Some(entry);
-            };
-            let inner: Vec<Value> = entry
-                .get("hooks")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|hook| {
-                    !hook
-                        .get("command")
-                        .and_then(Value::as_str)
-                        .is_some_and(|command| command.contains(HOOK_WRAPPER))
-                })
-                .collect();
-            if inner.is_empty() {
-                return None;
-            }
-            entry.insert("hooks".into(), Value::Array(inner));
-            Some(Value::Object(entry))
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -461,42 +475,46 @@ mod tests {
     }
 
     #[test]
-    fn hooks_install_next_to_other_tools_hooks_and_only_once() {
+    fn launched_sessions_get_every_hook_and_the_policy_hook_fails_closed() {
         let (temp, state) = state();
-        let claude = ClaudeHome {
-            home: temp.path().join("home"),
-        };
-        let settings = claude.home.join(".claude/settings.json");
-        std::fs::create_dir_all(settings.parent().expect("parent")).expect("dir");
-        std::fs::write(
-            &settings,
-            r#"{"theme":"dark","hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"say done"},{"type":"command","command":"sh /old/claude-hook"}]}]}}"#,
-        )
-        .expect("settings");
-        let binary = Path::new("/Apps/Pomelo.app/Contents/MacOS/pomelo");
-        assert!(install_hooks(&claude, &state, binary).expect("install"));
-        assert!(!install_hooks(&claude, &state, binary).expect("again"));
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&settings).expect("read")).expect("json");
-        assert_eq!(written["theme"], "dark");
-        let command = format!("sh {}", state.path("claude-hook").display());
-        assert_eq!(
-            written["hooks"]["Stop"],
-            json!([
-                {"matcher": "", "hooks": [{"type": "command", "command": "say done"}]},
-                {"matcher": "", "hooks": [{"type": "command", "command": command}]},
-            ])
-        );
+        let hooks = session_hooks(&state, Path::new("/nonexistent/pomelo")).expect("hooks");
         for event in HOOK_EVENTS {
-            assert!(
-                written["hooks"][event]
-                    .as_array()
-                    .is_some_and(|list| !list.is_empty()),
-                "{event}"
-            );
+            let command = hooks[event][0]["hooks"][0]["command"]
+                .as_str()
+                .expect("command");
+            let wrapper = if event == "PreToolUse" {
+                POLICY_WRAPPER
+            } else {
+                SESSION_WRAPPER
+            };
+            assert!(command.contains(wrapper), "{event}: {command}");
         }
-        assert!(std::fs::read_to_string(state.path("claude-hook"))
-            .expect("wrapper")
-            .ends_with("exec \"$BIN\" claude-hook\n"));
+        let guard = state.path(POLICY_WRAPPER);
+        let run = |path: &Path| {
+            std::process::Command::new("/bin/sh")
+                .arg(path)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("sh")
+                .status
+                .code()
+        };
+        assert_eq!(run(&guard), Some(2), "pom missing: the call is blocked");
+        let failing = temp.path().join("failing");
+        std::fs::write(&failing, "#!/bin/sh\nexit 101\n").expect("script");
+        std::fs::set_permissions(
+            &failing,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .expect("chmod");
+        session_hooks(&state, &failing).expect("hooks");
+        assert_eq!(run(&guard), Some(2), "pom crashing: the call is blocked");
+        assert!(std::fs::read_to_string(state.path(SESSION_WRAPPER))
+            .expect("recorder")
+            .contains("claude-hook --session"));
+        assert!(
+            !temp.path().join("home/.claude/settings.json").exists(),
+            "nothing is written to the user's settings"
+        );
     }
 }
