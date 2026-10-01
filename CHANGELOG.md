@@ -4,6 +4,11 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-10-01
+
+### Fixed
+- 0.8.0 quit as soon as a file opened: the release is now signed so language packages can run, and built-in languages no longer depend on them. (#183)
+
 ## [0.8.0] - 2026-10-01
 
 ### Added
