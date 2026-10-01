@@ -258,6 +258,7 @@ pub const CTRL_CURSOR_BLINK: u64 = 333;
 pub const CTRL_CURSOR_ANIMATION: u64 = 334;
 pub const CTRL_CURSOR_SHAPE: u64 = 335;
 pub const CTRL_REDUCE_MOTION: u64 = 336;
+pub const CTRL_RESTORE_ON_STARTUP: u64 = 337;
 pub const CTRL_ENABLE_LANGUAGE_SERVER: u64 = 350;
 pub const CTRL_LANGUAGE_SERVERS: u64 = 351;
 pub const CTRL_DEFINITION_SCROLL: u64 = 352;
@@ -339,6 +340,8 @@ pub const MODULES_DAYS_MAX: u64 = 365;
 /// What closing an agent's tab does, as (setting value, label).
 const AGENT_TAB_CLOSE: [(&str, &str); 2] =
     [("hide", "Keep It Running"), ("stop", "Stop the Agent")];
+const RESTORE_ON_STARTUP: [(&str, &str); 2] =
+    [("last_session", "Last Session"), ("none", "Nothing")];
 const MULTI_CURSOR_MODIFIERS: [(&str, &str); 2] = [("alt", "Alt"), ("cmd_or_ctrl", "Cmd Or Ctrl")];
 const CURSOR_SHAPES: [(&str, &str); 4] = [
     ("bar", "Bar"),
@@ -663,6 +666,7 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_MODULES_FALLBACK
             | CTRL_HIDE_MOUSE
             | CTRL_AGENT_TAB_CLOSE
+            | CTRL_RESTORE_ON_STARTUP
             | CTRL_MULTI_CURSOR_MODIFIER
             | CTRL_CURSOR_SHAPE
             | CTRL_REDUCE_MOTION
@@ -712,6 +716,7 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
             .iter()
             .map(|(_, label)| label.to_string())
             .collect(),
+        CTRL_RESTORE_ON_STARTUP => labels(&RESTORE_ON_STARTUP),
         CTRL_MULTI_CURSOR_MODIFIER => labels(&MULTI_CURSOR_MODIFIERS),
         CTRL_CURSOR_SHAPE => labels(&CURSOR_SHAPES),
         CTRL_REDUCE_MOTION => labels(&REDUCE_MOTION),
@@ -754,6 +759,7 @@ pub fn control_value(id: u64, s: &Settings) -> String {
             .find(|(value, _)| *value == s.agent_tab_close)
             .map_or(AGENT_TAB_CLOSE[0].1, |(_, label)| label)
             .to_string(),
+        CTRL_RESTORE_ON_STARTUP => label_of(&RESTORE_ON_STARTUP, &s.restore_on_startup),
         CTRL_MULTI_CURSOR_MODIFIER => label_of(&MULTI_CURSOR_MODIFIERS, &s.multi_cursor_modifier),
         CTRL_CURSOR_SHAPE => label_of(&CURSOR_SHAPES, &s.cursor_shape),
         CTRL_REDUCE_MOTION => label_of(&REDUCE_MOTION, &s.reduce_motion),
@@ -810,11 +816,13 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
             s.agent_tab_close = value.to_string();
         }
         CTRL_MULTI_CURSOR_MODIFIER
+        | CTRL_RESTORE_ON_STARTUP
         | CTRL_CURSOR_SHAPE
         | CTRL_REDUCE_MOTION
         | CTRL_DEFINITION_SCROLL
         | CTRL_DIAGNOSTICS_SEVERITY => {
             let (choices, slot) = match id {
+                CTRL_RESTORE_ON_STARTUP => (&RESTORE_ON_STARTUP[..], &mut s.restore_on_startup),
                 CTRL_MULTI_CURSOR_MODIFIER => {
                     (&MULTI_CURSOR_MODIFIERS[..], &mut s.multi_cursor_modifier)
                 }
@@ -915,6 +923,7 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_MODULES_FALLBACK => s.modules_fallback == d.modules_fallback,
         CTRL_HIDE_MOUSE => s.hide_mouse == d.hide_mouse,
         CTRL_AGENT_TAB_CLOSE => s.agent_tab_close == d.agent_tab_close,
+        CTRL_RESTORE_ON_STARTUP => s.restore_on_startup == d.restore_on_startup,
         CTRL_MULTI_CURSOR_MODIFIER => s.multi_cursor_modifier == d.multi_cursor_modifier,
         CTRL_CURSOR_BLINK => s.cursor_blink == d.cursor_blink,
         CTRL_CURSOR_ANIMATION => s.cursor_animation == d.cursor_animation,
@@ -991,6 +1000,7 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_MODULES_FALLBACK => s.modules_fallback = d.modules_fallback.clone(),
         CTRL_HIDE_MOUSE => s.hide_mouse = d.hide_mouse.clone(),
         CTRL_AGENT_TAB_CLOSE => s.agent_tab_close = d.agent_tab_close.clone(),
+        CTRL_RESTORE_ON_STARTUP => s.restore_on_startup = d.restore_on_startup.clone(),
         CTRL_MULTI_CURSOR_MODIFIER => s.multi_cursor_modifier = d.multi_cursor_modifier.clone(),
         CTRL_CURSOR_BLINK => s.cursor_blink = d.cursor_blink,
         CTRL_CURSOR_ANIMATION => s.cursor_animation = d.cursor_animation.clone(),
@@ -2661,6 +2671,15 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
                     on: general.start_at_login,
                 },
                 reset: None,
+            }),
+            PageItem::Row(SettingRow {
+                title: "Restore on Startup".into(),
+                description: "Reopen each workspace's tabs from last time, or start without them. After a crash at startup they stay closed until you reopen them.".into(),
+                control: Control::Dropdown {
+                    id: CTRL_RESTORE_ON_STARTUP,
+                    value: control_value(CTRL_RESTORE_ON_STARTUP, s),
+                },
+                reset: reset_if_changed(CTRL_RESTORE_ON_STARTUP, s),
             }),
             PageItem::Header("Updates"),
             PageItem::Row(SettingRow {
@@ -4553,6 +4572,11 @@ mod tests {
     #[test]
     fn closing_an_agent_tab_keeps_it_running_unless_set_to_stop() {
         let mut s = Settings::default();
+        assert_eq!(control_value(CTRL_RESTORE_ON_STARTUP, &s), "Last Session");
+        assert!(apply_choice(CTRL_RESTORE_ON_STARTUP, 1, &[], &mut s));
+        assert_eq!(s.restore_on_startup, "none");
+        assert!(reset_to_default(CTRL_RESTORE_ON_STARTUP, &mut s));
+        assert_eq!(s.restore_on_startup, "last_session");
         assert_eq!(control_value(CTRL_AGENT_TAB_CLOSE, &s), "Keep It Running");
         assert!(apply_choice(CTRL_AGENT_TAB_CLOSE, 1, &[], &mut s));
         assert_eq!(s.agent_tab_close, "stop");

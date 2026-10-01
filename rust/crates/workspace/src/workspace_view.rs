@@ -161,6 +161,19 @@ enum NotificationAction {
     RestartStale,
     ReleaseNotes,
     Server(crate::ServerNotice),
+    ReopenTabs,
+    RestartUpdate,
+}
+
+/// Whether the next restore brings the saved tabs back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TabRestore {
+    #[default]
+    Restore,
+    /// Start empty once and save from there (the setting says not to restore).
+    SkipOnce,
+    /// Start empty and leave the saved tabs as they are until they are reopened (they may be what crashed).
+    Hold,
 }
 
 /// A zoomed group drawn over the workspace: its frame (with the border on `sides`) and the content inside it.
@@ -264,6 +277,7 @@ pub struct WorkspaceView {
     popover_groups: Vec<(InputGroup, usize)>,
     /// The project's saved panes were loaded (done once, before the first frame).
     panes_restored: bool,
+    tab_restore: TabRestore,
     /// The panes as last written, and when the pending write is due.
     saved_panes: Option<String>,
     panes_write_at: Option<Instant>,
@@ -379,6 +393,7 @@ impl WorkspaceView {
             popover_rects: Vec::new(),
             popover_groups: Vec::new(),
             panes_restored: false,
+            tab_restore: TabRestore::default(),
             saved_panes: None,
             panes_write_at: None,
             panes_checked_at: None,
@@ -1102,6 +1117,44 @@ impl WorkspaceView {
         });
     }
 
+    /// Leave the saved tabs closed and untouched; `reopen_saved_tabs` brings them back.
+    pub fn hold_saved_tabs(&mut self) {
+        self.tab_restore = TabRestore::Hold;
+    }
+
+    /// Open the project without its saved tabs, saving what is open from then on.
+    pub fn skip_saved_tabs_once(&mut self) {
+        self.tab_restore = TabRestore::SkipOnce;
+    }
+
+    pub fn reopen_saved_tabs(&mut self) {
+        self.tab_restore = TabRestore::Restore;
+        self.panes_restored = false;
+    }
+
+    /// After a crash at startup: the tabs stayed closed, and the button reopens them.
+    pub fn notify_recovery(&mut self, title: String, message: String) {
+        self.notification = Some(Notification {
+            title,
+            message,
+            primary: Some("Reopen Tabs".into()),
+            action: Some(NotificationAction::ReopenTabs),
+            level: Some(crate::NoticeLevel::Warning),
+            ..Notification::default()
+        });
+    }
+
+    /// A release that may fix the crash is downloaded; the button restarts into it.
+    pub fn notify_update_ready(&mut self, title: String, message: String) {
+        self.notification = Some(Notification {
+            title,
+            message,
+            primary: Some("Restart to Update".into()),
+            action: Some(NotificationAction::RestartUpdate),
+            ..Notification::default()
+        });
+    }
+
     pub fn notify_release_notes(&mut self, title: String, message: String, button: &str) {
         self.notification = Some(Notification {
             title,
@@ -1259,6 +1312,15 @@ impl WorkspaceView {
         if std::mem::replace(&mut self.panes_restored, true) {
             return;
         }
+        match self.tab_restore {
+            TabRestore::Hold => return,
+            TabRestore::SkipOnce => {
+                self.tab_restore = TabRestore::Restore;
+                self.saved_panes = self.panes_state().map(|(_, json)| json);
+                return;
+            }
+            TabRestore::Restore => {}
+        }
         let Some(root) = self.layout.files_view.as_ref().and_then(|v| v.root_dir()) else {
             return;
         };
@@ -1301,7 +1363,7 @@ impl WorkspaceView {
     /// Save the panes 200ms after they first change, taking in whatever else changed meanwhile; `flush` writes
     /// any change right away (on quit).
     pub fn persist_panes(&mut self, flush: bool) {
-        if !self.panes_restored {
+        if !self.panes_restored || self.tab_restore == TabRestore::Hold {
             return;
         }
         let now = Instant::now();
@@ -7163,6 +7225,10 @@ impl WorkspaceView {
                 Some(NotificationAction::ReleaseNotes) => {
                     self.pending.update = Some(crate::UpdateAction::ReleaseNotes)
                 }
+                Some(NotificationAction::ReopenTabs) => self.reopen_saved_tabs(),
+                Some(NotificationAction::RestartUpdate) => {
+                    self.pending.update = Some(crate::UpdateAction::Restart)
+                }
                 Some(NotificationAction::Server(_)) | None => {}
             }
         }
@@ -7795,6 +7861,41 @@ mod tests {
             Some("Language 2 is available for this file".to_string())
         );
         assert!(view.server_notices.is_empty());
+    }
+
+    #[test]
+    fn held_tabs_stay_closed_until_reopened_and_a_fix_restarts() {
+        let mut view = WorkspaceView::new(Layout::default());
+        view.hold_saved_tabs();
+        view.restore_saved_panes();
+        assert!(view.panes_restored);
+        assert_eq!(
+            view.tab_restore,
+            TabRestore::Hold,
+            "nothing restored, nothing saved over"
+        );
+        view.notify_recovery("Pomelo quit unexpectedly last time".into(), "tabs".into());
+        view.header_click(crate::NOTIFICATION_PRIMARY);
+        assert_eq!(view.tab_restore, TabRestore::Restore);
+        assert!(
+            !view.panes_restored,
+            "the next frame restores the saved tabs"
+        );
+        view.notify_update_ready("A fixed version is ready".into(), "0.8.2".into());
+        view.header_click(crate::NOTIFICATION_PRIMARY);
+        assert_eq!(
+            view.take_effects().update,
+            Some(crate::UpdateAction::Restart)
+        );
+    }
+
+    #[test]
+    fn skipping_tabs_once_saves_what_is_open_from_then_on() {
+        let mut view = WorkspaceView::new(Layout::default());
+        view.skip_saved_tabs_once();
+        view.restore_saved_panes();
+        assert_eq!(view.tab_restore, TabRestore::Restore);
+        assert!(view.panes_restored);
     }
 
     #[test]
