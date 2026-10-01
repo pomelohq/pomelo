@@ -6280,37 +6280,91 @@ fn image_id(path: &str) -> u64 {
 
 /// An image file shown as a center tab: decoded once to RGBA and registered with the renderer, then drawn
 /// aspect-fit. Not editable.
+/// The longest side an image is shown at: sharp on a Retina display, and within every GPU's texture limit.
+const IMAGE_SIDE_LIMIT: u32 = 4096;
+/// Decoding stops past this much memory, so a corrupt or enormous file can't take the machine down.
+const IMAGE_DECODE_BYTES: u64 = 1 << 30;
+
+/// An image decoded off the UI thread: its size on disk and as shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DecodedImage {
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug)]
+enum ImageState {
+    Loading(std::sync::mpsc::Receiver<Result<DecodedImage, String>>),
+    Ready(Option<DecodedImage>),
+    Failed(String),
+}
+
 struct ImageItem {
     root: PathBuf,
     path: String,
     name: String,
     id: u64,
-    ok: bool,
+    state: ImageState,
+}
+
+/// Decodes `file` within the memory limit and scales it down to fit `IMAGE_SIDE_LIMIT`, keeping its aspect.
+fn decode_image(file: &std::path::Path) -> Result<(DecodedImage, u32, u32, Vec<u8>), String> {
+    let mut reader = image::ImageReader::open(file)
+        .map_err(|error| error.to_string())?
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(IMAGE_DECODE_BYTES);
+    reader.limits(limits);
+    let decoded = reader.decode().map_err(|error| error.to_string())?;
+    let original = DecodedImage {
+        width: decoded.width(),
+        height: decoded.height(),
+    };
+    let shown = if decoded.width() > IMAGE_SIDE_LIMIT || decoded.height() > IMAGE_SIDE_LIMIT {
+        decoded.resize(
+            IMAGE_SIDE_LIMIT,
+            IMAGE_SIDE_LIMIT,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        decoded
+    };
+    let rgba = shown.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok((original, width, height, rgba.into_raw()))
 }
 
 impl ImageItem {
     fn new(root: &std::path::Path, path: &str) -> Self {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         let id = image_id(path);
-        let ok = ui::has_image(id)
-            || match std::fs::read(root.join(path))
-                .ok()
-                .and_then(|bytes| image::load_from_memory(&bytes).ok())
-            {
-                Some(img) => {
-                    let rgba = img.to_rgba8();
-                    let (w, h) = rgba.dimensions();
-                    ui::set_image(id, w, h, rgba.into_raw());
-                    true
-                }
-                None => false,
-            };
+        let state = if ui::has_image(id) {
+            ImageState::Ready(None)
+        } else {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let file = root.join(path);
+            let spawned = std::thread::Builder::new()
+                .name("image-decode".into())
+                .spawn(move || {
+                    let decoded = decode_image(&file).map(|(original, width, height, rgba)| {
+                        ui::set_image(id, width, height, rgba);
+                        original
+                    });
+                    sender.send(decoded).ok();
+                    ui::wake();
+                });
+            match spawned {
+                Ok(_) => ImageState::Loading(receiver),
+                Err(error) => ImageState::Failed(error.to_string()),
+            }
+        };
         Self {
             root: root.to_path_buf(),
             path: path.to_string(),
             name,
             id,
-            ok,
+            state,
         }
     }
 }
@@ -6334,26 +6388,47 @@ impl Item for ImageItem {
         Some(MaterialIcon::Image)
     }
     fn clone_on_split(&self) -> Option<Box<dyn Item>> {
-        Some(Box::new(ImageItem {
-            root: self.root.clone(),
-            path: self.path.clone(),
-            name: self.name.clone(),
-            id: self.id,
-            ok: self.ok,
-        }))
+        Some(Box::new(ImageItem::new(&self.root, &self.path)))
+    }
+    fn tab_detail(&self) -> Option<String> {
+        match &self.state {
+            ImageState::Ready(Some(original)) => {
+                Some(format!("{} x {}", original.width, original.height))
+            }
+            _ => None,
+        }
+    }
+    fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
+        let ImageState::Loading(receiver) = &self.state else {
+            return workspace::ItemTick::default();
+        };
+        let next = match receiver.try_recv() {
+            Ok(Ok(original)) => ImageState::Ready(Some(original)),
+            Ok(Err(error)) => ImageState::Failed(error),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return workspace::ItemTick::default(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ImageState::Failed("the decoder stopped".into())
+            }
+        };
+        self.state = next;
+        workspace::ItemTick {
+            changed: true,
+            ..workspace::ItemTick::default()
+        }
     }
     fn render(&mut self) -> Node {
-        if !self.ok {
+        let message = match &self.state {
+            ImageState::Loading(_) => Some("Loading...".to_string()),
+            ImageState::Failed(error) => Some(format!("Cannot decode this image: {error}")),
+            ImageState::Ready(_) => None,
+        };
+        if let Some(message) = message {
             return div()
                 .col()
                 .flex(1.0)
                 .px(MESSAGE_PAD)
                 .py(MESSAGE_PAD)
-                .child(
-                    label("Cannot decode this image")
-                        .size(13.0)
-                        .color(theme().text_muted),
-                )
+                .child(label(message).size(13.0).color(theme().text_muted))
                 .into();
         }
         // Fill the body; the renderer aspect-fits the picture centered within it.
@@ -11387,6 +11462,44 @@ mod quiet_server_tests {
         let names = quiet_servers(&file);
         assert_eq!(names.len(), 2);
         assert!(names.contains("solargraph") && names.contains("gopls"));
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn a_huge_image_is_shown_scaled_down_and_keeps_its_size() {
+        let temp = tempfile::tempdir().expect("temp");
+        let file = temp.path().join("wide.png");
+        image::RgbaImage::from_pixel(20_000, 300, image::Rgba([200, 30, 30, 255]))
+            .save(&file)
+            .expect("png");
+        let (original, width, height, rgba) = decode_image(&file).expect("decoded");
+        assert_eq!((original.width, original.height), (20_000, 300));
+        assert!(width <= IMAGE_SIDE_LIMIT && height <= IMAGE_SIDE_LIMIT);
+        assert_eq!(width, IMAGE_SIDE_LIMIT, "the long side fills the limit");
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+    }
+
+    #[test]
+    fn a_broken_image_says_why_instead_of_crashing() {
+        let temp = tempfile::tempdir().expect("temp");
+        let file = temp.path().join("broken.png");
+        std::fs::write(&file, b"not an image").expect("write");
+        assert!(decode_image(&file).is_err());
+        let mut item = ImageItem::new(temp.path(), "broken.png");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while matches!(item.state, ImageState::Loading(_)) && std::time::Instant::now() < deadline {
+            item.tick(&|| None);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            matches!(item.state, ImageState::Failed(_)),
+            "{:?}",
+            item.state
+        );
     }
 }
 
