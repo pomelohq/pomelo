@@ -25,6 +25,9 @@ Semver in `rust/Cargo.toml` (`[workspace.package] version`), tagged `v<version>`
      `appcast.xml`, `checksums.txt`, with notes from the CHANGELOG block.
 
    Watch it with `gh run watch --repo pomelohq/pomelo`.
+5. Regenerate the docs site's reference pages from the tag: in a `pomelo-docs` checkout,
+   `cargo run --manifest-path <pomelo>/rust/Cargo.toml -p docs_gen -- --out reference`, then open a docs PR
+   with what changed. The docs repo's `Reference drift` check fails until the pages match the latest tag.
 
 Secrets (Settings > Secrets > Actions): `MACOS_CERT_P12` (base64 .p12), `MACOS_CERT_PASSWORD`,
 `MACOS_SIGN_IDENTITY`, `KEYCHAIN_PASSWORD`, `NOTARY_APPLE_ID`, `NOTARY_APP_PASSWORD`, `NOTARY_TEAM_ID`,

@@ -2,6 +2,7 @@
 //! drift check regenerates them at each release tag.
 
 mod cli_page;
+mod languages_page;
 mod mcp_page;
 mod settings_page;
 mod shortcuts_page;
@@ -25,6 +26,8 @@ fn run() -> Result<(), String> {
         ("shortcuts.md", shortcuts_page::render()),
         ("cli.md", cli_page::render()?),
         ("mcp.md", mcp_page::render()),
+        ("languages.md", languages_page::render_languages()?),
+        ("language-servers.md", languages_page::render_servers()),
     ];
     for (name, body) in pages {
         let path = out.join(name);
