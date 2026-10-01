@@ -996,7 +996,7 @@ pub const MENU_TAB_REVEAL: u64 = 908;
 pub const MENU_TAB_REVEAL_IN_TREE: u64 = 909;
 pub const MENU_TAB_OPEN_TERMINAL: u64 = 910;
 pub const MENU_TAB_STOP: u64 = 911;
-pub const MENU_TAB_TOGGLE_PIN: u64 = 911;
+pub const MENU_TAB_TOGGLE_PIN: u64 = 912;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeAction {
@@ -3884,5 +3884,31 @@ mod toolbar_id_tests {
         let third = toolbar_ids(64);
         assert!(first >= ITEM_TOOLBAR_IDS);
         assert!(second >= first + 64 && third >= second + 8);
+    }
+}
+
+#[cfg(test)]
+mod tab_menu_id_tests {
+    use super::*;
+
+    #[test]
+    fn every_tab_menu_entry_has_its_own_id() {
+        let ids = [
+            MENU_TAB_CLOSE,
+            MENU_TAB_CLOSE_OTHERS,
+            MENU_TAB_CLOSE_LEFT,
+            MENU_TAB_CLOSE_RIGHT,
+            MENU_TAB_CLOSE_CLEAN,
+            MENU_TAB_CLOSE_ALL,
+            MENU_TAB_COPY_PATH,
+            MENU_TAB_COPY_REL_PATH,
+            MENU_TAB_REVEAL,
+            MENU_TAB_REVEAL_IN_TREE,
+            MENU_TAB_OPEN_TERMINAL,
+            MENU_TAB_STOP,
+            MENU_TAB_TOGGLE_PIN,
+        ];
+        let distinct: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        assert_eq!(distinct.len(), ids.len());
     }
 }
