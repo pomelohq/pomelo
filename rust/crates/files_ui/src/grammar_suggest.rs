@@ -111,6 +111,27 @@ impl GrammarSuggestions {
         true
     }
 
+    /// Installs the package of a language picked for a file by hand, unless it is installed or installing.
+    pub(crate) fn install_language(&mut self, language: &str) {
+        if !grammars::downloads_on() {
+            return;
+        }
+        let Some(dir) = editor::grammar_packages::grammars_dir() else {
+            return;
+        };
+        let index = self.index.get_or_insert_with(|| grammars::load_index(&dir));
+        let Some(package) = index.package_for_language(language).cloned() else {
+            return;
+        };
+        let installing = self
+            .installing
+            .iter()
+            .any(|(installing, _)| installing.id == package.id);
+        if !installing && !grammars::is_installed(&dir, &package) {
+            self.install(package);
+        }
+    }
+
     fn install(&mut self, package: Package) {
         let Some(dir) = editor::grammar_packages::grammars_dir() else {
             return;

@@ -40,6 +40,7 @@ pub enum Action {
     OpenAgentUsage,
     OpenDevRequests,
     OpenModuleStore,
+    SelectLanguage,
     /// The tab at this 0-based position in the focused pane.
     ActivateTab(u8),
     ActivateLastTab,
@@ -48,7 +49,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 49] = [
+    pub const ALL: [Action; 50] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -86,6 +87,7 @@ impl Action {
         Action::OpenAgentUsage,
         Action::OpenDevRequests,
         Action::OpenModuleStore,
+        Action::SelectLanguage,
         Action::ActivateTab(0),
         Action::ActivateTab(1),
         Action::ActivateTab(2),
@@ -140,6 +142,7 @@ impl Action {
             Action::OpenAgentUsage => "pomelo::OpenAgentUsage",
             Action::OpenDevRequests => "pomelo::OpenDevRequests",
             Action::OpenModuleStore => "pomelo::OpenModuleStore",
+            Action::SelectLanguage => "language_selector::Toggle",
             Action::ActivateTab(_) => "pane::ActivateItem",
             Action::ActivateLastTab => "pane::ActivateLastItem",
             Action::ActivatePreviousTab => "pane::ActivatePreviousItem",
@@ -187,6 +190,7 @@ impl Action {
             Action::OpenAgentUsage => "Agent Usage",
             Action::OpenDevRequests => "Dev Requests",
             Action::OpenModuleStore => "node_modules Store",
+            Action::SelectLanguage => "Select Language",
             Action::ActivateTab(index) => match index {
                 0 => "Go to Tab 1",
                 1 => "Go to Tab 2",
@@ -384,6 +388,7 @@ pub const MACOS_DEFAULTS: &[(&str, Action)] = &[
     ("cmd-alt-w", Action::CloseAllItems),
     ("cmd-shift-v", Action::MarkdownPreview),
     ("cmd-k v", Action::MarkdownPreviewToTheSide),
+    ("cmd-k m", Action::SelectLanguage),
     ("cmd-shift-u", Action::OpenAgentUsage),
     ("cmd-1", Action::ActivateTab(0)),
     ("cmd-2", Action::ActivateTab(1)),
@@ -429,6 +434,7 @@ pub const OTHER_DEFAULTS: &[(&str, Action)] = &[
     ("ctrl-alt-w", Action::CloseAllItems),
     ("ctrl-shift-v", Action::MarkdownPreview),
     ("ctrl-k v", Action::MarkdownPreviewToTheSide),
+    ("ctrl-k m", Action::SelectLanguage),
     ("ctrl-shift-u", Action::OpenAgentUsage),
     ("ctrl-1", Action::ActivateTab(0)),
     ("ctrl-2", Action::ActivateTab(1)),

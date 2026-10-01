@@ -623,6 +623,8 @@ pub struct DiagnosticSummary {
 }
 
 pub const CURSOR_POSITION: u64 = 11;
+/// The active file's language in the status bar, which opens the language picker.
+pub const ACTIVE_LANGUAGE: u64 = 26;
 pub const DIAGNOSTIC_MESSAGE: u64 = 12;
 /// The status bar's language-server button and the line of server activity beside it.
 pub const LANGUAGE_SERVERS_BUTTON: u64 = 23;
@@ -1604,6 +1606,7 @@ pub enum EditKey {
     ToggleGoToLine,
     ToggleCommandPalette,
     ToggleFileFinder,
+    ToggleLanguageSelector,
     DeployProjectSearch,
     /// Open the project diagnostics tab; from the status bar it shows warnings when there are no errors.
     DeployDiagnostics,
@@ -3469,7 +3472,17 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                 if shows_position {
                     row = row.child(vsep());
                 }
-                row = row.child(label(language).size(12.0).color(dim));
+                let mut button = div()
+                    .h_px(20.0)
+                    .px(4.0)
+                    .rounded(4.0)
+                    .items_center()
+                    .on_click(ACTIVE_LANGUAGE)
+                    .child(label(language).size(12.0).color(dim));
+                if hovered == Some(ACTIVE_LANGUAGE) {
+                    button = button.bg(theme().ghost_element_hover);
+                }
+                row = row.child(button);
             }
             if let Some(today) = &layout.usage.today {
                 row = row.child(vsep()).child(crate::usage::status_item(
@@ -3708,6 +3721,11 @@ pub fn status_tooltip(id: u64) -> Option<(String, StatusKey)> {
         Some(("Agent".into(), StatusKey::Action(Action::ToggleAgent)))
     } else if id == CURSOR_POSITION {
         Some(("Go to Line/Column".into(), StatusKey::Fixed("ctrl-g")))
+    } else if id == ACTIVE_LANGUAGE {
+        Some((
+            "Select Language".into(),
+            StatusKey::Action(Action::SelectLanguage),
+        ))
     } else if id == DIAGNOSTIC_MESSAGE {
         Some(("Next Diagnostic".into(), StatusKey::Fixed("f8")))
     } else if id == LANGUAGE_SERVERS_BUTTON {

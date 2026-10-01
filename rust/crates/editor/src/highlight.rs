@@ -217,6 +217,14 @@ impl Lang {
         }
     }
 
+    /// The file endings the language is known by when its grammar is built in; empty otherwise.
+    pub fn path_suffixes(self) -> &'static [&'static str] {
+        PATH_SUFFIXES
+            .iter()
+            .find(|(lang, _)| *lang == self)
+            .map_or(&[], |(_, suffixes)| *suffixes)
+    }
+
     pub fn from_ext(ext: &str) -> Lang {
         match ext.to_ascii_lowercase().as_str() {
             "rs" => Lang::Rust,

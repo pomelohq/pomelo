@@ -620,6 +620,14 @@ impl WorkspaceView {
             Action::FileFinder => self.open_file_finder(),
             Action::ProjectSearch => self.deploy_project_search(),
             Action::ProjectDiagnostics => self.deploy_project_diagnostics(false),
+            Action::SelectLanguage => {
+                self.set_terminal_focus(false);
+                return self
+                    .layout
+                    .files_view
+                    .as_mut()
+                    .is_some_and(|files| files.editor_key(EditKey::ToggleLanguageSelector, false));
+            }
             Action::MarkdownPreview | Action::MarkdownPreviewToTheSide => {
                 let key = if action == Action::MarkdownPreview {
                     EditKey::OpenMarkdownPreview
@@ -6927,6 +6935,10 @@ impl WorkspaceView {
         } else if id == crate::CURSOR_POSITION {
             if let Some(v) = self.layout.files_view.as_mut() {
                 v.editor_key(EditKey::ToggleGoToLine, false);
+            }
+        } else if id == crate::ACTIVE_LANGUAGE {
+            if let Some(v) = self.layout.files_view.as_mut() {
+                v.editor_key(EditKey::ToggleLanguageSelector, false);
             }
         } else if id == BOTTOM_TOGGLE {
             // The terminal button: activate the terminal on its side, toggling the dock if already visible.

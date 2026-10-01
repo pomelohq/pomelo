@@ -490,7 +490,12 @@ fn row_height() -> f32 {
 }
 
 /// `text` with the chars at `positions` in the accent colour; long text is cut from the front.
-fn highlighted(text: &str, positions: &[usize], color: ui::Rgba, size: LabelSize) -> Node {
+pub(crate) fn highlighted(
+    text: &str,
+    positions: &[usize],
+    color: ui::Rgba,
+    size: LabelSize,
+) -> Node {
     let accent = theme().text_accent;
     if positions.is_empty() {
         return label(text.to_string())
