@@ -9,6 +9,7 @@ pub mod language;
 pub mod line_widths;
 pub mod movement;
 pub mod outline;
+pub mod registry;
 pub mod search;
 pub mod snippet;
 pub mod syntax;

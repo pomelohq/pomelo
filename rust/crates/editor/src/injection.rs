@@ -38,7 +38,7 @@ pub(crate) struct InjectionQuery {
 
 impl InjectionQuery {
     pub(crate) fn new(lang: Lang, language: &Language) -> Option<Self> {
-        let query = Query::new(language, injection_patterns(lang)?).ok()?;
+        let query = Query::new(language, &injection_patterns(lang)?).ok()?;
         let index_of = |name: &str| {
             query
                 .capture_names()
@@ -146,7 +146,7 @@ pub(crate) struct LayerGrammar {
 impl LayerGrammar {
     fn load(lang: Lang) -> Option<Self> {
         let (language, source) = grammar(lang)?;
-        let highlights = Query::new(&language, source).ok()?;
+        let highlights = Query::new(&language, &source).ok()?;
         let capture_keys = highlights
             .capture_names()
             .iter()
@@ -483,7 +483,7 @@ mod tests {
         ] {
             let (language, _) = grammar(lang).unwrap();
             let source = injection_patterns(lang).unwrap();
-            if let Err(error) = Query::new(&language, source) {
+            if let Err(error) = Query::new(&language, &source) {
                 panic!("{}: {error}", source.lines().next().unwrap_or(""));
             }
         }
