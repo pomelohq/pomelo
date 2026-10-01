@@ -574,11 +574,20 @@ pub fn fetch_package(package: &Package) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    /// Install slots are per process, so tests that download take turns instead of seeing each other's slot.
+    fn exclusive_slots() -> std::sync::MutexGuard<'static, ()> {
+        static SLOTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        SLOTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// The published Kotlin package, end to end: download, checksum and signature with the app's key, install,
     /// load through the editor's languages, and the highlights the compiled-in grammar gave before it left.
     #[test]
     #[ignore = "downloads from the grammars release"]
     fn a_published_package_installs_and_highlights_like_the_grammar_it_replaced() {
+        let _slots = exclusive_slots();
         use editor::highlight::Lang;
         let index = embedded_index();
         let package = index.package_for("Main.kt").expect("Kotlin is published");
@@ -706,6 +715,7 @@ mod tests {
 
     #[test]
     fn a_download_needs_the_key_its_checksum_and_its_signature() {
+        let _slots = exclusive_slots();
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let bytes = b"archive".to_vec();
         let good = package(&bytes, &key);
@@ -723,6 +733,7 @@ mod tests {
 
     #[test]
     fn an_install_lands_whole_in_its_version_folder() {
+        let _slots = exclusive_slots();
         let temp = tempfile::tempdir().expect("temp");
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let bytes = archive(
@@ -792,6 +803,7 @@ mod tests {
 
     #[test]
     fn an_update_lands_beside_the_old_package_and_replaces_it_once_in_use() {
+        let _slots = exclusive_slots();
         let temp = tempfile::tempdir().expect("temp");
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let grammars = temp.path().join("grammars");
@@ -878,6 +890,7 @@ mod tests {
 
     #[test]
     fn a_suggestion_waits_for_downloads_and_respects_what_is_there() {
+        let _slots = exclusive_slots();
         let open = SuggestionCheck {
             downloads_on: true,
             ..SuggestionCheck::default()
@@ -956,6 +969,7 @@ mod tests {
 
     #[test]
     fn recently_opened_languages_without_a_grammar_install_once() {
+        let _slots = exclusive_slots();
         let temp = tempfile::tempdir().expect("temp");
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let bytes = archive(
