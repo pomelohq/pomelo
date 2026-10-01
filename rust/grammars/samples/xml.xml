@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Orders for a customer. -->
+<orders customer="42">
+  <order id="1" status="paid">
+    <line name="tea" price="3.00" qty="2"/>
+    <note><![CDATA[Leave at the door & ring]]></note>
+  </order>
+</orders>

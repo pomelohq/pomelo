@@ -1,0 +1,14 @@
+# Orders for a customer.
+query Orders($id: ID!, $first: Int = 10) {
+  customer(id: $id) {
+    name
+    orders(first: $first) {
+      edges { node { id total createdAt } }
+    }
+  }
+}
+
+type Order {
+  id: ID!
+  total: Float
+}

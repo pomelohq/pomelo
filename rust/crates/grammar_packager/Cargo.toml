@@ -1,0 +1,20 @@
+[package]
+name = "grammar_packager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Builds the grammar packages the app downloads: wasm grammars with the app's queries, signed index."
+
+[[bin]]
+name = "grammar_packager"
+path = "src/main.rs"
+
+[dependencies]
+editor = { package = "pomelo-editor", path = "../editor" }
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.9"
+sha2 = "0.10"
+ed25519-dalek = "2"
+base64 = "0.22"
+tempfile = "3"

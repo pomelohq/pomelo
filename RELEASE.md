@@ -40,6 +40,24 @@ Secrets (Settings > Secrets > Actions): `MACOS_CERT_P12` (base64 .p12), `MACOS_C
   Sparkle; the feed points them at the new DMG, signed with the same key, so they move over by themselves.
   The `latest` release must keep carrying `appcast.xml`.
 
+## Grammar packages
+
+Grammars the app doesn't compile in are packages it downloads: `rust/grammars/manifest.toml` lists them, each
+built from the crate version Cargo.lock pins. `.github/workflows/grammars.yml` builds and checks them on every
+change; run it by hand with `publish=true` to sign `index.json` and publish a `grammars-<date>` release. It is
+never marked latest, because the latest release must keep carrying `appcast.xml`.
+
+One-time setup, before the first publish:
+
+1. Make the signing key: `cd rust && cargo run -p grammar_packager -- keygen`. It prints the secret and the
+   public key. This is a key of its own, not the Sparkle key.
+2. Add the secret as the repository secret `GRAMMARS_SIGNING_KEY`. Keep a copy somewhere safe; like the Sparkle
+   key, replacing it later means shipping an app with the new public key before packages signed with it work.
+3. Keep the public key for the app: the downloader (next step of the grammar work) builds it in and refuses
+   any package whose signature it doesn't verify.
+
+Locally: `cargo run -p grammar_packager -- build` then `-- verify` (needs network for crates.io and wasi-sdk).
+
 ## Rules
 
 - Never delete old GitHub releases.

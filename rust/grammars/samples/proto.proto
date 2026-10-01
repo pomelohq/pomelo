@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package shop.v1;
+
+// An order line.
+message Line {
+  string name = 1;
+  double price = 2;
+  int32 qty = 3;
+}
+
+service Orders {
+  rpc Total (Line) returns (Line);
+}
