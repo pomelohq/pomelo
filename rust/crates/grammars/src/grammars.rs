@@ -63,6 +63,12 @@ pub fn embedded_index() -> Index {
 }
 
 impl Index {
+    pub fn package_for_language(&self, language: &str) -> Option<&Package> {
+        self.packages
+            .iter()
+            .find(|package| package.language.eq_ignore_ascii_case(language))
+    }
+
     /// The package for a file: by its whole name first, then by its extension or path ending.
     pub fn package_for(&self, path: &str) -> Option<&Package> {
         let name = path.rsplit('/').next().unwrap_or(path);

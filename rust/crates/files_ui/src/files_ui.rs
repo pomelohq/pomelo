@@ -44,6 +44,7 @@ mod git_diff;
 mod go_to_line;
 mod grammar_suggest;
 mod hover;
+mod language_selector;
 mod language_servers;
 mod list_scrollbar;
 mod lsp_completion;
@@ -449,6 +450,7 @@ const MAX_PANES: usize = 6; // ceiling on total leaf panes in the group
 // Click ids in the feature-view space: tree rows below FUNC_VIEW_BASE + 1M, the editor pane group from there up
 // to pane_group_view::ID_SPAN, then the ranges below (checked high-to-low in `on_click`, so they must not overlap).
 const STICKY_BASE: u64 = FUNC_VIEW_BASE + pane_group_view::ID_SPAN;
+const LANGUAGE_BASE: u64 = FUNC_VIEW_BASE + 14_300_000; // + row
 const FINDER_BASE: u64 = FUNC_VIEW_BASE + 14_400_000; // + row
 const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 14_500_000; // + PaletteClick
 const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 14_600_000; // + row
@@ -1585,6 +1587,24 @@ impl FileItem {
         self.wraps.iter_mut().for_each(|wrap| *wrap = None);
         self.wrap_width = 0.0;
         self.char_widths.borrow_mut().clear();
+        self.ensure_visible();
+    }
+
+    /// Reads the file as `lang` from now on, whatever its name says: highlighting, indent and language servers
+    /// follow.
+    fn set_language(&mut self, lang: Lang) {
+        if self.lang == lang {
+            return;
+        }
+        self.lang = lang;
+        self.syntax = self.buffer.as_ref().and_then(|_| Syntax::new(lang));
+        self.soft_wrap = default_soft_wrap(lang);
+        self.rows = None;
+        self.layout_cache.borrow_mut().clear();
+        *self.crumbs.borrow_mut() = None;
+        *self.active_indent.borrow_mut() = None;
+        *self.minimap_lines.borrow_mut() = MinimapLines::default();
+        self.refresh();
         self.ensure_visible();
     }
 
@@ -4214,6 +4234,7 @@ impl Item for FileItem {
         let text = self.buffer.as_ref().map(|b| b.text_for_save());
         let mut item = FileItem::new(self.root.clone(), &self.path, text);
         item.saved_mtime = self.saved_mtime;
+        item.set_language(self.lang);
         Some(Box::new(item))
     }
 
@@ -6549,6 +6570,7 @@ pub struct FilesView {
     go_to_line: Option<(Vec<usize>, go_to_line::GoToLine)>,
     palette: Option<(Vec<usize>, command_palette::CommandPalette)>,
     finder: Option<(Vec<usize>, file_finder::FileFinder)>,
+    language_selector: Option<(Vec<usize>, language_selector::LanguageSelector)>,
     finder_candidates: std::sync::Arc<file_finder::Candidates>,
     finder_loading: Option<std::sync::mpsc::Receiver<file_finder::Candidates>>,
     pending_opens: Vec<PendingOpen>,
@@ -6713,6 +6735,7 @@ impl FilesView {
             go_to_line: None,
             palette: None,
             finder: None,
+            language_selector: None,
             finder_candidates: Default::default(),
             finder_loading: None,
             pending_opens: Vec::new(),
@@ -7259,6 +7282,7 @@ impl FilesView {
         self.outline.is_some()
             || self.palette.is_some()
             || self.finder.is_some()
+            || self.language_selector.is_some()
             || self.go_to_line.is_some()
     }
 
@@ -7547,6 +7571,70 @@ impl FilesView {
         let full = self.root.join(&target.path);
         self.open_file_at(&full, target.row, target.column);
         self.note_recent();
+    }
+
+    fn toggle_language_selector(&mut self) {
+        if self.language_selector.take().is_some() {
+            return;
+        }
+        let path = self.panes.active.clone();
+        let Some(lang) = self.go_to_line_item(&path).map(|item| item.lang) else {
+            return;
+        };
+        self.language_selector = Some((path, language_selector::LanguageSelector::new(lang)));
+    }
+
+    fn language_selector_key(&mut self, key: EditKey, shift: bool) {
+        let Some((_, selector)) = self.language_selector.as_mut() else {
+            return;
+        };
+        match key {
+            EditKey::Escape | EditKey::ToggleLanguageSelector => self.language_selector = None,
+            EditKey::Enter => self.confirm_language_selector(),
+            EditKey::Up => selector.select_previous(),
+            EditKey::Down => selector.select_next(),
+            _ => {
+                if selector.field.key(key, shift) {
+                    selector.update_matches();
+                }
+            }
+        }
+    }
+
+    fn language_selector_input(&mut self, text: &str) {
+        if let Some((_, selector)) = self.language_selector.as_mut() {
+            selector.field.insert(&text.replace('\n', ""));
+            selector.update_matches();
+        }
+    }
+
+    /// Switches the file to the chosen language in every pane showing it, installing its grammar package
+    /// first when it is one that isn't installed.
+    fn confirm_language_selector(&mut self) {
+        let Some((path, selector)) = self.language_selector.take() else {
+            return;
+        };
+        let Some(lang) = selector.confirm() else {
+            return;
+        };
+        let Some(file_path) = self.go_to_line_item(&path).map(|item| item.path.clone()) else {
+            return;
+        };
+        self.panes.for_each_item_mut(&mut |item| {
+            if let Some(file) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FileItem>())
+                .filter(|file| file.path == file_path)
+            {
+                file.set_language(lang);
+            }
+        });
+        let highlighted = self
+            .go_to_line_item(&path)
+            .is_some_and(|item| item.syntax.is_some());
+        if lang != Lang::PlainText && !highlighted {
+            self.grammar_suggestions.install_language(lang.name());
+        }
     }
 
     /// Show the diagnostics tab, reusing one already open. From the status bar with only warnings, warnings
@@ -7917,7 +8005,17 @@ impl FilesView {
         }
         if key == EditKey::ToggleFileFinder {
             self.go_to_line = None;
+            self.language_selector = None;
             self.toggle_finder();
+            return true;
+        }
+        if self.language_selector.is_some() {
+            self.language_selector_key(key, shift);
+            return true;
+        }
+        if key == EditKey::ToggleLanguageSelector {
+            self.go_to_line = None;
+            self.toggle_language_selector();
             return true;
         }
         if key == EditKey::DeployProjectSearch {
@@ -7966,6 +8064,10 @@ impl FilesView {
         }
         if self.finder.is_some() {
             self.finder_input(text);
+            return true;
+        }
+        if self.language_selector.is_some() {
+            self.language_selector_input(text);
             return true;
         }
         if self.go_to_line.is_some() {
@@ -8230,11 +8332,7 @@ impl ItemInput for FilesView {
 
     fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)> {
         let popovers = self.panes.editor_popovers(viewport);
-        if self.outline.is_some()
-            || self.palette.is_some()
-            || self.finder.is_some()
-            || self.go_to_line.is_some()
-        {
+        if self.modal_open() {
             return Vec::new();
         }
         popovers
@@ -8384,6 +8482,13 @@ impl FunctionView for FilesView {
                 elevation: Elevation::Modal,
             });
         }
+        if let Some((_, selector)) = self.language_selector.as_ref() {
+            return Some(ModalView {
+                node: selector.render(LANGUAGE_BASE),
+                width: language_selector::WIDTH,
+                elevation: Elevation::Modal,
+            });
+        }
         let (_, modal) = self.go_to_line.as_ref()?;
         Some(ModalView {
             node: modal.render(),
@@ -8437,6 +8542,9 @@ impl FunctionView for FilesView {
         if let Some((_, finder)) = self.finder.as_mut() {
             return finder.scroll_by(dy);
         }
+        if let Some((_, selector)) = self.language_selector.as_mut() {
+            return selector.scroll_by(dy);
+        }
         false
     }
 
@@ -8444,6 +8552,7 @@ impl FunctionView for FilesView {
         self.close_outline(false);
         self.palette = None;
         self.finder = None;
+        self.language_selector = None;
         self.close_go_to_line(false);
     }
 
@@ -8729,6 +8838,13 @@ impl FunctionView for FilesView {
             self.confirm_finder(false);
             return true;
         }
+        if id >= LANGUAGE_BASE {
+            if let Some((_, selector)) = self.language_selector.as_mut() {
+                selector.select_row((id - LANGUAGE_BASE) as usize);
+            }
+            self.confirm_language_selector();
+            return true;
+        }
         // A pinned sticky breadcrumb folder: collapse it and scroll so it becomes the top row.
         if id >= STICKY_BASE {
             let k = (id - STICKY_BASE) as usize;
@@ -8789,13 +8905,26 @@ impl FunctionView for FilesView {
     fn set_hover(&mut self, id: Option<u64>) -> bool {
         // Tab hits reveal a close button and modal rows light up, so only changes there need a repaint.
         let tab_changed = self.panes.set_hover(id);
-        let modal = |x: Option<u64>| x.is_some_and(|v| (FINDER_BASE..MODAL_END).contains(&v));
+        let modal = |x: Option<u64>| x.is_some_and(|v| (LANGUAGE_BASE..MODAL_END).contains(&v));
         let entered = self.hover != id;
         let changed = tab_changed || (entered && (modal(self.hover) || modal(id)));
         self.hover = id;
-        let over_modal = id.filter(|v| (FINDER_BASE..MODAL_END).contains(v));
+        let over_modal = id.filter(|v| (LANGUAGE_BASE..MODAL_END).contains(v));
+        if let Some((_, selector)) = self.language_selector.as_mut() {
+            selector.hovered = over_modal.filter(|v| *v < FINDER_BASE);
+            if selector.hovered.is_some() {
+                selector.scrollbar.reveal();
+            }
+            if let Some(row) = selector
+                .hovered
+                .filter(|_| entered)
+                .map(|v| (v - LANGUAGE_BASE) as usize)
+            {
+                selector.select_row(row);
+            }
+        }
         if let Some((_, finder)) = self.finder.as_mut() {
-            finder.hovered = over_modal.filter(|v| *v < PALETTE_BASE);
+            finder.hovered = over_modal.filter(|v| (FINDER_BASE..PALETTE_BASE).contains(v));
             if let Some(row) = finder
                 .hovered
                 .filter(|_| entered)
@@ -8919,6 +9048,7 @@ impl FunctionView for FilesView {
                 EditKey::NewCenterTerminal
                     | EditKey::ToggleCommandPalette
                     | EditKey::ToggleFileFinder
+                    | EditKey::ToggleLanguageSelector
                     | EditKey::DeployProjectSearch
                     | EditKey::DeployDiagnostics
                     | EditKey::DeployDiagnosticsFromStatus
@@ -8933,6 +9063,7 @@ impl FunctionView for FilesView {
         self.outline.is_none()
             && self.palette.is_none()
             && self.finder.is_none()
+            && self.language_selector.is_none()
             && self.go_to_line.is_none()
             && !self.tree_edit_active()
     }
@@ -11754,5 +11885,150 @@ mod workspace_palette_tests {
         view.editor_text("login");
         view.editor_key(EditKey::Enter, false);
         assert_eq!(view.take_effects().activate_workspace, Some(1));
+    }
+}
+
+#[cfg(test)]
+mod language_selector_tests {
+    use super::*;
+
+    fn project() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("temp");
+        std::fs::write(
+            temp.path().join("env.local"),
+            "PORT=3000\nexport NAME=web\n",
+        )
+        .expect("write");
+        temp
+    }
+
+    #[test]
+    fn picking_a_language_switches_the_file_in_every_pane() {
+        let temp = project();
+        let root = temp.path().to_path_buf();
+        let mut view = FilesView::scanned(root.clone());
+        view.open_file_at(&root.join("env.local"), None, None);
+        assert_eq!(view.active_language(), Some("Plain Text"));
+
+        view.editor_key(EditKey::ToggleLanguageSelector, false);
+        let selected = view
+            .language_selector
+            .as_ref()
+            .and_then(|(_, selector)| selector.selected_label());
+        assert_eq!(selected.as_deref(), Some("Plain Text (current)"));
+        assert!(view.editor_focused(), "typing goes to the picker");
+        view.editor_key(EditKey::Escape, false);
+
+        view.pane_command(PaneCommand::Split(SplitDirection::Right));
+        view.editor_key(EditKey::ToggleLanguageSelector, false);
+        view.editor_text("shell");
+        view.editor_key(EditKey::Enter, false);
+        assert!(view.language_selector.is_none());
+        assert_eq!(view.active_language(), Some("Shell Script"));
+        let mut languages = Vec::new();
+        view.panes.for_each_item_mut(&mut |item| {
+            languages.extend(item.language_name());
+        });
+        assert_eq!(languages, ["Shell Script", "Shell Script"]);
+        let highlighted = view
+            .panes
+            .active_item()
+            .and_then(|item| item.as_any())
+            .and_then(|any| any.downcast_ref::<FileItem>())
+            .is_some_and(|file| file.syntax.is_some());
+        assert!(highlighted, "the new language's grammar highlights it");
+
+        view.pane_command(PaneCommand::Split(SplitDirection::Right));
+        assert_eq!(
+            view.active_language(),
+            Some("Shell Script"),
+            "a split keeps the chosen language"
+        );
+    }
+
+    #[test]
+    fn escape_leaves_the_language_alone() {
+        let temp = project();
+        let root = temp.path().to_path_buf();
+        let mut view = FilesView::scanned(root.clone());
+        view.open_file_at(&root.join("env.local"), None, None);
+        view.editor_key(EditKey::ToggleLanguageSelector, false);
+        view.editor_text("rust");
+        view.editor_key(EditKey::Escape, false);
+        assert!(view.language_selector.is_none());
+        assert_eq!(view.active_language(), Some("Plain Text"));
+    }
+
+    #[test]
+    fn the_status_bar_language_opens_the_picker() {
+        let temp = project();
+        let root = temp.path().to_path_buf();
+        let mut files = FilesView::scanned(root.clone());
+        files.open_file_at(&root.join("env.local"), None, None);
+        let mut app = ui::Application::new();
+        let (handle, window) = app.open_raw_window(
+            ui::WindowOptions {
+                width: 1200.0,
+                height: 800.0,
+                scale: 2.0,
+                ..Default::default()
+            },
+            move |_| {
+                workspace::WorkspaceView::new(workspace::Layout {
+                    files_view: Some(Box::new(files)),
+                    ..Default::default()
+                })
+            },
+        );
+        app.draw(handle);
+        let (x, y) = app
+            .window(handle)
+            .and_then(|w| w.center_of(workspace::ACTIVE_LANGUAGE))
+            .expect("the language is a button in the status bar");
+        window.update(app.app_mut(), |view, _| {
+            view.mouse_move(x, y);
+            view.mouse_down(x, y);
+            view.mouse_up();
+        });
+        window.update(app.app_mut(), |view, _| {
+            view.editor_text("shell");
+            view.editor_key(EditKey::Enter, false);
+        });
+        let language = window.update(app.app_mut(), |view, _| {
+            view.layout()
+                .files_view
+                .as_ref()
+                .and_then(|files| files.active_language())
+        });
+        assert_eq!(language, Some("Shell Script"));
+    }
+
+    #[test]
+    fn the_palette_action_opens_the_picker() {
+        let temp = project();
+        let root = temp.path().to_path_buf();
+        let mut files = FilesView::scanned(root.clone());
+        files.open_file_at(&root.join("env.local"), None, None);
+        let mut view = workspace::WorkspaceView::new(workspace::Layout {
+            files_view: Some(Box::new(files)),
+            ..Default::default()
+        });
+        assert!(view.run_action(workspace::keymap::Action::SelectLanguage));
+        view.editor_text("ruby");
+        view.editor_key(EditKey::Enter, false);
+        let language = view
+            .layout()
+            .files_view
+            .as_ref()
+            .and_then(|files| files.active_language());
+        assert_eq!(language, Some("Ruby"));
+    }
+
+    #[test]
+    fn nothing_opens_without_a_file() {
+        let temp = project();
+        let mut view = FilesView::scanned(temp.path().to_path_buf());
+        view.editor_key(EditKey::ToggleLanguageSelector, false);
+        assert!(view.language_selector.is_none());
     }
 }
