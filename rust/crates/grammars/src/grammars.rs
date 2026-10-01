@@ -440,6 +440,59 @@ pub fn fetch_package(package: &Package) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    /// The published Kotlin package, end to end: download, checksum and signature with the app's key, install,
+    /// load through the editor's languages, and the highlights the compiled-in grammar gave before it left.
+    #[test]
+    #[ignore = "downloads from the grammars release"]
+    fn a_published_package_installs_and_highlights_like_the_grammar_it_replaced() {
+        use editor::highlight::Lang;
+        let index = embedded_index();
+        let package = index.package_for("Main.kt").expect("Kotlin is published");
+        let dir = tempfile::tempdir().expect("temp");
+        let folder = download_and_install(package, dir.path()).expect("installed");
+        editor::grammar_packages::register_installed_grammar(&folder).expect("registered");
+        let registry = editor::registry::language_registry();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let (grammar, highlights) = loop {
+            if let Some(found) = editor::registry::request_grammar(registry, Lang::Kotlin) {
+                break found;
+            }
+            assert!(std::time::Instant::now() < deadline, "never loaded");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../grammars");
+        let sample = std::fs::read_to_string(root.join("samples/kotlin.kt")).expect("sample");
+        let expected: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("expected/kotlin.json")).expect("expected"),
+        )
+        .expect("json");
+        let captures: Vec<serde_json::Value> =
+            editor::grammar_packages::highlight_captures(&grammar, &highlights, &sample)
+                .expect("captures")
+                .into_iter()
+                .map(|(range, name)| serde_json::json!([range.start, range.end, name]))
+                .collect();
+        assert_eq!(serde_json::Value::Array(captures), expected["captures"]);
+    }
+
+    #[test]
+    fn a_file_of_a_language_the_app_no_longer_carries_gets_the_suggestion() {
+        let index = embedded_index();
+        let package = index
+            .package_for("app/src/Main.kt")
+            .expect("Kotlin is published");
+        assert_eq!(package.language, "Kotlin");
+        assert!(
+            index.package_for("lib/user.rb").is_none(),
+            "Ruby stays built in"
+        );
+        let check = SuggestionCheck {
+            downloads_on: downloads_on(),
+            ..SuggestionCheck::default()
+        };
+        assert!(check.suggests());
+    }
+
     #[test]
     fn every_package_in_the_built_in_index_is_signed_by_the_app_key() {
         let key = GRAMMARS_PUBLIC_KEY.expect("the app carries the grammars key");

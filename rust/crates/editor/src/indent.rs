@@ -129,9 +129,8 @@ pub fn native_indents(lang: Lang) -> &'static str {
         Lang::Go => include_str!("../queries/go/indents.scm"),
         Lang::Python => include_str!("../queries/python/indents.scm"),
         Lang::C | Lang::Cpp => include_str!("../queries/c/indents.scm"),
-        Lang::Java | Lang::CSharp => include_str!("../queries/java/indents.scm"),
+        Lang::Java => include_str!("../queries/java/indents.scm"),
         Lang::Html => include_str!("../queries/html/indents.scm"),
-        Lang::Xml => include_str!("../queries/xml/indents.scm"),
         _ => "",
     }
 }
@@ -696,7 +695,6 @@ mod tests {
             Lang::Cpp,
             Lang::Java,
             Lang::Html,
-            Lang::Xml,
         ] {
             let (language, _) = crate::highlight::grammar(lang).unwrap();
             if let Err(error) = Query::new(&language, native_indents(lang)) {

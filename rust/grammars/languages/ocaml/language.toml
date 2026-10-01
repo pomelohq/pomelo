@@ -1,0 +1,47 @@
+path_suffixes = ["ml", "mli"]
+line_comments = []
+block_comment = ["(*", "*)"]
+autoclose_before = ";:.,=}])>"
+decrease_indent_patterns = []
+indent_from_last_non_blank_line = true
+snippet_scope = "ocaml"
+
+[[brackets]]
+start = "{"
+end = "}"
+close = true
+surround = true
+newline = true
+not_in = []
+
+[[brackets]]
+start = "["
+end = "]"
+close = true
+surround = true
+newline = true
+not_in = []
+
+[[brackets]]
+start = "("
+end = ")"
+close = true
+surround = true
+newline = true
+not_in = []
+
+[[brackets]]
+start = '"'
+end = '"'
+close = true
+surround = true
+newline = false
+not_in = ["string", "comment"]
+
+[[brackets]]
+start = "'"
+end = "'"
+close = true
+surround = true
+newline = false
+not_in = ["string", "comment"]

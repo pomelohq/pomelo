@@ -1,9 +1,10 @@
 //! Builds the grammar packages the app downloads instead of compiling those grammars in.
 //!
-//! `build` compiles each grammar in `grammars/manifest.toml` to wasm from the crate version Cargo.lock pins,
-//! with the app's own queries for its language, into `<id>-<version>.tar.gz` plus an `index.json`. `verify`
-//! loads the built packages the way the app does and checks they highlight their samples exactly like the
-//! compiled-in grammars. `sign` signs each package's sha256 in the index; `keygen` makes the signing key.
+//! `build` compiles each grammar in `grammars/manifest.toml` to wasm from the crate version it names, with the
+//! queries and editing config in `grammars/languages/<id>/`, into `<id>-<version>.tar.gz` plus an
+//! `index.json`. `verify` loads the built packages the way the app does and checks each gives for its sample
+//! what `grammars/expected/<id>.json` records the compiled-in language gave. `sign` signs each package's
+//! sha256 in the index; `keygen` makes the signing key.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
-use editor::highlight::{builtin_language, Lang};
+use editor::highlight::Lang;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -25,6 +26,8 @@ struct Entry {
     language: String,
     #[serde(rename = "crate")]
     crate_name: String,
+    version: String,
+    checksum: String,
     #[serde(default)]
     source: Option<String>,
     grammar: String,
@@ -67,8 +70,9 @@ struct IndexEntry {
 
 struct Paths {
     manifest: PathBuf,
-    lockfile: PathBuf,
     samples: PathBuf,
+    languages: PathBuf,
+    expected: PathBuf,
 }
 
 fn main() {
@@ -95,8 +99,9 @@ fn workspace_paths() -> Paths {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     Paths {
         manifest: workspace.join("grammars/manifest.toml"),
-        lockfile: workspace.join("Cargo.lock"),
         samples: workspace.join("grammars/samples"),
+        languages: workspace.join("grammars/languages"),
+        expected: workspace.join("grammars/expected"),
     }
 }
 
@@ -122,28 +127,6 @@ fn language(entry: &Entry) -> Result<Lang, String> {
         .into_iter()
         .find(|lang| lang.name() == entry.language)
         .ok_or_else(|| format!("the editor has no language {}", entry.language))
-}
-
-/// Each locked crate's version and checksum, by name.
-fn locked_crates(lockfile: &Path) -> Result<BTreeMap<String, (String, String)>, String> {
-    #[derive(Deserialize)]
-    struct Lock {
-        package: Vec<Locked>,
-    }
-    #[derive(Deserialize)]
-    struct Locked {
-        name: String,
-        version: String,
-        checksum: Option<String>,
-    }
-    let text = std::fs::read_to_string(lockfile)
-        .map_err(|error| format!("{}: {error}", lockfile.display()))?;
-    let lock: Lock = toml::from_str(&text).map_err(|error| format!("Cargo.lock: {error}"))?;
-    Ok(lock
-        .package
-        .into_iter()
-        .filter_map(|locked| Some((locked.name, (locked.version, locked.checksum?))))
-        .collect())
 }
 
 fn run(command: &mut Command) -> Result<(), String> {
@@ -218,7 +201,7 @@ fn wasi_clang(cache: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "the wasi-sdk archive has no bin/clang".to_string())
 }
 
-/// The crate's unpacked source, downloaded from crates.io and checked against the checksum Cargo.lock holds.
+/// The crate's unpacked source, downloaded from crates.io and checked against the manifest's checksum.
 fn crate_source(
     cache: &Path,
     name: &str,
@@ -238,7 +221,7 @@ fn crate_source(
     let found = sha256_hex(&bytes);
     if found != checksum {
         return Err(format!(
-            "{name} {version}: checksum {found} is not Cargo.lock's {checksum}"
+            "{name} {version}: checksum {found} is not the manifest's {checksum}"
         ));
     }
     run(Command::new("tar")
@@ -315,42 +298,33 @@ fn compile(clang: &Path, src: &Path, grammar: &str, out: &Path) -> Result<(), St
     run(&mut command)
 }
 
-fn language_toml(entry: &Entry, lang: Lang, version: &str) -> String {
-    let builtin = builtin_language(lang);
+/// `language.toml`: where the package comes from, then the language's matcher and editing config as kept in
+/// `languages/<id>/language.toml`.
+fn language_toml(entry: &Entry, kept: &str) -> String {
     let quote = |text: &str| toml::Value::String(text.to_string()).to_string();
-    let mut text = format!(
-        "name = {}\ngrammar = {}\nversion = {}\nrepository = {}\nrev = {}\nlicense = {}\n",
+    format!(
+        "name = {}\ngrammar = {}\nversion = {}\nrepository = {}\nrev = {}\nlicense = {}\n{kept}",
         quote(&entry.language),
         quote(&entry.grammar),
-        quote(version),
+        quote(&entry.version),
         quote(&entry.repository),
         quote(&entry.rev),
         quote(&entry.license),
-    );
-    let suffixes: Vec<String> = builtin
-        .path_suffixes
-        .iter()
-        .map(|suffix| quote(suffix))
-        .collect();
-    text.push_str(&format!("path_suffixes = [{}]\n", suffixes.join(", ")));
-    if let Some(pattern) = builtin.first_line_pattern {
-        text.push_str(&format!("first_line_pattern = {}\n", quote(pattern)));
-    }
-    let editing = editor::grammar_packages::EditingConfig::from_native(
-        &builtin.config,
-        builtin.snippet_scope,
-    );
-    match editing.to_toml() {
-        Ok(fields) => text.push_str(&fields),
-        Err(error) => eprintln!("{}: editing config: {error}", entry.language),
-    }
-    text
+    )
+}
+
+/// The language's matcher as `languages/<id>/language.toml` keeps it, for the index.
+#[derive(Deserialize)]
+struct KeptMatcher {
+    #[serde(default)]
+    path_suffixes: Vec<String>,
+    #[serde(default)]
+    first_line_pattern: Option<String>,
 }
 
 fn build(args: &[String]) -> Result<(), String> {
     let paths = workspace_paths();
     let manifest = read_manifest(&paths.manifest)?;
-    let locked = locked_crates(&paths.lockfile)?;
     let out = out_dir(args);
     let cache = PathBuf::from(option(args, "--cache").unwrap_or("target/grammar-cache"));
     let only: Option<Vec<&str>> = option(args, "--only").map(|ids| ids.split(',').collect());
@@ -370,11 +344,9 @@ fn build(args: &[String]) -> Result<(), String> {
             continue;
         }
         let started = Instant::now();
-        let lang = language(entry)?;
-        let (version, checksum) = locked
-            .get(&entry.crate_name)
-            .ok_or_else(|| format!("{id}: {} is not in Cargo.lock", entry.crate_name))?;
-        let source = crate_source(&cache, &entry.crate_name, version, checksum)?;
+        language(entry)?;
+        let version = &entry.version;
+        let source = crate_source(&cache, &entry.crate_name, version, &entry.checksum)?;
         let rev = published_rev(&source)?;
         if rev != entry.rev {
             return Err(format!(
@@ -395,23 +367,22 @@ fn build(args: &[String]) -> Result<(), String> {
             &package.join("grammar.wasm"),
         )
         .map_err(|error| format!("{id}: {error}"))?;
-        let builtin = builtin_language(lang);
+        let kept = paths.languages.join(id);
+        for name in editor::grammar_packages::QUERY_FILES {
+            if kept.join(name).is_file() {
+                std::fs::copy(kept.join(name), package.join(name))
+                    .map_err(|error| format!("{id}: {name}: {error}"))?;
+            }
+        }
+        let kept_toml = std::fs::read_to_string(kept.join("language.toml"))
+            .map_err(|error| format!("{id}: language.toml: {error}"))?;
+        let matcher: KeptMatcher =
+            toml::from_str(&kept_toml).map_err(|error| format!("{id}: language.toml: {error}"))?;
         let write = |name: &str, text: &str| {
             std::fs::write(package.join(name), text)
                 .map_err(|error| format!("{id}: {name}: {error}"))
         };
-        write("highlights.scm", builtin.highlights)?;
-        for (name, query) in [
-            ("injections.scm", builtin.injections),
-            ("outline.scm", builtin.outline),
-            ("indents.scm", builtin.indents),
-            ("overrides.scm", builtin.overrides),
-        ] {
-            if let Some(query) = used_query(&builtin, query) {
-                write(name, query)?;
-            }
-        }
-        write("language.toml", &language_toml(entry, lang, version))?;
+        write("language.toml", &language_toml(entry, &kept_toml))?;
         write("LICENSE", &license_text(entry, &source, &cache)?)?;
         let file = format!("{id}-{version}.tar.gz");
         let archive = out.join(&file);
@@ -439,12 +410,8 @@ fn build(args: &[String]) -> Result<(), String> {
             license: entry.license.clone(),
             repository: entry.repository.clone(),
             rev: entry.rev.clone(),
-            path_suffixes: builtin
-                .path_suffixes
-                .iter()
-                .map(|suffix| suffix.to_string())
-                .collect(),
-            first_line_pattern: builtin.first_line_pattern.map(str::to_string),
+            path_suffixes: matcher.path_suffixes,
+            first_line_pattern: matcher.first_line_pattern,
         });
     }
     write_index(&out, &index)
@@ -462,15 +429,36 @@ fn read_index(out: &Path) -> Result<Index, String> {
     serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// Installs every built package as the app would, then checks each highlights its sample with exactly the
-/// captures the compiled-in grammar gives.
+/// Captures as `expected/<id>.json` keeps them: byte start, byte end, capture name.
+type Captures = Vec<(usize, usize, String)>;
+
+/// What the compiled-in language gave for a package's sample, recorded before its grammar left the app.
+#[derive(Deserialize)]
+struct Expected {
+    captures: Captures,
+    tree: String,
+    /// Captures of each other query the language has, by kind.
+    queried: Vec<(String, Captures)>,
+    /// Its editing config as `language.toml` spells it.
+    editing: String,
+}
+
+fn flat(captures: Vec<(std::ops::Range<usize>, String)>) -> Captures {
+    captures
+        .into_iter()
+        .map(|(range, name)| (range.start, range.end, name))
+        .collect()
+}
+
+/// Installs every built package as the app would, then checks each gives for its sample exactly what
+/// `expected/<id>.json` records: highlight captures, syntax tree, the other queries' captures, editing config.
 fn verify(args: &[String]) -> Result<(), String> {
     let paths = workspace_paths();
     let manifest = read_manifest(&paths.manifest)?;
     let out = out_dir(args);
     let index = read_index(&out)?;
     let installed = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let mut expected = Vec::new();
+    let mut checks = Vec::new();
     for package in &index.packages {
         let entry = manifest
             .get(&package.id)
@@ -479,42 +467,15 @@ fn verify(args: &[String]) -> Result<(), String> {
         let sample_path = paths.samples.join(&entry.sample);
         let sample = std::fs::read_to_string(&sample_path)
             .map_err(|error| format!("{}: {error}", sample_path.display()))?;
-        let builtin = builtin_language(lang);
-        let native = builtin
-            .grammar
-            .clone()
-            .ok_or_else(|| format!("{}: no compiled-in grammar to compare with", package.id))?;
-        let captures =
-            editor::grammar_packages::highlight_captures(&native, builtin.highlights, &sample)
-                .map_err(|error| format!("{} (compiled in): {error}", package.id))?;
-        if captures.is_empty() {
+        let expected_path = paths.expected.join(format!("{}.json", package.id));
+        let expected: Expected = std::fs::read_to_string(&expected_path)
+            .map_err(|error| error.to_string())
+            .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+            .map_err(|error| format!("{}: {error}", expected_path.display()))?;
+        if expected.captures.is_empty() {
             return Err(format!("{}: the sample highlights nothing", package.id));
         }
-        let tree = editor::grammar_packages::syntax_tree(&native, &sample)
-            .map_err(|error| format!("{} (compiled in): {error}", package.id))?;
-        let mut queried = Vec::new();
-        for (kind, query) in [
-            ("injections", builtin.injections),
-            ("outline", builtin.outline),
-            ("indents", builtin.indents),
-            ("overrides", builtin.overrides),
-        ] {
-            if let Some(query) = used_query(&builtin, query) {
-                let found = editor::grammar_packages::query_captures(&native, query, &sample)
-                    .map_err(|error| format!("{} {kind} (compiled in): {error}", package.id))?;
-                queried.push((kind, found));
-            }
-        }
-        expected.push(Expected {
-            id: package.id.clone(),
-            lang,
-            sample,
-            captures,
-            tree,
-            queried,
-            config: builtin.config,
-            snippet_scope: builtin.snippet_scope,
-        });
+        checks.push((package.id.clone(), lang, sample, expected));
         let folder = installed.path().join(&package.id).join(&package.version);
         std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
         run(Command::new("tar")
@@ -531,17 +492,7 @@ fn verify(args: &[String]) -> Result<(), String> {
         ));
     }
     let registry = editor::registry::language_registry();
-    for Expected {
-        id,
-        lang,
-        sample,
-        captures,
-        tree,
-        queried,
-        config,
-        snippet_scope,
-    } in expected
-    {
+    for (id, lang, sample, expected) in checks {
         let deadline = Instant::now() + Duration::from_secs(60);
         let (grammar, highlights) = loop {
             if let Some(found) = editor::registry::request_grammar(registry, lang) {
@@ -553,27 +504,27 @@ fn verify(args: &[String]) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(20));
         };
         if !grammar.is_wasm() {
-            return Err(format!(
-                "{id}: the registry still gives the compiled-in grammar"
-            ));
+            return Err(format!("{id}: the registry gives a compiled-in grammar"));
         }
-        let packaged = editor::grammar_packages::highlight_captures(&grammar, &highlights, &sample)
-            .map_err(|error| format!("{id} (package): {error}"))?;
-        if packaged != captures {
+        let packaged = flat(
+            editor::grammar_packages::highlight_captures(&grammar, &highlights, &sample)
+                .map_err(|error| format!("{id} (package): {error}"))?,
+        );
+        if packaged != expected.captures {
             let first = packaged
                 .iter()
-                .zip(&captures)
+                .zip(&expected.captures)
                 .position(|(a, b)| a != b)
-                .unwrap_or(packaged.len().min(captures.len()));
+                .unwrap_or(packaged.len().min(expected.captures.len()));
             return Err(format!(
-                "{id}: {} captures from the package, {} compiled in, first difference at {first}",
+                "{id}: {} captures from the package, {} expected, first difference at {first}",
                 packaged.len(),
-                captures.len()
+                expected.captures.len()
             ));
         }
-        let packaged_tree = editor::grammar_packages::syntax_tree(&grammar, &sample)
+        let tree = editor::grammar_packages::syntax_tree(&grammar, &sample)
             .map_err(|error| format!("{id} (package): {error}"))?;
-        if packaged_tree != tree {
+        if tree != expected.tree {
             return Err(format!(
                 "{id}: the package parses the sample into a different tree"
             ));
@@ -583,33 +534,44 @@ fn verify(args: &[String]) -> Result<(), String> {
             .map_err(|_| "the language registry is unavailable".to_string())?
             .queries(lang)
             .ok_or_else(|| format!("{id}: no queries registered"))?;
-        for (kind, found) in &queried {
-            let source = match *kind {
+        for (kind, found) in &expected.queried {
+            let source = match kind.as_str() {
                 "injections" => queries.injections.clone(),
                 "outline" => queries.outline.clone(),
                 "indents" => queries.indents.clone(),
                 _ => queries.overrides.clone(),
             }
             .ok_or_else(|| format!("{id}: the package has no {kind} query"))?;
-            let packaged = editor::grammar_packages::query_captures(&grammar, &source, &sample)
-                .map_err(|error| format!("{id} {kind} (package): {error}"))?;
+            let packaged = flat(
+                editor::grammar_packages::query_captures(&grammar, &source, &sample)
+                    .map_err(|error| format!("{id} {kind} (package): {error}"))?,
+            );
             if &packaged != found {
                 return Err(format!(
-                    "{id}: {kind}: {} captures from the package, {} compiled in",
+                    "{id}: {kind}: {} captures from the package, {} expected",
                     packaged.len(),
                     found.len()
                 ));
             }
         }
-        if queries.config != config || queries.snippet_scope != snippet_scope {
+        let editing = editor::grammar_packages::EditingConfig::from_native(
+            &queries.config,
+            queries.snippet_scope,
+        )
+        .to_toml()?;
+        if editing != expected.editing {
             return Err(format!(
-                "{id}: the package's editing config differs from the compiled-in one"
+                "{id}: the package's editing config differs from the expected one"
             ));
         }
-        let kinds: Vec<&str> = queried.iter().map(|(kind, _)| *kind).collect();
+        let kinds: Vec<&str> = expected
+            .queried
+            .iter()
+            .map(|(kind, _)| kind.as_str())
+            .collect();
         eprintln!(
             "{id}: {} captures, the tree, the editing config{} match",
-            captures.len(),
+            expected.captures.len(),
             if kinds.is_empty() {
                 String::new()
             } else {
@@ -618,31 +580,6 @@ fn verify(args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
-}
-
-/// `query` when the compiled-in grammar reads it; one it can't compile is dropped by the editor, so the
-/// package leaves it out too.
-fn used_query(
-    builtin: &editor::highlight::BuiltinLanguage,
-    query: Option<&'static str>,
-) -> Option<&'static str> {
-    let grammar = builtin.grammar.as_ref()?;
-    query.filter(|query| editor::grammar_packages::query_compiles(grammar, query))
-}
-
-type Captures = Vec<(std::ops::Range<usize>, String)>;
-
-/// What a package must reproduce from the compiled-in language for one sample.
-struct Expected {
-    id: String,
-    lang: Lang,
-    sample: String,
-    captures: Captures,
-    tree: String,
-    /// Captures of each other query the compiled-in language has, by kind.
-    queried: Vec<(&'static str, Captures)>,
-    config: editor::language::LanguageConfig,
-    snippet_scope: &'static str,
 }
 
 fn signing_key(seed: &str) -> Result<SigningKey, String> {
@@ -716,21 +653,24 @@ mod tests {
     use ed25519_dalek::Verifier;
 
     #[test]
-    fn the_manifest_names_editor_languages_and_existing_samples() {
+    fn the_manifest_names_editor_languages_with_their_files() {
         let paths = workspace_paths();
         let manifest = read_manifest(&paths.manifest).expect("manifest");
-        let locked = locked_crates(&paths.lockfile).expect("lockfile");
         assert!(manifest.len() >= 20);
         for (id, entry) in &manifest {
             language(entry).unwrap_or_else(|error| panic!("{id}: {error}"));
-            assert!(
-                locked.contains_key(&entry.crate_name),
-                "{id}: {} not locked",
-                entry.crate_name
-            );
+            assert_eq!(entry.checksum.len(), 64, "{id}: checksum");
             assert!(
                 paths.samples.join(&entry.sample).is_file(),
                 "{id}: no sample"
+            );
+            assert!(
+                paths.languages.join(id).join("highlights.scm").is_file(),
+                "{id}: no highlights"
+            );
+            assert!(
+                paths.expected.join(format!("{id}.json")).is_file(),
+                "{id}: no expected results"
             );
             assert!(
                 entry.license_file.is_some() != entry.license_path.is_some(),
@@ -741,15 +681,20 @@ mod tests {
 
     #[test]
     fn a_package_carries_the_languages_files_and_provenance() {
-        let manifest = read_manifest(&workspace_paths().manifest).expect("manifest");
+        let paths = workspace_paths();
+        let manifest = read_manifest(&paths.manifest).expect("manifest");
         let entry = &manifest["kotlin"];
-        let text = language_toml(entry, Lang::Kotlin, "1.1.0");
+        let kept = std::fs::read_to_string(paths.languages.join("kotlin/language.toml"))
+            .expect("kept language.toml");
+        let text = language_toml(entry, &kept);
         let parsed: toml::Table = toml::from_str(&text).expect("language.toml");
         assert_eq!(parsed["name"].as_str(), Some("Kotlin"));
         assert_eq!(parsed["grammar"].as_str(), Some("kotlin"));
+        assert_eq!(parsed["version"].as_str(), Some(entry.version.as_str()));
         assert_eq!(parsed["rev"].as_str(), Some(entry.rev.as_str()));
         let suffixes = parsed["path_suffixes"].as_array().expect("suffixes");
         assert!(suffixes.iter().any(|suffix| suffix.as_str() == Some("kt")));
+        assert!(parsed.contains_key("brackets"), "editing config");
     }
 
     #[test]

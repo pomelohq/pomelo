@@ -43,8 +43,10 @@ Secrets (Settings > Secrets > Actions): `MACOS_CERT_P12` (base64 .p12), `MACOS_C
 ## Grammar packages
 
 Grammars the app doesn't compile in are packages it downloads: `rust/grammars/manifest.toml` lists them, each
-built from the crate version Cargo.lock pins. `.github/workflows/grammars.yml` builds and checks them on every
-change; run it by hand with `publish=true` to sign `index.json` and upload the packages to the one `grammars`
+built from the crate version and checksum it names, with the queries and editing config in
+`rust/grammars/languages/<id>/`. `rust/grammars/expected/<id>.json` records what the compiled-in language gave
+for its sample before it left the app; `verify` holds every package to it. `.github/workflows/grammars.yml`
+builds and checks them on every change; run it by hand with `publish=true` to sign `index.json` and upload the packages to the one `grammars`
 release, updated in place. It is never marked latest, because the latest release must keep carrying
 `appcast.xml`, and there is only ever one so it never pushes app releases out of the updater's view.
 
