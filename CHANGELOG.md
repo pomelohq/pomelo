@@ -4,6 +4,18 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-10-01
+
+### Added
+- After a crash at launch, Pomelo looks for a fixed release first and reopens windows without the tabs that crashed it, with Reopen Tabs. (#190)
+- Settings > General > Restore on Startup chooses whether the last session's tabs reopen. (#190)
+- A shared service can be a command (`cmd:`) run once for every workspace, like a mock auth server; agents start and stop it with the new shared_* tools. (#188)
+
+### Fixed
+- Symbols the Claude Code TUI draws as text, such as its line markers, showed as color emoji in the terminal. (#185)
+- Scrolling over a service tab's header scrolled its log. (#186)
+- Stop Agent in an agent tab's menu pinned the tab instead of stopping the agent. (#187)
+
 ## [0.8.1] - 2026-10-01
 
 ### Fixed
