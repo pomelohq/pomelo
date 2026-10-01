@@ -75,6 +75,20 @@ impl WorkspaceEnv<'_> {
         .resolve_env(env)
     }
 
+    /// What `{{shared.<name>.url}}` resolves to in this workspace.
+    pub fn shared_url(&self, name: &str) -> Option<String> {
+        let ws_key = self.ws_key();
+        ResolveContext {
+            config: self.config,
+            branch: self.branch,
+            ws_key: &ws_key,
+            env_name: "",
+            db_names: &IndexMap::new(),
+            sources: self.sources,
+        }
+        .lookup(&format!("shared.{name}.url"))
+    }
+
     /// The repo env overlaid with the service's own, resolved, for injecting into its holder.
     pub fn service_env(&self, repo: &str, service: &str) -> Vec<(String, String)> {
         let Some(dir) = self.config.repos.get(repo) else {

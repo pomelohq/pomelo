@@ -11,7 +11,9 @@ use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
-use crate::model::{run_action, Action, Crash, ServicesContext, Shared, Status, TabRequest};
+use crate::model::{
+    run_action, shared_key, Action, Crash, ServicesContext, Shared, SharedRun, Status, TabRequest,
+};
 use crate::view::{self, action_button, State, Tone};
 
 const START: u64 = 0;
@@ -50,6 +52,8 @@ pub(crate) struct ServiceItem {
     shared: Arc<Mutex<Shared>>,
     target: ServiceTarget,
     holder: String,
+    /// A shared container's name: the tab follows it instead of a workspace service.
+    container: Option<String>,
     root: PathBuf,
     base: u64,
     showing: Showing,
@@ -83,6 +87,43 @@ struct LogLine {
 
 pub(crate) fn tab_id(holder: &str) -> String {
     format!("service:{holder}")
+}
+
+pub(crate) fn shared_tab_id(name: &str) -> String {
+    format!("shared-log:{name}")
+}
+
+/// A shared container's tab: the same header, facts and logs as a service's, over `docker compose logs`.
+pub(crate) fn open_shared_tab(
+    context: Arc<ServicesContext>,
+    shared: Arc<Mutex<Shared>>,
+    name: String,
+    root: PathBuf,
+) -> Option<Box<dyn workspace::Item>> {
+    let mut item = ServiceItem::shared_container(context, shared, name, root);
+    item.respawn();
+    Some(Box::new(item))
+}
+
+/// The shared container's tab as it draws with `lines` of output (snapshots).
+pub(crate) fn shared_preview(
+    context: Arc<ServicesContext>,
+    shared: Arc<Mutex<Shared>>,
+    name: &str,
+    root: PathBuf,
+    lines: &[&str],
+    width: f32,
+    height: f32,
+) -> Node {
+    let mut item = ServiceItem::shared_container(context, shared, name.to_string(), root);
+    item.lines = lines
+        .iter()
+        .map(|text| LogLine {
+            time: None,
+            text: text.to_string(),
+        })
+        .collect();
+    item.tree(width, height)
 }
 
 /// The service's tab, following what the service is doing now.
@@ -157,8 +198,27 @@ impl ServiceItem {
             shared,
             target,
             holder,
+            container: None,
             root,
         }
+    }
+
+    fn shared_container(
+        context: Arc<ServicesContext>,
+        shared: Arc<Mutex<Shared>>,
+        name: String,
+        root: PathBuf,
+    ) -> ServiceItem {
+        let target = ServiceTarget {
+            branch: context.branch.clone(),
+            is_main: context.is_main,
+            repo: String::new(),
+            service: name.clone(),
+        };
+        let mut item = ServiceItem::new(context, shared, target, root);
+        item.holder = shared_key(&name);
+        item.container = Some(name);
+        item
     }
 
     /// Follows the live output while the service runs, what it left once it stops.
@@ -413,6 +473,28 @@ impl ServiceItem {
 impl ServiceItem {
     fn console(&self, showing: Showing) -> (TerminalOptions, Waker) {
         let runner = &self.context.runner;
+        if let Some(name) = &self.container {
+            let mut args = vec![
+                format!("PATH={}", pom_services::tool_path()),
+                "docker".to_string(),
+                "compose".to_string(),
+                "-f".to_string(),
+                runner.compose_file().to_string_lossy().into_owned(),
+                "-p".to_string(),
+                runner.compose_project(),
+                "logs".to_string(),
+            ];
+            if showing == Showing::Live {
+                args.push("-f".to_string());
+            }
+            args.extend(["--tail".to_string(), "200".to_string(), name.clone()]);
+            let options = TerminalOptions {
+                shell: Some(("/usr/bin/env".to_string(), args)),
+                working_directory: Some(self.root.clone()),
+                ..TerminalOptions::default()
+            };
+            return (options, self.context.waker.clone());
+        }
         let holders = runner.holders().clone();
         let options = match showing {
             Showing::Live => TerminalOptions {
@@ -458,11 +540,15 @@ impl ServiceItem {
         };
         let error = shared.errors.get(&self.holder).cloned();
         let crash = shared.crashes.get(&self.holder).cloned();
-        let status = shared
-            .status
-            .get(&self.holder)
-            .copied()
-            .unwrap_or(Status::Stopped);
+        let status = match &self.container {
+            Some(name) if shared.shared_running.contains(name) => Status::Running,
+            Some(_) => Status::Stopped,
+            None => shared
+                .status
+                .get(&self.holder)
+                .copied()
+                .unwrap_or(Status::Stopped),
+        };
         let state = match (shared.pending.get(&self.holder), status) {
             (Some(action), _) => State::Busy(action.progress_label()),
             (None, Status::Running) => State::Running,
@@ -478,6 +564,9 @@ impl ServiceItem {
     }
 
     fn service(&self) -> Option<(Arc<pom_config::Config>, pom_config::Service)> {
+        if self.container.is_some() {
+            return None;
+        }
         let config = self.context.config()?;
         let service = if self.target.is_workspace_level() {
             config.workspace_services.get(&self.target.service)?.clone()
@@ -493,8 +582,21 @@ impl ServiceItem {
     }
 
     fn url(&self) -> Option<String> {
+        if self.container.is_some() {
+            return None;
+        }
         let config = self.context.config()?;
         self.context.runner.proxy_url(&config, &self.target)
+    }
+
+    /// What `{{shared.<name>.url}}` gives this workspace for the shared container.
+    fn connection(&self) -> Option<String> {
+        let name = self.container.as_ref()?;
+        let config = self.context.config()?;
+        self.context
+            .runner
+            .workspace_env(&config, &self.target.branch)
+            .shared_url(name)
     }
 
     fn run(&self, action: Action) {
@@ -594,7 +696,16 @@ impl ServiceItem {
             .gap(8.0)
             .items_center()
             .child(view::status_icon(state));
-        title = if self.target.is_workspace_level() {
+        title = if self.container.is_some() {
+            title
+                .child(
+                    label(self.target.service.clone())
+                        .size(14.0)
+                        .medium()
+                        .color(colors.text),
+                )
+                .child(view::tag("shared"))
+        } else if self.target.is_workspace_level() {
             title.child(
                 label(self.target.service.clone())
                     .size(14.0)
@@ -754,7 +865,7 @@ impl ServiceItem {
             );
         }
         let mut buttons = Vec::new();
-        if port.is_some() {
+        if port.is_some() && self.container.is_none() {
             buttons.push(self.button(
                 NEW_PORT,
                 IconKind::ArrowUpRight,
@@ -762,7 +873,9 @@ impl ServiceItem {
                 Tone::Primary,
             ));
         }
-        buttons.push(self.button(FIX, IconKind::Sparkle, "Fix with Claude", Tone::Agent));
+        if self.container.is_none() {
+            buttons.push(self.button(FIX, IconKind::Sparkle, "Fix with Claude", Tone::Agent));
+        }
         buttons.push(self.button(RESTART, IconKind::RotateCw, "Restart", Tone::Plain));
         block = block.child(view::pack(buttons, inner, 6.0));
         Some(div().row().px(14.0).pt(10.0).child(block).into())
@@ -820,6 +933,9 @@ impl ServiceItem {
                     )
                     .into(),
             ));
+        }
+        if let Some(name) = &self.container {
+            facts.extend(self.shared_facts(name));
         }
         if let Some((config, service)) = self.service() {
             if let Some(port) = self.context.runner.port(&config, &self.target) {
@@ -926,6 +1042,75 @@ impl ServiceItem {
 }
 
 impl ServiceItem {
+    /// A shared container's image, port, connection and the repos of this workspace that use it.
+    fn shared_facts(&self, name: &str) -> Vec<Node> {
+        let colors = theme();
+        let mut facts = Vec::new();
+        let config = self.context.config();
+        let image = config
+            .as_ref()
+            .and_then(|config| config.shared_services.get(name))
+            .map(|def| def.image.clone())
+            .filter(|image| !image.is_empty());
+        if let Some(image) = image {
+            facts.push(Self::fact(
+                "Image",
+                label(image).size(12.5).mono().color(colors.text).into(),
+            ));
+        }
+        let port = self.context.runner.shared_host_port(name);
+        if port > 0 {
+            facts.push(Self::fact(
+                "Port",
+                label(format!(":{port}"))
+                    .size(12.5)
+                    .mono()
+                    .color(colors.text)
+                    .into(),
+            ));
+        }
+        if let Some(connection) = self.connection() {
+            facts.push(Self::fact(
+                "Connection",
+                div()
+                    .row()
+                    .gap(6.0)
+                    .items_center()
+                    .child(label(connection).size(12.5).mono().color(colors.text))
+                    .child(
+                        div()
+                            .on_click(self.base + COPY_URL)
+                            .child(icon(IconKind::Copy).size(11.0).color(colors.icon_muted)),
+                    )
+                    .into(),
+            ));
+        }
+        let users = config
+            .map(|config| pom_db::service_users(&config, name))
+            .unwrap_or_default();
+        facts.push(Self::fact(
+            "Used by",
+            if users.is_empty() {
+                label("not used here")
+                    .size(12.5)
+                    .color(colors.text_placeholder)
+                    .into()
+            } else {
+                label(users.join(", ")).size(12.5).color(colors.text).into()
+            },
+        ));
+        facts
+    }
+
+    fn run_shared(&self, action: Action) {
+        if let Some(name) = &self.container {
+            self.ask(TabRequest::Shared(SharedRun {
+                name: name.clone(),
+                action,
+            }));
+        }
+    }
+
     fn click(&mut self, id: u64) {
         let Some(offset) = id
             .checked_sub(self.base)
@@ -935,6 +1120,11 @@ impl ServiceItem {
         };
         self.filter_focused = offset == FILTER;
         match offset {
+            START | STOP | RESTART if self.container.is_some() => self.run_shared(match offset {
+                START => Action::Start,
+                STOP => Action::Stop,
+                _ => Action::Restart,
+            }),
             START => self.run(Action::Start),
             STOP => self.run(Action::Stop),
             RESTART => self.run(Action::Restart),
@@ -945,7 +1135,7 @@ impl ServiceItem {
                 }
             }
             COPY_URL => {
-                if let Some(url) = self.url() {
+                if let Some(url) = self.url().or_else(|| self.connection()) {
                     self.ask(TabRequest::Copy(url));
                 }
             }
@@ -960,8 +1150,11 @@ impl ServiceItem {
                     ));
                 }
             }
-            FIX => self.ask(TabRequest::Fix(self.target.clone())),
-            MORE => self.ask(TabRequest::Menu(self.target.clone())),
+            FIX if self.container.is_none() => self.ask(TabRequest::Fix(self.target.clone())),
+            MORE => self.ask(match &self.container {
+                Some(name) => TabRequest::SharedMenu(name.clone()),
+                None => TabRequest::Menu(self.target.clone()),
+            }),
             CLEAR => {
                 if let Some(terminal) = self.terminal.as_mut() {
                     terminal.clear();
@@ -1029,7 +1222,10 @@ impl ServiceItem {
 
 impl Item for ServiceItem {
     fn id(&self) -> Option<String> {
-        Some(tab_id(&self.holder))
+        Some(match &self.container {
+            Some(name) => shared_tab_id(name),
+            None => tab_id(&self.holder),
+        })
     }
 
     fn title(&self) -> String {
@@ -1037,6 +1233,9 @@ impl Item for ServiceItem {
     }
 
     fn tab_detail(&self) -> Option<String> {
+        if self.container.is_some() {
+            return Some("shared".to_string());
+        }
         (!self.target.is_workspace_level()).then(|| self.target.repo.clone())
     }
 

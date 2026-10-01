@@ -260,6 +260,17 @@ fn main() -> anyhow::Result<()> {
         };
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
         let node = match tab.as_deref().and_then(|which| which.split_once('/')) {
+            Some(("shared", name)) => panel.shared_tab_preview(
+                name,
+                &[
+                    "LOG:  database system is ready to accept connections",
+                    "LOG:  checkpoint starting: time",
+                    "ERROR:  relation \"accounts\" does not exist at character 15",
+                    "LOG:  checkpoint complete: wrote 3 buffers",
+                ],
+                width,
+                height,
+            ),
             Some((repo, service)) => panel.tab_preview(
                 repo,
                 service,

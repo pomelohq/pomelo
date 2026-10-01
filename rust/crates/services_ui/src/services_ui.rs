@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use pom_services::ServiceTarget;
-use terminal_ui::TerminalItem;
 use ui::{div, icon, label, theme, IconKind, Node, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{AgentFix, EditKey, MenuItem, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
@@ -418,6 +417,19 @@ impl ServicesPanel {
             self.root.clone(),
             lines,
             filter,
+            width,
+            height,
+        )
+    }
+
+    /// Shared container `name`'s tab as it draws with `lines` of its log (snapshots).
+    pub fn shared_tab_preview(&self, name: &str, lines: &[&str], width: f32, height: f32) -> Node {
+        tab::shared_preview(
+            self.model.context.clone(),
+            self.model.shared.clone(),
+            name,
+            self.root.clone(),
+            lines,
             width,
             height,
         )
@@ -1540,48 +1552,14 @@ impl ServicesPanel {
             .count()
     }
 
-    /// Follows a shared container's log in a read-only tab.
+    /// A shared container's tab: its state, how to reach it and its log.
     fn open_shared_logs(&mut self, name: &str) {
-        let runner = &self.model.context.runner;
-        let mut args = vec![
-            format!("PATH={}", pom_services::tool_path()),
-            "docker".to_string(),
-            "compose".to_string(),
-            "-f".to_string(),
-            runner.compose_file().to_string_lossy().into_owned(),
-            "-p".to_string(),
-            runner.compose_project(),
-            "logs".to_string(),
-            "-f".to_string(),
-            "--tail".to_string(),
-            "200".to_string(),
-        ];
-        args.push(name.to_string());
-        let (root, waker) = (self.root.clone(), self.model.context.waker.clone());
-        let item_number = self.next_item;
-        self.next_item += 1;
-        let item_id = format!("shared-log:{name}");
-        let title = format!("{name} (shared)");
+        let context = self.model.context.clone();
+        let shared = self.model.shared.clone();
+        let (name, root) = (name.to_string(), self.root.clone());
         self.requests.push(PanelRequest::Reveal {
-            id: item_id.clone(),
-            open: Box::new(move || {
-                match TerminalItem::command_output(
-                    item_number,
-                    root,
-                    item_id,
-                    title,
-                    "/usr/bin/env".to_string(),
-                    args,
-                    Vec::new(),
-                    waker,
-                ) {
-                    Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
-                    Err(error) => {
-                        eprintln!("services: shared log: {error}");
-                        None
-                    }
-                }
-            }),
+            id: tab::shared_tab_id(&name),
+            open: Box::new(move || tab::open_shared_tab(context, shared, name, root)),
         });
     }
 
@@ -2478,6 +2456,11 @@ impl SidePanelView for ServicesPanel {
                 model::TabRequest::Menu(target) => {
                     let holder = self.model.context.runner.holder_name(&target);
                     self.menu = Some(self.service_menu(&target, &holder));
+                    self.requests.push(PanelRequest::OpenMenu);
+                }
+                model::TabRequest::Shared(run) => self.run_shared(run),
+                model::TabRequest::SharedMenu(name) => {
+                    self.menu = Some(self.shared_menu(&name));
                     self.requests.push(PanelRequest::OpenMenu);
                 }
             }
