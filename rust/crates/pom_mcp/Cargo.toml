@@ -9,6 +9,7 @@ description = "`pom mcp`: a stdio MCP server that lets a coding agent see and dr
 path = "src/pom_mcp.rs"
 
 [dependencies]
+pom_agent = { path = "../pom_agent" }
 pom_config = { path = "../pom_config" }
 pom_db = { path = "../pom_db" }
 pom_doctor = { path = "../pom_doctor" }

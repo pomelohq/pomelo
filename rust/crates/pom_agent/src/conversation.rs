@@ -164,6 +164,7 @@ impl Drive {
         if text.trim().is_empty() {
             return Err(DriveError::Invalid("nothing to send".into()));
         }
+        gate.drivable_target(&view.holder)?;
         let agent_driver = driver(&view.driver).ok_or_else(|| Refusal::NotDrivable {
             role: view.role.clone(),
         })?;
