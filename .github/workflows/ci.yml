@@ -89,6 +89,14 @@ jobs:
             git ls-files -z | xargs -0 touch
           fi
       - run: make check
+      # Releases run under the hardened runtime, where a wasm grammar only runs with the app's entitlements:
+      # sign the editor tests the same way and parse with a package grammar.
+      - name: Load a wasm grammar under the hardened runtime
+        run: |
+          tests="$(cargo test -p pomelo-editor --lib --no-run --message-format=json 2>/dev/null \
+            | jq -r 'select(.executable != null and .profile.test) | .executable' | head -1)"
+          codesign --force --options runtime --entitlements scripts/Pomelo.entitlements --sign - "$tests"
+          cd crates/editor && "$tests" a_package_grammar_compiles_off_thread_then_highlights
       - name: Size of the build cache
         run: du -sh target ~/.cargo/registry 2>/dev/null || true
       - if: github.ref == 'refs/heads/main'

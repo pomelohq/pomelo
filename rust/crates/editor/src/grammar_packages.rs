@@ -377,9 +377,7 @@ pub fn highlight_captures(
 /// and indent alike.
 pub fn syntax_tree(grammar: &tree_sitter::Language, text: &str) -> Result<String, String> {
     let tree = crate::parsers::with_parser(|parser| {
-        parser
-            .set_language(grammar)
-            .map_err(|error| error.to_string())?;
+        crate::parsers::set_language(parser, grammar)?;
         parser
             .parse(text, None)
             .ok_or_else(|| "the parse gave no tree".to_string())
@@ -399,9 +397,7 @@ pub fn query_captures(
 ) -> Result<Vec<(std::ops::Range<usize>, String)>, String> {
     use tree_sitter::{Query, QueryCursor, StreamingIterator};
     let tree = crate::parsers::with_parser(|parser| {
-        parser
-            .set_language(grammar)
-            .map_err(|error| error.to_string())?;
+        crate::parsers::set_language(parser, grammar)?;
         parser
             .parse(text, None)
             .ok_or_else(|| "the parse gave no tree".to_string())
@@ -548,7 +544,7 @@ mod tests {
         );
         let source = r#"{"name": "web", "port": 8080}"#;
         let tree = crate::parsers::with_parser(|parser| {
-            parser.set_language(&grammar).ok()?;
+            crate::parsers::set_language(parser, &grammar).ok()?;
             parser.parse(source, None)
         })
         .expect("parsed");

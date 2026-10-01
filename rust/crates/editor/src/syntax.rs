@@ -216,7 +216,7 @@ impl Syntax {
         let rope = &buffer.rope;
         let old_tree = self.tree.as_ref();
         let parsed = with_parser(|parser| {
-            parser.set_language(&language).ok()?;
+            crate::parsers::set_language(parser, &language).ok()?;
             let options = ParseOptions::new().progress_callback(&mut out_of_budget);
             parser.parse_with_options(
                 &mut |byte, _| chunk_from(rope, byte),
@@ -245,7 +245,7 @@ impl Syntax {
         let rope = &buffer.rope;
         let old_tree = self.tree.as_ref();
         let parsed = with_parser(|parser| {
-            parser.set_language(&language).ok()?;
+            crate::parsers::set_language(parser, &language).ok()?;
             parser.parse_with_options(&mut |byte, _| chunk_from(rope, byte), old_tree, None)
         });
         if let Some(tree) = parsed {
@@ -290,7 +290,7 @@ impl Syntax {
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
             let tree = with_parser(|parser| {
-                parser.set_language(&language).ok()?;
+                crate::parsers::set_language(parser, &language).ok()?;
                 parser.parse_with_options(
                     &mut |byte, _| chunk_from(&rope, byte),
                     old_tree.as_ref(),
