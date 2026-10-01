@@ -5634,6 +5634,7 @@ dependencies = [
  "reactor",
  "resvg",
  "serde_json",
+ "unicode-properties",
  "wgpu",
  "winit",
 ]
