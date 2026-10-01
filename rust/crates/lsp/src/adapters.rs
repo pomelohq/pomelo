@@ -361,7 +361,8 @@ pub fn initialization_options(adapter: &str) -> serde_json::Value {
     serde_json::Value::Null
 }
 
-fn default_adapters_for(lang: Lang) -> Vec<(Adapter, &'static str)> {
+/// Every adapter for `lang` with all its servers, opt-in ones too, before the settings choose.
+pub fn default_adapters_for(lang: Lang) -> Vec<(Adapter, &'static str)> {
     let mut adapters: Vec<(Adapter, &'static str)> =
         default_adapter_for(lang).into_iter().collect();
     let language_id = match lang {

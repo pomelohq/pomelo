@@ -1187,8 +1187,11 @@ dependencies = [
 name = "docs_gen"
 version = "0.8.2"
 dependencies = [
+ "grammars",
+ "lsp",
  "pom_cli",
  "pom_mcp",
+ "pomelo-editor",
  "serde_json",
  "settings",
  "workspace",

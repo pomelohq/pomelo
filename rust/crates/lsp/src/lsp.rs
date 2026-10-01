@@ -21,7 +21,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 pub use adapters::{
-    adapter_for, adapters_for, choice_for, set_server_choice, Adapter, ServerChoice,
+    adapter_for, adapters_for, choice_for, default_adapters_for, set_server_choice, Adapter,
+    ServerChoice,
 };
 pub use completion::{
     CompletionDocumentation, CompletionsResponse, LspCompletion, ResolvedCompletion,
