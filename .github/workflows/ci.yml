@@ -24,8 +24,8 @@ jobs:
       rust: ${{ steps.f.outputs.rust }}
       workflows: ${{ steps.f.outputs.workflows }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: f
         with:
           filters: |
@@ -56,14 +56,14 @@ jobs:
       POM_TARGET_LIMIT_GB: 8
     steps:
       # Full history, to tell which files changed since the commit the cached build came from.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # Installs the toolchain rust/rust-toolchain.toml pins.
       - run: rustup show
       # Our own crates are cached too, not only dependencies. Only main saves (a new entry per commit), so a PR
       # starts from the latest main build and the cache stays within the repository's limit.
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache
         with:
           path: |
@@ -102,7 +102,7 @@ jobs:
       - if: github.ref == 'refs/heads/main'
         run: git rev-parse HEAD > target/.built-from
       - if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -134,7 +134,7 @@ jobs:
       ACTIONLINT_VERSION: 1.7.12
       ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           curl -fsSL --max-time 60 --retry 3 -o "$RUNNER_TEMP/$archive" \
