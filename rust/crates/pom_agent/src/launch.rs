@@ -284,23 +284,19 @@ pub fn claude_launch_with(context: &LaunchContext<'_>, options: &LaunchOptions) 
 }
 
 /// Whether holder `name` runs a coding agent for `branch` of `session`: the workspace agent, a numbered
-/// extra one, or a task agent (fixer, onboarder).
+/// extra one, a task agent (fixer, onboarder), or a role started on its own.
 pub fn is_agent_holder(name: &str, session: &str, branch: &str) -> bool {
     let prefix = format!(
         "ws-{}-{}-",
         session.replace('/', "_"),
         branch.replace('/', "_")
     );
-    let Some(role) = name.strip_prefix(&prefix) else {
+    let Some(kind) = name.strip_prefix(&prefix) else {
         return false;
     };
-    [CLAUDE_HOLDER, "fixer", "onboarder"].iter().any(|agent| {
-        role.strip_prefix(agent).is_some_and(|rest| {
-            rest.is_empty()
-                || rest.strip_prefix('-').is_some_and(|number| {
-                    !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
-                })
-        })
+    // Side agents and other CLIs have their own records; only Claude sessions that report through hooks count.
+    crate::identity::role_of_kind(kind).is_some_and(|role| {
+        role.driver == crate::identity::CLAUDE_DRIVER && !kind.starts_with("side-")
     })
 }
 

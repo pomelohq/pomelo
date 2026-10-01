@@ -11,6 +11,7 @@ mod lease;
 mod naming;
 mod onboard;
 mod policy;
+mod presence;
 mod sessions;
 mod side;
 mod statusline;
@@ -45,6 +46,10 @@ pub use onboard::{onboard_launch_with, AgentCli};
 pub use policy::{
     answer_path, ask_policy, decide, hook_output, request_id, take_answer, workspace_policy,
     write_answer, Answer, Decision, Driver, Policy, PolicyLookup, Verdict,
+};
+pub use presence::{
+    answer_as_person, driven_by, pending_approval, session_for_holder, take_over,
+    workspace_agent_state, PendingApproval,
 };
 pub use sessions::{
     events, events_path, now_ms, project_sessions, read_state, record_event, session_dir,
