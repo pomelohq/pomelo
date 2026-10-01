@@ -114,6 +114,19 @@ agents (one workspace at a time; --json for stable output)
                      stream the workspace's agent events as NDJSON
   agent stop <workspace/role>
                      end a session
+  agent send <workspace/role> <text | --file f> [--queue] [--take]
+                     submit one turn (refused unless idle; --queue waits, --take takes the session over)
+  agent wait <workspace/role> [--until idle|awaiting_input|turn-end] [--turn n] [--timeout d]
+                     exit 0 reached, 2 timeout, 3 awaiting input, 4 died
+  agent ask <workspace/role> <text | --file f> [--take] [--timeout d]
+                     send, wait for the turn to end, and read it
+  agent interrupt <workspace/role>
+                     stop the current turn
+  agent approve|deny <workspace/role> <request> [--always]
+                     answer a pending approval of the workspace policy
+  agent takeover [workspace] --session-id <id> [--settings f] [--mcp-config f]
+  agent release <workspace/role>
+                     a person takes a session over, and hands it back
   completion bash|zsh|fish
   version
 

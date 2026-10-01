@@ -8,10 +8,11 @@ mod server;
 mod session;
 
 pub use client::{
-    attach, snapshot, spawn_holder, wait_for_holder, Attached, HolderConnection, SpawnRequest,
+    attach, connect_writer, snapshot, spawn_holder, wait_for_holder, Attached, HolderConnection,
+    SpawnRequest,
 };
 pub use process::{
     ancestors, descendants, parent_pid, peer_pid, process_alive, CrashInfo, SocketDir,
 };
-pub use server::{listen_and_serve, serve};
+pub use server::{listen_and_serve, serve, serve_with_lease};
 pub use session::{Session, StartOptions, Subscription, RING_CAPACITY};

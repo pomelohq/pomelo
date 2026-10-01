@@ -2,6 +2,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::ExitStatusExt;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
 
@@ -56,7 +57,7 @@ pub fn listen_and_serve(
             return Err(error);
         }
     };
-    serve(listener, session.clone())?;
+    serve_with_lease(listener, session.clone(), Some(dir.lease_file(name)))?;
     let watched = session.clone();
     std::thread::Builder::new()
         .name("ptyhost-cleanup".into())
@@ -70,6 +71,15 @@ pub fn listen_and_serve(
 
 /// Accepts clients on `listener` for as long as `session` runs.
 pub fn serve(listener: UnixListener, session: Session) -> io::Result<()> {
+    serve_with_lease(listener, session, None)
+}
+
+/// Like `serve`, and while `lease` holds a token only a client that claimed it may type.
+pub fn serve_with_lease(
+    listener: UnixListener,
+    session: Session,
+    lease: Option<PathBuf>,
+) -> io::Result<()> {
     std::thread::Builder::new()
         .name("ptyhost-accept".into())
         .spawn(move || {
@@ -81,10 +91,11 @@ pub fn serve(listener: UnixListener, session: Session) -> io::Result<()> {
                     continue;
                 };
                 let session = session.clone();
+                let lease = lease.clone();
                 let spawned = std::thread::Builder::new()
                     .name("ptyhost-client".into())
                     .spawn(move || {
-                        if let Err(error) = serve_client(&session, stream) {
+                        if let Err(error) = serve_client(&session, stream, lease) {
                             if error.kind() != io::ErrorKind::BrokenPipe {
                                 eprintln!("ptyhost: client: {error}");
                             }
@@ -110,7 +121,11 @@ fn crash_header(name: &str, status: &ExitStatus) -> String {
     format!("{kind}\t{name} - {detail}\n")
 }
 
-fn serve_client(session: &Session, mut stream: UnixStream) -> io::Result<()> {
+fn serve_client(
+    session: &Session,
+    mut stream: UnixStream,
+    lease: Option<PathBuf>,
+) -> io::Result<()> {
     let (since, pending) = read_leading_resume(&mut stream)?;
     let subscription = session.subscribe_since(since);
     let client = session.add_client();
@@ -127,11 +142,24 @@ fn serve_client(session: &Session, mut stream: UnixStream) -> io::Result<()> {
         std::thread::Builder::new()
             .name("ptyhost-input".into())
             .spawn(move || {
+                let mut claimed: Option<String> = None;
                 if let Some(frame) = pending {
-                    apply(&reader_session, client, &frame);
+                    apply(
+                        &reader_session,
+                        client,
+                        &frame,
+                        lease.as_deref(),
+                        &mut claimed,
+                    );
                 }
                 while let Ok(frame) = frame::read_frame(&mut input) {
-                    apply(&reader_session, client, &frame);
+                    apply(
+                        &reader_session,
+                        client,
+                        &frame,
+                        lease.as_deref(),
+                        &mut claimed,
+                    );
                 }
                 // The client is gone: drop its size and wake the output loop so it ends too.
                 reader_session.remove_client(client);
@@ -166,13 +194,26 @@ fn read_leading_resume(stream: &mut UnixStream) -> io::Result<(u64, Option<Frame
     })
 }
 
-fn apply(session: &Session, client: u64, frame: &Frame) {
+fn apply(
+    session: &Session,
+    client: u64,
+    frame: &Frame,
+    lease: Option<&Path>,
+    claimed: &mut Option<String>,
+) {
     match frame.kind {
         frame::INPUT => {
+            // A session someone else drives is view-only to everyone who has not claimed its lease.
+            if let Some(token) = lease.and_then(crate::process::input_lease_at) {
+                if claimed.as_deref() != Some(token.as_str()) {
+                    return;
+                }
+            }
             if let Err(error) = session.write(&frame.payload) {
                 eprintln!("ptyhost: input: {error}");
             }
         }
+        frame::CLAIM => *claimed = Some(String::from_utf8_lossy(&frame.payload).into_owned()),
         frame::RESIZE => {
             if let Some((cols, rows)) = frame::parse_resize(&frame.payload) {
                 session.client_size(client, cols, rows);

@@ -57,6 +57,42 @@ impl SocketDir {
         self.root.join(format!("{}.crash", Self::stem(name)))
     }
 
+    /// While this file names a token, only clients that claimed it may type into the holder.
+    pub fn lease_file(&self, name: &str) -> PathBuf {
+        self.root.join(format!("{}.lease", Self::stem(name)))
+    }
+
+    /// Lets only clients claiming `token` type into holder `name`; `None` lets every client type again.
+    pub fn set_input_lease(&self, name: &str, token: Option<&str>) -> std::io::Result<()> {
+        let path = self.lease_file(name);
+        match token {
+            Some(token) => {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                std::fs::create_dir_all(&self.root)?;
+                let staged =
+                    self.root
+                        .join(format!("{}.lease.{}", Self::stem(name), std::process::id()));
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&staged)?;
+                file.write_all(token.as_bytes())?;
+                std::fs::rename(&staged, &path)
+            }
+            None => match std::fs::remove_file(&path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            },
+        }
+    }
+
+    pub fn input_lease(&self, name: &str) -> Option<String> {
+        input_lease_at(&self.lease_file(name))
+    }
+
     pub fn holder_pid(&self, name: &str) -> Option<i32> {
         let text = std::fs::read_to_string(self.pidfile(name)).ok()?;
         text.lines().next()?.trim().parse().ok()
@@ -146,6 +182,13 @@ pub struct CrashInfo {
     pub crashed: bool,
     pub header: String,
     pub output: Vec<u8>,
+}
+
+pub(crate) fn input_lease_at(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 pub(crate) fn remove_quietly(path: &Path) {

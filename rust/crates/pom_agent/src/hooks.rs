@@ -146,6 +146,7 @@ pub fn session_event(input: &[u8]) -> Option<SessionEvent> {
             "UserPromptSubmit" => json!({ "prompt_chars": field("prompt").chars().count() }),
             "Stop" => json!({ "stop_reason": "end_turn" }),
             "PreCompact" => json!({ "trigger": field("trigger") }),
+            "SessionEnd" => json!({ "reason": field("reason") }),
             _ => Value::Null,
         },
     })
@@ -301,7 +302,18 @@ fn pre_tool_use_decision(
     let decision = match workspace_policy(Path::new(cwd)) {
         PolicyLookup::None => return None,
         PolicyLookup::Unreadable(reason) => Decision::deny(reason),
-        PolicyLookup::Found(policy) => decide(state, identity, &body, &policy, Driver::Person),
+        PolicyLookup::Found(policy) => {
+            let driven = identity.is_some_and(|identity| {
+                crate::lease::read_lease(state, &identity.holder).class
+                    != crate::lease::LeaseClass::Human
+            });
+            let driver = if driven {
+                Driver::Orchestrator
+            } else {
+                Driver::Person
+            };
+            decide(state, identity, &body, &policy, driver)
+        }
     };
     Some(hook_output(&decision))
 }
