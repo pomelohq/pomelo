@@ -59,8 +59,22 @@ fn language_icon(lang: Lang) -> MaterialIcon {
         .iter()
         .map(String::as_str)
         .chain(lang.path_suffixes().iter().copied())
-        .map(|suffix| crate::file_icon(&format!("file.{suffix}")))
+        // A suffix can be a whole file name (`Dockerfile`, `COMMIT_EDITMSG`) as well as an extension.
+        .flat_map(|suffix| {
+            [
+                crate::file_icon(suffix),
+                crate::file_icon(&format!("file.{suffix}")),
+            ]
+        })
         .find(|icon| *icon != MaterialIcon::Document)
+        .or_else(|| {
+            // A package language that isn't installed yet registers no endings: go by its known extensions.
+            (lang != Lang::PlainText).then_some(())?;
+            crate::EXTENSION_ICONS
+                .iter()
+                .find(|(extensions, _)| extensions.iter().any(|ext| Lang::from_ext(ext) == lang))
+                .map(|(_, icon)| *icon)
+        })
         .unwrap_or(MaterialIcon::Document)
 }
 
@@ -342,6 +356,27 @@ mod tests {
     #[test]
     fn languages_show_their_file_icon() {
         assert!(language_icon(Lang::Rust) == crate::file_icon("main.rs"));
-        assert!(language_icon(Lang::Ruby) != MaterialIcon::Document);
+        let generic: Vec<&str> = Lang::LANGUAGES
+            .iter()
+            .filter(|lang| **lang != Lang::PlainText)
+            .filter(|lang| language_icon(**lang) == MaterialIcon::Document)
+            .map(|lang| lang.name())
+            .collect();
+        assert!(generic.is_empty(), "no icon of their own: {generic:?}");
+        assert!(language_icon(Lang::PlainText) == MaterialIcon::Document);
+    }
+
+    #[test]
+    fn file_names_without_a_telling_extension_get_their_icon() {
+        use crate::file_icon;
+        for name in [".env", ".env.local", ".env.development.local"] {
+            assert!(file_icon(name) == MaterialIcon::Tune, "{name}");
+        }
+        assert!(file_icon("Dockerfile") == MaterialIcon::Docker);
+        assert!(file_icon("Makefile") == MaterialIcon::Makefile);
+        assert!(file_icon("COMMIT_EDITMSG") == MaterialIcon::Git);
+        assert!(file_icon("schema.sql") == MaterialIcon::Database);
+        assert!(file_icon("logo.svg") == MaterialIcon::Image);
+        assert!(file_icon("notes.txt") == MaterialIcon::Document);
     }
 }
