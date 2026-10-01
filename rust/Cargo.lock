@@ -1774,6 +1774,7 @@ version = "0.7.7"
 dependencies = [
  "base64",
  "ed25519-dalek",
+ "grammars",
  "pomelo-editor",
  "serde",
  "serde_json",

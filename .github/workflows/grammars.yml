@@ -1,19 +1,22 @@
 name: Grammars
 
 # Builds the grammar packages the app downloads and checks each one reads its sample exactly like the compiled-in
-# language: highlights, the syntax tree, every other query it uses, and its editing config. Publishing is manual: run it with publish=true to sign the index and put the packages in the one
-# `grammars` release, updated in place.
+# language did: highlights, the syntax tree, every other query it uses, and its editing config.
+# On main, packages whose inputs changed are signed and put in the one `grammars` release, updated in place;
+# unchanged ones keep their published file and signature. A pull request shows what would be published.
+# Run by hand with publish=true to sign and publish every package again.
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Sign the index and update the grammars release
+        description: Sign and publish every package again, changed or not
         type: boolean
         default: false
   pull_request:
     paths:
       - 'rust/grammars/**'
       - 'rust/crates/grammar_packager/**'
+      - 'rust/crates/grammars/**'
       - 'rust/crates/editor/queries/**'
       - 'rust/crates/editor/src/**'
       - '.github/workflows/grammars.yml'
@@ -22,6 +25,7 @@ on:
     paths:
       - 'rust/grammars/**'
       - 'rust/crates/grammar_packager/**'
+      - 'rust/crates/grammars/**'
       - 'rust/crates/editor/queries/**'
       - 'rust/crates/editor/src/**'
       - '.github/workflows/grammars.yml'
@@ -29,14 +33,21 @@ on:
 permissions:
   contents: read
 
+# Main runs queue instead of cancelling, so a publish is never cut off and two never write the release at once.
 concurrency:
   group: grammars-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  RELEASE_URL: https://github.com/${{ github.repository }}/releases/download/grammars
 
 jobs:
   build:
     name: Build and verify packages
     runs-on: macos-15
+    timeout-minutes: 45
+    outputs:
+      changed: ${{ steps.keep.outputs.changed }}
     defaults:
       run:
         working-directory: rust
@@ -58,13 +69,36 @@ jobs:
           path: ~/grammar-cache/wasi-sdk-34
           key: wasi-sdk-34-${{ runner.os }}-${{ runner.arch }}
       - name: Build packages
-        run: |
-          cargo run -p grammar_packager -- build --out target/grammar-packages --cache ~/grammar-cache \
-            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/grammars"
+        run: cargo run -p grammar_packager -- build --out target/grammar-packages --cache ~/grammar-cache --base-url "$RELEASE_URL"
       - name: Verify packages highlight like the compiled-in grammars
         run: cargo run -p grammar_packager -- verify --out target/grammar-packages
-      - name: Sign the index
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+      # A forced run publishes everything; otherwise only packages whose inputs differ from what is published.
+      - name: Keep the published packages that did not change
+        id: keep
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        run: |
+          published="$RUNNER_TEMP/published-index.json"
+          status=$(curl -sL --max-time 60 --retry 3 -o "$published" -w '%{http_code}' "$RELEASE_URL/index.json" || true)
+          case "$status" in
+            200) ;;
+            404) rm -f "$published"; echo "nothing published yet" ;;
+            *) echo "could not read the published index (HTTP $status)"; exit 1 ;;
+          esac
+          if [ "$FORCE" = "true" ]; then
+            cargo run -p grammar_packager -- keep-published --published /nonexistent --out target/grammar-packages
+          else
+            cargo run -p grammar_packager -- keep-published --published "$published" --out target/grammar-packages
+          fi
+          changed=$(grep -c . target/grammar-packages/changed.txt || true)
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Grammar packages"
+            if [ "$changed" = "0" ]; then echo "Nothing to publish: every package matches the published one."
+            else echo "To publish: $(paste -sd, target/grammar-packages/changed.txt | sed 's/,/, /g')"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Sign the changed packages
+        if: ${{ steps.keep.outputs.changed != '0' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
         env:
           GRAMMARS_SIGNING_KEY: ${{ secrets.GRAMMARS_SIGNING_KEY }}
         run: cargo run -p grammar_packager -- sign --out target/grammar-packages
@@ -73,12 +107,14 @@ jobs:
           name: grammar-packages
           path: rust/target/grammar-packages/
           if-no-files-found: error
+          retention-days: 7
 
   publish:
     name: Publish the grammars release
     needs: build
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    if: ${{ needs.build.outputs.changed != '0' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -86,7 +122,7 @@ jobs:
         with:
           name: grammar-packages
           path: packages
-      # The app refuses unsigned packages, so an index without signatures is not published.
+      # The app refuses unsigned packages, so an index without every signature is not published.
       - name: Check the index is signed
         run: |
           if jq -e '.packages | any(.signature == null)' packages/index.json >/dev/null; then
@@ -94,15 +130,19 @@ jobs:
             exit 1
           fi
       # One release, updated in place and never marked latest: the app's updater reads only the newest releases,
-      # which must stay the app's own.
+      # which must stay the app's own. Archives go up before the index that points at them; old archives stay,
+      # since an app may still hold an index that names them.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd packages
-          if gh release view grammars --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload grammars --repo "$GITHUB_REPOSITORY" --clobber ./*
-          else
+          archives=$(ls ./*.tar.gz 2>/dev/null || true)
+          if ! gh release view grammars --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create grammars --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
-              --title "Grammar packages" --notes "Grammar packages, built from rust/grammars/manifest.toml." ./*
+              --title "Grammar packages" --notes "Grammar packages, built from rust/grammars/manifest.toml."
           fi
+          if [ -n "$archives" ]; then
+            gh release upload grammars --repo "$GITHUB_REPOSITORY" --clobber $archives
+          fi
+          gh release upload grammars --repo "$GITHUB_REPOSITORY" --clobber index.json

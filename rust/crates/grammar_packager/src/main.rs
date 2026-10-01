@@ -1,10 +1,11 @@
 //! Builds the grammar packages the app downloads instead of compiling those grammars in.
 //!
 //! `build` compiles each grammar in `grammars/manifest.toml` to wasm from the crate version it names, with the
-//! queries and editing config in `grammars/languages/<id>/`, into `<id>-<version>.tar.gz` plus an
+//! queries and editing config in `grammars/languages/<id>/`, into `<id>-<version>-<input hash>.tar.gz` plus an
 //! `index.json`. `verify` loads the built packages the way the app does and checks each gives for its sample
-//! what `grammars/expected/<id>.json` records the compiled-in language gave. `sign` signs each package's
-//! sha256 in the index; `keygen` makes the signing key.
+//! what `grammars/expected/<id>.json` records the compiled-in language gave. `keep-published` keeps the
+//! published package of every language whose inputs did not change. `sign` signs the packages not signed yet;
+//! `check-index` checks an index is signed by the app's key; `keygen` makes the signing key.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,8 +21,12 @@ use sha2::{Digest, Sha256};
 /// The wasi-sdk release grammars are compiled with.
 const WASI_SDK_VERSION: &str = "34";
 const SIGNING_KEY_ENV: &str = "GRAMMARS_SIGNING_KEY";
+/// Flags every grammar compiles with; part of each package's input hash.
+const COMPILE_FLAGS: [&str; 3] = ["-fPIC", "-shared", "-Os"];
+/// Bumped when what goes into a package changes in a way its inputs don't show, so every package is rebuilt.
+const PACKAGE_FORMAT: u32 = 1;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Entry {
     language: String,
     #[serde(rename = "crate")]
@@ -61,6 +66,9 @@ struct IndexEntry {
     license: String,
     repository: String,
     rev: String,
+    /// What the package was built from; unchanged inputs keep the published package.
+    #[serde(default)]
+    input_hash: Option<String>,
     /// How the app recognizes the language's files before the package is installed.
     #[serde(default)]
     path_suffixes: Vec<String>,
@@ -81,11 +89,14 @@ fn main() {
         Some("build") => build(&args[1..]),
         Some("verify") => verify(&args[1..]),
         Some("sign") => sign(&args[1..]),
+        Some("keep-published") => keep_published(&args[1..]),
+        Some("check-index") => check_index(&args[1..]),
         Some("keygen") => keygen(),
         _ => Err(
             "usage: grammar_packager build [--out DIR] [--only id,id] [--base-url URL] [--cache DIR]\n       \
              grammar_packager verify [--out DIR]\n       grammar_packager sign [--out DIR]\n       \
-             grammar_packager keygen"
+             grammar_packager keep-published --published FILE [--out DIR]\n       \
+             grammar_packager check-index --index FILE\n       grammar_packager keygen"
                 .to_string(),
         ),
     };
@@ -285,7 +296,7 @@ fn compile(clang: &Path, src: &Path, grammar: &str, out: &Path) -> Result<(), St
     let scanner = src.join("scanner.c");
     let mut command = Command::new(clang);
     command
-        .args(["-fPIC", "-shared", "-Os"])
+        .args(COMPILE_FLAGS)
         .arg(format!("-Wl,--export=tree_sitter_{grammar}"))
         .arg("-o")
         .arg(out)
@@ -296,6 +307,60 @@ fn compile(clang: &Path, src: &Path, grammar: &str, out: &Path) -> Result<(), St
         command.arg(&scanner);
     }
     run(&mut command)
+}
+
+/// Everything a package is made from: its crate, how it compiles, the toolchain and the language's own
+/// queries and config. The grammar's wasm bytes differ from build to build, so packages are compared by this.
+fn input_hash(entry: &Entry, kept: &Path) -> Result<String, String> {
+    let mut hasher = Sha256::new();
+    let fields = [
+        format!("format={PACKAGE_FORMAT}"),
+        format!("crate={}", entry.crate_name),
+        format!("version={}", entry.version),
+        format!("checksum={}", entry.checksum),
+        format!("source={}", entry.source.as_deref().unwrap_or_default()),
+        format!("grammar={}", entry.grammar),
+        format!("language={}", entry.language),
+        format!("repository={}", entry.repository),
+        format!("rev={}", entry.rev),
+        format!("license={}", entry.license),
+        format!(
+            "license_file={}",
+            entry.license_file.as_deref().unwrap_or_default()
+        ),
+        format!(
+            "license_path={}",
+            entry.license_path.as_deref().unwrap_or_default()
+        ),
+        format!("wasi-sdk={WASI_SDK_VERSION}"),
+        format!("flags={}", COMPILE_FLAGS.join(" ")),
+    ];
+    for field in fields {
+        hasher.update(field.as_bytes());
+        hasher.update(b"\n");
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(kept)
+        .map_err(|error| format!("{}: {error}", kept.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+    for file in files {
+        let name = file
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let bytes = std::fs::read(&file).map_err(|error| format!("{}: {error}", file.display()))?;
+        hasher.update(name.as_bytes());
+        hasher.update([0]);
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// `language.toml`: where the package comes from, then the language's matcher and editing config as kept in
@@ -384,7 +449,9 @@ fn build(args: &[String]) -> Result<(), String> {
         };
         write("language.toml", &language_toml(entry, &kept_toml))?;
         write("LICENSE", &license_text(entry, &source, &cache)?)?;
-        let file = format!("{id}-{version}.tar.gz");
+        let hash = input_hash(entry, &kept)?;
+        // The hash in the name keeps a rebuilt package from replacing the file an older index still points at.
+        let file = format!("{id}-{version}-{}.tar.gz", &hash[..8]);
         let archive = out.join(&file);
         run(Command::new("tar")
             .arg("-czf")
@@ -410,6 +477,7 @@ fn build(args: &[String]) -> Result<(), String> {
             license: entry.license.clone(),
             repository: entry.repository.clone(),
             rev: entry.rev.clone(),
+            input_hash: Some(hash),
             path_suffixes: matcher.path_suffixes,
             first_line_pattern: matcher.first_line_pattern,
         });
@@ -605,7 +673,13 @@ fn sign(args: &[String]) -> Result<(), String> {
     let key = signing_key(&seed)?;
     let out = out_dir(args);
     let mut index = read_index(&out)?;
-    for package in &mut index.packages {
+    let mut signed = 0;
+    for package in index
+        .packages
+        .iter_mut()
+        .filter(|package| package.signature.is_none())
+    {
+        signed += 1;
         let bytes = std::fs::read(out.join(&package.file)).map_err(|error| error.to_string())?;
         if sha256_hex(&bytes) != package.sha256 {
             return Err(format!(
@@ -620,9 +694,102 @@ fn sign(args: &[String]) -> Result<(), String> {
     }
     write_index(&out, &index)?;
     eprintln!(
-        "signed {} packages with public key {}",
-        index.packages.len(),
+        "signed {signed} packages with public key {}",
         base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes())
+    );
+    Ok(())
+}
+
+/// Swaps each freshly built package for the published one when its inputs are the same, deleting the fresh
+/// archive so only changed packages are uploaded; writes the ids still to publish to `changed.txt`.
+fn keep_published(args: &[String]) -> Result<(), String> {
+    let out = out_dir(args);
+    let published_path =
+        option(args, "--published").ok_or("keep-published needs --published FILE")?;
+    let published: Index = match std::fs::read_to_string(published_path) {
+        Ok(text) => {
+            serde_json::from_str(&text).map_err(|error| format!("{published_path}: {error}"))?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Index {
+            version: 1,
+            packages: Vec::new(),
+        },
+        Err(error) => return Err(format!("{published_path}: {error}")),
+    };
+    let mut index = read_index(&out)?;
+    let mut changed = Vec::new();
+    for package in &mut index.packages {
+        let same = published.packages.iter().find(|old| {
+            old.id == package.id
+                && old.signature.is_some()
+                && old.url.is_some()
+                && old.input_hash.is_some()
+                && old.input_hash == package.input_hash
+        });
+        match same {
+            Some(old) => {
+                let fresh = out.join(&package.file);
+                if fresh.exists() {
+                    std::fs::remove_file(&fresh)
+                        .map_err(|error| format!("{}: {error}", fresh.display()))?;
+                }
+                *package = IndexEntry {
+                    id: old.id.clone(),
+                    language: old.language.clone(),
+                    version: old.version.clone(),
+                    file: old.file.clone(),
+                    url: old.url.clone(),
+                    size: old.size,
+                    sha256: old.sha256.clone(),
+                    signature: old.signature.clone(),
+                    license: old.license.clone(),
+                    repository: old.repository.clone(),
+                    rev: old.rev.clone(),
+                    input_hash: old.input_hash.clone(),
+                    path_suffixes: package.path_suffixes.clone(),
+                    first_line_pattern: package.first_line_pattern.clone(),
+                };
+            }
+            None => changed.push(package.id.clone()),
+        }
+    }
+    let removed: Vec<&str> = published
+        .packages
+        .iter()
+        .filter(|old| !index.packages.iter().any(|package| package.id == old.id))
+        .map(|old| old.id.as_str())
+        .collect();
+    write_index(&out, &index)?;
+    std::fs::write(out.join("changed.txt"), changed.join("\n"))
+        .map_err(|error| error.to_string())?;
+    eprintln!(
+        "{} of {} packages changed: {}{}",
+        changed.len(),
+        index.packages.len(),
+        if changed.is_empty() {
+            "none".to_string()
+        } else {
+            changed.join(", ")
+        },
+        if removed.is_empty() {
+            String::new()
+        } else {
+            format!("; no longer listed: {}", removed.join(", "))
+        }
+    );
+    Ok(())
+}
+
+/// Checks every package in the index at `--index` is signed by the key the app carries.
+fn check_index(args: &[String]) -> Result<(), String> {
+    let path = option(args, "--index").ok_or("check-index needs --index FILE")?;
+    let text = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+    let index = grammars::parse_index(&text).map_err(|error| format!("{path}: {error}"))?;
+    let key = grammars::GRAMMARS_PUBLIC_KEY.ok_or("the app carries no grammars key")?;
+    grammars::verify_index(&index, key)?;
+    eprintln!(
+        "{path}: {} packages, every one signed by the app's key",
+        index.packages.len()
     );
     Ok(())
 }
@@ -677,6 +844,126 @@ mod tests {
                 "{id}: exactly one of license_file and license_path"
             );
         }
+    }
+
+    #[test]
+    fn a_package_input_hash_follows_its_files_and_its_crate() {
+        let paths = workspace_paths();
+        let manifest = read_manifest(&paths.manifest).expect("manifest");
+        let entry = &manifest["kotlin"];
+        let temp = tempfile::tempdir().expect("temp");
+        let kept = temp.path().join("kotlin");
+        std::fs::create_dir_all(&kept).expect("dir");
+        std::fs::write(kept.join("highlights.scm"), "(comment) @comment").expect("write");
+        let first = input_hash(entry, &kept).expect("hash");
+        assert_eq!(first, input_hash(entry, &kept).expect("hash"), "stable");
+        std::fs::write(kept.join("highlights.scm"), "(comment) @comment.line").expect("write");
+        let edited = input_hash(entry, &kept).expect("hash");
+        assert_ne!(first, edited, "a query edit changes it");
+        let mut bumped = entry.clone();
+        bumped.version = "9.9.9".into();
+        assert_ne!(
+            edited,
+            input_hash(&bumped, &kept).expect("hash"),
+            "a crate bump changes it"
+        );
+    }
+
+    fn entry_for(id: &str, hash: &str, signature: Option<&str>) -> IndexEntry {
+        IndexEntry {
+            id: id.into(),
+            language: id.into(),
+            version: "1".into(),
+            file: format!("{id}-1-{}.tar.gz", &hash[..8.min(hash.len())]),
+            url: Some(format!("https://example.invalid/{id}")),
+            size: 1,
+            sha256: "00".repeat(32),
+            signature: signature.map(str::to_string),
+            license: "MIT".into(),
+            repository: "https://example.invalid".into(),
+            rev: "r".into(),
+            input_hash: Some(hash.into()),
+            path_suffixes: vec![id.into()],
+            first_line_pattern: None,
+        }
+    }
+
+    #[test]
+    fn only_packages_whose_inputs_changed_are_published_again() {
+        let temp = tempfile::tempdir().expect("temp");
+        let out = temp.path().join("out");
+        std::fs::create_dir_all(&out).expect("dir");
+        let mut fresh = Vec::new();
+        for (id, hash) in [
+            ("lua", "aaaaaaaa11"),
+            ("nix", "bbbbbbbb22"),
+            ("zig", "cccccccc33"),
+        ] {
+            let mut entry = entry_for(id, hash, None);
+            entry.url = Some(format!("https://example.invalid/new/{id}"));
+            std::fs::write(out.join(&entry.file), id).expect("archive");
+            fresh.push(entry);
+        }
+        write_index(
+            &out,
+            &Index {
+                version: 1,
+                packages: fresh,
+            },
+        )
+        .expect("index");
+        let published = temp.path().join("published.json");
+        let old = Index {
+            version: 1,
+            packages: vec![
+                entry_for("lua", "aaaaaaaa11", Some("signed-lua")),
+                entry_for("nix", "dddddddd44", Some("signed-nix")),
+                entry_for("elm", "eeeeeeee55", Some("signed-elm")),
+            ],
+        };
+        std::fs::write(&published, serde_json::to_string(&old).expect("json")).expect("write");
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        keep_published(&args(&[
+            "--published",
+            published.to_str().expect("path"),
+            "--out",
+            out.to_str().expect("path"),
+        ]))
+        .expect("keep");
+        let index = read_index(&out).expect("index");
+        let lua = index
+            .packages
+            .iter()
+            .find(|package| package.id == "lua")
+            .expect("lua");
+        assert_eq!(
+            lua.signature.as_deref(),
+            Some("signed-lua"),
+            "kept as published"
+        );
+        assert!(
+            !out.join("lua-1-aaaaaaaa.tar.gz").exists(),
+            "its fresh archive is not uploaded"
+        );
+        let nix = index
+            .packages
+            .iter()
+            .find(|package| package.id == "nix")
+            .expect("nix");
+        assert!(
+            nix.signature.is_none() && out.join(&nix.file).exists(),
+            "changed: rebuilt"
+        );
+        assert!(!index.packages.iter().any(|package| package.id == "elm"));
+        let changed = std::fs::read_to_string(out.join("changed.txt")).expect("changed");
+        assert_eq!(changed.lines().collect::<Vec<_>>(), ["nix", "zig"]);
+        keep_published(&args(&[
+            "--published",
+            "/nonexistent/index.json",
+            "--out",
+            out.to_str().expect("path"),
+        ]))
+        .expect("nothing published yet is fine");
     }
 
     #[test]

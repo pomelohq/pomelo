@@ -46,13 +46,18 @@ Grammars the app doesn't compile in are packages it downloads: `rust/grammars/ma
 built from the crate version and checksum it names, with the queries and editing config in
 `rust/grammars/languages/<id>/`. `rust/grammars/expected/<id>.json` records what the compiled-in language gave
 for its sample before it left the app; `verify` holds every package to it. `.github/workflows/grammars.yml`
-builds and checks them on every change; run it by hand with `publish=true` to sign `index.json` and upload the packages to the one `grammars`
-release, updated in place. It is never marked latest, because the latest release must keep carrying
-`appcast.xml`, and there is only ever one so it never pushes app releases out of the updater's view.
+builds and checks them on every change. On main it then publishes, by itself, the packages whose inputs changed
+(crate, queries and config, compile flags, wasi-sdk; each package records them as `input_hash`), signed, to the
+one `grammars` release, updated in place; unchanged packages keep their published file and signature, and a
+pull request's run lists what would be published. Run it by hand with `publish=true` to publish every package
+again. The release is never marked latest, because the latest release must keep carrying `appcast.xml`, and
+there is only ever one so it never pushes app releases out of the updater's view. Old archives stay on it, since
+an app may still hold an index that names them.
 
 The app reads `https://github.com/pomelohq/pomelo/releases/download/grammars/index.json` at most once a day, and
-falls back to the copy built into it from `rust/grammars/index.json`. Before an app release that relies on new
-packages, copy the published `index.json` into `rust/grammars/index.json`.
+falls back to the copy built into it. `release.yml` downloads the published index, refuses it unless every
+package is signed by the app's key, and builds it into the release; `rust/grammars/index.json` is only the copy
+dev builds carry, and the fallback when the release can't download.
 
 One-time setup, before the first publish:
 
@@ -64,7 +69,8 @@ One-time setup, before the first publish:
    app downloads nothing and never suggests a package; once set, every package must match its sha256 and its
    signature or it is refused.
 
-Locally: `cargo run -p grammar_packager -- build` then `-- verify` (needs network for crates.io and wasi-sdk).
+Locally: `cargo run -p grammar_packager -- build` then `-- verify` (needs network for crates.io and wasi-sdk);
+`-- check-index --index FILE` checks an index is signed by the app's key.
 
 ## Rules
 
