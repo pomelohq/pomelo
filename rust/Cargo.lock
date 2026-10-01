@@ -1184,6 +1184,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "docs_gen"
+version = "0.8.2"
+dependencies = [
+ "serde_json",
+ "settings",
+ "workspace",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
