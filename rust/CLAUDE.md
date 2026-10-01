@@ -39,6 +39,7 @@ Our crates must be warning-clean.
 
 ## Build / run / release (macOS, Apple Silicon only)
 
+- Building needs `cmake` (`brew install cmake`): tree-sitter's wasm runtime, which loads grammar packages, builds with it.
 - `make run` builds + launches **PomeloDev.app** (kills the previous dev instance first). Dev and prod are
   distinct bundles that coexist: `PomeloDev.app` (`com.pomelo.app.dev`) and `Pomelo.app` (`com.pomelo.app`,
   the same id as the earlier Swift app, so installs update in place and keep their permissions).

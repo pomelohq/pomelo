@@ -427,7 +427,7 @@ pub fn injection_patterns(lang: Lang) -> Option<Arc<str>> {
 }
 
 /// The injection query a compiled-in grammar ships with, where it has one.
-fn native_injections(lang: Lang) -> Option<&'static str> {
+pub(crate) fn native_injections(lang: Lang) -> Option<&'static str> {
     Some(match lang {
         Lang::Markdown => tree_sitter_md::INJECTION_QUERY_BLOCK,
         Lang::MarkdownInline => tree_sitter_md::INJECTION_QUERY_INLINE,
@@ -581,7 +581,7 @@ fn native_grammar(lang: Lang) -> Option<tree_sitter::Language> {
 }
 
 /// The highlight query a compiled-in grammar is read with.
-fn native_highlights(lang: Lang) -> &'static str {
+pub(crate) fn native_highlights(lang: Lang) -> &'static str {
     match lang {
         Lang::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
         Lang::TypeScript => TYPESCRIPT_HIGHLIGHTS.as_str(),
@@ -638,7 +638,7 @@ fn native_highlights(lang: Lang) -> &'static str {
 
 /// The grammar that parses `lang` and its highlight query; none for plain text.
 pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, Arc<str>)> {
-    language_registry().read().ok()?.grammar(lang)
+    crate::registry::request_grammar(language_registry(), lang)
 }
 
 /// The languages and grammars compiled into the app. Languages with a first-line pattern keep the order
