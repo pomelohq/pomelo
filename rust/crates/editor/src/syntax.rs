@@ -14,12 +14,13 @@ use crate::highlight::{grammar, Lang, HIGHLIGHT_NAMES};
 use crate::indent::{compute_autoindents, IndentQuery, IndentRegexes, IndentSize, IndentView};
 use crate::injection::{InjectionQuery, Injections, LayerCapture};
 use crate::outline::{OutlineItem, OutlineQuery};
+use crate::parsers::with_parser;
 use ropey::Rope;
 use std::ops::{ControlFlow, Range};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 use tree_sitter::{
-    Language, Node, ParseOptions, Parser, Query, QueryCaptures, QueryCursor, StreamingIterator,
+    Language, Node, ParseOptions, Query, QueryCaptures, QueryCursor, StreamingIterator,
     TextProvider, Tree,
 };
 
@@ -79,6 +80,8 @@ impl LanguageQueries {
         if let Some(compiled) = cache.lock().ok()?.get(&lang) {
             return compiled.clone();
         }
+        // A grammar still loading from its package is asked for again once it is ready.
+        grammar(lang)?;
         // Compiled outside the lock so a slow language doesn't hold up files of another.
         let compiled = LanguageQueries::compile(lang).map(std::sync::Arc::new);
         cache.lock().ok()?.entry(lang).or_insert(compiled).clone()
@@ -201,10 +204,7 @@ impl Syntax {
         if fresh || self.background.is_some() {
             return;
         }
-        let mut parser = Parser::new();
-        if parser.set_language(&self.queries.language).is_err() {
-            return;
-        }
+        let language = self.queries.language.clone();
         let started = Instant::now();
         let mut out_of_budget = |_: &tree_sitter::ParseState| {
             if started.elapsed() > SYNC_PARSE_BUDGET {
@@ -213,13 +213,17 @@ impl Syntax {
                 ControlFlow::Continue(())
             }
         };
-        let options = ParseOptions::new().progress_callback(&mut out_of_budget);
         let rope = &buffer.rope;
-        let parsed = parser.parse_with_options(
-            &mut |byte, _| chunk_from(rope, byte),
-            self.tree.as_ref(),
-            Some(options),
-        );
+        let old_tree = self.tree.as_ref();
+        let parsed = with_parser(|parser| {
+            parser.set_language(&language).ok()?;
+            let options = ParseOptions::new().progress_callback(&mut out_of_budget);
+            parser.parse_with_options(
+                &mut |byte, _| chunk_from(rope, byte),
+                old_tree,
+                Some(options),
+            )
+        });
         match parsed {
             Some(tree) => {
                 self.tree = Some(tree);
@@ -237,16 +241,14 @@ impl Syntax {
             return;
         }
         self.background = None;
-        let mut parser = Parser::new();
-        if parser.set_language(&self.queries.language).is_err() {
-            return;
-        }
+        let language = self.queries.language.clone();
         let rope = &buffer.rope;
-        if let Some(tree) = parser.parse_with_options(
-            &mut |byte, _| chunk_from(rope, byte),
-            self.tree.as_ref(),
-            None,
-        ) {
+        let old_tree = self.tree.as_ref();
+        let parsed = with_parser(|parser| {
+            parser.set_language(&language).ok()?;
+            parser.parse_with_options(&mut |byte, _| chunk_from(rope, byte), old_tree, None)
+        });
+        if let Some(tree) = parsed {
             self.tree = Some(tree);
             self.parsed_version = version;
         }
@@ -287,15 +289,14 @@ impl Syntax {
         let old_tree = self.tree.clone();
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
-            let mut parser = Parser::new();
-            let tree = match parser.set_language(&language) {
-                Ok(()) => parser.parse_with_options(
+            let tree = with_parser(|parser| {
+                parser.set_language(&language).ok()?;
+                parser.parse_with_options(
                     &mut |byte, _| chunk_from(&rope, byte),
                     old_tree.as_ref(),
                     None,
-                ),
-                Err(_) => None,
-            };
+                )
+            });
             // The receiver is gone only if the editor closed; nothing to report then.
             let _ = sender.send((tree, version));
         });

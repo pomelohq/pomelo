@@ -3,6 +3,7 @@
 //! somewhere other than the app binary; a language's queries are only loaded when it is first used.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
 use crate::highlight::Lang;
@@ -34,9 +35,23 @@ struct AvailableLanguage {
     loaded: OnceLock<LanguageQueries>,
 }
 
-/// Where a grammar stands. Compiled in for now; one read from a package on first use adds states here.
+/// Where a grammar stands: compiled in, or a package's wasm compiled on first use.
 enum GrammarState {
     Native(tree_sitter::Language),
+    Unloaded(PathBuf),
+    Loading,
+    Loaded(tree_sitter::Language),
+    /// Its compile failed (logged); not tried again this run.
+    Failed,
+}
+
+/// What a lookup of a language's grammar found.
+pub enum GrammarLookup {
+    Ready(tree_sitter::Language, Arc<str>),
+    /// Its package's wasm, by grammar name, waits to be compiled.
+    NeedsLoad(Arc<str>, PathBuf),
+    /// Still compiling, failed, or the language has none.
+    Unavailable,
 }
 
 #[derive(Default)]
@@ -58,6 +73,19 @@ impl LanguageRegistry {
             grammars
                 .into_iter()
                 .map(|(name, grammar)| (name, GrammarState::Native(grammar))),
+        );
+        self.version += 1;
+    }
+
+    /// Grammars read from packages: each `.wasm` is compiled the first time a file needs it.
+    pub fn register_wasm_grammars(
+        &mut self,
+        grammars: impl IntoIterator<Item = (Arc<str>, PathBuf)>,
+    ) {
+        self.grammars.extend(
+            grammars
+                .into_iter()
+                .map(|(name, path)| (name, GrammarState::Unloaded(path))),
         );
         self.version += 1;
     }
@@ -87,6 +115,13 @@ impl LanguageRegistry {
     pub fn set_file_types(&mut self, file_types: Vec<(Lang, Vec<String>)>) {
         self.file_types = file_types;
         self.version += 1;
+    }
+
+    pub fn matcher(&self, lang: Lang) -> Option<LanguageMatcher> {
+        self.languages
+            .iter()
+            .find(|language| language.lang == lang)
+            .map(|language| language.matcher.clone())
     }
 
     pub fn version(&self) -> u64 {
@@ -164,17 +199,112 @@ impl LanguageRegistry {
             .any(|language| language.lang == lang && language.loaded.get().is_some())
     }
 
-    /// The grammar that parses `lang` and its highlight query; none for a language without a grammar.
+    /// The grammar that parses `lang` and its highlight query; none for a language without a grammar, or
+    /// one whose package isn't compiled yet.
     pub fn grammar(&self, lang: Lang) -> Option<(tree_sitter::Language, Arc<str>)> {
-        let language = self
+        match self.lookup_grammar(lang) {
+            GrammarLookup::Ready(grammar, highlights) => Some((grammar, highlights)),
+            GrammarLookup::NeedsLoad(..) | GrammarLookup::Unavailable => None,
+        }
+    }
+
+    pub fn lookup_grammar(&self, lang: Lang) -> GrammarLookup {
+        let Some((name, state)) = self
             .languages
             .iter()
-            .find(|language| language.lang == lang)?;
-        let grammar = match self.grammars.get(language.grammar.as_ref()?)? {
-            GrammarState::Native(grammar) => grammar.clone(),
+            .find(|language| language.lang == lang)
+            .and_then(|language| language.grammar.as_ref())
+            .and_then(|name| Some((name, self.grammars.get(name)?)))
+        else {
+            return GrammarLookup::Unavailable;
         };
-        Some((grammar, self.queries(lang)?.highlights))
+        let grammar = match state {
+            GrammarState::Native(grammar) | GrammarState::Loaded(grammar) => grammar.clone(),
+            GrammarState::Unloaded(path) => {
+                return GrammarLookup::NeedsLoad(name.clone(), path.clone())
+            }
+            GrammarState::Loading | GrammarState::Failed => return GrammarLookup::Unavailable,
+        };
+        match self.queries(lang) {
+            Some(queries) => GrammarLookup::Ready(grammar, queries.highlights),
+            None => GrammarLookup::Unavailable,
+        }
     }
+
+    /// Claims an unloaded grammar for one loader; false when another got there first.
+    fn start_loading(&mut self, name: &str) -> bool {
+        match self.grammars.get_mut(name) {
+            Some(state @ GrammarState::Unloaded(_)) => {
+                *state = GrammarState::Loading;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn finish_loading(&mut self, name: Arc<str>, loaded: Result<tree_sitter::Language, String>) {
+        let state = match loaded {
+            Ok(grammar) => GrammarState::Loaded(grammar),
+            Err(error) => {
+                eprintln!("grammars: {name}: {error}");
+                GrammarState::Failed
+            }
+        };
+        self.grammars.insert(name, state);
+        self.version += 1;
+    }
+}
+
+type ChangeListener = Arc<dyn Fn() + Send + Sync>;
+
+static ON_CHANGE: RwLock<Option<ChangeListener>> = RwLock::new(None);
+
+/// Called (from any thread) when a grammar finishes loading, so the app redraws and its editors look their
+/// languages up again.
+pub fn on_languages_changed(listener: ChangeListener) {
+    if let Ok(mut slot) = ON_CHANGE.write() {
+        *slot = Some(listener);
+    }
+}
+
+/// `lang`'s grammar from `registry`, starting its package's compile on a background thread when it isn't
+/// loaded yet; the registry's version moves on once it is.
+pub fn request_grammar(
+    registry: &'static RwLock<LanguageRegistry>,
+    lang: Lang,
+) -> Option<(tree_sitter::Language, Arc<str>)> {
+    let lookup = registry.read().ok()?.lookup_grammar(lang);
+    let (name, path) = match lookup {
+        GrammarLookup::Ready(grammar, highlights) => return Some((grammar, highlights)),
+        GrammarLookup::Unavailable => return None,
+        GrammarLookup::NeedsLoad(name, path) => (name, path),
+    };
+    if !registry.write().ok()?.start_loading(&name) {
+        return None;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("grammar-load".into())
+        .spawn({
+            let name = name.clone();
+            move || {
+                let loaded = std::fs::read(&path)
+                    .map_err(|error| format!("read {}: {error}", path.display()))
+                    .and_then(|bytes| crate::parsers::load_wasm_grammar(&name, &bytes));
+                if let Ok(mut registry) = registry.write() {
+                    registry.finish_loading(name, loaded);
+                }
+                let listener = ON_CHANGE.read().ok().and_then(|slot| slot.clone());
+                if let Some(listener) = listener {
+                    listener();
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        if let Ok(mut registry) = registry.write() {
+            registry.finish_loading(name, Err(format!("start loading: {error}")));
+        }
+    }
+    None
 }
 
 /// Every editor in the app reads the same languages.

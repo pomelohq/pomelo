@@ -12,9 +12,7 @@
 use std::ops::Range;
 
 use ropey::Rope;
-use tree_sitter::{
-    InputEdit, Language, Node, Parser, Point, Query, QueryCursor, StreamingIterator, Tree,
-};
+use tree_sitter::{InputEdit, Language, Node, Point, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::highlight::{grammar, injection_patterns, Lang};
 
@@ -336,16 +334,17 @@ impl Injections {
             .position(overlaps)
             .map(|index| previous.swap_remove(index).tree);
         let layer_grammar = self.grammars.get(grammar)?.as_ref()?;
-        let mut parser = Parser::new();
-        parser.set_language(&layer_grammar.language).ok()?;
         let included: Vec<tree_sitter::Range> =
             ranges.iter().map(|range| ts_range(rope, range)).collect();
-        parser.set_included_ranges(&included).ok()?;
-        parser.parse_with_options(
-            &mut |byte, _| chunk_from(rope, byte),
-            old_tree.as_ref(),
-            None,
-        )
+        crate::parsers::with_parser(|parser| {
+            parser.set_language(&layer_grammar.language).ok()?;
+            parser.set_included_ranges(&included).ok()?;
+            parser.parse_with_options(
+                &mut |byte, _| chunk_from(rope, byte),
+                old_tree.as_ref(),
+                None,
+            )
+        })
     }
 
     /// Highlight captures from every layer overlapping `range`.

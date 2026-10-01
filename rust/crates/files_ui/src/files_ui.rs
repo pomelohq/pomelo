@@ -6494,6 +6494,8 @@ pub struct FilesView {
     server_status: language_servers::ServerStatusState,
     /// Open log tabs: the tab's id, the server it shows and how many of its lines it has.
     server_logs: Vec<(String, lsp::ServerId, u64)>,
+    /// The language registry's version last seen: a grammar that finished loading moves it on.
+    languages_seen: u64,
     /// A line from the language servers for the toast (none of them can do what was asked).
     lsp_toast: Option<String>,
     tree_ops: tree_actions::TreeOps,
@@ -6649,6 +6651,7 @@ impl FilesView {
             lsp,
             server_status: language_servers::ServerStatusState::default(),
             server_logs: Vec::new(),
+            languages_seen: 0,
             lsp_toast: None,
             tree_ops: tree_actions::TreeOps::default(),
             request: None,
@@ -6680,6 +6683,33 @@ impl FilesView {
             tree_actions::place_edit_row(&mut rows, &edit.target);
         }
         rows
+    }
+
+    /// Files opened as plain text while their grammar was still compiling get highlighted once it is ready.
+    fn adopt_loaded_grammars(&mut self) -> bool {
+        let version = editor::registry::language_registry()
+            .read()
+            .map_or(self.languages_seen, |registry| registry.version());
+        if version == self.languages_seen {
+            return false;
+        }
+        self.languages_seen = version;
+        let mut changed = false;
+        self.panes.for_each_item_mut(&mut |item| {
+            let Some(file) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FileItem>())
+                .filter(|file| file.syntax.is_none() && file.buffer.is_some())
+            else {
+                return;
+            };
+            file.syntax = Syntax::new(file.lang);
+            if file.syntax.is_some() {
+                file.refresh();
+                changed = true;
+            }
+        });
+        changed
     }
 
     fn open_server_log(&mut self, index: usize) {
@@ -8928,6 +8958,7 @@ impl FunctionView for FilesView {
 
     fn tick_items(&mut self, clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
         let mut outcome = workspace::ItemTick::default();
+        outcome.changed |= self.adopt_loaded_grammars();
         self.panes.keep_edited_previews();
         outcome.changed |= self.poll_finder_candidates();
         outcome.changed |= self.poll_pending_opens();

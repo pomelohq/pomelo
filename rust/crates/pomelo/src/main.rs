@@ -4638,6 +4638,10 @@ fn main() -> anyhow::Result<()> {
         notifications::start();
     }
     let mut app = App::default();
+    editor::registry::on_languages_changed(std::sync::Arc::new(ui::wake));
+    if let Some(dir) = editor::grammar_packages::grammars_dir() {
+        editor::grammar_packages::register_installed_grammars(&dir);
+    }
     let (keymap, problems) = workspace::keymap::Keymap::load();
     for problem in &problems {
         eprintln!("{problem}");
