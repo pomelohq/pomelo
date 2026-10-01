@@ -1,6 +1,6 @@
 use workspace::keymap::{Action, MACOS_DEFAULTS, OTHER_DEFAULTS};
 
-use crate::{code, table_cell};
+use crate::{code, prose};
 
 const INTRO: &str = "\
 # Key bindings
@@ -22,7 +22,7 @@ pub fn render() -> String {
     for action in Action::ALL {
         page.push_str(&format!(
             "| {} | {} | {} | {} |\n",
-            table_cell(action.label()),
+            prose(action.label()),
             code(&binding_target(action)),
             keys(MACOS_DEFAULTS, action, ""),
             keys(OTHER_DEFAULTS, action, " pc"),

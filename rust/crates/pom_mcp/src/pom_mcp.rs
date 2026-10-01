@@ -65,6 +65,25 @@ pub fn server_for(cwd: &Path, branch: Option<&str>, state: StateDir) -> Server {
     }
 }
 
+/// Every tool the server offers, built over a placeholder workspace so it can be listed without a project.
+pub fn catalog() -> Vec<Tool> {
+    let state = StateDir::new(std::env::temp_dir().join("pom-mcp-catalog"));
+    let runner = ServiceRunner::new(RunnerOptions {
+        project_root: PathBuf::new(),
+        session: String::new(),
+        state: state.clone(),
+        holders: SocketDir::new(PathBuf::new()),
+        binary: PathBuf::new(),
+        docker: "docker".into(),
+    });
+    tools::tools(Rc::new(Workspace {
+        config_path: PathBuf::new(),
+        state,
+        branch: String::new(),
+        runner,
+    }))
+}
+
 fn workspace_for(cwd: &Path, branch: Option<&str>, state: StateDir) -> Option<Workspace> {
     let config_path = cwd.ancestors().find_map(pom_core::config_in)?;
     let config = pom_config::Config::load(&config_path).ok()?;

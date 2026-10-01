@@ -30,7 +30,7 @@ use pom_services::{RunnerOptions, ServiceRunner, ServiceTarget};
 use run::RunCommand;
 use workspaces::WorkspaceCommand;
 
-const USAGE: &str = "usage: pom [-w <workspace>] [-c <pom.yml>] <command> [args]
+pub const USAGE: &str = "usage: pom [-w <workspace>] [-c <pom.yml>] <command> [args]
 
 services
   start <target>     start a service, a repo's services, or a `workspaces:` group

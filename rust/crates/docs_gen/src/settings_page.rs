@@ -1,6 +1,6 @@
 use settings::Settings;
 
-use crate::{code, table_cell};
+use crate::{code, prose};
 
 /// Every key `settings.json` holds, by the Settings page that edits it, with what it does. A test keeps this in
 /// step with the `Settings` struct, so a new key cannot ship undocumented.
@@ -132,7 +132,7 @@ pub fn render() -> Result<String, String> {
             "| {} | {} | {} |\n",
             code(key),
             code(&default),
-            table_cell(description)
+            prose(description)
         ));
     }
     Ok(page)

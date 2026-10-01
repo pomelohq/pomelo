@@ -1,6 +1,8 @@
 //! Writes the docs site's generated reference pages into `--out <dir>`; the docs repo checks them in and its
 //! drift check regenerates them at each release tag.
 
+mod cli_page;
+mod mcp_page;
 mod settings_page;
 mod shortcuts_page;
 
@@ -21,6 +23,8 @@ fn run() -> Result<(), String> {
     let pages = [
         ("settings.md", settings_page::render()?),
         ("shortcuts.md", shortcuts_page::render()),
+        ("cli.md", cli_page::render()?),
+        ("mcp.md", mcp_page::render()),
     ];
     for (name, body) in pages {
         let path = out.join(name);
@@ -50,4 +54,24 @@ fn code(text: &str) -> String {
 
 fn table_cell(text: &str) -> String {
     text.replace('|', "\\|")
+}
+
+/// Text from the code for a table cell or paragraph. Outside code spans the site reads `<x>` as an HTML tag and
+/// `{{ }}` as a template, so both are escaped there.
+fn prose(text: &str) -> String {
+    let escaped: Vec<String> = text
+        .split('`')
+        .enumerate()
+        .map(|(index, part)| {
+            if index % 2 == 1 {
+                part.to_string()
+            } else {
+                part.replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace("{{", "&#123;&#123;")
+                    .replace("}}", "&#125;&#125;")
+            }
+        })
+        .collect();
+    table_cell(&escaped.join("`"))
 }
