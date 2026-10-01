@@ -267,6 +267,14 @@ pub fn on_languages_changed(listener: ChangeListener) {
     }
 }
 
+/// Wakes the app so its editors look their languages up again.
+pub fn notify_languages_changed() {
+    let listener = ON_CHANGE.read().ok().and_then(|slot| slot.clone());
+    if let Some(listener) = listener {
+        listener();
+    }
+}
+
 /// `lang`'s grammar from `registry`, starting its package's compile on a background thread when it isn't
 /// loaded yet; the registry's version moves on once it is.
 pub fn request_grammar(
@@ -293,10 +301,7 @@ pub fn request_grammar(
                 if let Ok(mut registry) = registry.write() {
                     registry.finish_loading(name, loaded);
                 }
-                let listener = ON_CHANGE.read().ok().and_then(|slot| slot.clone());
-                if let Some(listener) = listener {
-                    listener();
-                }
+                notify_languages_changed();
             }
         });
     if let Err(error) = spawned {

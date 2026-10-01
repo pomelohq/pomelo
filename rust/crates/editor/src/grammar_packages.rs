@@ -34,6 +34,18 @@ pub fn register_installed_grammars(dir: &Path) -> usize {
     }
 }
 
+/// Registers one package just installed, so files of its language highlight without a restart.
+pub fn register_installed_grammar(package: &Path) -> Result<(), String> {
+    let registered = match language_registry().write() {
+        Ok(mut registry) => register_package(&mut registry, package),
+        Err(_) => Err("the language registry is unavailable".to_string()),
+    };
+    if registered.is_ok() {
+        crate::registry::notify_languages_changed();
+    }
+    registered
+}
+
 pub(crate) fn register_packages(registry: &mut LanguageRegistry, dir: &Path) -> usize {
     let Ok(languages) = std::fs::read_dir(dir) else {
         return 0;

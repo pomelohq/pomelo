@@ -6507,8 +6507,12 @@ impl WorkspaceView {
     fn pull_server_notices(&mut self) {
         if let Some(view) = self.layout.files_view.as_mut() {
             self.server_notices.extend(view.take_server_notices());
+            let withdrawn = view.take_withdrawn_notices();
             if let Some(message) = view.take_toast() {
                 self.show_toast(message, None);
+            }
+            if !withdrawn.is_empty() {
+                self.withdraw_server_notices(&withdrawn);
             }
         }
         if self.notification.is_some() {
@@ -6516,6 +6520,18 @@ impl WorkspaceView {
         }
         if let Some(notice) = self.server_notices.pop_front() {
             self.notification = Some(server_notification(notice));
+        }
+    }
+
+    fn withdraw_server_notices(&mut self, tokens: &[u64]) {
+        self.server_notices
+            .retain(|notice| !tokens.contains(&notice.token));
+        let showing = matches!(
+            self.notification.as_ref().and_then(|notification| notification.action.as_ref()),
+            Some(NotificationAction::Server(notice)) if tokens.contains(&notice.token)
+        );
+        if showing {
+            self.notification = None;
         }
     }
 
@@ -7756,6 +7772,30 @@ fn union_rect(a: Rect, b: &Rect) -> Rect {
 mod tests {
     use super::*;
     use ui::Application;
+
+    #[test]
+    fn a_withdrawn_notice_leaves_the_queue_and_the_card() {
+        let mut view = WorkspaceView::new(Layout::default());
+        let notice = |token: u64| crate::ServerNotice {
+            token,
+            server: format!("Language {token} is available for this file"),
+            level: crate::NoticeLevel::Info,
+            message: String::new(),
+            actions: Vec::new(),
+            switch: None,
+        };
+        view.server_notices
+            .extend([notice(1), notice(2), notice(3)]);
+        view.pull_server_notices();
+        view.withdraw_server_notices(&[1, 3]);
+        assert!(view.notification.is_none());
+        view.pull_server_notices();
+        assert_eq!(
+            view.notification_text().map(|(title, _)| title.to_string()),
+            Some("Language 2 is available for this file".to_string())
+        );
+        assert!(view.server_notices.is_empty());
+    }
 
     #[test]
     fn server_notices_wait_their_turn_and_offer_a_switch() {

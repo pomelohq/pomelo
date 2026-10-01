@@ -42,6 +42,7 @@ mod file_finder;
 mod fuzzy;
 mod git_diff;
 mod go_to_line;
+mod grammar_suggest;
 mod hover;
 mod language_servers;
 mod list_scrollbar;
@@ -311,7 +312,7 @@ struct ServerNotices {
     told: HashSet<String>,
 }
 
-const DONT_SHOW_AGAIN: &str = "Don't show again";
+pub(crate) const DONT_SHOW_AGAIN: &str = "Don't show again";
 
 /// Where the missing servers the user asked not to hear about again are kept.
 fn quiet_servers_file() -> Option<PathBuf> {
@@ -6481,6 +6482,7 @@ pub struct FilesView {
     recent_files: Vec<String>,
     palette_memory: command_palette::PaletteMemory,
     server_notices: ServerNotices,
+    grammar_suggestions: grammar_suggest::GrammarSuggestions,
     extra_commands: Vec<workspace::ExtraCommand>,
     picked_command: Option<u64>,
     /// The open symbol outline and the pane it navigates.
@@ -6643,6 +6645,7 @@ impl FilesView {
             recent_files: Vec::new(),
             palette_memory: command_palette::PaletteMemory::default(),
             server_notices: ServerNotices::default(),
+            grammar_suggestions: grammar_suggest::GrammarSuggestions::default(),
             extra_commands: Vec::new(),
             picked_command: None,
             outline: None,
@@ -6683,6 +6686,36 @@ impl FilesView {
             tree_actions::place_edit_row(&mut rows, &edit.target);
         }
         rows
+    }
+
+    /// Offers a grammar for the active file when it has none, and reports installs that failed.
+    fn serve_grammar_suggestions(&mut self) {
+        let shown = self
+            .panes
+            .active_item()
+            .and_then(|item| item.as_any())
+            .and_then(|any| any.downcast_ref::<FileItem>())
+            .filter(|file| file.scratch.is_none())
+            .map(|file| {
+                (
+                    file.path.clone(),
+                    (file.lang != Lang::PlainText).then(|| file.lang.name()),
+                    file.syntax.is_some(),
+                )
+            });
+        let next = &mut self.server_notices.next;
+        if let Some((path, language, highlighted)) = shown {
+            let file = grammar_suggest::ShownFile {
+                path: &path,
+                language,
+                highlighted,
+            };
+            if let Some(notice) = self.grammar_suggestions.file_shown(file, next) {
+                self.server_notices.shown.push(notice);
+            }
+        }
+        let failed = self.grammar_suggestions.poll(&mut self.server_notices.next);
+        self.server_notices.shown.extend(failed);
     }
 
     /// Files opened as plain text while their grammar was still compiling get highlighted once it is ready.
@@ -8930,7 +8963,14 @@ impl FunctionView for FilesView {
         std::mem::take(&mut self.server_notices.shown)
     }
 
+    fn take_withdrawn_notices(&mut self) -> Vec<u64> {
+        self.grammar_suggestions.take_withdrawn()
+    }
+
     fn answer_server_notice(&mut self, token: u64, action: Option<usize>) {
+        if self.grammar_suggestions.answer(token, action) {
+            return;
+        }
         if let Some(name) = self.server_notices.missing.remove(&token) {
             if action == Some(0) {
                 if let Some(file) = quiet_servers_file() {
@@ -8959,6 +8999,7 @@ impl FunctionView for FilesView {
     fn tick_items(&mut self, clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
         let mut outcome = workspace::ItemTick::default();
         outcome.changed |= self.adopt_loaded_grammars();
+        self.serve_grammar_suggestions();
         self.panes.keep_edited_previews();
         outcome.changed |= self.poll_finder_candidates();
         outcome.changed |= self.poll_pending_opens();

@@ -2020,6 +2020,10 @@ pub trait FunctionView: ItemInput + 'static {
     }
     /// The action picked on a notice (`None` when it was closed).
     fn answer_server_notice(&mut self, _token: u64, _action: Option<usize>) {}
+    /// Notices that no longer apply (answered in another window), by token.
+    fn take_withdrawn_notices(&mut self) -> Vec<u64> {
+        Vec::new()
+    }
     /// A menu an item's toolbar asked to open, once.
     fn take_menu_request(&mut self) -> Option<Vec<MenuItem>> {
         None

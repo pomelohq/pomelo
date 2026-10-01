@@ -17,6 +17,7 @@ settings_ui = { path = "../settings_ui" }
 files_ui = { path = "../files_ui" }
 lsp = { path = "../lsp" }
 editor = { package = "pomelo-editor", path = "../editor" }
+grammars = { path = "../grammars" }
 terminal = { path = "../terminal" }
 terminal_ui = { path = "../terminal_ui" }
 auto_update = { path = "../auto_update" }

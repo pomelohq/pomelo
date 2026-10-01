@@ -4641,6 +4641,19 @@ fn main() -> anyhow::Result<()> {
     editor::registry::on_languages_changed(std::sync::Arc::new(ui::wake));
     if let Some(dir) = editor::grammar_packages::grammars_dir() {
         editor::grammar_packages::register_installed_grammars(&dir);
+        if grammars::downloads_on() && grammars::index_is_stale(&dir, std::time::SystemTime::now())
+        {
+            let refresh = std::thread::Builder::new()
+                .name("grammar-index".into())
+                .spawn(move || {
+                    if let Err(error) = grammars::refresh_index(&dir) {
+                        eprintln!("grammars: refresh the index: {error}");
+                    }
+                });
+            if let Err(error) = refresh {
+                eprintln!("grammars: refresh the index: {error}");
+            }
+        }
     }
     let (keymap, problems) = workspace::keymap::Keymap::load();
     for problem in &problems {

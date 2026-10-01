@@ -22,6 +22,7 @@ members = [
     "crates/settings_ui",
     "crates/ui_snapshot",
     "crates/grammar_packager",
+    "crates/grammars",
     "crates/pom_config",
     "crates/pom_env",
     "crates/pom_paths",

@@ -1363,6 +1363,7 @@ version = "0.7.7"
 dependencies = [
  "files",
  "git",
+ "grammars",
  "image",
  "lsp",
  "markdown",
@@ -1779,6 +1780,19 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "grammars"
+version = "0.7.7"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "pom_paths",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -3789,6 +3803,7 @@ dependencies = [
  "environment_ui",
  "files_ui",
  "git_ui",
+ "grammars",
  "jira_ui",
  "libc",
  "lsp",

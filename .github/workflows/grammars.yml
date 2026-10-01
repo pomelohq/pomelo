@@ -1,13 +1,13 @@
 name: Grammars
 
 # Builds the grammar packages the app downloads and checks each highlights its sample exactly like the compiled-in
-# grammar. Publishing is manual: run it with publish=true to sign the index and put the packages in a
-# `grammars-<date>` release.
+# grammar. Publishing is manual: run it with publish=true to sign the index and put the packages in the one
+# `grammars` release, updated in place.
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Sign the index and publish a grammars-<date> release
+        description: Sign the index and update the grammars release
         type: boolean
         default: false
   pull_request:
@@ -36,8 +36,6 @@ jobs:
     defaults:
       run:
         working-directory: rust
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
@@ -55,12 +53,10 @@ jobs:
         with:
           path: ~/grammar-cache/wasi-sdk-34
           key: wasi-sdk-34-${{ runner.os }}-${{ runner.arch }}
-      - id: tag
-        run: echo "tag=grammars-$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       - name: Build packages
         run: |
           cargo run -p grammar_packager -- build --out target/grammar-packages --cache ~/grammar-cache \
-            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ steps.tag.outputs.tag }}"
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/grammars"
       - name: Verify packages highlight like the compiled-in grammars
         run: cargo run -p grammar_packager -- verify --out target/grammar-packages
       - name: Sign the index
@@ -93,13 +89,16 @@ jobs:
             echo "GRAMMARS_SIGNING_KEY is not set as a repository secret: not publishing unsigned packages."
             exit 1
           fi
-      # Not marked latest: the app's updater reads the newest `v` releases, and grammar releases sit beside them.
+      # One release, updated in place and never marked latest: the app's updater reads only the newest releases,
+      # which must stay the app's own.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.build.outputs.tag }}
         run: |
           cd packages
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
-            --title "$TAG" --notes "Grammar packages, built from rust/grammars/manifest.toml." ./* \
-          || gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber ./*
+          if gh release view grammars --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload grammars --repo "$GITHUB_REPOSITORY" --clobber ./*
+          else
+            gh release create grammars --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+              --title "Grammar packages" --notes "Grammar packages, built from rust/grammars/manifest.toml." ./*
+          fi
