@@ -943,18 +943,16 @@ impl ServicesPanel {
                     .config()
                     .map(|config| pom_db::service_users(&config, name))
                     .unwrap_or_default();
-                let engine = self
+                let def = self
                     .model
                     .context
                     .config()
-                    .and_then(|config| {
-                        config
-                            .shared_services
-                            .get(name)
-                            .map(|def| pom_db::Engine::of_service(name, def))
-                    })
-                    .unwrap_or(pom_db::Engine::Other);
-                let (logo, tint) = database_ui::engine_logo(engine);
+                    .and_then(|config| config.shared_services.get(name).cloned());
+                let (logo, tint) = match &def {
+                    Some(def) if def.is_command() => (IconKind::Terminal, colors.icon_muted),
+                    Some(def) => database_ui::engine_logo(pom_db::Engine::of_service(name, def)),
+                    None => database_ui::engine_logo(pom_db::Engine::Other),
+                };
                 let trailing: Node = match (&state, hovered) {
                     (State::Busy(text), _) => {
                         label(*text).size(11.0).color(colors.text_accent).into()

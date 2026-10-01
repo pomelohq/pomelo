@@ -128,6 +128,7 @@ impl ResolveContext<'_> {
             "user" => Some(login.map(|(user, _)| user).unwrap_or_default()),
             "pass" => Some(login.map(|(_, pass)| pass).unwrap_or_default()),
             "slot" => Some(self.slot_index(name)),
+            "url" | "" if def.is_command() => Some(format!("http://{host}:{port}")),
             "url" | "" => {
                 let port = if port == 0 { 5432 } else { port };
                 Some(match login {

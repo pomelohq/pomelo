@@ -112,6 +112,15 @@ fn template_refs(text: &str) -> Vec<&str> {
 
 /// Everything standing between the project and a first run, most blocking first; a single `ok` finding when
 /// nothing does.
+/// The program a shell command runs first, past `KEY=value` assignments and `exec`/`env`; none for a path
+/// (a script in the project), which the PATH can't vouch for.
+fn command_program(command: &str) -> Option<&str> {
+    command
+        .split_whitespace()
+        .find(|word| !word.contains('=') && *word != "exec" && *word != "env")
+        .filter(|program| !program.contains('/'))
+}
+
 pub fn diagnose(
     config: Option<&Config>,
     config_path: &Path,
@@ -139,7 +148,7 @@ pub fn diagnose(
     if !(machine.has_tool)("git") {
         out.push(Finding::new("tool.git", Severity::Error, "git not found").fix("install git"));
     }
-    let shared = !config.shared_services.is_empty();
+    let shared = config.shared_services.values().any(|def| !def.is_command());
     if !(machine.has_tool)("docker") {
         if shared {
             out.push(
@@ -154,6 +163,26 @@ pub fn diagnose(
                 .detail("shared services can't start until Docker is up")
                 .fix("start Docker"),
         );
+    }
+    for (name, def) in &config.shared_services {
+        let Some(program) = command_program(&def.cmd) else {
+            continue;
+        };
+        if !(machine.has_tool)(program) {
+            out.push(
+                Finding::new(
+                    format!("tool.shared:{name}"),
+                    Severity::Error,
+                    format!("{program} not found for shared service {name}"),
+                )
+                .detail(format!(
+                    "shared_services.{name}.cmd runs `{program}`, which is not on the PATH"
+                ))
+                .fix(format!(
+                    "install {program}, or change shared_services.{name}.cmd"
+                )),
+            );
+        }
     }
     let default_branch = config.global_default_branch();
     for name in config.repos.keys() {
@@ -290,6 +319,38 @@ mod tests {
             move |tool: &str| tool == "git" || (docker && tool == "docker"),
             move || docker,
         )
+    }
+
+    #[test]
+    fn a_command_shared_service_needs_its_program_not_docker() -> Result<(), String> {
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let path = write(
+            temp.path(),
+            "session: demo\nshared_services:\n  mock-as:\n    cmd: PORT_HINT=1 exec deno run mock.ts\nrepos:\n  api:\n    env:\n      AS: \"{{shared.mock-as.url}}\"\n    services:\n      web: rails s\n",
+        );
+        std::fs::create_dir_all(temp.path().join("workspace--main/api"))
+            .map_err(|error| error.to_string())?;
+        let config = Config::load(&path).map_err(|error| error.message)?;
+        let (has_tool, docker) = machine(false);
+        let findings = diagnose(
+            Some(&config),
+            &path,
+            temp.path(),
+            &[],
+            &Machine {
+                has_tool: &has_tool,
+                docker_running: &docker,
+            },
+        );
+        let ids: Vec<&str> = findings.iter().map(|finding| finding.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["tool.shared:mock-as"],
+            "no Docker needed for a command"
+        );
+        assert!(findings[0].title.contains("deno"));
+        assert_eq!(command_program("./bin/mock"), None);
+        Ok(())
     }
 
     #[test]

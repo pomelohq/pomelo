@@ -175,3 +175,46 @@ repos:
     assert_eq!(line("PORT").source, "own");
     assert!(env.explain_service("api", "missing", "").is_none());
 }
+
+#[test]
+fn a_command_shared_service_is_reached_over_http() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("workspace--feat-a/api")).expect("worktree");
+    std::fs::write(
+        root.join("pom.yml"),
+        r#"session: demo
+shared_services:
+  mock-as:
+    cmd: node mock.js
+repos:
+  api:
+    shared_services: [mock-as]
+    services:
+      server:
+        cmd: rails s
+        env:
+          ISSUER: "{{shared.mock-as.url}}"
+          AS_PORT: "{{shared.mock-as.port}}"
+          AS_HOST: "{{shared.mock-as.host}}"
+"#,
+    )
+    .expect("pom.yml");
+    let config = Config::load(&root.join("pom.yml")).expect("config");
+    let env = WorkspaceEnv {
+        config: &config,
+        project_root: root,
+        branch: "feat-a",
+        sources: &Pinned,
+    }
+    .service_env("api", "server");
+    let value = |key: &str| {
+        env.iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(value("ISSUER"), "http://127.0.0.1:25432");
+    assert_eq!(value("AS_PORT"), "25432");
+    assert_eq!(value("AS_HOST"), "127.0.0.1");
+}

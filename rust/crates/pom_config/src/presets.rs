@@ -38,6 +38,10 @@ impl Config {
     /// volumes and credentials so a bare `postgres:` entry is enough.
     pub(crate) fn apply_well_known_defaults(&mut self) {
         for (name, def) in self.shared_services.iter_mut() {
+            // A command shared service runs what it says; a Docker template would turn it into a container.
+            if def.is_command() {
+                continue;
+            }
             let kind = if def.kind.is_empty() {
                 name.as_str()
             } else {

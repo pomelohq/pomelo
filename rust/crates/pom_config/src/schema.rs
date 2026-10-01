@@ -100,6 +100,18 @@ pub struct SharedServiceDef {
     pub db_user: String,
     pub db_password: String,
     pub capacity: Option<u16>,
+    /// A command run as one process for every workspace, instead of a Docker `image`.
+    pub cmd: String,
+    /// The repo whose main-workspace checkout `cmd` runs in; the project folder when empty.
+    pub repo: String,
+    /// The port `cmd` listens on, handed to it as `$PORT`; leased when unset.
+    pub port: Option<u16>,
+}
+
+impl SharedServiceDef {
+    pub fn is_command(&self) -> bool {
+        !self.cmd.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -376,6 +388,9 @@ impl SharedServiceDef {
         def.db_user = decoder.string(field("db_user"));
         def.db_password = decoder.string(field("db_password"));
         def.capacity = decoder.opt_u16(field("capacity"));
+        def.cmd = decoder.string(field("cmd"));
+        def.repo = decoder.string(field("repo"));
+        def.port = decoder.opt_u16(field("port"));
         def
     }
 }
