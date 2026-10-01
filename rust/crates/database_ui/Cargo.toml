@@ -19,6 +19,7 @@ serde_json.workspace = true
 terminal = { path = "../terminal" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 pom_ptyhost = { path = "../pom_ptyhost" }

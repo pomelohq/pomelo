@@ -17,6 +17,7 @@ pom_secrets = { path = "../pom_secrets" }
 pom_sessions = { path = "../pom_sessions" }
 serde_json.workspace = true
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 tempfile = "3"

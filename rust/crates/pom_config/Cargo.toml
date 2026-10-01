@@ -11,6 +11,7 @@ path = "src/pom_config.rs"
 [dependencies]
 saphyr-parser = "0.0.6"
 indexmap = "2"
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 tempfile = "3"

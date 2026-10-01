@@ -19,6 +19,7 @@ pollster.workspace = true
 bytemuck.workspace = true
 serde_json.workspace = true
 unicode-properties = { version = "0.1", default-features = false, features = ["emoji"] }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal", "CALayer", "CAMetalLayer"] }

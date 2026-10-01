@@ -21,3 +21,4 @@ globset = "0.4"
 ignore = "0.4"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 trash = "5"
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

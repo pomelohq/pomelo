@@ -17,6 +17,7 @@ ui = { path = "../ui" }
 settings = { path = "../settings" }
 editor = { package = "pomelo-editor", path = "../editor" }
 serde_json.workspace = true
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 pom_secrets = { path = "../pom_secrets" }

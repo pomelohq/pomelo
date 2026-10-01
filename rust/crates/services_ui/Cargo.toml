@@ -19,6 +19,7 @@ terminal = { path = "../terminal" }
 terminal_ui = { path = "../terminal_ui" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 pom_paths = { path = "../pom_paths" }

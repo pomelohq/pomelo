@@ -7,3 +7,6 @@ description = "Reactive app runtime (App/Entity/Context/Global) in the reactive-
 
 [lib]
 path = "src/reactor.rs"
+
+[dependencies]
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

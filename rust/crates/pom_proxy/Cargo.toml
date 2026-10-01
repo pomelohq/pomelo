@@ -23,6 +23,7 @@ pom_ports = { path = "../pom_ports" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 regex = "1"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros", "io-util", "time", "sync"] }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 tempfile = "3"

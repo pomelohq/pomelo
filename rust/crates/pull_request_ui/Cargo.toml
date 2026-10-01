@@ -16,6 +16,7 @@ terminal = { path = "../terminal" }
 ui = { path = "../ui" }
 markdown = { path = "../markdown" }
 workspace = { path = "../workspace" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 tempfile = "3"

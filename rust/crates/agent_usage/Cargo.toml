@@ -11,6 +11,7 @@ path = "src/agent_usage.rs"
 [dependencies]
 libc = "0.2"
 serde_json.workspace = true
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 tempfile = "3"
