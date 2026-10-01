@@ -315,6 +315,8 @@ pub struct LspStore {
     pending: HashMap<u64, Pending>,
     summaries: HashMap<(PathBuf, ServerId), (usize, usize)>,
     resolves: HashMap<(ServerId, i64), (u64, SyncedText)>,
+    /// Diagnostics asked of a server that reports them only on request, with the file and the version asked.
+    pulls: HashMap<(ServerId, i64), (PathBuf, i32)>,
     next_request: u64,
     /// Each server's output, kept across its restarts.
     logs: HashMap<ServerId, crate::SharedLog>,
@@ -339,6 +341,7 @@ impl LspStore {
             pending: HashMap::new(),
             summaries: HashMap::new(),
             resolves: HashMap::new(),
+            pulls: HashMap::new(),
             next_request: 0,
             logs: HashMap::new(),
         }
@@ -651,12 +654,25 @@ impl LspStore {
     }
 
     fn sync_with(&mut self, path: &Path, id: ServerId, language_id: &str, buffer: &EditorBuffer) {
+        if self.sync_text(path, id, language_id, buffer) {
+            self.pull_diagnostics(path, id);
+        }
+    }
+
+    /// Opens or updates `path` on the server; whether it got new text.
+    fn sync_text(
+        &mut self,
+        path: &Path,
+        id: ServerId,
+        language_id: &str,
+        buffer: &EditorBuffer,
+    ) -> bool {
         let Ok(uri) = Url::from_file_path(path) else {
-            return;
+            return false;
         };
         let Some((server, capabilities)) = self.servers.get_mut(&id).and_then(Server::running)
         else {
-            return;
+            return false;
         };
         let document = self
             .documents
@@ -693,13 +709,13 @@ impl LspStore {
                         synced: Some(text),
                     }));
             }
-            return;
+            return true;
         };
         let Some(last) = synced.versions.back() else {
-            return;
+            return false;
         };
         if last.buffer_version == buffer.version() {
-            return;
+            return false;
         }
         let changes = match sync_kind(capabilities) {
             Some(TextDocumentSyncKind::INCREMENTAL) => {
@@ -725,6 +741,73 @@ impl LspStore {
         });
         while synced.versions.len() > RETAINED_VERSIONS {
             synced.versions.pop_front();
+        }
+        true
+    }
+
+    /// Asks a server that reports diagnostics only on request for `path`'s, at the version it has.
+    fn pull_diagnostics(&mut self, path: &Path, id: ServerId) {
+        let Some(document) = self.documents.get(path) else {
+            return;
+        };
+        let Some(version) = document
+            .server(id)
+            .and_then(|synced| synced.versions.back())
+            .map(|text| text.lsp_version)
+        else {
+            return;
+        };
+        let uri = document.uri.clone();
+        let Some((server, capabilities)) = self.servers.get_mut(&id).and_then(Server::running)
+        else {
+            return;
+        };
+        if capabilities.diagnostic_provider.is_none() {
+            return;
+        }
+        let call = server.request(
+            "textDocument/diagnostic",
+            json!({"textDocument": {"uri": uri}}),
+        );
+        self.pulls.insert((id, call), (path.to_path_buf(), version));
+    }
+
+    /// A pulled report: a full one replaces the server's diagnostics for the file, an unchanged one keeps them.
+    fn receive_pulled(&mut self, id: ServerId, path: PathBuf, version: i32, report: Option<Value>) {
+        let Some(report) = report else {
+            return;
+        };
+        if report.get("kind").and_then(Value::as_str) != Some("full") {
+            return;
+        }
+        let diagnostics = report
+            .get("items")
+            .cloned()
+            .and_then(|items| serde_json::from_value::<Vec<Diagnostic>>(items).ok())
+            .unwrap_or_default();
+        let Ok(uri) = Url::from_file_path(&path) else {
+            return;
+        };
+        self.receive_diagnostics(
+            id,
+            PublishDiagnosticsParams {
+                uri,
+                diagnostics,
+                version: Some(version),
+            },
+        );
+    }
+
+    /// The server's diagnostics may have changed for every file: ask again for the ones open on it.
+    fn refresh_pulled(&mut self, id: ServerId) {
+        let paths: Vec<PathBuf> = self
+            .documents
+            .iter()
+            .filter(|(_, document)| document.server(id).is_some())
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in paths {
+            self.pull_diagnostics(&path, id);
         }
     }
 
@@ -1216,6 +1299,10 @@ impl LspStore {
             ServerEvent::Response {
                 id: call, result, ..
             } => {
+                if let Some((path, version)) = self.pulls.remove(&(id, call)) {
+                    self.receive_pulled(id, path, version, result.ok());
+                    return;
+                }
                 if self.answered(id, call, result.as_ref().ok().cloned()) {
                     return;
                 }
@@ -1305,6 +1392,7 @@ impl LspStore {
             ServerEvent::MessageRequest { id: call, params } => {
                 self.receive_message(id, &params, Some(call));
             }
+            ServerEvent::DiagnosticsRefresh => self.refresh_pulled(id),
             ServerEvent::ProgressCreated { token } => {
                 if let Some(server) = self.servers.get_mut(&id) {
                     server.progress_tokens.insert(token);
@@ -1338,6 +1426,7 @@ impl LspStore {
             self.answered(id, call, None);
         }
         self.resolves.retain(|(server, _), _| *server != id);
+        self.pulls.retain(|(server, _), _| *server != id);
         let paths: Vec<PathBuf> = self
             .documents
             .iter()
@@ -2105,6 +2194,32 @@ mod tests {
         );
         assert_eq!(suggested_switch("solargraph", "Indexing"), None);
         assert_eq!(suggested_switch("vtsls", message), None);
+    }
+
+    #[test]
+    fn a_pulled_full_report_becomes_the_servers_diagnostics() {
+        let (mut store, id) = store_with_running("typescript");
+        let path = PathBuf::from("/tmp/a.js");
+        store.pulls.insert((id, 9), (path.clone(), 0));
+        store.handle_event(
+            id,
+            ServerEvent::Response {
+                id: 9,
+                method: "textDocument/diagnostic".into(),
+                result: Ok(json!({"kind": "full", "items": [{
+                    "range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 12}},
+                    "severity": 1,
+                    "code": "no-unused-vars",
+                    "message": "'unused' is assigned a value but never used.",
+                }]})),
+            },
+        );
+        assert!(store.pulls.is_empty());
+        let kept = store
+            .unopened_diagnostics
+            .get(&(path, id))
+            .expect("diagnostics for the file");
+        assert_eq!(kept.len(), 1);
     }
 
     #[test]

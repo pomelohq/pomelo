@@ -68,6 +68,8 @@ pub struct Candidate {
     pub opt_in: bool,
     /// The command that installs it, told to the user when it is missing and can't be downloaded.
     pub install: Option<&'static str>,
+    /// A server built from its source release instead of found on the PATH or on npm.
+    pub source: Option<SourceBuild>,
 }
 
 impl Candidate {
@@ -77,6 +79,18 @@ impl Candidate {
             ..self
         }
     }
+}
+
+/// A server release downloaded as a source archive, then `npm install` and `npm run compile` in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceBuild {
+    pub url: &'static str,
+    /// The folder the release is built in, named for its version so another version builds apart.
+    pub folder: &'static str,
+    /// The script node runs, relative to `folder`.
+    pub script: &'static str,
+    /// Given to node before the script.
+    pub node_args: &'static [&'static str],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +113,7 @@ const fn candidate(
         npm: None,
         opt_in: false,
         install: None,
+        source: None,
     }
 }
 
@@ -144,6 +159,7 @@ const RUST: Adapter = Adapter {
         npm: None,
         opt_in: false,
         install: Some("rustup component add rust-analyzer"),
+        source: None,
     }]),
 };
 const CLANGD: Adapter = Adapter {
@@ -215,6 +231,19 @@ const TAILWIND: Adapter = Adapter {
         "@tailwindcss/language-server",
         "node_modules/.bin/tailwindcss-language-server",
     )]),
+};
+const ESLINT: Adapter = Adapter {
+    name: "eslint",
+    manifest: NODE_PROJECT,
+    candidates: std::borrow::Cow::Borrowed(&[Candidate {
+        source: Some(SourceBuild {
+            url: "https://github.com/microsoft/vscode-eslint/archive/refs/tags/release%2F3.0.24.tar.gz",
+            folder: "vscode-eslint-3.0.24",
+            script: "vscode-eslint/server/out/eslintServer.js",
+            node_args: &["--max-old-space-size=8192"],
+        }),
+        ..candidate("eslint", "", &["--stdio"])
+    }]),
 };
 const TYPESCRIPT: Adapter = Adapter {
     name: "typescript",
@@ -333,18 +362,24 @@ pub fn initialization_options(adapter: &str) -> serde_json::Value {
 }
 
 fn default_adapters_for(lang: Lang) -> Vec<(Adapter, &'static str)> {
-    let tailwind = |language_id| (TAILWIND, language_id);
     let mut adapters: Vec<(Adapter, &'static str)> =
         default_adapter_for(lang).into_iter().collect();
-    match lang {
-        Lang::TypeScript => adapters.push(tailwind("typescript")),
-        Lang::Tsx => adapters.push(tailwind("typescriptreact")),
-        Lang::JavaScript => adapters.push(tailwind("javascript")),
-        Lang::Css => adapters.push(tailwind("css")),
-        Lang::Html => adapters.push(tailwind("html")),
-        Lang::Svelte => adapters.push(tailwind("svelte")),
-        Lang::Php => adapters.push(tailwind("php")),
-        _ => {}
+    let language_id = match lang {
+        Lang::TypeScript => "typescript",
+        Lang::Tsx => "typescriptreact",
+        Lang::JavaScript => "javascript",
+        Lang::Css => "css",
+        Lang::Html => "html",
+        Lang::Svelte => "svelte",
+        Lang::Php => "php",
+        _ => return adapters,
+    };
+    adapters.push((TAILWIND, language_id));
+    if matches!(
+        lang,
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Svelte
+    ) {
+        adapters.push((ESLINT, language_id));
     }
     adapters
 }
@@ -364,6 +399,9 @@ pub fn workspace_configuration(adapter: &str, root: &Path) -> serde_json::Value 
                 },
             },
         });
+    }
+    if adapter == ESLINT.name {
+        return eslint_configuration(root);
     }
     if adapter != TYPESCRIPT.name {
         return serde_json::Value::Null;
@@ -385,6 +423,87 @@ pub fn workspace_configuration(adapter: &str, root: &Path) -> serde_json::Value 
             "autoUseWorkspaceTsdk": true,
         },
     })
+}
+
+const ESLINT_FLAT_CONFIGS_8_21: &[&str] = &["eslint.config.js"];
+const ESLINT_FLAT_CONFIGS_8_57: &[&str] =
+    &["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs"];
+const ESLINT_FLAT_CONFIGS_10: &[&str] = &[
+    "eslint.config.js",
+    "eslint.config.mjs",
+    "eslint.config.cjs",
+    "eslint.config.ts",
+    "eslint.config.cts",
+    "eslint.config.mts",
+];
+const ESLINT_LEGACY_CONFIGS: &[&str] = &[
+    ".eslintrc",
+    ".eslintrc.js",
+    ".eslintrc.cjs",
+    ".eslintrc.yaml",
+    ".eslintrc.yml",
+    ".eslintrc.json",
+];
+
+/// The ESLint server's settings for a project in `root`; the server finds config files and the working
+/// directory itself, so only the two flat-config cases it gets wrong on its own are set.
+fn eslint_configuration(root: &Path) -> serde_json::Value {
+    let mut config = serde_json::json!({
+        "validate": "on",
+        "rulesCustomizations": [],
+        "run": "onType",
+        "nodePath": null,
+        "workingDirectory": {"mode": "auto"},
+        "workspaceFolder": {
+            "uri": lsp_types::Url::from_file_path(root).map(|uri| uri.to_string()).unwrap_or_default(),
+            "name": root.file_name().unwrap_or(root.as_os_str()).to_string_lossy(),
+        },
+        "problems": {},
+        "codeActionOnSave": {"enable": true},
+        "codeAction": {
+            "disableRuleComment": {"enable": true, "location": "separateLine"},
+            "showDocumentation": {"enable": true},
+        },
+    });
+    let version = eslint_version(root);
+    let flat = version.and_then(|(major, minor)| {
+        let flat_names = match (major, minor) {
+            (10.., _) => ESLINT_FLAT_CONFIGS_10,
+            (9, _) | (8, 57..) => ESLINT_FLAT_CONFIGS_8_57,
+            (8, 21..) => ESLINT_FLAT_CONFIGS_8_21,
+            _ => &[],
+        };
+        if flat_names.iter().any(|name| root.join(name).is_file()) {
+            Some(true)
+        } else if ESLINT_LEGACY_CONFIGS
+            .iter()
+            .any(|name| root.join(name).is_file())
+        {
+            Some(false)
+        } else {
+            None
+        }
+    });
+    match (version, flat) {
+        (Some((8, 21..=56)), Some(true)) => {
+            config["experimental"] = serde_json::json!({"useFlatConfig": true});
+        }
+        (Some((9, _)), Some(false)) => config["useFlatConfig"] = serde_json::json!(false),
+        _ => {}
+    }
+    config
+}
+
+/// The project's installed ESLint (major, minor).
+fn eslint_version(root: &Path) -> Option<(u64, u64)> {
+    let manifest = std::fs::read(root.join("node_modules/eslint/package.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest).ok()?;
+    let mut parts = manifest
+        .get("version")?
+        .as_str()?
+        .split('.')
+        .map(|part| part.parse::<u64>().ok());
+    Some((parts.next()??, parts.next()??))
 }
 
 #[cfg(test)]
@@ -454,5 +573,108 @@ mod tests {
         assert_eq!(names(&["ruby-lsp", "..."]), ["ruby-lsp", "solargraph"]);
         let (_, language_id) = adapter_for(Lang::Ruby).unwrap();
         assert_eq!(language_id, "ruby");
+    }
+
+    #[test]
+    fn typescript_runs_vtsls_tailwind_and_eslint() {
+        let names: Vec<&str> = default_adapters_for(Lang::Tsx)
+            .iter()
+            .map(|(adapter, _)| adapter.name)
+            .collect();
+        assert_eq!(names, ["typescript", "tailwindcss", "eslint"]);
+        assert!(default_adapters_for(Lang::Css)
+            .iter()
+            .all(|(adapter, _)| adapter.name != "eslint"));
+    }
+
+    fn eslint_project(version: &str, configs: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp");
+        let eslint = dir.path().join("node_modules/eslint");
+        std::fs::create_dir_all(&eslint).expect("mkdir");
+        std::fs::write(
+            eslint.join("package.json"),
+            format!(r#"{{"name": "eslint", "version": "{version}"}}"#),
+        )
+        .expect("write");
+        for config in configs {
+            std::fs::write(dir.path().join(config), "").expect("write");
+        }
+        dir
+    }
+
+    #[test]
+    fn eslint_settings_validate_on_type_in_the_project_folder() {
+        let project = eslint_project("9.4.0", &["eslint.config.js"]);
+        let config = workspace_configuration("eslint", project.path());
+        assert_eq!(config["validate"], "on");
+        assert_eq!(config["run"], "onType");
+        assert_eq!(config["workingDirectory"]["mode"], "auto");
+        assert!(config["workspaceFolder"]["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with("file://")));
+        assert_eq!(config["codeActionOnSave"]["enable"], true);
+        assert_eq!(
+            config["codeAction"]["disableRuleComment"]["location"],
+            "separateLine"
+        );
+        assert!(config.get("useFlatConfig").is_none() && config.get("experimental").is_none());
+    }
+
+    #[test]
+    fn eslint_flat_config_is_set_only_where_the_server_guesses_wrong() {
+        let flat_8 = eslint_project("8.30.0", &["eslint.config.js"]);
+        let config = eslint_configuration(flat_8.path());
+        assert_eq!(config["experimental"]["useFlatConfig"], true);
+        let legacy_9 = eslint_project("9.1.0", &[".eslintrc.json"]);
+        assert_eq!(
+            eslint_configuration(legacy_9.path())["useFlatConfig"],
+            false
+        );
+        let flat_8_57 = eslint_project("8.57.0", &["eslint.config.mjs"]);
+        let config = eslint_configuration(flat_8_57.path());
+        assert!(config.get("experimental").is_none() && config.get("useFlatConfig").is_none());
+        let old_flat = eslint_project("8.10.0", &["eslint.config.js"]);
+        assert!(eslint_configuration(old_flat.path())
+            .get("experimental")
+            .is_none());
+    }
+
+    /// Builds the ESLint server (network, node and npm on the login PATH) and lints a project that has ESLint
+    /// installed: `POM_ESLINT_PROJECT=<dir> cargo test -p lsp eslint_reports -- --ignored`.
+    #[test]
+    #[ignore]
+    fn eslint_reports_a_rule_from_the_projects_config() {
+        let Some(root) = std::env::var_os("POM_ESLINT_PROJECT").map(std::path::PathBuf::from)
+        else {
+            return;
+        };
+        set_server_choice(|_| ServerChoice {
+            servers: vec!["eslint".into()],
+            ..ServerChoice::default()
+        });
+        let path = root.join("a.js");
+        let text = std::fs::read_to_string(&path).expect("a.js");
+        let env = crate::capture_login_env(&root).expect("login env");
+        let mut store =
+            crate::LspStore::new(root.clone(), std::sync::Arc::new(|| {})).with_environment(env);
+        let buffer = editor::EditorBuffer::from_text(&text);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        let mut found = None;
+        while found.is_none() && std::time::Instant::now() < deadline {
+            store.sync_document(&path, Lang::JavaScript, &buffer);
+            found = store.poll().into_iter().find_map(|event| match event {
+                crate::StoreEvent::Diagnostics(update) if !update.diagnostics.is_empty() => {
+                    Some(update.diagnostics)
+                }
+                _ => None,
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let diagnostics = found.expect("eslint diagnostics");
+        eprintln!("{diagnostics:?}");
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.code,
+            Some(lsp_types::NumberOrString::String(code)) if code == "no-unused-vars"
+        )));
     }
 }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::adapters::{Candidate, NpmPackage};
+use crate::adapters::{Candidate, NpmPackage, SourceBuild};
 
 /// What starts a server: its program and arguments, and the candidate it came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +59,19 @@ pub(crate) fn locate(
     {
         return report(Found::Done(Ok(located)));
     }
+    let built = candidates
+        .iter()
+        .find_map(|candidate| Some((candidate, candidate.source.as_ref()?)));
+    if let (Some((candidate, source)), Some(downloads)) = (built, downloads) {
+        return report(Found::Done(build_from_source(
+            candidate,
+            source,
+            &downloads.join(candidate.name),
+            path,
+            env,
+            report,
+        )));
+    }
     let downloadable = candidates
         .iter()
         .find_map(|candidate| Some((candidate, candidate.npm.as_ref()?)));
@@ -84,6 +97,9 @@ pub(crate) fn locate(
 }
 
 fn on_path(candidate: &Candidate, path: &str, env: &HashMap<String, String>) -> Option<Located> {
+    if candidate.source.is_some() {
+        return None;
+    }
     let found = which(candidate.binary, path)?;
     if let Some(probe) = candidate.probe {
         let works = Command::new(&found)
@@ -172,6 +188,130 @@ fn download(
             last_lines(&String::from_utf8_lossy(&output.stderr))
         )),
         Err(error) => fall_back(format!("could not run npm: {error}")),
+    }
+}
+
+/// How long the source archive may take to download.
+const ARCHIVE_TIMEOUT_SECS: &str = "120";
+
+/// The server built once from its pinned source release in `dir`, then reused as it is.
+fn build_from_source(
+    candidate: &Candidate,
+    source: &SourceBuild,
+    dir: &Path,
+    path: &str,
+    env: &HashMap<String, String>,
+    report: &dyn Fn(Found),
+) -> Result<Located, String> {
+    let (Some(node), Some(npm)) = (which("node", path), which("npm", path)) else {
+        return Err(format!(
+            "Node.js is not on the PATH; it is needed to build {}.",
+            candidate.name
+        ));
+    };
+    let release = dir.join(source.folder);
+    let script = release.join(source.script);
+    let located = Located {
+        name: candidate.name,
+        binary: node,
+        args: source
+            .node_args
+            .iter()
+            .map(|arg| arg.to_string())
+            .chain(std::iter::once(script.to_string_lossy().into_owned()))
+            .chain(candidate.args.iter().map(|arg| arg.to_string()))
+            .collect(),
+    };
+    if script.is_file() {
+        return Ok(located);
+    }
+    report(Found::Status(candidate.name, BinaryStatus::Downloading));
+    if dir.exists() {
+        if let Err(error) = std::fs::remove_dir_all(dir) {
+            return Err(format!("could not clear {}: {error}", dir.display()));
+        }
+    }
+    if let Err(error) = std::fs::create_dir_all(&release) {
+        return Err(format!("could not create {}: {error}", release.display()));
+    }
+    let archive = dir.join("source.tar.gz");
+    let unpacked = dir.join("unpacked");
+    let repo = script
+        .strip_prefix(&release)
+        .ok()
+        .and_then(|relative| relative.components().next())
+        .map(|first| release.join(first))
+        .ok_or_else(|| format!("{} names no folder", source.script))?;
+    run(
+        Command::new("curl")
+            .args(["--fail", "--location", "--silent", "--show-error"])
+            .args([
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                ARCHIVE_TIMEOUT_SECS,
+            ])
+            .arg("--output")
+            .arg(&archive)
+            .arg(source.url),
+        "download",
+    )?;
+    std::fs::create_dir_all(&unpacked)
+        .map_err(|error| format!("could not create {}: {error}", unpacked.display()))?;
+    run(
+        Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&unpacked),
+        "unpack",
+    )?;
+    let top = std::fs::read_dir(&unpacked)
+        .ok()
+        .and_then(|mut entries| entries.next())
+        .and_then(Result::ok)
+        .ok_or_else(|| "the source archive is empty".to_string())?;
+    std::fs::rename(top.path(), &repo)
+        .map_err(|error| format!("could not move the source into place: {error}"))?;
+    let npm_in_repo = |args: &[&str]| {
+        let mut command = Command::new(&npm);
+        command
+            .args(args)
+            .current_dir(&repo)
+            .env_clear()
+            .envs(env)
+            .stdin(Stdio::null());
+        command
+    };
+    run(
+        npm_in_repo(&["install"]).args(NPM_NETWORK_ARGS),
+        "npm install",
+    )?;
+    run(
+        &mut npm_in_repo(&["run-script", "compile"]),
+        "npm run compile",
+    )?;
+    // Best effort: what is left over is only space, the server is in place either way.
+    std::fs::remove_file(&archive).ok();
+    std::fs::remove_dir_all(&unpacked).ok();
+    if script.is_file() {
+        Ok(located)
+    } else {
+        Err(format!(
+            "building {} made no {}",
+            candidate.name, source.script
+        ))
+    }
+}
+
+fn run(command: &mut Command, what: &str) -> Result<(), String> {
+    match command.stdin(Stdio::null()).output() {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(format!(
+            "{what} failed: {}",
+            last_lines(&String::from_utf8_lossy(&output.stderr))
+        )),
+        Err(error) => Err(format!("could not {what}: {error}")),
     }
 }
 
