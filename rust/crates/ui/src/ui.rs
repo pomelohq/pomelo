@@ -584,14 +584,65 @@ fn joins_previous(ch: char) -> bool {
     matches!(ch as u32, 0x0300..=0x036F | 0x200C | 0x200D | 0xFE00..=0xFE0F | 0x1F3FB..=0x1F3FF | 0xE0100..=0xE01EF)
 }
 
+/// Monochrome symbol fonts macOS ships, tried after the configured fallbacks for symbols drawn as text (`⏺`,
+/// `✓`, box drawing): left to the system, those land in the color emoji font, unlike in other terminals.
+const TEXT_SYMBOL_FONTS: [&str; 4] = [
+    "Menlo",
+    "Apple Symbols",
+    "STIX Two Math",
+    "Arial Unicode MS",
+];
+
+/// Whether `ch` (followed by `next`) is a symbol drawn as text, which the text symbol fonts take: punctuation,
+/// arrows, technical, box drawing, shapes and other symbols, and emoji-capable characters, unless they default
+/// to emoji presentation or a variation selector asks for the emoji. Letters (CJK...) stay with the system.
+fn text_symbol(ch: char, next: Option<char>) -> bool {
+    use unicode_properties::{EmojiStatus, UnicodeEmoji};
+    let symbol = matches!(ch as u32, 0x2010..=0x2BFF)
+        || !matches!(
+            ch.emoji_status(),
+            EmojiStatus::NonEmoji | EmojiStatus::NonEmojiButEmojiComponent
+        );
+    symbol && text_presentation(ch, next)
+}
+
+/// Whether `ch` (followed by `next`) is drawn as text rather than as an emoji: everything but characters that
+/// default to emoji presentation, unless a variation selector asks for the other one.
+fn text_presentation(ch: char, next: Option<char>) -> bool {
+    use unicode_properties::{EmojiStatus, UnicodeEmoji};
+    match next {
+        Some('\u{FE0F}') => return false,
+        Some('\u{FE0E}') => return true,
+        _ => {}
+    }
+    !matches!(
+        ch.emoji_status(),
+        EmojiStatus::EmojiPresentation
+            | EmojiStatus::EmojiPresentationAndModifierBase
+            | EmojiStatus::EmojiPresentationAndEmojiComponent
+            | EmojiStatus::EmojiPresentationAndModifierAndEmojiComponent
+    )
+}
+
+/// The fallback families of a run: the configured ones, then the text symbol fonts.
+fn run_fallbacks(configured: &[String]) -> Vec<String> {
+    configured
+        .iter()
+        .cloned()
+        .chain(TEXT_SYMBOL_FONTS.iter().map(|name| name.to_string()))
+        .collect()
+}
+
 /// Slices of `text` and the font each is drawn in: `None` for the primary family, `Some(ix)` for
 /// `fallbacks[ix]`. A character stays in the primary font when it has a glyph there, then in the fallback in
 /// use, else the first fallback that has one; characters none cover stay primary for the system fallback.
+/// Fallbacks from `symbols_from` on only take characters drawn as text.
 fn fallback_spans(
     font_system: &mut FontSystem,
     text: &str,
     primary: Option<&str>,
     fallbacks: &[String],
+    symbols_from: usize,
     weight: u16,
 ) -> Vec<(std::ops::Range<usize>, Option<usize>)> {
     let mut load = |name: &str| {
@@ -612,7 +663,9 @@ fn fallback_spans(
     spans_by_coverage(
         text,
         |ch| covers(&primary_font, ch),
-        |ix, ch| covers(&fallback_fonts[ix], ch),
+        |ix, ch, next| {
+            (ix < symbols_from || text_symbol(ch, next)) && covers(&fallback_fonts[ix], ch)
+        },
         fallback_fonts.len(),
     )
 }
@@ -621,18 +674,20 @@ fn fallback_spans(
 fn spans_by_coverage(
     text: &str,
     primary_covers: impl Fn(char) -> bool,
-    fallback_covers: impl Fn(usize, char) -> bool,
+    fallback_covers: impl Fn(usize, char, Option<char>) -> bool,
     fallbacks: usize,
 ) -> Vec<(std::ops::Range<usize>, Option<usize>)> {
     let mut spans: Vec<(std::ops::Range<usize>, Option<usize>)> = Vec::new();
     let mut current: Option<usize> = None;
-    for (at, ch) in text.char_indices() {
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, ch)) = chars.next() {
+        let next = chars.peek().map(|(_, next)| *next);
         let slot = if ch.is_ascii() || primary_covers(ch) {
             None
-        } else if joins_previous(ch) || current.is_some_and(|ix| fallback_covers(ix, ch)) {
+        } else if joins_previous(ch) || current.is_some_and(|ix| fallback_covers(ix, ch, next)) {
             current
         } else {
-            (0..fallbacks).find(|ix| fallback_covers(*ix, ch))
+            (0..fallbacks).find(|ix| fallback_covers(*ix, ch, next))
         };
         let end = at + ch.len_utf8();
         match spans.last_mut() {
@@ -674,15 +729,17 @@ fn shape_text(buffer: &mut Buffer, font_system: &mut FontSystem, text: &str, sty
     if let Some(color) = color {
         attrs = attrs.color(color);
     }
-    if settings.fallbacks.is_empty() || text.is_ascii() {
+    if text.is_ascii() {
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
     } else {
-        let spans = fallback_spans(font_system, text, family, &settings.fallbacks, weight);
+        let fallbacks = run_fallbacks(&settings.fallbacks);
+        let symbols_from = settings.fallbacks.len();
+        let spans = fallback_spans(font_system, text, family, &fallbacks, symbols_from, weight);
         let runs = spans.into_iter().map(|(range, slot)| {
             let attrs = match slot {
                 None => attrs.clone(),
                 Some(ix) => {
-                    let attrs = text_attrs(Family::Name(&settings.fallbacks[ix]), weight, italic)
+                    let attrs = text_attrs(Family::Name(&fallbacks[ix]), weight, italic)
                         .font_features(features.clone());
                     match color {
                         Some(color) => attrs.color(color),
@@ -2381,6 +2438,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn symbols_meant_as_text_take_a_text_font_and_emoji_stay_emoji() {
+        assert!(
+            text_symbol('\u{23FA}', None),
+            "record button, Emoji_Presentation=No"
+        );
+        assert!(text_symbol('\u{2713}', None));
+        assert!(text_symbol('\u{2192}', None));
+        assert!(
+            !text_symbol('\u{23FA}', Some('\u{FE0F}')),
+            "asked to be an emoji"
+        );
+        assert!(!text_symbol('\u{1F600}', None), "an emoji by default");
+        assert!(text_symbol('\u{2600}', Some('\u{FE0E}')));
+        assert!(
+            !text_symbol('\u{6771}', None),
+            "CJK stays with the system fallback"
+        );
+        assert!(!text_symbol('a', None));
+    }
+
+    #[test]
     fn characters_the_font_lacks_go_to_the_first_fallback_that_has_them() {
         // Primary covers Latin; fallback 0 covers only Greek, fallback 1 Greek and CJK.
         let primary = |ch: char| ch.is_ascii() || ch == 'é';
@@ -2388,7 +2466,7 @@ mod tests {
             0 => ('α'..='ω').contains(&ch),
             _ => ('α'..='ω').contains(&ch) || ch == '東',
         };
-        let spans = spans_by_coverage("ab é αβ 東x", primary, fallback, 2);
+        let spans = spans_by_coverage("ab é αβ 東x", primary, |ix, ch, _| fallback(ix, ch), 2);
         let text = "ab é αβ 東x";
         let labelled: Vec<(&str, Option<usize>)> = spans
             .iter()
@@ -2405,7 +2483,7 @@ mod tests {
             ]
         );
         let combining = "e\u{301}α\u{301}";
-        let spans = spans_by_coverage(combining, |ch| ch.is_ascii(), |_, ch| ch == 'α', 1);
+        let spans = spans_by_coverage(combining, |ch| ch.is_ascii(), |_, ch, _| ch == 'α', 1);
         assert_eq!(
             spans,
             vec![(0..3, None), (3..7, Some(0))],
