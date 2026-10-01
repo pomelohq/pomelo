@@ -31,7 +31,6 @@ jobs:
           filters: |
             rust:
               - 'rust/**'
-              - 'docs/config-*.md'
               - '.github/workflows/ci.yml'
             workflows:
               - '.github/workflows/**'

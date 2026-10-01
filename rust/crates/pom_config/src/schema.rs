@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
 
 use crate::decode::Decoder;
+use crate::field_docs::Section;
 use crate::yaml_node::{Node, NodeKind};
 
 pub const DEFAULT_SESSION: &str = "pomelo";
@@ -171,7 +172,7 @@ impl Config {
         let Some(root) = decoder.fields(root, "Config") else {
             return config;
         };
-        let field = |name: &str| root.get(name);
+        let field = |name: &'static str| key(root, Section::Root, name);
         let session = decoder.string(field("session"));
         if !session.is_empty() {
             config.session = session;
@@ -198,22 +199,22 @@ impl Config {
         config.code_agents = field("code_agents")
             .and_then(|node| decoder.fields(node, "CodeAgentsConfig"))
             .map(|node| CodeAgentsConfig {
-                disabled: decoder.bool(node.get("disabled")),
-                only: decoder.strings(node.get("only")),
-                notify_disabled: decoder.bool(node.get("notify_disabled")),
+                disabled: decoder.bool(key(node, Section::CodeAgents, "disabled")),
+                only: decoder.strings(key(node, Section::CodeAgents, "only")),
+                notify_disabled: decoder.bool(key(node, Section::CodeAgents, "notify_disabled")),
             });
         config.ui = field("ui")
             .and_then(|node| decoder.fields(node, "UIConfig"))
             .map(|node| UiConfig {
-                editor: decoder.string(node.get("editor")),
+                editor: decoder.string(key(node, Section::Ui, "editor")),
             });
         config.sync = field("sync")
             .and_then(|node| decoder.fields(node, "SyncConfig"))
             .map(|node| SyncConfig {
-                auto_push: decoder.bool(node.get("auto_push")),
-                interval_sec: decoder.int(node.get("interval_sec")),
-                refresh_main: decoder.bool(node.get("refresh_main")),
-                refresh_interval_sec: decoder.int(node.get("refresh_interval_sec")),
+                auto_push: decoder.bool(key(node, Section::Sync, "auto_push")),
+                interval_sec: decoder.int(key(node, Section::Sync, "interval_sec")),
+                refresh_main: decoder.bool(key(node, Section::Sync, "refresh_main")),
+                refresh_interval_sec: decoder.int(key(node, Section::Sync, "refresh_interval_sec")),
             });
         config.seed = decoder.strings(field("seed"));
         config.prepare_main = decoder.strings(field("prepare_main"));
@@ -229,12 +230,12 @@ impl Dir {
         let Some(node) = decoder.fields(node, "Dir") else {
             return dir;
         };
-        let field = |name: &str| node.get(name);
+        let field = |name: &'static str| key(node, Section::Repo, name);
         dir.alias = decoder.string(field("alias"));
         dir.pre_start = decoder.string(field("pre_start"));
         dir.shell_env = decoder.string(field("shell_env"));
         dir.default_branch = decoder.string(field("default_branch"));
-        dir.shortcuts = decode_shortcuts(decoder, tasks_node(node));
+        dir.shortcuts = decode_shortcuts(decoder, tasks_node(node, Section::Repo));
         dir.services = decoder.map(field("services"), "map[string]Service", Service::decode);
         dir.proxy_port = decoder.opt_u16(field("proxy_port"));
         dir.profiles = decoder.string_list(field("profiles"));
@@ -264,23 +265,35 @@ impl Dir {
                 *target = values;
             }
         };
-        replace(&mut self.copy, decoder.strings(block.get("copy")));
-        replace(&mut self.setup, decoder.strings(block.get("setup")));
-        replace(&mut self.migrate, decoder.strings(block.get("migrate")));
-        replace(&mut self.seed, decoder.strings(block.get("seed")));
+        replace(
+            &mut self.copy,
+            decoder.strings(key(block, Section::Lifecycle, "copy")),
+        );
+        replace(
+            &mut self.setup,
+            decoder.strings(key(block, Section::Lifecycle, "setup")),
+        );
+        replace(
+            &mut self.migrate,
+            decoder.strings(key(block, Section::Lifecycle, "migrate")),
+        );
+        replace(
+            &mut self.seed,
+            decoder.strings(key(block, Section::Lifecycle, "seed")),
+        );
         replace(
             &mut self.pre_delete,
-            decoder.strings(block.get("pre_delete")),
+            decoder.strings(key(block, Section::Lifecycle, "pre_delete")),
         );
-        let pre_start = decoder.string(block.get("pre_start"));
+        let pre_start = decoder.string(key(block, Section::Lifecycle, "pre_start"));
         if !pre_start.is_empty() {
             self.pre_start = pre_start;
         }
-        let shortcuts = decode_shortcuts(decoder, tasks_node(block));
+        let shortcuts = decode_shortcuts(decoder, tasks_node(block, Section::Lifecycle));
         if !shortcuts.is_empty() {
             self.shortcuts = shortcuts;
         }
-        let commands = decoder.string_map(block.get("commands"));
+        let commands = decoder.string_map(key(block, Section::Lifecycle, "commands"));
         if !commands.is_empty() {
             self.commands = commands;
         }
@@ -293,7 +306,7 @@ impl Preset {
         let Some(node) = decoder.fields(node, "Preset") else {
             return preset;
         };
-        let field = |name: &str| node.get(name);
+        let field = |name: &'static str| key(node, Section::Preset, name);
         preset.presets = preset_names(field("preset"));
         preset.env = decoder.string_map(field("env"));
         preset.setup = decoder.strings(field("setup"));
@@ -302,7 +315,7 @@ impl Preset {
         preset.pre_start = decoder.string(field("pre_start"));
         preset.copy = decoder.strings(field("copy"));
         preset.seed_from_main = decoder.bool(field("seed_from_main"));
-        preset.shortcuts = decode_shortcuts(decoder, tasks_node(node));
+        preset.shortcuts = decode_shortcuts(decoder, tasks_node(node, Section::Preset));
         preset.services = decoder.map(field("services"), "map[string]Service", Service::decode);
         preset.commands = decoder.string_map(field("commands"));
         preset.migrate = decoder.strings(field("migrate"));
@@ -320,7 +333,7 @@ impl Service {
         let Some(node) = decoder.fields(node, "Service") else {
             return service;
         };
-        let field = |name: &str| node.get(name);
+        let field = |name: &'static str| key(node, Section::Service, name);
         service.kind = decoder.string(field("type"));
         service.cmd = decoder.string(field("cmd"));
         service.dir = decoder.string(field("dir"));
@@ -328,7 +341,7 @@ impl Service {
         service.env = decoder.string_map(field("env"));
         service.pre_start = decoder.string(field("pre_start"));
         service.proxy_port = decoder.opt_u16(field("proxy_port"));
-        service.shortcuts = decode_shortcuts(decoder, tasks_node(node));
+        service.shortcuts = decode_shortcuts(decoder, tasks_node(node, Section::Service));
         service.depends_on = decoder.strings(field("depends_on"));
         service.port = decoder.opt_bool(field("port"));
         service.modes = decoder.string_map(field("modes"));
@@ -369,7 +382,7 @@ impl SharedServiceDef {
         let Some(node) = decoder.fields(node, "SharedServiceDef") else {
             return def;
         };
-        let field = |name: &str| node.get(name);
+        let field = |name: &'static str| key(node, Section::Shared, name);
         def.kind = decoder.string(field("type"));
         def.image = decoder.string(field("image"));
         def.host = decoder.string(field("host"));
@@ -380,10 +393,12 @@ impl SharedServiceDef {
         def.healthcheck = field("healthcheck")
             .and_then(|n| decoder.fields(n, "HealthCheck"))
             .map(|n| HealthCheck {
-                test: n.get("test").filter(|test| !test.is_null()).cloned(),
-                interval: decoder.string(n.get("interval")),
-                timeout: decoder.string(n.get("timeout")),
-                retries: decoder.int(n.get("retries")),
+                test: key(n, Section::HealthCheck, "test")
+                    .filter(|test| !test.is_null())
+                    .cloned(),
+                interval: decoder.string(key(n, Section::HealthCheck, "interval")),
+                timeout: decoder.string(key(n, Section::HealthCheck, "timeout")),
+                retries: decoder.int(key(n, Section::HealthCheck, "retries")),
             });
         def.db_user = decoder.string(field("db_user"));
         def.db_password = decoder.string(field("db_password"));
@@ -396,8 +411,18 @@ impl SharedServiceDef {
 }
 
 /// A repo's, preset's or service's quick commands: `tasks:`, or `shortcuts:`, the name configs used before.
-fn tasks_node(node: &Node) -> Option<&Node> {
-    node.get("tasks").or_else(|| node.get("shortcuts"))
+fn tasks_node(node: &Node, section: Section) -> Option<&Node> {
+    let tasks = key(node, section, "tasks");
+    let shortcuts = key(node, section, "shortcuts");
+    tasks.or(shortcuts)
+}
+
+/// Every key the parser reads goes through here, so a test can check each one is documented.
+#[cfg_attr(not(test), allow(unused_variables))]
+fn key<'a>(node: &'a Node, section: Section, name: &'static str) -> Option<&'a Node> {
+    #[cfg(test)]
+    crate::field_docs::seen::record(section, name);
+    node.get(name)
 }
 
 fn decode_shortcuts(decoder: &mut Decoder, node: Option<&Node>) -> Vec<Shortcut> {
@@ -412,9 +437,9 @@ fn decode_shortcuts(decoder: &mut Decoder, node: Option<&Node>) -> Vec<Shortcut>
     for item in items {
         if let Some(item) = decoder.fields(item, "Shortcut") {
             shortcuts.push(Shortcut {
-                cmd: decoder.string(item.get("cmd")),
-                desc: decoder.string(item.get("desc")),
-                key: decoder.string(item.get("key")),
+                cmd: decoder.string(key(item, Section::Task, "cmd")),
+                desc: decoder.string(key(item, Section::Task, "desc")),
+                key: decoder.string(key(item, Section::Task, "key")),
             });
         }
     }
@@ -494,8 +519,7 @@ fn parse_shared_refs(node: Option<&Node>) -> Vec<SharedServiceRef> {
             for (name, options) in entries {
                 refs.push(SharedServiceRef {
                     name: name.text().to_string(),
-                    db_name: options
-                        .get("db_name")
+                    db_name: key(options, Section::RepoSharedRef, "db_name")
                         .map(Node::raw_text)
                         .unwrap_or_default()
                         .to_string(),

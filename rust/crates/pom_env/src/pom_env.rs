@@ -2,6 +2,7 @@ pub mod branch;
 mod dev_ports;
 mod resolver;
 pub mod template;
+pub mod template_docs;
 
 pub use branch::{
     branch_hash, branch_host, branch_safe, port_ws_key, resolve_branch_tokens, stable_shared_port,

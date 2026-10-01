@@ -9,6 +9,7 @@ description = "Coding agents in workspaces: registering pom's MCP server and hoo
 path = "src/pom_agent.rs"
 
 [dependencies]
+pom_env = { path = "../pom_env" }
 pom_paths = { path = "../pom_paths" }
 serde.workspace = true
 serde_json.workspace = true
