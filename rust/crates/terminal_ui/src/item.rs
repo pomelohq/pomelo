@@ -47,6 +47,8 @@ pub struct TerminalItem {
     /// A coding agent's tab, drawn at the agent text size.
     agent: bool,
     toolbar: Option<Box<dyn ConsoleToolbar>>,
+    /// Over an agent tab: who drives it when it is not the person here, and approvals waiting on them.
+    lease_bar: Option<crate::lease_bar::LeaseBar>,
     /// The toolbar asked for the find bar.
     find_requested: bool,
     /// Text for other tabs' prompts, taken by the panel.
@@ -228,6 +230,11 @@ impl TerminalItem {
     ) -> anyhow::Result<Self> {
         let mut argv = argv.into_iter();
         let program = argv.next().unwrap_or_else(|| "zsh".to_string());
+        let lease_bar = crate::lease_bar::LeaseBar::new(
+            &holder.name,
+            pom_paths::StateDir::from_env(),
+            holder.dir.clone(),
+        );
         let options = TerminalOptions {
             shell: Some((program, argv.collect())),
             working_directory: Some(root.clone()),
@@ -241,6 +248,7 @@ impl TerminalItem {
             keep_after_exit: false,
         });
         item.agent = true;
+        item.lease_bar = Some(lease_bar);
         Ok(item)
     }
 
@@ -311,6 +319,7 @@ impl TerminalItem {
             console: None,
             agent: false,
             toolbar: None,
+            lease_bar: None,
             find_requested: false,
             outgoing: Vec::new(),
             pending_input: None,
@@ -863,12 +872,23 @@ impl Item for TerminalItem {
 
     fn toolbar(&self, width: f32) -> Option<Node> {
         let lines = self.terminal.history_size();
-        self.toolbar
+        let own = self
+            .toolbar
             .as_ref()
-            .map(|toolbar| toolbar.render(width, lines))
+            .map(|toolbar| toolbar.render(width, lines));
+        let lease = self.lease_bar.as_ref().and_then(|bar| bar.render(width));
+        match (lease, own) {
+            (Some(lease), Some(own)) => {
+                Some(div().col().w_px(width).child(lease).child(own).into())
+            }
+            (lease, own) => lease.or(own),
+        }
     }
 
     fn toolbar_click(&mut self, id: u64) -> bool {
+        if self.lease_bar.as_mut().is_some_and(|bar| bar.click(id)) {
+            return true;
+        }
         let handled = self
             .toolbar
             .as_mut()

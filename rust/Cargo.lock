@@ -5070,6 +5070,8 @@ version = "0.8.4"
 dependencies = [
  "anyhow",
  "image",
+ "pom_agent",
+ "pom_paths",
  "pom_ptyhost",
  "pomelo-editor",
  "regex",

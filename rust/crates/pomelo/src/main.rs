@@ -776,7 +776,9 @@ impl App {
                 .into_iter()
                 .map(|status| (status.branch, status.state))
                 .collect();
-        let holders: Vec<String> = pom_ptyhost::SocketDir::from_env()
+        let socket_dir = pom_ptyhost::SocketDir::from_env();
+        let state_dir = pom_paths::StateDir::from_env();
+        let holders: Vec<String> = socket_dir
             .holders()
             .into_iter()
             .map(|(name, _)| name)
@@ -802,10 +804,15 @@ impl App {
                 if !running {
                     continue;
                 }
-                let state = reported
-                    .get(&workspace.branch)
-                    .copied()
-                    .unwrap_or(pom_agent::AgentState::Idle);
+                // Every session of the workspace counts: a reviewer's question shows even while the main agent idles.
+                let state = pom_agent::workspace_agent_state(
+                    &state_dir,
+                    &socket_dir,
+                    &session,
+                    &workspace.branch,
+                )
+                .or_else(|| reported.get(&workspace.branch).copied())
+                .unwrap_or(pom_agent::AgentState::Idle);
                 let key = (session.clone(), workspace.branch.clone());
                 dots.insert(workspace.branch.clone(), agent_dot(state));
                 let before = self.agents.states.get(&key).copied();

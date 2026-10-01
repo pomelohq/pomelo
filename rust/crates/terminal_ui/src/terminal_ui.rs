@@ -4,6 +4,7 @@
 mod blocks;
 mod contrast;
 mod item;
+mod lease_bar;
 mod panel;
 mod side_bar;
 
