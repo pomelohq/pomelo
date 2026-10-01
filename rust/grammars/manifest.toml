@@ -1,0 +1,223 @@
+# Grammars shipped as packages instead of compiled into the app. Each one is built from the same crate
+# version Cargo.lock pins (checksum and git rev verified), so the package parses exactly like the
+# compiled-in grammar did, and is read with the app's own queries for that language.
+#
+#   language       the editor's name for it
+#   crate          the grammar crate in Cargo.lock; its version is the package version
+#   source         folder in the crate holding src/parser.c (default: the crate root)
+#   grammar        the name its parser exports, tree_sitter_<grammar>
+#   repository/rev upstream the crate was published from (rev from its .cargo_vcs_info.json)
+#   license        SPDX id; license_file is in the crate, license_path is fetched from the repository at rev
+#   sample         file in samples/ the package must highlight exactly like the compiled-in grammar
+
+[csharp]
+language = "C#"
+crate = "tree-sitter-c-sharp"
+grammar = "c_sharp"
+repository = "https://github.com/tree-sitter/tree-sitter-c-sharp"
+rev = "cac6d5fb595f5811a076336682d5d595ac1c9e85"
+license = "MIT"
+license_file = "LICENSE"
+sample = "csharp.cs"
+
+[dart]
+language = "Dart"
+crate = "tree-sitter-dart"
+grammar = "dart"
+repository = "https://github.com/nielsenko/tree-sitter-dart"
+rev = "b57d734c84f510bbd524097902cab671e4dbfca9"
+license = "MIT"
+license_file = "LICENSE"
+sample = "dart.dart"
+
+[elixir]
+language = "Elixir"
+crate = "tree-sitter-elixir"
+grammar = "elixir"
+repository = "https://github.com/elixir-lang/tree-sitter-elixir"
+rev = "e2d9e6e0e76b0c436fa48a0b8c32a031d0cbdf49"
+license = "Apache-2.0"
+license_file = "LICENSE"
+sample = "elixir.ex"
+
+[elm]
+language = "Elm"
+crate = "tree-sitter-elm"
+grammar = "elm"
+repository = "https://github.com/elm-tooling/tree-sitter-elm"
+rev = "34815684e37cf299477e86a7d1e10d3ecb5486f9"
+license = "MIT"
+license_file = "LICENSE.md"
+sample = "elm.elm"
+
+[erlang]
+language = "Erlang"
+crate = "tree-sitter-erlang"
+grammar = "erlang"
+repository = "https://github.com/WhatsApp/tree-sitter-erlang"
+rev = "67e7f7f05baf492ca2a7c0d9538761b242d33d95"
+license = "MIT"
+license_file = "LICENSE"
+sample = "erlang.erl"
+
+[gleam]
+language = "Gleam"
+crate = "tree-sitter-gleam"
+grammar = "gleam"
+repository = "https://github.com/gleam-lang/tree-sitter-gleam"
+rev = "066704e4826699e754d351e3bbe12bf2e51de9d8"
+license = "Apache-2.0"
+license_path = "LICENSE"
+sample = "gleam.gleam"
+
+[graphql]
+language = "GraphQL"
+crate = "tree-sitter-graphql"
+grammar = "graphql"
+repository = "https://github.com/joowani/tree-sitter-graphql"
+rev = "1abcd628084f2fd8b1e74081b5552acfd2c21cd6"
+license = "MIT"
+license_file = "LICENSE"
+sample = "graphql.graphql"
+
+[haskell]
+language = "Haskell"
+crate = "tree-sitter-haskell"
+grammar = "haskell"
+repository = "https://github.com/tree-sitter/tree-sitter-haskell"
+rev = "c30d812bc90827f1a54106a25bc9a6307f5cdcec"
+license = "MIT"
+license_path = "LICENSE"
+sample = "haskell.hs"
+
+[hcl]
+language = "HCL"
+crate = "tree-sitter-hcl"
+grammar = "hcl"
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-hcl"
+rev = "009def4ae38ec30e5b40beeae26efe93484ab286"
+license = "Apache-2.0"
+license_file = "LICENSE"
+sample = "hcl.tf"
+
+[kotlin]
+language = "Kotlin"
+crate = "tree-sitter-kotlin-ng"
+grammar = "kotlin"
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-kotlin"
+rev = "77dd60ea0a9003ce062c9728a513ffe1aaff8c82"
+license = "MIT"
+license_path = "LICENSE"
+sample = "kotlin.kt"
+
+[lua]
+language = "Lua"
+crate = "tree-sitter-lua"
+grammar = "lua"
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-lua"
+rev = "10fe0054734eec83049514ea2e718b2a56acd0c9"
+license = "MIT"
+license_path = "LICENSE.md"
+sample = "lua.lua"
+
+[nix]
+language = "Nix"
+crate = "tree-sitter-nix"
+grammar = "nix"
+repository = "https://github.com/nix-community/tree-sitter-nix"
+rev = "ea1d87f7996be1329ef6555dcacfa63a69bd55c6"
+license = "MIT"
+license_file = "LICENSE"
+sample = "nix.nix"
+
+[ocaml]
+language = "OCaml"
+crate = "tree-sitter-ocaml"
+source = "grammars/ocaml"
+grammar = "ocaml"
+repository = "https://github.com/tree-sitter/tree-sitter-ocaml"
+rev = "e3c9cf368f68bffd2f81188229aefa7b434eda65"
+license = "MIT"
+license_file = "LICENSE"
+sample = "ocaml.ml"
+
+[prisma]
+language = "Prisma"
+crate = "tree-sitter-prisma-io"
+grammar = "prisma"
+repository = "https://github.com/victorhqc/tree-sitter-prisma"
+rev = "3556b2c1f20ec9ac91e92d32c43d9d2a0ca3cc49"
+license = "MIT"
+license_file = "LICENSE"
+sample = "prisma.prisma"
+
+[proto]
+language = "Proto"
+crate = "tree-sitter-proto"
+grammar = "proto"
+repository = "https://github.com/coder3101/tree-sitter-proto"
+rev = "6c878d18628ebbff3474479d2fdd6d8ba1954c3e"
+license = "MIT"
+license_file = "LICENSE"
+sample = "proto.proto"
+
+[r]
+language = "R"
+crate = "tree-sitter-r"
+grammar = "r"
+repository = "https://github.com/r-lib/tree-sitter-r"
+rev = "f2289db204dda2bf7c7ea720de5c2a2c3eff2530"
+license = "MIT"
+license_file = "LICENSE"
+sample = "r.r"
+
+[scala]
+language = "Scala"
+crate = "tree-sitter-scala"
+grammar = "scala"
+repository = "https://github.com/tree-sitter/tree-sitter-scala"
+rev = "b931fcc338390925eb893d70ad070033f5856ccf"
+license = "MIT"
+license_file = "LICENSE"
+sample = "scala.scala"
+
+[svelte]
+language = "Svelte"
+crate = "tree-sitter-svelte-ng"
+grammar = "svelte"
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-svelte"
+rev = "774a65aea563accc35f5d45fafa4d96ec5761f57"
+license = "MIT"
+license_path = "LICENSE"
+sample = "svelte.svelte"
+
+[swift]
+language = "Swift"
+crate = "tree-sitter-swift"
+grammar = "swift"
+repository = "https://github.com/alex-pinkus/tree-sitter-swift"
+rev = "b8b22bffbb3441780e6471665bacfb263741c86a"
+license = "MIT"
+license_file = "LICENSE"
+sample = "swift.swift"
+
+[xml]
+language = "XML"
+crate = "tree-sitter-xml"
+source = "xml"
+grammar = "xml"
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-xml"
+rev = "4b64dd3a03ec002258d6268d712fd93716d6ab57"
+license = "MIT"
+license_path = "LICENSE"
+sample = "xml.xml"
+
+[zig]
+language = "Zig"
+crate = "tree-sitter-zig"
+grammar = "zig"
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-zig"
+rev = "b670c8df85a1568f498aa5c8cae42f51a90473c0"
+license = "MIT"
+license_path = "LICENSE"
+sample = "zig.zig"

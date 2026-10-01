@@ -1,0 +1,105 @@
+name: Grammars
+
+# Builds the grammar packages the app downloads and checks each highlights its sample exactly like the compiled-in
+# grammar. Publishing is manual: run it with publish=true to sign the index and put the packages in a
+# `grammars-<date>` release.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Sign the index and publish a grammars-<date> release
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - 'rust/grammars/**'
+      - 'rust/crates/grammar_packager/**'
+      - '.github/workflows/grammars.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'rust/grammars/**'
+      - 'rust/crates/grammar_packager/**'
+      - '.github/workflows/grammars.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grammars-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and verify packages
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: rust
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      # Reuses CI's latest main build; this workflow never saves it.
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-
+      - uses: actions/cache@v4
+        with:
+          path: ~/grammar-cache/wasi-sdk-34
+          key: wasi-sdk-34-${{ runner.os }}-${{ runner.arch }}
+      - id: tag
+        run: echo "tag=grammars-$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Build packages
+        run: |
+          cargo run -p grammar_packager -- build --out target/grammar-packages --cache ~/grammar-cache \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ steps.tag.outputs.tag }}"
+      - name: Verify packages highlight like the compiled-in grammars
+        run: cargo run -p grammar_packager -- verify --out target/grammar-packages
+      - name: Sign the index
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          GRAMMARS_SIGNING_KEY: ${{ secrets.GRAMMARS_SIGNING_KEY }}
+        run: cargo run -p grammar_packager -- sign --out target/grammar-packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grammar-packages
+          path: rust/target/grammar-packages/
+          if-no-files-found: error
+
+  publish:
+    name: Publish the grammars release
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: grammar-packages
+          path: packages
+      # The app refuses unsigned packages, so an index without signatures is not published.
+      - name: Check the index is signed
+        run: |
+          if jq -e '.packages | any(.signature == null)' packages/index.json >/dev/null; then
+            echo "GRAMMARS_SIGNING_KEY is not set as a repository secret: not publishing unsigned packages."
+            exit 1
+          fi
+      # Not marked latest: the app's updater reads the newest `v` releases, and grammar releases sit beside them.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          cd packages
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+            --title "$TAG" --notes "Grammar packages, built from rust/grammars/manifest.toml." ./* \
+          || gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber ./*

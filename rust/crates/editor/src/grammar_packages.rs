@@ -123,6 +123,35 @@ fn package_queries(folder: &Path, lang: Lang) -> LanguageQueries {
     }
 }
 
+/// What `highlights` captures in `text` parsed with `grammar`: each capture's byte range and name, in order.
+pub fn highlight_captures(
+    grammar: &tree_sitter::Language,
+    highlights: &str,
+    text: &str,
+) -> Result<Vec<(std::ops::Range<usize>, String)>, String> {
+    use tree_sitter::{Query, QueryCursor, StreamingIterator};
+    let tree = crate::parsers::with_parser(|parser| {
+        parser
+            .set_language(grammar)
+            .map_err(|error| error.to_string())?;
+        parser
+            .parse(text, None)
+            .ok_or_else(|| "the parse gave no tree".to_string())
+    })?;
+    let query = Query::new(grammar, highlights).map_err(|error| error.to_string())?;
+    let mut cursor = QueryCursor::new();
+    let mut captures = cursor.captures(&query, tree.root_node(), text.as_bytes());
+    let mut found = Vec::new();
+    while let Some((matched, index)) = captures.next() {
+        let capture = matched.captures()[*index];
+        found.push((
+            capture.node.byte_range(),
+            query.capture_names()[capture.index as usize].to_string(),
+        ));
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -636,6 +636,32 @@ pub(crate) fn native_highlights(lang: Lang) -> &'static str {
     }
 }
 
+/// What a grammar package for `lang` takes over from the language compiled in, so the two parse, highlight and
+/// detect files alike.
+pub struct BuiltinLanguage {
+    pub grammar: Option<tree_sitter::Language>,
+    pub highlights: &'static str,
+    pub injections: Option<&'static str>,
+    pub path_suffixes: &'static [&'static str],
+    pub first_line_pattern: Option<&'static str>,
+}
+
+pub fn builtin_language(lang: Lang) -> BuiltinLanguage {
+    BuiltinLanguage {
+        grammar: native_grammar(lang),
+        highlights: native_highlights(lang),
+        injections: native_injections(lang),
+        path_suffixes: PATH_SUFFIXES
+            .iter()
+            .find(|(each, _)| *each == lang)
+            .map_or(&[], |(_, suffixes)| *suffixes),
+        first_line_pattern: FIRST_LINE_PATTERNS
+            .iter()
+            .find(|(each, _)| *each == lang)
+            .map(|(_, pattern)| *pattern),
+    }
+}
+
 /// The grammar that parses `lang` and its highlight query; none for plain text.
 pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, Arc<str>)> {
     crate::registry::request_grammar(language_registry(), lang)

@@ -1768,6 +1768,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "grammar_packager"
+version = "0.7.7"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "pomelo-editor",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
