@@ -1,6 +1,6 @@
 name: CI
 
-# Path-gated so a docs-only change runs nothing heavy; dependencies are cached so repeat runs stay fast.
+# Path-gated so a docs-only change runs nothing heavy; the build is cached so repeat runs only rebuild what changed.
 # Releases live in release.yml.
 on:
   pull_request:
@@ -41,14 +41,58 @@ jobs:
     defaults:
       run:
         working-directory: rust
+    env:
+      CARGO_INCREMENTAL: 0
+      # Keeps the cached target/ small enough to restore quickly; make check's trim drops it past this.
+      POM_TARGET_LIMIT_GB: 8
     steps:
+      # Full history, to tell which files changed since the commit the cached build came from.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Installs the toolchain rust/rust-toolchain.toml pins.
       - run: rustup show
-      - uses: Swatinem/rust-cache@v2
+      # Our own crates are cached too, not only dependencies. Only main saves (a new entry per commit), so a PR
+      # starts from the latest main build and the cache stays within the repository's limit.
+      - uses: actions/cache/restore@v4
+        id: cache
         with:
-          workspaces: rust
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-
+      # Cargo rebuilds a crate when a source is newer than its last build, and a checkout makes every file new.
+      # Unchanged files get an old time, files changed since the cached build's commit the current one.
+      - name: Date sources by what changed since the cached build
+        run: |
+          git ls-files -z | xargs -0 touch -t 200001010000
+          built="$(cat target/.built-from 2>/dev/null || true)"
+          if [ -n "$built" ] && git cat-file -e "$built^{commit}" 2>/dev/null; then
+            echo "cached build is from $built"
+            git diff --name-only --relative "$built" HEAD | while IFS= read -r file; do
+              if [ -e "$file" ]; then touch "$file"; fi
+            done
+          else
+            echo "no usable cached build: everything is new"
+            git ls-files -z | xargs -0 touch
+          fi
       - run: make check
+      - name: Size of the build cache
+        run: du -sh target ~/.cargo/registry 2>/dev/null || true
+      - if: github.ref == 'refs/heads/main'
+        run: git rev-parse HEAD > target/.built-from
+      - if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   # The one required check: path-gated jobs may be skipped, and a skipped job never satisfies a branch rule.
   gate:
