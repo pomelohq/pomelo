@@ -4,6 +4,17 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-10-02
+
+### Added
+- Agents can read the full pom.yml and template reference with the new `config_reference` MCP tool. (#195)
+
+### Fixed
+- Service URLs no longer end in "backend not reachable" while the service runs: every process now shares one port per service, the proxy follows the port the service really listens on (IPv4 or IPv6), and leftover port leases are cleaned up. (#197)
+- A stopped or still-building service now says so in the browser instead of "backend not reachable". (#197)
+- Resolving a port conflict restarts the services it moves. (#197)
+- Opening a high-resolution image no longer crashes or freezes Pomelo; it is shown scaled down with its original size in the tab. (#196)
+
 ## [0.8.2] - 2026-10-01
 
 ### Added
