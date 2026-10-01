@@ -78,9 +78,20 @@ pub fn session_id(key: &str) -> String {
 
 /// ` --settings '<json>'` routing the agent's status line through Pomelo, or nothing when it cannot.
 pub(crate) fn settings_flag(context: &LaunchContext<'_>) -> String {
-    crate::statusline::statusline_settings(context.state, context.binary, context.home)
-        .map(|settings| format!(" --settings {}", shell_quote(&settings)))
-        .unwrap_or_default()
+    let mut settings =
+        crate::statusline::statusline_settings(context.state, context.binary, context.home)
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(hooks) = crate::hooks::session_hooks(context.state, context.binary) {
+        settings["hooks"] = hooks;
+    }
+    if settings
+        .as_object()
+        .is_some_and(|settings| settings.is_empty())
+    {
+        return String::new();
+    }
+    format!(" --settings {}", shell_quote(&settings.to_string()))
 }
 
 pub(crate) fn shell_quote(text: &str) -> String {
@@ -176,8 +187,66 @@ pub struct LaunchContext<'a> {
     pub cwd: &'a Path,
 }
 
+/// Extra choices for a launched session (`pom agent start`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LaunchOptions {
+    /// The tool set the session has at all (`Read,Edit,Write,Glob,Grep`).
+    pub tools: Option<String>,
+    pub allowed_tools: Vec<String>,
+    pub disallowed_tools: Vec<String>,
+    pub permission_mode: Option<String>,
+    pub model: Option<String>,
+    /// More MCP servers, loaded next to pom's own.
+    pub extra_mcp_config: Option<String>,
+    pub system_prompt: Option<String>,
+    pub prompt: Option<String>,
+    /// Load no project or local Claude settings and no MCP servers but these, so a repo's own
+    /// `.claude/settings.json` cannot switch the session's hooks off or allow more.
+    pub isolated: bool,
+}
+
+impl LaunchOptions {
+    fn flags(&self) -> String {
+        let mut flags = String::new();
+        if self.isolated {
+            flags.push_str(" --setting-sources user --strict-mcp-config");
+        }
+        let mut add = |flag: &str, value: &str| {
+            flags.push_str(&format!(" {flag} {}", shell_quote(value)));
+        };
+        if let Some(tools) = &self.tools {
+            add("--tools", tools);
+        }
+        if !self.allowed_tools.is_empty() {
+            add("--allowedTools", &self.allowed_tools.join(","));
+        }
+        if !self.disallowed_tools.is_empty() {
+            add("--disallowedTools", &self.disallowed_tools.join(","));
+        }
+        if let Some(mode) = &self.permission_mode {
+            add("--permission-mode", mode);
+        }
+        if let Some(model) = &self.model {
+            add("--model", model);
+        }
+        flags
+    }
+
+    fn mcp(&self, ours: &str) -> String {
+        match &self.extra_mcp_config {
+            Some(extra) => format!("{} {}", shell_quote(ours), shell_quote(extra)),
+            None => shell_quote(ours),
+        }
+    }
+}
+
 /// Claude Code for the workspace, resuming its conversation when one exists.
 pub fn claude_launch(context: &LaunchContext<'_>) -> AgentLaunch {
+    claude_launch_with(context, &LaunchOptions::default())
+}
+
+/// The workspace's main agent with launch options.
+pub fn claude_launch_with(context: &LaunchContext<'_>, options: &LaunchOptions) -> AgentLaunch {
     let id = session_id(&main_session_key(context));
     let session_flag = if transcript_exists(context.home, context.cwd, &id) {
         "--resume"
@@ -194,15 +263,17 @@ pub fn claude_launch(context: &LaunchContext<'_>) -> AgentLaunch {
     );
     let identity = Identity::for_holder(&holder, context.session, context.branch);
     let script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {session_flag} {id} --mcp-config {mcp}{settings} --add-dir {images} --append-system-prompt {prompt}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {session_flag} {id} --mcp-config {mcp}{settings}{flags} --add-dir {images} --append-system-prompt {prompt}{first}",
         path = shell_quote(context.tool_path),
         identity = identity.exports(),
         cwd = shell_quote(&context.cwd.to_string_lossy()),
         claude = shell_quote(&claude),
-        mcp = shell_quote(&mcp),
+        mcp = options.mcp(&mcp),
         settings = crate::launch::settings_flag(context),
+        flags = options.flags(),
         images = shell_quote(&image_cache.to_string_lossy()),
-        prompt = shell_quote(&system_prompt()),
+        prompt = shell_quote(&with_extra_system(&system_prompt(), options)),
+        first = options.prompt.as_deref().map(|prompt| format!(" {}", shell_quote(prompt))).unwrap_or_default(),
     );
     AgentLaunch {
         holder,
@@ -231,6 +302,51 @@ pub fn is_agent_holder(name: &str, session: &str, branch: &str) -> bool {
                 })
         })
     })
+}
+
+fn with_extra_system(base: &str, options: &LaunchOptions) -> String {
+    match &options.system_prompt {
+        Some(extra) if !extra.trim().is_empty() => format!("{base}\n{extra}"),
+        _ => base.to_string(),
+    }
+}
+
+/// A session started on its own under `role` (`claude-<role>`), on a new conversation that shares nothing
+/// with the workspace's main one.
+pub fn fresh_launch(
+    context: &LaunchContext<'_>,
+    role: &str,
+    options: &LaunchOptions,
+) -> (AgentLaunch, String) {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let id = session_id(&format!("fresh:{role}:{}:{stamp}", context.branch));
+    let claude = resolve_claude(context.home, context.tool_path);
+    let mcp = mcp_config_json(context.state, context.binary, context.branch);
+    let holder = crate::identity::fresh_holder(context.session, context.branch, role);
+    let identity = Identity::for_holder(&holder, context.session, context.branch);
+    let script = format!(
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --session-id {id} --mcp-config {mcp}{settings}{flags} --append-system-prompt {system}{first}",
+        path = shell_quote(context.tool_path),
+        identity = identity.exports(),
+        cwd = shell_quote(&context.cwd.to_string_lossy()),
+        claude = shell_quote(&claude),
+        mcp = options.mcp(&mcp),
+        settings = crate::launch::settings_flag(context),
+        flags = options.flags(),
+        system = shell_quote(&with_extra_system(&system_prompt(), options)),
+        first = options.prompt.as_deref().map(|prompt| format!(" {}", shell_quote(prompt))).unwrap_or_default(),
+    );
+    (
+        AgentLaunch {
+            holder,
+            cwd: context.cwd.to_path_buf(),
+            argv: vec!["zsh".into(), "-c".into(), script],
+            title: format!("Claude ({role})"),
+        },
+        id,
+    )
 }
 
 pub fn claude_task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str) -> AgentLaunch {
@@ -442,6 +558,80 @@ mod tests {
         let config: serde_json::Value =
             serde_json::from_str(&args[config_at + 1]).expect("mcp json survives quoting");
         assert_eq!(config["mcpServers"]["pom"]["args"][2], "main");
+    }
+
+    #[test]
+    fn an_orchestrator_session_ignores_the_repos_claude_settings_and_keeps_poms_hooks() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = StateDir::new(temp.path().join("state"));
+        let cwd = temp.path().join("workspace--feat-login");
+        std::fs::create_dir_all(cwd.join(".claude")).expect("cwd");
+        std::fs::write(
+            cwd.join(".claude/settings.json"),
+            r#"{"disableAllHooks": true, "permissions": {"allow": ["Bash(*)"]}}"#,
+        )
+        .expect("project settings");
+        let context = LaunchContext {
+            state: &state,
+            home: temp.path(),
+            binary: Path::new("/bin/pomelo"),
+            tool_path: "/usr/bin:/bin",
+            session: "myproject",
+            branch: "feat-login",
+            is_main: false,
+            cwd: &cwd,
+        };
+        let options = LaunchOptions {
+            tools: Some("Read,Edit,Write,Glob,Grep".into()),
+            allowed_tools: vec!["Read".into()],
+            model: Some("sonnet".into()),
+            extra_mcp_config: Some(r#"{"mcpServers":{"docs":{"command":"docs-mcp"}}}"#.into()),
+            isolated: true,
+            ..LaunchOptions::default()
+        };
+        let (launch, _) = fresh_launch(&context, "reviewer", &options);
+        assert_eq!(launch.holder, "ws-myproject-feat-login-claude-reviewer");
+        let script = launch.argv[2].replacen("exec 'claude'", "printf '%s\\0'", 1);
+        let output = std::process::Command::new("zsh")
+            .args(["-f", "-c", &script])
+            .output()
+            .expect("zsh");
+        let args: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .split('\0')
+            .map(str::to_string)
+            .collect();
+        let after = |flag: &str| {
+            args.iter()
+                .position(|arg| arg == flag)
+                .and_then(|at| args.get(at + 1))
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            after("--setting-sources"),
+            "user",
+            "project and local settings are not read"
+        );
+        assert!(args.iter().any(|arg| arg == "--strict-mcp-config"));
+        assert_eq!(after("--tools"), "Read,Edit,Write,Glob,Grep");
+        assert_eq!(after("--model"), "sonnet");
+        let settings: serde_json::Value =
+            serde_json::from_str(&after("--settings")).expect("settings");
+        assert!(
+            settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+                .as_str()
+                .is_some_and(|command| command.contains("claude-policy-hook")),
+            "the policy hook comes with the session itself"
+        );
+        let mcp_at = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("mcp");
+        assert!(args[mcp_at + 1].contains("\"pom\""));
+        assert!(
+            args[mcp_at + 2].contains("docs-mcp"),
+            "the extra servers load next to pom's"
+        );
     }
 
     #[test]

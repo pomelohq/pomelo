@@ -162,7 +162,6 @@ pub struct SyncConfig {
 pub struct AgentsConfig {
     pub policy: String,
     pub policy_timeout_sec: i64,
-    pub ask_timeout_sec: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -230,7 +229,6 @@ impl Config {
             .map(|node| AgentsConfig {
                 policy: decoder.string(key(node, Section::Agents, "policy")),
                 policy_timeout_sec: decoder.int(key(node, Section::Agents, "policy_timeout_sec")),
-                ask_timeout_sec: decoder.int(key(node, Section::Agents, "ask_timeout_sec")),
             });
         config.seed = decoder.strings(field("seed"));
         config.prepare_main = decoder.strings(field("prepare_main"));
