@@ -4645,13 +4645,18 @@ fn main() -> anyhow::Result<()> {
         if grammars::downloads_on() {
             install_recent_grammars(dir.clone());
         }
-        if grammars::downloads_on() && grammars::index_is_stale(&dir, std::time::SystemTime::now())
-        {
+        let stale = grammars::index_is_stale(&dir, std::time::SystemTime::now());
+        if grammars::downloads_on() {
             let refresh = std::thread::Builder::new()
                 .name("grammar-index".into())
                 .spawn(move || {
-                    if let Err(error) = grammars::refresh_index(&dir) {
-                        eprintln!("grammars: refresh the index: {error}");
+                    update_installed_grammars(&dir);
+                    if !stale {
+                        return;
+                    }
+                    match grammars::refresh_index(&dir) {
+                        Ok(()) => update_installed_grammars(&dir),
+                        Err(error) => eprintln!("grammars: refresh the index: {error}"),
                     }
                 });
             if let Err(error) = refresh {
@@ -4690,6 +4695,24 @@ fn register_available_languages() {
             package.path_suffixes,
             package.first_line_pattern.as_deref(),
         );
+    }
+}
+
+/// Brings installed grammar packages up to what the index publishes; off the UI thread, and a failed update
+/// keeps the package in use.
+fn update_installed_grammars(dir: &std::path::Path) {
+    let index = grammars::load_index(dir);
+    for package in grammars::outdated(dir, &index) {
+        let updated = grammars::update(
+            &package,
+            dir,
+            grammars::GRAMMARS_PUBLIC_KEY,
+            grammars::fetch_package,
+            editor::grammar_packages::register_installed_grammar,
+        );
+        if let Err(error) = updated {
+            eprintln!("grammars: update {}: {error}", package.language);
+        }
     }
 }
 

@@ -1,5 +1,6 @@
-//! Grammars installed as packages. `<dir>/<language>/<version>/` holds `grammar.wasm`, the queries it is read
-//! with, and `language.toml` saying which language it is and which files are that language.
+//! Grammars installed as packages. `<dir>/<language>/<version>-<hash>/` holds `grammar.wasm`, the queries it is
+//! read with, `language.toml` saying which language it is and which files are that language, and the record of
+//! which published package it is.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,6 +10,24 @@ use serde::Deserialize;
 use crate::highlight::{native_queries, Lang};
 use crate::language::{BracketPair, IndentRules, LanguageConfig};
 use crate::registry::{language_registry, LanguageMatcher, LanguageQueries, LanguageRegistry};
+
+/// What a package folder was installed from, written into it before it lands.
+pub const INSTALL_RECORD: &str = "installed.json";
+
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct InstallRecord {
+    /// The published package's input hash; packages from before inputs were hashed have none.
+    #[serde(default)]
+    pub input_hash: Option<String>,
+    pub sha256: String,
+    /// Seconds since the epoch: of a language's folders, the latest installed is the one in use.
+    pub installed_at: u64,
+}
+
+pub fn install_record(folder: &Path) -> Option<InstallRecord> {
+    let text = std::fs::read_to_string(folder.join(INSTALL_RECORD)).ok()?;
+    serde_json::from_str(&text).ok()
+}
 
 #[derive(Deserialize)]
 struct PackageConfig {
@@ -241,7 +260,7 @@ pub(crate) fn register_packages(registry: &mut LanguageRegistry, dir: &Path) -> 
     };
     let mut registered = 0;
     for language in languages.flatten() {
-        let Some(package) = newest_version(&language.path()) else {
+        let Some(package) = current_package(&language.path()) else {
             continue;
         };
         match register_package(registry, &package) {
@@ -252,14 +271,21 @@ pub(crate) fn register_packages(registry: &mut LanguageRegistry, dir: &Path) -> 
     registered
 }
 
-/// The version folder with the highest version, compared part by part as numbers where they are numbers.
-fn newest_version(language_dir: &Path) -> Option<PathBuf> {
+/// The folder of a language in use: the one installed last by its record, else (folders from before records)
+/// the highest version, compared part by part as numbers where they are numbers.
+pub fn current_package(language_dir: &Path) -> Option<PathBuf> {
     let versions = std::fs::read_dir(language_dir).ok()?;
     versions
         .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .max_by(|a, b| version_key(&a.file_name()).cmp(&version_key(&b.file_name())))
-        .map(|entry| entry.path())
+        .filter(|entry| {
+            entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.')
+        })
+        .map(|entry| {
+            let installed = install_record(&entry.path()).map(|record| record.installed_at);
+            (installed, version_key(&entry.file_name()), entry.path())
+        })
+        .max()
+        .map(|(_, _, path)| path)
 }
 
 fn version_key(name: &std::ffi::OsStr) -> Vec<(u64, String)> {
@@ -624,6 +650,38 @@ mod tests {
         assert_eq!(
             queries.outline.as_deref(),
             crate::outline::native_outline(Lang::Json)
+        );
+    }
+
+    #[test]
+    fn the_folder_installed_last_is_the_one_in_use() {
+        let temp = tempfile::tempdir().expect("temp");
+        let language = temp.path().join("json");
+        for (folder, installed_at) in [
+            ("2.0.0", None),
+            ("1.0.0-aaaa1111", Some(10)),
+            ("1.0.0-bbbb2222", Some(20)),
+        ] {
+            let folder = language.join(folder);
+            std::fs::create_dir_all(&folder).expect("folder");
+            if let Some(installed_at) = installed_at {
+                let record = InstallRecord {
+                    input_hash: Some(folder.display().to_string()),
+                    sha256: "0".repeat(64),
+                    installed_at,
+                };
+                std::fs::write(
+                    folder.join(INSTALL_RECORD),
+                    serde_json::to_string(&record).expect("record"),
+                )
+                .expect("write record");
+            }
+        }
+        std::fs::create_dir_all(language.join(".staging-1")).expect("staging");
+        assert_eq!(
+            current_package(&language),
+            Some(language.join("1.0.0-bbbb2222")),
+            "a recorded install wins over a higher version without one"
         );
     }
 
