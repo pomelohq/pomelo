@@ -569,7 +569,6 @@ pub fn native_overrides(lang: Lang) -> Option<&'static str> {
         Lang::Yaml => include_str!("../queries/yaml/overrides.scm"),
         Lang::Java => include_str!("../queries/java/overrides.scm"),
         Lang::Ruby => include_str!("../queries/ruby/overrides.scm"),
-        Lang::Lua => include_str!("../queries/lua/overrides.scm"),
         Lang::Html => include_str!("../queries/html/overrides.scm"),
         _ => return None,
     })
@@ -944,7 +943,6 @@ mod scope_tests {
             Lang::Yaml,
             Lang::Java,
             Lang::Ruby,
-            Lang::Lua,
             Lang::Html,
         ] {
             let (language, _) = grammar(lang).unwrap();
@@ -1087,58 +1085,13 @@ mod new_language_tests {
     }
 
     #[test]
-    fn proto_colors_types_fields_and_services() {
-        let text = "// c\npackage demo.v1;\nmessage User {\n  int32 id = 1;\n  Role role = 2;\n}\nservice Users {\n  rpc Get(User) returns (User);\n}\n";
-        assert_eq!(capture_of(Lang::Proto, text, "// c"), Some("comment"));
-        assert_eq!(capture_of(Lang::Proto, text, "demo"), Some("namespace"));
-        assert_eq!(capture_of(Lang::Proto, text, "User {"), Some("type"));
-        assert_eq!(capture_of(Lang::Proto, text, "int32"), Some("type.builtin"));
-        assert_eq!(capture_of(Lang::Proto, text, "id ="), Some("property"));
-        assert_eq!(capture_of(Lang::Proto, text, "Role"), Some("type"));
-        assert_eq!(capture_of(Lang::Proto, text, "1;\n  Role"), Some("number"));
-        assert_eq!(capture_of(Lang::Proto, text, "rpc"), Some("keyword"));
-        assert_eq!(
-            capture_of(Lang::Proto, text, "Get"),
-            Some("function.method")
-        );
-    }
-
-    #[test]
     fn new_languages_color_their_keywords() {
-        assert_eq!(
-            capture_of(Lang::Kotlin, "fun main() {}\n", "fun"),
-            Some("keyword")
-        );
-        assert_eq!(
-            capture_of(Lang::Kotlin, "fun main() {}\n", "main"),
-            Some("function")
-        );
-        assert_eq!(
-            capture_of(
-                Lang::Hcl,
-                "resource \"x\" \"y\" {\n  a = 1\n}\n",
-                "resource"
-            ),
-            Some("type")
-        );
-        assert_eq!(
-            capture_of(Lang::GraphQl, "type Query { a: Int }\n", "type"),
-            Some("keyword")
-        );
         assert_eq!(
             capture_of(Lang::Sql, "SELECT a FROM t;\n", "SELECT"),
             Some("keyword")
         );
         assert_eq!(
             capture_of(Lang::Dockerfile, "FROM alpine\n", "FROM"),
-            Some("keyword")
-        );
-        assert_eq!(
-            capture_of(
-                Lang::Proto,
-                "syntax = \"proto3\";\nmessage A {}\n",
-                "message"
-            ),
             Some("keyword")
         );
     }

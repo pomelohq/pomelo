@@ -1,18 +1,23 @@
-# Grammars shipped as packages instead of compiled into the app. Each one is built from the same crate
-# version Cargo.lock pins (checksum and git rev verified), so the package parses exactly like the
-# compiled-in grammar did, and is read with the app's own queries for that language.
+# Grammars shipped as packages instead of compiled into the app. Each one is built from the crate version
+# the app compiled in before (checksum and git rev verified), so the package parses exactly as that grammar
+# did, and carries the queries and editing config in languages/<id>/. expected/<id>.json is what that
+# compiled-in language gave for the sample; a package must give the same.
 #
 #   language       the editor's name for it
-#   crate          the grammar crate in Cargo.lock; its version is the package version
+#   crate          the grammar crate on crates.io the package is built from
+#   version        that crate's version, which is the package version
+#   checksum       sha256 of the published .crate, checked before it is built
 #   source         folder in the crate holding src/parser.c (default: the crate root)
 #   grammar        the name its parser exports, tree_sitter_<grammar>
 #   repository/rev upstream the crate was published from (rev from its .cargo_vcs_info.json)
 #   license        SPDX id; license_file is in the crate, license_path is fetched from the repository at rev
-#   sample         file in samples/ the package must highlight exactly like the compiled-in grammar
+#   sample         file in samples/; expected/<id>.json holds what the package must give for it
 
 [csharp]
 language = "C#"
 crate = "tree-sitter-c-sharp"
+version = "0.23.5"
+checksum = "c1aac67f1ad71de1d6d39708d34811081c26dfa495658de6c14c34200849357c"
 grammar = "c_sharp"
 repository = "https://github.com/tree-sitter/tree-sitter-c-sharp"
 rev = "cac6d5fb595f5811a076336682d5d595ac1c9e85"
@@ -23,6 +28,8 @@ sample = "csharp.cs"
 [dart]
 language = "Dart"
 crate = "tree-sitter-dart"
+version = "0.2.0"
+checksum = "325dd1e24ee9ee21111e9c43680ae7d6010aaa9f282b048a99b9c7163c1cf553"
 grammar = "dart"
 repository = "https://github.com/nielsenko/tree-sitter-dart"
 rev = "b57d734c84f510bbd524097902cab671e4dbfca9"
@@ -33,6 +40,8 @@ sample = "dart.dart"
 [elixir]
 language = "Elixir"
 crate = "tree-sitter-elixir"
+version = "0.3.5"
+checksum = "66dd064a762ed95bfc29857fa3cb7403bb1e5cb88112de0f6341b7e47284ba40"
 grammar = "elixir"
 repository = "https://github.com/elixir-lang/tree-sitter-elixir"
 rev = "e2d9e6e0e76b0c436fa48a0b8c32a031d0cbdf49"
@@ -43,6 +52,8 @@ sample = "elixir.ex"
 [elm]
 language = "Elm"
 crate = "tree-sitter-elm"
+version = "5.9.4"
+checksum = "807f387a83c88d894b978edeff024f26a2935505de83237f57c77f9aa2de4ee7"
 grammar = "elm"
 repository = "https://github.com/elm-tooling/tree-sitter-elm"
 rev = "34815684e37cf299477e86a7d1e10d3ecb5486f9"
@@ -53,6 +64,8 @@ sample = "elm.elm"
 [erlang]
 language = "Erlang"
 crate = "tree-sitter-erlang"
+version = "0.20.0"
+checksum = "3107efc581d335488dc38d2f51ca8b7a6a98e36f07f95a8e963f031edda6f568"
 grammar = "erlang"
 repository = "https://github.com/WhatsApp/tree-sitter-erlang"
 rev = "67e7f7f05baf492ca2a7c0d9538761b242d33d95"
@@ -63,6 +76,8 @@ sample = "erlang.erl"
 [gleam]
 language = "Gleam"
 crate = "tree-sitter-gleam"
+version = "1.0.0"
+checksum = "f0175c53793bda5d444360dd5add25463d18d66afb7f521d6791e2fc61bf2fb3"
 grammar = "gleam"
 repository = "https://github.com/gleam-lang/tree-sitter-gleam"
 rev = "066704e4826699e754d351e3bbe12bf2e51de9d8"
@@ -73,6 +88,8 @@ sample = "gleam.gleam"
 [graphql]
 language = "GraphQL"
 crate = "tree-sitter-graphql"
+version = "0.2.1"
+checksum = "e54723227ad8bf2b5700331ea522785d545a7f9787ff7271044a8f9e24ea660b"
 grammar = "graphql"
 repository = "https://github.com/joowani/tree-sitter-graphql"
 rev = "1abcd628084f2fd8b1e74081b5552acfd2c21cd6"
@@ -83,6 +100,8 @@ sample = "graphql.graphql"
 [haskell]
 language = "Haskell"
 crate = "tree-sitter-haskell"
+version = "0.23.1"
+checksum = "977c51e504548cba13fc27cb5a2edab2124cf6716a1934915d07ab99523b05a4"
 grammar = "haskell"
 repository = "https://github.com/tree-sitter/tree-sitter-haskell"
 rev = "c30d812bc90827f1a54106a25bc9a6307f5cdcec"
@@ -93,6 +112,8 @@ sample = "haskell.hs"
 [hcl]
 language = "HCL"
 crate = "tree-sitter-hcl"
+version = "1.1.0"
+checksum = "5a7b2cc3d7121553b84309fab9d11b3ff3d420403eef9ae50f9fd1cd9d9cf012"
 grammar = "hcl"
 repository = "https://github.com/tree-sitter-grammars/tree-sitter-hcl"
 rev = "009def4ae38ec30e5b40beeae26efe93484ab286"
@@ -103,6 +124,8 @@ sample = "hcl.tf"
 [kotlin]
 language = "Kotlin"
 crate = "tree-sitter-kotlin-ng"
+version = "1.1.0"
+checksum = "e800ebbda938acfbf224f4d2c34947a31994b1295ee6e819b65226c7b51b4450"
 grammar = "kotlin"
 repository = "https://github.com/tree-sitter-grammars/tree-sitter-kotlin"
 rev = "77dd60ea0a9003ce062c9728a513ffe1aaff8c82"
@@ -113,6 +136,8 @@ sample = "kotlin.kt"
 [lua]
 language = "Lua"
 crate = "tree-sitter-lua"
+version = "0.5.0"
+checksum = "8daaf5f4235188a58603c39760d5fa5d4b920d36a299c934adddae757f32a10c"
 grammar = "lua"
 repository = "https://github.com/tree-sitter-grammars/tree-sitter-lua"
 rev = "10fe0054734eec83049514ea2e718b2a56acd0c9"
@@ -123,6 +148,8 @@ sample = "lua.lua"
 [nix]
 language = "Nix"
 crate = "tree-sitter-nix"
+version = "0.3.0"
+checksum = "4952a9733f3a98f6683a0ccd1035d84ab7a52f7e84eeed58548d86765ad92de3"
 grammar = "nix"
 repository = "https://github.com/nix-community/tree-sitter-nix"
 rev = "ea1d87f7996be1329ef6555dcacfa63a69bd55c6"
@@ -133,6 +160,8 @@ sample = "nix.nix"
 [ocaml]
 language = "OCaml"
 crate = "tree-sitter-ocaml"
+version = "0.26.0"
+checksum = "43adb10fcccbcbbce0f4adc9dab7cd55f0a5eafc2d71bd4c03fcc5d6767066e0"
 source = "grammars/ocaml"
 grammar = "ocaml"
 repository = "https://github.com/tree-sitter/tree-sitter-ocaml"
@@ -144,6 +173,8 @@ sample = "ocaml.ml"
 [prisma]
 language = "Prisma"
 crate = "tree-sitter-prisma-io"
+version = "1.6.0"
+checksum = "c35912d65a6adb07f781db46d843bf0464935e267da6ed192705516adafc7c24"
 grammar = "prisma"
 repository = "https://github.com/victorhqc/tree-sitter-prisma"
 rev = "3556b2c1f20ec9ac91e92d32c43d9d2a0ca3cc49"
@@ -154,6 +185,8 @@ sample = "prisma.prisma"
 [proto]
 language = "Proto"
 crate = "tree-sitter-proto"
+version = "0.6.0"
+checksum = "9c93b6f1ed20de442e900eb636f2176af6063953dfaa9f76bf168dd3b490a3a1"
 grammar = "proto"
 repository = "https://github.com/coder3101/tree-sitter-proto"
 rev = "6c878d18628ebbff3474479d2fdd6d8ba1954c3e"
@@ -164,6 +197,8 @@ sample = "proto.proto"
 [r]
 language = "R"
 crate = "tree-sitter-r"
+version = "1.3.0"
+checksum = "ffc9954ec870dcad6cffdd302b405306c68cf031ed79a78cd9746f6740d9fe20"
 grammar = "r"
 repository = "https://github.com/r-lib/tree-sitter-r"
 rev = "f2289db204dda2bf7c7ea720de5c2a2c3eff2530"
@@ -174,6 +209,8 @@ sample = "r.r"
 [scala]
 language = "Scala"
 crate = "tree-sitter-scala"
+version = "0.26.2"
+checksum = "24e0ab4505990bfe30051761d40a7bf4033ce5a81c9eda9e20e987a5cdc84826"
 grammar = "scala"
 repository = "https://github.com/tree-sitter/tree-sitter-scala"
 rev = "b931fcc338390925eb893d70ad070033f5856ccf"
@@ -184,6 +221,8 @@ sample = "scala.scala"
 [svelte]
 language = "Svelte"
 crate = "tree-sitter-svelte-ng"
+version = "1.0.2"
+checksum = "ef0a71f9cf5e94373cc86c64893630c8a29bb25d3390a248268d08af2165fa37"
 grammar = "svelte"
 repository = "https://github.com/tree-sitter-grammars/tree-sitter-svelte"
 rev = "774a65aea563accc35f5d45fafa4d96ec5761f57"
@@ -194,6 +233,8 @@ sample = "svelte.svelte"
 [swift]
 language = "Swift"
 crate = "tree-sitter-swift"
+version = "0.7.3"
+checksum = "fe36052155b9dd69ca82b3b8f1b4ccfb2d867125ac1a4db1dd7331829242668c"
 grammar = "swift"
 repository = "https://github.com/alex-pinkus/tree-sitter-swift"
 rev = "b8b22bffbb3441780e6471665bacfb263741c86a"
@@ -204,6 +245,8 @@ sample = "swift.swift"
 [xml]
 language = "XML"
 crate = "tree-sitter-xml"
+version = "0.7.0"
+checksum = "e670041f591d994f54d597ddcd8f4ebc930e282c4c76a42268743b71f0c8b6b3"
 source = "xml"
 grammar = "xml"
 repository = "https://github.com/tree-sitter-grammars/tree-sitter-xml"
@@ -215,6 +258,8 @@ sample = "xml.xml"
 [zig]
 language = "Zig"
 crate = "tree-sitter-zig"
+version = "1.1.2"
+checksum = "ab11fc124851b0db4dd5e55983bbd9631192e93238389dcd44521715e5d53e28"
 grammar = "zig"
 repository = "https://github.com/tree-sitter-grammars/tree-sitter-zig"
 rev = "b670c8df85a1568f498aa5c8cae42f51a90473c0"

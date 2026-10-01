@@ -1,0 +1,48 @@
+path_suffixes = ["lua"]
+line_comments = ["-- "]
+autoclose_before = ";:.,=}])>"
+increase_indent_pattern = '^\s*(local\s+)?function\b|\bfunction\s*\([^)]*\)\s*$|\b(then|do|else|repeat)\s*$'
+decrease_indent_pattern = '^\s*(end|else|elseif|until)\b'
+decrease_indent_patterns = []
+indent_from_last_non_blank_line = true
+snippet_scope = "lua"
+
+[[brackets]]
+start = "{"
+end = "}"
+close = true
+surround = true
+newline = true
+not_in = []
+
+[[brackets]]
+start = "["
+end = "]"
+close = true
+surround = true
+newline = true
+not_in = []
+
+[[brackets]]
+start = "("
+end = ")"
+close = true
+surround = true
+newline = true
+not_in = []
+
+[[brackets]]
+start = '"'
+end = '"'
+close = true
+surround = true
+newline = false
+not_in = ["string", "comment"]
+
+[[brackets]]
+start = "'"
+end = "'"
+close = true
+surround = true
+newline = false
+not_in = ["string", "comment"]

@@ -57,6 +57,32 @@ pub enum Lang {
     PlainText,
 }
 
+/// Languages whose grammar is a package: known by name, recognized once their published package's matcher is
+/// registered, and plain text until the package is installed.
+pub const PACKAGED: [Lang; 21] = [
+    Lang::CSharp,
+    Lang::Dart,
+    Lang::Elixir,
+    Lang::Elm,
+    Lang::Erlang,
+    Lang::Gleam,
+    Lang::GraphQl,
+    Lang::Haskell,
+    Lang::Hcl,
+    Lang::Kotlin,
+    Lang::Lua,
+    Lang::Nix,
+    Lang::Ocaml,
+    Lang::Prisma,
+    Lang::Proto,
+    Lang::R,
+    Lang::Scala,
+    Lang::Svelte,
+    Lang::Swift,
+    Lang::Xml,
+    Lang::Zig,
+];
+
 /// Files the settings say are a language, over detection: whole names, extensions, or `*` globs.
 pub fn set_file_types(file_types: Vec<(Lang, Vec<String>)>) {
     if let Ok(mut registry) = language_registry().write() {
@@ -355,34 +381,18 @@ const PATH_SUFFIXES: &[(Lang, &[&str])] = &[
         Lang::Yaml,
         &["yml", "yaml", "pixi.lock", "clang-format", "clangd", "bst"],
     ),
-    (Lang::Lua, &["lua"]),
-    (Lang::CSharp, &["cs"]),
     (
         Lang::Markdown,
         &["md", "mdx", "mdwn", "mdc", "markdown", "MD"],
     ),
     (Lang::Php, &["php"]),
-    (Lang::Scala, &["scala", "sc", "sbt"]),
-    (Lang::Elixir, &["ex", "exs"]),
-    (Lang::Haskell, &["hs"]),
-    (Lang::Ocaml, &["ml", "mli"]),
     (Lang::Scss, &["scss"]),
-    (Lang::Nix, &["nix"]),
-    (Lang::Swift, &["swift"]),
     (Lang::Make, &["mk", "Makefile", "makefile", "GNUmakefile"]),
-    (Lang::Xml, &["xml", "svg", "xaml", "plist"]),
-    (Lang::Zig, &["zig"]),
-    (Lang::Dart, &["dart"]),
     (Lang::Sql, &["sql"]),
-    (Lang::Kotlin, &["kt", "kts"]),
-    (Lang::Svelte, &["svelte"]),
     (
         Lang::Dockerfile,
         &["Dockerfile", "Containerfile", "dockerfile", "containerfile"],
     ),
-    (Lang::GraphQl, &["graphql", "gql", "graphqls"]),
-    (Lang::Hcl, &["hcl", "tf", "tfvars"]),
-    (Lang::Proto, &["proto"]),
     (Lang::Diff, &["diff", "patch"]),
     (
         Lang::GitCommit,
@@ -398,14 +408,6 @@ const PATH_SUFFIXES: &[(Lang, &[&str])] = &[
         Lang::Ini,
         &["ini", "cfg", "editorconfig", "gitconfig", "gitmodules"],
     ),
-    (
-        Lang::Erlang,
-        &["erl", "hrl", "app.src", "escript", "rebar.config"],
-    ),
-    (Lang::Gleam, &["gleam"]),
-    (Lang::R, &["r", "R"]),
-    (Lang::Elm, &["elm"]),
-    (Lang::Prisma, &["prisma"]),
 ];
 
 /// Patterns a file's first line can match to name its language when the path doesn't.
@@ -435,15 +437,7 @@ pub(crate) fn native_injections(lang: Lang) -> Option<&'static str> {
         Lang::JavaScript | Lang::TypeScript | Lang::Tsx => tree_sitter_javascript::INJECTIONS_QUERY,
         Lang::Rust => tree_sitter_rust::INJECTIONS_QUERY,
         Lang::Php => tree_sitter_php::INJECTIONS_QUERY,
-        Lang::Elixir => tree_sitter_elixir::INJECTIONS_QUERY,
-        Lang::Nix => tree_sitter_nix::INJECTIONS_QUERY,
-        Lang::Swift => tree_sitter_swift::INJECTIONS_QUERY,
-        Lang::Zig => tree_sitter_zig::INJECTIONS_QUERY,
-        Lang::Lua => tree_sitter_lua::INJECTIONS_QUERY,
-        Lang::Haskell => tree_sitter_haskell::INJECTIONS_QUERY,
-        Lang::Svelte => tree_sitter_svelte_ng::INJECTIONS_QUERY,
         Lang::GitCommit => tree_sitter_gitcommit::INJECTIONS_QUERY,
-        Lang::Elm => tree_sitter_elm::INJECTIONS_QUERY,
         _ => return None,
     })
 }
@@ -543,40 +537,41 @@ fn native_grammar(lang: Lang) -> Option<tree_sitter::Language> {
         Lang::Java => tree_sitter_java::LANGUAGE.into(),
         Lang::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
         Lang::Yaml => tree_sitter_yaml::LANGUAGE.into(),
-        Lang::Lua => tree_sitter_lua::LANGUAGE.into(),
-        Lang::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
         Lang::Markdown => tree_sitter_md::LANGUAGE.into(),
         Lang::Php => tree_sitter_php::LANGUAGE_PHP.into(),
-        Lang::Scala => tree_sitter_scala::LANGUAGE.into(),
-        Lang::Elixir => tree_sitter_elixir::LANGUAGE.into(),
-        Lang::Haskell => tree_sitter_haskell::LANGUAGE.into(),
-        Lang::Ocaml => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
         Lang::Scss => tree_sitter_scss::language(),
-        Lang::Nix => tree_sitter_nix::LANGUAGE.into(),
-        Lang::Swift => tree_sitter_swift::LANGUAGE.into(),
         Lang::Make => tree_sitter_make::LANGUAGE.into(),
-        Lang::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
-        Lang::Zig => tree_sitter_zig::LANGUAGE.into(),
-        Lang::Dart => tree_sitter_dart::LANGUAGE.into(),
         Lang::Sql => tree_sitter_sequel::LANGUAGE.into(),
-        Lang::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
-        Lang::Svelte => tree_sitter_svelte_ng::LANGUAGE.into(),
         Lang::Dockerfile => tree_sitter_containerfile::LANGUAGE.into(),
-        Lang::GraphQl => tree_sitter_graphql::LANGUAGE.into(),
-        Lang::Hcl => tree_sitter_hcl::LANGUAGE.into(),
-        Lang::Proto => tree_sitter_proto::LANGUAGE.into(),
         Lang::Diff => tree_sitter_diff::LANGUAGE.into(),
         Lang::GitCommit => tree_sitter_gitcommit::LANGUAGE.into(),
         Lang::Ini => tree_sitter_ini::LANGUAGE.into(),
-        Lang::Erlang => tree_sitter_erlang::LANGUAGE.into(),
-        Lang::Gleam => tree_sitter_gleam::LANGUAGE.into(),
-        Lang::R => tree_sitter_r::LANGUAGE.into(),
-        Lang::Elm => tree_sitter_elm::LANGUAGE.into(),
-        Lang::Prisma => tree_sitter_prisma_io::LANGUAGE.into(),
         Lang::MarkdownInline => tree_sitter_md::INLINE_LANGUAGE.into(),
         Lang::Regex => tree_sitter_regex::LANGUAGE.into(),
         Lang::JsDoc => tree_sitter_jsdoc::LANGUAGE.into(),
         Lang::PlainText => return None,
+        // Grammar packages, downloaded when a file needs them.
+        Lang::CSharp
+        | Lang::Dart
+        | Lang::Elixir
+        | Lang::Elm
+        | Lang::Erlang
+        | Lang::Gleam
+        | Lang::GraphQl
+        | Lang::Haskell
+        | Lang::Hcl
+        | Lang::Kotlin
+        | Lang::Lua
+        | Lang::Nix
+        | Lang::Ocaml
+        | Lang::Prisma
+        | Lang::Proto
+        | Lang::R
+        | Lang::Scala
+        | Lang::Svelte
+        | Lang::Swift
+        | Lang::Xml
+        | Lang::Zig => return None,
     })
 }
 
@@ -599,40 +594,40 @@ pub(crate) fn native_highlights(lang: Lang) -> &'static str {
         Lang::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
         Lang::Toml => tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
         Lang::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY,
-        Lang::Lua => tree_sitter_lua::HIGHLIGHTS_QUERY,
-        Lang::CSharp => tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
         Lang::Markdown => tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
         Lang::Php => tree_sitter_php::HIGHLIGHTS_QUERY,
-        Lang::Scala => tree_sitter_scala::HIGHLIGHTS_QUERY,
-        Lang::Elixir => tree_sitter_elixir::HIGHLIGHTS_QUERY,
-        Lang::Haskell => tree_sitter_haskell::HIGHLIGHTS_QUERY,
-        Lang::Ocaml => tree_sitter_ocaml::HIGHLIGHTS_QUERY,
         Lang::Scss => tree_sitter_scss::HIGHLIGHTS_QUERY,
-        Lang::Nix => tree_sitter_nix::HIGHLIGHTS_QUERY,
-        Lang::Swift => tree_sitter_swift::HIGHLIGHTS_QUERY,
         Lang::Make => tree_sitter_make::HIGHLIGHTS_QUERY,
-        Lang::Xml => tree_sitter_xml::XML_HIGHLIGHT_QUERY,
-        Lang::Zig => tree_sitter_zig::HIGHLIGHTS_QUERY,
-        Lang::Dart => tree_sitter_dart::HIGHLIGHTS_QUERY,
         Lang::Sql => tree_sitter_sequel::HIGHLIGHTS_QUERY,
-        Lang::Kotlin => include_str!("../queries/kotlin/highlights.scm"),
-        Lang::Svelte => tree_sitter_svelte_ng::HIGHLIGHTS_QUERY,
         Lang::Dockerfile => tree_sitter_containerfile::HIGHLIGHTS_QUERY,
-        Lang::GraphQl => include_str!("../queries/graphql/highlights.scm"),
-        Lang::Hcl => include_str!("../queries/hcl/highlights.scm"),
-        Lang::Proto => include_str!("../queries/proto/highlights.scm"),
         Lang::Diff => tree_sitter_diff::HIGHLIGHTS_QUERY,
         Lang::GitCommit => tree_sitter_gitcommit::HIGHLIGHTS_QUERY,
         Lang::Ini => tree_sitter_ini::HIGHLIGHTS_QUERY,
-        Lang::Erlang => tree_sitter_erlang::HIGHLIGHTS_QUERY,
-        Lang::Gleam => tree_sitter_gleam::HIGHLIGHT_QUERY,
-        Lang::R => tree_sitter_r::HIGHLIGHTS_QUERY,
-        Lang::Elm => tree_sitter_elm::HIGHLIGHTS_QUERY,
-        Lang::Prisma => include_str!("../queries/prisma/highlights.scm"),
         Lang::MarkdownInline => tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
         Lang::Regex => tree_sitter_regex::HIGHLIGHTS_QUERY,
         Lang::JsDoc => tree_sitter_jsdoc::HIGHLIGHTS_QUERY,
         Lang::PlainText => "",
+        Lang::CSharp
+        | Lang::Dart
+        | Lang::Elixir
+        | Lang::Elm
+        | Lang::Erlang
+        | Lang::Gleam
+        | Lang::GraphQl
+        | Lang::Haskell
+        | Lang::Hcl
+        | Lang::Kotlin
+        | Lang::Lua
+        | Lang::Nix
+        | Lang::Ocaml
+        | Lang::Prisma
+        | Lang::Proto
+        | Lang::R
+        | Lang::Scala
+        | Lang::Svelte
+        | Lang::Swift
+        | Lang::Xml
+        | Lang::Zig => "",
     }
 }
 
@@ -648,42 +643,6 @@ pub(crate) fn native_queries(lang: Lang) -> LanguageQueries {
         overrides: crate::syntax::native_overrides(lang).map(Into::into),
         config: crate::language::native_config(lang),
         snippet_scope: crate::snippet::native_snippet_scope(lang),
-    }
-}
-
-/// What a grammar package for `lang` takes over from the language compiled in, so the two parse, highlight and
-/// detect files alike.
-pub struct BuiltinLanguage {
-    pub grammar: Option<tree_sitter::Language>,
-    pub highlights: &'static str,
-    pub injections: Option<&'static str>,
-    pub outline: Option<&'static str>,
-    pub indents: Option<&'static str>,
-    pub overrides: Option<&'static str>,
-    pub config: crate::language::LanguageConfig,
-    pub snippet_scope: &'static str,
-    pub path_suffixes: &'static [&'static str],
-    pub first_line_pattern: Option<&'static str>,
-}
-
-pub fn builtin_language(lang: Lang) -> BuiltinLanguage {
-    BuiltinLanguage {
-        grammar: native_grammar(lang),
-        highlights: native_highlights(lang),
-        injections: native_injections(lang),
-        outline: crate::outline::native_outline(lang),
-        indents: Some(crate::indent::native_indents(lang)).filter(|patterns| !patterns.is_empty()),
-        overrides: crate::syntax::native_overrides(lang),
-        config: crate::language::native_config(lang),
-        snippet_scope: crate::snippet::native_snippet_scope(lang),
-        path_suffixes: PATH_SUFFIXES
-            .iter()
-            .find(|(each, _)| *each == lang)
-            .map_or(&[], |(_, suffixes)| *suffixes),
-        first_line_pattern: FIRST_LINE_PATTERNS
-            .iter()
-            .find(|(each, _)| *each == lang)
-            .map(|(_, pattern)| *pattern),
     }
 }
 
@@ -719,6 +678,7 @@ pub(crate) fn builtin_registry() -> LanguageRegistry {
         .iter()
         .map(|(lang, _)| *lang)
         .chain(PATH_SUFFIXES.iter().map(|(lang, _)| *lang))
+        .chain(PACKAGED)
         .chain([Lang::PlainText]);
     let mut registered: Vec<Lang> = Vec::new();
     for lang in ordered {
@@ -797,13 +757,11 @@ mod tests {
     fn detects_by_the_longest_path_match_then_the_first_line() {
         assert_eq!(Lang::detect("src/main.rs", None), Lang::Rust);
         assert_eq!(Lang::detect("Dockerfile", None), Lang::Dockerfile);
-        assert_eq!(Lang::detect("infra/main.tf", None), Lang::Hcl);
         assert_eq!(Lang::detect(".git/COMMIT_EDITMSG", None), Lang::GitCommit);
         assert_eq!(Lang::detect("include/a.h", None), Lang::Cpp);
         assert_eq!(Lang::detect("Cargo.lock", None), Lang::Toml);
         assert_eq!(Lang::detect("tsconfig.json", None), Lang::Json);
         assert_eq!(Lang::detect(".zshrc", None), Lang::Bash);
-        assert_eq!(Lang::detect("schema.graphql", None), Lang::GraphQl);
         assert_eq!(
             Lang::detect("bin/tool", Some("#!/usr/bin/env python3")),
             Lang::Python

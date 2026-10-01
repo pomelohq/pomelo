@@ -4639,6 +4639,7 @@ fn main() -> anyhow::Result<()> {
     }
     let mut app = App::default();
     editor::registry::on_languages_changed(std::sync::Arc::new(ui::wake));
+    register_available_languages();
     if let Some(dir) = editor::grammar_packages::grammars_dir() {
         editor::grammar_packages::register_installed_grammars(&dir);
         if grammars::downloads_on() {
@@ -4677,6 +4678,19 @@ fn main() -> anyhow::Result<()> {
     app.refresh_agents();
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// The languages published as grammar packages, so their files are recognized before one is installed.
+fn register_available_languages() {
+    let index = editor::grammar_packages::grammars_dir()
+        .map_or_else(grammars::embedded_index, |dir| grammars::load_index(&dir));
+    for package in index.packages {
+        editor::grammar_packages::register_available_language(
+            &package.language,
+            package.path_suffixes,
+            package.first_line_pattern.as_deref(),
+        );
+    }
 }
 
 /// Installs, in the background, the grammars of languages opened lately that the app no longer carries.

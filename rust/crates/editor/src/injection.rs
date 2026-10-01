@@ -473,12 +473,6 @@ mod tests {
             Lang::Tsx,
             Lang::Rust,
             Lang::Php,
-            Lang::Elixir,
-            Lang::Nix,
-            Lang::Swift,
-            Lang::Zig,
-            Lang::Lua,
-            Lang::Haskell,
         ] {
             let (language, _) = grammar(lang).unwrap();
             let source = injection_patterns(lang).unwrap();

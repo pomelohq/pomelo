@@ -175,6 +175,54 @@ pub fn register_installed_grammars(dir: &Path) -> usize {
     }
 }
 
+/// Registers a language a published package provides, so its files are recognized, and open as plain text,
+/// before the package is installed; a language that has a grammar already is left as it is.
+pub fn register_available_language(
+    name: &str,
+    path_suffixes: Vec<String>,
+    first_line_pattern: Option<&str>,
+) -> bool {
+    let Some(lang) = Lang::LANGUAGES
+        .into_iter()
+        .find(|lang| lang.name().eq_ignore_ascii_case(name))
+    else {
+        return false;
+    };
+    let Ok(mut registry) = language_registry().write() else {
+        return false;
+    };
+    register_available(&mut registry, lang, path_suffixes, first_line_pattern)
+}
+
+pub(crate) fn register_available(
+    registry: &mut LanguageRegistry,
+    lang: Lang,
+    path_suffixes: Vec<String>,
+    first_line_pattern: Option<&str>,
+) -> bool {
+    if registry.has_grammar(lang) {
+        return false;
+    }
+    let first_line = match first_line_pattern.map(regex::Regex::new).transpose() {
+        Ok(first_line) => first_line,
+        Err(error) => {
+            eprintln!("grammars: {}: first_line_pattern: {error}", lang.name());
+            None
+        }
+    };
+    registry.register_language(
+        lang,
+        LanguageMatcher {
+            path_suffixes,
+            first_line,
+        },
+        None,
+        false,
+        Arc::new(move || native_queries(lang)),
+    );
+    true
+}
+
 /// Registers one package just installed, so files of its language highlight without a restart.
 pub fn register_installed_grammar(package: &Path) -> Result<(), String> {
     let registered = match language_registry().write() {
@@ -368,6 +416,64 @@ mod tests {
         if let Some(highlights) = highlights {
             std::fs::write(package.join("highlights.scm"), highlights).expect("query");
         }
+    }
+
+    #[test]
+    fn a_published_language_is_recognized_as_plain_text_until_its_package_installs() {
+        let registry: &'static RwLock<LanguageRegistry> =
+            Box::leak(Box::new(RwLock::new(crate::highlight::builtin_registry())));
+        {
+            let mut registry = registry.write().expect("registry");
+            assert_eq!(registry.language_for_file("App.kt", None), Lang::PlainText);
+            assert!(register_available(
+                &mut registry,
+                Lang::Kotlin,
+                vec!["kt".into(), "kts".into()],
+                None
+            ));
+            assert!(
+                !register_available(&mut registry, Lang::Ruby, vec!["rb".into()], None),
+                "a compiled-in language keeps its own"
+            );
+            assert_eq!(registry.language_for_file("src/App.kt", None), Lang::Kotlin);
+            assert_eq!(registry.language_for_name("Kotlin"), Some(Lang::Kotlin));
+            assert!(!registry.has_grammar(Lang::Kotlin));
+            assert!(registry.grammar(Lang::Kotlin).is_none());
+            assert!(registry
+                .queries(Lang::Kotlin)
+                .is_some_and(|queries| queries.config.line_comments.is_empty()));
+        }
+        let temp = tempfile::tempdir().expect("temp");
+        let package = temp.path().join("kotlin").join("1.1.0");
+        std::fs::create_dir_all(&package).expect("package dir");
+        std::fs::write(package.join("grammar.wasm"), FIXTURE).expect("wasm");
+        std::fs::write(
+            package.join("language.toml"),
+            "name = \"Kotlin\"\ngrammar = \"json\"\n",
+        )
+        .expect("config");
+        std::fs::write(package.join("highlights.scm"), "(number) @number\n").expect("query");
+        register_package(&mut registry.write().expect("registry"), &package).expect("registered");
+        assert!(registry.read().expect("registry").has_grammar(Lang::Kotlin));
+        assert_eq!(
+            registry
+                .read()
+                .expect("registry")
+                .language_for_file("src/App.kt", None),
+            Lang::Kotlin,
+            "the package keeps the matcher it was recognized by"
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (grammar, highlights) = loop {
+            if let Some(found) = crate::registry::request_grammar(registry, Lang::Kotlin) {
+                break found;
+            }
+            assert!(Instant::now() < deadline, "the grammar never loaded");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(grammar.is_wasm());
+        let captures = highlight_captures(&grammar, &highlights, "[1, 2]").expect("captures");
+        assert_eq!(captures.len(), 2);
     }
 
     #[test]

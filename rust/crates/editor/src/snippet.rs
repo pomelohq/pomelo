@@ -297,39 +297,40 @@ pub fn native_snippet_scope(lang: Lang) -> &'static str {
         Lang::Java => "java",
         Lang::Toml => "toml",
         Lang::Yaml => "yaml",
-        Lang::Lua => "lua",
-        Lang::CSharp => "c#",
         Lang::Markdown | Lang::MarkdownInline => "markdown",
         Lang::Php => "php",
-        Lang::Scala => "scala",
-        Lang::Elixir => "elixir",
-        Lang::Haskell => "haskell",
-        Lang::Ocaml => "ocaml",
         Lang::Scss => "scss",
-        Lang::Nix => "nix",
-        Lang::Swift => "swift",
         Lang::Make => "makefile",
-        Lang::Xml => "xml",
-        Lang::Zig => "zig",
-        Lang::Dart => "dart",
         Lang::Sql => "sql",
-        Lang::Kotlin => "kotlin",
-        Lang::Svelte => "svelte",
         Lang::Dockerfile => "dockerfile",
-        Lang::GraphQl => "graphql",
-        Lang::Hcl => "hcl",
-        Lang::Proto => "proto",
         Lang::Diff => "diff",
         Lang::GitCommit => "git commit",
         Lang::Ini => "ini",
-        Lang::Erlang => "erlang",
-        Lang::Gleam => "gleam",
-        Lang::R => "r",
-        Lang::Elm => "elm",
-        Lang::Prisma => "prisma",
         Lang::Regex => "regex",
         Lang::JsDoc => "jsdoc",
         Lang::PlainText => "plaintext",
+        // Packaged languages: their package names the scope, plain text until it is installed.
+        Lang::CSharp
+        | Lang::Dart
+        | Lang::Elixir
+        | Lang::Elm
+        | Lang::Erlang
+        | Lang::Gleam
+        | Lang::GraphQl
+        | Lang::Haskell
+        | Lang::Hcl
+        | Lang::Kotlin
+        | Lang::Lua
+        | Lang::Nix
+        | Lang::Ocaml
+        | Lang::Prisma
+        | Lang::Proto
+        | Lang::R
+        | Lang::Scala
+        | Lang::Svelte
+        | Lang::Swift
+        | Lang::Xml
+        | Lang::Zig => "plaintext",
     }
 }
 

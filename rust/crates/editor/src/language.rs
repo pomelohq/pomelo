@@ -111,22 +111,6 @@ const RUBY_INDENT: IndentRules = IndentRules {
     using_last_non_empty_line: true,
 };
 
-const LUA_INDENT: IndentRules = IndentRules {
-    increase: Some(
-        r"^\s*(local\s+)?function\b|\bfunction\s*\([^)]*\)\s*$|\b(then|do|else|repeat)\s*$",
-    ),
-    decrease: Some(r"^\s*(end|else|elseif|until)\b"),
-    decrease_after: &[],
-    using_last_non_empty_line: true,
-};
-
-const ELIXIR_INDENT: IndentRules = IndentRules {
-    increase: Some(r"\bdo\s*$|->\s*$"),
-    decrease: Some(r"^\s*(end|else|rescue|catch|after)\b"),
-    decrease_after: &[],
-    using_last_non_empty_line: true,
-};
-
 impl LanguageConfig {
     pub fn should_autoclose_before(&self, c: char) -> bool {
         c.is_whitespace() || self.autoclose_before.contains(c)
@@ -352,7 +336,32 @@ pub fn native_config(lang: Lang) -> LanguageConfig {
             indent: BASH_INDENT,
         },
         Lang::Markdown => code(MARKDOWN, &[], Some(("<!--", "-->"))),
-        Lang::PlainText | Lang::MarkdownInline | Lang::Regex | Lang::JsDoc => LanguageConfig {
+        // A packaged language edits as plain text until its package, which carries its config, is installed.
+        Lang::PlainText
+        | Lang::MarkdownInline
+        | Lang::Regex
+        | Lang::JsDoc
+        | Lang::CSharp
+        | Lang::Dart
+        | Lang::Elixir
+        | Lang::Elm
+        | Lang::Erlang
+        | Lang::Gleam
+        | Lang::GraphQl
+        | Lang::Haskell
+        | Lang::Hcl
+        | Lang::Kotlin
+        | Lang::Lua
+        | Lang::Nix
+        | Lang::Ocaml
+        | Lang::Prisma
+        | Lang::Proto
+        | Lang::R
+        | Lang::Scala
+        | Lang::Svelte
+        | Lang::Swift
+        | Lang::Xml
+        | Lang::Zig => LanguageConfig {
             brackets: PLAIN_TEXT,
             autoclose_before: ")]}",
             line_comments: &[],
@@ -360,27 +369,11 @@ pub fn native_config(lang: Lang) -> LanguageConfig {
             indent: NO_INDENT_RULES,
         },
         Lang::Ruby => with_indent(code(GENERIC, HASH_COMMENTS, None), RUBY_INDENT),
-        Lang::Elixir => with_indent(code(GENERIC, HASH_COMMENTS, None), ELIXIR_INDENT),
-        Lang::Toml | Lang::Nix | Lang::Make => code(GENERIC, HASH_COMMENTS, None),
-        Lang::Lua => with_indent(code(GENERIC, DASH_COMMENTS, None), LUA_INDENT),
-        Lang::Haskell => code(GENERIC, DASH_COMMENTS, None),
-        Lang::Html | Lang::Xml => code(GENERIC, &[], Some(("<!--", "-->"))),
-        Lang::Ocaml => code(GENERIC, &[], Some(("(*", "*)"))),
-        Lang::Java | Lang::CSharp | Lang::Php | Lang::Scala | Lang::Swift | Lang::Dart => {
-            code(GENERIC, SLASH_COMMENTS, SLASH_BLOCK)
-        }
-        Lang::Zig => code(GENERIC, SLASH_COMMENTS, None),
-        Lang::Kotlin | Lang::Proto | Lang::Prisma | Lang::Gleam => {
-            code(GENERIC, SLASH_COMMENTS, SLASH_BLOCK)
-        }
+        Lang::Toml | Lang::Make => code(GENERIC, HASH_COMMENTS, None),
+        Lang::Html => code(GENERIC, &[], Some(("<!--", "-->"))),
+        Lang::Java | Lang::Php => code(GENERIC, SLASH_COMMENTS, SLASH_BLOCK),
         Lang::Sql => code(GENERIC, DASH_COMMENTS, SLASH_BLOCK),
-        Lang::Hcl => code(GENERIC, &["# ", "// "], SLASH_BLOCK),
-        Lang::Dockerfile | Lang::GraphQl | Lang::R | Lang::GitCommit | Lang::Diff => {
-            code(GENERIC, HASH_COMMENTS, None)
-        }
+        Lang::Dockerfile | Lang::GitCommit | Lang::Diff => code(GENERIC, HASH_COMMENTS, None),
         Lang::Ini => code(GENERIC, &["; ", "# "], None),
-        Lang::Erlang => code(GENERIC, &["% "], None),
-        Lang::Elm => code(GENERIC, DASH_COMMENTS, Some(("{-", "-}"))),
-        Lang::Svelte => code(GENERIC, &[], Some(("<!--", "-->"))),
     }
 }
