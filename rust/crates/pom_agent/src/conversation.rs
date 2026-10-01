@@ -570,6 +570,7 @@ impl Drive {
             })
             .unwrap_or_else(|| json!({}));
         merged["hooks"] = hooks;
+        crate::launch::add_readable_dirs(&mut merged, &self.home);
         let identity = identity_of(self, view);
         let script = format!(
             "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} --resume {id} --mcp-config {mcp} --settings {settings}",

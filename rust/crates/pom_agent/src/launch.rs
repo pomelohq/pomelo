@@ -85,6 +85,7 @@ pub(crate) fn settings_flag(context: &LaunchContext<'_>) -> String {
     if let Some(hooks) = crate::hooks::session_hooks(context.state, context.binary) {
         settings["hooks"] = hooks;
     }
+    add_readable_dirs(&mut settings, context.home);
     if settings
         .as_object()
         .is_some_and(|settings| settings.is_empty())
@@ -92,6 +93,33 @@ pub(crate) fn settings_flag(context: &LaunchContext<'_>) -> String {
         return String::new();
     }
     format!(" --settings {}", shell_quote(&settings.to_string()))
+}
+
+/// Claude only lets tools such as Workflow run files inside the session's readable folders, so a skill's own
+/// scripts under `~/.claude/skills` would be refused without this.
+pub(crate) fn add_readable_dirs(settings: &mut serde_json::Value, home: &Path) {
+    let skills = home.join(".claude/skills");
+    if !skills.is_dir() {
+        return;
+    }
+    let Some(settings) = settings.as_object_mut() else {
+        return;
+    };
+    let permissions = settings
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(permissions) = permissions.as_object_mut() else {
+        return;
+    };
+    let dirs = permissions
+        .entry("additionalDirectories")
+        .or_insert_with(|| serde_json::json!([]));
+    let skills = serde_json::Value::from(skills.to_string_lossy().into_owned());
+    if let Some(dirs) = dirs.as_array_mut() {
+        if !dirs.contains(&skills) {
+            dirs.push(skills);
+        }
+    }
 }
 
 pub(crate) fn shell_quote(text: &str) -> String {
@@ -414,6 +442,53 @@ fn task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str, system: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agents_may_read_the_users_skills_so_their_scripts_run() {
+        let home = tempfile::tempdir().expect("home");
+        let skills = home.path().join(".claude/skills");
+        std::fs::create_dir_all(&skills).expect("skills");
+        let state = StateDir::new(home.path().join("state"));
+        let context = LaunchContext {
+            state: &state,
+            home: home.path(),
+            binary: Path::new("/app/pom"),
+            tool_path: "/usr/bin",
+            session: "demo",
+            branch: "feat-login",
+            is_main: false,
+            cwd: Path::new("/work/demo"),
+        };
+        let script = claude_launch(&context).argv.join(" ");
+        assert!(
+            script.contains(&format!(
+                "\"additionalDirectories\":[\"{}\"]",
+                skills.display()
+            )),
+            "{script}"
+        );
+
+        let mut settings = serde_json::json!({"permissions": {"additionalDirectories": ["/mine"], "allow": ["Read"]}});
+        add_readable_dirs(&mut settings, home.path());
+        add_readable_dirs(&mut settings, home.path());
+        assert_eq!(
+            settings["permissions"]["additionalDirectories"],
+            serde_json::json!(["/mine", skills.to_string_lossy()]),
+            "a caller's own folders stay and the skills folder is added once"
+        );
+        assert_eq!(
+            settings["permissions"]["allow"],
+            serde_json::json!(["Read"])
+        );
+
+        let mut untouched = serde_json::json!({});
+        add_readable_dirs(&mut untouched, Path::new("/nonexistent-home"));
+        assert_eq!(
+            untouched,
+            serde_json::json!({}),
+            "no skills folder, nothing added"
+        );
+    }
 
     #[test]
     fn a_task_starts_a_fresh_conversation_on_its_prompt() {
