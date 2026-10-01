@@ -17,14 +17,24 @@ pub(crate) struct UpdateTracker {
     notes: Option<Receiver<NotesResult>>,
 }
 
+impl UpdateTracker {
+    pub(crate) fn waker_installed(&self) -> bool {
+        self.waker_installed
+    }
+
+    pub(crate) fn install_waker(&mut self) {
+        self.waker_installed = true;
+        auto_update::set_waker(ui::wake);
+    }
+}
+
 impl App {
     pub(crate) fn poll_updates(&mut self) {
         if self.mains.is_empty() {
             return;
         }
         if !self.updates.waker_installed {
-            self.updates.waker_installed = true;
-            auto_update::set_waker(ui::wake);
+            self.updates.install_waker();
         }
         auto_update::set_automatic_checks(self.settings.auto_update);
         let snapshot = auto_update::snapshot();
@@ -44,7 +54,28 @@ impl App {
             }
             self.settings_pages_at = None;
         }
+        self.announce_fix();
         self.poll_release_notes();
+    }
+
+    /// After a crash at startup, a newer release that is ready says so in every window.
+    fn announce_fix(&mut self) {
+        if self.fix_announced || !self.launch.recovering() {
+            return;
+        }
+        let auto_update::Status::Ready { version, .. } = auto_update::snapshot().status else {
+            return;
+        };
+        self.fix_announced = true;
+        let message = format!("Pomelo {version} is downloaded. Restart to use it.");
+        let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+        for id in windows {
+            let (title, message) = ("A fixed version is ready".to_string(), message.clone());
+            self.with_workspace_view(id, |view, _| view.notify_update_ready(title, message));
+            if let Some(main) = self.mains.get_mut(&id) {
+                main.dirty = true;
+            }
+        }
     }
 
     /// The Settings > General update row, for the page state.
@@ -100,6 +131,10 @@ impl App {
             self.with_workspace_view(id, |view, _| view.persist_panes(true));
         }
         self.persist_settings();
+        // The restart exits without the usual quit, which would otherwise leave the marker of a crash.
+        if let Some(marker) = &self.run_marker {
+            crate::recovery::end(marker);
+        }
         let Err(error) = auto_update::restart();
         eprintln!("[update] restart: {error}");
     }

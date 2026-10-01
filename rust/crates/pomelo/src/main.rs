@@ -15,6 +15,7 @@ mod key_equivalents;
 mod module_store_tabs;
 mod notifications;
 mod onboarding;
+mod recovery;
 mod updates;
 mod usage;
 mod window_bounds;
@@ -628,6 +629,19 @@ struct App {
     machine: onboarding::MachineChecks,
     usage: usage::UsageTracker,
     updates: updates::UpdateTracker,
+    /// How this launch differs after a crash at startup, or the setting not to restore tabs.
+    launch: recovery::Plan,
+    /// How the last run ended, read once at launch.
+    last_run: Option<recovery::LastRun>,
+    /// Where this run's marker lives; none for runs that keep no marker (tests, temporary state).
+    run_marker: Option<std::path::PathBuf>,
+    launched_at: Option<Instant>,
+    /// The run lasted long enough that a crash is no longer one at startup.
+    settled: bool,
+    /// The first window skipped its tabs (the setting), so later windows restore theirs.
+    skipped_tabs: bool,
+    /// A fixed release was announced after a startup crash.
+    fix_announced: bool,
     adding_repo: Option<add_repo::AddingRepo>,
     cloning_repos: Option<add_repo::CloningRepos>,
     keymap: workspace::keymap::Keymap,
@@ -1498,6 +1512,47 @@ impl App {
 
     /// Create a real OS window hosting a `WorkspaceView` for `layout`, wire its renderer + macOS chrome, and
     /// register it. Returns its `WindowId`. Used both for the first window and for "Open in new window".
+    /// After a crash at startup the updater runs before anything else is opened: the build that crashed can't
+    /// be trusted to get as far as its usual hourly check.
+    fn check_for_a_fix(&mut self) {
+        if !self.updates.waker_installed() {
+            self.updates.install_waker();
+        }
+        auto_update::check(auto_update::CheckKind::Automatic);
+    }
+
+    fn announce_recovery(&mut self, id: WindowId) {
+        let Some(version) = self.launch.crashed_version.clone() else {
+            return;
+        };
+        let title = "Pomelo quit unexpectedly last time".to_string();
+        let mut message =
+            format!("Pomelo {version} quit while starting, so your tabs were not reopened.");
+        if self.launch.risky_off {
+            message.push_str(
+                " It happened more than once, so language servers and language packages are off until Pomelo starts normally.",
+            );
+        }
+        self.with_workspace_view(id, |view, _| view.notify_recovery(title, message));
+    }
+
+    /// Once the run lasted long enough, a crash is no longer one at startup.
+    fn settle_run(&mut self) {
+        if self.settled {
+            return;
+        }
+        let Some(launched) = self.launched_at else {
+            return;
+        };
+        if launched.elapsed() < recovery::SETTLED_AFTER {
+            return;
+        }
+        self.settled = true;
+        if let Some(marker) = &self.run_marker {
+            recovery::settle(marker);
+        }
+    }
+
     fn new_main_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1574,6 +1629,12 @@ impl App {
         );
         let bindings = self.keymap_bindings();
         self.with_workspace_view(id, |view, _| view.set_bindings(bindings));
+        if self.launch.hold_saved {
+            self.with_workspace_view(id, |view, _| view.hold_saved_tabs());
+        } else if !self.launch.restore_tabs && !self.skipped_tabs {
+            self.skipped_tabs = true;
+            self.with_workspace_view(id, |view, _| view.skip_saved_tabs_once());
+        }
         self.apply_workspace_grouping();
         id
     }
@@ -1696,10 +1757,11 @@ impl App {
 
     fn apply_language_tools(&self) {
         let settings = self.settings.clone();
+        let risky_off = self.launch.risky_off;
         lsp::set_server_choice(move |language| {
             let chosen = settings.language_server_settings(language);
             lsp::ServerChoice {
-                enabled: chosen.enabled,
+                enabled: chosen.enabled && !risky_off,
                 servers: chosen.servers,
                 completions: chosen.completions,
                 completion_timeout_ms: chosen.completion_timeout_ms,
@@ -3301,6 +3363,9 @@ const RESIZE_SETTLE: Duration = Duration::from_millis(150);
 
 impl ApplicationHandler for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(marker) = &self.run_marker {
+            recovery::end(marker);
+        }
         let windows: Vec<WindowId> = self.mains.keys().copied().collect();
         for id in windows {
             self.with_workspace_view(id, |v, _| v.persist_panes(true));
@@ -3358,6 +3423,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.settle_run();
         self.poll_onboarding();
         self.poll_machine();
         self.poll_usage();
@@ -3520,6 +3586,12 @@ impl ApplicationHandler for App {
             app_menu::install(&self.keymap);
         }
 
+        if let Some(last_run) = &self.last_run {
+            self.launch = recovery::plan(last_run, &self.settings.restore_on_startup);
+        }
+        if self.launch.check_update_first {
+            self.check_for_a_fix();
+        }
         let mut layout = Layout::default();
         apply_dock_settings(&self.settings, &mut layout);
         let explicit = std::env::var_os("POM_CONFIG").map(std::path::PathBuf::from);
@@ -3528,6 +3600,7 @@ impl ApplicationHandler for App {
         let id = self.new_main_window(event_loop, layout, config.as_deref());
         self.open_project_in(id, config);
         self.announce_update(id);
+        self.announce_recovery(id);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -4638,9 +4711,17 @@ fn main() -> anyhow::Result<()> {
         notifications::start();
     }
     let mut app = App::default();
+    let (marker, last_run) = begin_run();
+    app.run_marker = marker;
+    app.launched_at = Some(Instant::now());
+    app.launch = recovery::plan(&last_run, "last_session");
+    app.last_run = Some(last_run);
+    #[cfg(debug_assertions)]
+    crash_at_launch_for_testing();
     editor::registry::on_languages_changed(std::sync::Arc::new(ui::wake));
     register_available_languages();
-    if let Some(dir) = editor::grammar_packages::grammars_dir() {
+    let grammar_dir = editor::grammar_packages::grammars_dir().filter(|_| !app.launch.risky_off);
+    if let Some(dir) = grammar_dir {
         editor::grammar_packages::register_installed_grammars(&dir);
         if grammars::downloads_on() {
             install_recent_grammars(dir.clone());
@@ -4683,6 +4764,52 @@ fn main() -> anyhow::Result<()> {
     app.refresh_agents();
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// Records this run as running and says how the last one ended. Only the app's own windows keep a marker:
+/// the helpers that re-exec this binary (pty, mcp, hooks) have returned before this runs, and test runs with
+/// temporary state keep none.
+fn begin_run() -> (Option<std::path::PathBuf>, recovery::LastRun) {
+    if uses_real_state().is_none() && std::env::var_os("POMELO_CRASH_AT_LAUNCH").is_none() {
+        return (None, recovery::LastRun::Clean);
+    }
+    let Some(dir) = pom_paths::config_dir() else {
+        return (None, recovery::LastRun::Clean);
+    };
+    let app = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            let bundle = exe.ancestors().nth(3)?;
+            Some(bundle.file_stem()?.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "pomelo".into());
+    let marker = recovery::marker_path(&dir, &app);
+    let last = recovery::begin(
+        &marker,
+        auto_update::current_version(),
+        std::time::SystemTime::now(),
+        std::process::id(),
+        recovery::process_alive,
+    );
+    (Some(marker), last)
+}
+
+/// `POMELO_CRASH_AT_LAUNCH=1` aborts two seconds after launch, like a build that crashes on its first frames,
+/// to try the recovery by hand. Debug builds only.
+#[cfg(debug_assertions)]
+fn crash_at_launch_for_testing() {
+    if std::env::var_os("POMELO_CRASH_AT_LAUNCH").is_none() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("crash-at-launch".into())
+        .spawn(|| {
+            std::thread::sleep(Duration::from_secs(2));
+            std::process::abort();
+        });
+    if let Err(error) = spawned {
+        eprintln!("crash at launch: {error}");
+    }
 }
 
 /// The languages published as grammar packages, so their files are recognized before one is installed.

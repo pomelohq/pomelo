@@ -50,6 +50,8 @@ pub struct Settings {
     pub agent_command: String,
     /// Closing an agent's tab: "hide" leaves the agent running, "stop" ends it.
     pub agent_tab_close: String,
+    /// What a launch opens: "last_session" brings back each workspace's tabs, "none" starts without them.
+    pub restore_on_startup: String,
     /// The new-workspace ticket picker lists only Jira tickets assigned to you.
     pub jira_only_mine: bool,
     /// The Jira board the ticket picker opened on last (0: none yet).
@@ -169,6 +171,7 @@ impl Default for Settings {
             show_session_name: true,
             agent_command: "claude".into(),
             agent_tab_close: "hide".into(),
+            restore_on_startup: "last_session".into(),
             jira_only_mine: false,
             jira_board: 0,
             group_workspaces: false,

@@ -3839,6 +3839,7 @@ dependencies = [
  "services_ui",
  "settings",
  "settings_ui",
+ "tempfile",
  "terminal",
  "terminal_ui",
  "ui",
