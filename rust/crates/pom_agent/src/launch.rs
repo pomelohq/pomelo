@@ -142,6 +142,23 @@ pub(crate) fn transcript_path(home: &Path, cwd: &Path, id: &str) -> Option<PathB
         .find(|path| path.is_file())
 }
 
+/// Where the agent will write a new conversation's transcript: its folder is the working directory with every
+/// character but letters and digits turned into `-`.
+pub(crate) fn expected_transcript_path(home: &Path, cwd: &Path, id: &str) -> PathBuf {
+    if let Some(existing) = transcript_path(home, cwd, id) {
+        return existing;
+    }
+    let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let folder: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    home.join(".claude/projects")
+        .join(folder)
+        .join(format!("{id}.jsonl"))
+}
+
 fn transcript_exists(home: &Path, cwd: &Path, id: &str) -> bool {
     transcript_path(home, cwd, id).is_some()
 }
@@ -203,6 +220,8 @@ pub struct LaunchOptions {
     /// Load no project or local Claude settings and no MCP servers but these, so a repo's own
     /// `.claude/settings.json` cannot switch the session's hooks off or allow more.
     pub isolated: bool,
+    /// Answer the agent's "do you trust this folder" prompt when it shows one at start.
+    pub trust: bool,
 }
 
 impl LaunchOptions {

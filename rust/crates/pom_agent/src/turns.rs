@@ -2,12 +2,18 @@
 //! recorded), who sent it, how it ended, and what happened in it.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use pom_paths::StateDir;
 use serde::{Deserialize, Serialize};
 
 use crate::sessions::{events, read_state, session_dir, EventLine};
 use crate::transcript::{parse, turn_between, TurnContent};
+
+const SETTLE_POLL: Duration = Duration::from_millis(100);
+/// How long after the transcript stops growing a just-ended turn counts as fully written.
+pub const SETTLE_QUIET: Duration = Duration::from_millis(800);
+pub const SETTLE_CAP: Duration = Duration::from_secs(4);
 
 /// Who sent a turn.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +70,7 @@ pub struct TurnSpan {
     pub turn: u64,
     /// Where the transcript stood just before the prompt; `None` when nothing was recorded before it.
     pub start: Option<u64>,
+    /// Where the next prompt was submitted; `None` for the latest turn, which runs to the end of the file.
     pub end: Option<u64>,
     pub stop_reason: Option<&'static str>,
 }
@@ -73,15 +80,20 @@ pub fn turn_spans(lines: &[EventLine]) -> Vec<TurnSpan> {
     let mut before: Option<u64> = None;
     for line in lines {
         match line.event.as_str() {
-            "UserPromptSubmit" => spans.push(TurnSpan {
-                turn: line.turn,
-                start: before,
-                end: None,
-                stop_reason: None,
-            }),
+            "UserPromptSubmit" => {
+                // The agent writes a turn's closing lines after its Stop hook, so a turn runs up to the next prompt.
+                if let Some(previous) = spans.last_mut() {
+                    previous.end = line.transcript_bytes.or(before);
+                }
+                spans.push(TurnSpan {
+                    turn: line.turn,
+                    start: before,
+                    end: None,
+                    stop_reason: None,
+                })
+            }
             "Stop" | "Interrupted" => {
                 if let Some(span) = spans.last_mut().filter(|span| span.stop_reason.is_none()) {
-                    span.end = line.transcript_bytes;
                     span.stop_reason = Some(if line.event == "Stop" {
                         "end_turn"
                     } else {
@@ -120,6 +132,25 @@ pub struct RecordedTurn {
     pub stop_reason: String,
     #[serde(flatten)]
     pub content: TurnContent,
+}
+
+/// Waits until the transcript has not grown for `quiet`, at most `cap`: right after a Stop hook the agent is
+/// still writing the turn's last lines.
+pub fn settle_transcript(path: &Path, quiet: Duration, cap: Duration) {
+    let started = Instant::now();
+    let length = || std::fs::metadata(path).map_or(0, |meta| meta.len());
+    let mut seen = length();
+    let mut since = Instant::now();
+    while started.elapsed() < cap {
+        std::thread::sleep(SETTLE_POLL);
+        let now = length();
+        if now != seen {
+            seen = now;
+            since = Instant::now();
+        } else if since.elapsed() >= quiet {
+            return;
+        }
+    }
 }
 
 /// The turns of a session `select` picks, from its log and transcript. A running turn of a session whose
@@ -240,5 +271,49 @@ mod tests {
         );
         let dead = read_turns(&state, "s1", |turn| turn == 2, false, false);
         assert_eq!(dead[0].stop_reason, "died");
+    }
+
+    #[test]
+    fn lines_written_after_the_stop_hook_still_belong_to_their_turn() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = StateDir::new(temp.path().join("state"));
+        let transcript = temp.path().join("s2.jsonl");
+        let prompt = |text: &str| {
+            format!("{{\"type\":\"user\",\"uuid\":\"{text}\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n")
+        };
+        let reply = |id: &str, text: &str| {
+            format!("{{\"type\":\"assistant\",\"uuid\":\"{id}\",\"message\":{{\"id\":\"{id}\",\"stop_reason\":\"end_turn\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}\n")
+        };
+        let mut text = String::new();
+        let hook = |name: &str, text: &str, agent_state: AgentState| {
+            std::fs::write(&transcript, text).expect("transcript");
+            let event = SessionEvent {
+                session_id: "s2".into(),
+                event: name.into(),
+                state: Some(agent_state),
+                transcript: transcript.to_string_lossy().into_owned(),
+                ..SessionEvent::default()
+            };
+            record_event(&state, &identity(), &event).expect("event");
+        };
+        hook("SessionStart", &text, AgentState::Idle);
+        hook("UserPromptSubmit", &text, AgentState::Thinking);
+        text.push_str(&prompt("summarize src"));
+        hook("Stop", &text, AgentState::Idle);
+        // The agent appends its answer only after the Stop hook ran.
+        text.push_str(&reply("a1", "two files, both tiny"));
+        std::fs::write(&transcript, &text).expect("transcript");
+        let latest = read_turns(&state, "s2", |_| true, true, false);
+        assert_eq!(latest[0].content.text(), "two files, both tiny");
+
+        hook("UserPromptSubmit", &text, AgentState::Thinking);
+        text.push_str(&prompt("now the tests"));
+        text.push_str(&reply("a2", "no tests yet"));
+        hook("Stop", &text, AgentState::Idle);
+        let turns = read_turns(&state, "s2", |_| true, true, false);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].content.text(), "two files, both tiny");
+        assert_eq!(turns[1].content.prompt, "now the tests");
+        assert_eq!(turns[1].content.text(), "no tests yet");
     }
 }

@@ -67,7 +67,11 @@ pub fn suggest_name(
     seed: &str,
     description: &str,
 ) -> Result<NameSuggestion, String> {
-    let mut child = Command::new(claude)
+    let mut command = Command::new(claude);
+    for marker in pom_ptyhost::INHERITED_SESSION_MARKERS {
+        command.env_remove(marker);
+    }
+    let mut child = command
         .args([
             "-p",
             "--output-format",

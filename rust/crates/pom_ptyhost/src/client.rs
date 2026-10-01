@@ -139,11 +139,26 @@ pub struct SpawnRequest<'a> {
     pub env: &'a [(String, String)],
 }
 
-/// Starts holder `name` detached from this process (own session, no terminal), unless it already runs.
-pub fn spawn_holder(dir: &SocketDir, request: &SpawnRequest<'_>) -> io::Result<()> {
-    if dir.holder_alive(request.name) {
-        return Ok(());
-    }
+/// Markers a coding agent sets for the processes it runs. A holder outlives whoever spawned it and is never part
+/// of that agent's session: inherited, they turn off the transcript of an agent started inside the holder
+/// (`CLAUDE_CODE_CHILD_SESSION`) and hand it the parent's messaging token. User settings such as
+/// `CLAUDE_CONFIG_DIR` or `CLAUDE_CODE_USE_BEDROCK` are kept.
+pub const INHERITED_SESSION_MARKERS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_PID",
+    "CLAUDE_JOB_DIR",
+    "CLAUDE_EFFORT",
+];
+
+fn holder_command(dir: &SocketDir, request: &SpawnRequest<'_>) -> Command {
     let mut command = Command::new(request.binary);
     command
         .args(["pty", "run", request.name, "--cwd"])
@@ -153,6 +168,9 @@ pub fn spawn_holder(dir: &SocketDir, request: &SpawnRequest<'_>) -> io::Result<(
             .args(["--cols", &request.cols.to_string()])
             .args(["--rows", &request.rows.to_string()]);
     }
+    for marker in INHERITED_SESSION_MARKERS {
+        command.env_remove(marker);
+    }
     command
         .arg("--")
         .args(request.argv)
@@ -161,6 +179,15 @@ pub fn spawn_holder(dir: &SocketDir, request: &SpawnRequest<'_>) -> io::Result<(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    command
+}
+
+/// Starts holder `name` detached from this process (own session, no terminal), unless it already runs.
+pub fn spawn_holder(dir: &SocketDir, request: &SpawnRequest<'_>) -> io::Result<()> {
+    if dir.holder_alive(request.name) {
+        return Ok(());
+    }
+    let mut command = holder_command(dir, request);
     // SAFETY: setsid is async-signal-safe.
     unsafe {
         command.pre_exec(|| {
@@ -180,4 +207,48 @@ pub fn spawn_holder(dir: &SocketDir, request: &SpawnRequest<'_>) -> io::Result<(
             }
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_holder_drops_the_spawning_agent_session_markers_but_keeps_what_it_is_given() {
+        let dir = SocketDir::new("/tmp/pom-test-markers");
+        let env = [("POM_AGENT_ROLE".to_string(), "reviewer".to_string())];
+        let command = holder_command(
+            &dir,
+            &SpawnRequest {
+                binary: Path::new("/bin/true"),
+                name: "ws-myproject-feat-login-claude-raw",
+                cwd: Path::new("/"),
+                cols: 80,
+                rows: 24,
+                argv: &[],
+                env: &env,
+            },
+        );
+        let envs: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        for marker in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+        ] {
+            assert!(
+                envs.contains(&(marker.to_string(), None)),
+                "{marker} is removed"
+            );
+        }
+        assert!(envs.contains(&("POM_AGENT_ROLE".into(), Some("reviewer".into()))));
+        assert!(!envs.iter().any(|(key, _)| key == "CLAUDE_CONFIG_DIR"));
+    }
 }

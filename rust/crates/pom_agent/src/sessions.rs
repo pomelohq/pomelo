@@ -86,6 +86,14 @@ struct WorkspaceIndex {
     sessions: Vec<IndexEntry>,
 }
 
+/// pom's own event for a session it just launched, before the agent ran any hook.
+pub const LAUNCHED_EVENT: &str = "Launched";
+/// A launched session the agent has not reported on yet; nothing may be sent to it.
+pub const STARTING_STATE: &str = "starting";
+/// A launched session stuck at the agent's "do you trust this folder" prompt.
+pub const NEEDS_TRUST_STATE: &str = "needs_trust";
+pub const NEEDS_TRUST_EVENT: &str = "NeedsTrust";
+
 /// A hook event, reduced to what the session log keeps.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionEvent {
@@ -202,12 +210,18 @@ pub fn record_event(
                 .as_ref()
                 .map_or(TurnState::None, |current| current.turn_state),
         };
-        let agent_state = event
-            .state
-            .map(AgentState::as_str)
-            .map(str::to_string)
-            .or_else(|| current.as_ref().map(|current| current.state.clone()))
-            .unwrap_or_else(|| AgentState::Idle.as_str().to_string());
+        let agent_state = if event.event == LAUNCHED_EVENT {
+            STARTING_STATE.to_string()
+        } else if event.event == NEEDS_TRUST_EVENT {
+            NEEDS_TRUST_STATE.to_string()
+        } else {
+            event
+                .state
+                .map(AgentState::as_str)
+                .map(str::to_string)
+                .or_else(|| current.as_ref().map(|current| current.state.clone()))
+                .unwrap_or_else(|| AgentState::Idle.as_str().to_string())
+        };
         let t_ms = now_ms();
         let transcript = if event.transcript.is_empty() {
             current
