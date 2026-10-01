@@ -477,7 +477,7 @@ impl ServiceItem {
 impl ServiceItem {
     fn console(&self, showing: Showing) -> (TerminalOptions, Waker) {
         let runner = &self.context.runner;
-        if let Some(name) = &self.container {
+        if let Some(name) = self.container.as_ref().filter(|_| !self.command_shared()) {
             let mut args = vec![
                 format!("PATH={}", pom_services::tool_path()),
                 "docker".to_string(),
@@ -500,19 +500,20 @@ impl ServiceItem {
             return (options, self.context.waker.clone());
         }
         let holders = runner.holders().clone();
+        let process = self.process_holder();
         let options = match showing {
             Showing::Live => TerminalOptions {
                 working_directory: Some(self.root.clone()),
                 holder: Some(HolderOptions {
                     dir: holders,
-                    name: self.holder.clone(),
+                    name: process.clone(),
                     binary: std::env::current_exe().unwrap_or_default(),
                     attach_only: true,
                 }),
                 ..TerminalOptions::default()
             },
             Showing::Leftover => {
-                let log = holders.crash_log(&self.holder);
+                let log = holders.crash_log(&process);
                 let shell = if log.is_file() {
                     (
                         "/usr/bin/tail".to_string(),
@@ -676,8 +677,31 @@ impl ServiceItem {
         row.into()
     }
 
+    /// The shared service's definition, when this tab follows one.
+    fn shared_def(&self) -> Option<pom_config::SharedServiceDef> {
+        let name = self.container.as_ref()?;
+        self.context.config()?.shared_services.get(name).cloned()
+    }
+
+    /// Whether this tab follows a shared service that is a command, whose process runs in a holder.
+    fn command_shared(&self) -> bool {
+        self.shared_def().is_some_and(|def| def.is_command())
+    }
+
+    /// The holder whose process this tab follows: the service's own, or a command shared service's.
+    fn process_holder(&self) -> String {
+        match &self.container {
+            Some(name) if self.command_shared() => self.context.runner.shared_holder(name),
+            _ => self.holder.clone(),
+        }
+    }
+
     fn uptime(&self) -> Option<String> {
-        let pidfile = self.context.runner.holders().pidfile(&self.holder);
+        let pidfile = self
+            .context
+            .runner
+            .holders()
+            .pidfile(&self.process_holder());
         let started = std::fs::metadata(pidfile)
             .and_then(|meta| meta.modified())
             .ok()?;
@@ -911,7 +935,12 @@ impl ServiceItem {
         };
         let mut facts = vec![Self::fact("Status", status)];
         if *state == State::Running {
-            if let Some(pid) = self.context.runner.holders().holder_pid(&self.holder) {
+            if let Some(pid) = self
+                .context
+                .runner
+                .holders()
+                .holder_pid(&self.process_holder())
+            {
                 facts.push(Self::fact(
                     "PID",
                     label(pid.to_string())
@@ -1051,15 +1080,44 @@ impl ServiceItem {
         let colors = theme();
         let mut facts = Vec::new();
         let config = self.context.config();
-        let image = config
+        let def = config
             .as_ref()
-            .and_then(|config| config.shared_services.get(name))
+            .and_then(|config| config.shared_services.get(name));
+        let image = def
             .map(|def| def.image.clone())
             .filter(|image| !image.is_empty());
         if let Some(image) = image {
             facts.push(Self::fact(
                 "Image",
                 label(image).size(12.5).mono().color(colors.text).into(),
+            ));
+        }
+        let command = def.filter(|def| def.is_command());
+        if let (Some(def), Some(config)) = (command, config.as_ref()) {
+            facts.push(Self::fact(
+                "Command",
+                div()
+                    .row()
+                    .gap(6.0)
+                    .items_center()
+                    .child(label(def.cmd.clone()).size(12.5).mono().color(colors.text))
+                    .child(
+                        div()
+                            .on_click(self.base + COPY_COMMAND)
+                            .child(icon(IconKind::Copy).size(11.0).color(colors.icon_muted)),
+                    )
+                    .into(),
+            ));
+            let folder = self.context.runner.shared_command_dir(config, def);
+            let shown = folder
+                .strip_prefix(self.context.runner.project_root())
+                .ok()
+                .map(|relative| relative.to_string_lossy().into_owned())
+                .filter(|relative| !relative.is_empty())
+                .unwrap_or_else(|| "project folder".to_string());
+            facts.push(Self::fact(
+                "Folder",
+                label(shown).size(12.5).mono().color(colors.text).into(),
             ));
         }
         let port = self.context.runner.shared_host_port(name);
@@ -1075,7 +1133,11 @@ impl ServiceItem {
         }
         if let Some(connection) = self.connection() {
             facts.push(Self::fact(
-                "Connection",
+                if command.is_some() {
+                    "URL"
+                } else {
+                    "Connection"
+                },
                 div()
                     .row()
                     .gap(6.0)
@@ -1141,6 +1203,11 @@ impl ServiceItem {
             COPY_URL => {
                 if let Some(url) = self.url().or_else(|| self.connection()) {
                     self.ask(TabRequest::Copy(url));
+                }
+            }
+            COPY_COMMAND if self.command_shared() => {
+                if let Some(def) = self.shared_def() {
+                    self.ask(TabRequest::Copy(def.cmd.trim().to_string()));
                 }
             }
             COPY_COMMAND => {

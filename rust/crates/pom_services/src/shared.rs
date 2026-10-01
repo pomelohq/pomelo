@@ -17,6 +17,8 @@ pub const SHARED_NETWORK: &str = "pomelo-shared";
 /// Shared services keep their usual host port when it is free, searching this far above it.
 const PREFERRED_SPAN: u16 = 100;
 const POSTGRES: &str = "postgres";
+/// A Docker that stopped answering must not hold up the panel or an agent asking what runs.
+const SHARED_PS_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_REDIS_PORT: u16 = 6379;
 
@@ -181,6 +183,9 @@ impl ServiceRunner {
         out.push_str(&format!("name: {}\n\nservices:\n", self.compose_project()));
         let mut volumes: Vec<String> = Vec::new();
         for (name, def) in &config.shared_services {
+            if def.is_command() {
+                continue;
+            }
             let instances = if def.capacity.is_some() {
                 self.slots.instance_count(name).max(1)
             } else {
@@ -254,13 +259,29 @@ impl ServiceRunner {
         out
     }
 
-    /// Brings the whole shared stack up (a no-op for services already running).
+    /// Brings the whole shared stack up, containers and commands (a no-op for services already running).
     pub fn ensure_shared(&self, config: &Config) -> Result<(), ServiceError> {
         if config.shared_services.is_empty() {
             return Ok(());
         }
-        let file = self.write_shared_compose(config)?;
-        self.compose(&file, &["up", "-d"])
+        let mut result = Ok(());
+        if config.shared_services.values().any(|def| !def.is_command()) {
+            let file = self.write_shared_compose(config)?;
+            result = self.compose(&file, &["up", "-d"]);
+        } else {
+            self.reserve_shared_ports(config);
+        }
+        for (name, def) in &config.shared_services {
+            if def.is_command() {
+                if let Err(error) = self.start_shared_command(config, name) {
+                    eprintln!("services: shared {name}: {error}");
+                    if result.is_ok() {
+                        result = Err(error);
+                    }
+                }
+            }
+        }
+        result
     }
 
     pub fn shared_action(
@@ -269,8 +290,19 @@ impl ServiceRunner {
         name: &str,
         action: SharedAction,
     ) -> Result<(), ServiceError> {
-        if !config.shared_services.contains_key(name) {
+        let Some(def) = config.shared_services.get(name) else {
             return Err(ServiceError::UnknownService(name.to_string()));
+        };
+        if def.is_command() {
+            self.reserve_shared_ports(config);
+            return match action {
+                SharedAction::Start => self.start_shared_command(config, name).map(|_| ()),
+                SharedAction::Stop => self.stop_shared_command(name).map_err(Into::into),
+                SharedAction::Restart => {
+                    self.stop_shared_command(name)?;
+                    self.start_shared_command(config, name).map(|_| ())
+                }
+            };
         }
         let file = self.write_shared_compose(config)?;
         match action {
@@ -281,25 +313,49 @@ impl ServiceRunner {
     }
 
     pub fn stop_shared(&self) -> Result<(), ServiceError> {
+        let commands = self.shared_command_holders();
+        self.holders().kill_holders_now(&commands);
+        if !self.compose_file().is_file() {
+            return Ok(());
+        }
         self.compose(&self.compose_file(), &["stop"])
     }
 
-    /// Shared services whose container runs right now; empty when Docker is unreachable.
+    /// The running holders of command shared services, named as `shared_holder` names them.
+    fn shared_command_holders(&self) -> Vec<String> {
+        let prefix = self.shared_holder("");
+        self.holders()
+            .holders()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| name.starts_with(&prefix) && self.holders().holder_alive(name))
+            .collect()
+    }
+
+    /// Shared services that run right now: commands by their holder, containers as Docker reports them (none
+    /// when Docker is unreachable).
     pub fn shared_running(&self) -> HashSet<String> {
+        let prefix = self.shared_holder("");
+        let mut running: HashSet<String> = self
+            .shared_command_holders()
+            .iter()
+            .filter_map(|holder| holder.strip_prefix(&prefix).map(str::to_string))
+            .collect();
         let file = self.compose_file();
         if !file.is_file() {
-            return HashSet::new();
+            return running;
         }
         let args = self.compose_args(&file, &["ps", "--services", "--filter", "status=running"]);
-        match self.docker(&args) {
-            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_string)
-                .collect(),
-            _ => HashSet::new(),
+        if let Ok(stdout) = self.docker_within(&args, SHARED_PS_TIMEOUT) {
+            running.extend(
+                stdout
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string),
+            );
         }
+        running
     }
 
     /// Creates the workspace's databases in the shared Postgres; existing ones are left alone.
@@ -503,13 +559,19 @@ impl ServiceRunner {
                 continue;
             };
             for index in 0..def.ports.len().max(1) {
-                let base = host_port_base(def, index);
+                let base = if def.is_command() {
+                    def.port.unwrap_or(0)
+                } else {
+                    host_port_base(def, index)
+                };
                 let key = pom_ports::shared_key(name, index);
-                if self
-                    .ports
-                    .acquire_preferred(&key, base, PREFERRED_SPAN)
-                    .is_none()
-                {
+                // A cmd's own port is the one it is told: searching past it would point refs elsewhere.
+                let span = if def.is_command() && def.port.is_some() {
+                    0
+                } else {
+                    PREFERRED_SPAN
+                };
+                if self.ports.acquire_preferred(&key, base, span).is_none() {
                     eprintln!("services: no free port for shared {name}");
                 }
             }

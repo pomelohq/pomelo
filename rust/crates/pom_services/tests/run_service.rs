@@ -249,3 +249,106 @@ fn a_running_service_is_stale_once_the_config_changes_its_env() {
         vec![fixture.target.clone()]
     );
 }
+
+#[test]
+fn a_command_shared_service_runs_once_for_every_workspace() {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let temp = tempfile::Builder::new()
+        .prefix("shr")
+        .tempdir_in("/tmp")
+        .expect("temp");
+    let root = temp.path().join("project");
+    for workspace in ["workspace--feat/x", "workspace--feat/y", "workspace--main"] {
+        std::fs::create_dir_all(root.join(workspace).join("api")).expect("worktree");
+    }
+    std::fs::write(
+        root.join("pom.yml"),
+        r#"session: demo
+shared_services:
+  mock-as:
+    cmd: "echo mock-as-up-$PORT-$ISSUER; pwd; exec nc -lk 127.0.0.1 $PORT"
+    repo: api
+    environment:
+      ISSUER: "http://127.0.0.1:$PORT"
+    healthcheck:
+      test: "nc -z 127.0.0.1 $PORT"
+repos:
+  api:
+    shared_services: [mock-as]
+    services:
+      web:
+        type: backend
+        env:
+          AS_URL: "{{shared.mock-as.url}}"
+        cmd: "echo web-$AS_URL; exec nc -lk 127.0.0.1 $PORT"
+"#,
+    )
+    .expect("pom.yml");
+    let config = Config::load(&root.join("pom.yml")).expect("config");
+    let runner = ServiceRunner::new(RunnerOptions {
+        project_root: root.clone(),
+        session: "demo".into(),
+        state: StateDir::new(temp.path().join("state")),
+        holders: SocketDir::new(temp.path().join("s")),
+        binary: wrapper_script(temp.path()),
+        docker: "/nonexistent".into(),
+    });
+    let target = |branch: &str| ServiceTarget {
+        branch: branch.into(),
+        is_main: false,
+        repo: "api".into(),
+        service: "web".into(),
+    };
+    let cleanup = || {
+        let names: Vec<String> = runner
+            .holders()
+            .holders()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        runner.holders().kill_holders_now(&names);
+    };
+
+    runner.start(&config, &target("feat/x")).expect("start x");
+    let shared = runner.shared_holder("mock-as");
+    assert_eq!(shared, "shr-demo-mock-as");
+    assert!(
+        runner.holders().holder_alive(&shared),
+        "the first workspace starts it"
+    );
+    let pid = runner.holders().holder_pid(&shared);
+    let port = runner.shared_host_port("mock-as");
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok(),
+        "the healthcheck waited until it listens"
+    );
+    let output = pom_ptyhost::snapshot(runner.holders(), &shared, TIMEOUT).expect("output");
+    let output = String::from_utf8_lossy(&output);
+    assert!(
+        output.contains(&format!("mock-as-up-{port}-http://127.0.0.1:{port}")),
+        "{output}"
+    );
+    assert!(
+        output.contains("workspace--main/api"),
+        "runs in main's checkout: {output}"
+    );
+
+    runner.start(&config, &target("feat/y")).expect("start y");
+    assert_eq!(
+        runner.holders().holder_pid(&shared),
+        pid,
+        "the second workspace reuses the running one"
+    );
+    let web = runner.holder_name(&target("feat/y"));
+    let expected = format!("web-http://127.0.0.1:{port}");
+    wait_for("the service to see the shared url", || {
+        pom_ptyhost::snapshot(runner.holders(), &web, TIMEOUT)
+            .is_ok_and(|output| String::from_utf8_lossy(&output).contains(&expected))
+    });
+    assert!(runner.shared_running().contains("mock-as"));
+
+    runner.stop_shared().expect("stop shared");
+    assert!(!runner.holders().holder_alive(&shared));
+    assert!(!runner.shared_running().contains("mock-as"));
+    cleanup();
+}

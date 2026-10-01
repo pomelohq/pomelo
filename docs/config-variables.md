@@ -13,7 +13,7 @@ alias fails loudly).
 
 | Token | Resolves to |
 |---|---|
-| `{{shared.<name>.url}}` | Shared service connection `user:pass@host:port`; just `host:port` for a service with no login (e.g. Redis) |
+| `{{shared.<name>.url}}` | Shared service connection `user:pass@host:port`; just `host:port` for a service with no login (e.g. Redis); `http://127.0.0.1:<port>` for a `cmd:` shared service |
 | `{{shared.<name>.host}}` | Host — always `127.0.0.1` (explicit IPv4: `localhost` may resolve to `::1`, which Docker's publish misses) |
 | `{{shared.<name>.port}}` | Allocated port for the shared service |
 | `{{shared.<name>.user}}` / `.pass` | Credentials from `shared_services.<name>` (`postgres` for a Postgres that sets none, empty otherwise) |

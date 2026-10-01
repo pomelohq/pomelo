@@ -36,11 +36,85 @@ impl Config {
                 );
             }
         }
+        self.check_shared_services(&mut errors);
         if errors.is_empty() {
             return Ok(());
         }
         errors.sort();
         Err(format!("invalid pom.yml:\n  - {}", errors.join("\n  - ")))
+    }
+
+    /// A shared service is a Docker `image` or a `cmd`, each with only its own fields, on a port of its own.
+    fn check_shared_services(&self, errors: &mut Vec<String>) {
+        let mut owners: IndexMap<u16, Vec<(String, bool)>> = IndexMap::new();
+        for (name, def) in &self.shared_services {
+            let context = format!("shared service {name:?}");
+            match (def.image.is_empty(), def.cmd.is_empty()) {
+                (false, false) => errors.push(format!(
+                    "{context}: set either image (a Docker container) or cmd (a command), not both"
+                )),
+                (true, true) => errors.push(format!(
+                    "{context}: needs an image (a Docker container) or a cmd (a command)"
+                )),
+                _ => {}
+            }
+            if def.is_command() {
+                let docker_only = [
+                    ("ports", !def.ports.is_empty()),
+                    ("volumes", !def.volumes.is_empty()),
+                    ("command", !def.command.is_empty()),
+                    ("capacity", def.capacity.is_some()),
+                    ("db_user", !def.db_user.is_empty()),
+                    ("db_password", !def.db_password.is_empty()),
+                ];
+                for (field, set) in docker_only {
+                    if set {
+                        errors.push(format!(
+                            "{context}: {field} is only for an image; a cmd service uses port"
+                        ));
+                    }
+                }
+                if !def.repo.is_empty() && !self.repos.contains_key(&def.repo) {
+                    errors.push(format!("{context}: repo {:?} is not in repos", def.repo));
+                }
+            } else {
+                for (field, set) in [("repo", !def.repo.is_empty()), ("port", def.port.is_some())] {
+                    if set {
+                        errors.push(format!(
+                            "{context}: {field} is only for a cmd; an image service uses ports"
+                        ));
+                    }
+                }
+            }
+            for port in def
+                .port
+                .into_iter()
+                .chain(def.ports.iter().filter_map(|mapping| {
+                    mapping
+                        .split([':', '/'])
+                        .next()
+                        .and_then(|port| port.trim().parse::<u16>().ok())
+                }))
+            {
+                owners
+                    .entry(port)
+                    .or_default()
+                    .push((name.clone(), def.is_command()));
+            }
+        }
+        // Docker services that ask for the same port are leased apart; a cmd's port is the one it is told.
+        for (port, names) in owners {
+            if names.len() > 1 && names.iter().any(|(_, command)| *command) {
+                let names: Vec<String> = names
+                    .into_iter()
+                    .map(|(name, _)| format!("{name:?}"))
+                    .collect();
+                errors.push(format!(
+                    "shared services {} all want port {port}",
+                    names.join(", ")
+                ));
+            }
+        }
     }
 
     fn check_profiles(&self, errors: &mut Vec<String>, context: &str, profiles: &[String]) {

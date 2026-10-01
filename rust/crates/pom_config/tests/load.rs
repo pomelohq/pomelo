@@ -495,3 +495,77 @@ fn finds_config_walking_up() {
     std::fs::create_dir_all(&nested).expect("dirs");
     assert_eq!(pom_config::find_config_from(&nested), Some(project.root()));
 }
+
+#[test]
+fn a_shared_service_can_be_a_command() {
+    let config = load(
+        r#"session: myproject
+shared_services:
+  mock-as:
+    cmd: node scripts/mock-as.js
+    repo: api
+    port: 4010
+    environment:
+      ISSUER: "http://127.0.0.1:$PORT"
+    healthcheck:
+      test: "curl -sf http://127.0.0.1:$PORT/health"
+  redis:
+    image: redis:7
+repos:
+  api:
+    shared_services: [mock-as]
+    services:
+      server: bin/server
+"#,
+    );
+    let mock = &config.shared_services["mock-as"];
+    assert!(mock.is_command());
+    assert_eq!(
+        (mock.cmd.as_str(), mock.repo.as_str(), mock.port),
+        ("node scripts/mock-as.js", "api", Some(4010))
+    );
+    assert!(mock.image.is_empty(), "no Docker defaults for a command");
+    assert!(!config.shared_services["redis"].is_command());
+    assert_eq!(config.validate(), Ok(()));
+}
+
+#[test]
+fn a_shared_service_is_an_image_or_a_command_with_its_own_fields() {
+    let config = load(
+        r#"session: myproject
+shared_services:
+  both:
+    image: redis:7
+    cmd: redis-server
+  neither:
+    environment: { A: "1" }
+  mock-as:
+    cmd: node mock.js
+    repo: missing
+    ports: ["4010:4010"]
+    port: 6379
+  cache:
+    image: redis:7
+    ports: ["6379:6379"]
+    port: 7000
+repos:
+  api:
+    services:
+      server: bin/server
+"#,
+    );
+    let errors = config.validate().expect_err("invalid");
+    for expected in [
+        "\"both\": set either image",
+        "\"neither\": needs an image",
+        "\"mock-as\": repo \"missing\" is not in repos",
+        "\"mock-as\": ports is only for an image",
+        "\"cache\": port is only for a cmd",
+        "all want port 6379",
+    ] {
+        assert!(
+            errors.contains(expected),
+            "{expected:?} missing from:\n{errors}"
+        );
+    }
+}

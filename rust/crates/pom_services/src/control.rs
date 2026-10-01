@@ -459,7 +459,7 @@ impl ServiceRunner {
 
     /// The service's port, moving to a new one when something outside our leases already listens on
     /// the old one.
-    fn preflight_port(&self, key: &str) -> Result<u16, ServiceError> {
+    pub(crate) fn preflight_port(&self, key: &str) -> Result<u16, ServiceError> {
         let mut port = self.lease_port(key)?;
         // A fresh port can be taken by another process before we look again, so try a few.
         for _ in 0..RELOCATE_ATTEMPTS {
@@ -528,7 +528,7 @@ impl ServiceRunner {
         Ok(())
     }
 
-    fn spawn(
+    pub(crate) fn spawn(
         &self,
         holder: &str,
         cwd: &Path,
@@ -765,7 +765,7 @@ pub fn shell_quote(text: &str) -> String {
 }
 
 /// `command (pid N)` of whatever listens on the port, for telling the user what is in the way.
-fn port_owner(port: u16) -> Option<String> {
+pub(crate) fn port_owner(port: u16) -> Option<String> {
     let output = std::process::Command::new("lsof")
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
         .output()

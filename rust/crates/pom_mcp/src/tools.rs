@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use pom_config::Config;
 use pom_core::Project;
 use pom_paths::StateDir;
-use pom_services::{ServiceRunner, ServiceTarget};
+use pom_services::{ServiceRunner, ServiceTarget, SharedAction};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -64,6 +64,20 @@ struct EntryRepo {
     setup: Vec<String>,
 }
 
+/// A shared service: one Docker container (`image`) or one process (`cmd`) every workspace uses.
+#[derive(Serialize)]
+struct EntryShared {
+    name: String,
+    kind: &'static str,
+    running: bool,
+    #[serde(skip_serializing_if = "is_zero")]
+    port: u16,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    url: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    used_by: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct Entry {
     branch: String,
@@ -71,6 +85,7 @@ struct Entry {
     path: PathBuf,
     repos: Vec<EntryRepo>,
     ws_services: Vec<EntryService>,
+    shared_services: Vec<EntryShared>,
     running: usize,
     total: usize,
 }
@@ -228,9 +243,83 @@ impl Workspace {
             path: workspace.path.clone(),
             repos: entry_repos,
             ws_services,
+            shared_services: self.shared_entries(config),
             running,
             total,
         })
+    }
+
+    fn shared_entries(&self, config: &Config) -> Vec<EntryShared> {
+        if config.shared_services.is_empty() {
+            return Vec::new();
+        }
+        let running = self.runner.shared_running();
+        let env = self.runner.workspace_env(config, &self.branch);
+        config
+            .shared_services
+            .iter()
+            .map(|(name, def)| EntryShared {
+                name: name.clone(),
+                kind: if def.is_command() { "cmd" } else { "image" },
+                running: running.contains(name),
+                port: self.runner.shared_host_port(name),
+                url: env.shared_url(name).unwrap_or_default(),
+                used_by: pom_db::service_users(config, name),
+            })
+            .collect()
+    }
+
+    /// Starts, stops or restarts a shared service. Stopping one takes it from every workspace, so it is
+    /// refused while other workspaces run services, unless `force` says to go ahead.
+    fn shared_action(&self, action: SharedAction, args: &ToolArgs) -> Result<String, String> {
+        let config = self.config()?;
+        let name = text(args, "name");
+        if !config.shared_services.contains_key(&name) {
+            let known: Vec<&str> = config.shared_services.keys().map(String::as_str).collect();
+            return Err(format!(
+                "no shared service {name:?} (shared services: {})",
+                known.join(", ")
+            ));
+        }
+        let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+        if action != SharedAction::Start && !force {
+            let others = self.other_workspaces_running(&config);
+            if others > 0 {
+                return Err(format!(
+                    "{others} service(s) in other workspaces are running and may use {name}; it is shared, so this would take it from under them. Call again with force: true to go ahead."
+                ));
+            }
+        }
+        self.runner
+            .shared_action(&config, &name, action)
+            .map_err(|error| error.to_string())?;
+        let verb = match action {
+            SharedAction::Start => "started",
+            SharedAction::Stop => "stopped",
+            SharedAction::Restart => "restarted",
+        };
+        Ok(format!(
+            "{verb}: {name} (port {})",
+            self.runner.shared_host_port(&name)
+        ))
+    }
+
+    /// Running services that belong to other workspaces of this project.
+    fn other_workspaces_running(&self, config: &Config) -> usize {
+        let is_main = self
+            .entry(config)
+            .map(|entry| entry.is_main)
+            .unwrap_or(false);
+        let own: std::collections::HashSet<String> =
+            ServiceRunner::service_targets(config, &self.branch, is_main)
+                .iter()
+                .map(|target| self.runner.holder_name(target))
+                .collect();
+        self.runner
+            .running_holders()
+            .into_iter()
+            .filter(|holder| !own.contains(holder))
+            .count()
     }
 
     fn target(&self, is_main: bool, repo: &str, service: &str) -> ServiceTarget {
@@ -423,6 +512,17 @@ fn service_schema() -> Value {
     })
 }
 
+fn shared_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string", "description": "shared service name (a key of shared_services)" },
+            "force": { "type": "boolean", "description": "stop/restart even while other workspaces run services" },
+        },
+        "required": ["name"],
+    })
+}
+
 fn yaml_schema() -> Value {
     json!({
         "type": "object",
@@ -450,7 +550,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "workspace_info",
-        "Overview of THIS workspace: branch, repos, and their services (running state, ports, modes, agent state).",
+        "Overview of THIS workspace: branch, repos, and their services (running state, ports, modes, agent state), plus the shared services (Docker image or cmd process) with state, port and url.",
         None,
         true,
         Box::new(move |_| pretty(&ws.entry(&ws.config()?)?)),
@@ -459,7 +559,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "services",
-        "List this workspace's services with running state and allocated port.",
+        "List this workspace's services with running state and allocated port, then the shared services every workspace uses (Repo \"shared\", Kind image or cmd, Url).",
         None,
         true,
         Box::new(move |_| {
@@ -477,6 +577,16 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
                         })
                     })
                 })
+                .chain(entry.shared_services.iter().map(|shared| {
+                    json!({
+                        "Repo": "shared",
+                        "Service": shared.name,
+                        "Running": shared.running,
+                        "Port": shared.port,
+                        "Kind": shared.kind,
+                        "Url": shared.url,
+                    })
+                }))
                 .collect();
             if rows.is_empty() {
                 return Ok("null".into());
@@ -662,6 +772,33 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
             Some(service_schema()),
             false,
             Box::new(move |args| ws.service_action(action, args)),
+        ));
+    }
+
+    for (action, name, description) in [
+        (
+            SharedAction::Start,
+            "shared_start",
+            "Start a shared service (one Docker container or one cmd process for every workspace of the project). A no-op when it already runs.",
+        ),
+        (
+            SharedAction::Stop,
+            "shared_stop",
+            "Stop a shared service for EVERY workspace. Refused while other workspaces run services, unless force: true.",
+        ),
+        (
+            SharedAction::Restart,
+            "shared_restart",
+            "Restart a shared service for every workspace (e.g. after editing its cmd or environment). Refused while other workspaces run services, unless force: true.",
+        ),
+    ] {
+        let ws = workspace.clone();
+        tools.push(tool(
+            name,
+            description,
+            Some(shared_schema()),
+            false,
+            Box::new(move |args| ws.shared_action(action, args)),
         ));
     }
 
@@ -851,7 +988,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "config_get",
-        "Read this project's pom.yml (services, repos, shared services, env profiles, databases).",
+        "Read this project's pom.yml (services, repos, shared services - Docker image or cmd -, env profiles, databases).",
         None,
         true,
         Box::new(move |_| config_files::read(&ws.config_path)),
@@ -873,7 +1010,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
 
     tools.push(tool(
         "config_validate",
-        "Dry-run validate a proposed pom.yml (schema + reference checks) WITHOUT writing. Always validate before config_set.",
+        "Dry-run validate a proposed pom.yml (schema + reference checks) WITHOUT writing. Always validate before config_set. A shared service is either a Docker `image:` or a `cmd:` run once for every workspace, e.g. `shared_services: {mock-as: {cmd: node scripts/mock-as.js, repo: api, port: 4010}}` (repo: run in that repo's main checkout; port: else one is leased and given as $PORT); reach it with {{shared.mock-as.url}}.",
         Some(yaml_schema()),
         true,
         Box::new(move |args| {
@@ -886,7 +1023,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "config_set",
-        "Validate and write a new pom.yml, then reload - adds/edits services, repos, shared services, databases, env. Rejected if invalid (nothing is written). Newly added services get ports allocated automatically.",
+        "Validate and write a new pom.yml, then reload - adds/edits services, repos, shared services, databases, env. Rejected if invalid (nothing is written). Newly added services get ports allocated automatically. A shared service is a Docker `image:` or a `cmd:` (one process for every workspace, optional repo/port/environment/healthcheck); start it with shared_start.",
         Some(yaml_schema()),
         false,
         Box::new(move |args| {
@@ -943,6 +1080,140 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stands in for the app binary's `pty run`: the wrapper script below re-enters this test binary here.
+    #[test]
+    fn holder_entry() {
+        let Some(count) = std::env::var("POM_TEST_PTY_ARGC")
+            .ok()
+            .and_then(|count| count.parse::<usize>().ok())
+        else {
+            return;
+        };
+        let mut args = vec!["pomelo".to_string()];
+        args.extend(
+            (0..count).filter_map(|index| std::env::var(format!("POM_TEST_PTY_ARG_{index}")).ok()),
+        );
+        std::process::exit(pom_ptyhost::cli::run(&args).unwrap_or(2));
+    }
+
+    /// Passes `pty run ...` through to `holder_entry`, with an empty zsh config dir so the user's profile
+    /// never runs inside the test.
+    fn wrapper_script(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let zdotdir = dir.join("zdot");
+        std::fs::create_dir_all(&zdotdir).expect("zdotdir");
+        let test_binary = std::env::current_exe().expect("test binary");
+        let script = dir.join("pty-host");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ni=0\nfor arg; do export \"POM_TEST_PTY_ARG_$i=$arg\"; i=$((i+1)); done\n\
+                 export POM_TEST_PTY_ARGC=$i ZDOTDIR='{}'\n\
+                 exec '{}' tools::tests::holder_entry --exact --nocapture\n",
+                zdotdir.display(),
+                test_binary.display()
+            ),
+        )
+        .expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        script
+    }
+
+    fn call(tools: &[Tool], name: &str, args: Value) -> Result<String, String> {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("no tool {name}"));
+        let args = args.as_object().cloned().unwrap_or_default();
+        (tool.run)(&args)
+    }
+
+    #[test]
+    fn agents_see_and_run_a_command_shared_service() {
+        // Short path: Unix socket paths are limited to 104 bytes.
+        let temp = tempfile::Builder::new()
+            .prefix("mcp")
+            .tempdir_in("/tmp")
+            .expect("temp");
+        let root = temp.path().join("project");
+        std::fs::create_dir_all(root.join("workspace--main/api/.git")).expect("main checkout");
+        std::fs::create_dir_all(root.join("workspace--feat-x/api")).expect("other workspace");
+        std::fs::write(
+            root.join("pom.yml"),
+            "session: demo\nshared_services:\n  mock-as:\n    cmd: \"echo up; exec nc -lk 127.0.0.1 $PORT\"\n    repo: api\nrepos:\n  api:\n    shared_services: [mock-as]\n    services:\n      web: exec sleep 30\n",
+        )
+        .expect("pom.yml");
+        let config_path = root.join("pom.yml");
+        let state = StateDir::new(temp.path().join("state"));
+        let runner = ServiceRunner::new(pom_services::RunnerOptions {
+            project_root: root.clone(),
+            session: "demo".into(),
+            state: state.clone(),
+            holders: pom_ptyhost::SocketDir::new(temp.path().join("s")),
+            binary: wrapper_script(temp.path()),
+            docker: "/nonexistent".into(),
+        });
+        let tools = super::tools(Rc::new(Workspace {
+            config_path,
+            state,
+            branch: "main".into(),
+            runner,
+        }));
+        for name in ["shared_start", "shared_stop", "shared_restart"] {
+            assert!(tools.iter().any(|tool| tool.name == name), "{name}");
+        }
+        let unknown = call(&tools, "shared_start", json!({"name": "nope"})).expect_err("unknown");
+        assert!(unknown.contains("mock-as"), "{unknown}");
+
+        let started = call(&tools, "shared_start", json!({"name": "mock-as"})).expect("start");
+        assert!(started.starts_with("started: mock-as"), "{started}");
+        let services = call(&tools, "services", json!({})).expect("services");
+        let rows: Vec<Value> = serde_json::from_str(&services).expect("json");
+        let shared = rows
+            .iter()
+            .find(|row| row["Repo"] == "shared")
+            .expect("a shared row");
+        assert_eq!(shared["Service"], "mock-as");
+        assert_eq!(shared["Kind"], "cmd");
+        assert_eq!(shared["Running"], true);
+        let port = shared["Port"].as_u64().expect("port");
+        assert_eq!(shared["Url"], format!("http://127.0.0.1:{port}"));
+
+        let other = ServiceRunner::new(pom_services::RunnerOptions {
+            project_root: root.clone(),
+            session: "demo".into(),
+            state: StateDir::new(temp.path().join("state")),
+            holders: pom_ptyhost::SocketDir::new(temp.path().join("s")),
+            binary: wrapper_script(temp.path()),
+            docker: "/nonexistent".into(),
+        });
+        let config = Config::load(&root.join("pom.yml")).expect("config");
+        let elsewhere = ServiceTarget {
+            branch: "feat-x".into(),
+            is_main: false,
+            repo: "api".into(),
+            service: "web".into(),
+        };
+        other
+            .start(&config, &elsewhere)
+            .expect("another workspace's service");
+        let refused = call(&tools, "shared_stop", json!({"name": "mock-as"})).expect_err("refused");
+        assert!(refused.contains("force: true"), "{refused}");
+        let stopped = call(
+            &tools,
+            "shared_stop",
+            json!({"name": "mock-as", "force": true}),
+        )
+        .expect("stop");
+        assert!(stopped.starts_with("stopped: mock-as"), "{stopped}");
+        let info = call(&tools, "workspace_info", json!({})).expect("info");
+        let info: Value = serde_json::from_str(&info).expect("json");
+        assert_eq!(info["shared_services"][0]["running"], false);
+        other
+            .stop(&elsewhere)
+            .expect("stop the other workspace's service");
+    }
 
     #[test]
     fn tails_strip_escapes_and_blank_lines() {

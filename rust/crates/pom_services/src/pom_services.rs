@@ -1,6 +1,7 @@
 mod control;
 mod env_files;
 mod shared;
+mod shared_command;
 mod slots;
 mod tool_path;
 

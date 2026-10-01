@@ -52,6 +52,14 @@ shared_services:
     healthcheck: { <...> }?
     db_user: <string>? ; db_password: <string>?
     capacity: <int>?                  # slot-limited → {{slot.<name>}}
+  [name]:                             # OR a command: one process for every workspace (no Docker)
+    cmd: <shell string>               # instead of image; gets $PORT and $BIND_IP
+    repo: <repo>?                     # runs in that repo's main-workspace checkout; else the project folder
+    port: <int>?                      # the port it is told (fixed); else one is leased
+    environment: { [KEY]: <val> }?    # $PORT / ${PORT} in a value become the port
+    healthcheck: { test: <cmd> }?     # waited for (up to 30s) before services that use it start
+                                      # image XOR cmd; ports/volumes/command/capacity/db_* are image-only,
+                                      # repo/port are cmd-only; {{shared.<name>.url}} = http://127.0.0.1:<port>
 
 environments:                         # local↔remote switchboard: DEFINE profiles
   [profile]:
