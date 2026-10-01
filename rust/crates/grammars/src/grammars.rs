@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,9 @@ pub struct Package {
     pub url: Option<String>,
     pub size: u64,
     pub sha256: String,
+    /// What the package was built from; a package re-published from changed inputs gets a new one.
+    #[serde(default)]
+    pub input_hash: Option<String>,
     /// Base64 Ed25519 signature of the archive's sha256 digest.
     pub signature: Option<String>,
     #[serde(default)]
@@ -189,9 +193,97 @@ fn verify_signature(digest: &[u8], package: &Package, public_key: &str) -> Resul
         .map_err(|_| format!("{}: the signature does not verify", package.language))
 }
 
-/// Where `package` lives once installed.
+/// What tells two publications of a package apart: its inputs when the index has them, else its archive.
+fn package_key(package: &Package) -> &str {
+    package.input_hash.as_deref().unwrap_or(&package.sha256)
+}
+
+/// Where `package` lives once installed; a re-published package lands beside the one in use.
 pub fn install_dir(grammars_dir: &Path, package: &Package) -> PathBuf {
-    grammars_dir.join(&package.id).join(&package.version)
+    let key: String = package_key(package).chars().take(8).collect();
+    grammars_dir
+        .join(&package.id)
+        .join(format!("{}-{key}", package.version))
+}
+
+/// Whether the package in use for `package`'s language is an older publication than `package`. One installed
+/// before installs were recorded counts as older.
+pub fn is_outdated(grammars_dir: &Path, package: &Package) -> bool {
+    let Some(current) = editor::grammar_packages::current_package(&grammars_dir.join(&package.id))
+    else {
+        return false;
+    };
+    match editor::grammar_packages::install_record(&current) {
+        None => true,
+        Some(record) => match (&record.input_hash, &package.input_hash) {
+            (Some(installed), Some(published)) => installed != published,
+            _ => record.sha256 != package.sha256,
+        },
+    }
+}
+
+/// The installed languages the index has a newer publication of.
+pub fn outdated(grammars_dir: &Path, index: &Index) -> Vec<Package> {
+    index
+        .packages
+        .iter()
+        .filter(|package| is_outdated(grammars_dir, package))
+        .cloned()
+        .collect()
+}
+
+/// Languages with a download running, so two never install the same one at once.
+static INSTALLING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Holds a language's install slot until dropped.
+pub struct InstallSlot(String);
+
+impl Drop for InstallSlot {
+    fn drop(&mut self) {
+        if let Ok(mut installing) = INSTALLING.lock() {
+            installing.remove(&self.0);
+        }
+    }
+}
+
+/// The install slot for `id`, or none while another download of it runs.
+pub fn claim_install(id: &str) -> Option<InstallSlot> {
+    let mut installing = INSTALLING.lock().ok()?;
+    installing
+        .insert(id.to_string())
+        .then(|| InstallSlot(id.to_string()))
+}
+
+/// Brings an installed language up to `package`, a newer publication: the new package installs beside the old
+/// one, `activate` puts it in use, and only then the old folders go. A failure leaves the old one in use.
+pub fn update(
+    package: &Package,
+    grammars_dir: &Path,
+    public_key: Option<&str>,
+    fetch: impl Fn(&Package) -> Result<Vec<u8>, String>,
+    activate: impl Fn(&Path) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    let _slot = claim_install(&package.id)
+        .ok_or_else(|| format!("{}: already downloading", package.language))?;
+    let bytes = fetch(package)?;
+    verify(&bytes, package, public_key)?;
+    let folder = install(&bytes, package, grammars_dir)?;
+    activate(&folder)?;
+    remove_other_versions(grammars_dir, package, &folder);
+    Ok(folder)
+}
+
+fn remove_other_versions(grammars_dir: &Path, package: &Package, keep: &Path) {
+    let Ok(folders) = std::fs::read_dir(grammars_dir.join(&package.id)) else {
+        return;
+    };
+    for folder in folders.flatten().map(|entry| entry.path()) {
+        if folder != keep && folder.is_dir() {
+            if let Err(error) = std::fs::remove_dir_all(&folder) {
+                eprintln!("grammars: remove {}: {error}", folder.display());
+            }
+        }
+    }
 }
 
 /// Whether any version of `package` is installed.
@@ -221,6 +313,7 @@ pub fn install(bytes: &[u8], package: &Package, grammars_dir: &Path) -> Result<P
             ));
         }
         settle_permissions(&staging)?;
+        write_record(&staging, package)?;
         std::fs::rename(&staging, &target).map_err(|error| error.to_string())
     });
     if let Err(error) = unpacked {
@@ -230,6 +323,23 @@ pub fn install(bytes: &[u8], package: &Package, grammars_dir: &Path) -> Result<P
         return Err(error);
     }
     Ok(target)
+}
+
+fn write_record(folder: &Path, package: &Package) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let installed_at = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let record = editor::grammar_packages::InstallRecord {
+        input_hash: package.input_hash.clone(),
+        sha256: package.sha256.clone(),
+        installed_at,
+    };
+    let path = folder.join(editor::grammar_packages::INSTALL_RECORD);
+    let text = serde_json::to_string_pretty(&record).map_err(|error| error.to_string())?;
+    std::fs::write(&path, text).map_err(|error| error.to_string())?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .map_err(|error| error.to_string())
 }
 
 fn unpack(bytes: &[u8], into: &Path) -> Result<(), String> {
@@ -291,6 +401,8 @@ pub fn download_and_install(package: &Package, grammars_dir: &Path) -> Result<Pa
         .url
         .as_deref()
         .ok_or_else(|| format!("{}: the index has no download for it", package.language))?;
+    let _slot = claim_install(&package.id)
+        .ok_or_else(|| format!("{}: already downloading", package.language))?;
     let bytes = download(url, Duration::from_secs(120))?;
     verify(&bytes, package, GRAMMARS_PUBLIC_KEY)?;
     install(&bytes, package, grammars_dir)
@@ -437,6 +549,9 @@ impl AutoInstall<'_> {
             let mut done = read_names(self.done_file);
             done.push(package.language.clone());
             write_names(self.done_file, &done);
+            let Some(_slot) = claim_install(&package.id) else {
+                continue;
+            };
             let installed = fetch(&package)
                 .and_then(|bytes| verify(&bytes, &package, public_key).map(|()| bytes))
                 .and_then(|bytes| install(&bytes, &package, self.grammars_dir));
@@ -532,6 +647,7 @@ mod tests {
             url: None,
             size: bytes.len() as u64,
             sha256: digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+            input_hash: Some("inputs-one".into()),
             signature: Some(
                 base64::engine::general_purpose::STANDARD.encode(key.sign(&digest).to_bytes()),
             ),
@@ -619,21 +735,145 @@ mod tests {
         let grammars = temp.path().join("grammars");
         let package = package(&bytes, &key);
         let installed = install(&bytes, &package, &grammars).expect("install");
-        assert_eq!(installed, grammars.join("ocaml").join("0.24.2"));
+        assert_eq!(installed, grammars.join("ocaml").join("0.24.2-inputs-o"));
         assert!(installed.join("grammar.wasm").is_file());
         assert!(is_installed(&grammars, &package));
+        let record = editor::grammar_packages::install_record(&installed).expect("record");
+        assert_eq!(record.input_hash.as_deref(), Some("inputs-one"));
+        assert_eq!(record.sha256, package.sha256);
         let leftovers: Vec<_> = std::fs::read_dir(grammars.join("ocaml"))
             .expect("dir")
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(leftovers, ["0.24.2"]);
+        assert_eq!(leftovers, ["0.24.2-inputs-o"]);
 
         let broken = archive(&temp.path().join("broken"), &[("readme", "no grammar")]);
         let mut other = package.clone();
         other.id = "kotlin".into();
         assert!(install(&broken, &other, &grammars).is_err());
-        assert!(!grammars.join("kotlin").join("0.24.2").exists());
+        assert!(!grammars.join("kotlin").join("0.24.2-inputs-o").exists());
+    }
+
+    #[test]
+    fn an_installed_package_is_outdated_only_when_its_publication_changed() {
+        let temp = tempfile::tempdir().expect("temp");
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let bytes = archive(
+            temp.path(),
+            &[
+                ("grammar.wasm", "wasm"),
+                ("language.toml", "name = \"OCaml\"\n"),
+            ],
+        );
+        let grammars = temp.path().join("grammars");
+        let published = package(&bytes, &key);
+        assert!(
+            !is_outdated(&grammars, &published),
+            "not installed is not outdated"
+        );
+        install(&bytes, &published, &grammars).expect("install");
+        assert!(!is_outdated(&grammars, &published), "same inputs");
+        let mut republished = published.clone();
+        republished.input_hash = Some("inputs-two".into());
+        assert!(is_outdated(&grammars, &republished));
+        let index = Index {
+            version: 1,
+            packages: vec![republished.clone()],
+        };
+        assert_eq!(outdated(&grammars, &index), [republished]);
+
+        let unrecorded = grammars.join("kotlin").join("1.0.0");
+        std::fs::create_dir_all(&unrecorded).expect("old install");
+        let mut kotlin = published;
+        kotlin.id = "kotlin".into();
+        assert!(is_outdated(&grammars, &kotlin), "installed before records");
+    }
+
+    #[test]
+    fn an_update_lands_beside_the_old_package_and_replaces_it_once_in_use() {
+        let temp = tempfile::tempdir().expect("temp");
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let grammars = temp.path().join("grammars");
+        let old_bytes = archive(
+            &temp.path().join("old"),
+            &[
+                ("grammar.wasm", "old"),
+                ("language.toml", "name = \"OCaml\"\n"),
+            ],
+        );
+        let old = package(&old_bytes, &key);
+        let old_folder = install(&old_bytes, &old, &grammars).expect("old");
+        let new_bytes = archive(
+            &temp.path().join("new"),
+            &[
+                ("grammar.wasm", "new"),
+                ("language.toml", "name = \"OCaml\"\n"),
+            ],
+        );
+        let mut new = package(&new_bytes, &key);
+        new.input_hash = Some("inputs-two".into());
+        let key_text = public(&key);
+
+        let failed = update(
+            &new,
+            &grammars,
+            Some(&key_text),
+            |_| Err("offline".into()),
+            |_| Ok(()),
+        );
+        assert!(failed.is_err());
+        assert!(
+            old_folder.join("grammar.wasm").is_file(),
+            "a failure keeps the old one"
+        );
+
+        let refused = update(
+            &new,
+            &grammars,
+            Some(&key_text),
+            |_| Ok(new_bytes.clone()),
+            |_| Err("did not load".into()),
+        );
+        assert!(refused.is_err());
+        assert!(
+            old_folder.is_dir(),
+            "the old one stays until the new one is in use"
+        );
+
+        let slot = claim_install("ocaml").expect("slot");
+        let busy = update(
+            &new,
+            &grammars,
+            Some(&key_text),
+            |_| Ok(new_bytes.clone()),
+            |_| Ok(()),
+        );
+        assert!(busy.is_err(), "never two downloads of a language at once");
+        drop(slot);
+
+        let activated = std::cell::RefCell::new(Vec::new());
+        let folder = update(
+            &new,
+            &grammars,
+            Some(&key_text),
+            |_| Ok(new_bytes.clone()),
+            |folder| {
+                activated.borrow_mut().push(folder.to_path_buf());
+                Ok(())
+            },
+        )
+        .expect("updated");
+        assert_eq!(activated.into_inner(), std::slice::from_ref(&folder));
+        assert!(
+            !old_folder.exists(),
+            "the old one goes once the new one is in use"
+        );
+        assert_eq!(
+            editor::grammar_packages::current_package(&grammars.join("ocaml")),
+            Some(folder)
+        );
+        assert!(!is_outdated(&grammars, &new));
     }
 
     #[test]

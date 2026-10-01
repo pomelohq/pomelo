@@ -9,6 +9,7 @@ description = "Grammar packages the app can download: the index, verified downlo
 path = "src/grammars.rs"
 
 [dependencies]
+editor = { package = "pomelo-editor", path = "../editor" }
 pom_paths = { path = "../pom_paths" }
 serde.workspace = true
 serde_json.workspace = true
@@ -18,4 +19,3 @@ base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
-editor = { package = "pomelo-editor", path = "../editor" }
