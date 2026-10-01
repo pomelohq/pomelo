@@ -24,6 +24,11 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "working tree not clean; commit or stash first" >&2
   exit 1
 fi
+# The release notes and the update feed come from this block; the release workflow refuses a tag without it.
+if ! grep -q "^## \[${NEW}\]" ../CHANGELOG.md; then
+  echo "CHANGELOG.md has no '## [${NEW}]' block: curate it and commit it first" >&2
+  exit 1
+fi
 
 sed -i '' "s/^version = \"${CUR}\"/version = \"${NEW}\"/" Cargo.toml
 cargo update --workspace >/dev/null 2>&1

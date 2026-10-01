@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -25,15 +25,33 @@ env:
 jobs:
   release:
     runs-on: macos-15 # Apple Silicon
+    timeout-minutes: 90
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The notes and the update feed come from CHANGELOG.md's block for this version, and the app reports the
+      # version Cargo.toml names: stop before anything is built or signed if either is missing or off.
+      - name: Check the tag, the version and the CHANGELOG agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$CARGO_VERSION" != "$VERSION" ]; then
+            echo "::error::the tag is $GITHUB_REF_NAME but rust/Cargo.toml says version $CARGO_VERSION"
+            exit 1
+          fi
+          if ! grep -q "^## \[$VERSION\]" ../CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' block. Curate it on main, then cut the release again (see the release-audit skill)."
+            exit 1
+          fi
       # Installs the toolchain rust/rust-toolchain.toml pins.
       - run: rustup show
       # A tag's own cache is never seen by the next tag; this reads the one release-cache.yml keeps on main.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rust
           shared-key: release
@@ -142,6 +160,7 @@ jobs:
   refresh-docs:
     needs: release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Trigger pomelo-docs deploy
         env:
