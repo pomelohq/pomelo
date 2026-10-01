@@ -9,9 +9,6 @@ use pom_ptyhost::SocketDir;
 
 use crate::routing::{Machine, ProjectRoute};
 
-const LIVE_PORT_LOW: u16 = 10000;
-const LIVE_PORT_HIGH: u16 = 65535;
-
 /// The real lease files, holders and processes.
 pub struct SystemMachine {
     pub state: StateDir,
@@ -34,9 +31,11 @@ impl Machine for SystemMachine {
             .collect()
     }
 
-    fn live_port(&self, holder: &str) -> Option<u16> {
-        let pid = self.holders.holder_pid(holder)?;
-        listening_port_in_tree(pid, LIVE_PORT_LOW, LIVE_PORT_HIGH)
+    fn live_ports(&self, holder: &str) -> Vec<u16> {
+        self.holders
+            .holder_pid(holder)
+            .map(listening_ports_in_tree)
+            .unwrap_or_default()
     }
 
     fn holder_alive(&self, holder: &str) -> bool {
@@ -48,8 +47,8 @@ impl Machine for SystemMachine {
     }
 }
 
-/// The first TCP port in range that the process or any of its descendants listens on.
-pub fn listening_port_in_tree(root_pid: i32, low: u16, high: u16) -> Option<u16> {
+/// Every TCP port the process or any of its descendants listens on, on any address.
+pub fn listening_ports_in_tree(root_pid: i32) -> Vec<u16> {
     let pids: Vec<String> = pom_ptyhost::descendants(root_pid)
         .iter()
         .map(i32::to_string)
@@ -64,18 +63,28 @@ pub fn listening_port_in_tree(root_pid: i32, low: u16, high: u16) -> Option<u16>
             "-sTCP:LISTEN",
             "-Fn",
         ])
-        .output()
-        .ok()?;
-    listening_ports(&String::from_utf8_lossy(&output.stdout))
-        .into_iter()
-        .find(|port| (low..=high).contains(port))
+        .output();
+    match output {
+        Ok(output) => listening_ports(&String::from_utf8_lossy(&output.stdout)),
+        Err(error) => {
+            eprintln!("dev-proxy: lsof: {error}");
+            Vec::new()
+        }
+    }
 }
 
 fn listening_ports(lsof: &str) -> Vec<u16> {
-    lsof.lines()
+    let mut ports: Vec<u16> = Vec::new();
+    for port in lsof
+        .lines()
         .filter_map(|line| line.strip_prefix('n'))
         .filter_map(|address| address.rsplit_once(':')?.1.parse().ok())
-        .collect()
+    {
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    ports
 }
 
 #[cfg(test)]
@@ -85,7 +94,7 @@ mod tests {
     #[test]
     fn lsof_names_yield_their_ports() {
         assert_eq!(
-            listening_ports("p42\nf12\nn127.0.0.1:5173\nf13\nn[::1]:24678\nn*:8080\n"),
+            listening_ports("p42\nf12\nn127.0.0.1:5173\nf13\nn[::1]:24678\nn*:8080\nn[::1]:5173\n"),
             vec![5173, 24678, 8080]
         );
     }

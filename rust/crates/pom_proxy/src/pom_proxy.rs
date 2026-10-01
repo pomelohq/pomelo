@@ -5,9 +5,9 @@ mod server;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-pub use machine::{listening_port_in_tree, SystemMachine};
+pub use machine::{listening_ports_in_tree, SystemMachine};
 pub use routing::{
-    branch_labels, host_labels, pick_port, resolve_service_key, rewrite_external_cookie,
+    branch_labels, host_labels, reachable, resolve_service_key, rewrite_external_cookie,
     rewrite_local_cookie, ConfigSource, Decision, Logged, Machine, ProjectRoute, Route, Router,
 };
 
