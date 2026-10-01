@@ -137,12 +137,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd packages
-          archives=$(ls ./*.tar.gz 2>/dev/null || true)
+          shopt -s nullglob
+          archives=(./*.tar.gz)
           if ! gh release view grammars --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create grammars --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
               --title "Grammar packages" --notes "Grammar packages, built from rust/grammars/manifest.toml."
           fi
-          if [ -n "$archives" ]; then
-            gh release upload grammars --repo "$GITHUB_REPOSITORY" --clobber $archives
+          if [ "${#archives[@]}" -gt 0 ]; then
+            gh release upload grammars --repo "$GITHUB_REPOSITORY" --clobber "${archives[@]}"
           fi
           gh release upload grammars --repo "$GITHUB_REPOSITORY" --clobber index.json
