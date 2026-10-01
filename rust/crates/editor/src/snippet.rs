@@ -267,7 +267,19 @@ pub fn parse_snippet_file(json: &str, source: &Path) -> Result<Vec<SnippetDefini
 }
 
 /// The file stem a language's snippets live under (`rust.json`); `snippets.json` holds ones for every language.
+/// The snippet scope `lang`'s snippets are filed under, from its grammar package or the app.
 pub fn snippet_scope(lang: Lang) -> &'static str {
+    crate::registry::language_registry()
+        .read()
+        .ok()
+        .and_then(|registry| registry.queries(lang))
+        .map_or_else(
+            || native_snippet_scope(lang),
+            |queries| queries.snippet_scope,
+        )
+}
+
+pub fn native_snippet_scope(lang: Lang) -> &'static str {
     match lang {
         Lang::Rust => "rust",
         Lang::TypeScript => "typescript",

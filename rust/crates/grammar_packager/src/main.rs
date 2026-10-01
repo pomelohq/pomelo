@@ -336,6 +336,14 @@ fn language_toml(entry: &Entry, lang: Lang, version: &str) -> String {
     if let Some(pattern) = builtin.first_line_pattern {
         text.push_str(&format!("first_line_pattern = {}\n", quote(pattern)));
     }
+    let editing = editor::grammar_packages::EditingConfig::from_native(
+        &builtin.config,
+        builtin.snippet_scope,
+    );
+    match editing.to_toml() {
+        Ok(fields) => text.push_str(&fields),
+        Err(error) => eprintln!("{}: editing config: {error}", entry.language),
+    }
     text
 }
 
@@ -393,8 +401,15 @@ fn build(args: &[String]) -> Result<(), String> {
                 .map_err(|error| format!("{id}: {name}: {error}"))
         };
         write("highlights.scm", builtin.highlights)?;
-        if let Some(injections) = builtin.injections {
-            write("injections.scm", injections)?;
+        for (name, query) in [
+            ("injections.scm", builtin.injections),
+            ("outline.scm", builtin.outline),
+            ("indents.scm", builtin.indents),
+            ("overrides.scm", builtin.overrides),
+        ] {
+            if let Some(query) = used_query(&builtin, query) {
+                write(name, query)?;
+            }
         }
         write("language.toml", &language_toml(entry, lang, version))?;
         write("LICENSE", &license_text(entry, &source, &cache)?)?;
@@ -467,6 +482,7 @@ fn verify(args: &[String]) -> Result<(), String> {
         let builtin = builtin_language(lang);
         let native = builtin
             .grammar
+            .clone()
             .ok_or_else(|| format!("{}: no compiled-in grammar to compare with", package.id))?;
         let captures =
             editor::grammar_packages::highlight_captures(&native, builtin.highlights, &sample)
@@ -474,7 +490,31 @@ fn verify(args: &[String]) -> Result<(), String> {
         if captures.is_empty() {
             return Err(format!("{}: the sample highlights nothing", package.id));
         }
-        expected.push((package.id.clone(), lang, sample, captures));
+        let tree = editor::grammar_packages::syntax_tree(&native, &sample)
+            .map_err(|error| format!("{} (compiled in): {error}", package.id))?;
+        let mut queried = Vec::new();
+        for (kind, query) in [
+            ("injections", builtin.injections),
+            ("outline", builtin.outline),
+            ("indents", builtin.indents),
+            ("overrides", builtin.overrides),
+        ] {
+            if let Some(query) = used_query(&builtin, query) {
+                let found = editor::grammar_packages::query_captures(&native, query, &sample)
+                    .map_err(|error| format!("{} {kind} (compiled in): {error}", package.id))?;
+                queried.push((kind, found));
+            }
+        }
+        expected.push(Expected {
+            id: package.id.clone(),
+            lang,
+            sample,
+            captures,
+            tree,
+            queried,
+            config: builtin.config,
+            snippet_scope: builtin.snippet_scope,
+        });
         let folder = installed.path().join(&package.id).join(&package.version);
         std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
         run(Command::new("tar")
@@ -491,7 +531,17 @@ fn verify(args: &[String]) -> Result<(), String> {
         ));
     }
     let registry = editor::registry::language_registry();
-    for (id, lang, sample, captures) in expected {
+    for Expected {
+        id,
+        lang,
+        sample,
+        captures,
+        tree,
+        queried,
+        config,
+        snippet_scope,
+    } in expected
+    {
         let deadline = Instant::now() + Duration::from_secs(60);
         let (grammar, highlights) = loop {
             if let Some(found) = editor::registry::request_grammar(registry, lang) {
@@ -521,9 +571,78 @@ fn verify(args: &[String]) -> Result<(), String> {
                 captures.len()
             ));
         }
-        eprintln!("{id}: {} captures match", captures.len());
+        let packaged_tree = editor::grammar_packages::syntax_tree(&grammar, &sample)
+            .map_err(|error| format!("{id} (package): {error}"))?;
+        if packaged_tree != tree {
+            return Err(format!(
+                "{id}: the package parses the sample into a different tree"
+            ));
+        }
+        let queries = registry
+            .read()
+            .map_err(|_| "the language registry is unavailable".to_string())?
+            .queries(lang)
+            .ok_or_else(|| format!("{id}: no queries registered"))?;
+        for (kind, found) in &queried {
+            let source = match *kind {
+                "injections" => queries.injections.clone(),
+                "outline" => queries.outline.clone(),
+                "indents" => queries.indents.clone(),
+                _ => queries.overrides.clone(),
+            }
+            .ok_or_else(|| format!("{id}: the package has no {kind} query"))?;
+            let packaged = editor::grammar_packages::query_captures(&grammar, &source, &sample)
+                .map_err(|error| format!("{id} {kind} (package): {error}"))?;
+            if &packaged != found {
+                return Err(format!(
+                    "{id}: {kind}: {} captures from the package, {} compiled in",
+                    packaged.len(),
+                    found.len()
+                ));
+            }
+        }
+        if queries.config != config || queries.snippet_scope != snippet_scope {
+            return Err(format!(
+                "{id}: the package's editing config differs from the compiled-in one"
+            ));
+        }
+        let kinds: Vec<&str> = queried.iter().map(|(kind, _)| *kind).collect();
+        eprintln!(
+            "{id}: {} captures, the tree, the editing config{} match",
+            captures.len(),
+            if kinds.is_empty() {
+                String::new()
+            } else {
+                format!(" and {}", kinds.join(", "))
+            }
+        );
     }
     Ok(())
+}
+
+/// `query` when the compiled-in grammar reads it; one it can't compile is dropped by the editor, so the
+/// package leaves it out too.
+fn used_query(
+    builtin: &editor::highlight::BuiltinLanguage,
+    query: Option<&'static str>,
+) -> Option<&'static str> {
+    let grammar = builtin.grammar.as_ref()?;
+    query.filter(|query| editor::grammar_packages::query_compiles(grammar, query))
+}
+
+type Captures = Vec<(std::ops::Range<usize>, String)>;
+
+/// What a package must reproduce from the compiled-in language for one sample.
+struct Expected {
+    id: String,
+    lang: Lang,
+    sample: String,
+    captures: Captures,
+    tree: String,
+    /// Captures of each other query the compiled-in language has, by kind.
+    queried: Vec<(&'static str, Captures)>,
+    config: editor::language::LanguageConfig,
+    snippet_scope: &'static str,
 }
 
 fn signing_key(seed: &str) -> Result<SigningKey, String> {

@@ -9,7 +9,8 @@ use tree_sitter::{Language, Node, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::highlight::Lang;
 
-fn outline_patterns(lang: Lang) -> Option<&'static str> {
+/// The outline query compiled into the app for `lang`.
+pub fn native_outline(lang: Lang) -> Option<&'static str> {
     Some(match lang {
         Lang::Rust => include_str!("../queries/rust/outline.scm"),
         Lang::JavaScript => include_str!("../queries/javascript/outline.scm"),
@@ -56,7 +57,12 @@ pub struct OutlineQuery {
 
 impl OutlineQuery {
     pub fn new(lang: Lang, language: &Language) -> Option<Self> {
-        let query = Query::new(language, outline_patterns(lang)?).ok()?;
+        let patterns = crate::registry::language_registry()
+            .read()
+            .ok()?
+            .queries(lang)?
+            .outline?;
+        let query = Query::new(language, &patterns).ok()?;
         let index_of = |name: &str| {
             query
                 .capture_names()
@@ -216,7 +222,7 @@ mod tests {
             Lang::Bash,
         ] {
             let (language, _) = crate::highlight::grammar(lang).unwrap();
-            let source = outline_patterns(lang).unwrap();
+            let source = native_outline(lang).unwrap();
             if let Err(error) = Query::new(&language, source) {
                 panic!("{source}: {error}");
             }
