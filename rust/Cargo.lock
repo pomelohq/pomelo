@@ -1190,6 +1190,8 @@ dependencies = [
  "grammars",
  "lsp",
  "pom_cli",
+ "pom_config",
+ "pom_env",
  "pom_mcp",
  "pomelo-editor",
  "serde_json",
@@ -3508,6 +3510,7 @@ name = "pom_agent"
 version = "0.8.2"
 dependencies = [
  "notify",
+ "pom_env",
  "pom_paths",
  "serde",
  "serde_json",

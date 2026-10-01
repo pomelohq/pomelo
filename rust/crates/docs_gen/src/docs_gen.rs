@@ -2,6 +2,7 @@
 //! drift check regenerates them at each release tag.
 
 mod cli_page;
+mod config_page;
 mod languages_page;
 mod mcp_page;
 mod settings_page;
@@ -28,6 +29,8 @@ fn run() -> Result<(), String> {
         ("mcp.md", mcp_page::render()),
         ("languages.md", languages_page::render_languages()?),
         ("language-servers.md", languages_page::render_servers()),
+        ("config.md", config_page::render_config()),
+        ("templates.md", config_page::render_templates()),
     ];
     for (name, body) in pages {
         let path = out.join(name);
@@ -62,6 +65,28 @@ fn table_cell(text: &str) -> String {
 /// Text from the code for a table cell or paragraph. Outside code spans the site reads `<x>` as an HTML tag and
 /// `{{ }}` as a template, so both are escaped there.
 fn prose(text: &str) -> String {
+    table_cell(&outside_code(text))
+}
+
+/// Markdown written for agents, made safe for the site: outside fenced blocks, same escaping as `prose`.
+fn site_safe(markdown: &str) -> String {
+    let mut fenced = false;
+    let mut out = String::new();
+    for line in markdown.lines() {
+        if line.starts_with("```") {
+            fenced = !fenced;
+            out.push_str(line);
+        } else if fenced {
+            out.push_str(line);
+        } else {
+            out.push_str(&outside_code(line));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn outside_code(text: &str) -> String {
     let escaped: Vec<String> = text
         .split('`')
         .enumerate()
@@ -76,5 +101,5 @@ fn prose(text: &str) -> String {
             }
         })
         .collect();
-    table_cell(&escaped.join("`"))
+    escaped.join("`")
 }

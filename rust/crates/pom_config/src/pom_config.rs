@@ -1,6 +1,7 @@
 mod decode;
 mod depgraph;
 pub mod edit;
+pub mod field_docs;
 mod lookup;
 pub mod maintain;
 mod migrate;

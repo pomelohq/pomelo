@@ -988,10 +988,18 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "config_get",
-        "Read this project's pom.yml (services, repos, shared services - Docker image or cmd -, env profiles, databases).",
+        "Read this project's pom.yml (services, repos, shared services - Docker image or cmd -, env profiles, databases). What each key means: config_reference.",
         None,
         true,
         Box::new(move |_| config_files::read(&ws.config_path)),
+    ));
+
+    tools.push(tool(
+        "config_reference",
+        "The pom.yml reference: every key the config reads (type, default, what it does, examples), every {{...}} template token, and the removed keys and colon forms with their replacements. Read it before writing a config with config_set.",
+        None,
+        true,
+        Box::new(|_| Ok(config_reference())),
     ));
 
     let ws = workspace.clone();
@@ -1010,7 +1018,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
 
     tools.push(tool(
         "config_validate",
-        "Dry-run validate a proposed pom.yml (schema + reference checks) WITHOUT writing. Always validate before config_set. A shared service is either a Docker `image:` or a `cmd:` run once for every workspace, e.g. `shared_services: {mock-as: {cmd: node scripts/mock-as.js, repo: api, port: 4010}}` (repo: run in that repo's main checkout; port: else one is leased and given as $PORT); reach it with {{shared.mock-as.url}}.",
+        "Dry-run validate a proposed pom.yml (schema + reference checks) WITHOUT writing. Always validate before config_set. Every key and token: config_reference. A shared service is either a Docker `image:` or a `cmd:` run once for every workspace, e.g. `shared_services: {mock-as: {cmd: node scripts/mock-as.js, repo: api, port: 4010}}` (repo: run in that repo's main checkout; port: else one is leased and given as $PORT); reach it with {{shared.mock-as.url}}.",
         Some(yaml_schema()),
         true,
         Box::new(move |args| {
@@ -1023,7 +1031,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "config_set",
-        "Validate and write a new pom.yml, then reload - adds/edits services, repos, shared services, databases, env. Rejected if invalid (nothing is written). Newly added services get ports allocated automatically. A shared service is a Docker `image:` or a `cmd:` (one process for every workspace, optional repo/port/environment/healthcheck); start it with shared_start.",
+        "Validate and write a new pom.yml, then reload - adds/edits services, repos, shared services, databases, env. Rejected if invalid (nothing is written). Newly added services get ports allocated automatically. A shared service is a Docker `image:` or a `cmd:` (one process for every workspace, optional repo/port/environment/healthcheck); start it with shared_start. Every key and token: config_reference.",
         Some(yaml_schema()),
         false,
         Box::new(move |args| {
@@ -1075,6 +1083,14 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     ));
 
     tools
+}
+
+fn config_reference() -> String {
+    format!(
+        "# pom.yml keys\n\n{}\n# Templates\n\n{}",
+        pom_config::field_docs::markdown(),
+        pom_env::template_docs::markdown()
+    )
 }
 
 #[cfg(test)]

@@ -56,7 +56,9 @@ Before cutting a release, run the `release-audit` skill: release notes and the S
   from the config. Never hand-write `source .env.local` in a shell string.
 - **Config templates are dot-notation only** (`{{shared.postgres.url}}`, `{{db.main}}`, `{{api.web.url}}`,
   `{{secret.NAME}}`, `{{branch.safe}}`), validated at load. Never author colon forms or `proxy:` / `webhook:`
-  blocks. Reference: `docs/config-schema.md`, `docs/config-variables.md`.
+  blocks. Every key is documented in `pom_config/src/field_docs.rs` and every token in
+  `pom_env/src/template_docs.rs` (a test fails on an undocumented key); the docs site's pom.yml and templates
+  pages and the MCP `config_reference` tool are rendered from them.
 
 ## Docs
 
