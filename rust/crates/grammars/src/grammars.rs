@@ -146,6 +146,25 @@ pub fn verify(bytes: &[u8], package: &Package, public_key: Option<&str>) -> Resu
     verify_signature(&digest, package, public_key)
 }
 
+/// Checks every package in `index` is signed by `public_key`, from the sha256 the index records: what a
+/// release checks before it embeds a downloaded index.
+pub fn verify_index(index: &Index, public_key: &str) -> Result<(), String> {
+    if index.packages.is_empty() {
+        return Err("the index lists no packages".into());
+    }
+    for package in &index.packages {
+        let digest: Vec<u8> = (0..package.sha256.len())
+            .step_by(2)
+            .filter_map(|at| u8::from_str_radix(package.sha256.get(at..at + 2)?, 16).ok())
+            .collect();
+        if digest.len() != 32 {
+            return Err(format!("{}: the sha256 is malformed", package.language));
+        }
+        verify_signature(&digest, package, public_key)?;
+    }
+    Ok(())
+}
+
 /// Checks `package`'s signature over the archive's sha256 `digest` with `public_key`.
 fn verify_signature(digest: &[u8], package: &Package, public_key: &str) -> Result<(), String> {
     use base64::Engine;
@@ -496,16 +515,9 @@ mod tests {
     #[test]
     fn every_package_in_the_built_in_index_is_signed_by_the_app_key() {
         let key = GRAMMARS_PUBLIC_KEY.expect("the app carries the grammars key");
-        let index = embedded_index();
-        assert!(!index.packages.is_empty());
-        for package in &index.packages {
-            let digest: Vec<u8> = (0..package.sha256.len())
-                .step_by(2)
-                .filter_map(|at| u8::from_str_radix(package.sha256.get(at..at + 2)?, 16).ok())
-                .collect();
-            assert_eq!(digest.len(), 32, "{}", package.language);
-            verify_signature(&digest, package, key).unwrap_or_else(|error| panic!("{error}"));
-        }
+        verify_index(&embedded_index(), key).unwrap_or_else(|error| panic!("{error}"));
+        let other = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        assert!(verify_index(&embedded_index(), &public(&other)).is_err());
     }
     use ed25519_dalek::Signer;
 

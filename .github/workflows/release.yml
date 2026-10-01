@@ -57,6 +57,19 @@ jobs:
           shared-key: release
           save-if: false
 
+      # The app carries the grammars index so it knows the packages offline: a release carries the one published
+      # now, refused unless every package is signed by the app's key. Without network, the repository's copy.
+      - name: Embed the published grammars index
+        run: |
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/grammars/index.json"
+          if curl -fsSL --max-time 60 --retry 3 -o "$RUNNER_TEMP/grammars-index.json" "$url"; then
+            cargo run --release -q -p grammar_packager -- check-index --index "$RUNNER_TEMP/grammars-index.json"
+            cp "$RUNNER_TEMP/grammars-index.json" grammars/index.json
+          else
+            echo "::warning::could not download the published grammars index; the release carries the repository's copy"
+          fi
+          cargo run --release -q -p grammar_packager -- check-index --index grammars/index.json
+
       - name: Import Developer ID certificate
         env:
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
