@@ -210,6 +210,7 @@ impl App {
         let Some(target) = project.workspaces.get(index).cloned() else {
             return;
         };
+        let elsewhere = project.active_branch() != target.branch;
         match action {
             workspace::RowAction::Rename => {
                 let current = pom_layout::WorkspaceState::load(&target.path).display_name;
@@ -226,7 +227,13 @@ impl App {
                 OpKind::PrepareMain(pom_workspace::PrepareRequest::default()),
                 "Preparing main",
             ),
-            workspace::RowAction::OpenTicket => self.open_ticket(id, &target.branch),
+            workspace::RowAction::OpenTicket => {
+                // A ticket opens in its own workspace, so each workspace keeps one tab for it.
+                if elsewhere {
+                    self.activate_workspace(id, index);
+                }
+                self.open_ticket(id, &target.branch);
+            }
             workspace::RowAction::AddMissingRepos => self.add_missing_repos(id, &target),
             workspace::RowAction::AddRepos => self.pick_repos(id, &target),
         }
