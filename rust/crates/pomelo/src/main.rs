@@ -4641,6 +4641,9 @@ fn main() -> anyhow::Result<()> {
     editor::registry::on_languages_changed(std::sync::Arc::new(ui::wake));
     if let Some(dir) = editor::grammar_packages::grammars_dir() {
         editor::grammar_packages::register_installed_grammars(&dir);
+        if grammars::downloads_on() {
+            install_recent_grammars(dir.clone());
+        }
         if grammars::downloads_on() && grammars::index_is_stale(&dir, std::time::SystemTime::now())
         {
             let refresh = std::thread::Builder::new()
@@ -4674,6 +4677,53 @@ fn main() -> anyhow::Result<()> {
     app.refresh_agents();
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// Installs, in the background, the grammars of languages opened lately that the app no longer carries.
+fn install_recent_grammars(dir: std::path::PathBuf) {
+    let spawned = std::thread::Builder::new()
+        .name("grammar-auto-install".into())
+        .spawn(move || {
+            let (Some(recent), Some(done_file)) =
+                (grammars::recent_file(), grammars::auto_installed_file())
+            else {
+                return;
+            };
+            let index = grammars::load_index(&dir);
+            let auto = grammars::AutoInstall {
+                grammars_dir: &dir,
+                index: &index,
+                recent: grammars::recent_languages(&recent),
+                dismissed: grammars::dismissed_file()
+                    .map(|file| grammars::dismissed(&file))
+                    .unwrap_or_default(),
+                done_file: &done_file,
+            };
+            let has_grammar = |language: &str| {
+                let registry = editor::registry::language_registry();
+                let Ok(registry) = registry.read() else {
+                    return true;
+                };
+                registry
+                    .language_for_name(language)
+                    .is_none_or(|lang| registry.has_grammar(lang))
+            };
+            for (language, installed) in auto.run(
+                has_grammar,
+                grammars::GRAMMARS_PUBLIC_KEY,
+                grammars::fetch_package,
+            ) {
+                let registered = installed.and_then(|folder| {
+                    editor::grammar_packages::register_installed_grammar(&folder)
+                });
+                if let Err(error) = registered {
+                    eprintln!("grammars: install {language}: {error}");
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("grammars: install recent languages: {error}");
+    }
 }
 
 /// How an agent's tab is dressed.

@@ -119,7 +119,8 @@ const GENERIC_PATTERNS: [&str; 3] = [
     "(_ \"(\" \")\" @end) @indent",
 ];
 
-fn language_patterns(lang: Lang) -> &'static str {
+/// The indent patterns compiled into the app for `lang`, beyond the bracket pairs every grammar shares.
+pub fn native_indents(lang: Lang) -> &'static str {
     match lang {
         Lang::Rust => include_str!("../queries/rust/indents.scm"),
         Lang::JavaScript => include_str!("../queries/javascript/indents.scm"),
@@ -153,9 +154,13 @@ impl IndentQuery {
             .filter(|pattern| Query::new(language, pattern).is_ok())
             .map(|pattern| format!("{pattern}\n"))
             .collect();
-        let extra = language_patterns(lang);
-        if Query::new(language, extra).is_ok() {
-            source.push_str(extra);
+        let extra = crate::registry::language_registry()
+            .read()
+            .ok()
+            .and_then(|registry| registry.queries(lang))
+            .and_then(|queries| queries.indents);
+        if let Some(extra) = extra.filter(|extra| Query::new(language, extra).is_ok()) {
+            source.push_str(&extra);
         }
         let query = Query::new(language, &source).ok()?;
         let mut indent = Self {
@@ -694,8 +699,8 @@ mod tests {
             Lang::Xml,
         ] {
             let (language, _) = crate::highlight::grammar(lang).unwrap();
-            if let Err(error) = Query::new(&language, language_patterns(lang)) {
-                panic!("{}: {error}", language_patterns(lang));
+            if let Err(error) = Query::new(&language, native_indents(lang)) {
+                panic!("{}: {error}", native_indents(lang));
             }
         }
     }

@@ -358,6 +358,79 @@ pub fn record_language(file: &Path, language: &str) {
     write_names(file, &names);
 }
 
+/// Languages already installed on their own because they had been opened lately, so each happens once.
+pub fn auto_installed_file() -> Option<PathBuf> {
+    Some(pom_paths::config_dir()?.join("auto-installed-grammars.json"))
+}
+
+/// Where the first launch without a language's grammar looks: what was opened lately, what was turned off
+/// or already installed this way, and the files that keep those lists.
+pub struct AutoInstall<'a> {
+    pub grammars_dir: &'a Path,
+    pub index: &'a Index,
+    pub recent: Vec<String>,
+    pub dismissed: BTreeSet<String>,
+    /// Keeps the languages installed this way.
+    pub done_file: &'a Path,
+}
+
+impl AutoInstall<'_> {
+    /// The packages for recently opened languages that have no grammar in the app, in the order they were
+    /// opened: in the index, not installed, not turned off, and not installed this way before.
+    pub fn candidates(&self, has_grammar: impl Fn(&str) -> bool) -> Vec<Package> {
+        let done: BTreeSet<String> = read_names(self.done_file).into_iter().collect();
+        self.recent
+            .iter()
+            .filter(|language| {
+                !has_grammar(language)
+                    && !self.dismissed.contains(*language)
+                    && !done.contains(*language)
+            })
+            .filter_map(|language| {
+                self.index
+                    .packages
+                    .iter()
+                    .find(|package| &package.language == language)
+            })
+            .filter(|package| !is_installed(self.grammars_dir, package))
+            .cloned()
+            .collect()
+    }
+
+    /// Installs each candidate with `fetch`, checked against `public_key`; nothing without a key. Each
+    /// language is noted as done before its download, so a failing one isn't retried every launch.
+    pub fn run(
+        &self,
+        has_grammar: impl Fn(&str) -> bool,
+        public_key: Option<&str>,
+        fetch: impl Fn(&Package) -> Result<Vec<u8>, String>,
+    ) -> Vec<(String, Result<PathBuf, String>)> {
+        if public_key.is_none() {
+            return Vec::new();
+        }
+        let mut results = Vec::new();
+        for package in self.candidates(has_grammar) {
+            let mut done = read_names(self.done_file);
+            done.push(package.language.clone());
+            write_names(self.done_file, &done);
+            let installed = fetch(&package)
+                .and_then(|bytes| verify(&bytes, &package, public_key).map(|()| bytes))
+                .and_then(|bytes| install(&bytes, &package, self.grammars_dir));
+            results.push((package.language.clone(), installed));
+        }
+        results
+    }
+}
+
+/// Downloads a package for the first-launch install, with the same time limit as one asked for.
+pub fn fetch_package(package: &Package) -> Result<Vec<u8>, String> {
+    let url = package
+        .url
+        .as_deref()
+        .ok_or_else(|| format!("{}: the index has no download for it", package.language))?;
+    download(url, Duration::from_secs(120))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,5 +627,65 @@ mod tests {
             now + INDEX_MAX_AGE + Duration::from_secs(60)
         ));
         assert_eq!(load_index(temp.path()).packages.len(), 0);
+    }
+
+    #[test]
+    fn recently_opened_languages_without_a_grammar_install_once() {
+        let temp = tempfile::tempdir().expect("temp");
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let bytes = archive(
+            temp.path(),
+            &[
+                ("grammar.wasm", "wasm"),
+                ("language.toml", "name = \"OCaml\"\ngrammar = \"ocaml\"\n"),
+            ],
+        );
+        let ocaml = package(&bytes, &key);
+        let mut kotlin = ocaml.clone();
+        kotlin.id = "kotlin".into();
+        kotlin.language = "Kotlin".into();
+        let index = Index {
+            version: 1,
+            packages: vec![ocaml.clone(), kotlin],
+        };
+        let grammars_dir = temp.path().join("grammars");
+        let done_file = temp.path().join("auto-installed.json");
+        let auto = AutoInstall {
+            grammars_dir: &grammars_dir,
+            index: &index,
+            recent: vec!["Rust".into(), "OCaml".into(), "Kotlin".into(), "Lua".into()],
+            dismissed: ["Kotlin".to_string()].into_iter().collect(),
+            done_file: &done_file,
+        };
+        let has_grammar = |language: &str| language == "Rust";
+        assert!(
+            auto.run(has_grammar, None, |_| Ok(bytes.clone()))
+                .is_empty(),
+            "nothing without a key"
+        );
+        let names: Vec<String> = auto
+            .candidates(has_grammar)
+            .into_iter()
+            .map(|package| package.language)
+            .collect();
+        assert_eq!(
+            names,
+            ["OCaml"],
+            "Rust has one, Kotlin was turned off, Lua has no package"
+        );
+        let public = public(&key);
+        let results = auto.run(has_grammar, Some(&public), |_| Ok(bytes.clone()));
+        assert_eq!(results.len(), 1);
+        let folder = results[0].1.clone().expect("installed");
+        assert!(folder.join("grammar.wasm").is_file());
+        assert!(is_installed(&grammars_dir, &ocaml));
+        assert!(auto
+            .run(has_grammar, Some(&public), |_| Ok(bytes.clone()))
+            .is_empty());
+        std::fs::remove_dir_all(&grammars_dir).expect("uninstall");
+        assert!(
+            auto.candidates(has_grammar).is_empty(),
+            "removed by hand, not installed again"
+        );
     }
 }

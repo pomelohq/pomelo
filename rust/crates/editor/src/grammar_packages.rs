@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::highlight::{native_highlights, native_injections, Lang};
+use crate::highlight::{native_queries, Lang};
+use crate::language::{BracketPair, IndentRules, LanguageConfig};
 use crate::registry::{language_registry, LanguageMatcher, LanguageQueries, LanguageRegistry};
 
 #[derive(Deserialize)]
@@ -19,7 +20,147 @@ struct PackageConfig {
     path_suffixes: Vec<String>,
     #[serde(default)]
     first_line_pattern: Option<String>,
+    #[serde(flatten)]
+    editing: Option<EditingConfig>,
 }
+
+/// How a package's language is edited, as `language.toml` spells it: comment markers, bracket pairs and the
+/// line-based indent hints.
+#[derive(Debug, Deserialize, PartialEq, serde::Serialize)]
+pub struct EditingConfig {
+    line_comments: Vec<String>,
+    #[serde(default)]
+    block_comment: Option<(String, String)>,
+    autoclose_before: String,
+    brackets: Vec<PackageBracket>,
+    #[serde(default)]
+    increase_indent_pattern: Option<String>,
+    #[serde(default)]
+    decrease_indent_pattern: Option<String>,
+    #[serde(default)]
+    decrease_indent_patterns: Vec<DecreaseAfter>,
+    indent_from_last_non_blank_line: bool,
+    snippet_scope: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, serde::Serialize)]
+struct PackageBracket {
+    start: String,
+    end: String,
+    close: bool,
+    surround: bool,
+    newline: bool,
+    /// Scopes where the pair is off: `string`, `comment`.
+    #[serde(default)]
+    not_in: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, serde::Serialize)]
+struct DecreaseAfter {
+    pattern: String,
+    valid_after: Vec<String>,
+}
+
+impl EditingConfig {
+    pub fn from_native(config: &LanguageConfig, snippet_scope: &str) -> Self {
+        let indent = config.indent;
+        Self {
+            line_comments: config.line_comments.iter().map(|c| c.to_string()).collect(),
+            block_comment: config
+                .block_comment
+                .map(|(start, end)| (start.to_string(), end.to_string())),
+            autoclose_before: config.autoclose_before.to_string(),
+            brackets: config
+                .brackets
+                .iter()
+                .map(|pair| PackageBracket {
+                    start: pair.start.to_string(),
+                    end: pair.end.to_string(),
+                    close: pair.close,
+                    surround: pair.surround,
+                    newline: pair.newline,
+                    not_in: [
+                        pair.not_in_string.then_some("string"),
+                        pair.not_in_comment.then_some("comment"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(str::to_string)
+                    .collect(),
+                })
+                .collect(),
+            increase_indent_pattern: indent.increase.map(str::to_string),
+            decrease_indent_pattern: indent.decrease.map(str::to_string),
+            decrease_indent_patterns: indent
+                .decrease_after
+                .iter()
+                .map(|(pattern, valid_after)| DecreaseAfter {
+                    pattern: pattern.to_string(),
+                    valid_after: valid_after.iter().map(|name| name.to_string()).collect(),
+                })
+                .collect(),
+            indent_from_last_non_blank_line: indent.using_last_non_empty_line,
+            snippet_scope: snippet_scope.to_string(),
+        }
+    }
+
+    /// The config as the editor holds it. Its text is kept for the rest of the run: a language's config is
+    /// read once per package registration, and the editor's config borrows its strings for good.
+    fn into_language(self) -> (LanguageConfig, &'static str) {
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let brackets: Vec<BracketPair> = self
+            .brackets
+            .into_iter()
+            .map(|pair| BracketPair {
+                start: leak(pair.start),
+                end: leak(pair.end),
+                close: pair.close,
+                surround: pair.surround,
+                newline: pair.newline,
+                not_in_string: pair.not_in.iter().any(|scope| scope == "string"),
+                not_in_comment: pair.not_in.iter().any(|scope| scope == "comment"),
+            })
+            .collect();
+        let line_comments: Vec<&'static str> = self.line_comments.into_iter().map(leak).collect();
+        let decrease_after: Vec<(&'static str, &'static [&'static str])> = self
+            .decrease_indent_patterns
+            .into_iter()
+            .map(|after| {
+                let names: Vec<&'static str> = after.valid_after.into_iter().map(leak).collect();
+                (leak(after.pattern), &*Box::leak(names.into_boxed_slice()))
+            })
+            .collect();
+        let config = LanguageConfig {
+            brackets: Box::leak(brackets.into_boxed_slice()),
+            autoclose_before: leak(self.autoclose_before),
+            line_comments: Box::leak(line_comments.into_boxed_slice()),
+            block_comment: self
+                .block_comment
+                .map(|(start, end)| (leak(start), leak(end))),
+            indent: IndentRules {
+                increase: self.increase_indent_pattern.map(leak),
+                decrease: self.decrease_indent_pattern.map(leak),
+                decrease_after: Box::leak(decrease_after.into_boxed_slice()),
+                using_last_non_empty_line: self.indent_from_last_non_blank_line,
+            },
+        };
+        (config, leak(self.snippet_scope))
+    }
+
+    /// The fields as `language.toml` lines.
+    pub fn to_toml(&self) -> Result<String, String> {
+        toml::to_string(self).map_err(|error| error.to_string())
+    }
+}
+
+/// The query files a package can ship, and what each one is to the editor.
+pub const QUERY_FILES: [&str; 5] = [
+    "highlights.scm",
+    "injections.scm",
+    "outline.scm",
+    "indents.scm",
+    "overrides.scm",
+];
 
 pub fn grammars_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
@@ -112,31 +253,72 @@ fn register_package(registry: &mut LanguageRegistry, package: &Path) -> Result<(
     let grammar: Arc<str> = config.grammar.into();
     registry.register_wasm_grammars([(grammar.clone(), wasm)]);
     let folder = package.to_path_buf();
+    let editing = std::sync::Mutex::new(config.editing);
     registry.register_language(
         lang,
         matcher,
         Some(grammar),
         false,
-        Arc::new(move || package_queries(&folder, lang)),
+        Arc::new(move || {
+            let editing = editing.lock().ok().and_then(|mut editing| editing.take());
+            package_queries(&folder, lang, editing)
+        }),
     );
     Ok(())
 }
 
-/// The package's queries; one it doesn't ship falls back to the one compiled in for its language.
-fn package_queries(folder: &Path, lang: Lang) -> LanguageQueries {
+/// The package's queries and editing config; anything it doesn't ship falls back to what is compiled in for
+/// its language.
+fn package_queries(folder: &Path, lang: Lang, editing: Option<EditingConfig>) -> LanguageQueries {
+    let native = native_queries(lang);
     let read = |name: &str| -> Option<Arc<str>> {
         std::fs::read_to_string(folder.join(name))
             .ok()
             .map(Into::into)
     };
+    let (config, snippet_scope) = editing
+        .map(EditingConfig::into_language)
+        .unwrap_or((native.config, native.snippet_scope));
     LanguageQueries {
-        highlights: read("highlights.scm").unwrap_or_else(|| native_highlights(lang).into()),
-        injections: read("injections.scm").or_else(|| native_injections(lang).map(Into::into)),
+        highlights: read("highlights.scm").unwrap_or(native.highlights),
+        injections: read("injections.scm").or(native.injections),
+        outline: read("outline.scm").or(native.outline),
+        indents: read("indents.scm").or(native.indents),
+        overrides: read("overrides.scm").or(native.overrides),
+        config,
+        snippet_scope,
     }
 }
 
 /// What `highlights` captures in `text` parsed with `grammar`: each capture's byte range and name, in order.
 pub fn highlight_captures(
+    grammar: &tree_sitter::Language,
+    highlights: &str,
+    text: &str,
+) -> Result<Vec<(std::ops::Range<usize>, String)>, String> {
+    query_captures(grammar, highlights, text)
+}
+
+/// The syntax tree `grammar` gives `text`, written out: two grammars that agree on it fold, match brackets
+/// and indent alike.
+pub fn syntax_tree(grammar: &tree_sitter::Language, text: &str) -> Result<String, String> {
+    let tree = crate::parsers::with_parser(|parser| {
+        parser
+            .set_language(grammar)
+            .map_err(|error| error.to_string())?;
+        parser
+            .parse(text, None)
+            .ok_or_else(|| "the parse gave no tree".to_string())
+    })?;
+    Ok(tree.root_node().to_sexp())
+}
+
+pub fn query_compiles(grammar: &tree_sitter::Language, query: &str) -> bool {
+    tree_sitter::Query::new(grammar, query).is_ok()
+}
+
+/// What `query` captures in `text` parsed with `grammar`: each capture's byte range and name, in order.
+pub fn query_captures(
     grammar: &tree_sitter::Language,
     highlights: &str,
     text: &str,
@@ -263,7 +445,80 @@ mod tests {
         let mut registry = LanguageRegistry::default();
         assert_eq!(register_packages(&mut registry, temp.path()), 1);
         let queries = registry.queries(Lang::Json).expect("queries");
-        assert_eq!(&*queries.highlights, native_highlights(Lang::Json));
+        assert_eq!(
+            &*queries.highlights,
+            crate::highlight::native_highlights(Lang::Json)
+        );
+    }
+
+    #[test]
+    fn every_languages_editing_config_round_trips_through_language_toml() {
+        let embedded = [Lang::MarkdownInline, Lang::Regex, Lang::JsDoc];
+        for lang in Lang::LANGUAGES.iter().chain(&embedded).copied() {
+            let native = crate::language::native_config(lang);
+            let scope = crate::snippet::native_snippet_scope(lang);
+            let text = format!(
+                "name = \"{}\"\ngrammar = \"x\"\n{}",
+                lang.name(),
+                EditingConfig::from_native(&native, scope)
+                    .to_toml()
+                    .expect("toml")
+            );
+            let parsed: PackageConfig = toml::from_str(&text).expect("parse");
+            let (config, snippet_scope) = parsed.editing.expect("editing fields").into_language();
+            assert_eq!(config, native, "{lang:?}");
+            assert_eq!(snippet_scope, scope, "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn a_package_supplies_every_query_and_its_editing_config() {
+        let temp = tempfile::tempdir().expect("temp");
+        install(temp.path(), "1.0.0", Some("(string) @string\n"));
+        let package = temp.path().join("json").join("1.0.0");
+        std::fs::write(package.join("outline.scm"), "(pair key: (_) @name) @item\n")
+            .expect("outline");
+        std::fs::write(package.join("indents.scm"), "(object \"}\" @end) @indent\n")
+            .expect("indents");
+        std::fs::write(package.join("overrides.scm"), "(string) @string\n").expect("overrides");
+        let mut text = std::fs::read_to_string(package.join("language.toml")).expect("config");
+        let mut editing =
+            EditingConfig::from_native(&crate::language::native_config(Lang::Json), "json");
+        editing.line_comments = vec!["## ".into()];
+        text.push_str(&editing.to_toml().expect("toml"));
+        std::fs::write(package.join("language.toml"), text).expect("config");
+        let mut registry = LanguageRegistry::default();
+        assert_eq!(register_packages(&mut registry, temp.path()), 1);
+        let queries = registry.queries(Lang::Json).expect("queries");
+        assert_eq!(
+            queries.outline.as_deref(),
+            Some("(pair key: (_) @name) @item\n")
+        );
+        assert_eq!(
+            queries.indents.as_deref(),
+            Some("(object \"}\" @end) @indent\n")
+        );
+        assert_eq!(queries.overrides.as_deref(), Some("(string) @string\n"));
+        assert_eq!(queries.config.line_comments, ["## "]);
+        assert_eq!(
+            queries.config.brackets,
+            crate::language::native_config(Lang::Json).brackets
+        );
+        assert_eq!(queries.snippet_scope, "json");
+    }
+
+    #[test]
+    fn a_package_without_editing_fields_edits_like_the_built_in_language() {
+        let temp = tempfile::tempdir().expect("temp");
+        install(temp.path(), "1.0.0", None);
+        let mut registry = LanguageRegistry::default();
+        assert_eq!(register_packages(&mut registry, temp.path()), 1);
+        let queries = registry.queries(Lang::Json).expect("queries");
+        assert_eq!(queries.config, crate::language::native_config(Lang::Json));
+        assert_eq!(
+            queries.outline.as_deref(),
+            crate::outline::native_outline(Lang::Json)
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 name: Grammars
 
-# Builds the grammar packages the app downloads and checks each highlights its sample exactly like the compiled-in
-# grammar. Publishing is manual: run it with publish=true to sign the index and put the packages in the one
+# Builds the grammar packages the app downloads and checks each one reads its sample exactly like the compiled-in
+# language: highlights, the syntax tree, every other query it uses, and its editing config. Publishing is manual: run it with publish=true to sign the index and put the packages in the one
 # `grammars` release, updated in place.
 on:
   workflow_dispatch:
@@ -14,12 +14,16 @@ on:
     paths:
       - 'rust/grammars/**'
       - 'rust/crates/grammar_packager/**'
+      - 'rust/crates/editor/queries/**'
+      - 'rust/crates/editor/src/**'
       - '.github/workflows/grammars.yml'
   push:
     branches: [main]
     paths:
       - 'rust/grammars/**'
       - 'rust/crates/grammar_packager/**'
+      - 'rust/crates/editor/queries/**'
+      - 'rust/crates/editor/src/**'
       - '.github/workflows/grammars.yml'
 
 permissions:

@@ -552,7 +552,8 @@ impl Syntax {
     }
 }
 
-fn override_patterns(lang: Lang) -> Option<&'static str> {
+/// The override query compiled into the app for `lang`.
+pub fn native_overrides(lang: Lang) -> Option<&'static str> {
     Some(match lang {
         Lang::Rust => include_str!("../queries/rust/overrides.scm"),
         Lang::JavaScript => include_str!("../queries/javascript/overrides.scm"),
@@ -583,7 +584,12 @@ struct OverrideQuery {
 
 impl OverrideQuery {
     fn new(lang: Lang, language: &Language) -> Option<Self> {
-        let query = Query::new(language, override_patterns(lang)?).ok()?;
+        let patterns = crate::registry::language_registry()
+            .read()
+            .ok()?
+            .queries(lang)?
+            .overrides?;
+        let query = Query::new(language, &patterns).ok()?;
         let captures = query
             .capture_names()
             .iter()
@@ -942,7 +948,7 @@ mod scope_tests {
             Lang::Html,
         ] {
             let (language, _) = grammar(lang).unwrap();
-            let source = override_patterns(lang).unwrap();
+            let source = native_overrides(lang).unwrap();
             if let Err(error) = Query::new(&language, source) {
                 panic!("{source}: {error}");
             }

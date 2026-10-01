@@ -636,12 +636,32 @@ pub(crate) fn native_highlights(lang: Lang) -> &'static str {
     }
 }
 
+/// Everything compiled into the app that `lang` is edited with besides its grammar.
+pub(crate) fn native_queries(lang: Lang) -> LanguageQueries {
+    LanguageQueries {
+        highlights: native_highlights(lang).into(),
+        injections: native_injections(lang).map(Into::into),
+        outline: crate::outline::native_outline(lang).map(Into::into),
+        indents: Some(crate::indent::native_indents(lang))
+            .filter(|patterns| !patterns.is_empty())
+            .map(Into::into),
+        overrides: crate::syntax::native_overrides(lang).map(Into::into),
+        config: crate::language::native_config(lang),
+        snippet_scope: crate::snippet::native_snippet_scope(lang),
+    }
+}
+
 /// What a grammar package for `lang` takes over from the language compiled in, so the two parse, highlight and
 /// detect files alike.
 pub struct BuiltinLanguage {
     pub grammar: Option<tree_sitter::Language>,
     pub highlights: &'static str,
     pub injections: Option<&'static str>,
+    pub outline: Option<&'static str>,
+    pub indents: Option<&'static str>,
+    pub overrides: Option<&'static str>,
+    pub config: crate::language::LanguageConfig,
+    pub snippet_scope: &'static str,
     pub path_suffixes: &'static [&'static str],
     pub first_line_pattern: Option<&'static str>,
 }
@@ -651,6 +671,11 @@ pub fn builtin_language(lang: Lang) -> BuiltinLanguage {
         grammar: native_grammar(lang),
         highlights: native_highlights(lang),
         injections: native_injections(lang),
+        outline: crate::outline::native_outline(lang),
+        indents: Some(crate::indent::native_indents(lang)).filter(|patterns| !patterns.is_empty()),
+        overrides: crate::syntax::native_overrides(lang),
+        config: crate::language::native_config(lang),
+        snippet_scope: crate::snippet::native_snippet_scope(lang),
         path_suffixes: PATH_SUFFIXES
             .iter()
             .find(|(each, _)| *each == lang)
@@ -725,10 +750,7 @@ fn register_builtin(
         },
         grammar,
         hidden,
-        Arc::new(move || LanguageQueries {
-            highlights: native_highlights(lang).into(),
-            injections: native_injections(lang).map(Into::into),
-        }),
+        Arc::new(move || native_queries(lang)),
     );
 }
 

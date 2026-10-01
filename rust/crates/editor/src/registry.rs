@@ -16,11 +16,33 @@ pub struct LanguageMatcher {
     pub first_line: Option<regex::Regex>,
 }
 
-/// The queries a grammar is read with.
+/// Everything a language is edited with besides its grammar: the queries the grammar is read with and the
+/// editing config, loaded together from wherever the language came from.
 #[derive(Clone, Debug)]
 pub struct LanguageQueries {
     pub highlights: Arc<str>,
     pub injections: Option<Arc<str>>,
+    pub outline: Option<Arc<str>>,
+    /// Indent patterns beyond the bracket pairs every grammar shares.
+    pub indents: Option<Arc<str>>,
+    pub overrides: Option<Arc<str>>,
+    pub config: crate::language::LanguageConfig,
+    pub snippet_scope: &'static str,
+}
+
+impl LanguageQueries {
+    /// Only a highlight query, with plain-text editing.
+    pub fn highlights_only(highlights: Arc<str>) -> Self {
+        Self {
+            highlights,
+            injections: None,
+            outline: None,
+            indents: None,
+            overrides: None,
+            config: crate::language::native_config(Lang::PlainText),
+            snippet_scope: crate::snippet::native_snippet_scope(Lang::PlainText),
+        }
+    }
 }
 
 pub type QueryLoader = Arc<dyn Fn() -> LanguageQueries + Send + Sync>;
@@ -181,6 +203,15 @@ impl LanguageRegistry {
                     .is_some_and(|pattern| pattern.is_match(first_line))
             })
             .map_or(Lang::PlainText, |language| language.lang)
+    }
+
+    /// Whether `lang` has a grammar to parse it with, compiled in or from a package (loaded or not).
+    pub fn has_grammar(&self, lang: Lang) -> bool {
+        self.languages
+            .iter()
+            .find(|language| language.lang == lang)
+            .and_then(|language| language.grammar.as_ref())
+            .is_some_and(|name| self.grammars.contains_key(name))
     }
 
     /// `lang`'s queries, loaded on first use.
@@ -358,10 +389,7 @@ mod tests {
 
     fn queries(highlights: &str) -> QueryLoader {
         let highlights: Arc<str> = highlights.into();
-        Arc::new(move || LanguageQueries {
-            highlights: highlights.clone(),
-            injections: None,
-        })
+        Arc::new(move || LanguageQueries::highlights_only(highlights.clone()))
     }
 
     fn sample() -> LanguageRegistry {
@@ -450,10 +478,7 @@ mod tests {
             false,
             Arc::new(|| {
                 LOADS.fetch_add(1, Ordering::SeqCst);
-                LanguageQueries {
-                    highlights: "(identifier) @variable".into(),
-                    injections: None,
-                }
+                LanguageQueries::highlights_only("(identifier) @variable".into())
             }),
         );
         assert!(!registry.queries_loaded(Lang::Rust));
@@ -475,5 +500,13 @@ mod tests {
         let before = registry.version();
         registry.set_file_types(Vec::new());
         assert!(registry.version() > before);
+    }
+
+    #[test]
+    fn a_language_has_a_grammar_only_when_one_is_registered_for_it() {
+        let registry = sample();
+        assert!(registry.has_grammar(Lang::Rust));
+        assert!(!registry.has_grammar(Lang::Toml), "no grammar named for it");
+        assert!(!registry.has_grammar(Lang::Go), "not registered at all");
     }
 }

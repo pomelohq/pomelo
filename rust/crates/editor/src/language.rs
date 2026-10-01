@@ -31,6 +31,7 @@ pub struct Scope {
     pub in_comment: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LanguageConfig {
     pub brackets: &'static [BracketPair],
     /// Besides whitespace, the chars an opening bracket auto-closes in front of.
@@ -41,7 +42,7 @@ pub struct LanguageConfig {
 }
 
 /// Line-level indentation hints layered on the syntax-tree indent query.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndentRules {
     /// A matching line indents the next one.
     pub increase: Option<&'static str>,
@@ -298,7 +299,17 @@ const HASH_COMMENTS: &[&str] = &["# "];
 const DASH_COMMENTS: &[&str] = &["-- "];
 const SLASH_BLOCK: Option<(&str, &str)> = Some(("/*", "*/"));
 
+/// `lang`'s editing config, from the grammar package that provides it or the one compiled in.
 pub fn config(lang: Lang) -> LanguageConfig {
+    crate::registry::language_registry()
+        .read()
+        .ok()
+        .and_then(|registry| registry.queries(lang))
+        .map_or_else(|| native_config(lang), |queries| queries.config)
+}
+
+/// The editing config compiled into the app for `lang`.
+pub fn native_config(lang: Lang) -> LanguageConfig {
     let code = |brackets, line_comments, block_comment| LanguageConfig {
         brackets,
         autoclose_before: CODE_AUTOCLOSE_BEFORE,
