@@ -42,6 +42,9 @@ pub struct EventLine {
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification: Option<String>,
+    /// How long the transcript was when the event fired, so a turn is the slice between two events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_bytes: Option<u64>,
     /// Extra fields of the event, such as a permission request's id and input.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub detail: Value,
@@ -206,6 +209,17 @@ pub fn record_event(
             .or_else(|| current.as_ref().map(|current| current.state.clone()))
             .unwrap_or_else(|| AgentState::Idle.as_str().to_string());
         let t_ms = now_ms();
+        let transcript = if event.transcript.is_empty() {
+            current
+                .as_ref()
+                .map(|current| current.transcript.clone())
+                .unwrap_or_default()
+        } else {
+            event.transcript.clone()
+        };
+        let transcript_bytes = (!transcript.is_empty())
+            .then(|| std::fs::metadata(&transcript).ok().map(|meta| meta.len()))
+            .flatten();
         let line = EventLine {
             t_ms,
             event: event.event.clone(),
@@ -213,6 +227,7 @@ pub fn record_event(
             turn,
             tool: event.tool.clone(),
             notification: event.notification.clone(),
+            transcript_bytes,
             detail: event.detail.clone(),
         };
         let mut text = serde_json::to_string(&line).map_err(std::io::Error::other)?;
@@ -231,13 +246,7 @@ pub fn record_event(
             event_ms: t_ms,
             turn,
             turn_state,
-            transcript: if event.transcript.is_empty() {
-                current
-                    .map(|current| current.transcript)
-                    .unwrap_or_default()
-            } else {
-                event.transcript.clone()
-            },
+            transcript,
         };
         let blob = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
         pom_paths::write_atomic(&dir.join(STATE_FILE), &blob, 0o644)?;
