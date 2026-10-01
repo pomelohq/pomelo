@@ -4,6 +4,45 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-10-01
+
+### Added
+- Settings > Languages & Tools: turn language servers on or off and choose them per language. (#146)
+- The status bar lists the running language servers with their progress, and downloads missing npm servers. (#147)
+- Each file runs every server its language uses, each in its project's own folder (nearest Gemfile, package.json, Cargo.toml...). (#157)
+- Tailwind CSS and ESLint language servers for web projects. (#157, #168)
+- Ruby files run solargraph, or ruby-lsp when chosen in settings. (#155)
+- A Project Diagnostics tab lists every error and warning; open it from the status bar or Cmd+Shift+M. (#156)
+- Language server messages and questions show as notifications; a too-large Ruby workspace offers to switch to ruby-lsp. (#161)
+- View Logs for each language server, a notice with the install command when one is missing, and a note when it can't go to a definition. (#166)
+- Preview tabs: a single click in the file tree opens an italic preview that the next one replaces; edit or double-click to keep it. (#165)
+- Editors get a breadcrumb bar with search and editor controls, and an optional minimap. (#141, #142, #145)
+- Cursor shape, blink and animation, the multi-cursor modifier and reduce motion are settings. (#136)
+- Shared service tabs show the status, image, port, connection URL and users above their logs. (#170)
+- Rarely used languages (Kotlin, Swift, OCaml, Lua and 17 more) install their highlighting on first use and update themselves. (#175, #178, #182)
+- Stop an agent from its tab's menu, and choose what closing an agent tab does. (#135)
+
+### Changed
+- The app is about 30 MB smaller, now that rare languages' grammars are downloads. (#178)
+- Edit in settings.json opens the file in a Pomelo tab, and hand edits apply as soon as you save. (#158, #159)
+- Settings keep keys they don't know, so an older version no longer drops a newer version's settings. (#162)
+- Clicking another workspace's ticket switches to that workspace first; only the ticket status opens it. (#165, #171)
+- Long tab titles trail off, and file finder paths shorten to fit their row. (#163, #165)
+- Highlighting follows each grammar's own queries, and the editor's text size is set apart from the UI's. (#138, #140)
+- Status bar buttons can each be turned off in Settings, and every font setting sits under Appearance. (#139, #143)
+- Completions fade a long label's tail and show the details a server adds. (#151)
+
+### Fixed
+- The Start, Stop and Restart buttons of a service tab could stop responding. (#169)
+- Typing into the command palette went to the console of the tab under it. (#160)
+- Holding Cmd+V, Cmd+X or Cmd+Z stuttered instead of repeating smoothly. (#152)
+- Shift+click extends the selection, and Cmd+click follows a link on release instead of selecting it. (#153, #154)
+- Items of a submenu opened to the left could not be clicked. (#148)
+- Gitignored files showed a git gutter. (#150)
+- Indent guides drew over the gutter when the editor scrolled sideways. (#137)
+- A window moved to another display redraws at that display's scale. (#134)
+- Updates install by rename and say why an install failed. (#133)
+
 ## [0.7.7] - 2026-09-30
 
 ### Added
