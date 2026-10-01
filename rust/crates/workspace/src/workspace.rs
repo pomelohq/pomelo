@@ -93,6 +93,16 @@ pub const FUNC_VIEW_BASE: u64 = 10000; // click ids owned by a feature's `Functi
 /// Click ids owned by the terminal panel's pane group, above every other range.
 pub const TERMINAL_VIEW_BASE: u64 = 1_000_000_000;
 
+/// Where tabs' own toolbar ids start, above every panel's and pane group's ids.
+pub const ITEM_TOOLBAR_IDS: u64 = 1 << 50;
+
+/// A block of `count` toolbar ids no other tab holds: every kind of tab takes its block from here, so a
+/// click on one tab's toolbar never reaches another's.
+pub fn toolbar_ids(count: u64) -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(ITEM_TOOLBAR_IDS);
+    NEXT.fetch_add(count, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn is_terminal_id(id: u64) -> bool {
     (TERMINAL_VIEW_BASE..TERMINAL_VIEW_BASE + pane_group_view::ID_SPAN).contains(&id)
 }
@@ -3847,4 +3857,18 @@ pub fn syntax_theme() -> editor::Theme {
         theme.syntax.insert(capture, rgb(color));
     }
     theme
+}
+
+#[cfg(test)]
+mod toolbar_id_tests {
+    use super::*;
+
+    #[test]
+    fn every_tab_gets_its_own_block_of_toolbar_ids() {
+        let first = toolbar_ids(64);
+        let second = toolbar_ids(8);
+        let third = toolbar_ids(64);
+        assert!(first >= ITEM_TOOLBAR_IDS);
+        assert!(second >= first + 64 && third >= second + 8);
+    }
 }

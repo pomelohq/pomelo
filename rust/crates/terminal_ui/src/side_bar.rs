@@ -7,7 +7,6 @@ use crate::item::{ConsoleAction, ConsoleToolbar};
 
 const SEND: u64 = 0;
 /// Ids far above every panel's and pane group's.
-const IDS: u64 = 1 << 51;
 const IDS_PER_BAR: u64 = 8;
 
 const ARCHIVE: u64 = 1;
@@ -28,7 +27,6 @@ pub struct SideAgentBar {
 
 impl SideAgentBar {
     pub fn new(
-        number: u64,
         role_icon: IconKind,
         role: &str,
         read_only: bool,
@@ -37,7 +35,7 @@ impl SideAgentBar {
         last_answer: Box<dyn Fn() -> Option<String>>,
     ) -> SideAgentBar {
         SideAgentBar {
-            base: IDS + number * IDS_PER_BAR,
+            base: workspace::toolbar_ids(IDS_PER_BAR),
             role_icon,
             role: role.to_string(),
             read_only,
@@ -184,7 +182,6 @@ mod tests {
 
     fn bar() -> SideAgentBar {
         SideAgentBar::new(
-            0,
             IconKind::Wrench,
             "Fix",
             false,
@@ -210,7 +207,8 @@ mod tests {
         let narrow = texts(330.0);
         assert!(!narrow.iter().any(|t| t == "Send to main"), "{narrow:?}");
         let width = 330.0;
-        let node = bar().render(width, 0);
+        let bar = bar();
+        let node = bar.render(width, 0);
         let painted = ui::render(
             &node,
             ui::Rect::new(0.0, 0.0, width, 40.0, ui::Rgba::TRANSPARENT),
@@ -218,7 +216,7 @@ mod tests {
         let archive = painted
             .hits
             .iter()
-            .find(|(_, id)| *id == IDS + ARCHIVE)
+            .find(|(_, id)| *id == bar.base + ARCHIVE)
             .expect("archive");
         assert!(
             archive.0.x + archive.0.w <= width,

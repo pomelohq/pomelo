@@ -1166,7 +1166,6 @@ impl App {
         }
         let (answer_home, answer_cwd) = (home.clone(), cwd.clone());
         let bar = terminal_ui::SideAgentBar::new(
-            number,
             icon,
             role.title(),
             read_only,
@@ -1229,11 +1228,9 @@ impl App {
             "review" => (ui::IconKind::Search, "Review"),
             _ => (ui::IconKind::HelpCircle, "Ask"),
         };
-        let number = self.next_agent_item;
         let (answer_home, answer_cwd, answer_session) =
             (home.clone(), cwd.clone(), record.session.clone());
         let bar = terminal_ui::SideAgentBar::new(
-            number,
             icon,
             role,
             read_only,

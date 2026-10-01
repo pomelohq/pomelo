@@ -274,10 +274,8 @@ fn colored_label(text: &str, colors: &[(Range<usize>, Rgba)], size: f32, plain: 
 /// The breadcrumb symbols and the (buffer version, caret) they were found for.
 type Crumbs = ((u64, usize), Vec<outline_view::Symbol>);
 
-/// Each editor's toolbar ids, clear of the other tabs' toolbars (which start at 1 << 50).
 fn next_toolbar_ids() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    (1 << 51) + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) * TOOLBAR_IDS_PER_EDITOR
+    workspace::toolbar_ids(TOOLBAR_IDS_PER_EDITOR)
 }
 
 const TOOLBAR_IDS_PER_EDITOR: u64 = 64;

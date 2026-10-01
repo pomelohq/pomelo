@@ -37,8 +37,6 @@ const MODE_BASE: u64 = 16;
 const PROFILE_BASE: u64 = 32;
 const CONSOLE: u64 = 63;
 const IDS_PER_TAB: u64 = 64;
-/// Toolbar ids sit far above every panel's and pane group's ids.
-const TOOLBAR_IDS: u64 = 1 << 50;
 
 /// What the console of a service's tab shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -93,9 +91,8 @@ pub(crate) fn open_tab(
     shared: Arc<Mutex<Shared>>,
     target: ServiceTarget,
     root: PathBuf,
-    number: u64,
 ) -> Option<Box<dyn workspace::Item>> {
-    let mut item = ServiceItem::new(context, shared, target, root, number);
+    let mut item = ServiceItem::new(context, shared, target, root);
     item.respawn();
     Some(Box::new(item))
 }
@@ -112,7 +109,7 @@ pub(crate) fn preview(
     width: f32,
     height: f32,
 ) -> Node {
-    let mut item = ServiceItem::new(context, shared, target, root, 0);
+    let mut item = ServiceItem::new(context, shared, target, root);
     item.lines = lines
         .iter()
         .enumerate()
@@ -131,11 +128,10 @@ impl ServiceItem {
         shared: Arc<Mutex<Shared>>,
         target: ServiceTarget,
         root: PathBuf,
-        number: u64,
     ) -> ServiceItem {
         let holder = context.runner.holder_name(&target);
         ServiceItem {
-            base: TOOLBAR_IDS + number * IDS_PER_TAB,
+            base: workspace::toolbar_ids(IDS_PER_TAB),
             showing: Showing::Leftover,
             terminal: None,
             console: None,

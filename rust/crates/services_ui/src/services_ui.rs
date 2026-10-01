@@ -1481,11 +1481,9 @@ impl ServicesPanel {
         let context = self.model.context.clone();
         let shared = self.model.shared.clone();
         let (target, root) = (target.clone(), self.root.clone());
-        let number = self.next_item;
-        self.next_item += 1;
         let id = tab::tab_id(holder);
         let open: Box<dyn FnOnce() -> Option<Box<dyn workspace::Item>>> =
-            Box::new(move || tab::open_tab(context, shared, target, root, number));
+            Box::new(move || tab::open_tab(context, shared, target, root));
         self.requests.push(if preview {
             PanelRequest::RevealPreview { id, open }
         } else {
