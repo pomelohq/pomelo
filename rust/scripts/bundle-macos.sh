@@ -64,12 +64,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# Grammar packages run as wasm compiled at runtime, which the hardened runtime refuses without these.
+ENTITLEMENTS="$(pwd)/scripts/Pomelo.entitlements"
 if [ -n "${SIGN_ID:-}" ]; then
   # Inner executables first: signing the bundle does not re-sign what it contains.
   for BIN in "$APP/Contents/MacOS/pom" "$APP/Contents/MacOS/pomelo"; do
-    codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$BIN" >&2
+    codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$BIN" >&2
   done
-  codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP" >&2
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$APP" >&2
   codesign --verify --strict --verbose=2 "$APP" >&2
 else
   # Seal the bundle ad hoc so macOS knows it by its bundle id: Notification Center ignores an unsealed app.

@@ -337,7 +337,7 @@ impl Injections {
         let included: Vec<tree_sitter::Range> =
             ranges.iter().map(|range| ts_range(rope, range)).collect();
         crate::parsers::with_parser(|parser| {
-            parser.set_language(&layer_grammar.language).ok()?;
+            crate::parsers::set_language(parser, &layer_grammar.language).ok()?;
             parser.set_included_ranges(&included).ok()?;
             parser.parse_with_options(
                 &mut |byte, _| chunk_from(rope, byte),
