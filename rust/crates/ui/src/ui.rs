@@ -1658,7 +1658,11 @@ impl UiRenderer {
                 None => return,
             },
         };
-        if width == 0 || height == 0 {
+        let side_limit = self.device.limits().max_texture_dimension_2d;
+        if width == 0 || height == 0 || width > side_limit || height > side_limit {
+            if width > side_limit || height > side_limit {
+                eprintln!("ui: a {width}x{height} image is past the GPU's {side_limit} px limit; not drawn");
+            }
             return;
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
