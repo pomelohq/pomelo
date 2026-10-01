@@ -24,7 +24,7 @@ pub use claude::{install_mcp, mcp_config_json, ClaudeHome, InstallError};
 pub use conversation::{
     WaitOutcome, WaitUntil, AWAITING_INPUT_EXIT, DIED_EXIT, NOT_SUBMITTED_EXIT, TIMEOUT_EXIT,
 };
-pub use drive::{split_handle, watch_line, Drive, DriveError, SessionView};
+pub use drive::{split_handle, watch_line, Drive, DriveError, SessionView, NEEDS_TRUST_EXIT};
 pub use driver::{driver, AgentDriver, ClaudeDriver, Keystrokes};
 pub use gate::{ApproveScope, Gate, Limits, Refusal, Workspace, REFUSED_EXIT};
 pub use hooks::{

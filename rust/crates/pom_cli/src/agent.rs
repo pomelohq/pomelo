@@ -166,6 +166,7 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
             args.allow(&[
                 "--role",
                 "--fresh",
+                "--trust",
                 "--prompt",
                 "--prompt-file",
                 "--system-prompt-file",
@@ -212,6 +213,7 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
                 system_prompt: read("--system-prompt-file")?,
                 prompt,
                 isolated: true,
+                trust: args.has("--trust"),
             };
             Ok((
                 AgentCommand::Start(StartRequest {

@@ -9,13 +9,16 @@ use pom_ptyhost::{SocketDir, SpawnRequest};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::driver::{driver, Keystrokes};
 use crate::gate::{Gate, Refusal};
 use crate::identity::{holder_role, workspace_prefix};
 use crate::launch::{claude_launch_with, fresh_launch, LaunchContext, LaunchOptions};
 use crate::sessions::{
-    events, now_ms, read_state, workspace_sessions, EventLine, SessionState, SCHEMA,
+    events, now_ms, read_state, record_event, workspace_sessions, EventLine, SessionEvent,
+    SessionState, TurnState, LAUNCHED_EVENT, NEEDS_TRUST_EVENT, NEEDS_TRUST_STATE, SCHEMA,
+    STARTING_STATE,
 };
-use crate::turns::{read_turns, RecordedTurn};
+use crate::turns::{read_turns, settle_transcript, RecordedTurn, SETTLE_CAP, SETTLE_QUIET};
 
 /// A working state no event refreshed for this long is reported stale.
 const STALE_AFTER_MS: u64 = 15 * 60 * 1000;
@@ -32,13 +35,24 @@ pub enum DriveError {
     NotFound(String),
     Invalid(String),
     Failed(String),
+    /// The agent waits at its "do you trust this folder" prompt and nothing answered it.
+    NeedsTrust(String),
 }
+
+/// `pom agent start` found the agent waiting at its folder trust prompt.
+pub const NEEDS_TRUST_EXIT: i32 = 7;
+/// How long `start` waits for a new session's first hook, answering a trust prompt meanwhile.
+const FIRST_HOOK_WAIT: Duration = Duration::from_secs(12);
+/// A starting session older than this whose terminal shows the trust prompt is reported as waiting on it.
+const TRUST_CHECK_AFTER_S: u64 = 2;
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(1);
 
 impl DriveError {
     pub fn exit_code(&self) -> i32 {
         match self {
             DriveError::Refused(_) => crate::gate::REFUSED_EXIT,
             DriveError::NotSubmitted(_) => crate::conversation::NOT_SUBMITTED_EXIT,
+            DriveError::NeedsTrust(_) => NEEDS_TRUST_EXIT,
             DriveError::NotFound(_) | DriveError::Invalid(_) | DriveError::Failed(_) => 1,
         }
     }
@@ -50,6 +64,7 @@ impl DriveError {
             DriveError::NotFound(_) => "not_found",
             DriveError::Invalid(_) => "invalid",
             DriveError::Failed(_) => "failed",
+            DriveError::NeedsTrust(_) => "needs_trust",
         }
     }
 
@@ -68,7 +83,8 @@ impl std::fmt::Display for DriveError {
             ),
             DriveError::NotFound(message)
             | DriveError::Invalid(message)
-            | DriveError::Failed(message) => write!(formatter, "{message}"),
+            | DriveError::Failed(message)
+            | DriveError::NeedsTrust(message) => write!(formatter, "{message}"),
         }
     }
 }
@@ -181,6 +197,16 @@ impl Drive {
                 None => views.push(view),
             }
         }
+        for view in &mut views {
+            let waiting = view.alive
+                && view.state == STARTING_STATE
+                && !view.session_id.is_empty()
+                && view.last_event_age_s >= TRUST_CHECK_AFTER_S;
+            if waiting && self.shows_trust_prompt(&view.holder, &view.driver) {
+                self.mark_needs_trust(&view.holder, &view.session_id, branch);
+                view.state = NEEDS_TRUST_STATE.into();
+            }
+        }
         let prefix = workspace_prefix(&self.project, branch);
         for (holder, _) in self.holders.holders() {
             if !holder.starts_with(&prefix) || views.iter().any(|view| view.holder == holder) {
@@ -254,6 +280,11 @@ impl Drive {
         if let Some(extra) = &options.extra_mcp_config {
             check_extra_mcp(extra)?;
         }
+        if options.trust && gate.caller().is_agent() {
+            return Err(DriveError::Invalid(
+                "only a person or an orchestrator can trust a folder for an agent".into(),
+            ));
+        }
         let options = &LaunchOptions {
             isolated: true,
             ..options.clone()
@@ -269,19 +300,23 @@ impl Drive {
             is_main,
             cwd,
         };
-        let launch = if fresh {
+        let (launch, session_id) = if fresh {
             if role == "claude" || !role_is_valid(role) {
                 return Err(DriveError::Invalid(format!(
                     "a fresh session needs its own --role (lowercase letters, digits, dashes), not {role:?}"
                 )));
             }
-            fresh_launch(&context, role, options).0
+            fresh_launch(&context, role, options)
         } else if role == "claude" {
-            claude_launch_with(&context, options)
+            (
+                claude_launch_with(&context, options),
+                crate::launch::session_id(&crate::launch::main_session_key(&context)),
+            )
         } else {
             return self.resolve(gate, role);
         };
         gate.target(&launch.holder)?;
+        let mut launched = false;
         if self.alive(&launch.holder) {
             if fresh {
                 return Err(DriveError::Invalid(format!(
@@ -303,6 +338,29 @@ impl Drive {
                 },
             )
             .map_err(|error| DriveError::Failed(format!("could not start {role}: {error}")))?;
+            // The agent reports its session only from its first hook, which a prompt it shows at start can hold
+            // off indefinitely: record what pom launched so ls, takeover and read find it meanwhile.
+            let identity = crate::identity::Identity::for_holder(
+                &launch.holder,
+                &self.project,
+                &workspace.branch,
+            );
+            let launch_event = SessionEvent {
+                session_id: session_id.clone(),
+                event: LAUNCHED_EVENT.into(),
+                transcript: crate::launch::expected_transcript_path(
+                    &self.home,
+                    &launch.cwd,
+                    &session_id,
+                )
+                .to_string_lossy()
+                .into_owned(),
+                ..SessionEvent::default()
+            };
+            if let Err(error) = record_event(&self.state, &identity, &launch_event) {
+                eprintln!("agents: recording the launch of {}: {error}", launch.holder);
+            }
+            launched = true;
             // Whoever starts a session drives it; a person takes it over from the app or with takeover.
             let role_name = holder_role(&launch.holder, &self.project, &workspace.branch)
                 .map_or_else(|| role.to_string(), |role| role.role);
@@ -323,6 +381,9 @@ impl Drive {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !self.alive(&holder) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
+        }
+        if launched {
+            self.await_first_hook(&holder, &session_id, &workspace.branch, options.trust)?;
         }
         let role_name = holder_role(&holder, &self.project, &workspace.branch)
             .map_or_else(|| role.to_string(), |role| role.role);
@@ -378,6 +439,81 @@ impl Drive {
         }
     }
 
+    /// Whether the session's terminal shows the agent's folder trust prompt.
+    fn shows_trust_prompt(&self, holder: &str, driver_name: &str) -> bool {
+        let Some(agent_driver) = driver(driver_name) else {
+            return false;
+        };
+        pom_ptyhost::snapshot(&self.holders, holder, SNAPSHOT_TIMEOUT)
+            .is_ok_and(|screen| agent_driver.waits_for_trust(&screen))
+    }
+
+    fn mark_needs_trust(&self, holder: &str, session_id: &str, branch: &str) {
+        let identity = crate::identity::Identity::for_holder(holder, &self.project, branch);
+        let event = SessionEvent {
+            session_id: session_id.to_string(),
+            event: NEEDS_TRUST_EVENT.into(),
+            ..SessionEvent::default()
+        };
+        if let Err(error) = record_event(&self.state, &identity, &event) {
+            eprintln!("agents: recording that {holder} waits for trust: {error}");
+        }
+    }
+
+    /// Types into a session as whoever holds its lease.
+    fn type_keys(&self, holder: &str, keys: &[Keystrokes]) -> Result<(), DriveError> {
+        let fail = |error: std::io::Error| {
+            DriveError::Failed(format!("could not type into {holder}: {error}"))
+        };
+        let lease = crate::lease::read_lease(&self.state, holder);
+        let mut connection = pom_ptyhost::connect_writer(&self.holders, holder).map_err(fail)?;
+        if lease.class != crate::lease::LeaseClass::Human {
+            connection.claim(&lease.token).map_err(fail)?;
+        }
+        for key in keys {
+            connection.input(&key.bytes).map_err(fail)?;
+            std::thread::sleep(Duration::from_millis(key.pause_ms));
+        }
+        Ok(())
+    }
+
+    /// Waits for a new session's first hook. The agent asks to trust a folder it has not seen before it runs
+    /// any: `trust` answers yes, otherwise the session is reported as waiting on it.
+    fn await_first_hook(
+        &self,
+        holder: &str,
+        session_id: &str,
+        branch: &str,
+        trust: bool,
+    ) -> Result<(), DriveError> {
+        let deadline = std::time::Instant::now() + FIRST_HOOK_WAIT;
+        let mut answered = false;
+        while std::time::Instant::now() < deadline {
+            let state = read_state(&self.state, session_id).map(|record| record.state);
+            if state
+                .as_deref()
+                .is_some_and(|state| state != STARTING_STATE && state != NEEDS_TRUST_STATE)
+                || !self.alive(holder)
+            {
+                return Ok(());
+            }
+            if !answered && self.shows_trust_prompt(holder, crate::identity::CLAUDE_DRIVER) {
+                if !trust {
+                    self.mark_needs_trust(holder, session_id, branch);
+                    return Err(DriveError::NeedsTrust(format!(
+                        "{holder} waits at the agent's \"trust this folder\" prompt: start it again with --trust to answer yes, or open it in Pomelo (or pom agent takeover) and answer it there"
+                    )));
+                }
+                let agent_driver = driver(crate::identity::CLAUDE_DRIVER)
+                    .ok_or_else(|| DriveError::Failed("no driver for the agent".into()))?;
+                self.type_keys(holder, &agent_driver.accept_trust())?;
+                answered = true;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        Ok(())
+    }
+
     /// The turns of a session `select` picks.
     pub fn read(
         &self,
@@ -390,6 +526,13 @@ impl Drive {
                 "{} has not reported a session yet (started before this version, or still starting)",
                 view.handle
             )));
+        }
+        if let Some(record) = read_state(&self.state, &view.session_id) {
+            let just_ended = record.turn_state == TurnState::Ended
+                && now_ms().saturating_sub(record.event_ms) < SETTLE_CAP.as_millis() as u64;
+            if just_ended && !record.transcript.is_empty() {
+                settle_transcript(Path::new(&record.transcript), SETTLE_QUIET, SETTLE_CAP);
+            }
         }
         Ok(read_turns(
             &self.state,

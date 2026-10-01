@@ -104,10 +104,11 @@ projects and machine
 agents (one workspace at a time; --json for stable output)
   agent ls [workspace] [--all-workspaces]
                      the workspace's agent sessions: role, state, turn, holder
-  agent start [workspace] [--role r] [--fresh] [--prompt text | --prompt-file f]
+  agent start [workspace] [--role r] [--fresh] [--trust] [--prompt text | --prompt-file f]
               [--system-prompt-file f] [--tools t] [--allowed-tools t] [--disallowed-tools t]
               [--permission-mode m] [--model m] [--extra-mcp-config f]
-                     start (or reuse) a session; --fresh starts role r on a new conversation
+                     start (or reuse) a session; --fresh starts role r on a new conversation;
+                     --trust says yes to the agent's prompt to trust the folder (else exit 7)
   agent read <workspace/role> [--turn n | --since n] [--full]
                      what the agent did in a turn (the last by default), from its transcript
   agent watch [workspace] [--from-start] [--timeout d]

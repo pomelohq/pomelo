@@ -9,7 +9,7 @@ mod session;
 
 pub use client::{
     attach, connect_writer, snapshot, spawn_holder, wait_for_holder, Attached, HolderConnection,
-    SpawnRequest,
+    SpawnRequest, INHERITED_SESSION_MARKERS,
 };
 pub use process::{
     ancestors, descendants, parent_pid, peer_pid, process_alive, CrashInfo, SocketDir,
