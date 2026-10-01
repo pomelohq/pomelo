@@ -2,6 +2,7 @@
 //! is the `pom.yml` above the current directory, the workspace comes from `--branch` or the
 //! `workspace--<branch>` folder the agent was started in, else the main one.
 
+mod agent_tools;
 mod config_files;
 mod protocol;
 mod tools;

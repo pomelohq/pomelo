@@ -3714,6 +3714,7 @@ name = "pom_mcp"
 version = "0.8.4"
 dependencies = [
  "libc",
+ "pom_agent",
  "pom_config",
  "pom_core",
  "pom_db",

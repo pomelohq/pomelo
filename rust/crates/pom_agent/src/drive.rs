@@ -303,6 +303,21 @@ impl Drive {
                 },
             )
             .map_err(|error| DriveError::Failed(format!("could not start {role}: {error}")))?;
+            // Whoever starts a session drives it; a person takes it over from the app or with takeover.
+            let role_name = holder_role(&launch.holder, &self.project, &workspace.branch)
+                .map_or_else(|| role.to_string(), |role| role.role);
+            crate::lease::set_lease(
+                &self.state,
+                &self.holders,
+                &self.project,
+                &workspace.branch,
+                &launch.holder,
+                &role_name,
+                crate::lease::Lease::for_caller(gate.caller()),
+            )
+            .map_err(|error| {
+                DriveError::Failed(format!("could not take the lease of {role}: {error}"))
+            })?;
         }
         let holder = launch.holder.clone();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);

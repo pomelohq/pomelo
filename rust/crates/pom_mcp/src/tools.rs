@@ -131,6 +131,20 @@ impl Workspace {
             .ok_or_else(|| format!("no database {name:?} in this branch (see db_list)"))
     }
 
+    pub(crate) fn config_for_agents(&self) -> Result<Config, String> {
+        self.config()
+    }
+
+    pub(crate) fn root(&self) -> PathBuf {
+        self.project_root()
+    }
+
+    pub(crate) fn is_main_workspace(&self) -> bool {
+        self.config()
+            .and_then(|config| self.entry(&config))
+            .is_ok_and(|entry| entry.is_main)
+    }
+
     fn config(&self) -> Result<Config, String> {
         Config::load(&self.config_path).map_err(|error| error.to_string())
     }
@@ -1095,6 +1109,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
         }),
     ));
 
+    tools.extend(crate::agent_tools::agent_tools(workspace));
     tools
 }
 
