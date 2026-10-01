@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 /// The public half of the key the published packages are signed with. None until it exists: downloads stay
 /// off then, so nothing unverified is ever installed.
-pub const GRAMMARS_PUBLIC_KEY: Option<&str> = None;
+pub const GRAMMARS_PUBLIC_KEY: Option<&str> = Some("ZZTOGrqGDRRuDi/xQcREy1p1JyD8zCQpWk4APNRuM5o=");
 
 /// The one grammars release, updated in place, so it never pushes app releases out of the updater's view.
 pub const INDEX_URL: &str =
@@ -132,7 +132,6 @@ fn download(url: &str, limit: Duration) -> Result<Vec<u8>, String> {
 /// Checks a downloaded archive against its sha256 and, with `public_key`, its signature; without a key
 /// nothing passes.
 pub fn verify(bytes: &[u8], package: &Package, public_key: Option<&str>) -> Result<(), String> {
-    use base64::Engine;
     let Some(public_key) = public_key else {
         return Err("grammar downloads are off: the app has no grammars key".into());
     };
@@ -144,6 +143,12 @@ pub fn verify(bytes: &[u8], package: &Package, public_key: Option<&str>) -> Resu
             package.language
         ));
     }
+    verify_signature(&digest, package, public_key)
+}
+
+/// Checks `package`'s signature over the archive's sha256 `digest` with `public_key`.
+fn verify_signature(digest: &[u8], package: &Package, public_key: &str) -> Result<(), String> {
+    use base64::Engine;
     let engine = base64::engine::general_purpose::STANDARD;
     let signature = package
         .signature
@@ -161,7 +166,7 @@ pub fn verify(bytes: &[u8], package: &Package, public_key: Option<&str>) -> Resu
         .ok_or("the grammars key is malformed")?;
     let key = ed25519_dalek::VerifyingKey::from_bytes(&key)
         .map_err(|error| format!("grammars key: {error}"))?;
-    key.verify_strict(&digest, &ed25519_dalek::Signature::from_bytes(&signature))
+    key.verify_strict(digest, &ed25519_dalek::Signature::from_bytes(&signature))
         .map_err(|_| format!("{}: the signature does not verify", package.language))
 }
 
@@ -434,6 +439,21 @@ pub fn fetch_package(package: &Package) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_package_in_the_built_in_index_is_signed_by_the_app_key() {
+        let key = GRAMMARS_PUBLIC_KEY.expect("the app carries the grammars key");
+        let index = embedded_index();
+        assert!(!index.packages.is_empty());
+        for package in &index.packages {
+            let digest: Vec<u8> = (0..package.sha256.len())
+                .step_by(2)
+                .filter_map(|at| u8::from_str_radix(package.sha256.get(at..at + 2)?, 16).ok())
+                .collect();
+            assert_eq!(digest.len(), 32, "{}", package.language);
+            verify_signature(&digest, package, key).unwrap_or_else(|error| panic!("{error}"));
+        }
+    }
     use ed25519_dalek::Signer;
 
     fn package(bytes: &[u8], key: &ed25519_dalek::SigningKey) -> Package {

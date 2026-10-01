@@ -1,1 +1,379 @@
-{"version": 1, "packages": []}
+{
+  "version": 1,
+  "packages": [
+    {
+      "id": "csharp",
+      "language": "C#",
+      "version": "0.23.5",
+      "file": "csharp-0.23.5.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/csharp-0.23.5.tar.gz",
+      "size": 329297,
+      "sha256": "7486ba4ae090f1ca4682cf0ec4dc68d90668da47abd5dddf0cb108297403cf9a",
+      "signature": "4rRwy0SlU+m+nFqRcZuBCMP+NycBZVgMy8sjTWamaDDVwoeeN9XQhyytzcs+KOmFed0kW8gjQtnUduJJ9RT1DA==",
+      "license": "MIT",
+      "repository": "https://github.com/tree-sitter/tree-sitter-c-sharp",
+      "rev": "cac6d5fb595f5811a076336682d5d595ac1c9e85",
+      "path_suffixes": [
+        "cs"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "dart",
+      "language": "Dart",
+      "version": "0.2.0",
+      "file": "dart-0.2.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/dart-0.2.0.tar.gz",
+      "size": 123418,
+      "sha256": "035d61b7d1af17f972514fc33da237bf44470bb476bc326c5b99f87f45613847",
+      "signature": "v1gDTTzqH9/mwHMBB3Xz1H7kbe4U3+mrqhqGvqccg3TUWaXRFng2lsZbWV00mQAaJK0CigHmI027OtVy0lprCQ==",
+      "license": "MIT",
+      "repository": "https://github.com/nielsenko/tree-sitter-dart",
+      "rev": "b57d734c84f510bbd524097902cab671e4dbfca9",
+      "path_suffixes": [
+        "dart"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "elixir",
+      "language": "Elixir",
+      "version": "0.3.5",
+      "file": "elixir-0.3.5.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/elixir-0.3.5.tar.gz",
+      "size": 155337,
+      "sha256": "24e4112b699f60e944905e065d3ba2d350a26e7ba83b997d8caa0b59feba835d",
+      "signature": "0JdTN+BH6p9WqSmwUtCar3hkNkbMQKAMQNhJRBIyIFAMg4MZej8a3dyaoTauirelGQMrC8VXeClbHmV4eJXwCg==",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/elixir-lang/tree-sitter-elixir",
+      "rev": "e2d9e6e0e76b0c436fa48a0b8c32a031d0cbdf49",
+      "path_suffixes": [
+        "ex",
+        "exs"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "elm",
+      "language": "Elm",
+      "version": "5.9.4",
+      "file": "elm-5.9.4.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/elm-5.9.4.tar.gz",
+      "size": 41417,
+      "sha256": "28f58de8310b913bfbaeba695ca543591c486b66e74fcc2daf548e898aca7563",
+      "signature": "zmq60JAgtsXZMretK7bCvJjMQEZDXn7O2naaaJfjz9TDYvSiCklgp9j6b6fiz4RnbsstjHUMGjWtdvsz/3mkBA==",
+      "license": "MIT",
+      "repository": "https://github.com/elm-tooling/tree-sitter-elm",
+      "rev": "34815684e37cf299477e86a7d1e10d3ecb5486f9",
+      "path_suffixes": [
+        "elm"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "erlang",
+      "language": "Erlang",
+      "version": "0.20.0",
+      "file": "erlang-0.20.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/erlang-0.20.0.tar.gz",
+      "size": 56064,
+      "sha256": "b7c65bea279d509e59733501fdddf0415b874550d59b908a019ef4e011d98982",
+      "signature": "0Yi11i53HIu2ul99/gI166PahDbomCsi4Q2PVGpRM0mQBdcvI7sjDe9nf+KoXGxTry1AdtMGQ4/fYrCSu+hJAg==",
+      "license": "MIT",
+      "repository": "https://github.com/WhatsApp/tree-sitter-erlang",
+      "rev": "67e7f7f05baf492ca2a7c0d9538761b242d33d95",
+      "path_suffixes": [
+        "erl",
+        "hrl",
+        "app.src",
+        "escript",
+        "rebar.config"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "gleam",
+      "language": "Gleam",
+      "version": "1.0.0",
+      "file": "gleam-1.0.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/gleam-1.0.0.tar.gz",
+      "size": 53018,
+      "sha256": "c46a939ad128aea54fc8a5af8764fcb6df1ea5dfc7e0c213a8fb4f549fa5da98",
+      "signature": "LJQTQOMrQEcs1HaFTyWgigxKslaruKkO0B8BT5+PHCp+0Gyb64rVHIw34gZIm3eHYiBlUy7TvFGKVQFftaKABA==",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/gleam-lang/tree-sitter-gleam",
+      "rev": "066704e4826699e754d351e3bbe12bf2e51de9d8",
+      "path_suffixes": [
+        "gleam"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "graphql",
+      "language": "GraphQL",
+      "version": "0.2.1",
+      "file": "graphql-0.2.1.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/graphql-0.2.1.tar.gz",
+      "size": 15201,
+      "sha256": "dc8abb64a86232f42fd39cee6ca930561b653cdc4b183787033d638404fb87e0",
+      "signature": "kkzNHZMjvfpmMZ4cU24hvL2mh8tw+svhK92dPOMefkEmzqEK/Dm8q23xXboPuh9aqAR4RB7S2keKuee/wOEmDg==",
+      "license": "MIT",
+      "repository": "https://github.com/joowani/tree-sitter-graphql",
+      "rev": "1abcd628084f2fd8b1e74081b5552acfd2c21cd6",
+      "path_suffixes": [
+        "graphql",
+        "gql",
+        "graphqls"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "haskell",
+      "language": "Haskell",
+      "version": "0.23.1",
+      "file": "haskell-0.23.1.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/haskell-0.23.1.tar.gz",
+      "size": 299339,
+      "sha256": "46da5bc6d4b4d3985841659800eb5f1cd060e5cb8656e6150ab02f0ac67df016",
+      "signature": "+pYAfRhGQl8dQjW26E4C1fn3fipPRHXqy/Po3IOKGnwdkMjYIMrBa3Bhaxwv0a6B9BsNjm5Ox2q99J1LijEkAQ==",
+      "license": "MIT",
+      "repository": "https://github.com/tree-sitter/tree-sitter-haskell",
+      "rev": "c30d812bc90827f1a54106a25bc9a6307f5cdcec",
+      "path_suffixes": [
+        "hs"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "hcl",
+      "language": "HCL",
+      "version": "1.1.0",
+      "file": "hcl-1.1.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/hcl-1.1.0.tar.gz",
+      "size": 25807,
+      "sha256": "a7e15dda20f611cb2086ab20f98be43d0ed4b58b30cdb066e4d23c0ec27b15a0",
+      "signature": "d+bWpIbxT+Jvp2sPvXb1uQta98Dm95VvWzc0zJjRl0txiWaFKSFDSHyjzzFfYh2dzj5x/ESmdrrvL8Pz+dLdBg==",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-hcl",
+      "rev": "009def4ae38ec30e5b40beeae26efe93484ab286",
+      "path_suffixes": [
+        "hcl",
+        "tf",
+        "tfvars"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "kotlin",
+      "language": "Kotlin",
+      "version": "1.1.0",
+      "file": "kotlin-1.1.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/kotlin-1.1.0.tar.gz",
+      "size": 302593,
+      "sha256": "1764388a2f03fc1e3e2d25b0f1bf7ed2bb838864d7c8349b9ad7dcea7e159a82",
+      "signature": "sgRzG0T3qOS9o5ryd+aBQuTbBBFH1MXHeOa7MYAaPJn5hAHhTZ97NTqTLgz3kJQCoaUBG7/yD7lS4CH6+MuEAw==",
+      "license": "MIT",
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-kotlin",
+      "rev": "77dd60ea0a9003ce062c9728a513ffe1aaff8c82",
+      "path_suffixes": [
+        "kt",
+        "kts"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "lua",
+      "language": "Lua",
+      "version": "0.5.0",
+      "file": "lua-0.5.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/lua-0.5.0.tar.gz",
+      "size": 16343,
+      "sha256": "7c25a916b6ec9fb5d61015d0f849e83eb53b328c5576f8beaad8ae0064073c90",
+      "signature": "jBEu1T3DCZ2qRrDaY3ag9IP14yFGpjuw1rsJM4QeWAOmueGtjQXttpY8UbJOWDSDdsYnncNW9GUDX0rwp5MnDA==",
+      "license": "MIT",
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-lua",
+      "rev": "10fe0054734eec83049514ea2e718b2a56acd0c9",
+      "path_suffixes": [
+        "lua"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "nix",
+      "language": "Nix",
+      "version": "0.3.0",
+      "file": "nix-0.3.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/nix-0.3.0.tar.gz",
+      "size": 19776,
+      "sha256": "336bfb8a807e40349c45ae5f0b423094d2f24ef67fcbd76b20713a205dba4ad0",
+      "signature": "QdhybfmmjYI0TYzois3pcG7CM5ON/LH0hfMwLJZ85CrkQVzPXv+CIyxrU3J4gzQFstAJA+uaZCRvOYPJhMJ0BA==",
+      "license": "MIT",
+      "repository": "https://github.com/nix-community/tree-sitter-nix",
+      "rev": "ea1d87f7996be1329ef6555dcacfa63a69bd55c6",
+      "path_suffixes": [
+        "nix"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "ocaml",
+      "language": "OCaml",
+      "version": "0.26.0",
+      "file": "ocaml-0.26.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/ocaml-0.26.0.tar.gz",
+      "size": 401197,
+      "sha256": "65d6d816e2dc139bd3068367a52afd9df7bcc24f1e5b10fb684f9227764efd24",
+      "signature": "kxvzkmOafVkYqNjA6PWtJLiEebr3BLUUO4+NpFpneD4zMbgSUse9T8Y4y+esuSDCsEeuJB/ghp/fKhAJ/4/zAA==",
+      "license": "MIT",
+      "repository": "https://github.com/tree-sitter/tree-sitter-ocaml",
+      "rev": "e3c9cf368f68bffd2f81188229aefa7b434eda65",
+      "path_suffixes": [
+        "ml",
+        "mli"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "prisma",
+      "language": "Prisma",
+      "version": "1.6.0",
+      "file": "prisma-1.6.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/prisma-1.6.0.tar.gz",
+      "size": 11142,
+      "sha256": "a28b63abc6fbc94cfb8e871ca9127107d16a8042788a909be44d4cd9750a9ed6",
+      "signature": "VBLgvmSkir5c+zOcYXos/gx9gvr6o30iP2YvXoyLwBHkb4F5z60XJnFpexm1k8iWDtlHdi//OEXZsYtdfOnMAA==",
+      "license": "MIT",
+      "repository": "https://github.com/victorhqc/tree-sitter-prisma",
+      "rev": "3556b2c1f20ec9ac91e92d32c43d9d2a0ca3cc49",
+      "path_suffixes": [
+        "prisma"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "proto",
+      "language": "Proto",
+      "version": "0.6.0",
+      "file": "proto-0.6.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/proto-0.6.0.tar.gz",
+      "size": 18824,
+      "sha256": "421ccf6b92cbca3ca2c87cec0f929d9245c40ed51caf73af5790c18d357a8f97",
+      "signature": "53pZy629yG3BclLPcDioPbPKSWn7PKFIABPVHlXGJe+kxor0tHAYjciQ022WUoyskm8sZnyTaeQ6Lixg4FJDCA==",
+      "license": "MIT",
+      "repository": "https://github.com/coder3101/tree-sitter-proto",
+      "rev": "6c878d18628ebbff3474479d2fdd6d8ba1954c3e",
+      "path_suffixes": [
+        "proto"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "r",
+      "language": "R",
+      "version": "1.3.0",
+      "file": "r-1.3.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/r-1.3.0.tar.gz",
+      "size": 52652,
+      "sha256": "a9fd3532ceea6cd65cfa7dd33af8b8eabbff4db1b928c1d2a6c498a5a8d38b83",
+      "signature": "Y/NoLyljxDQWqgmZuM4cLqP/RZKXhG3cs4lUsK/qKDQ1b12HEwReU/QH5uHrA33xeRmNQ/KquUvXDjcKh0wYAg==",
+      "license": "MIT",
+      "repository": "https://github.com/r-lib/tree-sitter-r",
+      "rev": "f2289db204dda2bf7c7ea720de5c2a2c3eff2530",
+      "path_suffixes": [
+        "r",
+        "R"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "scala",
+      "language": "Scala",
+      "version": "0.26.2",
+      "file": "scala-0.26.2.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/scala-0.26.2.tar.gz",
+      "size": 442426,
+      "sha256": "60633d4c21bc0e557be9b2103cf233def34a5602f1b855490fe1bda1194ae655",
+      "signature": "QljjHy4CvhekW6tm3Rr1Jqrje9Foa9XDLqS+jHLL8xcvP7uklMUor25qvdyA7vwGMmZdV74TZqtvz/0aX6aKCA==",
+      "license": "MIT",
+      "repository": "https://github.com/tree-sitter/tree-sitter-scala",
+      "rev": "b931fcc338390925eb893d70ad070033f5856ccf",
+      "path_suffixes": [
+        "scala",
+        "sc",
+        "sbt"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "svelte",
+      "language": "Svelte",
+      "version": "1.0.2",
+      "file": "svelte-1.0.2.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/svelte-1.0.2.tar.gz",
+      "size": 16302,
+      "sha256": "c5c2083cfaf37b3bc6ebfbf5f01661a42fa8725669f0b1e0b929aaeda9604ff7",
+      "signature": "no3nLlqXo0SJAJbbwAIQYArD9ln26ty8ywxlT24uH2r0Jz6SmWrJYJS+Yk+JFi9zqCJ3r4IkL3d0UgkBaeBBBA==",
+      "license": "MIT",
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-svelte",
+      "rev": "774a65aea563accc35f5d45fafa4d96ec5761f57",
+      "path_suffixes": [
+        "svelte"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "swift",
+      "language": "Swift",
+      "version": "0.7.3",
+      "file": "swift-0.7.3.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/swift-0.7.3.tar.gz",
+      "size": 332840,
+      "sha256": "dd0f4c337871305aa51fdf75d037d58a70ec852ce3972a9ed75e01dd6e9de23a",
+      "signature": "ExEtZ6tmSzj+xee7VTjHuozzTHm/XTqkdLO/rbtVTqqJa9EkZg/FxWIlsTrHdmnaJSD5l8kI7aMDYJb9fvXIBg==",
+      "license": "MIT",
+      "repository": "https://github.com/alex-pinkus/tree-sitter-swift",
+      "rev": "b8b22bffbb3441780e6471665bacfb263741c86a",
+      "path_suffixes": [
+        "swift"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "xml",
+      "language": "XML",
+      "version": "0.7.0",
+      "file": "xml-0.7.0.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/xml-0.7.0.tar.gz",
+      "size": 19425,
+      "sha256": "f1a7550b52d4220dfdbeb4dcdcb4597b4fe4ea8a4d30a1efb8466ab7572ee108",
+      "signature": "v+G0bp+GoTU2VzQYYJbVKkMGdoc4CRtAstYTB3SuFr4kFlp4+dDVF8Kw3+ahRFM0A7TUdBaYpFhXJtofCywnCg==",
+      "license": "MIT",
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-xml",
+      "rev": "4b64dd3a03ec002258d6268d712fd93716d6ab57",
+      "path_suffixes": [
+        "xml",
+        "svg",
+        "xaml",
+        "plist"
+      ],
+      "first_line_pattern": null
+    },
+    {
+      "id": "zig",
+      "language": "Zig",
+      "version": "1.1.2",
+      "file": "zig-1.1.2.tar.gz",
+      "url": "https://github.com/pomelohq/pomelo/releases/download/grammars/zig-1.1.2.tar.gz",
+      "size": 56911,
+      "sha256": "f23ac6a91808257a33e0661c8c27ce03da7eb500b0e92ba691a0a9f1798bb18b",
+      "signature": "vuItEaWb5hGcCPNgAD8NpHVRDvdas96v+OqWYqByF/AylOYCc1xxeEHDGtce5nY8Qy/9+aT69T8NnxvsUZQ1BA==",
+      "license": "MIT",
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-zig",
+      "rev": "b670c8df85a1568f498aa5c8cae42f51a90473c0",
+      "path_suffixes": [
+        "zig"
+      ],
+      "first_line_pattern": null
+    }
+  ]
+}
