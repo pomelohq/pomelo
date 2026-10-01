@@ -132,6 +132,10 @@ pub enum TabRequest {
     OpenFile(std::path::PathBuf),
     /// The service's menu, under the tab's "..." button.
     Menu(ServiceTarget),
+    /// Start, stop or restart a shared container, asking first as the panel does.
+    Shared(SharedRun),
+    /// A shared container's menu, under its tab's "..." button.
+    SharedMenu(String),
 }
 
 /// How a service died: the line of its output that most likely says why, how it exited, and when.

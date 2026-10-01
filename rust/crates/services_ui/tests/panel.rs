@@ -473,3 +473,41 @@ fn offers_services_and_repo_commands_in_the_palette_and_the_repo_menu() {
         Some(PanelRequest::RunCommand { .. })
     ));
 }
+
+#[test]
+fn a_shared_tab_shows_the_container_like_a_service() {
+    let mut fixture = shared_fixture();
+    fixture.panel.show_shared_running("postgres");
+    let node = fixture.panel.shared_tab_preview(
+        "postgres",
+        &["ready to accept connections"],
+        900.0,
+        400.0,
+    );
+    let painted = ui::render(
+        &node,
+        ui::Rect::new(0.0, 0.0, 900.0, 400.0, ui::Rgba::TRANSPARENT),
+    );
+    let texts: Vec<String> = painted.texts.iter().map(|text| text.text.clone()).collect();
+    for expected in [
+        "postgres",
+        "shared",
+        "Stop",
+        "Restart",
+        "Image",
+        "postgres:16",
+        "Used by",
+        "ready to accept connections",
+    ] {
+        assert!(
+            texts.iter().any(|text| text == expected),
+            "{expected}: {texts:?}"
+        );
+    }
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.ends_with("@127.0.0.1:0") || text.contains("127.0.0.1")),
+        "{texts:?}"
+    );
+}
