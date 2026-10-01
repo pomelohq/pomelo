@@ -22,10 +22,13 @@ const STALE_AFTER_MS: u64 = 15 * 60 * 1000;
 const HOLDER_COLS: u16 = 160;
 const HOLDER_ROWS: u16 = 48;
 const MCP_SERVER: &str = "pom";
+const WORKSPACE_LOG_KEY: &str = "\u{0}workspace";
 
 #[derive(Debug)]
 pub enum DriveError {
     Refused(Refusal),
+    /// The prompt was typed but the agent never took it as a turn.
+    NotSubmitted(String),
     NotFound(String),
     Invalid(String),
     Failed(String),
@@ -35,6 +38,7 @@ impl DriveError {
     pub fn exit_code(&self) -> i32 {
         match self {
             DriveError::Refused(_) => crate::gate::REFUSED_EXIT,
+            DriveError::NotSubmitted(_) => crate::conversation::NOT_SUBMITTED_EXIT,
             DriveError::NotFound(_) | DriveError::Invalid(_) | DriveError::Failed(_) => 1,
         }
     }
@@ -42,6 +46,7 @@ impl DriveError {
     pub fn code(&self) -> &'static str {
         match self {
             DriveError::Refused(refusal) => refusal.code(),
+            DriveError::NotSubmitted(_) => "not_submitted",
             DriveError::NotFound(_) => "not_found",
             DriveError::Invalid(_) => "invalid",
             DriveError::Failed(_) => "failed",
@@ -57,6 +62,10 @@ impl std::fmt::Display for DriveError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DriveError::Refused(refusal) => write!(formatter, "{refusal}"),
+            DriveError::NotSubmitted(handle) => write!(
+                formatter,
+                "the prompt was typed into {handle} but it never started a turn"
+            ),
             DriveError::NotFound(message)
             | DriveError::Invalid(message)
             | DriveError::Failed(message) => write!(formatter, "{message}"),
@@ -326,6 +335,24 @@ impl Drive {
     /// Ends a session and its holder.
     pub fn stop(&self, gate: &Gate<'_>, view: &SessionView) -> Result<(), DriveError> {
         gate.target(&view.holder)?;
+        if !view.session_id.is_empty() {
+            let identity = crate::identity::Identity {
+                holder: view.holder.clone(),
+                role: view.role.clone(),
+                project: self.project.clone(),
+                branch: view.workspace.clone(),
+                driver: view.driver.clone(),
+            };
+            let event = crate::sessions::SessionEvent {
+                session_id: view.session_id.clone(),
+                event: "Killed".into(),
+                state: Some(crate::hooks::AgentState::Idle),
+                ..crate::sessions::SessionEvent::default()
+            };
+            if let Err(error) = crate::sessions::record_event(&self.state, &identity, &event) {
+                eprintln!("agent: record stop of {}: {error}", view.handle);
+            }
+        }
         match self.holders.kill_holder(&view.holder) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -373,6 +400,15 @@ impl Drive {
             }
             seen.insert(entry.session_id.clone(), all.len());
         }
+        // Lease changes and messages between sessions belong to the workspace, not to one session.
+        let log = crate::lease::log_lines(&self.state, &self.project, branch);
+        let from = seen.get(WORKSPACE_LOG_KEY).copied().unwrap_or(0);
+        for line in log.iter().skip(from) {
+            let mut line = line.clone();
+            line["schema"] = json!(SCHEMA);
+            lines.push(line);
+        }
+        seen.insert(WORKSPACE_LOG_KEY.to_string(), log.len());
         lines.sort_by_key(|line| line.get("t_ms").and_then(Value::as_u64).unwrap_or(0));
         lines
     }

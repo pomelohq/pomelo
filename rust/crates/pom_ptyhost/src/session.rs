@@ -171,7 +171,9 @@ impl Session {
         };
         let end = state.total;
         let base = end - state.ring.len() as u64;
-        let skip = if since > base && since <= end {
+        let skip = if since == crate::frame::NO_SNAPSHOT {
+            state.ring.len()
+        } else if since > base && since <= end {
             (since - base) as usize
         } else {
             0

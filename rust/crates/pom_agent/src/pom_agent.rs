@@ -1,11 +1,13 @@
 mod caller;
 mod claude;
+mod conversation;
 mod drive;
 mod driver;
 mod gate;
 mod hooks;
 mod identity;
 mod launch;
+mod lease;
 mod naming;
 mod onboard;
 mod policy;
@@ -18,6 +20,9 @@ mod watch;
 
 pub use caller::Caller;
 pub use claude::{install_mcp, mcp_config_json, ClaudeHome, InstallError};
+pub use conversation::{
+    WaitOutcome, WaitUntil, AWAITING_INPUT_EXIT, DIED_EXIT, NOT_SUBMITTED_EXIT, TIMEOUT_EXIT,
+};
 pub use drive::{split_handle, watch_line, Drive, DriveError, SessionView};
 pub use driver::{driver, AgentDriver, ClaudeDriver, Keystrokes};
 pub use gate::{ApproveScope, Gate, Limits, Refusal, Workspace, REFUSED_EXIT};
@@ -34,6 +39,7 @@ pub use launch::{
     main_session_id, onboard_launch, onboard_system_prompt, resolve_claude, session_id,
     system_prompt, AgentLaunch, LaunchContext, LaunchOptions,
 };
+pub use lease::{log as log_workspace, log_lines, read_lease, set_lease, Lease, LeaseClass};
 pub use naming::{claude_available, naming_prompt, parse_suggestion, suggest_name, NameSuggestion};
 pub use onboard::{onboard_launch_with, AgentCli};
 pub use policy::{

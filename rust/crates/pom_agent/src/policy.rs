@@ -72,6 +72,9 @@ pub struct Answer {
     pub decided_by: String,
     #[serde(default)]
     pub reason: String,
+    /// Stays for every later identical call instead of letting one through.
+    #[serde(default)]
+    pub always: bool,
 }
 
 /// The policy of the workspace a session runs in, from its project's `pom.yml`.
@@ -217,9 +220,11 @@ pub fn write_answer(
 /// The recorded answer for `request`, removed as it is read so one approval lets one call through.
 pub fn take_answer(state: &StateDir, session_id: &str, request: &str) -> Option<Answer> {
     let path = answer_path(state, session_id, request);
-    let answer = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
-    if let Err(error) = std::fs::remove_file(&path) {
-        eprintln!("agent policy: {}: {error}", path.display());
+    let answer: Answer = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    if !answer.always {
+        if let Err(error) = std::fs::remove_file(&path) {
+            eprintln!("agent policy: {}: {error}", path.display());
+        }
     }
     Some(answer)
 }
@@ -447,6 +452,7 @@ mod tests {
             allow: true,
             decided_by: "operator".into(),
             reason: String::new(),
+            always: false,
         };
         write_answer(&state, "s1", &request, &approval).expect("approve");
         assert_eq!(

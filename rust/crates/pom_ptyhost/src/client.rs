@@ -37,6 +37,11 @@ impl HolderConnection {
         frame::write_primary(&mut self.stream)
     }
 
+    /// Claims the session's input lease, so this client may type while a lease is set.
+    pub fn claim(&mut self, token: &str) -> io::Result<()> {
+        frame::write_claim(&mut self.stream, token)
+    }
+
     pub fn try_clone(&self) -> io::Result<HolderConnection> {
         Ok(HolderConnection {
             stream: self.stream.try_clone()?,
@@ -60,6 +65,26 @@ pub fn attach(dir: &SocketDir, name: &str, since: u64) -> io::Result<Attached> {
         end,
         output,
     })
+}
+
+/// A connection that only writes: no scrollback is replayed to it.
+pub fn connect_writer(dir: &SocketDir, name: &str) -> io::Result<HolderConnection> {
+    let mut stream = UnixStream::connect(dir.socket(name))?;
+    frame::write_resume(&mut stream, frame::NO_SNAPSHOT)?;
+    let mut output = BufReader::new(stream.try_clone()?);
+    read_snapshot(&mut output)?;
+    // Keep draining live output so the holder never blocks on this client.
+    std::thread::Builder::new()
+        .name("ptyhost-writer-drain".into())
+        .spawn(move || {
+            let mut sink = std::io::sink();
+            if let Err(error) = std::io::copy(&mut output, &mut sink) {
+                if error.kind() != io::ErrorKind::ConnectionReset {
+                    eprintln!("ptyhost: writer drain: {error}");
+                }
+            }
+        })?;
+    Ok(HolderConnection { stream })
 }
 
 /// The holder's current scrollback, without staying attached (a log peek).

@@ -7,8 +7,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use pom_agent::{
-    split_handle, Caller, Drive, DriveError, Gate, LaunchOptions, Limits, RecordedTurn,
-    SessionView, Workspace, SCHEMA,
+    split_handle, ApproveScope, Caller, Drive, DriveError, Gate, LaunchOptions, Limits,
+    RecordedTurn, SessionView, WaitUntil, Workspace, SCHEMA,
 };
 use pom_ptyhost::SocketDir;
 use serde_json::{json, Value};
@@ -34,6 +34,57 @@ pub(crate) enum AgentCommand {
         from_start: bool,
         timeout: Option<Duration>,
     },
+    Drive(DriveRequest),
+}
+
+impl AgentCommand {
+    fn json(&self) -> bool {
+        match self {
+            AgentCommand::Ls { json, .. } | AgentCommand::Stop { json, .. } => *json,
+            AgentCommand::Read(request) => request.json,
+            AgentCommand::Start(request) => request.json,
+            AgentCommand::Watch { .. } => true,
+            AgentCommand::Drive(request) => request.json,
+        }
+    }
+}
+
+/// The commands that drive a session's turns or its lease.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DriveAction {
+    Send {
+        text: String,
+        queue: bool,
+        take: bool,
+    },
+    Wait {
+        until: WaitUntil,
+        turn: Option<u64>,
+    },
+    Ask {
+        text: String,
+        take: bool,
+        full: bool,
+    },
+    Interrupt,
+    Approve {
+        request: String,
+        scope: ApproveScope,
+    },
+    Takeover {
+        session_id: String,
+        settings: Option<String>,
+        mcp_config: Option<String>,
+    },
+    Release,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DriveRequest {
+    pub handle: String,
+    pub action: DriveAction,
+    pub timeout: Option<Duration>,
+    pub json: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -73,6 +124,10 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
         "--turn",
         "--since",
         "--timeout",
+        "--file",
+        "--until",
+        "--session-id",
+        "--settings",
         "-o",
         "--output",
     ];
@@ -203,8 +258,86 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
                 args.positional.first().cloned(),
             ))
         }
+        "send" | "ask" | "wait" | "interrupt" | "approve" | "deny" | "release" => {
+            args.allow(&[
+                "--file", "--queue", "--take", "--until", "--turn", "--timeout", "--full",
+                "--always", "--json", "-o", "--output",
+            ])?;
+            let (handle, workspace) = handle("a session (<workspace>/<role>)")?;
+            let text = || -> Result<String, String> {
+                match (args.positional.get(1), args.value(&["--file"])) {
+                    (Some(text), None) => Ok(text.clone()),
+                    (None, Some(path)) => std::fs::read_to_string(&path)
+                        .map_err(|error| format!("--file {path}: {error}")),
+                    _ => Err(format!("pom agent {verb} needs the text, or --file")),
+                }
+            };
+            let action = match *verb {
+                "send" => DriveAction::Send {
+                    text: text()?,
+                    queue: args.has("--queue"),
+                    take: args.has("--take"),
+                },
+                "ask" => DriveAction::Ask {
+                    text: text()?,
+                    take: args.has("--take"),
+                    full: args.has("--full"),
+                },
+                "wait" => DriveAction::Wait {
+                    until: match args.value(&["--until"]) {
+                        Some(until) => WaitUntil::parse(&until).ok_or(format!(
+                            "--until {until}: idle, awaiting_input or turn-end"
+                        ))?,
+                        None => WaitUntil::TurnEnd,
+                    },
+                    turn: number("--turn")?,
+                },
+                "interrupt" => DriveAction::Interrupt,
+                "release" => DriveAction::Release,
+                _ => DriveAction::Approve {
+                    request: args
+                        .positional
+                        .get(1)
+                        .cloned()
+                        .ok_or(format!("pom agent {verb} needs the request id"))?,
+                    scope: match (*verb, args.has("--always")) {
+                        ("deny", _) => ApproveScope::Deny,
+                        (_, true) => ApproveScope::Always,
+                        _ => ApproveScope::Once,
+                    },
+                },
+            };
+            let timeout = args
+                .value(&["--timeout"])
+                .map(|text| parse_duration(&text))
+                .transpose()?;
+            Ok((
+                AgentCommand::Drive(DriveRequest { handle, action, timeout, json }),
+                workspace,
+            ))
+        }
+        "takeover" => {
+            args.allow(&["--session-id", "--settings", "--mcp-config", "--json", "-o", "--output"])?;
+            args.at_most(1, "pom agent takeover")?;
+            let session_id = args
+                .value(&["--session-id"])
+                .ok_or("pom agent takeover needs --session-id")?;
+            Ok((
+                AgentCommand::Drive(DriveRequest {
+                    handle: session_id.clone(),
+                    action: DriveAction::Takeover {
+                        session_id,
+                        settings: args.value(&["--settings"]),
+                        mcp_config: args.value(&["--mcp-config"]),
+                    },
+                    timeout: None,
+                    json,
+                }),
+                args.positional.first().cloned(),
+            ))
+        }
         other => Err(format!(
-            "unknown agent command {other} (ls, start, stop, read, watch)"
+            "unknown agent command {other} (ls, start, stop, read, watch, send, wait, ask, interrupt, approve, deny, takeover, release)"
         )),
     }
 }
@@ -251,19 +384,12 @@ pub(crate) fn execute(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    let wants_json = matches!(
-        command,
-        AgentCommand::Ls { json: true, .. }
-            | AgentCommand::Stop { json: true, .. }
-            | AgentCommand::Read(ReadRequest { json: true, .. })
-            | AgentCommand::Start(StartRequest { json: true, .. })
-            | AgentCommand::Watch { .. }
-    );
+    let wants_json = command.json();
     let result = Session::open(invocation, cwd)
         .map_err(DriveError::Failed)
         .and_then(|session| run(command, &session, out));
     match result {
-        Ok(()) => 0,
+        Ok(code) => code,
         Err(error) => {
             let message = if wants_json {
                 error.to_json().to_string()
@@ -278,7 +404,150 @@ pub(crate) fn execute(
     }
 }
 
-fn run(command: &AgentCommand, session: &Session, out: &mut dyn Write) -> Result<(), DriveError> {
+fn run(command: &AgentCommand, session: &Session, out: &mut dyn Write) -> Result<i32, DriveError> {
+    if let AgentCommand::Drive(request) = command {
+        return drive_turn(request, session, out);
+    }
+    run_view(command, session, out).map(|()| 0)
+}
+
+fn drive_turn(
+    request: &DriveRequest,
+    session: &Session,
+    out: &mut dyn Write,
+) -> Result<i32, DriveError> {
+    let drive = drive(session);
+    let workspace = Workspace {
+        project: session.config.session.clone(),
+        branch: session.branch.clone(),
+    };
+    let gate = Gate::open(
+        &drive.state,
+        Caller::current(&drive.holders),
+        workspace.clone(),
+        Limits::OPERATOR,
+    )?;
+    let timeout = gate.wait(request.timeout)?;
+    let print = |out: &mut dyn Write, value: Value, text: String| {
+        if request.json {
+            let mut value = value;
+            value["schema"] = json!(SCHEMA);
+            line(out, &value.to_string())
+        } else {
+            line(out, &text)
+        }
+    };
+    if let DriveAction::Takeover {
+        session_id,
+        settings,
+        mcp_config,
+    } = &request.action
+    {
+        let view = drive
+            .list(&workspace.branch)
+            .into_iter()
+            .find(|view| view.session_id == *session_id)
+            .ok_or_else(|| {
+                DriveError::NotFound(format!(
+                    "no session {session_id} in workspace {}",
+                    workspace.branch
+                ))
+            })?;
+        let cwd =
+            pom_layout::workspace_root(&session.project.root, &workspace.branch, session.is_main);
+        let view = drive.takeover(
+            &gate,
+            &view,
+            &cwd,
+            settings.as_deref(),
+            mcp_config.as_deref(),
+        )?;
+        print(
+            out,
+            json!({"handle": view.handle, "holder": view.holder, "lease": "person"}),
+            format!("{} is yours: attach to {}", view.handle, view.holder),
+        )?;
+        return Ok(0);
+    }
+    let view = drive.resolve(&gate, &request.handle)?;
+    match &request.action {
+        DriveAction::Send { text, queue, take } => {
+            let turn = drive.send(&gate, &view, text, *queue, *take, timeout)?;
+            print(
+                out,
+                json!({"handle": view.handle, "turn": turn}),
+                format!("sent turn {turn} to {}", view.handle),
+            )?;
+            Ok(0)
+        }
+        DriveAction::Wait { until, turn } => {
+            let outcome = drive.wait(&view, *until, *turn, timeout);
+            let code = outcome.exit_code;
+            print(
+                out,
+                json!(outcome),
+                format!(
+                    "{} {} (turn {})",
+                    view.handle, outcome.reached, outcome.turn
+                ),
+            )?;
+            Ok(code)
+        }
+        DriveAction::Ask { text, take, full } => {
+            let turn = drive.send(&gate, &view, text, false, *take, timeout)?;
+            let outcome = drive.wait(&view, WaitUntil::TurnEnd, Some(turn), timeout);
+            let turns = drive.read(&view, |number| number == turn, *full)?;
+            let code = outcome.exit_code;
+            if request.json {
+                print(
+                    out,
+                    json!({"handle": view.handle, "turn": turn, "wait": outcome, "result": turns.first()}),
+                    String::new(),
+                )?;
+            } else {
+                print_turns(out, &view, &turns, false)?;
+                if code != 0 {
+                    line(out, &format!("({})", outcome.reached))?;
+                }
+            }
+            Ok(code)
+        }
+        DriveAction::Interrupt => {
+            drive.interrupt(&gate, &view)?;
+            print(
+                out,
+                json!({"handle": view.handle, "interrupted": true}),
+                format!("interrupted {}", view.handle),
+            )?;
+            Ok(0)
+        }
+        DriveAction::Approve { request: id, scope } => {
+            drive.approve(&gate, &view, id, *scope)?;
+            print(
+                out,
+                json!({"handle": view.handle, "request": id, "scope": scope}),
+                format!("{scope:?} {id} for {}", view.handle).to_lowercase(),
+            )?;
+            Ok(0)
+        }
+        DriveAction::Release => {
+            let lease = drive.release(&gate, &view)?;
+            print(
+                out,
+                json!({"handle": view.handle, "lease": lease.class}),
+                format!("{} goes back to {}", view.handle, lease.by),
+            )?;
+            Ok(0)
+        }
+        DriveAction::Takeover { .. } => Ok(0),
+    }
+}
+
+fn run_view(
+    command: &AgentCommand,
+    session: &Session,
+    out: &mut dyn Write,
+) -> Result<(), DriveError> {
     let drive = drive(session);
     let workspace = Workspace {
         project: session.config.session.clone(),
@@ -377,6 +646,7 @@ fn run(command: &AgentCommand, session: &Session, out: &mut dyn Write) -> Result
                 std::thread::sleep(WATCH_POLL);
             }
         }
+        AgentCommand::Drive(_) => Ok(()),
     }
 }
 

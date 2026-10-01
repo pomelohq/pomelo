@@ -7,6 +7,10 @@ pub const INPUT: u8 = 0x00;
 pub const RESIZE: u8 = 0x01;
 pub const PRIMARY: u8 = 0x02;
 pub const RESUME: u8 = 0x03;
+/// Payload: the lease token of the session's driver; only a client that sent it may type while a lease is set.
+pub const CLAIM: u8 = 0x04;
+/// A resume offset that asks for no scrollback at all (a client that only writes).
+pub const NO_SNAPSHOT: u64 = u64::MAX;
 
 /// Payload: the absolute output offset right after the snapshot, to resume from on the next connect.
 pub const META: u8 = 0x10;
@@ -64,6 +68,10 @@ pub fn write_primary(writer: &mut impl Write) -> io::Result<()> {
 
 pub fn write_resume(writer: &mut impl Write, since: u64) -> io::Result<()> {
     write_frame(writer, RESUME, &since.to_be_bytes())
+}
+
+pub fn write_claim(writer: &mut impl Write, token: &str) -> io::Result<()> {
+    write_frame(writer, CLAIM, token.as_bytes())
 }
 
 pub fn parse_resize(payload: &[u8]) -> Option<(u16, u16)> {

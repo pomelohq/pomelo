@@ -191,3 +191,35 @@ fn a_one_shot_snapshot_reads_the_scrollback() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn while_a_lease_is_set_only_the_client_that_claimed_it_can_type() {
+    let holders = Holders::new();
+    holders.spawn("leased", &["/bin/cat"]);
+    let mut watcher = holders.attach("leased", 0);
+    holders
+        .dir
+        .set_input_lease("leased", Some("token-1"))
+        .expect("lease");
+    watcher
+        .connection
+        .input(b"from-the-viewer\n")
+        .expect("viewer input");
+    let mut driver = pom_ptyhost::connect_writer(&holders.dir, "leased").expect("writer");
+    driver.input(b"before-claim\n").expect("unclaimed");
+    driver.claim("token-1").expect("claim");
+    driver.input(b"from-the-driver\n").expect("driver input");
+    let seen = read_until(&mut watcher, "from-the-driver");
+    assert!(!seen.contains("from-the-viewer"), "{seen}");
+    assert!(!seen.contains("before-claim"), "{seen}");
+
+    holders
+        .dir
+        .set_input_lease("leased", None)
+        .expect("release");
+    watcher
+        .connection
+        .input(b"viewer-again\n")
+        .expect("viewer input");
+    read_until(&mut watcher, "viewer-again");
+}
