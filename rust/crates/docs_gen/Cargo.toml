@@ -1,0 +1,16 @@
+[package]
+name = "docs_gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Writes the reference pages of the docs site (settings, key bindings) from the code that defines them."
+publish = false
+
+[[bin]]
+name = "docs_gen"
+path = "src/docs_gen.rs"
+
+[dependencies]
+settings = { path = "../settings" }
+workspace = { path = "../workspace" }
+serde_json.workspace = true

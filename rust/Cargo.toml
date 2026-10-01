@@ -60,6 +60,7 @@ members = [
     "crates/dev_services_ui",
     "crates/module_store",
     "crates/module_store_ui",
+    "crates/docs_gen",
 ]
 
 [workspace.package]

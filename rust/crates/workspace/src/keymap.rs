@@ -357,7 +357,7 @@ pub struct Keymap {
 }
 
 /// macOS binds window commands on Command; `ctrl-`` stays because `cmd-`` cycles the app's windows.
-const MACOS_DEFAULTS: &[(&str, Action)] = &[
+pub const MACOS_DEFAULTS: &[(&str, Action)] = &[
     ("cmd-shift-p", Action::CommandPalette),
     ("cmd-p", Action::FileFinder),
     ("cmd-shift-f", Action::ProjectSearch),
@@ -402,7 +402,7 @@ const MACOS_DEFAULTS: &[(&str, Action)] = &[
 ];
 
 /// Linux and Windows: the same commands on Control, with those platforms' tab keys.
-const OTHER_DEFAULTS: &[(&str, Action)] = &[
+pub const OTHER_DEFAULTS: &[(&str, Action)] = &[
     ("ctrl-shift-p", Action::CommandPalette),
     ("ctrl-p", Action::FileFinder),
     ("ctrl-shift-f", Action::ProjectSearch),
