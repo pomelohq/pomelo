@@ -20,14 +20,29 @@ concurrency:
 jobs:
   build:
     runs-on: macos-15 # the runner release.yml uses, so the cache matches
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # To drop the older optimized builds; the new one is saved when the job ends.
+      actions: write
     defaults:
       run:
         working-directory: rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rust
           shared-key: release
       - run: cargo build --release -p pomelo -p pom_cli
+      # A changed Cargo.lock starts a new entry of most of a gigabyte while the old ones stay; release.yml only
+      # restores the newest, so the rest only push other caches out of the repository's limit.
+      - name: Drop older optimized builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "v0-rust-release-" --sort created_at --order desc \
+            --limit 100 --json id --jq '.[1:][].id' | while read -r id; do
+            gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
+          done

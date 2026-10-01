@@ -19,11 +19,13 @@ jobs:
   changes:
     name: Detect changed areas
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       rust: ${{ steps.f.outputs.rust }}
+      workflows: ${{ steps.f.outputs.workflows }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
         id: f
         with:
           filters: |
@@ -31,6 +33,8 @@ jobs:
               - 'rust/**'
               - 'docs/config-*.md'
               - '.github/workflows/ci.yml'
+            workflows:
+              - '.github/workflows/**'
 
   # The same `make check` run locally: fmt, clippy -D warnings, tests.
   rust:
@@ -38,6 +42,11 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Only main uses it: to drop older build caches after saving the new one.
+      actions: write
     defaults:
       run:
         working-directory: rust
@@ -47,14 +56,14 @@ jobs:
       POM_TARGET_LIMIT_GB: 8
     steps:
       # Full history, to tell which files changed since the commit the cached build came from.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       # Installs the toolchain rust/rust-toolchain.toml pins.
       - run: rustup show
       # Our own crates are cached too, not only dependencies. Only main saves (a new entry per commit), so a PR
       # starts from the latest main build and the cache stays within the repository's limit.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: cache
         with:
           path: |
@@ -85,7 +94,7 @@ jobs:
       - if: github.ref == 'refs/heads/main'
         run: git rev-parse HEAD > target/.built-from
       - if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry/index/
@@ -93,16 +102,50 @@ jobs:
             ~/.cargo/git/db/
             rust/target/
           key: ${{ steps.cache.outputs.cache-primary-key }}
+      # Each main build saves a new entry of a gigabyte or more; past the repository's limit GitHub evicts the
+      # least recently used, which can be the release or wasi-sdk caches. Only the newest two are ever restored.
+      - name: Drop older build caches
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: cargo-${{ runner.os }}-${{ runner.arch }}-
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "$PREFIX" --sort created_at --order desc --limit 100 \
+            --json id --jq '.[2:][].id' | while read -r id; do
+            gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
+          done
+
+  # Workflow mistakes otherwise show only when the workflow runs, which for releases is at tag time.
+  actionlint:
+    name: Lint workflows
+    needs: changes
+    if: ${{ needs.changes.outputs.workflows == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --max-time 60 --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
 
   # The one required check: path-gated jobs may be skipped, and a skipped job never satisfies a branch rule.
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, rust]
+    needs: [changes, rust, actionlint]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - run: |
-          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }}"
+          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} actionlint=${{ needs.actionlint.result }}"
           test "${{ needs.changes.result }}" = "success" || exit 1
           case "${{ needs.rust.result }}" in success|skipped) ;; *) echo "rust failed"; exit 1 ;; esac
+          case "${{ needs.actionlint.result }}" in success|skipped) ;; *) echo "workflow lint failed"; exit 1 ;; esac
           echo "CI gate passed"
