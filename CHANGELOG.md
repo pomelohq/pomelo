@@ -4,6 +4,19 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5] - 2026-10-02
+
+### Added
+- `pom agent` lets scripts, orchestrators and other agents drive the coding agents of one workspace: start, send, wait, ask, read, watch, interrupt, approve, take over and release, with stable JSON and exit codes. (#202, #203, #204, #205, #208)
+- Agents get `agent_*` MCP tools to list and message the other sessions of their own workspace, with limits on rate and depth. (#206)
+- A workspace policy (`agents.policy` in pom.yml) can allow, deny or ask before each tool call an agent makes; a failing policy denies. (#202, #204)
+- An agent tab shows who drives it with Take over, lists pending approvals with Allow / Deny, and the workspace dot reflects every session. (#207)
+- Every language has its own file icon in the file tree, tabs and language picker, and `.env`, Dockerfile, Makefile and git message files get one by name. (#201)
+
+### Fixed
+- Two agent sessions in one workspace, or the same branch in two projects, no longer overwrite each other's state. (#202)
+- Skills that run their own scripts work in agent tabs. (#209)
+
 ## [0.8.4] - 2026-10-02
 
 ### Added
