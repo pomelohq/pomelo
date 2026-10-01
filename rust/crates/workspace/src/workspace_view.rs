@@ -39,7 +39,6 @@ const PREPARE_MAIN_PROMPT_TOKEN: u64 = 1 << 44;
 /// The gap a zoomed view leaves around it (on its dock's inner side only, for a dock panel).
 const ZOOM_PADDING: f32 = 8.0;
 /// Where tabs' own toolbar ids start (a service's header, a side agent's bar).
-const ITEM_TOOLBAR_IDS: u64 = 1 << 50;
 const PAGE_TAB: u64 = 1150;
 const PAGE_TAB_CLOSE: u64 = 1151;
 
@@ -6743,7 +6742,7 @@ impl WorkspaceView {
             return;
         }
         // A tab's own toolbar: its ids sit above every range, so ask the docks' tabs before the editor's.
-        if id >= ITEM_TOOLBAR_IDS {
+        if id >= crate::ITEM_TOOLBAR_IDS {
             if self
                 .layout
                 .agent_view
