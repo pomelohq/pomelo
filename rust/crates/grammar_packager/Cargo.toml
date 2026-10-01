@@ -19,3 +19,4 @@ sha2 = "0.10"
 ed25519-dalek = "2"
 base64 = "0.22"
 tempfile = "3"
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

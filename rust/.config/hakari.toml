@@ -1,0 +1,9 @@
+# One feature set for every third-party dependency, whichever packages a cargo command builds, so
+# `cargo test -p <crate>`, clippy and `make check` reuse one build instead of each leaving its own copy.
+# After changing a dependency, run `cargo hakari generate && cargo hakari manage-deps`.
+hakari-package = "workspace_hack"
+dep-format-version = "4"
+resolver = "2"
+platforms = ["aarch64-apple-darwin"]
+# Build-script features (tree-sitter's build turns on serde_json's preserve_order) stay off the app's own code.
+unify-target-host = "none"

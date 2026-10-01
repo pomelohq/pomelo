@@ -12,3 +12,4 @@ path = "src/markdown.rs"
 ui = { path = "../ui" }
 editor = { package = "pomelo-editor", path = "../editor" }
 pulldown-cmark = { version = "0.13", default-features = false }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

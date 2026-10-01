@@ -21,3 +21,4 @@ pom_mcp = { path = "../pom_mcp" }
 settings = { path = "../settings" }
 workspace = { path = "../workspace" }
 serde_json.workspace = true
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

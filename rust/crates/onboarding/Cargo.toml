@@ -15,6 +15,7 @@ pom_env = { path = "../pom_env" }
 pom_layout = { path = "../pom_layout" }
 pom_services = { path = "../pom_services" }
 pom_workspace = { path = "../pom_workspace" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 pom_paths = { path = "../pom_paths" }

@@ -25,6 +25,7 @@ pom_core = { path = "../pom_core" }
 pom_workspace = { path = "../pom_workspace" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,5 +1,5 @@
 # Pomelo - macOS / Apple Silicon. Dev bundle is PomeloDev.app (runs alongside Pomelo.app).
-.PHONY: help build run dev prod bundle-dev bundle-prod dmg appcast test fmt fmt-check lint check clean gc trim \
+.PHONY: help build run dev prod bundle-dev bundle-prod dmg appcast test fmt fmt-check hakari-check lint check clean gc trim \
         patch minor major version
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -56,7 +56,15 @@ fmt-check:
 lint: trim
 	cargo clippy --all-targets -- -D warnings
 
-check: fmt-check lint test
+# Fails when a dependency changed without regenerating the workspace-hack; skipped where cargo-hakari isn't installed.
+hakari-check:
+	@if cargo hakari --version >/dev/null 2>&1; then \
+		cargo hakari generate --diff && cargo hakari manage-deps --dry-run; \
+	else \
+		echo "cargo-hakari not installed (cargo install cargo-hakari): skipping the workspace-hack check"; \
+	fi
+
+check: fmt-check hakari-check lint test
 
 clean:
 	cargo clean

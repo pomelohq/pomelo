@@ -16,3 +16,4 @@ editor = { package = "pomelo-editor", path = "../editor" }
 arboard = "3.6.1"
 serde.workspace = true
 serde_json.workspace = true
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

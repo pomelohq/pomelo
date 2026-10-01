@@ -87,6 +87,9 @@ jobs:
             echo "no usable cached build: everything is new"
             git ls-files -z | xargs -0 touch
           fi
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-hakari
       - run: make check
       # Releases run under the hardened runtime, where a wasm grammar only runs with the app's entitlements:
       # sign the editor tests the same way and parse with a package grammar.

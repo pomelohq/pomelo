@@ -12,3 +12,4 @@ path = "src/auto_update.rs"
 serde_json.workspace = true
 base64 = "0.22"
 ed25519-dalek = "2"
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

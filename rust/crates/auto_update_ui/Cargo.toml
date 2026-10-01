@@ -12,3 +12,4 @@ path = "src/auto_update_ui.rs"
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }
 auto_update = { path = "../auto_update" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

@@ -34,8 +34,12 @@ touching anything here. These override defaults.
 
 ## The gate — run before calling anything done
 
-`make check` = `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test`. All must pass.
-Our crates must be warning-clean.
+`make check` = `cargo fmt --check` + the workspace-hack check + `cargo clippy --all-targets -- -D warnings` +
+`cargo test`. All must pass. Our crates must be warning-clean.
+
+After adding or changing a dependency, run `cargo hakari generate && cargo hakari manage-deps`
+(`cargo install cargo-hakari`): `crates/workspace_hack` pins one feature set for third-party crates, so every
+cargo command, whichever packages it builds, reuses one build instead of leaving another full copy in `target/`.
 
 ## Build / run / release (macOS, Apple Silicon only)
 

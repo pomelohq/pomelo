@@ -12,3 +12,4 @@ path = "src/agent_usage_ui.rs"
 terminal = { path = "../terminal" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

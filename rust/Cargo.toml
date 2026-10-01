@@ -52,6 +52,7 @@ members = [
     "crates/pom_agent",
     "crates/git_ui",
     "crates/pom_workspace",
+    "crates/workspace_hack",
     "crates/workspaces_ui",
     "crates/pom_jira",
     "crates/pom_sync",

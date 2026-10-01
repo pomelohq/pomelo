@@ -10,3 +10,6 @@ path = "src/pom_lock.rs"
 
 [dev-dependencies]
 tempfile = "3"
+
+[dependencies]
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

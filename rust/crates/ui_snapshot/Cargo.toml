@@ -47,3 +47,4 @@ pom_ptyhost = { path = "../pom_ptyhost" }
 terminal = { path = "../terminal" }
 anyhow.workspace = true
 png = "0.17"
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
