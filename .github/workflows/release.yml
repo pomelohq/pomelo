@@ -32,7 +32,7 @@ jobs:
       run:
         working-directory: rust
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The notes and the update feed come from CHANGELOG.md's block for this version, and the app reports the
       # version Cargo.toml names: stop before anything is built or signed if either is missing or off.
       - name: Check the tag, the version and the CHANGELOG agree
