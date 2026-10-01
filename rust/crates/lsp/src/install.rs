@@ -67,10 +67,11 @@ pub(crate) fn locate(
             .iter()
             .map(|candidate| candidate.binary)
             .collect();
-        return report(Found::Done(Err(format!(
-            "{} is not on the PATH.",
-            names.join(" or ")
-        ))));
+        let mut message = format!("{} is not on the PATH.", names.join(" or "));
+        if let Some(command) = candidates.iter().find_map(|candidate| candidate.install) {
+            message.push_str(&format!(" Install it with: {command}"));
+        }
+        return report(Found::Done(Err(message)));
     };
     report(Found::Done(download(
         candidate,

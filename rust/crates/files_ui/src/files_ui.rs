@@ -305,12 +305,62 @@ struct ServerNotices {
     /// The questions servers wait on, by notice token: the server, its request and the actions offered.
     requests: HashMap<u64, (lsp::ServerId, serde_json::Value, Vec<String>)>,
     next: u64,
+    /// Notices that a server is missing, by token: the server they name.
+    missing: HashMap<u64, String>,
+    /// Missing servers already told about since the app started.
+    told: HashSet<String>,
+}
+
+const DONT_SHOW_AGAIN: &str = "Don't show again";
+
+/// Where the missing servers the user asked not to hear about again are kept.
+fn quiet_servers_file() -> Option<PathBuf> {
+    Some(pom_paths::config_dir()?.join("quiet-language-servers.json"))
+}
+
+fn quiet_servers(file: &Path) -> HashSet<String> {
+    std::fs::read_to_string(file)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn quiet_server(file: &Path, name: &str) {
+    let mut names: Vec<String> = quiet_servers(file).into_iter().collect();
+    if names.iter().any(|known| known == name) {
+        return;
+    }
+    names.push(name.to_string());
+    names.sort();
+    let written = file
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| {
+            std::fs::write(
+                file,
+                serde_json::to_string_pretty(&names).unwrap_or_default(),
+            )
+        });
+    if let Err(error) = written {
+        eprintln!("lsp: save {}: {error}", file.display());
+    }
 }
 
 impl ServerNotices {
-    fn receive(&mut self, message: lsp::ServerMessage) {
+    fn receive(&mut self, mut message: lsp::ServerMessage) {
+        if message.missing {
+            let quiet = quiet_servers_file()
+                .is_some_and(|file| quiet_servers(&file).contains(message.name));
+            if quiet || !self.told.insert(message.name.to_string()) {
+                return;
+            }
+            message.actions = vec![DONT_SHOW_AGAIN.to_string()];
+        }
         let token = self.next;
         self.next += 1;
+        if message.missing {
+            self.missing.insert(token, message.name.to_string());
+        }
         if let Some(request) = message.request {
             self.requests
                 .insert(token, (message.server, request, message.actions.clone()));
@@ -825,6 +875,26 @@ fn reads_only(key: EditKey) -> bool {
             | EditKey::SelectPreviousMatch
             | EditKey::Escape
     )
+}
+
+impl FileItem {
+    /// Adds `text` at the end of a read-only tab; the caret follows when it sat at the end.
+    fn append_text(&mut self, text: &str) {
+        let Some(buffer) = self.buffer.as_mut() else {
+            return;
+        };
+        let end = buffer.rope.len_chars();
+        let following = buffer.cursor() >= end;
+        buffer.edit(vec![(end..end, text.to_string())]);
+        buffer.mark_saved();
+        if following {
+            buffer.place_cursor(buffer.rope.len_chars());
+        }
+        self.refresh();
+        if following {
+            self.ensure_visible();
+        }
+    }
 }
 
 pub fn text_tab(id: String, title: String, text: &str) -> Box<dyn Item> {
@@ -6422,6 +6492,10 @@ pub struct FilesView {
     /// The project's language servers; none in tests, which must not start real servers.
     lsp: Option<lsp::LspStore>,
     server_status: language_servers::ServerStatusState,
+    /// Open log tabs: the tab's id, the server it shows and how many of its lines it has.
+    server_logs: Vec<(String, lsp::ServerId, u64)>,
+    /// A line from the language servers for the toast (none of them can do what was asked).
+    lsp_toast: Option<String>,
     tree_ops: tree_actions::TreeOps,
     request: Option<workspace::ViewRequest>,
 }
@@ -6574,6 +6648,8 @@ impl FilesView {
             window_size: (1200.0, 800.0),
             lsp,
             server_status: language_servers::ServerStatusState::default(),
+            server_logs: Vec::new(),
+            lsp_toast: None,
             tree_ops: tree_actions::TreeOps::default(),
             request: None,
             click_targets: Vec::new(),
@@ -6604,6 +6680,77 @@ impl FilesView {
             tree_actions::place_edit_row(&mut rows, &edit.target);
         }
         rows
+    }
+
+    fn open_server_log(&mut self, index: usize) {
+        let Some(lsp) = self.lsp.as_mut() else {
+            return;
+        };
+        let summaries = lsp.servers();
+        let Some(summary) = summaries.get(index) else {
+            return;
+        };
+        let id = format!("language-server-log-{}", summary.key.0);
+        if self.panes.reveal_item(&id) {
+            return;
+        }
+        let mut text = summary.name.to_string();
+        if let Some(version) = &summary.version {
+            text.push_str(&format!(" {version}"));
+        }
+        text.push_str(&format!("\nFolder: {}\n", summary.root.display()));
+        if let Some(located) = &summary.binary {
+            text.push_str(&format!(
+                "Binary: {} {}\n",
+                located.binary.display(),
+                located.args.join(" ")
+            ));
+        }
+        text.push('\n');
+        let (lines, seen) = lsp.server_log(summary.key, 0).unwrap_or_default();
+        for line in lines {
+            text.push_str(&line);
+            text.push('\n');
+        }
+        lsp.watch_log(summary.key, true);
+        self.server_logs.push((id.clone(), summary.key, seen));
+        let title = format!("{} Logs", summary.name);
+        self.add_center_item(text_tab(id, title, &text));
+    }
+
+    /// Brings each open log tab up to date; a closed one stops being watched.
+    fn serve_server_logs(&mut self) -> bool {
+        let Some(lsp) = self.lsp.as_mut() else {
+            return false;
+        };
+        let mut changed = false;
+        let panes = &mut self.panes;
+        self.server_logs.retain_mut(|(id, server, seen)| {
+            let (lines, total) = lsp.server_log(*server, *seen).unwrap_or_default();
+            let mut open = false;
+            panes.for_each_item_mut(&mut |item| {
+                let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                    .filter(|file| file.scratch.as_ref().is_some_and(|(tab, _)| tab == id))
+                else {
+                    return;
+                };
+                open = true;
+                if !lines.is_empty() {
+                    let mut text = lines.join("\n");
+                    text.push('\n');
+                    file.append_text(&text);
+                    changed = true;
+                }
+            });
+            if !open {
+                lsp.watch_log(*server, false);
+            }
+            *seen = total.max(*seen);
+            open
+        });
+        changed
     }
 
     fn open_file(&mut self, path: &str) {
@@ -6850,6 +6997,7 @@ impl FilesView {
         for event in events {
             match event {
                 lsp::StoreEvent::Message(message) => self.server_notices.receive(message),
+                lsp::StoreEvent::Unsupported(text) => self.lsp_toast = Some(text),
                 lsp::StoreEvent::Diagnostics(update) => updates.push(update),
                 lsp::StoreEvent::Hover(response) => hovers.push(response),
                 lsp::StoreEvent::Completions(response) => completion_answers.push(response),
@@ -8115,6 +8263,10 @@ impl FunctionView for FilesView {
         let Some(lsp) = self.lsp.as_mut() else {
             return;
         };
+        if let workspace::LanguageServerAction::ViewLogs(index) = action {
+            self.open_server_log(index);
+            return;
+        }
         if let Some((name, text)) = self.server_status.act(lsp, action) {
             self.add_center_item(text_tab(format!("language-server-{name}"), name, &text));
         }
@@ -8728,7 +8880,7 @@ impl FunctionView for FilesView {
     }
 
     fn take_toast(&mut self) -> Option<String> {
-        self.take_tree_toast()
+        self.take_tree_toast().or_else(|| self.lsp_toast.take())
     }
 
     fn take_menu_request(&mut self) -> Option<Vec<workspace::MenuItem>> {
@@ -8749,6 +8901,14 @@ impl FunctionView for FilesView {
     }
 
     fn answer_server_notice(&mut self, token: u64, action: Option<usize>) {
+        if let Some(name) = self.server_notices.missing.remove(&token) {
+            if action == Some(0) {
+                if let Some(file) = quiet_servers_file() {
+                    quiet_server(&file, &name);
+                }
+            }
+            return;
+        }
         let Some((server, request, actions)) = self.server_notices.requests.remove(&token) else {
             return;
         };
@@ -8771,6 +8931,7 @@ impl FunctionView for FilesView {
         self.panes.keep_edited_previews();
         outcome.changed |= self.poll_finder_candidates();
         outcome.changed |= self.poll_pending_opens();
+        outcome.changed |= self.serve_server_logs();
         outcome.changed |= self.apply_disk_changes();
         outcome.changed |= self.serve_project_search();
         outcome.changed |= self.serve_project_diagnostics();
@@ -11136,6 +11297,24 @@ mod markdown_preview_tests {
         });
         assert!(texts.iter().any(|text| text == "Title"), "{texts:?}");
         assert!(texts.iter().any(|text| text.contains("more")), "{texts:?}");
+    }
+}
+
+#[cfg(test)]
+mod quiet_server_tests {
+    use super::*;
+
+    #[test]
+    fn a_quieted_server_is_remembered_once() {
+        let temp = tempfile::tempdir().expect("temp");
+        let file = temp.path().join("config").join("quiet.json");
+        assert!(quiet_servers(&file).is_empty());
+        quiet_server(&file, "solargraph");
+        quiet_server(&file, "solargraph");
+        quiet_server(&file, "gopls");
+        let names = quiet_servers(&file);
+        assert_eq!(names.len(), 2);
+        assert!(names.contains("solargraph") && names.contains("gopls"));
     }
 }
 

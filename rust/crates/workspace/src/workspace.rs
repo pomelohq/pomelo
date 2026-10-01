@@ -636,11 +636,11 @@ pub const LANGUAGE_SERVER_SUBMENU_BASE: u64 = 1700;
 const LANGUAGE_SERVER_LIMIT: u64 = 16;
 /// A server's submenu entries: base + index * stride + which.
 pub const LANGUAGE_SERVER_ACTION_BASE: u64 = 1900;
-const LANGUAGE_SERVER_ACTION_STRIDE: u64 = 4;
+const LANGUAGE_SERVER_ACTION_STRIDE: u64 = 5;
 pub const LANGUAGE_SERVERS_RESTART_ALL: u64 = 1890;
 pub const LANGUAGE_SERVERS_STOP_ALL: u64 = 1891;
 /// Cancel the activity menu's work at this index: base + index.
-pub const LANGUAGE_WORK_CANCEL_BASE: u64 = 1970;
+pub const LANGUAGE_WORK_CANCEL_BASE: u64 = 1980;
 /// The status-bar item names this keeps the line of server activity to, before trailing off.
 pub const ACTIVITY_MESSAGE_LIMIT: usize = 50;
 
@@ -665,6 +665,8 @@ pub struct LanguageServerRow {
     /// What runs it, for the tooltip of its details.
     pub binary: Option<String>,
     pub can_stop: bool,
+    /// It started at least once, so it has a log to view.
+    pub has_log: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -704,6 +706,7 @@ pub struct LanguageServers {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LanguageServerAction {
     ViewMessage(usize),
+    ViewLogs(usize),
     Restart(usize),
     Stop(usize),
     RestartAll,
@@ -735,6 +738,7 @@ pub fn language_server_action(id: u64) -> Option<LanguageServerAction> {
         0 => Some(LanguageServerAction::ViewMessage(index)),
         1 => Some(LanguageServerAction::Restart(index)),
         2 => Some(LanguageServerAction::Stop(index)),
+        4 => Some(LanguageServerAction::ViewLogs(index)),
         _ => None,
     }
 }
@@ -841,6 +845,12 @@ impl LanguageServers {
             items.push(MenuItem::new(
                 language_server_action_id(index, 0),
                 "View Message",
+            ));
+        }
+        if server.has_log {
+            items.push(MenuItem::new(
+                language_server_action_id(index, 4),
+                "View Logs",
             ));
         }
         items.push(MenuItem::new(

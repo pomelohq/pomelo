@@ -71,11 +71,15 @@ pub struct ServerMessage {
     pub actions: Vec<String>,
     pub request: Option<Value>,
     pub switch: Option<ServerSwitch>,
+    /// The server could not be found or downloaded.
+    pub missing: bool,
 }
 
 #[derive(Clone, Debug)]
 pub enum StoreEvent {
     Message(ServerMessage),
+    /// None of the file's servers can do what was asked: the line to tell the user.
+    Unsupported(String),
     Diagnostics(DiagnosticsUpdate),
     Hover(HoverResponse),
     Completions(crate::CompletionsResponse),
@@ -92,6 +96,15 @@ pub enum DefinitionKind {
 }
 
 impl DefinitionKind {
+    fn label(self) -> &'static str {
+        match self {
+            DefinitionKind::Definition => "go to definition",
+            DefinitionKind::Declaration => "go to declaration",
+            DefinitionKind::TypeDefinition => "go to type definition",
+            DefinitionKind::Implementation => "go to implementation",
+        }
+    }
+
     fn method(self) -> &'static str {
         match self {
             DefinitionKind::Definition => "textDocument/definition",
@@ -303,6 +316,8 @@ pub struct LspStore {
     summaries: HashMap<(PathBuf, ServerId), (usize, usize)>,
     resolves: HashMap<(ServerId, i64), (u64, SyncedText)>,
     next_request: u64,
+    /// Each server's output, kept across its restarts.
+    logs: HashMap<ServerId, crate::SharedLog>,
 }
 
 impl LspStore {
@@ -325,6 +340,7 @@ impl LspStore {
             summaries: HashMap::new(),
             resolves: HashMap::new(),
             next_request: 0,
+            logs: HashMap::new(),
         }
     }
 
@@ -475,6 +491,20 @@ impl LspStore {
             Ok(located) => located,
             Err(message) => {
                 eprintln!("lsp: {}: {message}", adapter.name);
+                let name = self
+                    .servers
+                    .get(&id)
+                    .map_or(adapter.name, |server| server.name);
+                self.updates.push(StoreEvent::Message(ServerMessage {
+                    server: id,
+                    name,
+                    level: MessageLevel::Warning,
+                    message: message.clone(),
+                    actions: Vec::new(),
+                    request: None,
+                    switch: None,
+                    missing: true,
+                }));
                 self.fail(id, message);
                 return false;
             }
@@ -485,6 +515,15 @@ impl LspStore {
         ) else {
             return false;
         };
+        let log = self.logs.entry(id).or_default().clone();
+        if let Ok(mut log) = log.lock() {
+            log.push(format!(
+                "Starting {} {} in {}",
+                located.binary.display(),
+                located.args.join(" "),
+                root.display()
+            ));
+        }
         let mut server = match LanguageServer::spawn(
             located.name,
             &located.binary,
@@ -492,6 +531,7 @@ impl LspStore {
             &root,
             &env,
             self.waker.clone(),
+            log,
         ) {
             Ok(server) => server,
             Err(error) => {
@@ -1007,6 +1047,24 @@ impl LspStore {
             .map(|(id, _)| *id)
             .filter(|id| self.capabilities(*id).is_some_and(supported))
             .collect();
+        if targets.is_empty() {
+            let names: Vec<String> = in_step
+                .iter()
+                .filter_map(|(id, _)| {
+                    let server = self.servers.get(id)?;
+                    Some(match &server.version {
+                        Some(version) => format!("{} {version}", server.name),
+                        None => server.name.to_string(),
+                    })
+                })
+                .collect();
+            self.updates.push(StoreEvent::Unsupported(format!(
+                "{} does not support {}",
+                names.join(", "),
+                kind.label()
+            )));
+            return None;
+        }
         let uri = self.documents.get(path)?.uri.clone();
         let params = json!({
             "textDocument": {"uri": uri},
@@ -1238,7 +1296,10 @@ impl LspStore {
                 } else if method == "$/progress" {
                     self.receive_progress(id, &params);
                 } else if method == "window/showMessage" {
+                    self.log_message(id, &params);
                     self.receive_message(id, &params, None);
+                } else if method == "window/logMessage" {
+                    self.log_message(id, &params);
                 }
             }
             ServerEvent::MessageRequest { id: call, params } => {
@@ -1414,6 +1475,39 @@ impl LspStore {
     }
 
     /// Ask a server to cancel work it said can be (`window/workDoneProgress/cancel`).
+    fn log_message(&mut self, id: ServerId, params: &Value) {
+        let level = match params.get("type").and_then(Value::as_u64) {
+            Some(1) => "ERROR",
+            Some(2) => "WARN",
+            Some(3) => "INFO",
+            _ => "LOG",
+        };
+        let message = params
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if let Ok(mut log) = self.logs.entry(id).or_default().lock() {
+            log.push(format!("[{level}] {message}"));
+        }
+    }
+
+    /// The lines of `id`'s log after the first `seen`, and how many there have been; none before it started.
+    pub fn server_log(&self, id: ServerId, seen: u64) -> Option<(Vec<String>, u64)> {
+        let log = self.logs.get(&id)?.lock().ok()?;
+        Some(log.since(seen))
+    }
+
+    pub fn has_log(&self, id: ServerId) -> bool {
+        self.logs.contains_key(&id)
+    }
+
+    /// Whether a view shows `id`'s log, so its new lines wake the UI.
+    pub fn watch_log(&mut self, id: ServerId, watched: bool) {
+        if let Ok(mut log) = self.logs.entry(id).or_default().lock() {
+            log.watched = watched;
+        }
+    }
+
     fn receive_message(&mut self, id: ServerId, params: &Value, request: Option<Value>) {
         let name = self.servers.get(&id).map_or("server", |server| server.name);
         let message = params
@@ -1445,6 +1539,7 @@ impl LspStore {
             actions,
             request,
             switch,
+            missing: false,
         }));
     }
 
@@ -1976,6 +2071,29 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn log_and_show_messages_land_in_the_servers_log() {
+        let (mut store, id) = store_with_running("typescript");
+        for (method, kind, message) in [
+            ("window/logMessage", 4, "indexing"),
+            ("window/showMessage", 1, "crashed"),
+        ] {
+            store.handle_event(
+                id,
+                ServerEvent::Notification {
+                    method: method.into(),
+                    params: json!({"type": kind, "message": message}),
+                },
+            );
+        }
+        let (lines, seen) = store.server_log(id, 0).expect("log");
+        assert_eq!(lines, ["[LOG] indexing", "[ERROR] crashed"]);
+        assert_eq!(
+            store.server_log(id, seen).map(|(lines, _)| lines.len()),
+            Some(0)
+        );
     }
 
     #[test]

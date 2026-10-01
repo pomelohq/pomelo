@@ -44,6 +44,7 @@ impl ServerStatusState {
                     summary.status,
                     ServerStatus::Starting | ServerStatus::Running
                 ),
+                has_log: store.has_log(summary.key),
             })
             .collect::<Vec<_>>();
         let can_stop_all = servers.iter().any(|server| server.can_stop);
@@ -151,6 +152,7 @@ impl ServerStatusState {
                 store.restart_server(key);
             }
             LanguageServerAction::Stop(index) => store.stop_server(key(index)?),
+            LanguageServerAction::ViewLogs(_) => {}
             LanguageServerAction::RestartAll => {
                 self.dismissed.clear();
                 store.restart_all();

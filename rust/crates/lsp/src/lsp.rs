@@ -6,6 +6,7 @@ mod adapters;
 mod completion;
 mod install;
 mod position;
+mod server_log;
 mod shell_env;
 mod store;
 
@@ -28,6 +29,7 @@ pub use completion::{
 pub use install::{languages_dir, BinaryStatus, Located};
 pub use lsp_types;
 pub use position::{char_to_position, diagnostic_char_range, position_to_char};
+pub use server_log::{ServerLog, SharedLog};
 pub use shell_env::capture_login_env;
 pub use store::{
     DefinitionKind, DefinitionTarget, DefinitionsResponse, DiagnosticsUpdate, HoverResponse,
@@ -113,6 +115,7 @@ impl LanguageServer {
         root: &Path,
         env: &HashMap<String, String>,
         waker: Waker,
+        log: SharedLog,
     ) -> std::io::Result<Self> {
         let mut child = Command::new(binary)
             .args(args)
@@ -131,11 +134,19 @@ impl LanguageServer {
         let (outgoing, to_write) = channel::<String>();
         std::thread::spawn(move || write_messages(stdin, to_write));
         let (sender, incoming) = channel();
+        let stderr_waker = waker.clone();
         std::thread::spawn(move || read_messages(stdout, sender, waker));
         let server_name = name.to_string();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 eprintln!("{server_name}: {line}");
+                let watched = log.lock().is_ok_and(|mut log| {
+                    log.push(line);
+                    log.watched
+                });
+                if watched {
+                    stderr_waker();
+                }
             }
         });
         Ok(Self {
@@ -585,6 +596,7 @@ mod tests {
             Path::new("/"),
             &env,
             Arc::new(|| {}),
+            SharedLog::default(),
         )
         .unwrap();
         let id = server.request("initialize", json!({}));
@@ -606,6 +618,7 @@ mod tests {
             Path::new("/tmp"),
             &env,
             Arc::new(|| {}),
+            SharedLog::default(),
         )
         .unwrap();
         assert_eq!(
