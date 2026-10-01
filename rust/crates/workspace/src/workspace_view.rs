@@ -6508,6 +6508,9 @@ impl WorkspaceView {
     fn pull_server_notices(&mut self) {
         if let Some(view) = self.layout.files_view.as_mut() {
             self.server_notices.extend(view.take_server_notices());
+            if let Some(message) = view.take_toast() {
+                self.show_toast(message, None);
+            }
         }
         if self.notification.is_some() {
             return;

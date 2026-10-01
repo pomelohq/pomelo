@@ -66,6 +66,17 @@ pub struct Candidate {
     pub npm: Option<NpmPackage>,
     /// Left out of `...`: runs only when `language_servers` names it.
     pub opt_in: bool,
+    /// The command that installs it, told to the user when it is missing and can't be downloaded.
+    pub install: Option<&'static str>,
+}
+
+impl Candidate {
+    const fn installed_by(self, command: &'static str) -> Self {
+        Candidate {
+            install: Some(command),
+            ..self
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +98,7 @@ const fn candidate(
         probe: None,
         npm: None,
         opt_in: false,
+        install: None,
     }
 }
 
@@ -131,6 +143,7 @@ const RUST: Adapter = Adapter {
         probe: Some(&["--help"]),
         npm: None,
         opt_in: false,
+        install: Some("rustup component add rust-analyzer"),
     }]),
 };
 const CLANGD: Adapter = Adapter {
@@ -147,7 +160,9 @@ const GOPLS: Adapter = Adapter {
         names: &["go.work", "go.mod"],
         outermost: true,
     },
-    candidates: std::borrow::Cow::Borrowed(&[candidate("gopls", "gopls", &[])]),
+    candidates: std::borrow::Cow::Borrowed(&[
+        candidate("gopls", "gopls", &[]).installed_by("go install golang.org/x/tools/gopls@latest")
+    ]),
 };
 const PYTHON: Adapter = Adapter {
     name: "python",
@@ -176,7 +191,7 @@ const PYTHON: Adapter = Adapter {
             "pyright",
             "node_modules/pyright/langserver.index.js",
         ),
-        candidate("ty", "ty", &["server"]),
+        candidate("ty", "ty", &["server"]).installed_by("uv tool install ty"),
     ]),
 };
 const RUBY: Adapter = Adapter {
@@ -186,8 +201,8 @@ const RUBY: Adapter = Adapter {
         outermost: false,
     },
     candidates: std::borrow::Cow::Borrowed(&[
-        candidate("solargraph", "solargraph", &["stdio"]),
-        opt_in("ruby-lsp", "ruby-lsp", &[]),
+        candidate("solargraph", "solargraph", &["stdio"]).installed_by("gem install solargraph"),
+        opt_in("ruby-lsp", "ruby-lsp", &[]).installed_by("gem install ruby-lsp"),
     ]),
 };
 const TAILWIND: Adapter = Adapter {
