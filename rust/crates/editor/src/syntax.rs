@@ -86,7 +86,7 @@ impl LanguageQueries {
 
     fn compile(lang: Lang) -> Option<LanguageQueries> {
         let (language, source) = grammar(lang)?;
-        let query = Query::new(&language, source).ok()?;
+        let query = Query::new(&language, &source).ok()?;
         let capture_keys = query
             .capture_names()
             .iter()

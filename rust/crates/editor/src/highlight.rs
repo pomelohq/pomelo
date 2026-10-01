@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use crate::registry::{language_registry, LanguageMatcher, LanguageQueries, LanguageRegistry};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
     Rust,
@@ -53,38 +57,11 @@ pub enum Lang {
     PlainText,
 }
 
-static FILE_TYPES: std::sync::RwLock<Vec<(Lang, Vec<String>)>> = std::sync::RwLock::new(Vec::new());
-
 /// Files the settings say are a language, over detection: whole names, extensions, or `*` globs.
 pub fn set_file_types(file_types: Vec<(Lang, Vec<String>)>) {
-    if let Ok(mut slot) = FILE_TYPES.write() {
-        *slot = file_types;
+    if let Ok(mut registry) = language_registry().write() {
+        registry.set_file_types(file_types);
     }
-}
-
-fn file_type_matches(pattern: &str, name: &str, path: &str) -> bool {
-    if !pattern.contains('*') {
-        return name == pattern
-            || name
-                .rsplit_once('.')
-                .is_some_and(|(_, extension)| extension == pattern);
-    }
-    let subject = if pattern.contains('/') { path } else { name };
-    let mut parts = pattern.split('*');
-    let Some(mut rest) = subject.strip_prefix(parts.next().unwrap_or_default()) else {
-        return false;
-    };
-    let parts: Vec<&str> = parts.collect();
-    for (index, part) in parts.iter().enumerate() {
-        if index + 1 == parts.len() {
-            return rest.ends_with(part);
-        }
-        match rest.find(part) {
-            Some(at) => rest = &rest[at + part.len()..],
-            None => return false,
-        }
-    }
-    rest.is_empty()
 }
 
 impl Lang {
@@ -140,7 +117,7 @@ impl Lang {
     ];
 
     pub fn from_name(name: &str) -> Option<Lang> {
-        Lang::LANGUAGES.into_iter().find(|lang| lang.name() == name)
+        language_registry().read().ok()?.language_for_name(name)
     }
 
     pub fn tab_size(self) -> usize {
@@ -268,47 +245,11 @@ impl Lang {
     /// The language of the file at `path`: the longest of its extension, name, or whole path that equals a
     /// language's suffix or ends in `.suffix` wins; with no match, a first-line pattern (a shebang) decides.
     pub fn detect(path: &str, first_line: Option<&str>) -> Lang {
-        let name = path.rsplit('/').next().unwrap_or(path);
-        let set = FILE_TYPES.read().ok().and_then(|file_types| {
-            file_types
-                .iter()
-                .find(|(_, patterns)| {
-                    patterns
-                        .iter()
-                        .any(|pattern| file_type_matches(pattern, name, path))
-                })
-                .map(|(lang, _)| *lang)
-        });
-        if let Some(lang) = set {
-            return lang;
-        }
-        let extension = name.rsplit('.').next().unwrap_or(name);
-        let candidates = [extension, name, path];
-        let mut best: Option<(usize, Lang)> = None;
-        for (lang, suffixes) in PATH_SUFFIXES {
-            for suffix in *suffixes {
-                let dotted = format!(".{suffix}");
-                let matched = candidates
-                    .iter()
-                    .find(|candidate| **candidate == *suffix || candidate.ends_with(&dotted))
-                    .map(|candidate| candidate.len());
-                if let Some(len) = matched {
-                    if best.is_none_or(|(best_len, _)| len > best_len) {
-                        best = Some((len, *lang));
-                    }
-                }
-            }
-        }
-        if let Some((_, lang)) = best {
-            return lang;
-        }
-        let first_line = first_line.unwrap_or("");
-        FIRST_LINE_PATTERNS
-            .iter()
-            .find(|(_, pattern)| {
-                regex::Regex::new(pattern).is_ok_and(|regex| regex.is_match(first_line))
+        language_registry()
+            .read()
+            .map_or(Lang::PlainText, |registry| {
+                registry.language_for_file(path, first_line)
             })
-            .map_or(Lang::PlainText, |(lang, _)| *lang)
     }
 
     /// The language an injection names, by language name or file extension (`rust`, `rs`, `c++`...).
@@ -480,8 +421,13 @@ const FIRST_LINE_PATTERNS: &[(Lang, &str)] = &[
     (Lang::Cpp, r"^//.*-\*-\s*C\+\+\s*-\*-"),
 ];
 
-/// The injection query a grammar ships with, where it has one.
-pub fn injection_patterns(lang: Lang) -> Option<&'static str> {
+/// The injection query `lang`'s grammar is read with, where it has one.
+pub fn injection_patterns(lang: Lang) -> Option<Arc<str>> {
+    language_registry().read().ok()?.queries(lang)?.injections
+}
+
+/// The injection query a compiled-in grammar ships with, where it has one.
+fn native_injections(lang: Lang) -> Option<&'static str> {
     Some(match lang {
         Lang::Markdown => tree_sitter_md::INJECTION_QUERY_BLOCK,
         Lang::MarkdownInline => tree_sitter_md::INJECTION_QUERY_INLINE,
@@ -578,209 +524,192 @@ static CPP_HIGHLIGHTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(||
     .join("\n")
 });
 
-pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, &'static str)> {
-    let (language, highlights): (tree_sitter::Language, &'static str) = match lang {
-        Lang::Rust => (
-            tree_sitter_rust::LANGUAGE.into(),
-            tree_sitter_rust::HIGHLIGHTS_QUERY,
-        ),
-        Lang::TypeScript => (
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            TYPESCRIPT_HIGHLIGHTS.as_str(),
-        ),
-        Lang::Tsx => (
-            tree_sitter_typescript::LANGUAGE_TSX.into(),
-            TSX_HIGHLIGHTS.as_str(),
-        ),
-        Lang::JavaScript => (
-            tree_sitter_javascript::LANGUAGE.into(),
-            JAVASCRIPT_HIGHLIGHTS.as_str(),
-        ),
-        Lang::Go => (
-            tree_sitter_go::LANGUAGE.into(),
-            tree_sitter_go::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Python => (
-            tree_sitter_python::LANGUAGE.into(),
-            tree_sitter_python::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Json => (
-            tree_sitter_json::LANGUAGE.into(),
-            tree_sitter_json::HIGHLIGHTS_QUERY,
-        ),
-        Lang::C => (
-            tree_sitter_c::LANGUAGE.into(),
-            tree_sitter_c::HIGHLIGHT_QUERY,
-        ),
-        Lang::Cpp => (tree_sitter_cpp::LANGUAGE.into(), CPP_HIGHLIGHTS.as_str()),
-        Lang::Bash => (
-            tree_sitter_bash::LANGUAGE.into(),
-            tree_sitter_bash::HIGHLIGHT_QUERY,
-        ),
-        Lang::Css => (
-            tree_sitter_css::LANGUAGE.into(),
-            tree_sitter_css::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Html => (
-            tree_sitter_html::LANGUAGE.into(),
-            tree_sitter_html::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Ruby => (
-            tree_sitter_ruby::LANGUAGE.into(),
-            tree_sitter_ruby::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Java => (
-            tree_sitter_java::LANGUAGE.into(),
-            tree_sitter_java::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Toml => (
-            tree_sitter_toml_ng::LANGUAGE.into(),
-            tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Yaml => (
-            tree_sitter_yaml::LANGUAGE.into(),
-            tree_sitter_yaml::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Lua => (
-            tree_sitter_lua::LANGUAGE.into(),
-            tree_sitter_lua::HIGHLIGHTS_QUERY,
-        ),
-        Lang::CSharp => (
-            tree_sitter_c_sharp::LANGUAGE.into(),
-            tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Markdown => (
-            tree_sitter_md::LANGUAGE.into(),
-            tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
-        ),
-        Lang::Php => (
-            tree_sitter_php::LANGUAGE_PHP.into(),
-            tree_sitter_php::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Scala => (
-            tree_sitter_scala::LANGUAGE.into(),
-            tree_sitter_scala::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Elixir => (
-            tree_sitter_elixir::LANGUAGE.into(),
-            tree_sitter_elixir::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Haskell => (
-            tree_sitter_haskell::LANGUAGE.into(),
-            tree_sitter_haskell::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Ocaml => (
-            tree_sitter_ocaml::LANGUAGE_OCAML.into(),
-            tree_sitter_ocaml::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Scss => (
-            tree_sitter_scss::language(),
-            tree_sitter_scss::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Nix => (
-            tree_sitter_nix::LANGUAGE.into(),
-            tree_sitter_nix::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Swift => (
-            tree_sitter_swift::LANGUAGE.into(),
-            tree_sitter_swift::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Make => (
-            tree_sitter_make::LANGUAGE.into(),
-            tree_sitter_make::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Xml => (
-            tree_sitter_xml::LANGUAGE_XML.into(),
-            tree_sitter_xml::XML_HIGHLIGHT_QUERY,
-        ),
-        Lang::Zig => (
-            tree_sitter_zig::LANGUAGE.into(),
-            tree_sitter_zig::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Dart => (
-            tree_sitter_dart::LANGUAGE.into(),
-            tree_sitter_dart::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Sql => (
-            tree_sitter_sequel::LANGUAGE.into(),
-            tree_sitter_sequel::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Kotlin => (
-            tree_sitter_kotlin_ng::LANGUAGE.into(),
-            include_str!("../queries/kotlin/highlights.scm"),
-        ),
-        Lang::Svelte => (
-            tree_sitter_svelte_ng::LANGUAGE.into(),
-            tree_sitter_svelte_ng::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Dockerfile => (
-            tree_sitter_containerfile::LANGUAGE.into(),
-            tree_sitter_containerfile::HIGHLIGHTS_QUERY,
-        ),
-        Lang::GraphQl => (
-            tree_sitter_graphql::LANGUAGE.into(),
-            include_str!("../queries/graphql/highlights.scm"),
-        ),
-        Lang::Hcl => (
-            tree_sitter_hcl::LANGUAGE.into(),
-            include_str!("../queries/hcl/highlights.scm"),
-        ),
-        Lang::Proto => (
-            tree_sitter_proto::LANGUAGE.into(),
-            include_str!("../queries/proto/highlights.scm"),
-        ),
-        Lang::Diff => (
-            tree_sitter_diff::LANGUAGE.into(),
-            tree_sitter_diff::HIGHLIGHTS_QUERY,
-        ),
-        Lang::GitCommit => (
-            tree_sitter_gitcommit::LANGUAGE.into(),
-            tree_sitter_gitcommit::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Ini => (
-            tree_sitter_ini::LANGUAGE.into(),
-            tree_sitter_ini::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Erlang => (
-            tree_sitter_erlang::LANGUAGE.into(),
-            tree_sitter_erlang::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Gleam => (
-            tree_sitter_gleam::LANGUAGE.into(),
-            tree_sitter_gleam::HIGHLIGHT_QUERY,
-        ),
-        Lang::R => (
-            tree_sitter_r::LANGUAGE.into(),
-            tree_sitter_r::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Elm => (
-            tree_sitter_elm::LANGUAGE.into(),
-            tree_sitter_elm::HIGHLIGHTS_QUERY,
-        ),
-        Lang::Prisma => (
-            tree_sitter_prisma_io::LANGUAGE.into(),
-            include_str!("../queries/prisma/highlights.scm"),
-        ),
-        Lang::MarkdownInline => (
-            tree_sitter_md::INLINE_LANGUAGE.into(),
-            tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
-        ),
-        Lang::Regex => (
-            tree_sitter_regex::LANGUAGE.into(),
-            tree_sitter_regex::HIGHLIGHTS_QUERY,
-        ),
-        Lang::JsDoc => (
-            tree_sitter_jsdoc::LANGUAGE.into(),
-            tree_sitter_jsdoc::HIGHLIGHTS_QUERY,
-        ),
+/// The grammar compiled into the app for `lang`.
+fn native_grammar(lang: Lang) -> Option<tree_sitter::Language> {
+    Some(match lang {
+        Lang::Rust => tree_sitter_rust::LANGUAGE.into(),
+        Lang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        Lang::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        Lang::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+        Lang::Go => tree_sitter_go::LANGUAGE.into(),
+        Lang::Python => tree_sitter_python::LANGUAGE.into(),
+        Lang::Json => tree_sitter_json::LANGUAGE.into(),
+        Lang::C => tree_sitter_c::LANGUAGE.into(),
+        Lang::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+        Lang::Bash => tree_sitter_bash::LANGUAGE.into(),
+        Lang::Css => tree_sitter_css::LANGUAGE.into(),
+        Lang::Html => tree_sitter_html::LANGUAGE.into(),
+        Lang::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+        Lang::Java => tree_sitter_java::LANGUAGE.into(),
+        Lang::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
+        Lang::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+        Lang::Lua => tree_sitter_lua::LANGUAGE.into(),
+        Lang::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+        Lang::Markdown => tree_sitter_md::LANGUAGE.into(),
+        Lang::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+        Lang::Scala => tree_sitter_scala::LANGUAGE.into(),
+        Lang::Elixir => tree_sitter_elixir::LANGUAGE.into(),
+        Lang::Haskell => tree_sitter_haskell::LANGUAGE.into(),
+        Lang::Ocaml => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
+        Lang::Scss => tree_sitter_scss::language(),
+        Lang::Nix => tree_sitter_nix::LANGUAGE.into(),
+        Lang::Swift => tree_sitter_swift::LANGUAGE.into(),
+        Lang::Make => tree_sitter_make::LANGUAGE.into(),
+        Lang::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
+        Lang::Zig => tree_sitter_zig::LANGUAGE.into(),
+        Lang::Dart => tree_sitter_dart::LANGUAGE.into(),
+        Lang::Sql => tree_sitter_sequel::LANGUAGE.into(),
+        Lang::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
+        Lang::Svelte => tree_sitter_svelte_ng::LANGUAGE.into(),
+        Lang::Dockerfile => tree_sitter_containerfile::LANGUAGE.into(),
+        Lang::GraphQl => tree_sitter_graphql::LANGUAGE.into(),
+        Lang::Hcl => tree_sitter_hcl::LANGUAGE.into(),
+        Lang::Proto => tree_sitter_proto::LANGUAGE.into(),
+        Lang::Diff => tree_sitter_diff::LANGUAGE.into(),
+        Lang::GitCommit => tree_sitter_gitcommit::LANGUAGE.into(),
+        Lang::Ini => tree_sitter_ini::LANGUAGE.into(),
+        Lang::Erlang => tree_sitter_erlang::LANGUAGE.into(),
+        Lang::Gleam => tree_sitter_gleam::LANGUAGE.into(),
+        Lang::R => tree_sitter_r::LANGUAGE.into(),
+        Lang::Elm => tree_sitter_elm::LANGUAGE.into(),
+        Lang::Prisma => tree_sitter_prisma_io::LANGUAGE.into(),
+        Lang::MarkdownInline => tree_sitter_md::INLINE_LANGUAGE.into(),
+        Lang::Regex => tree_sitter_regex::LANGUAGE.into(),
+        Lang::JsDoc => tree_sitter_jsdoc::LANGUAGE.into(),
         Lang::PlainText => return None,
+    })
+}
+
+/// The highlight query a compiled-in grammar is read with.
+fn native_highlights(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
+        Lang::TypeScript => TYPESCRIPT_HIGHLIGHTS.as_str(),
+        Lang::Tsx => TSX_HIGHLIGHTS.as_str(),
+        Lang::JavaScript => JAVASCRIPT_HIGHLIGHTS.as_str(),
+        Lang::Go => tree_sitter_go::HIGHLIGHTS_QUERY,
+        Lang::Python => tree_sitter_python::HIGHLIGHTS_QUERY,
+        Lang::Json => tree_sitter_json::HIGHLIGHTS_QUERY,
+        Lang::C => tree_sitter_c::HIGHLIGHT_QUERY,
+        Lang::Cpp => CPP_HIGHLIGHTS.as_str(),
+        Lang::Bash => tree_sitter_bash::HIGHLIGHT_QUERY,
+        Lang::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
+        Lang::Html => tree_sitter_html::HIGHLIGHTS_QUERY,
+        Lang::Ruby => tree_sitter_ruby::HIGHLIGHTS_QUERY,
+        Lang::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
+        Lang::Toml => tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+        Lang::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY,
+        Lang::Lua => tree_sitter_lua::HIGHLIGHTS_QUERY,
+        Lang::CSharp => tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
+        Lang::Markdown => tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+        Lang::Php => tree_sitter_php::HIGHLIGHTS_QUERY,
+        Lang::Scala => tree_sitter_scala::HIGHLIGHTS_QUERY,
+        Lang::Elixir => tree_sitter_elixir::HIGHLIGHTS_QUERY,
+        Lang::Haskell => tree_sitter_haskell::HIGHLIGHTS_QUERY,
+        Lang::Ocaml => tree_sitter_ocaml::HIGHLIGHTS_QUERY,
+        Lang::Scss => tree_sitter_scss::HIGHLIGHTS_QUERY,
+        Lang::Nix => tree_sitter_nix::HIGHLIGHTS_QUERY,
+        Lang::Swift => tree_sitter_swift::HIGHLIGHTS_QUERY,
+        Lang::Make => tree_sitter_make::HIGHLIGHTS_QUERY,
+        Lang::Xml => tree_sitter_xml::XML_HIGHLIGHT_QUERY,
+        Lang::Zig => tree_sitter_zig::HIGHLIGHTS_QUERY,
+        Lang::Dart => tree_sitter_dart::HIGHLIGHTS_QUERY,
+        Lang::Sql => tree_sitter_sequel::HIGHLIGHTS_QUERY,
+        Lang::Kotlin => include_str!("../queries/kotlin/highlights.scm"),
+        Lang::Svelte => tree_sitter_svelte_ng::HIGHLIGHTS_QUERY,
+        Lang::Dockerfile => tree_sitter_containerfile::HIGHLIGHTS_QUERY,
+        Lang::GraphQl => include_str!("../queries/graphql/highlights.scm"),
+        Lang::Hcl => include_str!("../queries/hcl/highlights.scm"),
+        Lang::Proto => include_str!("../queries/proto/highlights.scm"),
+        Lang::Diff => tree_sitter_diff::HIGHLIGHTS_QUERY,
+        Lang::GitCommit => tree_sitter_gitcommit::HIGHLIGHTS_QUERY,
+        Lang::Ini => tree_sitter_ini::HIGHLIGHTS_QUERY,
+        Lang::Erlang => tree_sitter_erlang::HIGHLIGHTS_QUERY,
+        Lang::Gleam => tree_sitter_gleam::HIGHLIGHT_QUERY,
+        Lang::R => tree_sitter_r::HIGHLIGHTS_QUERY,
+        Lang::Elm => tree_sitter_elm::HIGHLIGHTS_QUERY,
+        Lang::Prisma => include_str!("../queries/prisma/highlights.scm"),
+        Lang::MarkdownInline => tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+        Lang::Regex => tree_sitter_regex::HIGHLIGHTS_QUERY,
+        Lang::JsDoc => tree_sitter_jsdoc::HIGHLIGHTS_QUERY,
+        Lang::PlainText => "",
+    }
+}
+
+/// The grammar that parses `lang` and its highlight query; none for plain text.
+pub fn grammar(lang: Lang) -> Option<(tree_sitter::Language, Arc<str>)> {
+    language_registry().read().ok()?.grammar(lang)
+}
+
+/// The languages and grammars compiled into the app. Languages with a first-line pattern keep the order
+/// those patterns are tried in; path suffixes are unique across languages, so their order doesn't matter.
+pub(crate) fn builtin_registry() -> LanguageRegistry {
+    let mut registry = LanguageRegistry::default();
+    let embedded = [Lang::MarkdownInline, Lang::Regex, Lang::JsDoc];
+    let grammars = Lang::LANGUAGES
+        .iter()
+        .chain(&embedded)
+        .filter_map(|lang| Some((Arc::from(lang.name()), native_grammar(*lang)?)));
+    registry.register_native_grammars(grammars.collect::<Vec<_>>());
+    let first_line = |lang: Lang| {
+        FIRST_LINE_PATTERNS
+            .iter()
+            .find(|(each, _)| *each == lang)
+            .and_then(|(_, pattern)| regex::Regex::new(pattern).ok())
     };
-    Some((language, highlights))
+    let suffixes = |lang: Lang| -> Vec<String> {
+        PATH_SUFFIXES
+            .iter()
+            .find(|(each, _)| *each == lang)
+            .map(|(_, suffixes)| suffixes.iter().map(|suffix| suffix.to_string()).collect())
+            .unwrap_or_default()
+    };
+    let ordered = FIRST_LINE_PATTERNS
+        .iter()
+        .map(|(lang, _)| *lang)
+        .chain(PATH_SUFFIXES.iter().map(|(lang, _)| *lang))
+        .chain([Lang::PlainText]);
+    let mut registered: Vec<Lang> = Vec::new();
+    for lang in ordered {
+        if registered.contains(&lang) {
+            continue;
+        }
+        registered.push(lang);
+        register_builtin(&mut registry, lang, suffixes(lang), first_line(lang), false);
+    }
+    for lang in embedded {
+        register_builtin(&mut registry, lang, Vec::new(), None, true);
+    }
+    registry
+}
+
+fn register_builtin(
+    registry: &mut LanguageRegistry,
+    lang: Lang,
+    path_suffixes: Vec<String>,
+    first_line: Option<regex::Regex>,
+    hidden: bool,
+) {
+    let grammar = (lang != Lang::PlainText).then(|| Arc::from(lang.name()));
+    registry.register_language(
+        lang,
+        LanguageMatcher {
+            path_suffixes,
+            first_line,
+        },
+        grammar,
+        hidden,
+        Arc::new(move || LanguageQueries {
+            highlights: native_highlights(lang).into(),
+            injections: native_injections(lang).map(Into::into),
+        }),
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::file_type_matches;
 
     #[test]
     fn file_types_match_names_extensions_and_globs() {
@@ -808,7 +737,7 @@ mod tests {
             .chain(&embedded)
             .filter_map(|lang| {
                 let (language, source) = grammar(*lang)?;
-                tree_sitter::Query::new(&language, source)
+                tree_sitter::Query::new(&language, &source)
                     .err()
                     .map(|error| format!("{lang:?}: {error}"))
             })
@@ -837,5 +766,21 @@ mod tests {
             Lang::JavaScript
         );
         assert_eq!(Lang::detect("notes", Some("hello")), Lang::PlainText);
+    }
+
+    #[test]
+    fn first_line_patterns_are_tried_in_their_order_and_names_resolve() {
+        assert_eq!(
+            Lang::detect("bin/x", Some("#!/usr/bin/env -S deno run --ext=js")),
+            Lang::JavaScript
+        );
+        assert_eq!(
+            Lang::detect("bin/x", Some("#!/usr/bin/env -S deno run")),
+            Lang::TypeScript
+        );
+        for lang in Lang::LANGUAGES {
+            assert_eq!(Lang::from_name(lang.name()), Some(lang));
+        }
+        assert_eq!(Lang::from_name("Regex"), None);
     }
 }
