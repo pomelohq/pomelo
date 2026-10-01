@@ -8128,6 +8128,66 @@ fn open_definition(
     group.record_nav_jump(snapshot);
 }
 
+/// File extensions with an icon of their own; also tells the language picker which icon a language gets.
+pub(crate) const EXTENSION_ICONS: &[(&[&str], MaterialIcon)] = &[
+    (&["rs"], MaterialIcon::Rust),
+    (&["go"], MaterialIcon::Go),
+    (&["ts", "mts", "cts"], MaterialIcon::TypeScript),
+    (&["tsx", "jsx"], MaterialIcon::React),
+    (&["js", "mjs", "cjs"], MaterialIcon::JavaScript),
+    (&["json"], MaterialIcon::Json),
+    (&["md", "markdown", "mdx"], MaterialIcon::Markdown),
+    (&["toml"], MaterialIcon::Toml),
+    (&["yaml", "yml"], MaterialIcon::Yaml),
+    (&["html", "htm"], MaterialIcon::Html),
+    (&["css"], MaterialIcon::Css),
+    (&["scss", "sass"], MaterialIcon::Sass),
+    (&["py", "pyi"], MaterialIcon::Python),
+    (
+        &[
+            "rb", "erb", "rbs", "rbi", "rbx", "rjs", "rake", "ru", "gemspec", "podspec",
+        ],
+        MaterialIcon::Ruby,
+    ),
+    (&["lock"], MaterialIcon::Lock),
+    (&["sh", "bash", "zsh", "fish"], MaterialIcon::Console),
+    (
+        &["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"],
+        MaterialIcon::Image,
+    ),
+    (&["c", "h"], MaterialIcon::C),
+    (&["cc", "cpp", "cxx", "hpp", "hh", "hxx"], MaterialIcon::Cpp),
+    (&["cs"], MaterialIcon::CSharp),
+    (&["dart"], MaterialIcon::Dart),
+    (&["diff", "patch"], MaterialIcon::Diff),
+    (&["dockerfile", "containerfile"], MaterialIcon::Docker),
+    (&["ex", "exs", "heex"], MaterialIcon::Elixir),
+    (&["elm"], MaterialIcon::Elm),
+    (&["erl", "hrl"], MaterialIcon::Erlang),
+    (&["gleam"], MaterialIcon::Gleam),
+    (&["graphql", "gql"], MaterialIcon::GraphQl),
+    (&["hs"], MaterialIcon::Haskell),
+    (&["hcl", "tf", "tfvars"], MaterialIcon::Hcl),
+    (&["ini", "cfg", "conf"], MaterialIcon::Settings),
+    (&["java"], MaterialIcon::Java),
+    (&["kt", "kts"], MaterialIcon::Kotlin),
+    (&["lua"], MaterialIcon::Lua),
+    (&["mk"], MaterialIcon::Makefile),
+    (&["nix"], MaterialIcon::Nix),
+    (&["ml", "mli"], MaterialIcon::Ocaml),
+    (&["php"], MaterialIcon::Php),
+    (&["prisma"], MaterialIcon::Prisma),
+    (&["proto"], MaterialIcon::Proto),
+    (&["r"], MaterialIcon::R),
+    (&["scala", "sc", "sbt"], MaterialIcon::Scala),
+    (&["sql"], MaterialIcon::Database),
+    (&["svelte"], MaterialIcon::Svelte),
+    (&["swift"], MaterialIcon::Swift),
+    (&["xml", "xaml", "plist"], MaterialIcon::Xml),
+    (&["zig"], MaterialIcon::Zig),
+    (&["env"], MaterialIcon::Tune),
+];
+
 /// The Material file-type icon for a filename, by full name then extension (mirrors material-icon-theme's
 /// `fileNames`/`fileExtensions`). Falls back to a generic document.
 fn file_icon(name: &str) -> MaterialIcon {
@@ -8141,31 +8201,20 @@ fn file_icon(name: &str) -> MaterialIcon {
         "gemfile" => return MaterialIcon::Gemfile,
         ".ruby-version" | "rakefile" | "podfile" | "brewfile" | "guardfile" | "capfile"
         | "berksfile" | "dangerfile" | "thorfile" => return MaterialIcon::Ruby,
+        "dockerfile" | "containerfile" | ".dockerignore" => return MaterialIcon::Docker,
+        "makefile" | "gnumakefile" => return MaterialIcon::Makefile,
+        "commit_editmsg" | "merge_msg" | "tag_editmsg" => return MaterialIcon::Git,
         _ => {}
     }
-    let ext = lower.rsplit('.').next().unwrap_or("");
-    match ext {
-        "rs" => MaterialIcon::Rust,
-        "go" => MaterialIcon::Go,
-        "ts" | "mts" | "cts" => MaterialIcon::TypeScript,
-        "tsx" | "jsx" => MaterialIcon::React,
-        "js" | "mjs" | "cjs" => MaterialIcon::JavaScript,
-        "json" => MaterialIcon::Json,
-        "md" | "markdown" | "mdx" => MaterialIcon::Markdown,
-        "toml" => MaterialIcon::Toml,
-        "yaml" | "yml" => MaterialIcon::Yaml,
-        "html" | "htm" => MaterialIcon::Html,
-        "css" => MaterialIcon::Css,
-        "scss" | "sass" => MaterialIcon::Sass,
-        "py" | "pyi" => MaterialIcon::Python,
-        "rb" | "erb" | "rbs" | "rbi" | "rbx" | "rjs" | "rake" | "ru" | "gemspec" | "podspec" => {
-            MaterialIcon::Ruby
-        }
-        "lock" => MaterialIcon::Lock,
-        "sh" | "bash" | "zsh" | "fish" => MaterialIcon::Console,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" => MaterialIcon::Image,
-        _ => MaterialIcon::Document,
+    // `.env`, `.env.local`, `.env.development.local`: every dotenv variant, whatever it ends in.
+    if lower == ".env" || lower.starts_with(".env.") {
+        return MaterialIcon::Tune;
     }
+    let ext = lower.rsplit('.').next().unwrap_or("");
+    EXTENSION_ICONS
+        .iter()
+        .find(|(extensions, _)| extensions.contains(&ext))
+        .map_or(MaterialIcon::Document, |(_, icon)| *icon)
 }
 
 /// Depth-first flatten of the visible tree (a directory's children appear only when it is in `expanded`).
