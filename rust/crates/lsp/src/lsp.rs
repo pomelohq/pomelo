@@ -89,6 +89,8 @@ pub enum ServerEvent {
         id: Value,
         params: Value,
     },
+    /// `workspace/diagnostic/refresh`: diagnostics asked for before may be out of date.
+    DiagnosticsRefresh,
     /// The server's output closed: it exited or crashed.
     Exited,
 }
@@ -235,6 +237,9 @@ impl LanguageServer {
                     events.push(ServerEvent::MessageRequest { id, params });
                 }
                 Ok(Incoming::Request { id, method, params }) => {
+                    if method == "workspace/diagnostic/refresh" {
+                        events.push(ServerEvent::DiagnosticsRefresh);
+                    }
                     if method == "window/workDoneProgress/create" {
                         if let Some(token) = params.get("token").map(progress_token) {
                             events.push(ServerEvent::ProgressCreated { token });
@@ -640,5 +645,16 @@ mod tests {
                 .code,
             METHOD_NOT_FOUND
         );
+        for method in [
+            "eslint/openDoc",
+            "eslint/confirmESLintExecution",
+            "eslint/probeFailed",
+            "eslint/noLibrary",
+        ] {
+            assert_eq!(
+                server.answer(method, &json!({})).unwrap_err().code,
+                METHOD_NOT_FOUND
+            );
+        }
     }
 }
