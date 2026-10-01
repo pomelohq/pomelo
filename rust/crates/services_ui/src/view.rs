@@ -118,14 +118,28 @@ pub(crate) fn action_button(
     hot: bool,
 ) -> Node {
     let colors = theme();
-    let (bg, border, icon_color) = match tone {
+    let (bg, border, icon_color, hover, active) = match tone {
         Tone::Plain => (
             colors.element_background,
             colors.border_variant,
             colors.icon_muted,
+            colors.element_hover,
+            colors.element_active,
         ),
-        Tone::Primary => (colors.info_background, colors.info_border, colors.icon),
-        Tone::Agent => (ai_tint().alpha(0.12), ai_tint().alpha(0.55), ai_tint()),
+        Tone::Primary => (
+            colors.info_background,
+            colors.info_border,
+            colors.icon,
+            colors.info_border.alpha(0.22),
+            colors.info_border.alpha(0.32),
+        ),
+        Tone::Agent => (
+            ai_tint().alpha(0.12),
+            ai_tint().alpha(0.55),
+            ai_tint(),
+            ai_tint().alpha(0.2),
+            ai_tint().alpha(0.28),
+        ),
     };
     let mut button = div()
         .row()
@@ -134,7 +148,9 @@ pub(crate) fn action_button(
         .gap(4.0)
         .items_center()
         .rounded(4.0)
-        .bg(if hot { colors.element_hover } else { bg })
+        .bg(if hot { hover } else { bg })
+        .hover_bg(hover)
+        .active_bg(active)
         .border(1.0, border)
         .on_click(id);
     if let Some(kind) = kind {
@@ -144,6 +160,28 @@ pub(crate) fn action_button(
         button = button.child(label(text.to_string()).size(11.5).color(colors.text));
     }
     button.into()
+}
+
+/// A borderless clickable `child` that lights up under the pointer and while pressed.
+pub(crate) fn ghost(id: u64) -> ui::Div {
+    let colors = theme();
+    div()
+        .row()
+        .items_center()
+        .justify_center()
+        .rounded(3.0)
+        .hover_bg(colors.ghost_element_hover)
+        .active_bg(colors.ghost_element_active)
+        .on_click(id)
+}
+
+/// A small icon-only ghost button, such as a copy icon beside a value.
+pub(crate) fn icon_button(id: u64, kind: IconKind) -> Node {
+    ghost(id)
+        .w_px(18.0)
+        .h_px(18.0)
+        .child(icon(kind).size(11.0).color(theme().icon_muted))
+        .into()
 }
 
 /// A small button that cannot be pressed right now.
