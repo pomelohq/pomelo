@@ -206,14 +206,10 @@ fn routes_hosts_and_dev_paths_rewriting_cookies_and_logging() {
     let log = proxy.log(10);
     assert_eq!(
         log.len(),
-        2,
-        "both the host and the dev path request are logged"
+        1,
+        "a module fetched on a service host is not logged"
     );
-    assert!(log.iter().any(|entry| entry.path == "/health?x=1"));
-    let dev = log
-        .iter()
-        .find(|entry| entry.path.starts_with("/_pom_dev/"))
-        .expect("the dev path request");
+    let dev = &log[0];
     assert_eq!(dev.path, "/_pom_dev/api/server/v1/me");
     assert_eq!((dev.profile.as_str(), dev.status), ("local", 200));
     assert_eq!(dev.target, format!("127.0.0.1:{backend}"));

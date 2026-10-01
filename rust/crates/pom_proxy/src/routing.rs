@@ -15,6 +15,8 @@ const BRANCH_MAP_TTL: Duration = Duration::from_secs(5);
 const PORT_CACHE_TTL: Duration = Duration::from_secs(3);
 const LEASE_CACHE_TTL: Duration = Duration::from_secs(1);
 const REACH_TIMEOUT: Duration = Duration::from_millis(200);
+/// A miss is remembered briefly, so a page's burst of requests to a building service runs one lookup.
+const MISS_CACHE_TTL: Duration = Duration::from_millis(500);
 
 pub type ConfigSource = Arc<RwLock<Option<Arc<Config>>>>;
 
@@ -57,6 +59,9 @@ pub struct Logged {
     pub service: String,
     pub profile: String,
     pub target: String,
+    /// Came in on a service host rather than a `/_pom_dev/` path: only page loads and failures are worth
+    /// a log row, or a page's hundreds of module requests would push everything else out.
+    pub host_routed: bool,
 }
 
 pub struct Decision {
@@ -248,6 +253,7 @@ pub trait Machine: Send + Sync {
 
 type BranchMap = (Instant, HashMap<String, String>);
 type LeaseCache = (Instant, Vec<Lease>);
+type AddressCache = (Instant, Result<SocketAddr, Unavailable>);
 
 /// Routes requests into the open projects, caching what is expensive to look up per request (a dev server
 /// fires hundreds of module requests per page load).
@@ -256,7 +262,9 @@ pub struct Router {
     projects: RwLock<Vec<ProjectRoute>>,
     branch_maps: Mutex<HashMap<PathBuf, BranchMap>>,
     leases: Mutex<HashMap<String, LeaseCache>>,
-    ports: Mutex<HashMap<String, (Instant, SocketAddr)>>,
+    ports: Mutex<HashMap<String, AddressCache>>,
+    /// One lookup at a time: requests arriving while it runs wait and read its result from the cache.
+    resolving: Mutex<()>,
 }
 
 impl Router {
@@ -267,6 +275,7 @@ impl Router {
             branch_maps: Mutex::new(HashMap::new()),
             leases: Mutex::new(HashMap::new()),
             ports: Mutex::new(HashMap::new()),
+            resolving: Mutex::new(()),
         }
     }
 
@@ -336,7 +345,7 @@ impl Router {
     /// Forgets a cached address that just refused a connection, so the next request looks again.
     pub fn forget(&self, address: SocketAddr) {
         if let Ok(mut ports) = self.ports.lock() {
-            ports.retain(|_, (_, cached)| *cached != address);
+            ports.retain(|_, (_, cached)| *cached != Ok(address));
         }
     }
 
@@ -349,16 +358,12 @@ impl Router {
         service_key: &str,
     ) -> Result<SocketAddr, Unavailable> {
         let cache_key = format!("{}\0{branch}\0{service_key}", config.session);
-        let now = Instant::now();
-        if let Some((at, address)) = self
-            .ports
-            .lock()
-            .ok()
-            .and_then(|ports| ports.get(&cache_key).copied())
-        {
-            if now.duration_since(at) < PORT_CACHE_TTL {
-                return Ok(address);
-            }
+        if let Some(cached) = self.cached_address(&cache_key) {
+            return cached;
+        }
+        let _resolving = self.resolving.lock();
+        if let Some(cached) = self.cached_address(&cache_key) {
+            return cached;
         }
         let lease_key = pom_ports::service_key(&pom_env::port_ws_key(branch), service_key);
         let leased = self.lease_port(&config.session, &lease_key);
@@ -373,17 +378,25 @@ impl Router {
                 .into_iter()
                 .find_map(reachable)
         });
-        let Some(address) = found else {
-            return Err(match (alive, leased) {
-                (true, _) => Unavailable::Starting,
-                (false, Some(_)) => Unavailable::Stopped,
-                (false, None) => Unavailable::Unknown,
-            });
-        };
+        let resolved = found.ok_or(match (alive, leased) {
+            (true, _) => Unavailable::Starting,
+            (false, Some(_)) => Unavailable::Stopped,
+            (false, None) => Unavailable::Unknown,
+        });
         if let Ok(mut ports) = self.ports.lock() {
-            ports.insert(cache_key, (now, address));
+            ports.insert(cache_key, (Instant::now(), resolved));
         }
-        Ok(address)
+        resolved
+    }
+
+    fn cached_address(&self, cache_key: &str) -> Option<Result<SocketAddr, Unavailable>> {
+        let (at, cached) = *self.ports.lock().ok()?.get(cache_key)?;
+        let ttl = if cached.is_ok() {
+            PORT_CACHE_TTL
+        } else {
+            MISS_CACHE_TTL
+        };
+        (at.elapsed() < ttl).then_some(cached)
     }
 
     /// Every listening-capable port the service has across the session's workspaces.
@@ -520,6 +533,7 @@ impl Router {
                     service: service.to_string(),
                     profile: "local".into(),
                     target: String::new(),
+                    host_routed: false,
                 };
                 let Some((project, config, branch)) = self.project_for(&branch_label, &target)
                 else {
@@ -561,6 +575,7 @@ impl Router {
                 service: labels[0].clone(),
                 profile: "local".into(),
                 target: logged_target(&route),
+                host_routed: true,
             };
             return Decision {
                 route,

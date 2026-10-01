@@ -247,6 +247,10 @@ async fn handle_proxy(
     let query = request.uri().query().map(str::to_string);
     let method = request.method().to_string();
     let request_headers = header_list(request.headers());
+    let navigation = request
+        .headers()
+        .get("sec-fetch-mode")
+        .is_some_and(|mode| mode.as_bytes() == b"navigate");
     let request_capture = Capture::default();
     let (request_parts, request_body) = request.into_parts();
     let request = Request::from_parts(
@@ -314,7 +318,10 @@ async fn handle_proxy(
         }
         .boxed(),
     );
-    if let Some(logged) = decision.logged {
+    let worth_logging = |logged: &crate::routing::Logged| {
+        !logged.host_routed || navigation || response.status().as_u16() >= 400
+    };
+    if let Some(logged) = decision.logged.filter(worth_logging) {
         let logged_path = match &query {
             Some(query) => format!("{path}?{query}"),
             None => path,

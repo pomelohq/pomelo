@@ -20,6 +20,8 @@ struct World {
     leases: Vec<Lease>,
     listening: Option<u16>,
     holder_alive: bool,
+    lease_scans: usize,
+    process_scans: usize,
 }
 
 #[derive(Clone, Default)]
@@ -40,7 +42,8 @@ impl Machine for FakeMachine {
     fn leases(&self, session: &str) -> Vec<Lease> {
         self.0
             .lock()
-            .map(|world| {
+            .map(|mut world| {
+                world.lease_scans += 1;
                 world
                     .leases
                     .iter()
@@ -51,6 +54,9 @@ impl Machine for FakeMachine {
             .unwrap_or_default()
     }
     fn live_ports(&self, holder: &str) -> Vec<u16> {
+        if let Ok(mut world) = self.0.lock() {
+            world.process_scans += 1;
+        }
         self.0
             .lock()
             .ok()
@@ -109,6 +115,19 @@ fn dead_port_below(ceiling: u16) -> u16 {
         .expect("a dead port")
 }
 
+/// Reads a request head; closing a socket with unread bytes would reset it instead of ending it.
+fn read_head(stream: &mut TcpStream) -> bool {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut byte) {
+            Ok(1) => head.push(byte[0]),
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Answers every request with `200 ok`.
 fn backend(address: &str) -> u16 {
     let address = address
@@ -121,8 +140,7 @@ fn backend(address: &str) -> u16 {
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
             std::thread::spawn(move || {
-                let mut buffer = [0u8; 4096];
-                if stream.read(&mut buffer).is_ok() {
+                if read_head(&mut stream) {
                     let _ = stream.write_all(
                         b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
                     );
@@ -147,13 +165,18 @@ fn start(machine: FakeMachine) -> (DevProxy, u16) {
 }
 
 fn get(proxy_port: u16, host: &str, path: &str) -> String {
+    send(proxy_port, host, path, "")
+}
+
+fn send(proxy_port: u16, host: &str, path: &str, headers: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", proxy_port)).expect("connect proxy");
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("timeout");
     stream
         .write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n{headers}Connection: close\r\n\r\n")
+                .as_bytes(),
         )
         .expect("send");
     let mut response = String::new();
@@ -183,6 +206,7 @@ fn duplicate_leases_reach_the_one_the_service_runs_on() {
             ],
             listening: Some(service),
             holder_alive: true,
+            ..World::default()
         },
     );
 }
@@ -196,6 +220,7 @@ fn a_service_that_ignores_its_port_is_still_reached() {
             leases: vec![lease(dead_port_below(65000), PortState::Running)],
             listening: Some(service),
             holder_alive: true,
+            ..World::default()
         },
     );
 }
@@ -209,6 +234,7 @@ fn a_relocated_workspace_still_reaches_the_service_running_on_its_old_port() {
             leases: vec![lease(dead_port_below(65000), PortState::Assigned)],
             listening: Some(service),
             holder_alive: true,
+            ..World::default()
         },
     );
 }
@@ -222,6 +248,7 @@ fn a_service_whose_lease_was_reaped_is_reached_by_its_live_port() {
             leases: Vec::new(),
             listening: Some(service),
             holder_alive: true,
+            ..World::default()
         },
     );
 }
@@ -235,28 +262,61 @@ fn an_ipv6_only_service_is_reached() {
             leases: vec![lease(service, PortState::Running)],
             listening: Some(service),
             holder_alive: true,
+            ..World::default()
         },
     );
 }
 
+/// Serves one request, then stops listening: a dev server that restarts on another port. A connection
+/// that sends nothing (the proxy checking the port) does not count.
+fn one_shot_backend() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind backend");
+    let port = listener.local_addr().expect("local address").port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            if read_head(&mut stream) {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+                return;
+            }
+        }
+    });
+    port
+}
+
 #[test]
-fn a_service_that_comes_back_is_reached_on_the_next_request() {
+fn a_service_that_comes_back_is_reached_without_waiting_out_the_cache() {
     let machine = FakeMachine::default();
-    let stale = dead_port_below(65000);
-    machine.set(|world| world.leases = vec![lease(stale, PortState::Running)]);
+    machine.set(|world| world.leases = vec![lease(dead_port_below(65000), PortState::Running)]);
     let (_proxy, proxy_port) = start(machine.clone());
     let response = get(proxy_port, HOST, "/");
     assert!(response.starts_with("HTTP/1.1 50"), "{response}");
-    let service = backend("127.0.0.1:0");
+
+    let first = one_shot_backend();
     machine.set(|world| {
-        world.leases = vec![lease(service, PortState::Running)];
-        world.listening = Some(service);
+        world.leases = vec![lease(first, PortState::Running)];
+        world.listening = Some(first);
         world.holder_alive = true;
     });
+    std::thread::sleep(Duration::from_millis(600));
     let response = get(proxy_port, HOST, "/");
     assert!(
         response.starts_with("HTTP/1.1 200"),
-        "a failed request must not pin the dead port in the cache: {response}"
+        "a miss is only remembered briefly: {response}"
+    );
+
+    let second = backend("127.0.0.1:0");
+    machine.set(|world| {
+        world.leases = vec![lease(second, PortState::Running)];
+        world.listening = Some(second);
+    });
+    let response = get(proxy_port, HOST, "/");
+    assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+    let response = get(proxy_port, HOST, "/");
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "an address that refused is forgotten at once: {response}"
     );
 }
 
@@ -274,7 +334,7 @@ fn a_stopped_service_says_it_is_not_running() {
 }
 
 #[test]
-fn host_routed_requests_are_logged() {
+fn host_routed_page_loads_and_failures_are_logged_but_not_every_module() {
     let service = backend("127.0.0.1:0");
     let machine = FakeMachine::default();
     machine.set(|world| {
@@ -282,14 +342,126 @@ fn host_routed_requests_are_logged() {
         world.listening = Some(service);
         world.holder_alive = true;
     });
-    let (proxy, proxy_port) = start(machine);
-    let response = get(proxy_port, HOST, "/login");
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    let log = proxy.log(10);
+    let (proxy, proxy_port) = start(machine.clone());
+    let page = send(proxy_port, HOST, "/login", "Sec-Fetch-Mode: navigate\r\n");
+    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    for module in 0..20 {
+        get(proxy_port, HOST, &format!("/src/module{module}.tsx"));
+    }
+    machine.set(|world| {
+        world.leases.clear();
+        world.listening = None;
+        world.holder_alive = false;
+    });
+    let missing = get(proxy_port, "server.api.main.localhost", "/src/main.tsx");
+    assert!(missing.starts_with("HTTP/1.1 502"), "{missing}");
+    let paths: Vec<String> = proxy.log(50).into_iter().map(|entry| entry.path).collect();
     assert_eq!(
-        log.len(),
-        1,
-        "a request to a service URL shows in Dev Requests"
+        paths,
+        ["/src/main.tsx", "/login"],
+        "the page load and the failure only"
     );
-    assert_eq!(log[0].target, format!("127.0.0.1:{service}"));
+    assert_eq!(proxy.log(50)[1].target, format!("127.0.0.1:{service}"));
+}
+
+/// How a browser loads a client-rendered app: six keep-alive connections to the host, fetching modules
+/// back to back. Returns how many came back 200.
+fn browser_burst(proxy_port: u16, per_connection: usize) -> usize {
+    let handles: Vec<_> = (0..6)
+        .map(|connection| {
+            std::thread::spawn(move || {
+                let Ok(mut stream) = TcpStream::connect(("127.0.0.1", proxy_port)) else {
+                    return 0;
+                };
+                if stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .is_err()
+                {
+                    return 0;
+                }
+                let mut loaded = 0;
+                for module in 0..per_connection {
+                    let request = format!(
+                        "GET /src/c{connection}m{module}.tsx HTTP/1.1\r\nHost: {HOST}\r\n\r\n"
+                    );
+                    if stream.write_all(request.as_bytes()).is_err() {
+                        break;
+                    }
+                    match read_response(&mut stream) {
+                        Some(200) => loaded += 1,
+                        Some(_) => {}
+                        None => break,
+                    }
+                }
+                loaded
+            })
+        })
+        .collect();
+    handles
+        .into_iter()
+        .filter_map(|handle| handle.join().ok())
+        .sum()
+}
+
+/// The status of one response, after reading its body so the connection can carry the next request.
+fn read_response(stream: &mut TcpStream) -> Option<u16> {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut byte) {
+            Ok(1) => head.push(byte[0]),
+            _ => return None,
+        }
+    }
+    let head = String::from_utf8_lossy(&head);
+    let status = head.split(' ').nth(1)?.parse().ok()?;
+    let length: usize = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())?
+        })
+        .unwrap_or(0);
+    let mut body = vec![0u8; length];
+    stream.read_exact(&mut body).ok()?;
+    Some(status)
+}
+
+/// A client-rendered app fetches hundreds of modules per page load.
+#[test]
+fn a_burst_of_module_requests_looks_the_service_up_once() {
+    let service = backend("127.0.0.1:0");
+    let machine = FakeMachine::default();
+    machine.set(|world| {
+        world.leases = vec![lease(dead_port_below(65000), PortState::Running)];
+        world.listening = Some(service);
+        world.holder_alive = true;
+    });
+    let (_proxy, proxy_port) = start(machine.clone());
+    let burst = |per_connection: usize| browser_burst(proxy_port, per_connection);
+    assert_eq!(burst(50), 300, "every module loads");
+    let (leases, processes) = machine
+        .0
+        .lock()
+        .map(|world| (world.lease_scans, world.process_scans))
+        .unwrap_or_default();
+    assert!(leases <= 2, "lease files read {leases} times for one burst");
+    assert!(
+        processes <= 2,
+        "processes scanned {processes} times for one burst"
+    );
+
+    machine.set(|world| {
+        world.listening = None;
+        world.lease_scans = 0;
+        world.process_scans = 0;
+    });
+    std::thread::sleep(Duration::from_millis(3100));
+    assert_eq!(burst(1), 0, "the service is rebuilding");
+    let processes = machine.0.lock().map_or(0, |world| world.process_scans);
+    assert!(
+        processes <= 3,
+        "a building service is looked up {processes} times for one burst"
+    );
 }
