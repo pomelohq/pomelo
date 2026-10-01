@@ -58,6 +58,11 @@ struct IndexEntry {
     license: String,
     repository: String,
     rev: String,
+    /// How the app recognizes the language's files before the package is installed.
+    #[serde(default)]
+    path_suffixes: Vec<String>,
+    #[serde(default)]
+    first_line_pattern: Option<String>,
 }
 
 struct Paths {
@@ -419,6 +424,12 @@ fn build(args: &[String]) -> Result<(), String> {
             license: entry.license.clone(),
             repository: entry.repository.clone(),
             rev: entry.rev.clone(),
+            path_suffixes: builtin
+                .path_suffixes
+                .iter()
+                .map(|suffix| suffix.to_string())
+                .collect(),
+            first_line_pattern: builtin.first_line_pattern.map(str::to_string),
         });
     }
     write_index(&out, &index)

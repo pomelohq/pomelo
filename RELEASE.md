@@ -44,8 +44,13 @@ Secrets (Settings > Secrets > Actions): `MACOS_CERT_P12` (base64 .p12), `MACOS_C
 
 Grammars the app doesn't compile in are packages it downloads: `rust/grammars/manifest.toml` lists them, each
 built from the crate version Cargo.lock pins. `.github/workflows/grammars.yml` builds and checks them on every
-change; run it by hand with `publish=true` to sign `index.json` and publish a `grammars-<date>` release. It is
-never marked latest, because the latest release must keep carrying `appcast.xml`.
+change; run it by hand with `publish=true` to sign `index.json` and upload the packages to the one `grammars`
+release, updated in place. It is never marked latest, because the latest release must keep carrying
+`appcast.xml`, and there is only ever one so it never pushes app releases out of the updater's view.
+
+The app reads `https://github.com/pomelohq/pomelo/releases/download/grammars/index.json` at most once a day, and
+falls back to the copy built into it from `rust/grammars/index.json`. Before an app release that relies on new
+packages, copy the published `index.json` into `rust/grammars/index.json`.
 
 One-time setup, before the first publish:
 
@@ -53,8 +58,9 @@ One-time setup, before the first publish:
    public key. This is a key of its own, not the Sparkle key.
 2. Add the secret as the repository secret `GRAMMARS_SIGNING_KEY`. Keep a copy somewhere safe; like the Sparkle
    key, replacing it later means shipping an app with the new public key before packages signed with it work.
-3. Keep the public key for the app: the downloader (next step of the grammar work) builds it in and refuses
-   any package whose signature it doesn't verify.
+3. Put the public key in `GRAMMARS_PUBLIC_KEY` in `rust/crates/grammars/src/grammars.rs`. Until it is set the
+   app downloads nothing and never suggests a package; once set, every package must match its sha256 and its
+   signature or it is refused.
 
 Locally: `cargo run -p grammar_packager -- build` then `-- verify` (needs network for crates.io and wasi-sdk).
 
