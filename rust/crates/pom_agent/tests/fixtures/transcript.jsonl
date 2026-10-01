@@ -1,0 +1,12 @@
+{"type":"permission-mode","permissionMode":"default","sessionId":"s1"}
+{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"Summary of an earlier conversation"},"timestamp":"2026-10-02T09:59:00.000Z","sessionId":"s1"}
+{"type":"user","message":{"role":"user","content":"list the files in src"},"timestamp":"2026-10-02T10:00:00.000Z","sessionId":"s1"}
+{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"Use ls."}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":50,"cache_creation_input_tokens":7}},"timestamp":"2026-10-02T10:00:01.000Z"}
+{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls src"}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":50,"cache_creation_input_tokens":7}},"timestamp":"2026-10-02T10:00:02.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"main.rs\nlib.rs","is_error":false}]},"timestamp":"2026-10-02T10:00:03.000Z"}
+{"type":"user","isSidechain":true,"message":{"role":"user","content":"a subagent prompt"},"timestamp":"2026-10-02T10:00:03.500Z"}
+{"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"Two files: main.rs and lib.rs."}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":20,"cache_read_input_tokens":50,"cache_creation_input_tokens":0}},"timestamp":"2026-10-02T10:00:04.000Z"}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-10-02T10:00:04.100Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"run the tests"}]},"timestamp":"2026-10-02T10:01:00.000Z"}
+{"type":"assistant","message":{"id":"msg_3","role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"cargo test"}}],"stop_reason":"tool_use","usage":{"input_tokens":5,"output_tokens":3}},"timestamp":"2026-10-02T10:01:01.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":[{"type":"text","text":"1 failed"}],"is_error":true}]},"timestamp":"2026-10-02T10:01:09.000Z"}

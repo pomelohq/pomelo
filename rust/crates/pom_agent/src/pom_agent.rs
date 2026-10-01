@@ -1,5 +1,6 @@
 mod caller;
 mod claude;
+mod driver;
 mod gate;
 mod hooks;
 mod identity;
@@ -10,10 +11,13 @@ mod policy;
 mod sessions;
 mod side;
 mod statusline;
+mod transcript;
+mod turns;
 mod watch;
 
 pub use caller::Caller;
 pub use claude::{install_mcp, mcp_config_json, ClaudeHome, InstallError};
+pub use driver::{driver, AgentDriver, ClaudeDriver, Keystrokes};
 pub use gate::{ApproveScope, Gate, Limits, Refusal, Workspace, REFUSED_EXIT};
 pub use hooks::{
     branch_from_cwd, event_state, install_hooks, notification_for, read_states, record_hook, run,
@@ -44,4 +48,9 @@ pub use side::{
     SideRecord, SideRole, SideStart, SIDE_AGENT_ENV,
 };
 pub use statusline::{record_rate_limits, run_statusline, statusline_settings, RATE_LIMITS_FILE};
+pub use transcript::{Item, ToolCall, TurnContent, Usage, RESULT_PREVIEW};
+pub use turns::{
+    read_turns, turn_content, turn_meta, turn_spans, write_turn_meta, Origin, RecordedTurn,
+    TurnMeta, TurnSpan,
+};
 pub use watch::AgentWatcher;
