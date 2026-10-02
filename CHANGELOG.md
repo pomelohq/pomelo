@@ -4,6 +4,19 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.6] - 2026-10-02
+
+### Added
+- Database snapshots for a workspace: `pom db snapshot`, `restore`, `snapshots` and `snapshot drop` cover every database at once; a restore stops and restarts the workspace's services. (#210)
+- `prepare-main` keeps a `main__baseline` and new workspaces copy from it without disconnecting main, then keep a `ws__baseline`; `pom db baseline` and `pom db reseed` rebuild them, also as MCP tools. (#211)
+- Service healthchecks (`healthcheck: http | cmd`), `pom start --wait` and `pom status -o json` with up, ready and healthy. (#213)
+- `pom mark` with `pom logs --since` and `pom db stats --since` to read one test step's logs and queries, repeated queries included; `describe workspace` and `env ls` print JSON. (#214)
+- `pom queue wait-idle` and `queue counts` for Sidekiq and BullMQ queues in the workspace's Redis. (#215)
+- `pom proxy fault add` injects errors and delays into one workspace's proxied requests, with rules that expire. (#216)
+
+### Fixed
+- Redis slots are kept per project, a released slot's data is cleared, slots of workspaces deleted by hand are reclaimed, and unused Redis containers go away; one Redis now holds 64 workspaces. (#212)
+
 ## [0.8.5] - 2026-10-02
 
 ### Added
