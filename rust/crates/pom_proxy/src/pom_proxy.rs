@@ -1,3 +1,4 @@
+mod faults;
 mod machine;
 mod routing;
 mod server;
@@ -5,6 +6,10 @@ mod server;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+pub use faults::{
+    add_fault, clear_faults, faults_path, load_faults, now_ms as faults_now, remove_fault, Fault,
+    FaultRule,
+};
 pub use machine::{listening_ports_in_tree, SystemMachine};
 pub use routing::{
     branch_labels, host_labels, reachable, resolve_service_key, rewrite_external_cookie,
@@ -137,6 +142,8 @@ pub struct ProxyLogEntry {
     /// Body lengths so far (a streamed response keeps growing after the entry is logged).
     pub request_bytes: u64,
     pub response_bytes: u64,
+    /// The fault rule that changed this request, if one did.
+    pub fault: String,
 }
 
 struct Stored {

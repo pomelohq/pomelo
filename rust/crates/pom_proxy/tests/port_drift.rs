@@ -22,6 +22,7 @@ struct World {
     holder_alive: bool,
     lease_scans: usize,
     process_scans: usize,
+    faults: Vec<pom_proxy::FaultRule>,
 }
 
 #[derive(Clone, Default)]
@@ -70,6 +71,12 @@ impl Machine for FakeMachine {
     }
     fn service_envs(&self, _root: &Path, _branch: &str) -> WorkspaceState {
         WorkspaceState::default()
+    }
+    fn faults(&self) -> Vec<pom_proxy::FaultRule> {
+        self.0
+            .lock()
+            .map(|world| world.faults.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -463,5 +470,74 @@ fn a_burst_of_module_requests_looks_the_service_up_once() {
     assert!(
         processes <= 3,
         "a building service is looked up {processes} times for one burst"
+    );
+}
+
+fn fault(branch: &str, path: &str, status: Option<u16>, delay_ms: u64) -> pom_proxy::FaultRule {
+    pom_proxy::FaultRule {
+        id: format!("f-{branch}-{path}"),
+        session: "demo".into(),
+        branch: branch.into(),
+        repo: "acme-api".into(),
+        alias: "api".into(),
+        service: "server".into(),
+        path: path.into(),
+        status,
+        delay_ms,
+        rate: 1.0,
+        expires_ms: pom_proxy::faults_now() + 60_000,
+    }
+}
+
+#[test]
+fn a_fault_rule_fails_or_delays_only_its_workspace_service_and_path() {
+    let service = backend("127.0.0.1:0");
+    let machine = FakeMachine::default();
+    machine.set(|world| {
+        world.leases = vec![lease(service, PortState::Running)];
+        world.listening = Some(service);
+        world.holder_alive = true;
+        world.faults = vec![
+            fault("feat-login", "/v1/orders", Some(503), 0),
+            fault("feat-login", "/slow", None, 400),
+            fault("main", "/", Some(500), 0),
+        ];
+    });
+    let (proxy, proxy_port) = start(machine);
+    let failed = get(proxy_port, HOST, "/v1/orders/7");
+    assert!(failed.starts_with("HTTP/1.1 503"), "{failed}");
+    assert!(
+        failed.contains("fault f-feat-login-/v1/orders injected"),
+        "{failed}"
+    );
+    let dev_path = get(
+        proxy_port,
+        "web.web.feat-login.localhost",
+        "/_pom_dev/api/server/v1/orders",
+    );
+    assert!(
+        dev_path.starts_with("HTTP/1.1 503"),
+        "a /_pom_dev/ path is covered too: {dev_path}"
+    );
+    let fine = get(proxy_port, HOST, "/health");
+    assert!(
+        fine.starts_with("HTTP/1.1 200"),
+        "another path passes: {fine}"
+    );
+    let started = std::time::Instant::now();
+    let slow = get(proxy_port, HOST, "/slow");
+    assert!(slow.starts_with("HTTP/1.1 200"), "{slow}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "the delay applies"
+    );
+    let logged: Vec<String> = proxy.log(20).into_iter().map(|entry| entry.fault).collect();
+    assert!(
+        logged.contains(&"f-feat-login-/v1/orders".to_string()),
+        "{logged:?}"
+    );
+    assert!(
+        logged.contains(&"f-feat-login-/slow".to_string()),
+        "{logged:?}"
     );
 }

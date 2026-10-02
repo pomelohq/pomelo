@@ -52,6 +52,10 @@ services
   attach <service>   attach this terminal to a running service (detach: close the terminal)
   ports              every leased port
   url <service>      where a service with a port listens, directly and through the dev proxy
+  proxy fault add <service> [--path /x] [--status 503] [--delay 2s] [--rate 0.3] [--ttl 10m]
+                     make the dev proxy fail or slow down this workspace's requests to a service
+  proxy fault ls [--all] [-o json] | rm <id> | clear
+                     the fault rules in force; remove one, or every one of the workspace
   proxy              serve the dev proxy and webhook relay for every project (`pom start` runs
                      one in the background when neither the app nor another proxy does)
   run <name|\"cmd\"> [repo]
@@ -165,6 +169,7 @@ enum Command {
     Logs(marks::LogsArgs),
     Mark(marks::MarkArgs),
     Queue(QueueArgs),
+    ProxyFault(proxy::FaultCommand),
     Attach(String),
     Ports,
     Url(String),
@@ -376,7 +381,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "status"
                         | "logs"
                         | "mark"
-                        | "queue")
+                        | "queue"
+                        | "proxy")
                 )
             )
         {
@@ -429,7 +435,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "attach" => Command::Attach(one("a service")?),
         "ports" => none().map(|_| Command::Ports)?,
         "url" => Command::Url(one("a service")?),
-        "proxy" => none().map(|_| Command::Proxy)?,
+        "proxy" if rest.is_empty() => Command::Proxy,
+        "proxy" => Command::ProxyFault(proxy::parse_fault(rest)?),
         "ws" | "workspace" => Command::Workspace(workspaces::parse(rest, false)?),
         "prepare-main" => Command::Workspace(workspaces::parse(rest, true)?),
         "config" => Command::Config(config::parse(rest)?),
@@ -602,6 +609,7 @@ impl Session {
             Command::Status { json: true } => self.status_json(out),
             Command::Logs(args) => self.logs_command(args, out),
             Command::Mark(args) => self.mark_command(args, out),
+            Command::ProxyFault(command) => self.fault_command(command, out),
             Command::Attach(service) => self.attach(service),
             Command::Url(service) => self.url(service, out),
             Command::Workspace(command) => self.workspace(command, out),

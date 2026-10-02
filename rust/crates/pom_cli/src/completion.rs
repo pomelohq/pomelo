@@ -14,7 +14,7 @@ pub(crate) const COMMANDS: &[(&str, &[&str])] = &[
     ("attach", &[]),
     ("ports", &[]),
     ("url", &[]),
-    ("proxy", &[]),
+    ("proxy", &["fault"]),
     ("run", &[]),
     ("commands", &[]),
     ("env", &["ls", "get", "set", "unset"]),

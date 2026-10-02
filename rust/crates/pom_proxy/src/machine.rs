@@ -42,6 +42,10 @@ impl Machine for SystemMachine {
         self.holders.holder_alive(holder)
     }
 
+    fn faults(&self) -> Vec<crate::FaultRule> {
+        crate::load_faults(&self.state)
+    }
+
     fn service_envs(&self, project_root: &Path, branch: &str) -> WorkspaceState {
         WorkspaceState::load(&pom_layout::workspace_folder(project_root, branch))
     }
