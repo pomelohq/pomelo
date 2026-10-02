@@ -87,6 +87,16 @@ pub struct Service {
     pub modes: IndexMap<String, String>,
     pub mode: String,
     pub profiles: Vec<String>,
+    pub healthcheck: Option<ServiceHealthCheck>,
+}
+
+/// When a repo service counts as ready: an HTTP path on its port answering 2xx/3xx, or a command exiting 0.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServiceHealthCheck {
+    pub http: String,
+    pub cmd: String,
+    pub interval: String,
+    pub timeout: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -361,6 +371,17 @@ impl Service {
         service.modes = decoder.string_map(field("modes"));
         service.mode = decoder.string(field("mode"));
         service.profiles = decoder.string_list(field("profiles"));
+        service.healthcheck = field("healthcheck")
+            .and_then(|n| decoder.fields(n, "ServiceHealthCheck"))
+            .map(|n| {
+                let check = |name: &'static str| key(n, Section::ServiceHealthCheck, name);
+                ServiceHealthCheck {
+                    http: decoder.string(check("http")),
+                    cmd: decoder.string(check("cmd")),
+                    interval: decoder.string(check("interval")),
+                    timeout: decoder.string(check("timeout")),
+                }
+            });
         service
     }
 

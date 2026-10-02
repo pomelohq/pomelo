@@ -40,20 +40,7 @@ struct Fixture {
     _serial: MutexGuard<'static, ()>,
 }
 
-impl Fixture {
-    fn new() -> Fixture {
-        let serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-        // Short path: Unix socket paths are limited to 104 bytes.
-        let temp = tempfile::Builder::new()
-            .prefix("svc")
-            .tempdir_in("/tmp")
-            .expect("temp");
-        let root = temp.path().join("project");
-        let worktree = root.join("workspace--feat/x").join("api");
-        std::fs::create_dir_all(&worktree).expect("worktree");
-        std::fs::write(
-            root.join("pom.yml"),
-            r#"session: demo
+const CONFIG: &str = r#"session: demo
 repos:
   api:
     env:
@@ -64,9 +51,24 @@ repos:
         env:
           SELF_PORT: "{{api.web.port}}"
         cmd: "echo started-$PORT-$GREETING-$SELF_PORT; exec nc -lk 127.0.0.1 $PORT"
-"#,
-        )
-        .expect("pom.yml");
+"#;
+
+impl Fixture {
+    fn new() -> Fixture {
+        Fixture::with(CONFIG)
+    }
+
+    fn with(config: &str) -> Fixture {
+        let serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        // Short path: Unix socket paths are limited to 104 bytes.
+        let temp = tempfile::Builder::new()
+            .prefix("svc")
+            .tempdir_in("/tmp")
+            .expect("temp");
+        let root = temp.path().join("project");
+        let worktree = root.join("workspace--feat/x").join("api");
+        std::fs::create_dir_all(&worktree).expect("worktree");
+        std::fs::write(root.join("pom.yml"), config).expect("pom.yml");
         let config = Config::load(&root.join("pom.yml")).expect("config");
         let binary = wrapper_script(temp.path());
         let runner = ServiceRunner::new(RunnerOptions {
@@ -351,4 +353,100 @@ repos:
     assert!(!runner.holders().holder_alive(&shared));
     assert!(!runner.shared_running().contains("mock-as"));
     cleanup();
+}
+
+fn readiness_fixture(service: &str) -> Fixture {
+    Fixture::with(&format!(
+        "session: demo\nrepos:\n  api:\n    services:\n      web:\n        type: backend\n{service}"
+    ))
+}
+
+#[test]
+fn start_wait_returns_once_the_healthcheck_passes() {
+    let fixture = readiness_fixture(
+        "        cmd: \"sleep 1; touch ready.flag; exec nc -lk 127.0.0.1 $PORT\"\n        healthcheck:\n          cmd: test -f ready.flag\n          interval: 200ms\n",
+    );
+    fixture
+        .runner
+        .start(&fixture.config, &fixture.target)
+        .expect("start");
+    let before = fixture
+        .runner
+        .service_health(&fixture.config, &fixture.target);
+    assert!(
+        before.up && before.healthy == Some(false) && !before.ready,
+        "{before:?}"
+    );
+    let started = Instant::now();
+    match fixture.runner.wait_ready(
+        &fixture.config,
+        std::slice::from_ref(&fixture.target),
+        TIMEOUT,
+    ) {
+        pom_services::WaitOutcome::Ready(services) => {
+            assert!(
+                services[0].ready && services[0].healthy == Some(true),
+                "{services:?}"
+            );
+        }
+        other => panic!("not ready: {other:?}"),
+    }
+    assert!(started.elapsed() < TIMEOUT);
+}
+
+#[test]
+fn start_wait_times_out_when_the_healthcheck_never_passes() {
+    let fixture = readiness_fixture(
+        "        cmd: \"exec nc -lk 127.0.0.1 $PORT\"\n        healthcheck:\n          cmd: \"false\"\n          interval: 200ms\n",
+    );
+    fixture
+        .runner
+        .start(&fixture.config, &fixture.target)
+        .expect("start");
+    let outcome = fixture.runner.wait_ready(
+        &fixture.config,
+        std::slice::from_ref(&fixture.target),
+        Duration::from_secs(2),
+    );
+    assert!(
+        matches!(outcome, pom_services::WaitOutcome::TimedOut(_)),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn start_wait_reports_a_service_that_stops_while_starting() {
+    let fixture = readiness_fixture("        cmd: \"echo failing-to-boot; sleep 1; exit 3\"\n");
+    fixture
+        .runner
+        .start(&fixture.config, &fixture.target)
+        .expect("start");
+    match fixture.runner.wait_ready(
+        &fixture.config,
+        std::slice::from_ref(&fixture.target),
+        TIMEOUT,
+    ) {
+        pom_services::WaitOutcome::Crashed { service, .. } => assert_eq!(service, "api/web"),
+        other => panic!("not reported as stopped: {other:?}"),
+    }
+}
+
+#[test]
+fn without_a_healthcheck_a_service_is_ready_once_its_port_listens() {
+    let fixture = readiness_fixture("        cmd: \"sleep 1; exec nc -lk 127.0.0.1 $PORT\"\n");
+    fixture
+        .runner
+        .start(&fixture.config, &fixture.target)
+        .expect("start");
+    match fixture.runner.wait_ready(
+        &fixture.config,
+        std::slice::from_ref(&fixture.target),
+        TIMEOUT,
+    ) {
+        pom_services::WaitOutcome::Ready(services) => {
+            assert_eq!(services[0].healthy, None);
+            assert!(services[0].ready);
+        }
+        other => panic!("not ready: {other:?}"),
+    }
 }
