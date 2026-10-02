@@ -3,6 +3,7 @@ mod env_files;
 mod shared;
 mod shared_command;
 mod slots;
+mod snapshots;
 mod tool_path;
 
 pub use control::{
@@ -15,4 +16,9 @@ pub use shared::{
     COMPOSE_FILE, SHARED_NETWORK,
 };
 pub use slots::SlotStore;
+pub use snapshots::{
+    owned_database_names, restore_sql, snapshot_db_name, snapshot_sql, valid_snapshot_name,
+    DbOutcome, SnapshotDb, SnapshotEntry, SnapshotIndex, SnapshotReport, MAIN_BASELINE,
+    WORKSPACE_BASELINE,
+};
 pub use tool_path::tool_path;

@@ -70,7 +70,13 @@ workspaces
   db create|drop|reset [branch]
                      the workspace's databases in the shared Postgres
   db clean [--dry-run] [--yes]
-                     drop this project's databases no workspace uses
+                     drop this project's databases (and snapshots) no workspace uses
+  db snapshot <name> [-w b] [--replace] [-o json]
+                     copy every database of the workspace into snapshot <name>
+  db restore <name> [-w b] [--no-restart] [--main] [-o json]
+                     put the snapshot back: stops the workspace's services, restarts them after
+  db snapshots [-w b] [-o json]      the workspace's snapshots and their sizes
+  db snapshot drop <name> [-w b]     drop a snapshot
 
 config
   config path        the config file in use

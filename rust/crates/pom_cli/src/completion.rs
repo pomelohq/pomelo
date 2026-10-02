@@ -16,7 +16,18 @@ pub(crate) const COMMANDS: &[(&str, &[&str])] = &[
     ("run", &[]),
     ("commands", &[]),
     ("env", &["ls", "get", "set", "unset"]),
-    ("db", &["create", "drop", "reset", "clean"]),
+    (
+        "db",
+        &[
+            "create",
+            "drop",
+            "reset",
+            "clean",
+            "snapshot",
+            "restore",
+            "snapshots",
+        ],
+    ),
     (
         "config",
         &["path", "normalize", "explain", "export", "import"],
