@@ -2,6 +2,7 @@ mod control;
 mod env_files;
 mod health;
 mod marks;
+mod queue;
 mod shared;
 mod shared_command;
 mod slots;
@@ -18,6 +19,7 @@ pub use marks::{
     parse_statement_rows, step_stats, strip_ansi, LogSlice, Mark, StatementRow, StepQuery,
     StepStats, STATS_UNAVAILABLE,
 };
+pub use queue::{bull_queues_from_keys, count_commands, tally, Count, QueueCounts, QueueKind};
 pub use shared::{
     database_names, database_names_where, run_within, Endpoint, PortOwner, SharedAction,
     COMPOSE_FILE, SHARED_NETWORK,

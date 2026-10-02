@@ -736,7 +736,7 @@ impl ServiceRunner {
             })
     }
 
-    fn published_container(&self, port: u16) -> Option<String> {
+    pub(crate) fn published_container(&self, port: u16) -> Option<String> {
         let args = [
             "ps",
             "-q",
@@ -823,6 +823,33 @@ impl ServiceRunner {
         } else {
             Err(docker_failure(&output))
         }
+    }
+
+    /// `docker` with `input` on its stdin (redis-cli reads its commands that way).
+    pub(crate) fn docker_input(
+        &self,
+        args: &[String],
+        input: &[u8],
+    ) -> Result<Output, ServiceError> {
+        use std::io::Write as _;
+        let mut child = Command::new(&self.docker)
+            .args(args)
+            .current_dir(&self.project_root)
+            .env("PATH", crate::tool_path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                ServiceError::Io(std::io::Error::new(
+                    error.kind(),
+                    format!("docker: {error}"),
+                ))
+            })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input).map_err(ServiceError::Io)?;
+        }
+        child.wait_with_output().map_err(ServiceError::Io)
     }
 
     pub(crate) fn docker(&self, args: &[String]) -> Result<Output, ServiceError> {

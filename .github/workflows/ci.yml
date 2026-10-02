@@ -141,7 +141,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show
-      - run: cargo test -p pom_services --test snapshots -- --test-threads 1
+      - run: cargo test -p pom_services --test snapshots --test queues -- --test-threads 1
 
   # Workflow mistakes otherwise show only when the workflow runs, which for releases is at tag time.
   actionlint:

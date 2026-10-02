@@ -88,6 +88,20 @@ pub struct Service {
     pub mode: String,
     pub profiles: Vec<String>,
     pub healthcheck: Option<ServiceHealthCheck>,
+    pub queue: Option<ServiceQueue>,
+}
+
+/// The background-job queue a worker service drains, so `pom queue wait-idle` knows what to watch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServiceQueue {
+    /// `sidekiq` or `bullmq`.
+    pub kind: String,
+    /// BullMQ's key prefix; `bull` when empty.
+    pub prefix: String,
+    /// Queue names; empty means every queue found.
+    pub queues: Vec<String>,
+    /// The shared Redis it uses; the repo's first Redis when empty.
+    pub redis: String,
 }
 
 /// When a repo service counts as ready: an HTTP path on its port answering 2xx/3xx, or a command exiting 0.
@@ -373,6 +387,17 @@ impl Service {
         service.modes = decoder.string_map(field("modes"));
         service.mode = decoder.string(field("mode"));
         service.profiles = decoder.string_list(field("profiles"));
+        service.queue = field("queue")
+            .and_then(|n| decoder.fields(n, "ServiceQueue"))
+            .map(|n| {
+                let queue = |name: &'static str| key(n, Section::ServiceQueue, name);
+                ServiceQueue {
+                    kind: decoder.string(queue("kind")),
+                    prefix: decoder.string(queue("prefix")),
+                    queues: decoder.strings(queue("queues")),
+                    redis: decoder.string(queue("redis")),
+                }
+            });
         service.healthcheck = field("healthcheck")
             .and_then(|n| decoder.fields(n, "ServiceHealthCheck"))
             .map(|n| {
