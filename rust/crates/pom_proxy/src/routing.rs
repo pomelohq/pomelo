@@ -17,6 +17,8 @@ const LEASE_CACHE_TTL: Duration = Duration::from_secs(1);
 const REACH_TIMEOUT: Duration = Duration::from_millis(200);
 /// A miss is remembered briefly, so a page's burst of requests to a building service runs one lookup.
 const MISS_CACHE_TTL: Duration = Duration::from_millis(500);
+/// Fault rules are re-read this often, so a test's `pom proxy fault add` takes effect within a second.
+const FAULT_CACHE_TTL: Duration = Duration::from_secs(1);
 
 pub type ConfigSource = Arc<RwLock<Option<Arc<Config>>>>;
 
@@ -69,6 +71,8 @@ pub struct Decision {
     /// The path to send upstream.
     pub path: String,
     pub logged: Option<Logged>,
+    /// A test's fault rule matched: delay and/or answer with a status instead of forwarding.
+    pub fault: Option<crate::Fault>,
 }
 
 /// The labels of a `<...>.localhost` host, without its port.
@@ -249,6 +253,10 @@ pub trait Machine: Send + Sync {
     fn live_ports(&self, holder: &str) -> Vec<u16>;
     fn holder_alive(&self, holder: &str) -> bool;
     fn service_envs(&self, project_root: &Path, branch: &str) -> pom_layout::WorkspaceState;
+    /// The fault rules in force.
+    fn faults(&self) -> Vec<crate::FaultRule> {
+        Vec::new()
+    }
 }
 
 type BranchMap = (Instant, HashMap<String, String>);
@@ -265,6 +273,8 @@ pub struct Router {
     ports: Mutex<HashMap<String, AddressCache>>,
     /// One lookup at a time: requests arriving while it runs wait and read its result from the cache.
     resolving: Mutex<()>,
+    faults: Mutex<(Option<Instant>, Vec<crate::FaultRule>)>,
+    random: Mutex<u64>,
 }
 
 impl Router {
@@ -276,6 +286,8 @@ impl Router {
             leases: Mutex::new(HashMap::new()),
             ports: Mutex::new(HashMap::new()),
             resolving: Mutex::new(()),
+            faults: Mutex::new((None, Vec::new())),
+            random: Mutex::new(crate::faults::now_ms() | 1),
         }
     }
 
@@ -503,6 +515,7 @@ impl Router {
             route,
             path: path.to_string(),
             logged: None,
+            fault: None,
         };
         let Some(labels) = host_labels(host) else {
             return unrouted(Route::Error {
@@ -542,6 +555,7 @@ impl Router {
                         route: no_route(&branch_label, &target),
                         path: stripped,
                         logged: Some(logged),
+                        fault: None,
                     };
                 };
                 if let Some((profile, url)) =
@@ -549,26 +563,33 @@ impl Router {
                 {
                     logged.profile = profile;
                     logged.target = url.clone();
+                    let fault = self.fault_for(&config.session, &branch, &target, &stripped);
                     return Decision {
                         route: Route::External { url, prefix },
                         path: stripped,
                         logged: Some(logged),
+                        fault,
                     };
                 }
                 let route = self.workspace_route(&config, &branch, &target, &prefix);
                 logged.target = logged_target(&route);
+                let fault = self.fault_for(&config.session, &branch, &target, &stripped);
                 return Decision {
                     route,
                     path: stripped,
                     logged: Some(logged),
+                    fault,
                 };
             }
         }
         if labels.len() == 3 {
             let target = format!("{}/{}", labels[1], labels[0]);
-            let route = match self.project_for(&branch_label, &target) {
-                Some((_, config, branch)) => self.workspace_route(&config, &branch, &target, ""),
-                None => no_route(&branch_label, &target),
+            let (route, fault) = match self.project_for(&branch_label, &target) {
+                Some((_, config, branch)) => (
+                    self.workspace_route(&config, &branch, &target, ""),
+                    self.fault_for(&config.session, &branch, &target, path),
+                ),
+                None => (no_route(&branch_label, &target), None),
             };
             let logged = Logged {
                 repo: labels[1].clone(),
@@ -581,9 +602,47 @@ impl Router {
                 route,
                 path: path.to_string(),
                 logged: Some(logged),
+                fault,
             };
         }
         unrouted(no_route_for(host, path))
+    }
+
+    /// The first fault rule in force for this request, drawn against its rate.
+    fn fault_for(
+        &self,
+        session: &str,
+        branch: &str,
+        target: &str,
+        path: &str,
+    ) -> Option<crate::Fault> {
+        let now = Instant::now();
+        let rules = {
+            let mut cache = self.faults.lock().ok()?;
+            if cache
+                .0
+                .is_none_or(|at| now.duration_since(at) >= FAULT_CACHE_TTL)
+            {
+                *cache = (Some(now), self.machine.faults());
+            }
+            cache.1.clone()
+        };
+        let clock = crate::faults::now_ms();
+        let rule = rules
+            .iter()
+            .find(|rule| rule.matches(session, branch, target, path, clock))?;
+        (rule.rate >= 1.0 || self.draw() < rule.rate).then(|| rule.fault())
+    }
+
+    /// A uniform number in [0, 1) for fault rates.
+    fn draw(&self) -> f64 {
+        let Ok(mut state) = self.random.lock() else {
+            return 0.0;
+        };
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        (*state >> 11) as f64 / (1u64 << 53) as f64
     }
 
     fn shared_route(&self, config: &Config, name: &str) -> Route {

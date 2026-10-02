@@ -270,9 +270,24 @@ async fn handle_proxy(
         Ok(decision) => decision,
         Err(error) => return text_response(500, &format!("dev-proxy: {error}")),
     };
-    let response = match decision.route {
-        Route::Error { status, message } => text_response(status, &message),
-        Route::Local { address, prefix } => {
+    let fault = decision.fault.clone();
+    if let Some(delay) = fault
+        .as_ref()
+        .map(|fault| fault.delay_ms)
+        .filter(|ms| *ms > 0)
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
+    let injected = fault
+        .as_ref()
+        .and_then(|fault| fault.status.map(|status| (status, fault.id.clone())));
+    let response = match (injected, decision.route) {
+        (Some((status, id)), _) => text_response(
+            status,
+            &format!("dev-proxy: fault {id} injected by `pom proxy fault` (remove it with `pom proxy fault rm {id}`)"),
+        ),
+        (None, Route::Error { status, message }) => text_response(status, &message),
+        (None, Route::Local { address, prefix }) => {
             forward(
                 shared,
                 request,
@@ -284,7 +299,7 @@ async fn handle_proxy(
             )
             .await
         }
-        Route::External { url, prefix } => match url.parse::<Uri>() {
+        (None, Route::External { url, prefix }) => match url.parse::<Uri>() {
             Ok(uri) if uri.authority().is_some() => {
                 let upstream = Upstream::External {
                     scheme: uri.scheme_str().unwrap_or("http").to_string(),
@@ -319,7 +334,7 @@ async fn handle_proxy(
         .boxed(),
     );
     let worth_logging = |logged: &crate::routing::Logged| {
-        !logged.host_routed || navigation || response.status().as_u16() >= 400
+        !logged.host_routed || navigation || fault.is_some() || response.status().as_u16() >= 400
     };
     if let Some(logged) = decision.logged.filter(worth_logging) {
         let logged_path = match &query {
@@ -340,6 +355,7 @@ async fn handle_proxy(
                 ms: started.elapsed().as_millis() as u64,
                 request_headers,
                 response_headers,
+                fault: fault.map(|fault| fault.id).unwrap_or_default(),
                 ..ProxyLogEntry::default()
             },
             request_capture,

@@ -3766,6 +3766,8 @@ dependencies = [
  "pom_ports",
  "pom_ptyhost",
  "regex",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "workspace_hack",
