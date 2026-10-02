@@ -45,6 +45,10 @@ services
                      recent output of a service, or only what it printed since a mark
   logs --mark <name> record where every service's output has got to
   mark <name> [-w b] one mark for a test step: log offsets and query counters
+  queue wait-idle <service> [--timeout 60s] [-o json]
+                     wait until the service's Sidekiq/BullMQ queue (pom.yml `queue:`) has no work:
+                     exit 0 idle, 2 still busy
+  queue counts <service> [-o json]   the queue's waiting, active, due and delayed jobs
   attach <service>   attach this terminal to a running service (detach: close the terminal)
   ports              every leased port
   url <service>      where a service with a port listens, directly and through the dev proxy
@@ -160,6 +164,7 @@ enum Command {
     Status { json: bool },
     Logs(marks::LogsArgs),
     Mark(marks::MarkArgs),
+    Queue(QueueArgs),
     Attach(String),
     Ports,
     Url(String),
@@ -222,6 +227,15 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Agent(ref command) => {
                 return agent::execute(command, &invocation, cwd, out, err);
             }
+            Command::Queue(ref queue) => {
+                return match Session::open(&invocation, cwd) {
+                    Ok(session) => session.queue_command(queue, out, err),
+                    Err(message) => {
+                        report(err, &format!("error: {message}"));
+                        1
+                    }
+                };
+            }
             Command::Start(ref start) if start.wait => {
                 return match Session::open(&invocation, cwd) {
                     Ok(session) => session.start_and_wait(start, out, err),
@@ -254,6 +268,50 @@ struct StartArgs {
 const WAIT_TIMED_OUT: i32 = 2;
 const WAIT_CRASHED: i32 = 3;
 const DEFAULT_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct QueueArgs {
+    service: String,
+    /// Wait until idle; otherwise print the counts once.
+    wait: bool,
+    timeout: Option<std::time::Duration>,
+    json: bool,
+}
+
+const DEFAULT_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn parse_queue(rest: &[&str]) -> Result<QueueArgs, String> {
+    let (verb, rest) = rest
+        .split_first()
+        .ok_or("queue needs a subcommand (wait-idle, counts)")?;
+    let wait = match *verb {
+        "wait-idle" => true,
+        "counts" => false,
+        other => {
+            return Err(format!(
+                "unknown queue subcommand {other} (wait-idle, counts)"
+            ))
+        }
+    };
+    let args = args::Args::parse(rest, &["--timeout", "-o", "--output"])?;
+    args.allow(&["--timeout", "-o", "--output"])?;
+    let [service] = args.positional.as_slice() else {
+        return Err(format!("queue {verb} needs one service"));
+    };
+    let timeout = args
+        .value(&["--timeout"])
+        .map(|text| agent::parse_duration(&text))
+        .transpose()?;
+    if timeout.is_some() && !wait {
+        return Err("--timeout goes with wait-idle".into());
+    }
+    Ok(QueueArgs {
+        service: service.clone(),
+        wait,
+        timeout,
+        json: args.json()?,
+    })
+}
 
 fn parse_start(rest: &[&str]) -> Result<StartArgs, String> {
     let args = args::Args::parse(rest, &["--timeout"])?;
@@ -317,7 +375,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "start"
                         | "status"
                         | "logs"
-                        | "mark")
+                        | "mark"
+                        | "queue")
                 )
             )
         {
@@ -366,6 +425,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         }
         "logs" => Command::Logs(marks::parse_logs(rest)?),
         "mark" => Command::Mark(marks::parse_mark(rest)?),
+        "queue" => Command::Queue(parse_queue(rest)?),
         "attach" => Command::Attach(one("a service")?),
         "ports" => none().map(|_| Command::Ports)?,
         "url" => Command::Url(one("a service")?),
@@ -560,6 +620,7 @@ impl Session {
             | Command::Completion(_)
             | Command::Doctor
             | Command::Agent(_)
+            | Command::Queue(_)
             | Command::Version
             | Command::Help => Ok(()),
         }
@@ -780,6 +841,78 @@ impl Session {
         }
     }
 
+    /// `queue counts` or `queue wait-idle`: 0 idle (or counted), 2 still busy when the timeout passed.
+    fn queue_command(&self, queue: &QueueArgs, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+        let target = match self.service(&queue.service) {
+            Ok(target) => target,
+            Err(message) => {
+                report(err, &format!("error: {message}"));
+                return 1;
+            }
+        };
+        let print = |counts: &pom_services::QueueCounts, idle: bool, out: &mut dyn Write| {
+            if queue.json {
+                let document = serde_json::json!({
+                    "schema": "pom.queue/v1",
+                    "service": format!("{}/{}", target.repo, target.service),
+                    "idle": idle,
+                    "total": counts.total(),
+                    "counts": counts,
+                });
+                report(out, &document.to_string());
+            } else {
+                let waiting: Vec<String> = counts
+                    .waiting
+                    .iter()
+                    .map(|(name, count)| format!("{name}={count}"))
+                    .collect();
+                report(
+                    out,
+                    &format!(
+                        "{}/{}: waiting [{}], active {}, due {}, delayed {}",
+                        target.repo,
+                        target.service,
+                        waiting.join(" "),
+                        counts.active,
+                        counts.due,
+                        counts.delayed
+                    ),
+                );
+            }
+        };
+        if !queue.wait {
+            return match self.runner.queue_counts(&self.config, &target) {
+                Ok(counts) => {
+                    print(&counts, counts.total() == 0, out);
+                    0
+                }
+                Err(message) => {
+                    report(err, &format!("error: {message}"));
+                    1
+                }
+            };
+        }
+        let timeout = queue.timeout.unwrap_or(DEFAULT_QUEUE_WAIT);
+        match self.runner.wait_queue_idle(&self.config, &target, timeout) {
+            Ok(Ok(counts)) => {
+                print(&counts, true, out);
+                0
+            }
+            Ok(Err(counts)) => {
+                print(&counts, false, err);
+                report(
+                    err,
+                    &format!("error: still busy after {}s", timeout.as_secs()),
+                );
+                WAIT_TIMED_OUT
+            }
+            Err(message) => {
+                report(err, &format!("error: {message}"));
+                1
+            }
+        }
+    }
+
     /// `status -o json`: every repo service's up / ready / healthy, and the shared services.
     fn status_json(&self, out: &mut dyn Write) -> Result<(), String> {
         let mut services = Vec::new();
@@ -985,6 +1118,17 @@ mod tests {
             parsed("start api --timeout 30s").is_err(),
             "--timeout needs --wait"
         );
+        assert_eq!(
+            parsed("queue wait-idle api/worker --timeout 2m -o json").map(|i| i.command),
+            Ok(Command::Queue(QueueArgs {
+                service: "api/worker".into(),
+                wait: true,
+                timeout: Some(std::time::Duration::from_secs(120)),
+                json: true,
+            }))
+        );
+        assert!(parsed("queue counts api/worker --timeout 1s").is_err());
+        assert!(parsed("queue drain api/worker").is_err());
         assert_eq!(
             parsed("status -o json").map(|i| i.command),
             Ok(Command::Status { json: true })

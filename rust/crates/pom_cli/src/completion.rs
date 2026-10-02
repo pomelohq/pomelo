@@ -10,6 +10,7 @@ pub(crate) const COMMANDS: &[(&str, &[&str])] = &[
     ("status", &[]),
     ("logs", &[]),
     ("mark", &[]),
+    ("queue", &["wait-idle", "counts"]),
     ("attach", &[]),
     ("ports", &[]),
     ("url", &[]),
