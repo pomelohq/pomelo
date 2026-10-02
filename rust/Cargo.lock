@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "agent_usage"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "libc",
  "serde_json",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "agent_usage_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "terminal",
  "ui",
@@ -280,7 +280,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auto_update"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "auto_update_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "auto_update",
  "ui",
@@ -1084,7 +1084,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "database_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "files_ui",
  "image",
@@ -1119,7 +1119,7 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
 name = "dev_services_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_proxy",
  "pomelo-editor",
@@ -1191,7 +1191,7 @@ dependencies = [
 
 [[package]]
 name = "docs_gen"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "grammars",
  "lsp",
@@ -1271,7 +1271,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "environment_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_config",
  "pom_paths",
@@ -1371,7 +1371,7 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "files"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "criterion",
  "globset",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "files_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "files",
  "git",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "git"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "imara-diff",
  "tempfile",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "git_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "files_ui",
  "git",
@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "grammar_packager"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -1814,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "grammars"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -2319,7 +2319,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jira_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "markdown",
  "pom_jira",
@@ -2551,7 +2551,7 @@ checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 
 [[package]]
 name = "lsp"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "lsp-types",
  "pomelo-editor",
@@ -2583,7 +2583,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "markdown"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pomelo-editor",
  "pulldown-cmark",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "module_store"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "libc",
  "pom_paths",
@@ -2682,7 +2682,7 @@ dependencies = [
 
 [[package]]
 name = "module_store_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "module_store",
  "terminal",
@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "onboarding"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_config",
  "pom_doctor",
@@ -3243,7 +3243,7 @@ dependencies = [
 
 [[package]]
 name = "onboarding_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "onboarding",
  "pom_agent",
@@ -3528,7 +3528,7 @@ dependencies = [
 
 [[package]]
 name = "pom_agent"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "libc",
  "notify",
@@ -3545,7 +3545,7 @@ dependencies = [
 
 [[package]]
 name = "pom_bundle"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "aes-gcm",
  "pom_config",
@@ -3560,7 +3560,7 @@ dependencies = [
 
 [[package]]
 name = "pom_cli"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "module_store",
  "pom_agent",
@@ -3586,7 +3586,7 @@ dependencies = [
 
 [[package]]
 name = "pom_config"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "indexmap",
  "saphyr-parser",
@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "pom_core"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "notify",
  "pom_config",
@@ -3613,7 +3613,7 @@ dependencies = [
 
 [[package]]
 name = "pom_db"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_config",
  "pom_env",
@@ -3631,7 +3631,7 @@ dependencies = [
 
 [[package]]
 name = "pom_detect"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "globset",
  "pom_config",
@@ -3643,7 +3643,7 @@ dependencies = [
 
 [[package]]
 name = "pom_doctor"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_config",
  "pom_layout",
@@ -3655,7 +3655,7 @@ dependencies = [
 
 [[package]]
 name = "pom_env"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "indexmap",
  "pom_config",
@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "pom_forge"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_paths",
  "pom_secrets",
@@ -3680,7 +3680,7 @@ dependencies = [
 
 [[package]]
 name = "pom_jira"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_paths",
  "pom_secrets",
@@ -3692,7 +3692,7 @@ dependencies = [
 
 [[package]]
 name = "pom_layout"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "indexmap",
  "serde",
@@ -3703,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "pom_lock"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "tempfile",
  "workspace_hack",
@@ -3711,7 +3711,7 @@ dependencies = [
 
 [[package]]
 name = "pom_mcp"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "libc",
  "pom_agent",
@@ -3734,7 +3734,7 @@ dependencies = [
 
 [[package]]
 name = "pom_paths"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "tempfile",
  "workspace_hack",
@@ -3742,7 +3742,7 @@ dependencies = [
 
 [[package]]
 name = "pom_ports"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_paths",
  "tempfile",
@@ -3751,7 +3751,7 @@ dependencies = [
 
 [[package]]
 name = "pom_proxy"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -3775,7 +3775,7 @@ dependencies = [
 
 [[package]]
 name = "pom_ptyhost"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "libc",
  "sha1",
@@ -3785,7 +3785,7 @@ dependencies = [
 
 [[package]]
 name = "pom_secrets"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "aes-gcm",
  "pom_paths",
@@ -3796,7 +3796,7 @@ dependencies = [
 
 [[package]]
 name = "pom_services"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "indexmap",
  "pom_config",
@@ -3814,7 +3814,7 @@ dependencies = [
 
 [[package]]
 name = "pom_sessions"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_paths",
  "serde",
@@ -3825,7 +3825,7 @@ dependencies = [
 
 [[package]]
 name = "pom_sync"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "libc",
  "pom_config",
@@ -3841,7 +3841,7 @@ dependencies = [
 
 [[package]]
 name = "pom_workspace"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "indexmap",
  "module_store",
@@ -3859,7 +3859,7 @@ dependencies = [
 
 [[package]]
 name = "pomelo"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "agent_usage",
  "agent_usage_ui",
@@ -3919,7 +3919,7 @@ dependencies = [
 
 [[package]]
 name = "pomelo-editor"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "convert_case",
  "fancy-regex",
@@ -4076,7 +4076,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "pull_request_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "git",
  "markdown",
@@ -4223,7 +4223,7 @@ dependencies = [
 
 [[package]]
 name = "reactor"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "workspace_hack",
 ]
@@ -4636,7 +4636,7 @@ dependencies = [
 
 [[package]]
 name = "services_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "database_ui",
  "libc",
@@ -4655,7 +4655,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_paths",
  "serde",
@@ -4665,7 +4665,7 @@ dependencies = [
 
 [[package]]
 name = "settings_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "pom_config",
  "pom_jira",
@@ -5055,7 +5055,7 @@ dependencies = [
 
 [[package]]
 name = "terminal"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -5069,7 +5069,7 @@ dependencies = [
 
 [[package]]
 name = "terminal_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "anyhow",
  "image",
@@ -5706,7 +5706,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5724,7 +5724,7 @@ dependencies = [
 
 [[package]]
 name = "ui_snapshot"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "agent_usage_ui",
  "anyhow",
@@ -6940,7 +6940,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "workspace"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "arboard",
  "pom_paths",
@@ -7019,7 +7019,7 @@ dependencies = [
 
 [[package]]
 name = "workspaces_ui"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "indexmap",
  "module_store",
