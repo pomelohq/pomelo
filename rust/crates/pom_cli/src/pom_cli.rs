@@ -77,6 +77,9 @@ workspaces
                      put the snapshot back: stops the workspace's services, restarts them after
   db snapshots [-w b] [-o json]      the workspace's snapshots and their sizes
   db snapshot drop <name> [-w b]     drop a snapshot
+  db baseline [-w b] [-o json]       run the branch's migrations, then save ws__baseline again
+  db reseed [-w b] [--from main__baseline | --snapshot <name>] [--main] [-o json]
+                     replace the workspace's data, migrate, save ws__baseline; services restart
 
 config
   config path        the config file in use

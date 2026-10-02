@@ -17,6 +17,8 @@ pub(crate) enum DbCommand {
     Restore(SnapshotArgs),
     Snapshots(SnapshotArgs),
     SnapshotDrop(SnapshotArgs),
+    Baseline(SnapshotArgs),
+    Reseed(SnapshotArgs),
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -27,16 +29,36 @@ pub(crate) struct SnapshotArgs {
     pub main: bool,
     pub no_restart: bool,
     pub json: bool,
+    /// For reseed: one of the workspace's own snapshots instead of main's baseline.
+    pub from_snapshot: Option<String>,
 }
 
-const SNAPSHOT_VALUED: &[&str] = &["-w", "--workspace", "-o", "--output"];
+const SNAPSHOT_VALUED: &[&str] = &[
+    "-w",
+    "--workspace",
+    "-o",
+    "--output",
+    "--from",
+    "--snapshot",
+];
 
 fn snapshot_args(rest: &[&str], known: &[&str], what: &str) -> Result<SnapshotArgs, String> {
     let args = Args::parse(rest, SNAPSHOT_VALUED)?;
-    let mut allowed: Vec<&str> = SNAPSHOT_VALUED.to_vec();
+    let mut allowed: Vec<&str> = vec!["-w", "--workspace", "-o", "--output"];
     allowed.extend_from_slice(known);
     args.allow(&allowed)?;
     args.at_most(1, what)?;
+    let from_snapshot = match (args.value(&["--from"]), args.value(&["--snapshot"])) {
+        (Some(_), Some(_)) => return Err(format!("{what}: pass --from or --snapshot, not both")),
+        (Some(from), None) if from == pom_services::MAIN_BASELINE => None,
+        (Some(from), None) => {
+            return Err(format!(
+                "{what} --from takes {} (or pass --snapshot <name>), not {from}",
+                pom_services::MAIN_BASELINE
+            ))
+        }
+        (None, snapshot) => snapshot,
+    };
     Ok(SnapshotArgs {
         name: args.positional.first().cloned().unwrap_or_default(),
         branch: args.value(&["-w", "--workspace"]),
@@ -44,6 +66,7 @@ fn snapshot_args(rest: &[&str], known: &[&str], what: &str) -> Result<SnapshotAr
         main: args.has("--main"),
         no_restart: args.has("--no-restart"),
         json: args.json()?,
+        from_snapshot,
     })
 }
 
@@ -76,6 +99,20 @@ pub(crate) fn parse(words: &[&str]) -> Result<DbCommand, String> {
             &[],
             "db snapshots",
         )?)),
+        "baseline" => {
+            let args = snapshot_args(rest, &[], "db baseline")?;
+            if !args.name.is_empty() {
+                return Err("db baseline takes no arguments".into());
+            }
+            Ok(DbCommand::Baseline(args))
+        }
+        "reseed" => {
+            let args = snapshot_args(rest, &["--from", "--snapshot", "--main"], "db reseed")?;
+            if !args.name.is_empty() {
+                return Err("db reseed takes no arguments".into());
+            }
+            Ok(DbCommand::Reseed(args))
+        }
         _ => parse_basic(verb, rest),
     }
 }
@@ -123,6 +160,9 @@ impl Session {
             | DbCommand::Restore(args)
             | DbCommand::Snapshots(args)
             | DbCommand::SnapshotDrop(args) => return self.snapshot_command(command, args, out),
+            DbCommand::Baseline(args) | DbCommand::Reseed(args) => {
+                return self.baseline_command(command, args, out)
+            }
         };
         let names = self.workspace_databases(&branch)?;
         if names.is_empty() {
@@ -369,6 +409,82 @@ impl Session {
     }
 }
 
+impl Session {
+    fn baseline_command(
+        &self,
+        command: &DbCommand,
+        args: &SnapshotArgs,
+        out: &mut dyn Write,
+    ) -> Result<(), String> {
+        let branch = args.branch.clone().unwrap_or_else(|| self.branch.clone());
+        let folder = self.workspace_folder(&branch)?;
+        let is_main = branch == self.config.global_default_branch();
+        if matches!(command, DbCommand::Reseed(_)) && is_main && !args.main {
+            return Err(
+                "reseeding main replaces the data every new workspace starts from; pass --main to do it anyway"
+                    .into(),
+            );
+        }
+        if matches!(command, DbCommand::Baseline(_)) && is_main {
+            return Err("main's baseline is main__baseline: run `pom prepare-main`".into());
+        }
+        self.runner
+            .ensure_shared(&self.config)
+            .map_err(|error| format!("shared services: {error}"))?;
+        let context = self.context();
+        let report = match command {
+            DbCommand::Baseline(_) => pom_workspace::rebaseline(&context, &branch, &folder)?,
+            _ => {
+                let source = match &args.from_snapshot {
+                    Some(name) => pom_workspace::ReseedSource::Snapshot(name.clone()),
+                    None => pom_workspace::ReseedSource::MainBaseline,
+                };
+                pom_workspace::reseed(&context, &branch, is_main, &folder, &source)?
+            }
+        };
+        if args.json {
+            let text = serde_json::to_string(&report).map_err(|error| error.to_string())?;
+            say(out, &text)?;
+        } else {
+            for outcome in &report.databases {
+                let status = match &outcome.error {
+                    Some(error) => format!("failed: {error}"),
+                    None => format!("copied in {} ms", outcome.ms),
+                };
+                say(out, &format!("  {}  {status}", outcome.db))?;
+            }
+            for migration in &report.migrations {
+                let status = match &migration.error {
+                    Some(error) => format!("migrations failed: {error}"),
+                    None => "migrated".to_string(),
+                };
+                say(out, &format!("  {}  {status}", migration.repo))?;
+            }
+            if let Some(baseline) = &report.baseline {
+                print_report(baseline, false, out)?;
+            }
+            for service in &report.services_restarted {
+                say(out, &format!("  restarted {service}"))?;
+            }
+            for warning in &report.warnings {
+                say(out, &format!("warning: {warning}"))?;
+            }
+            say(
+                out,
+                &format!(
+                    "{} of workspace {}: {} ms",
+                    report.action, report.workspace, report.total_ms
+                ),
+            )?;
+        }
+        if report.ok() {
+            Ok(())
+        } else {
+            Err(format!("{} failed for some databases", report.action))
+        }
+    }
+}
+
 fn megabytes(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
@@ -477,6 +593,28 @@ mod tests {
             }))
         ));
         assert!(parse(&["restore"]).is_err(), "restore needs a name");
+        assert!(
+            matches!(parse(&["baseline", "-w", "feat-login"]), Ok(DbCommand::Baseline(SnapshotArgs { ref branch, .. })) if branch.as_deref() == Some("feat-login"))
+        );
+        assert!(matches!(
+            parse(&["reseed"]),
+            Ok(DbCommand::Reseed(SnapshotArgs {
+                from_snapshot: None,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            parse(&["reseed", "--from", "main__baseline"]),
+            Ok(DbCommand::Reseed(SnapshotArgs {
+                from_snapshot: None,
+                ..
+            }))
+        ));
+        assert!(
+            matches!(parse(&["reseed", "--snapshot", "seeded"]), Ok(DbCommand::Reseed(SnapshotArgs { from_snapshot: Some(ref name), .. })) if name == "seeded")
+        );
+        assert!(parse(&["reseed", "--from", "elsewhere"]).is_err());
+        assert!(parse(&["reseed", "--from", "main__baseline", "--snapshot", "s"]).is_err());
         assert!(
             parse(&["snapshot", "s", "--main"]).is_err(),
             "--main only restores"

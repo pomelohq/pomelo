@@ -143,6 +143,7 @@ echo "$*" >> '{log}'
 case "$*" in
   "ps -q"*) echo pg-container ;;
   *"-tAc"*"SELECT 1"*) echo 1 ;;
+  *server_version_num*) echo 160002 ;;
 esac
 exit 0
 "#,
@@ -278,9 +279,14 @@ fn create_then_delete_round_trip() {
         "seed_from_main repos are cloned, not seeded"
     );
     assert!(workspace.join("web/seeded.txt").is_file());
-    assert_eq!(outcome.warnings.len(), 1, "{:?}", outcome.warnings);
+    assert_eq!(outcome.warnings.len(), 2, "{:?}", outcome.warnings);
     assert!(
-        outcome.warnings[0].starts_with("web: setup failed (exit 3"),
+        outcome.warnings[0].starts_with("main has no main__baseline snapshot"),
+        "an old project still copies live main, and says so: {:?}",
+        outcome.warnings
+    );
+    assert!(
+        outcome.warnings[1].starts_with("web: setup failed (exit 3"),
         "{:?}",
         outcome.warnings
     );
@@ -319,6 +325,61 @@ fn create_then_delete_round_trip() {
 }
 
 #[test]
+fn a_workspace_copies_main_baseline_without_disconnecting_main_and_saves_its_own_baseline() {
+    let fixture = Fixture::new();
+    let main = fixture.root.join("workspace--main");
+    let mut index = pom_services::SnapshotIndex::default();
+    index.snapshots.insert(
+        pom_services::MAIN_BASELINE.into(),
+        pom_services::SnapshotEntry {
+            created_ms: 1,
+            databases: vec![pom_services::SnapshotDb {
+                db: "demo_api_main".into(),
+                snapshot_db: "demo_api_main__snap__main__baseline".into(),
+                bytes: 1,
+            }],
+        },
+    );
+    index.save(&main).expect("main index");
+    let (result, _) = fixture.create(&request("feat-z"));
+    let outcome = result.expect("create");
+    assert!(
+        !outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("main__baseline")),
+        "{:?}",
+        outcome.warnings
+    );
+    let docker = fixture.docker_calls();
+    assert!(
+        docker.contains(
+            "CREATE DATABASE \"demo_api_feat-z\" TEMPLATE \"demo_api_main__snap__main__baseline\""
+        ),
+        "{docker}"
+    );
+    assert!(
+        !docker.contains("datname = 'demo_api_main'"),
+        "main's connections are never terminated: {docker}"
+    );
+    assert!(
+        docker.contains(
+            "CREATE DATABASE \"demo_api_feat-z__snap__ws__baseline\" TEMPLATE \"demo_api_feat-z\""
+        ),
+        "{docker}"
+    );
+    let saved = pom_services::SnapshotIndex::load(&fixture.workspace("feat-z"));
+    assert_eq!(
+        saved.snapshots[pom_services::WORKSPACE_BASELINE]
+            .databases
+            .iter()
+            .map(|saved| saved.db.as_str())
+            .collect::<Vec<_>>(),
+        ["demo_api_feat-z", "demo_web_feat-z"]
+    );
+}
+
+#[test]
 fn fresh_databases_seed_even_the_repos_that_copy_main() {
     let fixture = Fixture::new();
     let fresh = CreateRequest {
@@ -330,7 +391,8 @@ fn fresh_databases_seed_even_the_repos_that_copy_main() {
     assert!(fixture.workspace("feat-y").join("api/seeded.txt").is_file());
     let docker = fixture.docker_calls();
     assert!(
-        docker.contains("CREATE DATABASE \"demo_api_feat-y\"") && !docker.contains("TEMPLATE"),
+        docker.contains("CREATE DATABASE \"demo_api_feat-y\"")
+            && !docker.contains("TEMPLATE \"demo_api_main"),
         "{docker}"
     );
 }
@@ -415,6 +477,7 @@ fn a_failed_worktree_rolls_back_and_the_run_resumes() {
             StageStatus::Completed,
             StageStatus::Completed,
             StageStatus::Failed,
+            StageStatus::Pending,
             StageStatus::Pending,
             StageStatus::Pending,
             StageStatus::Pending,

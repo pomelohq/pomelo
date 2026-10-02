@@ -10,7 +10,7 @@ use crate::{
     StageResult, StageScope, WorkspaceContext,
 };
 
-pub const CREATE_STAGES: [&str; 7] = [
+pub const CREATE_STAGES: [&str; 8] = [
     "Validating config and hosts",
     "Provisioning workspace",
     "Starting shared services and databases",
@@ -18,6 +18,7 @@ pub const CREATE_STAGES: [&str; 7] = [
     "Configuring repos (parallel)",
     "Running setup commands (parallel)",
     "Seeding databases (parallel)",
+    "Saving the workspace's baseline snapshot",
 ];
 
 const VALIDATE: usize = 0;
@@ -27,6 +28,7 @@ const SOURCE: usize = 3;
 const CONFIGURE: usize = 4;
 const SETUP: usize = 5;
 const SEED: usize = 6;
+const BASELINE: usize = 7;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CreateRequest {
@@ -118,6 +120,7 @@ pub fn create(
             CONFIGURE => creation.configure(),
             SETUP => creation.setup(scope),
             SEED => creation.seed(scope),
+            BASELINE => Ok(creation.baseline(scope)),
             _ => Ok(StageResult::Skipped),
         }
     })
@@ -259,7 +262,29 @@ impl Creation<'_> {
         runner
             .create_databases_when_ready(config, &fresh)
             .map_err(|error| error.to_string())?;
+        let main_folder =
+            pom_layout::workspace_root(runner.project_root(), self.default_branch, true);
+        let mut warned = false;
         for (target, template) in clones {
+            if let Some(baseline) =
+                pom_services::snapshot_copy(&main_folder, pom_services::MAIN_BASELINE, &template)
+            {
+                match runner.clone_from_snapshot(config, &baseline, &target) {
+                    Ok(()) => {
+                        scope.progress(format!("{target} copied from main__baseline"));
+                        continue;
+                    }
+                    Err(error) => scope.warn(format!(
+                        "could not copy main__baseline into {target}, copying live {template} instead: {error}"
+                    )),
+                }
+            } else if !warned {
+                warned = true;
+                scope.warn(
+                    "main has no main__baseline snapshot, so copying its databases disconnects whoever uses them; run `pom prepare-main` once to stop that"
+                        .to_string(),
+                );
+            }
             if runner.database_exists(config, &template) {
                 match runner.clone_database(config, &template, &target) {
                     Ok(()) => {
@@ -474,6 +499,40 @@ impl Creation<'_> {
             eprintln!("workspace: prune the node_modules store: {error}");
         }
         Ok(StageResult::Done)
+    }
+
+    /// `ws__baseline`: the workspace's data right after it was created, migrated and seeded.
+    fn baseline(&self, scope: &StageScope<'_>) -> StageResult {
+        let config = self.context.config;
+        let names = pom_services::owned_database_names(config, self.branch(), |repo| {
+            self.folder.join(repo).is_dir()
+        });
+        if config.shared_services.is_empty() || names.is_empty() {
+            return StageResult::Skipped;
+        }
+        match self.context.runner.snapshot_workspace(
+            config,
+            self.branch(),
+            &self.folder,
+            &names,
+            pom_services::WORKSPACE_BASELINE,
+            true,
+        ) {
+            Ok(report) => {
+                for outcome in report.databases.iter().filter(|outcome| !outcome.ok) {
+                    scope.warn(format!(
+                        "{}: {}",
+                        outcome.db,
+                        outcome.error.as_deref().unwrap_or("snapshot failed")
+                    ));
+                }
+                for warning in report.warnings {
+                    scope.warn(warning);
+                }
+            }
+            Err(error) => scope.warn(format!("ws__baseline: {error}")),
+        }
+        StageResult::Done
     }
 
     fn seed(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {

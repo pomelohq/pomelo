@@ -148,7 +148,7 @@ impl Session {
         }
     }
 
-    fn context(&self) -> WorkspaceContext<'_> {
+    pub(crate) fn context(&self) -> WorkspaceContext<'_> {
         WorkspaceContext {
             config: &self.config,
             runner: &self.runner,

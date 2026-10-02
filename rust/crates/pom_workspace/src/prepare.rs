@@ -17,6 +17,7 @@ fn phase_label(phase: &str) -> &'static str {
     match phase {
         "reset" => "Resetting main's databases",
         "migrate" => "Running migrations",
+        "snapshot" => "Saving the main__baseline snapshot",
         _ => "Seeding databases",
     }
 }
@@ -49,7 +50,13 @@ pub fn prepare_main(
         })
         .filter(|(_, path)| path.is_dir())
         .collect();
-    let phases = context.config.prepare_main_phases();
+    let mut phases = context.config.prepare_main_phases();
+    // The snapshot phase is ours alone, so the shared phase list leaves it out; it runs last by default.
+    let config = context.config;
+    if config.prepare_main.is_empty() || config.prepare_main.iter().any(|phase| phase == "snapshot")
+    {
+        phases.push("snapshot".to_string());
+    }
     let labels: Vec<&'static str> = phases.iter().map(|phase| phase_label(phase)).collect();
     let preparation = Preparation {
         context,
@@ -74,6 +81,7 @@ pub fn prepare_main(
         match phases[index].as_str() {
             "reset" => preparation.reset(scope),
             "migrate" => Ok(preparation.migrate(scope)),
+            "snapshot" => Ok(preparation.snapshot(scope)),
             _ if request.skip_seed => Ok(StageResult::Skipped),
             _ => Ok(preparation.seed(scope)),
         }
@@ -174,6 +182,41 @@ impl Preparation<'_> {
 
     fn migrate(&self, scope: &StageScope<'_>) -> StageResult {
         self.each_repo(scope, "migrate", |dir| dir.effective_migrate());
+        StageResult::Done
+    }
+
+    /// Saves main's databases as `main__baseline`, which new workspaces copy from without disconnecting main.
+    fn snapshot(&self, scope: &StageScope<'_>) -> StageResult {
+        let config = self.context.config;
+        let names = pom_services::owned_database_names(config, self.branch, |repo| {
+            self.repos.iter().any(|(name, _)| name == repo)
+        });
+        if config.shared_services.is_empty() || names.is_empty() {
+            return StageResult::Skipped;
+        }
+        scope.progress(format!("saving {}", names.join(", ")));
+        match self.context.runner.snapshot_workspace(
+            config,
+            self.branch,
+            &self.folder,
+            &names,
+            pom_services::MAIN_BASELINE,
+            true,
+        ) {
+            Ok(report) => {
+                for outcome in report.databases.iter().filter(|outcome| !outcome.ok) {
+                    scope.warn(format!(
+                        "{}: {}",
+                        outcome.db,
+                        outcome.error.as_deref().unwrap_or("snapshot failed")
+                    ));
+                }
+                for warning in report.warnings {
+                    scope.warn(warning);
+                }
+            }
+            Err(error) => scope.warn(format!("main__baseline: {error}")),
+        }
         StageResult::Done
     }
 
