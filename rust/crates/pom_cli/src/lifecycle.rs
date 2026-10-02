@@ -129,6 +129,93 @@ impl WorkspaceStatus {
     }
 }
 
+impl Session {
+    /// The addresses a test engine needs: each service's direct and proxy URL, each repo's databases and Redis.
+    fn add_urls(&self, status: &WorkspaceStatus, document: &mut serde_json::Value) {
+        let target = |repo: &str, service: &str| pom_services::ServiceTarget {
+            branch: status.branch.clone(),
+            is_main: status.is_main,
+            repo: repo.to_string(),
+            service: service.to_string(),
+        };
+        if let Some(services) = document["services"].as_array_mut() {
+            for service in services {
+                let (Some(repo), Some(name)) = (
+                    service["repo"].as_str().map(str::to_string),
+                    service["name"].as_str().map(str::to_string),
+                ) else {
+                    continue;
+                };
+                let (repo, name) = (repo.as_str(), name.as_str());
+                let target = target(repo, name);
+                service["url"] = serde_json::json!(self.runner.url(&self.config, &target));
+                service["proxy_url"] =
+                    serde_json::json!(self.runner.proxy_url(&self.config, &target));
+                let alias = self
+                    .config
+                    .repos
+                    .get(repo)
+                    .map(|dir| {
+                        if dir.alias.is_empty() {
+                            repo
+                        } else {
+                            dir.alias.as_str()
+                        }
+                    })
+                    .unwrap_or(repo);
+                service["path"] = serde_json::json!(format!("/_pom_dev/{alias}/{name}"));
+            }
+        }
+        let endpoint = self.runner.postgres_endpoint(&self.config);
+        let mut repos = serde_json::Map::new();
+        for (repo, dir) in &self.config.repos {
+            if !status.path.join(repo).is_dir() || !dir.has_worktree_config() {
+                continue;
+            }
+            let databases: Vec<serde_json::Value> =
+                pom_services::owned_database_names(&self.config, &status.branch, |name| {
+                    name == repo
+                })
+                .into_iter()
+                .map(|name| {
+                    serde_json::json!({
+                        "name": name,
+                        "url": format!(
+                            "postgres://{}:{}@{}:{}/{name}",
+                            endpoint.user, endpoint.password, endpoint.host, endpoint.port
+                        ),
+                    })
+                })
+                .collect();
+            let redis: Vec<serde_json::Value> = dir
+                .shared_refs
+                .iter()
+                .filter(|shared| {
+                    self.config
+                        .shared_services
+                        .get(&shared.name)
+                        .is_some_and(|def| {
+                            def.kind == "redis"
+                                || shared.name == "redis"
+                                || def.image.starts_with("redis")
+                        })
+                })
+                .map(|shared| {
+                    serde_json::json!({
+                        "service": shared.name,
+                        "url": self.runner.redis_url(&shared.name, &status.branch),
+                    })
+                })
+                .collect();
+            repos.insert(
+                repo.clone(),
+                serde_json::json!({ "databases": databases, "redis": redis }),
+            );
+        }
+        document["repos"] = serde_json::Value::Object(repos);
+    }
+}
+
 fn age(path: &std::path::Path) -> String {
     let Ok(elapsed) = std::fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -195,7 +282,9 @@ impl Session {
                     .find(|status| &status.branch == branch)
                     .ok_or_else(|| format!("no workspace {branch}"))?;
                 if *json {
-                    return say(out, &pretty(&status.json())?);
+                    let mut document = status.json();
+                    self.add_urls(&status, &mut document);
+                    return say(out, &pretty(&document)?);
                 }
                 say(out, &format!("Workspace  {}", status.branch))?;
                 say(

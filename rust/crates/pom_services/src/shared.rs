@@ -883,7 +883,7 @@ pub(crate) struct Postgres {
 
 impl Postgres {
     /// Docker arguments running `psql` on `database`: inside our container, or a throwaway client.
-    fn psql_args(&self, database: &str, rest: &[&str]) -> Vec<String> {
+    pub(crate) fn psql_args(&self, database: &str, rest: &[&str]) -> Vec<String> {
         let mut args: Vec<String> = match &self.container {
             Some(container) => ["exec", container, "psql", "-U", &self.user, "-d", database]
                 .map(str::to_string)

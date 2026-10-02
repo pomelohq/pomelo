@@ -19,6 +19,8 @@ pub(crate) enum DbCommand {
     SnapshotDrop(SnapshotArgs),
     Baseline(SnapshotArgs),
     Reseed(SnapshotArgs),
+    Mark(crate::marks::MarkArgs),
+    Stats(crate::marks::StatsArgs),
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -99,6 +101,8 @@ pub(crate) fn parse(words: &[&str]) -> Result<DbCommand, String> {
             &[],
             "db snapshots",
         )?)),
+        "mark" => Ok(DbCommand::Mark(crate::marks::parse_mark(rest)?)),
+        "stats" => Ok(DbCommand::Stats(crate::marks::parse_stats(rest)?)),
         "baseline" => {
             let args = snapshot_args(rest, &[], "db baseline")?;
             if !args.name.is_empty() {
@@ -163,6 +167,8 @@ impl Session {
             DbCommand::Baseline(args) | DbCommand::Reseed(args) => {
                 return self.baseline_command(command, args, out)
             }
+            DbCommand::Mark(args) => return self.db_mark(args, out),
+            DbCommand::Stats(args) => return self.db_stats(args, out),
         };
         let names = self.workspace_databases(&branch)?;
         if names.is_empty() {

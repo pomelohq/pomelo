@@ -11,7 +11,7 @@ use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use pom_services::{RunnerOptions, ServiceRunner, SnapshotIndex, MAIN_BASELINE};
 
-const CONFIG: &str = "session: myproject\ndefault_branch: main\nshared_services:\n  postgres:\n    image: postgres:16-alpine\n    ports: [\"PORT:5432\"]\n    db_user: postgres\n    db_password: postgres\nrepos:\n  api:\n    databases:\n      main: \"api_{{branch.safe}}\"\n      events: \"events_{{branch.safe}}\"\n    services:\n      server: echo\n";
+const CONFIG: &str = "session: myproject\ndefault_branch: main\nshared_services:\n  postgres:\n    image: postgres:16-alpine\n    ports: [\"PORT:5432\"]\n    command: postgres -c shared_preload_libraries=pg_stat_statements\n    db_user: postgres\n    db_password: postgres\nrepos:\n  api:\n    databases:\n      main: \"api_{{branch.safe}}\"\n      events: \"events_{{branch.safe}}\"\n    services:\n      server: echo\n";
 
 struct Project {
     _temp: tempfile::TempDir,
@@ -413,5 +413,52 @@ fn a_real_copy_from_main_baseline_keeps_mains_connections_open() {
     assert!(
         client.0.try_wait().expect("client state").is_none(),
         "main's client is still running"
+    );
+}
+
+#[test]
+fn a_real_step_reports_its_repeated_queries() {
+    if std::env::var_os("POM_DOCKER_TEST").is_none() {
+        return;
+    }
+    let session = "pomstatstest";
+    let port = 25436;
+    let project = project(session, port, "docker".into());
+    let _teardown = Teardown(project.runner.compose_file(), session.to_string());
+    project.runner.ensure_shared(&project.config).expect("up");
+    let dbs = project.databases("feat-login");
+    project
+        .runner
+        .create_databases_when_ready(&project.config, &dbs)
+        .expect("create");
+    psql(port, &dbs[0], "CREATE TABLE rows (value text)");
+    let before = project
+        .runner
+        .statement_rows(&project.config, &dbs)
+        .expect("statements");
+    let burst = (0..15)
+        .map(|index| format!("SELECT count(*) FROM rows WHERE value = '{index}';"))
+        .collect::<String>();
+    psql(port, &dbs[0], &burst);
+    let now = project
+        .runner
+        .statement_rows(&project.config, &dbs)
+        .expect("statements");
+    let stats = pom_services::step_stats(&before, &now, 10);
+    assert!(
+        stats
+            .repeated
+            .iter()
+            .any(|query| query.query.contains("FROM rows") && query.calls >= 15),
+        "{stats:?}"
+    );
+    let other = project.databases("feat-search");
+    assert!(
+        project
+            .runner
+            .statement_rows(&project.config, &other)
+            .expect("statements")
+            .is_empty(),
+        "another workspace's databases count nothing"
     );
 }

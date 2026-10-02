@@ -87,6 +87,26 @@ pub fn connect_writer(dir: &SocketDir, name: &str) -> io::Result<HolderConnectio
     Ok(HolderConnection { stream })
 }
 
+/// What holder `name` printed from absolute offset `since`, and the offset its output has reached. An offset the
+/// ring already dropped replays the whole ring, so the bytes can be fewer than `end - since`.
+pub fn read_since(
+    dir: &SocketDir,
+    name: &str,
+    since: u64,
+    timeout: Duration,
+) -> io::Result<(Vec<u8>, u64)> {
+    let mut stream = UnixStream::connect(dir.socket(name))?;
+    stream.set_read_timeout(Some(timeout))?;
+    frame::write_resume(&mut stream, since)?;
+    let mut reader = BufReader::new(stream);
+    read_snapshot(&mut reader)
+}
+
+/// The offset holder `name`'s output has reached, without its scrollback.
+pub fn output_end(dir: &SocketDir, name: &str, timeout: Duration) -> io::Result<u64> {
+    read_since(dir, name, frame::NO_SNAPSHOT, timeout).map(|(_, end)| end)
+}
+
 /// The holder's current scrollback, without staying attached (a log peek).
 pub fn snapshot(dir: &SocketDir, name: &str, timeout: Duration) -> io::Result<Vec<u8>> {
     let mut stream = UnixStream::connect(dir.socket(name))?;
