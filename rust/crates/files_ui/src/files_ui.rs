@@ -12081,3 +12081,52 @@ mod language_selector_tests {
         assert!(view.language_selector.is_none());
     }
 }
+
+#[cfg(test)]
+mod agent_tab_tests {
+    use super::*;
+
+    struct Agent;
+
+    impl workspace::Item for Agent {
+        fn id(&self) -> Option<String> {
+            Some("agent:demo".into())
+        }
+        fn title(&self) -> String {
+            "Main".into()
+        }
+        fn render(&mut self) -> ui::Node {
+            ui::div().into()
+        }
+    }
+
+    #[test]
+    fn an_agent_opens_next_to_the_code_when_asked_and_only_once() {
+        let temp = tempfile::tempdir().expect("temp");
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").expect("file");
+        let mut files = FilesView::scanned(temp.path().to_path_buf());
+        files.open_path("main.rs");
+        let mut view = workspace::WorkspaceView::new(workspace::Layout {
+            project: Some(workspace::ProjectInfo::default()),
+            files_view: Some(Box::new(files)),
+            ..Default::default()
+        });
+        let mut made = 0;
+        view.open_agent_item("agent:demo", true, || {
+            made += 1;
+            Some(Box::new(Agent) as Box<dyn workspace::Item>)
+        });
+        assert_eq!(
+            made, 1,
+            "built in the editor area: this layout has no agent dock"
+        );
+        view.open_agent_item("agent:demo", false, || {
+            made += 1;
+            None
+        });
+        assert_eq!(
+            made, 1,
+            "an agent already next to the code is focused, not opened again"
+        );
+    }
+}

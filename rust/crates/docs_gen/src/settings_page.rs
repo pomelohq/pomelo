@@ -63,6 +63,7 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("terminal_shell", "Terminal", "The shell new terminals run, with its arguments; empty runs your login shell."),
     ("terminal_scrollback", "Terminal", "Lines of history each new terminal keeps."),
     ("agent_command", "Agent", "The AI CLI the Agent button opens in a workspace; `claude` also gets pom's MCP server and prompt."),
+    ("agent_open_in", "Agent", "Where agents open: `\"dock\"` in the agent dock, `\"center\"` as a tab next to the code."),
     ("agent_tab_close", "Agent", "Closing an agent's tab: `\"hide\"` leaves the agent running, `\"stop\"` ends it."),
     ("notify_claude", "Notifications", "Banners and sounds when a workspace's Claude starts, finishes, needs input or compacts. Needs macOS notification permission."),
     ("notify_when_focused", "Notifications", "Also alert for the workspace on screen in the focused window."),

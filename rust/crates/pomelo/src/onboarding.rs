@@ -487,7 +487,9 @@ impl App {
         if visible {
             self.with_workspace_view(window, |view, _| view.hide_agent_dock());
         } else {
-            self.with_workspace_view(window, |view, _| view.open_agent_item(&item, || None));
+            self.with_workspace_view(window, |view, _| {
+                view.open_agent_item(&item, false, || None)
+            });
         }
         self.with_run(|run| run.agent_shown = !visible);
     }
@@ -725,7 +727,7 @@ impl App {
         }
         let title = self.run_value(|run| run.agent.title()).unwrap_or_default();
         self.with_workspace_view(window, |view, _| {
-            view.open_agent_item(&item, || None);
+            view.open_agent_item(&item, false, || None);
             view.show_toast(format!("Sent to {title} with the output"), None)
         });
     }
