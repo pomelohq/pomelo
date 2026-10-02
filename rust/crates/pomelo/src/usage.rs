@@ -476,7 +476,7 @@ impl App {
         }
         if let Some(record) = archived.iter().find(|record| record.session == session) {
             let item = format!("agent:{}", record.holder);
-            self.with_workspace_view(id, |view, _| view.open_agent_item(&item, || None));
+            self.with_workspace_view(id, |view, _| view.open_agent_item(&item, false, || None));
             return;
         }
         self.with_workspace_view(id, |view, _| {

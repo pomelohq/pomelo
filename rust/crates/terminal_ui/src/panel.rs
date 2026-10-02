@@ -1070,7 +1070,7 @@ mod tests {
             },
         );
         view.update(app.app_mut(), |view, _| {
-            view.open_agent_item("agent:demo", || {
+            view.open_agent_item("agent:demo", false, || {
                 let terminal = Terminal::spawn(
                     TerminalOptions {
                         shell: Some(("/bin/sh".into(), vec!["-c".into(), "sleep 5".into()])),
@@ -1105,7 +1105,7 @@ mod tests {
 
         let again = view.update(app.app_mut(), |view, _| {
             let mut built = false;
-            view.open_agent_item("terminal:7", || {
+            view.open_agent_item("terminal:7", false, || {
                 built = true;
                 None
             });

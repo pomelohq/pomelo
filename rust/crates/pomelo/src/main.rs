@@ -1444,8 +1444,9 @@ impl App {
         let item_id = format!("agent:{}", launch.holder);
         let item_number = self.next_agent_item;
         self.next_agent_item += 1;
+        let in_center = self.settings.agent_open_in == "center";
         self.with_workspace_view(id, |view, _| {
-            view.open_agent_item(&item_id, || {
+            view.open_agent_item(&item_id, in_center, || {
                 let options = terminal::HolderOptions {
                     dir: pom_ptyhost::SocketDir::from_env(),
                     name: launch.holder.clone(),

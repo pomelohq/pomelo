@@ -6309,29 +6309,50 @@ impl WorkspaceView {
     }
 
     /// Focus the agent session whose item has `id`, or add the one `make` builds; shows it in the agent dock.
+    /// Shows the agent `id` wherever it already is, else opens it: next to the code when `in_center`,
+    /// otherwise in the agent dock.
     pub fn open_agent_item(
         &mut self,
         id: &str,
+        in_center: bool,
         make: impl FnOnce() -> Option<Box<dyn crate::Item>>,
     ) {
         // Moved next to the code, the agent is shown there rather than opened a second time in the dock.
-        let in_center = self
+        let shown_in_center = self
             .layout
             .files_view
             .as_mut()
             .and_then(|files| files.pane_group_mut())
             .is_some_and(|group| group.reveal_item(id));
-        if in_center {
-            self.set_terminal_focus(false);
-            self.set_agent_focus(false);
-            self.focus_group(InputGroup::Center);
-            self.panes_input = true;
+        if shown_in_center {
+            self.focus_center_agent();
             return;
+        }
+        let in_dock = self
+            .layout
+            .agent_view
+            .as_mut()
+            .is_some_and(|view| view.panes().reveal_item(id));
+        if in_center && !in_dock {
+            if let Some(group) = self
+                .layout
+                .files_view
+                .as_mut()
+                .and_then(|files| files.pane_group_mut())
+            {
+                let Some(item) = make() else {
+                    return;
+                };
+                group.accept_foreign_item(item);
+                self.focus_center_agent();
+                self.pending.persist = true;
+                return;
+            }
         }
         let Some(view) = self.layout.agent_view.as_mut() else {
             return;
         };
-        if !view.panes().reveal_item(id) {
+        if !in_dock {
             let Some(item) = make() else {
                 return;
             };
@@ -6342,6 +6363,13 @@ impl WorkspaceView {
         self.focus_group(InputGroup::Agent);
         self.panes_input = true;
         self.pending.persist = true;
+    }
+
+    fn focus_center_agent(&mut self) {
+        self.set_terminal_focus(false);
+        self.set_agent_focus(false);
+        self.focus_group(InputGroup::Center);
+        self.panes_input = true;
     }
 
     /// Whether the agent dock is showing its sessions right now.

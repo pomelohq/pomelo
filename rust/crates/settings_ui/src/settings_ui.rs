@@ -276,6 +276,7 @@ pub const CTRL_INLINE_COLUMN_DEC: u64 = 370;
 pub const CTRL_INLINE_COLUMN_INC: u64 = 371;
 pub const CTRL_INLINE_COLUMN_EDIT: u64 = 372;
 pub const CTRL_LANGUAGE_BACK: u64 = 380;
+pub const CTRL_AGENT_OPEN_IN: u64 = 381;
 /// A language's Configure button, by its index in `language_names`.
 pub const LANGUAGE_OPEN_BASE: u64 = 29_000;
 /// A language's own controls: `LANGUAGE_CTRL_BASE + index * LANGUAGE_CTRL_STRIDE + field`.
@@ -340,6 +341,8 @@ pub const MODULES_DAYS_MAX: u64 = 365;
 /// What closing an agent's tab does, as (setting value, label).
 const AGENT_TAB_CLOSE: [(&str, &str); 2] =
     [("hide", "Keep It Running"), ("stop", "Stop the Agent")];
+/// Where agents open, as (setting value, label).
+const AGENT_OPEN_IN: [(&str, &str); 2] = [("dock", "Agent Dock"), ("center", "Editor Tab")];
 const RESTORE_ON_STARTUP: [(&str, &str); 2] =
     [("last_session", "Last Session"), ("none", "Nothing")];
 const MULTI_CURSOR_MODIFIERS: [(&str, &str); 2] = [("alt", "Alt"), ("cmd_or_ctrl", "Cmd Or Ctrl")];
@@ -666,6 +669,7 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_MODULES_FALLBACK
             | CTRL_HIDE_MOUSE
             | CTRL_AGENT_TAB_CLOSE
+            | CTRL_AGENT_OPEN_IN
             | CTRL_RESTORE_ON_STARTUP
             | CTRL_MULTI_CURSOR_MODIFIER
             | CTRL_CURSOR_SHAPE
@@ -717,6 +721,7 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
             .map(|(_, label)| label.to_string())
             .collect(),
         CTRL_RESTORE_ON_STARTUP => labels(&RESTORE_ON_STARTUP),
+        CTRL_AGENT_OPEN_IN => labels(&AGENT_OPEN_IN),
         CTRL_MULTI_CURSOR_MODIFIER => labels(&MULTI_CURSOR_MODIFIERS),
         CTRL_CURSOR_SHAPE => labels(&CURSOR_SHAPES),
         CTRL_REDUCE_MOTION => labels(&REDUCE_MOTION),
@@ -760,6 +765,7 @@ pub fn control_value(id: u64, s: &Settings) -> String {
             .map_or(AGENT_TAB_CLOSE[0].1, |(_, label)| label)
             .to_string(),
         CTRL_RESTORE_ON_STARTUP => label_of(&RESTORE_ON_STARTUP, &s.restore_on_startup),
+        CTRL_AGENT_OPEN_IN => label_of(&AGENT_OPEN_IN, &s.agent_open_in),
         CTRL_MULTI_CURSOR_MODIFIER => label_of(&MULTI_CURSOR_MODIFIERS, &s.multi_cursor_modifier),
         CTRL_CURSOR_SHAPE => label_of(&CURSOR_SHAPES, &s.cursor_shape),
         CTRL_REDUCE_MOTION => label_of(&REDUCE_MOTION, &s.reduce_motion),
@@ -817,12 +823,14 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
         }
         CTRL_MULTI_CURSOR_MODIFIER
         | CTRL_RESTORE_ON_STARTUP
+        | CTRL_AGENT_OPEN_IN
         | CTRL_CURSOR_SHAPE
         | CTRL_REDUCE_MOTION
         | CTRL_DEFINITION_SCROLL
         | CTRL_DIAGNOSTICS_SEVERITY => {
             let (choices, slot) = match id {
                 CTRL_RESTORE_ON_STARTUP => (&RESTORE_ON_STARTUP[..], &mut s.restore_on_startup),
+                CTRL_AGENT_OPEN_IN => (&AGENT_OPEN_IN[..], &mut s.agent_open_in),
                 CTRL_MULTI_CURSOR_MODIFIER => {
                     (&MULTI_CURSOR_MODIFIERS[..], &mut s.multi_cursor_modifier)
                 }
@@ -924,6 +932,7 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_HIDE_MOUSE => s.hide_mouse == d.hide_mouse,
         CTRL_AGENT_TAB_CLOSE => s.agent_tab_close == d.agent_tab_close,
         CTRL_RESTORE_ON_STARTUP => s.restore_on_startup == d.restore_on_startup,
+        CTRL_AGENT_OPEN_IN => s.agent_open_in == d.agent_open_in,
         CTRL_MULTI_CURSOR_MODIFIER => s.multi_cursor_modifier == d.multi_cursor_modifier,
         CTRL_CURSOR_BLINK => s.cursor_blink == d.cursor_blink,
         CTRL_CURSOR_ANIMATION => s.cursor_animation == d.cursor_animation,
@@ -1001,6 +1010,7 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_HIDE_MOUSE => s.hide_mouse = d.hide_mouse.clone(),
         CTRL_AGENT_TAB_CLOSE => s.agent_tab_close = d.agent_tab_close.clone(),
         CTRL_RESTORE_ON_STARTUP => s.restore_on_startup = d.restore_on_startup.clone(),
+        CTRL_AGENT_OPEN_IN => s.agent_open_in = d.agent_open_in.clone(),
         CTRL_MULTI_CURSOR_MODIFIER => s.multi_cursor_modifier = d.multi_cursor_modifier.clone(),
         CTRL_CURSOR_BLINK => s.cursor_blink = d.cursor_blink,
         CTRL_CURSOR_ANIMATION => s.cursor_animation = d.cursor_animation.clone(),
@@ -3190,6 +3200,15 @@ fn agent_page(s: &Settings, agent: &AgentPage) -> Page {
                 reset: reset_if_changed(CTRL_AGENT_COMMAND, s),
             }),
             PageItem::Row(SettingRow {
+                title: "Open Agents In".into(),
+                description: "The agent dock, or a tab next to your code. A tab already open stays where it is.".into(),
+                control: Control::Dropdown {
+                    id: CTRL_AGENT_OPEN_IN,
+                    value: control_value(CTRL_AGENT_OPEN_IN, s),
+                },
+                reset: reset_if_changed(CTRL_AGENT_OPEN_IN, s),
+            }),
+            PageItem::Row(SettingRow {
                 title: "Closing an Agent Tab".into(),
                 description: "Keep the agent running in the background, or stop it. Stop Agent in a tab's right-click menu always stops it.".into(),
                 control: Control::Dropdown {
@@ -4582,6 +4601,11 @@ mod tests {
         assert_eq!(s.agent_tab_close, "stop");
         assert!(reset_to_default(CTRL_AGENT_TAB_CLOSE, &mut s));
         assert_eq!(s.agent_tab_close, "hide");
+        assert_eq!(control_value(CTRL_AGENT_OPEN_IN, &s), "Agent Dock");
+        assert!(apply_choice(CTRL_AGENT_OPEN_IN, 1, &[], &mut s));
+        assert_eq!(s.agent_open_in, "center");
+        assert!(reset_to_default(CTRL_AGENT_OPEN_IN, &mut s));
+        assert_eq!(s.agent_open_in, "dock");
     }
 
     #[test]
