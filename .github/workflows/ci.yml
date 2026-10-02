@@ -125,6 +125,24 @@ jobs:
             gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
           done
 
+  # The macOS runners have no Docker; these tests need a real Postgres, so they run here.
+  postgres:
+    name: Real Postgres tests (Linux)
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_INCREMENTAL: 0
+      POM_DOCKER_TEST: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show
+      - run: cargo test -p pom_services --test snapshots -- --test-threads 1
+
   # Workflow mistakes otherwise show only when the workflow runs, which for releases is at tag time.
   actionlint:
     name: Lint workflows
@@ -149,13 +167,14 @@ jobs:
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, rust, actionlint]
+    needs: [changes, rust, postgres, actionlint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - run: |
-          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} actionlint=${{ needs.actionlint.result }}"
+          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
           test "${{ needs.changes.result }}" = "success" || exit 1
           case "${{ needs.rust.result }}" in success|skipped) ;; *) echo "rust failed"; exit 1 ;; esac
+          case "${{ needs.postgres.result }}" in success|skipped) ;; *) echo "postgres tests failed"; exit 1 ;; esac
           case "${{ needs.actionlint.result }}" in success|skipped) ;; *) echo "workflow lint failed"; exit 1 ;; esac
           echo "CI gate passed"

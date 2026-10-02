@@ -210,6 +210,7 @@ pub fn process_alive(pid: i32) -> bool {
     exists && !is_zombie(pid)
 }
 
+#[cfg(target_os = "macos")]
 fn is_zombie(pid: i32) -> bool {
     let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
@@ -230,7 +231,32 @@ fn is_zombie(pid: i32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
+/// `/proc/<pid>/stat`'s state and parent; the command name may hold spaces and parentheses, so fields count from
+/// its closing one.
+#[cfg(target_os = "linux")]
+fn proc_stat(pid: i32) -> Option<(char, i32)> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let mut fields = text.get(text.rfind(')')? + 1..)?.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let parent = fields.next()?.parse().ok()?;
+    Some((state, parent))
+}
+
+#[cfg(target_os = "linux")]
+fn is_zombie(pid: i32) -> bool {
+    proc_stat(pid).is_none_or(|(state, _)| state == 'Z')
+}
+
 /// The parent of `pid`, from the kernel's process table.
+#[cfg(target_os = "linux")]
+pub fn parent_pid(pid: i32) -> Option<i32> {
+    proc_stat(pid)
+        .map(|(_, parent)| parent)
+        .filter(|parent| *parent > 0)
+}
+
+/// The parent of `pid`, from the kernel's process table.
+#[cfg(target_os = "macos")]
 pub fn parent_pid(pid: i32) -> Option<i32> {
     if pid <= 0 {
         return None;
@@ -262,6 +288,26 @@ pub fn ancestors(pid: i32) -> Vec<i32> {
 }
 
 /// The process at the other end of a Unix socket, as the kernel saw it connect.
+#[cfg(target_os = "linux")]
+pub fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
+    use std::os::fd::AsRawFd;
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: SO_PEERCRED writes one ucred into `credentials`; `length` holds its size.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        )
+    };
+    (result == 0 && credentials.pid > 0).then_some(credentials.pid)
+}
+
+/// The process at the other end of a Unix socket, as the kernel saw it connect.
+#[cfg(target_os = "macos")]
 pub fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
     use std::os::fd::AsRawFd;
     let mut pid: libc::pid_t = 0;
@@ -279,6 +325,19 @@ pub fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
     (result == 0 && pid > 0).then_some(pid)
 }
 
+#[cfg(target_os = "linux")]
+fn children(pid: i32) -> Vec<i32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|child| proc_stat(*child).is_some_and(|(_, parent)| parent == pid))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
 fn children(pid: i32) -> Vec<i32> {
     let mut buffer = vec![0 as libc::pid_t; 256];
     loop {

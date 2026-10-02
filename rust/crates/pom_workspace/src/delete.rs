@@ -215,6 +215,9 @@ impl Deletion<'_> {
             }
         }
         if !config.shared_services.is_empty() {
+            if let Err(error) = self.context.runner.drop_all_snapshots(config, &self.folder) {
+                scope.warn(format!("drop snapshots: {error}"));
+            }
             let names = self.databases();
             if !names.is_empty() {
                 scope.progress(format!("dropping {}", names.join(", ")));

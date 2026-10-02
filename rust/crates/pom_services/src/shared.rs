@@ -401,7 +401,7 @@ impl ServiceRunner {
     }
 
     /// The shared Postgres: its connection and the container publishing it, if one of ours does.
-    fn postgres(&self, config: &Config) -> Postgres {
+    pub(crate) fn postgres(&self, config: &Config) -> Postgres {
         let endpoint = self.postgres_endpoint(config);
         Postgres {
             container: self.published_container(endpoint.port),
@@ -531,7 +531,7 @@ impl ServiceRunner {
         }
     }
 
-    fn terminate(&self, postgres: &Postgres, name: &str) {
+    pub(crate) fn terminate(&self, postgres: &Postgres, name: &str) {
         let sql = format!(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
             name.replace('\'', "''")
@@ -645,12 +645,17 @@ impl ServiceRunner {
         run_within(&mut command, timeout)
     }
 
-    fn psql(&self, postgres: &Postgres, database: &str, sql: &str) -> Result<Output, ServiceError> {
+    pub(crate) fn psql(
+        &self,
+        postgres: &Postgres,
+        database: &str,
+        sql: &str,
+    ) -> Result<Output, ServiceError> {
         self.docker(&postgres.psql_args(database, &["-c", sql]))
     }
 
     /// A query's rows as unaligned text.
-    fn psql_rows(&self, postgres: &Postgres, sql: &str) -> Result<String, ServiceError> {
+    pub(crate) fn psql_rows(&self, postgres: &Postgres, sql: &str) -> Result<String, ServiceError> {
         let output = self.docker(&postgres.psql_args(POSTGRES, &["-tAc", sql]))?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
@@ -676,7 +681,7 @@ impl ServiceRunner {
         }
     }
 
-    fn docker(&self, args: &[String]) -> Result<Output, ServiceError> {
+    pub(crate) fn docker(&self, args: &[String]) -> Result<Output, ServiceError> {
         Command::new(&self.docker)
             .args(args)
             .current_dir(&self.project_root)
@@ -691,8 +696,8 @@ impl ServiceRunner {
     }
 }
 
-struct Postgres {
-    container: Option<String>,
+pub(crate) struct Postgres {
+    pub(crate) container: Option<String>,
     host: String,
     port: u16,
     user: String,
@@ -723,7 +728,7 @@ impl Postgres {
     }
 }
 
-fn output_text(output: &Output) -> String {
+pub(crate) fn output_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr)
 }
 
