@@ -9,6 +9,7 @@ pub enum Section {
     Repo,
     Lifecycle,
     Service,
+    ServiceHealthCheck,
     Task,
     RepoSharedRef,
     Shared,
@@ -21,11 +22,12 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 13] = [
+    pub const ALL: [Section; 14] = [
         Section::Root,
         Section::Repo,
         Section::Lifecycle,
         Section::Service,
+        Section::ServiceHealthCheck,
         Section::Task,
         Section::RepoSharedRef,
         Section::Shared,
@@ -44,6 +46,7 @@ impl Section {
             Section::Repo => "repos.<repo>.",
             Section::Lifecycle => "repos.<repo>.lifecycle.",
             Section::Service => "repos.<repo>.services.<service>.",
+            Section::ServiceHealthCheck => "repos.<repo>.services.<service>.healthcheck.",
             Section::Task => "tasks[].",
             Section::RepoSharedRef => "repos.<repo>.shared_services[].<name>.",
             Section::Shared => "shared_services.<name>.",
@@ -62,6 +65,7 @@ impl Section {
             Section::Repo => "Repos",
             Section::Lifecycle => "Repo lifecycle",
             Section::Service => "Services",
+            Section::ServiceHealthCheck => "Service healthcheck",
             Section::Task => "Tasks",
             Section::RepoSharedRef => "A repo's shared services",
             Section::Shared => "Shared services",
@@ -80,6 +84,7 @@ impl Section {
             Section::Repo => "Each entry of `repos:` is one repository, keyed by its clone folder name.",
             Section::Lifecycle => "A repo's `lifecycle:` block groups how it is built and run. Every key here also works directly on the repo; when both are set, the `lifecycle:` value wins.",
             Section::Service => "Each entry of a repo's (or preset's) `services:` is one long-running process. `name: <cmd>` is short for `name: { cmd: <cmd> }`.",
+            Section::ServiceHealthCheck => "When a service counts as ready, for `pom start --wait` and `pom status`: give `http` or `cmd`. Without a healthcheck a service with a port is ready once the port listens.",
             Section::Task => "A `tasks:` list (older name `shortcuts:`) on a repo, its lifecycle, a service or a preset adds quick commands to the app and the agents.",
             Section::RepoSharedRef => "A repo's `shared_services:` lists the shared services it uses: a name, or `name: { db_name: <template> }`.",
             Section::Shared => "Each entry of `shared_services:` runs once for every workspace: a Docker `image` or a `cmd`, never both. `postgres`, `redis`, `minio`, `opensearch` and `zincsearch` (by name or `type:`) get a working image, ports, credentials and healthcheck filled in.",
@@ -240,6 +245,11 @@ pub const FIELDS: &[FieldDoc] = &[
     field(Service, "mode", "string", "", "The mode used when none is picked in the app; `cmd` runs when there is none.", "mode: dev"),
     field(Service, "tasks", "list", "", "Quick commands for this service; see Tasks.", ""),
     field(Service, "shortcuts", "list", "", "Older name of `tasks`.", ""),
+    field(Service, "healthcheck", "map", "", "When the service counts as ready; see Service healthcheck.", "healthcheck: { http: /health }"),
+    field(ServiceHealthCheck, "http", "path", "", "A path on the service's own port; ready once a GET answers 2xx or 3xx.", "http: /health"),
+    field(ServiceHealthCheck, "cmd", "command", "", "A shell command run in the service's folder with its env; ready once it exits 0.", "cmd: bin/rails runner 'ActiveRecord::Base.connection'"),
+    field(ServiceHealthCheck, "interval", "duration", "1s", "Time between checks.", "interval: 500ms"),
+    field(ServiceHealthCheck, "timeout", "duration", "3s", "How long one check may take before it counts as failed.", "timeout: 5s"),
     removed(Service, "exposes", "Published a `{{var:}}` variable; use a service ref such as `{{<repo>.<service>.url}}`."),
     field(Task, "key", "string", "", "A short name for the task.", "key: migrate"),
     field(Task, "desc", "string", "", "What the task does, shown next to it.", "desc: Run migrations"),
@@ -396,7 +406,7 @@ repos:
     lifecycle: { tasks: [{ key: k, desc: d, cmd: c }] }
     shared_services: [{ postgres: { db_name: x } }]
     services:
-      server: { cmd: run }
+      server: { cmd: run, healthcheck: { http: /health, cmd: "true", interval: 1s, timeout: 3s } }
 presets:
   base: { env: { A: b } }
 shared_services:

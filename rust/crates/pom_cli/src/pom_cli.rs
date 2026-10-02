@@ -34,10 +34,12 @@ use workspaces::WorkspaceCommand;
 pub const USAGE: &str = "usage: pom [-w <workspace>] [-c <pom.yml>] <command> [args]
 
 services
-  start <target>     start a service, a repo's services, or a `workspaces:` group
+  start <target> [--wait [--timeout 120s]]
+                     start a service, a repo's services, or a `workspaces:` group; --wait blocks until
+                     each is ready (its healthcheck, else its port): exit 0 ready, 2 timeout, 3 stopped
   stop [target]      stop them; with no target, every service of the workspace
   restart <target>   stop, then start
-  status             services of the workspace and whether they run
+  status [-o json]   services of the workspace and whether they run (json: up, ready, healthy)
   logs <service>     recent output of a service
   attach <service>   attach this terminal to a running service (detach: close the terminal)
   ports              every leased port
@@ -145,10 +147,10 @@ A service is `name` or `repo/name`.";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
-    Start(String),
+    Start(StartArgs),
     Stop(Option<String>),
     Restart(String),
-    Status,
+    Status { json: bool },
     Logs(String),
     Attach(String),
     Ports,
@@ -212,6 +214,15 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Agent(ref command) => {
                 return agent::execute(command, &invocation, cwd, out, err);
             }
+            Command::Start(ref start) if start.wait => {
+                return match Session::open(&invocation, cwd) {
+                    Ok(session) => session.start_and_wait(start, out, err),
+                    Err(message) => {
+                        report(err, &format!("error: {message}"));
+                        1
+                    }
+                };
+            }
             ref command => Session::open(&invocation, cwd)
                 .and_then(|session| session.execute(command, out, err)),
         };
@@ -222,6 +233,39 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             1
         }
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct StartArgs {
+    target: String,
+    wait: bool,
+    timeout: Option<std::time::Duration>,
+}
+
+/// Exit codes of `pom start --wait`.
+const WAIT_TIMED_OUT: i32 = 2;
+const WAIT_CRASHED: i32 = 3;
+const DEFAULT_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn parse_start(rest: &[&str]) -> Result<StartArgs, String> {
+    let args = args::Args::parse(rest, &["--timeout"])?;
+    args.allow(&["--wait", "--timeout"])?;
+    let [target] = args.positional.as_slice() else {
+        return Err("start needs one target".into());
+    };
+    let wait = args.has("--wait");
+    let timeout = args
+        .value(&["--timeout"])
+        .map(|text| agent::parse_duration(&text))
+        .transpose()?;
+    if timeout.is_some() && !wait {
+        return Err("--timeout goes with --wait".into());
+    }
+    Ok(StartArgs {
+        target: target.clone(),
+        wait,
+        timeout,
+    })
 }
 
 fn report(err: &mut dyn Write, message: &str) {
@@ -256,7 +300,9 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "ps"
                         | "init"
                         | "onboard"
-                        | "agent")
+                        | "agent"
+                        | "start"
+                        | "status")
                 )
             )
         {
@@ -291,13 +337,18 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         }
     };
     let command = match *name {
-        "start" => Command::Start(one("a target")?),
+        "start" => Command::Start(parse_start(rest)?),
         "stop" => match rest {
             [] => Command::Stop(None),
             _ => Command::Stop(Some(one("target")?)),
         },
         "restart" => Command::Restart(one("a target")?),
-        "status" => none().map(|_| Command::Status)?,
+        "status" => {
+            let args = args::Args::parse(rest, &["-o", "--output"])?;
+            args.allow(&["-o", "--output"])?;
+            args.at_most(0, "status")?;
+            Command::Status { json: args.json()? }
+        }
         "logs" => Command::Logs(one("a service")?),
         "attach" => Command::Attach(one("a service")?),
         "ports" => none().map(|_| Command::Ports)?,
@@ -465,13 +516,14 @@ impl Session {
         err: &mut dyn Write,
     ) -> Result<(), String> {
         match command {
-            Command::Start(target) => self.start(target, out, err),
+            Command::Start(start) => self.start(&start.target, out, err),
             Command::Stop(target) => self.stop(target.as_deref(), out),
             Command::Restart(target) => {
                 self.stop(Some(target), out)?;
                 self.start(target, out, err)
             }
-            Command::Status => self.status(out),
+            Command::Status { json: false } => self.status(out),
+            Command::Status { json: true } => self.status_json(out),
             Command::Logs(service) => self.logs(service, out),
             Command::Attach(service) => self.attach(service),
             Command::Url(service) => self.url(service, out),
@@ -646,6 +698,104 @@ impl Session {
         Ok(())
     }
 
+    /// `start`, then waits until every started service is ready: 0 ready, 2 timed out, 3 one stopped.
+    fn start_and_wait(&self, start: &StartArgs, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+        if let Err(message) = self.start(&start.target, out, err) {
+            report(err, &format!("error: {message}"));
+            return 1;
+        }
+        let targets: Vec<ServiceTarget> = match self.ordered(&start.target, false) {
+            Ok(pairs) => pairs
+                .iter()
+                .map(|(repo, service)| self.target(repo, service))
+                .collect(),
+            Err(message) => {
+                report(err, &format!("error: {message}"));
+                return 1;
+            }
+        };
+        let timeout = start.timeout.unwrap_or(DEFAULT_WAIT);
+        let describe = |health: &pom_services::ServiceHealth| {
+            let state = if health.ready {
+                "ready"
+            } else if health.up {
+                "not ready"
+            } else {
+                "stopped"
+            };
+            let port = health
+                .port
+                .map(|port| format!("  :{port}"))
+                .unwrap_or_default();
+            format!("  {}/{}  {state}{port}", health.repo, health.service)
+        };
+        let lines = |services: &[pom_services::ServiceHealth], out: &mut dyn Write| {
+            for health in services {
+                report(out, &describe(health));
+            }
+        };
+        match self.runner.wait_ready(&self.config, &targets, timeout) {
+            pom_services::WaitOutcome::Ready(services) => {
+                lines(&services, out);
+                report(out, "ready");
+                0
+            }
+            pom_services::WaitOutcome::TimedOut(services) => {
+                lines(&services, err);
+                report(
+                    err,
+                    &format!("error: not ready after {}s", timeout.as_secs()),
+                );
+                WAIT_TIMED_OUT
+            }
+            pom_services::WaitOutcome::Crashed {
+                service,
+                tail,
+                services,
+            } => {
+                lines(&services, err);
+                report(err, &format!("error: {service} stopped while starting"));
+                if !tail.is_empty() {
+                    report(err, &tail);
+                }
+                WAIT_CRASHED
+            }
+        }
+    }
+
+    /// `status -o json`: every repo service's up / ready / healthy, and the shared services.
+    fn status_json(&self, out: &mut dyn Write) -> Result<(), String> {
+        let mut services = Vec::new();
+        for (repo, dir) in &self.config.repos {
+            for name in dir.services.keys() {
+                services.push(
+                    self.runner
+                        .service_health(&self.config, &self.target(repo, name)),
+                );
+            }
+        }
+        let running = self.runner.shared_running();
+        let shared: Vec<serde_json::Value> = self
+            .config
+            .shared_services
+            .keys()
+            .map(|name| {
+                serde_json::json!({
+                    "name": name,
+                    "up": running.contains(name),
+                    "port": self.runner.shared_host_port(name),
+                })
+            })
+            .collect();
+        let document = serde_json::json!({
+            "schema": "pom.status/v1",
+            "workspace": self.branch,
+            "services": services,
+            "shared": shared,
+        });
+        say(out, &document.to_string())
+    }
+
     fn service(&self, entry: &str) -> Result<ServiceTarget, String> {
         let (repo, service) = self.config.find_service_entry(entry)?;
         Ok(self.target(&repo, &service))
@@ -784,7 +934,13 @@ mod tests {
     fn commands_and_flags_parse() {
         assert_eq!(
             parsed("-w feat/x start api").map(|i| (i.workspace, i.command)),
-            Ok((Some("feat/x".into()), Command::Start("api".into())))
+            Ok((
+                Some("feat/x".into()),
+                Command::Start(StartArgs {
+                    target: "api".into(),
+                    ..StartArgs::default()
+                })
+            ))
         );
         assert_eq!(parsed("stop").map(|i| i.command), Ok(Command::Stop(None)));
         assert_eq!(
@@ -797,6 +953,22 @@ mod tests {
         assert_eq!(parsed("start --help").map(|i| i.command), Ok(Command::Help));
         assert!(parsed("start").is_err());
         assert!(parsed("status extra").is_err());
+        assert_eq!(
+            parsed("start api --wait --timeout 30s").map(|i| i.command),
+            Ok(Command::Start(StartArgs {
+                target: "api".into(),
+                wait: true,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            }))
+        );
+        assert!(
+            parsed("start api --timeout 30s").is_err(),
+            "--timeout needs --wait"
+        );
+        assert_eq!(
+            parsed("status -o json").map(|i| i.command),
+            Ok(Command::Status { json: true })
+        );
         assert!(parsed("frobnicate").is_err());
         assert!(parsed("--nope status").is_err());
     }
