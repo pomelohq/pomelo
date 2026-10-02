@@ -112,6 +112,8 @@ pub struct SharedServiceDef {
     pub db_user: String,
     pub db_password: String,
     pub capacity: Option<u16>,
+    /// Run in an instance's container to empty one slot (`{{slot}}` is its number) before it is reused.
+    pub slot_reset: String,
     /// A command run as one process for every workspace, instead of a Docker `image`.
     pub cmd: String,
     /// The repo whose main-workspace checkout `cmd` runs in; the project folder when empty.
@@ -438,6 +440,7 @@ impl SharedServiceDef {
         def.db_user = decoder.string(field("db_user"));
         def.db_password = decoder.string(field("db_password"));
         def.capacity = decoder.opt_u16(field("capacity"));
+        def.slot_reset = decoder.string(field("slot_reset"));
         def.cmd = decoder.string(field("cmd"));
         def.repo = decoder.string(field("repo"));
         def.port = decoder.opt_u16(field("port"));

@@ -8,8 +8,8 @@
   "session": "pomelo",
   "shared_services": {
     "cache": {
-      "capacity": 16,
-      "command": "redis-server --appendonly yes",
+      "capacity": 64,
+      "command": "redis-server --appendonly yes --databases 64",
       "image": "redis:7-alpine",
       "ports": [
         "6379"
@@ -70,7 +70,7 @@
     },
     "redis": {
       "capacity": 8,
-      "command": "redis-server --appendonly yes",
+      "command": "redis-server --appendonly yes --databases 64",
       "image": "redis:7-alpine",
       "ports": [
         "6379"

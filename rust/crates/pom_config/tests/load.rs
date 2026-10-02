@@ -327,7 +327,27 @@ fn well_known_shared_defaults() {
     assert_eq!(redis.capacity, Some(8));
     let cache = &config.shared_services["cache"];
     assert_eq!(cache.image, "redis:7-alpine");
-    assert_eq!(cache.command, "redis-server --appendonly yes");
+    assert_eq!(
+        cache.command,
+        "redis-server --appendonly yes --databases 64"
+    );
+    assert_eq!(cache.capacity, Some(64));
+    assert_eq!(
+        cache.slot_reset,
+        "redis-cli -n {{slot}} FLUSHDB | grep -qx OK"
+    );
+}
+
+#[test]
+fn a_redis_with_its_own_command_keeps_the_default_sixteen_databases() {
+    let config = Project::new(
+        "session: myproject\nshared_services:\n  redis:\n    command: redis-server --save 60 1\n",
+    )
+    .load();
+    let redis = &config.shared_services["redis"];
+    assert_eq!(redis.command, "redis-server --save 60 1");
+    assert_eq!(redis.capacity, Some(16));
+    assert!(!redis.slot_reset.is_empty());
 }
 
 #[test]

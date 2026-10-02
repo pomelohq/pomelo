@@ -64,6 +64,7 @@ impl Config {
                     ("volumes", !def.volumes.is_empty()),
                     ("command", !def.command.is_empty()),
                     ("capacity", def.capacity.is_some()),
+                    ("slot_reset", !def.slot_reset.is_empty()),
                     ("db_user", !def.db_user.is_empty()),
                     ("db_password", !def.db_password.is_empty()),
                 ];

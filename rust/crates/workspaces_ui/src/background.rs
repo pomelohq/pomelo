@@ -72,6 +72,7 @@ fn run(context: BackgroundContext, stop: &AtomicBool) {
     let mut next_refresh: Option<i64> = None;
     let mut next_push: Option<Instant> = None;
     let mut pruned: Option<Instant> = None;
+    let mut slots_reclaimed = false;
     while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(TICK);
         if reaped.elapsed() >= REAP_EVERY {
@@ -85,6 +86,12 @@ fn run(context: BackgroundContext, stop: &AtomicBool) {
         let Some(config) = (context.config)() else {
             continue;
         };
+        if !slots_reclaimed {
+            slots_reclaimed = true;
+            if let Err(error) = context.runner.reclaim_slots(&config) {
+                eprintln!("sync: shared slots: {error}");
+            }
+        }
         let schedule = pom_sync::refresh_schedule(&context.state, &session, Some(&config));
         if !schedule.enabled {
             next_refresh = None;

@@ -16,6 +16,8 @@ pub const COMPOSE_FILE: &str = "docker-compose.shared.yml";
 pub const SHARED_NETWORK: &str = "pomelo-shared";
 /// Shared services keep their usual host port when it is free, searching this far above it.
 const PREFERRED_SPAN: u16 = 100;
+const SLOT_RESET_ATTEMPTS: usize = 5;
+const SLOT_RESET_PAUSE: Duration = Duration::from_millis(500);
 const POSTGRES: &str = "postgres";
 /// A Docker that stopped answering must not hold up the panel or an agent asking what runs.
 const SHARED_PS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -267,7 +269,14 @@ impl ServiceRunner {
         let mut result = Ok(());
         if config.shared_services.values().any(|def| !def.is_command()) {
             let file = self.write_shared_compose(config)?;
-            result = self.compose(&file, &["up", "-d"]);
+            // Instances beyond what the slots need, left from a time more workspaces existed, go away.
+            result = self.compose(&file, &["up", "-d", "--remove-orphans"]);
+            if result.is_ok() {
+                if let Err(error) = self.reconcile_slots(config) {
+                    eprintln!("services: shared slots: {error}");
+                    result = Err(error);
+                }
+            }
         } else {
             self.reserve_shared_ports(config);
         }
@@ -282,6 +291,141 @@ impl ServiceRunner {
             }
         }
         result
+    }
+
+    /// Brings slot bookkeeping in line with the workspaces on disk: adopts this project's slots from the
+    /// file every project used to share, gives back the slots of workspaces whose folder is gone, and empties
+    /// every slot waiting for its reset.
+    pub fn reconcile_slots(&self, config: &Config) -> Result<(), ServiceError> {
+        self.reconcile_slots_with(config, true)
+    }
+
+    /// Like `reconcile_slots`, for app launch: slots whose container is down wait for the next start.
+    pub fn reclaim_slots(&self, config: &Config) -> Result<(), ServiceError> {
+        self.reconcile_slots_with(config, false)
+    }
+
+    fn reconcile_slots_with(
+        &self,
+        config: &Config,
+        require_running: bool,
+    ) -> Result<(), ServiceError> {
+        let mut workspaces = workspace_keys_on_disk(&self.project_root);
+        self.slots.adopt_legacy(&workspaces)?;
+        // An unreadable project folder must not look like every workspace was deleted.
+        let scanned = !workspaces.is_empty();
+        workspaces.insert(pom_env::port_ws_key(config.global_default_branch()));
+        for (name, def) in &config.shared_services {
+            if def.capacity.is_none() || !scanned {
+                continue;
+            }
+            for ws_key in self.slots.holders(name) {
+                if !workspaces.contains(&ws_key) {
+                    self.slots.release(name, &ws_key)?;
+                }
+            }
+        }
+        self.reset_pending_slots(config, require_running)
+    }
+
+    /// Empties every slot waiting for it. A fresh slot whose reset fails is swapped for another, so a
+    /// workspace never gets one that may hold someone else's data. Without `require_running`, a slot whose
+    /// container is not up yet just keeps waiting: the next start of the shared services empties it.
+    pub(crate) fn reset_pending_slots(
+        &self,
+        config: &Config,
+        require_running: bool,
+    ) -> Result<(), ServiceError> {
+        let mut failures: Vec<String> = Vec::new();
+        for (name, def) in &config.shared_services {
+            let Some(capacity) = def.capacity else {
+                continue;
+            };
+            // A second pass empties the replacements of fresh slots that failed in the first.
+            for _ in 0..2 {
+                let mut swapped = false;
+                for pending in self.slots.pending(name) {
+                    let at = pending.allocation;
+                    match self.reset_slot(config, name, def, at) {
+                        Ok(true) => self.slots.cleared(name, at)?,
+                        Ok(false) if !require_running => {}
+                        Ok(false) => failures.push(format!(
+                            "{name} instance {} slot {}: its container is not running",
+                            at.instance, at.slot
+                        )),
+                        Err(error) => {
+                            failures.push(format!(
+                                "{name} instance {} slot {}: {error}",
+                                at.instance, at.slot
+                            ));
+                            if let Some(owner) = pending.owner {
+                                self.slots.reject(name, &owner)?;
+                                self.slots.allocate(name, &owner, capacity)?;
+                                swapped = true;
+                            }
+                        }
+                    }
+                }
+                if !swapped {
+                    break;
+                }
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(ServiceError::Io(std::io::Error::other(format!(
+                "could not empty shared slots (they stay out of use): {}",
+                failures.join("; ")
+            ))))
+        }
+    }
+
+    /// Runs the service's `slot_reset` for one slot; `false` when its container is not running.
+    fn reset_slot(
+        &self,
+        config: &Config,
+        name: &str,
+        def: &SharedServiceDef,
+        allocation: pom_env::SlotAllocation,
+    ) -> Result<bool, ServiceError> {
+        if def.slot_reset.is_empty() {
+            return Ok(true);
+        }
+        let service = if allocation.instance == 0 {
+            name.to_string()
+        } else {
+            format!("{name}-{}", allocation.instance + 1)
+        };
+        let file = self.write_shared_compose(config)?;
+        let running =
+            self.docker(&self.compose_args(&file, &["ps", "--status", "running", "-q", &service]))?;
+        if !running.status.success() || String::from_utf8_lossy(&running.stdout).trim().is_empty() {
+            return Ok(false);
+        }
+        let command = def
+            .slot_reset
+            .replace("{{slot}}", &allocation.slot.to_string());
+        let args = self.compose_args(&file, &["exec", "-T", &service, "sh", "-c", &command]);
+        let mut last = String::new();
+        // A container just brought up may still be loading its data.
+        for attempt in 0..SLOT_RESET_ATTEMPTS {
+            if attempt > 0 {
+                std::thread::sleep(SLOT_RESET_PAUSE);
+            }
+            let output = self.docker(&args)?;
+            if output.status.success() {
+                return Ok(true);
+            }
+            last = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        }
+        Err(ServiceError::Io(std::io::Error::other(
+            if last.is_empty() {
+                format!("`{command}` failed in {service}")
+            } else {
+                format!("`{command}` failed in {service}: {last}")
+            },
+        )))
     }
 
     pub fn shared_action(
@@ -694,6 +838,39 @@ impl ServiceRunner {
                 ))
             })
     }
+}
+
+/// The slot keys of every workspace folder on disk. A branch with `/` nests (`workspace--feat/login`), so
+/// every level counts: keeping a stale slot is harmless, emptying a live one is not.
+fn workspace_keys_on_disk(project_root: &Path) -> HashSet<String> {
+    fn walk(folder: &Path, branch: &str, depth: usize, keys: &mut HashSet<String>) {
+        keys.insert(pom_env::port_ws_key(branch));
+        if depth == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with('.') && entry.path().is_dir() {
+                walk(&entry.path(), &format!("{branch}/{name}"), depth - 1, keys);
+            }
+        }
+    }
+    let mut keys = HashSet::new();
+    let Ok(entries) = std::fs::read_dir(project_root) else {
+        return keys;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(branch) = name.strip_prefix("workspace--") {
+            if entry.path().is_dir() {
+                walk(&entry.path(), branch, 3, &mut keys);
+            }
+        }
+    }
+    keys
 }
 
 pub(crate) struct Postgres {
