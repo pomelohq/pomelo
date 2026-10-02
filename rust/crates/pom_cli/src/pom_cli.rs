@@ -9,6 +9,7 @@ mod db;
 mod env;
 mod lifecycle;
 mod machine;
+mod marks;
 mod modules;
 mod onboard;
 mod proxy;
@@ -40,7 +41,10 @@ services
   stop [target]      stop them; with no target, every service of the workspace
   restart <target>   stop, then start
   status [-o json]   services of the workspace and whether they run (json: up, ready, healthy)
-  logs <service>     recent output of a service
+  logs <service> [--since <mark>] [--raw] [-o json]
+                     recent output of a service, or only what it printed since a mark
+  logs --mark <name> record where every service's output has got to
+  mark <name> [-w b] one mark for a test step: log offsets and query counters
   attach <service>   attach this terminal to a running service (detach: close the terminal)
   ports              every leased port
   url <service>      where a service with a port listens, directly and through the dev proxy
@@ -80,6 +84,9 @@ workspaces
   db snapshots [-w b] [-o json]      the workspace's snapshots and their sizes
   db snapshot drop <name> [-w b]     drop a snapshot
   db baseline [-w b] [-o json]       run the branch's migrations, then save ws__baseline again
+  db mark <name> [-w b]              save the workspace's query counters (pom mark saves logs too)
+  db stats --since <mark> [--repeated n] [-w b] [-o json]
+                     the queries the workspace ran since the mark: totals, slowest, repeated (N+1)
   db reseed [-w b] [--from main__baseline | --snapshot <name>] [--main] [-o json]
                      replace the workspace's data, migrate, save ws__baseline; services restart
 
@@ -151,7 +158,8 @@ enum Command {
     Stop(Option<String>),
     Restart(String),
     Status { json: bool },
-    Logs(String),
+    Logs(marks::LogsArgs),
+    Mark(marks::MarkArgs),
     Attach(String),
     Ports,
     Url(String),
@@ -280,6 +288,11 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
     let mut words: Vec<&str> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
+        // No subcommand takes -c, so the config path works after any command.
+        if matches!(arg.as_str(), "-c" | "--config") {
+            config = Some(PathBuf::from(iter.next().ok_or("-c needs a path")?));
+            continue;
+        }
         // Workspace commands have flags of their own.
         let help = matches!(arg.as_str(), "-h" | "--help");
         if !help
@@ -302,7 +315,9 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "onboard"
                         | "agent"
                         | "start"
-                        | "status")
+                        | "status"
+                        | "logs"
+                        | "mark")
                 )
             )
         {
@@ -349,7 +364,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             args.at_most(0, "status")?;
             Command::Status { json: args.json()? }
         }
-        "logs" => Command::Logs(one("a service")?),
+        "logs" => Command::Logs(marks::parse_logs(rest)?),
+        "mark" => Command::Mark(marks::parse_mark(rest)?),
         "attach" => Command::Attach(one("a service")?),
         "ports" => none().map(|_| Command::Ports)?,
         "url" => Command::Url(one("a service")?),
@@ -524,7 +540,8 @@ impl Session {
             }
             Command::Status { json: false } => self.status(out),
             Command::Status { json: true } => self.status_json(out),
-            Command::Logs(service) => self.logs(service, out),
+            Command::Logs(args) => self.logs_command(args, out),
+            Command::Mark(args) => self.mark_command(args, out),
             Command::Attach(service) => self.attach(service),
             Command::Url(service) => self.url(service, out),
             Command::Workspace(command) => self.workspace(command, out),
@@ -947,7 +964,10 @@ mod tests {
             parsed("logs api/web -c /p/pom.yml").map(|i| (i.config, i.command)),
             Ok((
                 Some(PathBuf::from("/p/pom.yml")),
-                Command::Logs("api/web".into())
+                Command::Logs(marks::LogsArgs {
+                    service: Some("api/web".into()),
+                    ..marks::LogsArgs::default()
+                })
             ))
         );
         assert_eq!(parsed("start --help").map(|i| i.command), Ok(Command::Help));

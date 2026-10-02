@@ -10,10 +10,12 @@ use crate::{say, Session};
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum EnvCommand {
     List {
-        target: String,
+        /// None lists every service.
+        target: Option<String>,
         branch: Option<String>,
         env: String,
         show_secrets: bool,
+        json: bool,
     },
     Get {
         target: String,
@@ -41,7 +43,7 @@ pub(crate) fn parse(words: &[&str]) -> Result<EnvCommand, String> {
     let (verb, rest) = words
         .split_first()
         .ok_or("env needs a subcommand (ls, get, set, unset)")?;
-    let args = Args::parse(rest, &["--branch", "--env"])?;
+    let args = Args::parse(rest, &["--branch", "--env", "-o", "--output"])?;
     let resolving = || -> Result<(Option<String>, String), String> {
         Ok((
             args.value(&["--branch"]),
@@ -49,14 +51,15 @@ pub(crate) fn parse(words: &[&str]) -> Result<EnvCommand, String> {
         ))
     };
     match (*verb, args.positional.as_slice()) {
-        ("ls", [target]) => {
-            args.allow(&["--branch", "--env", "--show-secrets"])?;
+        ("ls", targets) if targets.len() <= 1 => {
+            args.allow(&["--branch", "--env", "--show-secrets", "-o", "--output"])?;
             let (branch, env) = resolving()?;
             Ok(EnvCommand::List {
-                target: target.clone(),
+                target: targets.first().cloned(),
                 branch,
                 env,
                 show_secrets: args.has("--show-secrets"),
+                json: args.json()?,
             })
         }
         ("get", [target, key]) => {
@@ -91,7 +94,7 @@ pub(crate) fn parse(words: &[&str]) -> Result<EnvCommand, String> {
                 keys: keys.to_vec(),
             })
         }
-        ("ls", _) => Err("usage: pom env ls <repo[/service]>".into()),
+        ("ls", _) => Err("usage: pom env ls [repo[/service]] [-o json]".into()),
         ("get", _) => Err("usage: pom env get <repo[/service]> <KEY>".into()),
         ("set", _) => Err("usage: pom env set <repo> KEY=VALUE...".into()),
         ("unset", _) => Err("usage: pom env unset <repo> KEY...".into()),
@@ -145,7 +148,14 @@ impl Session {
     ) -> Result<(), String> {
         let (target, branch, env) = match command {
             EnvCommand::List {
-                target,
+                target: None,
+                branch,
+                env,
+                show_secrets,
+                json,
+            } => return self.list_every_env(branch, env, *show_secrets, *json, out),
+            EnvCommand::List {
+                target: Some(target),
                 branch,
                 env,
                 ..
@@ -175,6 +185,18 @@ impl Session {
                     .ok_or_else(|| format!("no env var {key} for {repo}/{service}"))?;
                 say(out, &line.value)
             }
+            EnvCommand::List {
+                show_secrets,
+                json: true,
+                ..
+            } => {
+                let document = serde_json::json!({
+                    "schema": "pom.env/v1",
+                    "workspace": branch,
+                    "services": [env_json(&repo, &service, &explained.env, *show_secrets)],
+                });
+                say(out, &document.to_string())
+            }
             EnvCommand::List { show_secrets, .. } => {
                 let rows: Vec<Vec<String>> = explained
                     .env
@@ -192,6 +214,55 @@ impl Session {
             }
             _ => Ok(()),
         }
+    }
+
+    fn list_every_env(
+        &self,
+        branch: &Option<String>,
+        env: &str,
+        show_secrets: bool,
+        json: bool,
+        out: &mut dyn Write,
+    ) -> Result<(), String> {
+        self.config.validate_environment(env)?;
+        let branch = branch.clone().unwrap_or_else(|| self.branch.clone());
+        let workspace = self.runner.workspace_env(&self.config, &branch);
+        let mut services = Vec::new();
+        for (repo, dir) in &self.config.repos {
+            for service in dir.services.keys() {
+                if let Some(explained) = workspace.explain_service(repo, service, env) {
+                    services.push((repo.clone(), service.clone(), explained.env));
+                }
+            }
+        }
+        if json {
+            let list: Vec<serde_json::Value> = services
+                .iter()
+                .map(|(repo, service, lines)| env_json(repo, service, lines, show_secrets))
+                .collect();
+            let document = serde_json::json!({
+                "schema": "pom.env/v1",
+                "workspace": branch,
+                "services": list,
+            });
+            return say(out, &document.to_string());
+        }
+        for (repo, service, lines) in &services {
+            say(out, &format!("{repo}/{service}"))?;
+            let rows: Vec<Vec<String>> = lines
+                .iter()
+                .map(|line| {
+                    let value = if line.secret && !show_secrets {
+                        "********".to_string()
+                    } else {
+                        dash(&line.value)
+                    };
+                    vec![format!("  {}", line.key), value]
+                })
+                .collect();
+            table(out, "", &rows)?;
+        }
+        Ok(())
     }
 
     /// `repo/service`, or a repo (name or alias) standing for its first service.
@@ -212,6 +283,26 @@ impl Session {
             .ok_or_else(|| format!("{repo} has no services"))?;
         Ok((repo.clone(), service.clone()))
     }
+}
+
+fn env_json(
+    repo: &str,
+    service: &str,
+    lines: &[pom_services::EnvLine],
+    show_secrets: bool,
+) -> serde_json::Value {
+    let env: serde_json::Map<String, serde_json::Value> = lines
+        .iter()
+        .map(|line| {
+            let value = if line.secret && !show_secrets {
+                "********".to_string()
+            } else {
+                line.value.clone()
+            };
+            (line.key.clone(), serde_json::Value::String(value))
+        })
+        .collect();
+    serde_json::json!({ "repo": repo, "service": service, "env": env })
 }
 
 #[cfg(test)]
@@ -238,6 +329,14 @@ mod tests {
         );
         assert!(parse(&["set", "api", "A"]).is_err());
         assert!(parse(&["unset", "api"]).is_err());
-        assert!(parse(&["ls"]).is_err());
+        assert!(matches!(
+            parse(&["ls", "-o", "json"]),
+            Ok(EnvCommand::List {
+                target: None,
+                json: true,
+                ..
+            })
+        ));
+        assert!(parse(&["ls", "a", "b"]).is_err());
     }
 }

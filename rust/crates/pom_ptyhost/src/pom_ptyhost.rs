@@ -8,8 +8,8 @@ mod server;
 mod session;
 
 pub use client::{
-    attach, connect_writer, snapshot, spawn_holder, wait_for_holder, Attached, HolderConnection,
-    SpawnRequest, INHERITED_SESSION_MARKERS,
+    attach, connect_writer, output_end, read_since, snapshot, spawn_holder, wait_for_holder,
+    Attached, HolderConnection, SpawnRequest, INHERITED_SESSION_MARKERS,
 };
 pub use process::{
     ancestors, descendants, parent_pid, peer_pid, process_alive, CrashInfo, SocketDir,

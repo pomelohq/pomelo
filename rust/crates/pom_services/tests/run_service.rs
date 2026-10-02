@@ -450,3 +450,46 @@ fn without_a_healthcheck_a_service_is_ready_once_its_port_listens() {
         other => panic!("not ready: {other:?}"),
     }
 }
+
+#[test]
+fn logs_since_a_mark_hold_only_what_came_after_it() {
+    let fixture = readiness_fixture(
+        "        cmd: \"echo before-the-mark; sleep 2; echo after-the-mark; exec nc -lk 127.0.0.1 $PORT\"\n",
+    );
+    fixture
+        .runner
+        .start(&fixture.config, &fixture.target)
+        .expect("start");
+    let holder = fixture.runner.holder_name(&fixture.target);
+    wait_for("the first line", || {
+        pom_ptyhost::snapshot(fixture.runner.holders(), &holder, TIMEOUT)
+            .is_ok_and(|output| String::from_utf8_lossy(&output).contains("before-the-mark"))
+    });
+    let offsets = fixture
+        .runner
+        .log_offsets(std::slice::from_ref(&fixture.target));
+    let since = offsets["api/web"];
+    assert!(since > 0);
+    wait_for("the second line", || {
+        fixture
+            .runner
+            .logs_since(&fixture.target, since, false)
+            .is_ok_and(|slice| slice.text.contains("after-the-mark"))
+    });
+    let slice = fixture
+        .runner
+        .logs_since(&fixture.target, since, false)
+        .expect("slice");
+    assert!(!slice.text.contains("before-the-mark"), "{slice:?}");
+    assert!(!slice.truncated);
+    assert_eq!(slice.since, since);
+    let env = fixture
+        .runner
+        .workspace_env(&fixture.config, "feat/x")
+        .service_env("api", "web");
+    assert!(
+        env.iter()
+            .any(|(key, value)| key == "PGAPPNAME" && value == "pom:feat/x:api/web"),
+        "{env:?}"
+    );
+}

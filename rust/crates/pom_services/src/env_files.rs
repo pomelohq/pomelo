@@ -101,7 +101,15 @@ impl WorkspaceEnv<'_> {
         let env_name = state.service_env(&format!("{}/{service}", alias(repo, dir)));
         let mut merged = dir.env.clone();
         merged.extend(own.env.clone());
-        self.resolve(&merged, env_name, &self.db_names(dir))
+        let mut env = self.resolve(&merged, env_name, &self.db_names(dir));
+        // Postgres clients report it as application_name, which tells whose connections are whose.
+        if !env.iter().any(|(key, _)| key == "PGAPPNAME") {
+            env.push((
+                "PGAPPNAME".to_string(),
+                format!("pom:{}:{repo}/{service}", self.branch),
+            ));
+        }
+        env
     }
 
     pub fn explain_service(
