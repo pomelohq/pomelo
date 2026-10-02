@@ -138,9 +138,10 @@ fn well_known_service(kind: &str) -> Option<SharedServiceDef> {
         "redis" => SharedServiceDef {
             image: "redis:7-alpine".into(),
             ports: strings(&["6379"]),
-            command: "redis-server --appendonly yes".into(),
+            command: "redis-server --appendonly yes --databases 64".into(),
             volumes: strings(&["shared_redis:/data"]),
-            capacity: Some(16),
+            capacity: Some(64),
+            slot_reset: "redis-cli -n {{slot}} FLUSHDB | grep -qx OK".into(),
             ..SharedServiceDef::default()
         },
         "minio" => SharedServiceDef {
@@ -192,7 +193,8 @@ fn fill_shared_defaults(def: &mut SharedServiceDef, template: SharedServiceDef) 
     if def.ports.is_empty() {
         def.ports = template.ports;
     }
-    if def.command.is_empty() {
+    let command_from_template = def.command.is_empty();
+    if command_from_template {
         def.command = template.command;
     }
     if def.volumes.is_empty() {
@@ -208,7 +210,16 @@ fn fill_shared_defaults(def: &mut SharedServiceDef, template: SharedServiceDef) 
         def.db_password = template.db_password;
     }
     if def.capacity.is_none() {
-        def.capacity = template.capacity;
+        // The preset's capacity counts on its own command (Redis `--databases`); a custom command keeps the
+        // server's default of 16.
+        def.capacity = if command_from_template {
+            template.capacity
+        } else {
+            template.capacity.map(|capacity| capacity.min(16))
+        };
+    }
+    if def.slot_reset.is_empty() {
+        def.slot_reset = template.slot_reset;
     }
     if !template.environment.is_empty() {
         let mut merged = template.environment;

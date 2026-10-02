@@ -125,7 +125,7 @@ impl ServiceRunner {
     pub fn with_probe(options: RunnerOptions, probe: Box<dyn Probe>) -> ServiceRunner {
         ServiceRunner {
             ports: PortManager::open(&options.state, &options.session, probe),
-            slots: SlotStore::new(options.state.clone()),
+            slots: SlotStore::new(options.state.clone(), &options.session),
             secrets: SecretStore::new(options.state, &options.session),
             project_root: options.project_root,
             session: options.session,
@@ -288,6 +288,10 @@ impl ServiceRunner {
         let ws_key = pom_env::port_ws_key(branch);
         for name in config.shared_services.keys() {
             self.slots.release(name, &ws_key)?;
+        }
+        // A slot whose reset fails here stays out of use and is emptied the next time shared services start.
+        if let Err(error) = self.reset_pending_slots(config, false) {
+            eprintln!("services: {error}");
         }
         self.ports.release_workspace(&ws_key);
         Ok(())
@@ -539,6 +543,11 @@ impl ServiceRunner {
             {
                 self.slots.allocate(name, ws_key, capacity)?;
                 done.push(name);
+            }
+        }
+        if !done.is_empty() {
+            if let Err(error) = self.reset_pending_slots(config, false) {
+                eprintln!("services: {error}");
             }
         }
         Ok(())

@@ -99,7 +99,7 @@ exit 0
 #[test]
 fn the_compose_file_matches_the_previous_core_layout() {
     let fixture = Fixture::new("", "", "");
-    let slots = SlotStore::new(StateDir::new(fixture.temp.path().join("state")));
+    let slots = SlotStore::new(StateDir::new(fixture.temp.path().join("state")), "demo");
     for ws in ["ws-a", "ws-b"] {
         slots.allocate("redis", ws, 1).expect("slot");
     }
@@ -138,7 +138,7 @@ services:
 
   redis:
     image: redis:7
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --databases 64
     ports:
       - "{redis}:6379"
     volumes:
@@ -154,7 +154,7 @@ services:
 
   redis-2:
     image: redis:7
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --databases 64
     ports:
       - "{redis_2}:6379"
     volumes:
@@ -254,4 +254,95 @@ fn a_real_database_failure_is_reported() {
         .ensure_databases(&fixture.config, "main")
         .expect_err("failure");
     assert!(error.to_string().contains("role does not exist"), "{error}");
+}
+
+#[test]
+fn a_deleted_workspace_slot_is_emptied_before_anyone_gets_it() {
+    let fixture = Fixture::new("abc123", "", "");
+    let state = StateDir::new(fixture.temp.path().join("state"));
+    let slots = SlotStore::new(state, "demo");
+    let slot = slots.allocate("redis", "ws-feat-login", 16).expect("slot");
+    for pending in slots.pending("redis") {
+        slots.cleared("redis", pending.allocation).expect("cleared");
+    }
+    fixture
+        .runner
+        .release_workspace(&fixture.config, "feat-login")
+        .expect("release");
+    let compose = format!(
+        "compose -f {} -p demo-shared",
+        fixture.runner.compose_file().display()
+    );
+    let flush = format!(
+        "{compose} exec -T redis sh -c redis-cli -n {} FLUSHDB | grep -qx OK",
+        slot.slot
+    );
+    assert!(fixture.calls().contains(&flush), "{:#?}", fixture.calls());
+    assert!(slots.pending("redis").is_empty(), "the slot is free again");
+    assert_eq!(slots.get("redis", "ws-feat-login"), None);
+}
+
+#[test]
+fn starting_shared_services_reclaims_slots_of_folders_deleted_by_hand_and_drops_extra_instances() {
+    let fixture = Fixture::new("abc123", "", "");
+    let root = fixture.temp.path().join("project");
+    std::fs::create_dir_all(root.join("workspace--feat-login/api")).expect("workspace");
+    std::fs::create_dir_all(root.join("workspace--feat/nested/api")).expect("nested workspace");
+    let slots = SlotStore::new(StateDir::new(fixture.temp.path().join("state")), "demo");
+    let live = slots.allocate("redis", "ws-feat-login", 16).expect("live");
+    let nested = slots
+        .allocate("redis", "ws-feat_nested", 16)
+        .expect("nested");
+    let gone = slots
+        .allocate("redis", "ws-removed-by-hand", 16)
+        .expect("gone");
+    for pending in slots.pending("redis") {
+        slots.cleared("redis", pending.allocation).expect("cleared");
+    }
+    fixture.runner.ensure_shared(&fixture.config).expect("up");
+    let calls = fixture.calls();
+    let compose = format!(
+        "compose -f {} -p demo-shared",
+        fixture.runner.compose_file().display()
+    );
+    assert!(
+        calls.contains(&format!("{compose} up -d --remove-orphans")),
+        "{calls:#?}"
+    );
+    assert!(calls.contains(&format!(
+        "{compose} exec -T redis sh -c redis-cli -n {} FLUSHDB | grep -qx OK",
+        gone.slot
+    )));
+    assert_eq!(slots.get("redis", "ws-removed-by-hand"), None);
+    assert_eq!(slots.get("redis", "ws-feat-login"), Some(live));
+    assert_eq!(
+        slots.get("redis", "ws-feat_nested"),
+        Some(nested),
+        "a branch with a slash lives in a nested folder"
+    );
+}
+
+#[test]
+fn a_new_slot_is_emptied_before_the_workspace_uses_it() {
+    let fixture = Fixture::new("abc123", "", "");
+    let mut config = fixture.config.clone();
+    if let Some(api) = config.repos.get_mut("api") {
+        api.env
+            .insert("REDIS_DB".into(), "{{shared.redis.slot}}".into());
+    }
+    fixture
+        .runner
+        .allocate_slots(&config, "ws-feat-login")
+        .expect("slots");
+    let slots = SlotStore::new(StateDir::new(fixture.temp.path().join("state")), "demo");
+    let slot = slots.get("redis", "ws-feat-login").expect("slot");
+    let compose = format!(
+        "compose -f {} -p demo-shared",
+        fixture.runner.compose_file().display()
+    );
+    assert!(fixture.calls().contains(&format!(
+        "{compose} exec -T redis sh -c redis-cli -n {} FLUSHDB | grep -qx OK",
+        slot.slot
+    )));
+    assert!(slots.pending("redis").is_empty());
 }
