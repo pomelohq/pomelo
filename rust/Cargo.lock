@@ -3725,6 +3725,7 @@ dependencies = [
  "pom_ptyhost",
  "pom_secrets",
  "pom_services",
+ "pom_workspace",
  "serde",
  "serde_json",
  "tempfile",

@@ -155,6 +155,29 @@ impl Workspace {
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
     }
 
+    /// The workspace's folder and whether it is main. An agent may change only a branch workspace's data.
+    fn snapshot_scope(&self, writes: bool) -> Result<(PathBuf, bool), String> {
+        let project = Project::open(&self.config_path, &self.state);
+        let workspace = project
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.branch == self.branch)
+            .ok_or_else(|| {
+                format!(
+                    "no workspace for branch {:?} - create it first",
+                    self.branch
+                )
+            })?;
+        if writes && workspace.is_main {
+            return Err("main's databases are the data every new workspace starts from; only a person changes them (pom prepare-main)".into());
+        }
+        Ok((workspace.path.clone(), workspace.is_main))
+    }
+
+    fn owned_databases(&self, config: &Config, folder: &Path) -> Vec<String> {
+        pom_services::owned_database_names(config, &self.branch, |repo| folder.join(repo).is_dir())
+    }
+
     fn entry(&self, config: &Config) -> Result<Entry, String> {
         let project = Project::open(&self.config_path, &self.state);
         let workspace = project
@@ -764,6 +787,99 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
                     out["rows_affected"] = json!(count);
                 }
                 pretty(&out)
+            }),
+        )
+    });
+
+    let ws = workspace.clone();
+    tools.push(tool(
+        "db_snapshots",
+        "List THIS workspace's database snapshots: each name with its databases, sizes and when it was taken, plus the total size. ws__baseline is the state right after the workspace was created; take others with db_snapshot.",
+        None,
+        true,
+        Box::new(move |_| {
+            let (folder, _) = ws.snapshot_scope(false)?;
+            pretty(&pom_services::SnapshotIndex::load(&folder))
+        }),
+    ));
+
+    let ws = workspace.clone();
+    tools.push(tool(
+        "db_snapshot",
+        "Save every database of THIS workspace as snapshot `name` (letters, digits, - and _), so db_restore can put exactly this data back later - e.g. before a test that writes. Briefly disconnects the workspace's own services from their databases. Refused if the name exists unless `replace` is true. Never touches main or other workspaces.",
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "snapshot name, e.g. before-checkout" },
+                "replace": { "type": "boolean", "description": "take it again if it exists (default false)" },
+            },
+            "required": ["name"],
+        })),
+        false,
+        Box::new(move |args| {
+            let (folder, _) = ws.snapshot_scope(true)?;
+            let config = ws.config()?;
+            let names = ws.owned_databases(&config, &folder);
+            let replace = args.get("replace").and_then(Value::as_bool).unwrap_or(false);
+            pretty(&ws.runner.snapshot_workspace(&config, &ws.branch, &folder, &names, &text(args, "name"), replace)?)
+        }),
+    ));
+
+    let ws = workspace.clone();
+    tools.push(Tool {
+        destructive: true,
+        ..tool(
+            "db_restore",
+            "Put snapshot `name` back into every database of THIS workspace (see db_snapshots). STOPS the workspace's running services, replaces each database with its snapshot copy, then STARTS them again. Every change since the snapshot is lost. Refused on main.",
+            Some(json!({
+                "type": "object",
+                "properties": { "name": { "type": "string", "description": "a snapshot from db_snapshots" } },
+                "required": ["name"],
+            })),
+            false,
+            Box::new(move |args| {
+                let (folder, is_main) = ws.snapshot_scope(true)?;
+                let config = ws.config()?;
+                let names = ws.owned_databases(&config, &folder);
+                pretty(&ws.runner.restore_workspace(&config, &ws.branch, is_main, &folder, &names, &text(args, "name"), true)?)
+            }),
+        )
+    });
+
+    let ws = workspace.clone();
+    tools.push(tool(
+        "db_baseline",
+        "Run THIS workspace's migrations, then save its databases again as ws__baseline - after a migration changes the schema, so later resets start from the migrated data. Refused on main.",
+        None,
+        false,
+        Box::new(move |_| {
+            let (folder, _) = ws.snapshot_scope(true)?;
+            let config = ws.config()?;
+            let context = pom_workspace::WorkspaceContext { config: &config, runner: &ws.runner, state: &ws.state };
+            pretty(&pom_workspace::rebaseline(&context, &ws.branch, &folder)?)
+        }),
+    ));
+
+    let ws = workspace.clone();
+    tools.push(Tool {
+        destructive: true,
+        ..tool(
+            "db_reseed",
+            "Replace THIS workspace's data: from main's main__baseline (default, without disconnecting main) or from one of its own snapshots (`snapshot`). Then runs its migrations and saves ws__baseline again. STOPS and restarts the workspace's running services. Refused on main.",
+            Some(json!({
+                "type": "object",
+                "properties": { "snapshot": { "type": "string", "description": "one of this workspace's snapshots instead of main__baseline" } },
+            })),
+            false,
+            Box::new(move |args| {
+                let (folder, is_main) = ws.snapshot_scope(true)?;
+                let config = ws.config()?;
+                let source = match text(args, "snapshot") {
+                    name if name.is_empty() => pom_workspace::ReseedSource::MainBaseline,
+                    name => pom_workspace::ReseedSource::Snapshot(name),
+                };
+                let context = pom_workspace::WorkspaceContext { config: &config, runner: &ws.runner, state: &ws.state };
+                pretty(&pom_workspace::reseed(&context, &ws.branch, is_main, &folder, &source)?)
             }),
         )
     });

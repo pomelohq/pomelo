@@ -9,7 +9,7 @@ use std::process::Command;
 use pom_config::Config;
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
-use pom_services::{RunnerOptions, ServiceRunner, SnapshotIndex};
+use pom_services::{RunnerOptions, ServiceRunner, SnapshotIndex, MAIN_BASELINE};
 
 const CONFIG: &str = "session: myproject\ndefault_branch: main\nshared_services:\n  postgres:\n    image: postgres:16-alpine\n    ports: [\"PORT:5432\"]\n    db_user: postgres\n    db_password: postgres\nrepos:\n  api:\n    databases:\n      main: \"api_{{branch.safe}}\"\n      events: \"events_{{branch.safe}}\"\n    services:\n      server: echo\n";
 
@@ -23,7 +23,7 @@ struct Project {
 fn project(session: &str, port: u16, docker: PathBuf) -> Project {
     let temp = tempfile::tempdir().expect("temp");
     let root = temp.path().join("project");
-    for branch in ["feat-login", "feat-search"] {
+    for branch in ["main", "feat-login", "feat-search"] {
         std::fs::create_dir_all(root.join(format!("workspace--{branch}/api"))).expect("worktree");
     }
     std::fs::write(
@@ -305,4 +305,113 @@ fn a_real_restore_brings_back_every_database_of_one_workspace_only() {
         .snapshot_databases_present(&project.config)
         .expect("list")
         .is_empty());
+}
+
+/// Kills the long-lived psql client container even when an assertion fails.
+struct Client(std::process::Child, String);
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.kill() {
+            eprintln!("client: {error}");
+        }
+        let status = Command::new("docker")
+            .env("PATH", pom_services::tool_path())
+            .args(["rm", "-f", &self.1])
+            .status();
+        if let Err(error) = status {
+            eprintln!("client: {error}");
+        }
+    }
+}
+
+#[test]
+fn a_real_copy_from_main_baseline_keeps_mains_connections_open() {
+    if std::env::var_os("POM_DOCKER_TEST").is_none() {
+        return;
+    }
+    let session = "pombasetest";
+    let port = 25435;
+    let project = project(session, port, "docker".into());
+    let _teardown = Teardown(project.runner.compose_file(), session.to_string());
+    project.runner.ensure_shared(&project.config).expect("up");
+    let main_dbs = project.databases("main");
+    project
+        .runner
+        .create_databases_when_ready(&project.config, &main_dbs)
+        .expect("create main");
+    for db in &main_dbs {
+        psql(
+            port,
+            db,
+            "CREATE TABLE rows (value text); INSERT INTO rows VALUES ('seed')",
+        );
+    }
+    let report = project
+        .runner
+        .snapshot_workspace(
+            &project.config,
+            "main",
+            &project.folder("main"),
+            &main_dbs,
+            MAIN_BASELINE,
+            true,
+        )
+        .expect("baseline");
+    assert!(report.ok(), "{report:?}");
+
+    let watched = &main_dbs[0];
+    let name = format!("{session}-holder");
+    let child = Command::new("docker")
+        .env("PATH", pom_services::tool_path())
+        .args([
+            "run",
+            "--rm",
+            "--name",
+            &name,
+            "--add-host=host.docker.internal:host-gateway",
+            "postgres:16-alpine",
+            "psql",
+            &format!("postgresql://postgres:postgres@host.docker.internal:{port}/{watched}"),
+            "-c",
+            "SELECT pg_sleep(60)",
+        ])
+        .spawn()
+        .expect("client");
+    let mut client = Client(child, name);
+    let connected = format!(
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = '{watched}' AND query LIKE '%pg_sleep%'"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while psql(port, "postgres", &connected) != "1" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the client never connected"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+
+    let pairs = pom_services::main_counterparts(&project.config, "feat-login", |_| true);
+    assert_eq!(pairs.len(), 2);
+    for (workspace, main) in &pairs {
+        let snapshot = pom_services::snapshot_copy(&project.folder("main"), MAIN_BASELINE, main)
+            .expect("baseline copy");
+        project
+            .runner
+            .clone_from_snapshot(&project.config, &snapshot, workspace)
+            .expect("clone");
+        assert_eq!(
+            psql(port, workspace, "SELECT string_agg(value, ',') FROM rows"),
+            "seed"
+        );
+    }
+    assert_eq!(
+        psql(port, "postgres", &connected),
+        "1",
+        "main's client is still connected"
+    );
+    assert!(
+        client.0.try_wait().expect("client state").is_none(),
+        "main's client is still running"
+    );
 }

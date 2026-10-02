@@ -91,7 +91,7 @@ fn create_list_rename_and_delete_a_workspace() {
     let said = text(&created);
     assert!(created.status.success(), "{said}");
     assert!(
-        said.contains(">>> [4/7] Creating git worktrees (parallel)"),
+        said.contains(">>> [4/8] Creating git worktrees (parallel)"),
         "{said}"
     );
     assert!(said.contains("Workspace feat-x ready"), "{said}");

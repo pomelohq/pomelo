@@ -2,6 +2,7 @@
 //! events; a failed run leaves `pipeline-<branch>.json` behind (same format as the previous core) so the
 //! app can show where it stopped and resume from that stage.
 
+mod baseline;
 mod create;
 mod delete;
 mod git;
@@ -17,6 +18,7 @@ use pom_paths::StateDir;
 use pom_services::ServiceRunner;
 use serde::{Deserialize, Serialize};
 
+pub use baseline::{migrate, rebaseline, reseed, BaselineReport, MigrationOutcome, ReseedSource};
 pub use create::{create, validate_branch_name, CreateRequest, CREATE_STAGES};
 pub use delete::{delete, DeleteRequest, DELETE_STAGES};
 pub use git::{branch_is_safe_to_delete, unpushed_commits};

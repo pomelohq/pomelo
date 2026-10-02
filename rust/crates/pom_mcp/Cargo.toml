@@ -20,6 +20,7 @@ pom_ptyhost = { path = "../pom_ptyhost" }
 pom_secrets = { path = "../pom_secrets" }
 pom_env = { path = "../pom_env" }
 pom_services = { path = "../pom_services" }
+pom_workspace = { path = "../pom_workspace" }
 serde.workspace = true
 libc = "0.2"
 serde_json.workspace = true

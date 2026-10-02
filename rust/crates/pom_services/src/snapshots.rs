@@ -85,6 +85,56 @@ pub fn owned_database_names(
     names
 }
 
+/// `(workspace db, main db)` for every database template `branch` resolves differently from main.
+pub fn main_counterparts(
+    config: &Config,
+    branch: &str,
+    keep: impl Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    let main = config.global_default_branch();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for (repo, dir) in &config.repos {
+        if !dir.has_worktree_config() || !keep(repo) {
+            continue;
+        }
+        let shared = dir
+            .shared_refs
+            .iter()
+            .filter(|shared| !shared.db_name.is_empty())
+            .map(|shared| (shared.db_name.as_str(), String::new()));
+        let own = dir
+            .databases
+            .values()
+            .map(|template| (template.as_str(), format!("{}_", config.session)));
+        for (template, prefix) in shared.chain(own) {
+            let name = |branch: &str| {
+                let resolved = format!(
+                    "{prefix}{}",
+                    pom_env::resolve_branch_tokens(template, branch)
+                );
+                truncate(&resolved, PG_NAME_LIMIT).to_string()
+            };
+            let (workspace, main) = (name(branch), name(main));
+            if workspace != main && !pairs.iter().any(|(known, _)| *known == workspace) {
+                pairs.push((workspace, main));
+            }
+        }
+    }
+    pairs
+}
+
+/// The snapshot copy of `db` in snapshot `name` of the workspace in `folder`, if one was taken.
+pub fn snapshot_copy(folder: &Path, name: &str, db: &str) -> Option<String> {
+    let truncated = truncate(db, PG_NAME_LIMIT);
+    SnapshotIndex::load(folder)
+        .snapshots
+        .get(name)?
+        .databases
+        .iter()
+        .find(|saved| saved.db == truncated)
+        .map(|saved| saved.snapshot_db.clone())
+}
+
 fn quoted(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
@@ -437,6 +487,22 @@ impl ServiceRunner {
         Ok(report)
     }
 
+    /// Replaces `target` with a copy of a sealed snapshot database. No one can connect to a snapshot, so unlike
+    /// copying a live database this never disconnects the database it came from.
+    pub fn clone_from_snapshot(
+        &self,
+        config: &Config,
+        snapshot_db: &str,
+        target: &str,
+    ) -> Result<(), String> {
+        let version = self
+            .postgres_version(config)
+            .map_err(|error| error.to_string())?;
+        let postgres = self.postgres(config);
+        self.terminate(&postgres, target);
+        self.run_all(&postgres, &restore_sql(target, snapshot_db, version))
+    }
+
     /// Drops snapshot `name` of the workspace: its databases and its index entry.
     pub fn drop_workspace_snapshot(
         &self,
@@ -526,7 +592,8 @@ impl ServiceRunner {
         Ok(running)
     }
 
-    fn start_services(
+    /// Starts `targets` again in order; one that fails is a warning, so the rest still come up.
+    pub fn start_services(
         &self,
         config: &Config,
         targets: &[ServiceTarget],

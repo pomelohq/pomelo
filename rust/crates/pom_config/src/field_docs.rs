@@ -173,7 +173,7 @@ pub const FIELDS: &[FieldDoc] = &[
     field(Root, "environments", "map of maps", "", "Profiles that point services at deployed URLs: `<profile>: { <repo>.<service>: <url> }`. Under that profile `{{<repo>.<service>.url}}` (and `.host`, `.port`, `.ws`) resolves to the URL and the dev proxy forwards there; other services stay local. The URL is used as written, without templates.", "environments:\n  staging:\n    api.server: https://api.staging.example.com"),
     field(Root, "preset", "string or list", "", "Presets whose services run once per workspace, outside any repo.", "preset: [gateway]"),
     field(Root, "seed", "list of commands", "", "Runs once in the workspace folder when a workspace is created, before each repo's seed.", "seed: [./scripts/seed-all.sh]"),
-    field(Root, "prepare_main", "list", "reset, migrate, seed", "The phases Prepare Main runs, in order: `reset`, `migrate` and `seed`. Other names are skipped; a list with none of them runs only `reset`.", "prepare_main: [migrate, seed]"),
+    field(Root, "prepare_main", "list", "reset, migrate, seed, snapshot", "The phases Prepare Main runs, in order: `reset`, `migrate`, `seed` and `snapshot`, which saves main's databases as the `main__baseline` snapshot new workspaces copy from without disconnecting main. Other names are skipped; a list with none of them runs only `reset`.", "prepare_main: [migrate, seed, snapshot]"),
     field(Root, "sync", "map", "", "Keep Main Fresh; see Sync.", ""),
     field(Root, "agents", "map", "", "A policy for the workspace's coding agents; see Agents.", ""),
     ignored(Root, "workspaces", "map", "Workspace groups; nothing reads them now."),
