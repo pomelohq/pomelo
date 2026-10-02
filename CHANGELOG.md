@@ -4,6 +4,11 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.7] - 2026-10-02
+
+### Added
+- Settings > Agents > Open Agents In: open agents as a tab next to your code instead of in the agent dock. (#217)
+
 ## [0.8.6] - 2026-10-02
 
 ### Added
