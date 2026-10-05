@@ -3979,6 +3979,7 @@ impl ApplicationHandler for App {
                         "_" => key(EditKey::GoForward),
                         "j" => key(EditKey::JoinLines),
                         "m" => key(EditKey::MoveToEnclosingBracket),
+                        "r" => key(EditKey::Redo),
                         _ => None,
                     },
                     Key::Named(NamedKey::Tab) if shift => key(EditKey::Backtab),
