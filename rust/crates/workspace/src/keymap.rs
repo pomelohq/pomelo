@@ -114,10 +114,14 @@ pub enum Action {
     NextRegion,
     PreviousRegion,
     ToggleVimMode,
+    MenuSelectNext,
+    MenuSelectPrevious,
+    MenuSelectFirst,
+    MenuSelectLast,
 }
 
 impl Action {
-    pub const ALL: [Action; 118] = [
+    pub const ALL: [Action; 122] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -236,6 +240,10 @@ impl Action {
         Action::NextRegion,
         Action::PreviousRegion,
         Action::ToggleVimMode,
+        Action::MenuSelectNext,
+        Action::MenuSelectPrevious,
+        Action::MenuSelectFirst,
+        Action::MenuSelectLast,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -353,6 +361,10 @@ impl Action {
             Action::NextRegion => "workspace::ActivateNextRegion",
             Action::PreviousRegion => "workspace::ActivatePreviousRegion",
             Action::ToggleVimMode => "workspace::ToggleVimMode",
+            Action::MenuSelectNext => "menu::SelectNext",
+            Action::MenuSelectPrevious => "menu::SelectPrevious",
+            Action::MenuSelectFirst => "menu::SelectFirst",
+            Action::MenuSelectLast => "menu::SelectLast",
         }
     }
 
@@ -479,6 +491,10 @@ impl Action {
             Action::NextRegion => "Focus Next Region",
             Action::PreviousRegion => "Focus Previous Region",
             Action::ToggleVimMode => "Toggle Vim Mode",
+            Action::MenuSelectNext => "List: Next",
+            Action::MenuSelectPrevious => "List: Previous",
+            Action::MenuSelectFirst => "List: First",
+            Action::MenuSelectLast => "List: Last",
         }
     }
 
@@ -948,6 +964,37 @@ pub const OTHER_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
     (DATABASE_PANEL, "ctrl-n", Action::DatabaseNewConsole),
 ];
 
+/// Vim mode's list keys, in effect only while vim mode is on (the reference loads them from its vim keymap).
+pub const VIM_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
+    (PROJECT_PANEL, "j", Action::MenuSelectNext),
+    (PROJECT_PANEL, "k", Action::MenuSelectPrevious),
+    (PROJECT_PANEL, "g g", Action::MenuSelectFirst),
+    (PROJECT_PANEL, "shift-g", Action::MenuSelectLast),
+    (PROJECT_PANEL, "h", Action::TreeCollapse),
+    (PROJECT_PANEL, "l", Action::TreeExpand),
+    (GIT_PANEL, "j", Action::MenuSelectNext),
+    (GIT_PANEL, "k", Action::MenuSelectPrevious),
+    (GIT_PANEL, "g g", Action::MenuSelectFirst),
+    (GIT_PANEL, "shift-g", Action::MenuSelectLast),
+    (GIT_PANEL, "h", Action::GitCollapse),
+    (GIT_PANEL, "l", Action::GitExpand),
+    (SERVICES_PANEL, "j", Action::MenuSelectNext),
+    (SERVICES_PANEL, "k", Action::MenuSelectPrevious),
+    (SERVICES_PANEL, "g g", Action::MenuSelectFirst),
+    (SERVICES_PANEL, "shift-g", Action::MenuSelectLast),
+    (SERVICES_PANEL, "h", Action::ServicesCollapse),
+    (DATABASE_PANEL, "j", Action::MenuSelectNext),
+    (DATABASE_PANEL, "k", Action::MenuSelectPrevious),
+    (DATABASE_PANEL, "g g", Action::MenuSelectFirst),
+    (DATABASE_PANEL, "shift-g", Action::MenuSelectLast),
+    (DATABASE_PANEL, "h", Action::DatabaseCollapse),
+    (DATABASE_PANEL, "l", Action::DatabaseExpand),
+    (GIT_PANEL, "x", Action::GitToggleStaged),
+    (GIT_PANEL, "shift-x", Action::GitStageAll),
+    (GIT_PANEL, "shift-u", Action::GitUnstageAll),
+    (GIT_PANEL, "i", Action::GitFocusCommitEditor),
+];
+
 fn platform_context_defaults() -> &'static [(&'static str, &'static str, Action)] {
     if cfg!(target_os = "macos") {
         MACOS_CONTEXT_DEFAULTS
@@ -974,14 +1021,23 @@ fn sequence(text: &str) -> Option<Vec<Keystroke>> {
 
 impl Keymap {
     pub fn defaults() -> Keymap {
+        Keymap::defaults_with(false)
+    }
+
+    /// The defaults, with vim mode's list keys when `vim` is on.
+    pub fn defaults_with(vim: bool) -> Keymap {
         let window = platform_defaults()
             .iter()
             .filter_map(|(keys, action)| Some((WORKSPACE, sequence(keys)?, Some(*action))));
         let contextual = platform_context_defaults()
             .iter()
             .filter_map(|(context, keys, action)| Some((*context, sequence(keys)?, Some(*action))));
+        let vim_keys = VIM_CONTEXT_DEFAULTS
+            .iter()
+            .filter(|_| vim)
+            .filter_map(|(context, keys, action)| Some((*context, sequence(keys)?, Some(*action))));
         Keymap {
-            bindings: window.chain(contextual).collect(),
+            bindings: window.chain(contextual).chain(vim_keys).collect(),
         }
     }
 
@@ -991,7 +1047,12 @@ impl Keymap {
 
     /// The defaults with the user's keymap file applied; problems in it are returned, not fatal.
     pub fn load() -> (Keymap, Vec<String>) {
-        let mut keymap = Keymap::defaults();
+        Keymap::load_with(false)
+    }
+
+    /// `load` with vim mode's list keys when `vim` is on.
+    pub fn load_with(vim: bool) -> (Keymap, Vec<String>) {
+        let mut keymap = Keymap::defaults_with(vim);
         let text = Keymap::user_file().and_then(|path| std::fs::read_to_string(path).ok());
         let problems = match text {
             Some(text) => keymap.apply_user(&text),
@@ -1298,5 +1359,38 @@ mod tests {
             "Fetch All  ctrl-g ctrl-g"
         );
         assert_eq!(with_key_hint("Push", Action::GitPush), "Push", "unbound");
+    }
+
+    #[test]
+    fn vim_list_keys_apply_only_with_vim_mode_and_in_a_list() {
+        let stroke = |keys: &str| Keystroke::parse(keys).expect("keys").normalized();
+        let plain = Keymap::defaults();
+        assert_eq!(
+            plain.match_in(&[WORKSPACE, GIT_PANEL], &[], &stroke("j")),
+            KeyMatch::None
+        );
+        let vim = Keymap::defaults_with(true);
+        assert_eq!(
+            vim.match_in(&[WORKSPACE, GIT_PANEL], &[], &stroke("j")),
+            KeyMatch::Action(Action::MenuSelectNext)
+        );
+        assert_eq!(
+            vim.match_in(&[WORKSPACE], &[], &stroke("j")),
+            KeyMatch::None,
+            "not outside a list"
+        );
+        assert_eq!(
+            vim.match_in(&[WORKSPACE, SERVICES_PANEL], &[], &stroke("l")),
+            KeyMatch::Action(Action::ServicesLogs),
+            "the services list keeps l for logs"
+        );
+        assert_eq!(
+            vim.match_in(&[WORKSPACE, PROJECT_PANEL], &[], &stroke("g")),
+            KeyMatch::Pending
+        );
+        assert_eq!(
+            vim.match_in(&[WORKSPACE, PROJECT_PANEL], &[stroke("g")], &stroke("g")),
+            KeyMatch::Action(Action::MenuSelectFirst)
+        );
     }
 }

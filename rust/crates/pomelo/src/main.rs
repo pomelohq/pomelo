@@ -617,6 +617,8 @@ struct App {
     caret_last_toggle: Option<Instant>,
     /// Cmd+K was pressed; the next key completes a two-stroke editor binding.
     pending_cmd_k: bool,
+    /// Whether the keymap was built with vim mode's list keys.
+    keymap_vim: bool,
     /// The first key of a window chord pressed in a terminal, held back until the chord completes or not.
     held_terminal_key: Option<terminal::Keystroke>,
     settings_dirty: bool,
@@ -2019,11 +2021,12 @@ impl App {
         let modified = workspace::keymap::Keymap::user_file()
             .and_then(|path| std::fs::metadata(path).ok())
             .and_then(|meta| meta.modified().ok());
-        if modified == self.keymap_read {
+        if modified == self.keymap_read && self.keymap_vim == self.settings.vim_mode {
             return;
         }
         self.keymap_read = modified;
-        let (keymap, problems) = workspace::keymap::Keymap::load();
+        self.keymap_vim = self.settings.vim_mode;
+        let (keymap, problems) = workspace::keymap::Keymap::load_with(self.settings.vim_mode);
         #[cfg(target_os = "macos")]
         {
             key_equivalents::set_keymap(&keymap);
@@ -2787,6 +2790,7 @@ impl App {
             }
             Action::ToggleVimMode => {
                 self.settings.vim_mode = !self.settings.vim_mode;
+                self.keymap_checked = None;
                 if let Err(error) = self.settings.save() {
                     eprintln!("settings: save: {error}");
                 }
@@ -4817,7 +4821,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
-    let (keymap, problems) = workspace::keymap::Keymap::load();
+    let (keymap, problems) = workspace::keymap::Keymap::load_with(app.settings.vim_mode);
+    app.keymap_vim = app.settings.vim_mode;
     for problem in &problems {
         eprintln!("{problem}");
     }
