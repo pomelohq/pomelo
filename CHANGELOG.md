@@ -4,6 +4,15 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.8] - 2026-10-06
+
+### Added
+- Drive Pomelo from the keyboard: context menus, the file tree, the Git, Services and Database panels and the Settings window move with arrows, Enter and Escape. (#218, #219, #221, #222, #225)
+- `ctrl-tab` switches to recent tabs, `cmd-alt-up` / `cmd-alt-down` to the previous or next workspace, and `cmd-alt-a` to one whose agent waits for you. (#220)
+- Answer agents and notices from the keyboard: `cmd-k y` / `cmd-k n` allow or deny, `cmd-k o` takes over, `cmd-k enter` runs a notice's action. (#223)
+- Close tab sets (`cmd-alt-t`, `cmd-k e` / `t` / `u`), move between regions with `cmd-k tab` and `cmd-escape`, and see each button's key in its tooltip. (#224)
+- Vim mode (Settings > Keymap): Normal, Insert and Visual modes, motions, operators, registers, `.` repeat, search, and vim keys in panel lists. (#226, #227, #228, #229)
+
 ## [0.8.7] - 2026-10-02
 
 ### Added
