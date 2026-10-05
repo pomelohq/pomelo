@@ -722,3 +722,76 @@ fn a_pull_request_block_opens_it_in_the_app() {
         [PanelRequest::Reveal { id, .. }] if id == "pr:web:feat"
     ));
 }
+
+#[test]
+fn the_list_works_from_the_keyboard() {
+    use workspace::keymap::Action;
+    use workspace::EditKey;
+
+    let temp = tempfile::tempdir().expect("temp");
+    let root = repo(temp.path(), "api", &["app.rs", "lib.rs"], "feat");
+    write(&root, "app.rs", "one\ntwo\n");
+    write(&root, "lib.rs", "one\ntwo\n");
+    let mut panel = panel(vec![source("api", &root, "feat")]);
+    assert_eq!(panel.key_context(), Some(workspace::keymap::GIT_PANEL));
+    assert!(
+        !panel.panel_action(Action::GitToggleStaged),
+        "nothing picked yet"
+    );
+
+    panel.set_keyboard(true);
+    assert!(panel.has_keyboard());
+    let first = texts(&mut panel);
+    while panel.list_key(EditKey::Down, false) {
+        if panel.panel_action(Action::GitCopyRelativePath) {
+            break;
+        }
+    }
+    assert!(matches!(
+        panel.take_requests().as_slice(),
+        [PanelRequest::Copy(path)] if path == "app.rs"
+    ));
+
+    assert!(panel.panel_action(Action::GitToggleStaged));
+    panel.wait_for_scan();
+    assert_eq!(staged(&root), "app.rs");
+    assert!(
+        panel.panel_action(Action::GitUnstageFile) || panel.panel_action(Action::GitStageFile),
+        "a file row stages either way"
+    );
+    panel.wait_for_scan();
+
+    assert!(panel.panel_action(Action::GitStageAll));
+    panel.wait_for_scan();
+    assert_eq!(staged(&root), "app.rs\nlib.rs");
+    assert!(panel.panel_action(Action::GitUnstageAll));
+    panel.wait_for_scan();
+    assert_eq!(staged(&root), "");
+    texts(&mut panel);
+
+    assert!(panel.list_key(EditKey::Home, false));
+    assert!(panel.panel_action(Action::GitCollapse), "the top row folds");
+    assert_ne!(texts(&mut panel), first);
+    assert!(panel.panel_action(Action::GitExpand));
+    assert!(texts(&mut panel).contains("app.rs"));
+
+    assert!(panel.list_key(EditKey::End, false));
+    assert!(panel.panel_action(Action::GitRestoreFile));
+    assert!(
+        matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::Prompt { .. }]
+        ),
+        "discarding from the keyboard asks first"
+    );
+
+    assert!(panel.panel_action(Action::GitFocusCommitEditor));
+    assert!(panel.text_focused() && !panel.has_keyboard());
+    assert!(panel.key(EditKey::Tab, false));
+    assert!(!panel.text_focused() && panel.has_keyboard());
+
+    assert!(panel.panel_action(Action::GitHistoryTab));
+    assert_eq!(panel.tab(), Tab::History);
+    assert!(panel.panel_action(Action::GitChangesTab));
+    assert_eq!(panel.tab(), Tab::Changes);
+}

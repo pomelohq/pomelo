@@ -52,7 +52,16 @@ impl GitPanel {
         if self.hovered_row() == Some(index) {
             row = row.bg(theme().ghost_element_hover);
         }
-        row
+        self.mark_keyboard_row(index, row)
+    }
+
+    fn mark_keyboard_row(&self, index: usize, row: Div) -> Div {
+        if self.keyboard_row() == Some(index) {
+            row.bg(theme().element_selected)
+                .border(1.0, theme().panel_focused_border)
+        } else {
+            row
+        }
     }
 
     fn check(&self, index: usize, staging: Staging, tip: &str) -> Node {
@@ -85,6 +94,7 @@ impl GitPanel {
     pub(crate) fn render_panel(&mut self, width: f32, height: f32) -> Node {
         let scan = self.current();
         self.rows = self.build_rows(&scan);
+        self.settle_selection();
         let (footer, footer_h) = self.render_footer(width, &scan);
         let list_h = (height - TAB_BAR_H - 1.0 - TOOLBAR_H - footer_h).max(0.0);
         self.viewport_h = list_h;
@@ -685,7 +695,7 @@ impl GitPanel {
                 if self.hovered_row() == Some(index) {
                     row = row.bg(colors.ghost_element_hover);
                 }
-                row
+                self.mark_keyboard_row(index, row)
             }
             Row::CommitHeader => self.commit_header(scan),
         }
@@ -1024,7 +1034,7 @@ impl GitPanel {
         if hovered {
             block = block.bg(colors.ghost_element_hover);
         }
-        block
+        self.mark_keyboard_row(index, block)
     }
 
     fn commit_header(&self, scan: &Scan) -> Div {

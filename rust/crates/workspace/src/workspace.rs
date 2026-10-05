@@ -2444,6 +2444,13 @@ impl Layout {
         }
     }
 
+    pub fn side_panel(&self, kind: PaneKind) -> Option<&dyn SidePanelView> {
+        self.side_panels
+            .iter()
+            .find(|panel| panel.kind() == kind)
+            .map(|panel| panel.as_ref())
+    }
+
     pub fn side_panel_mut(&mut self, kind: PaneKind) -> Option<&mut Box<dyn SidePanelView>> {
         self.side_panels
             .iter_mut()
