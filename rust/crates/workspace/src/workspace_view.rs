@@ -695,6 +695,13 @@ impl WorkspaceView {
             | Action::DatabaseNewConsole => {
                 return self.run_panel_action(PaneKind::Database, action)
             }
+            Action::NewSideAgent => return self.pick_side_agent(),
+            Action::AgentTakeOver | Action::AgentAllow | Action::AgentDeny => {
+                return self.run_item_action(action)
+            }
+            Action::StopAgent => return self.stop_agent(),
+            Action::RunNotificationAction => return self.run_notice_action(),
+            Action::DismissNotification => return self.dismiss_notice(),
             Action::ToggleAgent => self.header_click(AGENT_TOGGLE),
             Action::ToggleTerminal => self.toggle_terminal(),
             Action::NewTerminal => self.open_terminal_at(None),
@@ -1587,9 +1594,22 @@ impl WorkspaceView {
         else {
             return;
         };
+        if let Some(role) = id
+            .checked_sub(PALETTE_SIDE_AGENT_BASE)
+            .and_then(|index| crate::SideAgentRole::ALL.get(index as usize))
+            .filter(|_| id < PALETTE_PANEL_BASE)
+        {
+            let start = if *role == crate::SideAgentRole::SecondOpinion {
+                crate::SideAgentStart::Fresh
+            } else {
+                crate::SideAgentStart::Auto
+            };
+            self.pending.side_agent = Some((*role, start));
+            return;
+        }
         if let Some(index) = id
             .checked_sub(PALETTE_WORKSPACE_BASE)
-            .filter(|index| *index < PALETTE_PANEL_BASE - PALETTE_WORKSPACE_BASE)
+            .filter(|index| *index < PALETTE_SIDE_AGENT_BASE - PALETTE_WORKSPACE_BASE)
         {
             self.pending.activate_workspace = Some(index as usize);
             return;
@@ -5783,6 +5803,106 @@ impl WorkspaceView {
         handled
     }
 
+    /// The groups whose front tab an agent action looks at: the focused one, then the agent dock's.
+    fn agent_action_groups(&self) -> Vec<InputGroup> {
+        let mut groups = vec![self.focused_group()];
+        for group in [InputGroup::Agent, InputGroup::Center, InputGroup::Panel] {
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+        groups
+    }
+
+    /// Hands an action to the first front tab that takes it.
+    fn run_item_action(&mut self, action: crate::keymap::Action) -> bool {
+        for group in self.agent_action_groups() {
+            let handled = self
+                .group_view_mut(group)
+                .and_then(|panes| panes.active_item_mut())
+                .is_some_and(|item| item.item_action(action));
+            if handled {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Stops the agent behind the first front tab that runs one, the way its tab menu does.
+    fn stop_agent(&mut self) -> bool {
+        for group in self.agent_action_groups() {
+            let Some(item) = self
+                .group_view_mut(group)
+                .and_then(|panes| panes.active_item_mut())
+                .filter(|item| item.stop_label().is_some())
+            else {
+                continue;
+            };
+            item.stop();
+            self.ask_about_pending_close();
+            return true;
+        }
+        false
+    }
+
+    /// Lists the side agent roles to start one from the keyboard, as the agent dock's "+" offers them.
+    fn pick_side_agent(&mut self) -> bool {
+        let entries: Vec<crate::ExtraCommand> = crate::SideAgentRole::ALL
+            .iter()
+            .enumerate()
+            .map(|(index, role)| crate::ExtraCommand {
+                name: role.title().to_string(),
+                keys: Vec::new(),
+                id: PALETTE_SIDE_AGENT_BASE + index as u64,
+            })
+            .collect();
+        self.set_terminal_focus(false);
+        self.set_agent_focus(false);
+        self.set_panel_keyboard(None);
+        match self.layout.files_view.as_mut() {
+            Some(files) => {
+                files.open_command_list(entries, "Start a side agent...");
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Runs the action of the toast, else of the notification card.
+    fn run_notice_action(&mut self) -> bool {
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.action.is_some())
+        {
+            self.header_click(TOAST_ACTION);
+            return true;
+        }
+        let Some(notification) = self.notification.as_ref() else {
+            return false;
+        };
+        if notification.primary.is_some() {
+            self.header_click(crate::NOTIFICATION_PRIMARY);
+        } else if !notification.buttons.is_empty() {
+            self.header_click(crate::NOTIFICATION_BUTTON_BASE);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// Closes the toast, else the notification card.
+    fn dismiss_notice(&mut self) -> bool {
+        if self.toast.is_some() {
+            self.header_click(TOAST_CLOSE);
+        } else if self.notification.is_some() {
+            self.header_click(crate::NOTIFICATION_CLOSE);
+        } else {
+            return false;
+        }
+        true
+    }
+
     fn tab_switcher_shown(switcher: &TabSwitcher) -> bool {
         !switcher.held || switcher.opened.elapsed() >= TAB_SWITCHER_DELAY
     }
@@ -7951,6 +8071,7 @@ impl RawView for WorkspaceView {
 
 const PALETTE_ACTION_BASE: u64 = 1;
 const PALETTE_WORKSPACE_BASE: u64 = 500;
+const PALETTE_SIDE_AGENT_BASE: u64 = 980;
 const PALETTE_PANEL_BASE: u64 = 1_000;
 const PALETTE_PANEL_STRIDE: u64 = 100_000;
 const PROMPT_BUTTON_BASE: u64 = 999_000_000;
@@ -9853,5 +9974,32 @@ mod tests {
         assert_eq!(state.moves, 1);
         assert_eq!(state.actions, vec![Action::GitPush]);
         assert!(!state.keyboard);
+    }
+
+    #[test]
+    fn notices_run_and_close_from_the_keyboard() {
+        use crate::keymap::Action;
+        let (mut app, h, e) = open();
+        app.draw(h);
+        e.update(app.app_mut(), |view, _| {
+            assert!(
+                !view.run_action(Action::RunNotificationAction),
+                "nothing to run"
+            );
+            assert!(
+                !view.run_action(Action::DismissNotification),
+                "nothing to close"
+            );
+            view.notify_update_ready("Update ready".into(), "Restart to finish".into());
+            view.show_toast("Saved", None);
+            assert!(
+                view.run_action(Action::DismissNotification),
+                "the toast goes first"
+            );
+            assert!(view.notification_text().is_some());
+            assert!(view.run_action(Action::RunNotificationAction));
+            assert!(view.notification_text().is_none());
+            assert!(view.take_effects().update.is_some(), "restarts to update");
+        });
     }
 }
