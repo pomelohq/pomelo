@@ -80,6 +80,8 @@ pub struct Settings {
     pub multi_cursor_modifier: String,
     pub cursor_blink: bool,
     pub cursor_animation: CursorAnimation,
+    /// Modal (vim) editing in the editor and h/j/k/l in panel lists.
+    pub vim_mode: bool,
     /// "bar", "block", "underline" or "hollow".
     pub cursor_shape: String,
     /// "on" holds loading shimmers, pulsing placeholders and the caret's glide still; "off" lets them move.
@@ -191,6 +193,7 @@ impl Default for Settings {
             multi_cursor_modifier: "alt".into(),
             cursor_blink: true,
             cursor_animation: CursorAnimation::default(),
+            vim_mode: false,
             cursor_shape: "bar".into(),
             reduce_motion: "off".into(),
             enable_language_server: true,

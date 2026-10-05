@@ -113,10 +113,11 @@ pub enum Action {
     FocusEditor,
     NextRegion,
     PreviousRegion,
+    ToggleVimMode,
 }
 
 impl Action {
-    pub const ALL: [Action; 117] = [
+    pub const ALL: [Action; 118] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -234,6 +235,7 @@ impl Action {
         Action::FocusEditor,
         Action::NextRegion,
         Action::PreviousRegion,
+        Action::ToggleVimMode,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -350,6 +352,7 @@ impl Action {
             Action::FocusEditor => "workspace::FocusCenter",
             Action::NextRegion => "workspace::ActivateNextRegion",
             Action::PreviousRegion => "workspace::ActivatePreviousRegion",
+            Action::ToggleVimMode => "workspace::ToggleVimMode",
         }
     }
 
@@ -475,6 +478,7 @@ impl Action {
             Action::FocusEditor => "Focus the Editor",
             Action::NextRegion => "Focus Next Region",
             Action::PreviousRegion => "Focus Previous Region",
+            Action::ToggleVimMode => "Toggle Vim Mode",
         }
     }
 

@@ -2003,6 +2003,10 @@ impl ItemInput for PaneGroupView {
         self.active_item()?.cursor_status()
     }
 
+    fn mode_label(&self) -> Option<&'static str> {
+        self.active_item()?.mode_label()
+    }
+
     fn active_language(&self) -> Option<&'static str> {
         self.active_item()?.language_name()
     }
