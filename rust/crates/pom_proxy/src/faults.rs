@@ -126,10 +126,16 @@ pub fn add_fault(state: &StateDir, mut rule: FaultRule) -> Result<FaultRule, Str
     {
         return Err("--status must be an HTTP status (100-599)".into());
     }
-    let seed =
-        now_ms() ^ (SEQUENCE.fetch_add(1, Ordering::Relaxed) << 48) ^ u64::from(std::process::id());
-    rule.id = format!("f{:06x}", seed & 0xff_ffff);
     let mut rules = load_faults(state);
+    // Two rules added within one millisecond share the clock part, so the counter must reach the id's bits.
+    loop {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let seed = now_ms() ^ sequence.wrapping_mul(0x9e37_79b9) ^ u64::from(std::process::id());
+        rule.id = format!("f{:06x}", seed & 0xff_ffff);
+        if !rules.iter().any(|existing| existing.id == rule.id) {
+            break;
+        }
+    }
     rules.push(rule.clone());
     save_faults(state, rules)?;
     Ok(rule)

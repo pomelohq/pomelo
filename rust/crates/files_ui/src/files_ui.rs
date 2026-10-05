@@ -6576,6 +6576,9 @@ pub struct FilesView {
     pending_opens: Vec<PendingOpen>,
     /// The file last clicked in the tree and when: a second click on it opens it for good.
     last_tree_click: Option<(std::time::Instant, String)>,
+    /// The file tree has the keyboard, and the row its arrows are on.
+    tree_focused: bool,
+    tree_selected: Option<String>,
     recent_files: Vec<String>,
     palette_memory: command_palette::PaletteMemory,
     server_notices: ServerNotices,
@@ -6740,6 +6743,8 @@ impl FilesView {
             finder_loading: None,
             pending_opens: Vec::new(),
             last_tree_click: None,
+            tree_focused: false,
+            tree_selected: None,
             recent_files: Vec::new(),
             palette_memory: command_palette::PaletteMemory::default(),
             server_notices: ServerNotices::default(),
@@ -8294,6 +8299,7 @@ impl ItemInput for FilesView {
 
     fn editor_click(&mut self, x: f32, y: f32, extend: bool) -> bool {
         self.confirm_tree_edit(true);
+        self.tree_focused = false;
         let clicked = self.panes.editor_click(x, y, extend);
         self.follow_navigation();
         clicked
@@ -8730,8 +8736,14 @@ impl FunctionView for FilesView {
                 .rounded(4.0)
                 .on_click(id)
                 .child(content);
+            let keyboard_row =
+                self.tree_focused && self.tree_selected.as_deref() == Some(row.path.as_str());
             if row.edit {
                 r = r.border(1.0, theme().panel_focused_border);
+            } else if keyboard_row {
+                r = r
+                    .bg(theme().element_selected)
+                    .border(1.0, theme().panel_focused_border);
             } else if selected {
                 r = r.bg(theme().element_selected);
             }
@@ -8921,6 +8933,8 @@ impl FunctionView for FilesView {
         let Some((path, is_dir)) = self.click_targets.get(idx).cloned() else {
             return false;
         };
+        self.tree_focused = true;
+        self.tree_selected = Some(path.clone());
         if is_dir {
             if !self.expanded.remove(&path) {
                 self.expanded.insert(path);
@@ -9088,6 +9102,26 @@ impl FunctionView for FilesView {
         };
         let relative = relative.to_string_lossy().into_owned();
         self.reveal_row(&relative);
+    }
+
+    fn tree_focused(&self) -> bool {
+        self.tree_focused
+    }
+
+    fn set_tree_focused(&mut self, focused: bool) {
+        self.set_tree_focus(focused);
+    }
+
+    fn tree_selection(&self) -> Option<(String, bool)> {
+        self.selected_tree_entry()
+    }
+
+    fn tree_nav(&mut self, key: EditKey, shift: bool) -> bool {
+        self.tree_nav_key(key, shift)
+    }
+
+    fn tree_expand(&mut self, expand: bool, all: bool) -> bool {
+        self.tree_expand_selected(expand, all)
     }
 
     fn claims_key(&self, key: EditKey) -> bool {
@@ -12127,6 +12161,108 @@ mod agent_tab_tests {
         assert_eq!(
             made, 1,
             "an agent already next to the code is focused, not opened again"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tree_keyboard_tests {
+    use super::*;
+    use workspace::keymap::{Action, PROJECT_PANEL};
+
+    fn workspace_with(root: &std::path::Path) -> workspace::WorkspaceView {
+        let mut files = FilesView::scanned(root.to_path_buf());
+        files.open_path("b.rs");
+        workspace::WorkspaceView::new(workspace::Layout {
+            project: Some(workspace::ProjectInfo::default()),
+            files_view: Some(Box::new(files)),
+            ..Default::default()
+        })
+    }
+
+    fn selection(view: &workspace::WorkspaceView) -> Option<String> {
+        view.layout()
+            .files_view
+            .as_ref()
+            .and_then(|files| files.tree_selection())
+            .map(|(path, _)| path)
+    }
+
+    #[test]
+    fn the_tree_takes_the_keyboard_moves_opens_and_gives_it_back() {
+        let temp = tempfile::tempdir().expect("temp");
+        std::fs::create_dir_all(temp.path().join("a")).expect("dir");
+        std::fs::write(temp.path().join("a/x.rs"), "x\n").expect("file");
+        std::fs::write(temp.path().join("b.rs"), "b\n").expect("file");
+        let mut view = workspace_with(temp.path());
+        assert!(!view.key_contexts().contains(&PROJECT_PANEL));
+
+        assert!(view.run_action(Action::FocusFiles));
+        assert!(
+            view.key_contexts().contains(&PROJECT_PANEL),
+            "the tree has the keyboard"
+        );
+        assert_eq!(
+            selection(&view).as_deref(),
+            Some("b.rs"),
+            "it starts on the open file"
+        );
+
+        view.editor_key(EditKey::Up, false);
+        assert_eq!(selection(&view).as_deref(), Some("a"));
+        assert!(
+            view.run_action(Action::TreeExpand),
+            "Right opens the folder"
+        );
+        view.editor_key(EditKey::Down, false);
+        assert_eq!(selection(&view).as_deref(), Some("a/x.rs"));
+        assert!(
+            view.editor_text("q"),
+            "typing stays out of the file underneath"
+        );
+
+        assert!(
+            view.run_action(Action::TreeCollapse),
+            "Left goes up to the folder and closes it"
+        );
+        assert_eq!(selection(&view).as_deref(), Some("a"));
+        view.editor_key(EditKey::Down, false);
+        assert_eq!(selection(&view).as_deref(), Some("b.rs"));
+
+        assert!(
+            view.run_action(Action::FocusFiles),
+            "pressed again, back to the editor"
+        );
+        assert!(!view.key_contexts().contains(&PROJECT_PANEL));
+        view.run_action(Action::FocusFiles);
+        view.editor_key(EditKey::Escape, false);
+        assert!(
+            !view.key_contexts().contains(&PROJECT_PANEL),
+            "Escape gives it back too"
+        );
+    }
+
+    #[test]
+    fn tree_actions_reach_the_row_the_keyboard_is_on() {
+        let temp = tempfile::tempdir().expect("temp");
+        std::fs::write(temp.path().join("a.rs"), "a\n").expect("file");
+        std::fs::write(temp.path().join("b.rs"), "b\n").expect("file");
+        let mut view = workspace_with(temp.path());
+        view.run_action(Action::FocusFiles);
+        view.editor_key(EditKey::Up, false);
+        assert_eq!(selection(&view).as_deref(), Some("a.rs"));
+        assert!(view.run_action(Action::TreeOpen), "space opens it");
+        let open = view
+            .layout()
+            .files_view
+            .as_ref()
+            .and_then(|files| files.active_file_path());
+        assert_eq!(open, Some(temp.path().join("a.rs")));
+
+        assert!(view.run_action(Action::TreeRename));
+        assert!(
+            !view.key_contexts().contains(&PROJECT_PANEL),
+            "while the name is edited, keys go to the field"
         );
     }
 }

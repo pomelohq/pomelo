@@ -2669,7 +2669,13 @@ impl App {
         if !in_settings && !self.mains.contains_key(&id) {
             return false;
         }
-        let matched = self.keymap.match_keys(&self.pending_keys, &stroke);
+        let contexts = if in_settings {
+            vec![workspace::keymap::WORKSPACE]
+        } else {
+            self.with_workspace_view(id, |view, _| view.key_contexts())
+                .unwrap_or_else(|| vec![workspace::keymap::WORKSPACE])
+        };
+        let matched = self.keymap.match_in(&contexts, &self.pending_keys, &stroke);
         #[cfg(target_os = "macos")]
         key_equivalents::set_chord_pending(matched == KeyMatch::Pending);
         match matched {

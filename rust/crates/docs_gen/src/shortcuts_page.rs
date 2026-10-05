@@ -1,4 +1,7 @@
-use workspace::keymap::{Action, MACOS_DEFAULTS, OTHER_DEFAULTS};
+use workspace::keymap::{
+    Action, MACOS_CONTEXT_DEFAULTS, MACOS_DEFAULTS, OTHER_CONTEXT_DEFAULTS, OTHER_DEFAULTS,
+    WORKSPACE,
+};
 
 use crate::{code, prose};
 
@@ -13,19 +16,28 @@ and pane keys listed there are fixed and cannot be rebound.
 Pomelo runs on macOS today; the Windows / Linux column shows the keys those
 platforms will use.
 
-| Action | Name | macOS | Windows / Linux |
-| --- | --- | --- | --- |
+The context says where a binding works: `Workspace` everywhere in the window,
+`ProjectPanel` only while the file tree has the keyboard. A keymap file
+section binds a context with `\"context\": \"ProjectPanel\"`.
+
+| Action | Name | Context | macOS | Windows / Linux |
+| --- | --- | --- | --- | --- |
 ";
 
 pub fn render() -> String {
     let mut page = String::from(INTRO);
     for action in Action::ALL {
+        let context = MACOS_CONTEXT_DEFAULTS
+            .iter()
+            .find(|(_, _, bound)| *bound == action)
+            .map_or(WORKSPACE, |(context, _, _)| *context);
         page.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} |\n",
             prose(action.label()),
             code(&binding_target(action)),
-            keys(MACOS_DEFAULTS, action, ""),
-            keys(OTHER_DEFAULTS, action, " pc"),
+            code(context),
+            keys(MACOS_DEFAULTS, MACOS_CONTEXT_DEFAULTS, action, ""),
+            keys(OTHER_DEFAULTS, OTHER_CONTEXT_DEFAULTS, action, " pc"),
         ));
     }
     page
@@ -38,9 +50,16 @@ fn binding_target(action: Action) -> String {
     }
 }
 
-fn keys(table: &[(&str, Action)], action: Action, platform: &str) -> String {
+fn keys(
+    table: &[(&str, Action)],
+    contextual: &[(&str, &str, Action)],
+    action: Action,
+    platform: &str,
+) -> String {
     let bound: Vec<String> = table
         .iter()
+        .map(|(keys, bound)| (*keys, *bound))
+        .chain(contextual.iter().map(|(_, keys, bound)| (*keys, *bound)))
         .filter(|(_, bound_action)| *bound_action == action)
         .map(|(keys, _)| {
             let attribute = keys

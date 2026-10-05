@@ -657,6 +657,122 @@ impl FilesView {
         self.other_dirty = dirty;
     }
 
+    /// The tree takes or gives back the keyboard; taking it starts on the open file's row, else the first.
+    pub(crate) fn set_tree_focus(&mut self, focused: bool) {
+        self.tree_focused = focused;
+        if !focused {
+            return;
+        }
+        let rows = self.visible_rows();
+        let still_there = self
+            .tree_selected
+            .as_ref()
+            .is_some_and(|path| rows.iter().any(|row| &row.path == path));
+        if still_there {
+            return;
+        }
+        let open = self.active_path();
+        if let Some(open) = open.filter(|path| !path.is_empty()) {
+            self.reveal_row(&open);
+            self.tree_selected = Some(open);
+        } else {
+            self.tree_selected = rows.first().map(|row| row.path.clone());
+        }
+        self.flat_dirty = true;
+    }
+
+    /// The row the tree's keys act on, as (path, is a folder); the open file when nothing is picked.
+    pub(crate) fn selected_tree_entry(&self) -> Option<(String, bool)> {
+        let rows = self.visible_rows();
+        let path = self.tree_selected.clone().or_else(|| self.active_path())?;
+        let is_dir = rows
+            .iter()
+            .find(|row| row.path == path)
+            .map(|row| row.is_dir)
+            .unwrap_or_else(|| self.root.join(&path).is_dir());
+        Some((path, is_dir))
+    }
+
+    /// Up, down, Home and End over the visible rows; the list stops at its ends.
+    pub(crate) fn tree_nav_key(&mut self, key: EditKey, shift: bool) -> bool {
+        let Some(movement) = workspace::list_nav::nav_move(key, shift) else {
+            return false;
+        };
+        let rows = self.visible_rows();
+        let mut nav = workspace::list_nav::ListNav {
+            selected: self
+                .tree_selected
+                .as_ref()
+                .and_then(|path| rows.iter().position(|row| &row.path == path)),
+        };
+        nav.apply(movement, rows.len(), false, |_| true);
+        if let Some(index) = nav.selected {
+            self.tree_selected = rows.get(index).map(|row| row.path.clone());
+            self.scroll_row_into_view(index);
+        }
+        true
+    }
+
+    /// Right opens the picked folder (or steps into it when open); Left closes it, or from inside one closes
+    /// the folder it is in and moves there. With `all`, every folder opens or closes.
+    pub(crate) fn tree_expand_selected(&mut self, expand: bool, all: bool) -> bool {
+        if all {
+            self.set_expanded_within(None, expand);
+            self.flat_dirty = true;
+            if !expand {
+                self.tree_selected = self
+                    .tree_selected
+                    .as_ref()
+                    .map(|path| path.split('/').next().unwrap_or(path).to_string());
+            }
+            return true;
+        }
+        let Some((path, is_dir)) = self.selected_tree_entry() else {
+            return false;
+        };
+        if expand {
+            if !is_dir {
+                return false;
+            }
+            if self.expanded.insert(path.clone()) {
+                self.flat_dirty = true;
+            } else {
+                let rows = self.visible_rows();
+                let child = rows
+                    .iter()
+                    .position(|row| row.path == path)
+                    .and_then(|index| rows.get(index + 1))
+                    .filter(|row| row.path.starts_with(&format!("{path}/")));
+                if let Some(child) = child {
+                    self.tree_selected = Some(child.path.clone());
+                }
+            }
+        } else if is_dir && self.expanded.remove(&path) {
+            self.flat_dirty = true;
+        } else if let Some((parent, _)) = path.rsplit_once('/') {
+            self.expanded.remove(parent);
+            self.tree_selected = Some(parent.to_string());
+            self.flat_dirty = true;
+        }
+        if let Some(index) = self.tree_selected.as_ref().and_then(|selected| {
+            self.visible_rows()
+                .iter()
+                .position(|row| &row.path == selected)
+        }) {
+            self.scroll_row_into_view(index);
+        }
+        true
+    }
+
+    fn scroll_row_into_view(&mut self, index: usize) {
+        let top = 4.0 + index as f32 * ROW_H;
+        if top < self.scroll {
+            self.scroll = top;
+        } else if top + ROW_H > self.scroll + self.viewport_h {
+            self.scroll = (top + ROW_H - self.viewport_h).max(0.0);
+        }
+    }
+
     pub(crate) fn tree_edit_active(&self) -> bool {
         self.tree_ops.edit.is_some()
     }
