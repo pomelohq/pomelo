@@ -617,6 +617,8 @@ struct App {
     caret_last_toggle: Option<Instant>,
     /// Cmd+K was pressed; the next key completes a two-stroke editor binding.
     pending_cmd_k: bool,
+    /// The first key of a window chord pressed in a terminal, held back until the chord completes or not.
+    held_terminal_key: Option<terminal::Keystroke>,
     settings_dirty: bool,
     settings_cursor: (f64, f64),
     super_down: bool,
@@ -2680,7 +2682,12 @@ impl App {
         key_equivalents::set_chord_pending(matched == KeyMatch::Pending);
         match matched {
             KeyMatch::Action(action) => {
+                // A finished chord never falls through: its last key would otherwise reach a terminal.
+                let chord = !self.pending_keys.is_empty();
                 self.pending_keys.clear();
+                if chord {
+                    self.pending_cmd_k = false;
+                }
                 if in_settings {
                     if action == workspace::keymap::Action::OpenSettings {
                         self.toggle_settings(event_loop);
@@ -2688,7 +2695,7 @@ impl App {
                     }
                     return false;
                 }
-                self.run_app_action(id, action, event_loop)
+                self.run_app_action(id, action, event_loop) || chord
             }
             KeyMatch::Pending => {
                 self.pending_keys.push(stroke);
@@ -3669,8 +3676,20 @@ impl ApplicationHandler for App {
                     cmd: self.super_down,
                 };
                 if let Some(stroke) = keymap_keystroke(ke, modifiers) {
+                    let held = self.held_terminal_key.take();
                     if self.dispatch_keys(id, stroke, event_loop) {
                         return;
+                    }
+                    let in_terminal = self.mains.contains_key(&id)
+                        && self.with_workspace_view(id, |v, _| v.terminal_focused()) == Some(true);
+                    // A chord's first key (cmd-k) also means something to a terminal: send it only once
+                    // the next key shows it was not a chord.
+                    if in_terminal && !self.pending_keys.is_empty() {
+                        self.held_terminal_key = terminal_keystroke(ke, modifiers);
+                        return;
+                    }
+                    if let Some(held) = held.filter(|_| in_terminal) {
+                        self.with_workspace_view(id, |v, _| v.terminal_key(&held));
                     }
                 }
                 if esc_on_settings {

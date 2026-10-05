@@ -17,6 +17,13 @@ const IDS: u64 = 4;
 /// Lease and approval files are read at most this often while the tab paints.
 const REFRESH: Duration = Duration::from_secs(1);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeaseButton {
+    TakeOver,
+    Allow,
+    Deny,
+}
+
 #[derive(Clone, Default)]
 struct Snapshot {
     driver: Option<String>,
@@ -175,22 +182,34 @@ impl LeaseBar {
         let Some(offset) = id.checked_sub(self.base).filter(|offset| *offset < IDS) else {
             return false;
         };
+        let button = match offset {
+            TAKE_OVER => LeaseButton::TakeOver,
+            ALLOW => LeaseButton::Allow,
+            DENY => LeaseButton::Deny,
+            _ => return true,
+        };
+        self.press(button);
+        true
+    }
+
+    /// Takes the session over, or answers the tool call waiting on the person; false when the strip does not
+    /// offer it right now.
+    pub fn press(&mut self, button: LeaseButton) -> bool {
         let snapshot = self.snapshot();
         let Some(session) = snapshot.session.as_ref() else {
-            return true;
+            return false;
         };
-        let outcome = match offset {
-            TAKE_OVER => pom_agent::take_over(&self.state, &self.holders, session),
-            ALLOW | DENY => match &snapshot.pending {
-                Some(pending) => pom_agent::answer_as_person(
-                    &self.state,
-                    session,
-                    &pending.request,
-                    offset == ALLOW,
-                ),
-                None => Ok(()),
-            },
-            _ => Ok(()),
+        let outcome = match (button, &snapshot.pending) {
+            (LeaseButton::TakeOver, _) if snapshot.driver.is_some() => {
+                pom_agent::take_over(&self.state, &self.holders, session)
+            }
+            (LeaseButton::Allow | LeaseButton::Deny, Some(pending)) => pom_agent::answer_as_person(
+                &self.state,
+                session,
+                &pending.request,
+                button == LeaseButton::Allow,
+            ),
+            _ => return false,
         };
         if let Err(error) = outcome {
             eprintln!("agent tab: {error}");
@@ -241,6 +260,27 @@ mod tests {
         .expect("lease");
         bar.forget();
         assert!(bar.render(600.0).is_some());
+        assert!(
+            !bar.press(LeaseButton::Allow),
+            "no tool call waits, so the key does nothing"
+        );
+        assert!(bar.press(LeaseButton::TakeOver), "the key takes over");
+        assert!(bar.render(600.0).is_none(), "taken over by the key");
+        assert!(
+            !bar.press(LeaseButton::TakeOver),
+            "nothing left to take over"
+        );
+        set_lease(
+            &state,
+            &holders,
+            "myproject",
+            "feat-login",
+            holder,
+            "reviewer",
+            Lease::for_caller(&Caller::Operator),
+        )
+        .expect("lease");
+        bar.forget();
         let base = bar.base;
         assert!(bar.click(base + TAKE_OVER));
         assert!(bar.render(600.0).is_none(), "taken over");

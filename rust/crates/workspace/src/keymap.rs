@@ -99,10 +99,17 @@ pub enum Action {
     DatabaseExpand,
     DatabaseCopyUrl,
     DatabaseNewConsole,
+    NewSideAgent,
+    AgentTakeOver,
+    AgentAllow,
+    AgentDeny,
+    StopAgent,
+    RunNotificationAction,
+    DismissNotification,
 }
 
 impl Action {
-    pub const ALL: [Action; 103] = [
+    pub const ALL: [Action; 110] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -206,6 +213,13 @@ impl Action {
         Action::DatabaseExpand,
         Action::DatabaseCopyUrl,
         Action::DatabaseNewConsole,
+        Action::NewSideAgent,
+        Action::AgentTakeOver,
+        Action::AgentAllow,
+        Action::AgentDeny,
+        Action::StopAgent,
+        Action::RunNotificationAction,
+        Action::DismissNotification,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -308,6 +322,13 @@ impl Action {
             Action::DatabaseExpand => "database_panel::ExpandSelectedEntry",
             Action::DatabaseCopyUrl => "database_panel::CopyUrl",
             Action::DatabaseNewConsole => "database_panel::NewConsole",
+            Action::NewSideAgent => "agent::NewSideAgent",
+            Action::AgentTakeOver => "agent::TakeOver",
+            Action::AgentAllow => "agent::Allow",
+            Action::AgentDeny => "agent::Deny",
+            Action::StopAgent => "agent::StopAgent",
+            Action::RunNotificationAction => "notification::RunAction",
+            Action::DismissNotification => "notification::Dismiss",
         }
     }
 
@@ -419,6 +440,13 @@ impl Action {
             Action::DatabaseExpand => "Database: Expand",
             Action::DatabaseCopyUrl => "Database: Copy Connection URL",
             Action::DatabaseNewConsole => "Database: New Console",
+            Action::NewSideAgent => "Agent: New Side Agent",
+            Action::AgentTakeOver => "Agent: Take Over",
+            Action::AgentAllow => "Agent: Allow Pending Tool",
+            Action::AgentDeny => "Agent: Deny Pending Tool",
+            Action::StopAgent => "Agent: Stop",
+            Action::RunNotificationAction => "Notification: Run Action",
+            Action::DismissNotification => "Notification: Dismiss",
         }
     }
 
@@ -625,6 +653,13 @@ pub const MACOS_DEFAULTS: &[(&str, Action)] = &[
     ("cmd-shift-v", Action::MarkdownPreview),
     ("cmd-k v", Action::MarkdownPreviewToTheSide),
     ("cmd-k m", Action::SelectLanguage),
+    ("cmd-k a", Action::NewSideAgent),
+    ("cmd-k o", Action::AgentTakeOver),
+    ("cmd-k y", Action::AgentAllow),
+    ("cmd-k n", Action::AgentDeny),
+    ("cmd-k .", Action::StopAgent),
+    ("cmd-k enter", Action::RunNotificationAction),
+    ("cmd-k escape", Action::DismissNotification),
     ("cmd-shift-u", Action::OpenAgentUsage),
     ("cmd-1", Action::ActivateTab(0)),
     ("cmd-2", Action::ActivateTab(1)),
@@ -676,6 +711,13 @@ pub const OTHER_DEFAULTS: &[(&str, Action)] = &[
     ("ctrl-shift-v", Action::MarkdownPreview),
     ("ctrl-k v", Action::MarkdownPreviewToTheSide),
     ("ctrl-k m", Action::SelectLanguage),
+    ("ctrl-k a", Action::NewSideAgent),
+    ("ctrl-k o", Action::AgentTakeOver),
+    ("ctrl-k y", Action::AgentAllow),
+    ("ctrl-k n", Action::AgentDeny),
+    ("ctrl-k .", Action::StopAgent),
+    ("ctrl-k enter", Action::RunNotificationAction),
+    ("ctrl-k escape", Action::DismissNotification),
     ("ctrl-shift-u", Action::OpenAgentUsage),
     ("ctrl-1", Action::ActivateTab(0)),
     ("ctrl-2", Action::ActivateTab(1)),

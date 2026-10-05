@@ -1316,6 +1316,10 @@ pub trait Item: 'static {
     fn toolbar_click(&mut self, _id: u64) -> bool {
         false
     }
+    /// A keymap action aimed at the item (an agent tab's take over, allow, deny); false when it does not apply.
+    fn item_action(&mut self, _action: crate::keymap::Action) -> bool {
+        false
+    }
     /// The menu a toolbar click asked to open under the button it hit, once.
     fn take_menu_request(&mut self) -> Option<Vec<MenuItem>> {
         None

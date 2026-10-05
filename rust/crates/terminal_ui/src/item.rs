@@ -885,6 +885,17 @@ impl Item for TerminalItem {
         }
     }
 
+    fn item_action(&mut self, action: workspace::keymap::Action) -> bool {
+        use workspace::keymap::Action;
+        let button = match action {
+            Action::AgentTakeOver => crate::lease_bar::LeaseButton::TakeOver,
+            Action::AgentAllow => crate::lease_bar::LeaseButton::Allow,
+            Action::AgentDeny => crate::lease_bar::LeaseButton::Deny,
+            _ => return false,
+        };
+        self.lease_bar.as_mut().is_some_and(|bar| bar.press(button))
+    }
+
     fn toolbar_click(&mut self, id: u64) -> bool {
         if self.lease_bar.as_mut().is_some_and(|bar| bar.click(id)) {
             return true;
