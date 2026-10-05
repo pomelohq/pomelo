@@ -213,6 +213,9 @@ fn row_base(panel: &DatabasePanel, index: usize, row: &Row) -> Div {
         .on_click(id);
     if panel.selected.as_deref() == Some(row.key().as_str()) {
         line = line.bg(colors.element_selected);
+        if panel.keyboard {
+            line = line.border(1.0, colors.panel_focused_border);
+        }
     } else if panel
         .hover
         .is_some_and(|hover| hover == id || hover == id + CHEVRON)

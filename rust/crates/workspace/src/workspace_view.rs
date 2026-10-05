@@ -681,6 +681,20 @@ impl WorkspaceView {
             | Action::GitChangesTab
             | Action::GitRemoteTab
             | Action::GitHistoryTab => return self.run_panel_action(PaneKind::Git, action),
+            Action::ServicesOpen
+            | Action::ServicesToggleRunning
+            | Action::ServicesRestart
+            | Action::ServicesOpenInBrowser
+            | Action::ServicesLogs
+            | Action::ServicesCollapse
+            | Action::ServicesExpand => return self.run_panel_action(PaneKind::Services, action),
+            Action::DatabaseOpen
+            | Action::DatabaseCollapse
+            | Action::DatabaseExpand
+            | Action::DatabaseCopyUrl
+            | Action::DatabaseNewConsole => {
+                return self.run_panel_action(PaneKind::Database, action)
+            }
             Action::ToggleAgent => self.header_click(AGENT_TOGGLE),
             Action::ToggleTerminal => self.toggle_terminal(),
             Action::NewTerminal => self.open_terminal_at(None),
