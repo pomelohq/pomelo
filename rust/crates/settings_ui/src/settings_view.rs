@@ -98,6 +98,11 @@ pub struct SettingsView {
     popover_rect: Option<Rect>,
     scroll_accum: f32,
     hits: Vec<(Rect, u64)>,
+    /// The page control the keyboard is on (Tab moves it); `None` while the keys move between pages.
+    key_focus: Option<u64>,
+    /// The page's controls in reading order, where they were last laid out, and the page's visible area.
+    page_controls: Vec<(Rect, u64)>,
+    page_clip: Rect,
     /// Last laid-out viewport (logical px), cached each `build` so input methods invoked outside `render_frame`
     /// (scroll/key, reached via `entity.update`) can size popovers and clamp scroll without a `Window`.
     viewport: (f32, f32),
@@ -139,6 +144,9 @@ impl SettingsView {
             popover_rect: None,
             scroll_accum: 0.0,
             hits: Vec::new(),
+            key_focus: None,
+            page_controls: Vec::new(),
+            page_clip: Rect::new(0.0, 0.0, 0.0, 0.0, ui::Rgba::TRANSPARENT),
             viewport: (0.0, 0.0),
             pending: SideEffects::default(),
             jira_session: None,
@@ -550,6 +558,20 @@ impl SettingsView {
             self.page_scroll,
         );
         self.page_total_h = total_h;
+        self.page_clip = Rect::new(clip_x, clip_y, clip_w, clip_h, ui::Rgba::TRANSPARENT);
+        self.page_controls = Vec::new();
+        for (rect, id) in page.hits.iter().copied() {
+            let known = self.page_controls.iter().any(|(_, seen)| *seen == id);
+            if settings_ui::is_keyboard_control(id) && !known {
+                self.page_controls.push((rect, id));
+            }
+        }
+        if self
+            .key_focus
+            .is_some_and(|id| !self.page_controls.iter().any(|(_, each)| *each == id))
+        {
+            self.key_focus = None;
+        }
 
         let mut offsets: Vec<(u64, f32)> = page
             .hits
@@ -617,6 +639,20 @@ impl SettingsView {
         });
 
         let mut overlay = chrome;
+        if let Some(ring) = self.key_focus.and_then(|id| {
+            self.page_controls
+                .iter()
+                .find(|(_, each)| *each == id)
+                .map(|(rect, _)| *rect)
+        }) {
+            let focus: ui::Node = ui::div()
+                .w_px(ring.w)
+                .h_px(ring.h)
+                .rounded(4.0)
+                .border(1.0, ui::theme().panel_focused_border)
+                .into();
+            overlay.rects.extend(ui::render(&focus, ring).rects);
+        }
         if let Some(bar) = settings_ui::content_scrollbar(
             (clip_x, clip_y, clip_w, clip_h),
             self.page_total_h,
@@ -796,6 +832,12 @@ impl SettingsView {
     /// Type into whichever field is focused (popover filter, numeric edit, or the sidebar search). Returns true
     /// if the buffer changed.
     pub fn key_text(&mut self, text: &str) -> bool {
+        if text == " " && self.popover.is_none() && self.editing.is_none() {
+            if let Some(id) = self.key_focus {
+                self.click(id);
+                return true;
+            }
+        }
         if self.popover.is_some() {
             let printable: String = text.chars().filter(|c| !c.is_control()).collect();
             if printable.is_empty() {
@@ -852,6 +894,9 @@ impl SettingsView {
     /// Escape: close the popover, cancel an edit, or clear the search (in that priority). Returns true if it
     /// did anything.
     pub fn key_escape(&mut self) -> bool {
+        if self.popover.is_none() && self.editing.is_none() && self.key_focus.take().is_some() {
+            return true;
+        }
         if self.popover.is_some() {
             self.close_popover();
             true
@@ -865,13 +910,153 @@ impl SettingsView {
         }
     }
 
-    /// Enter: commit an in-progress numeric edit.
+    /// Enter: commit an in-progress numeric edit, pick the highlighted dropdown item, or press the control the
+    /// keyboard is on.
     pub fn key_enter(&mut self) -> bool {
         if self.editing.is_some() {
             self.commit_edit();
             true
+        } else if let Some(item) = self.popover.and(self.popover_hover) {
+            self.click(item);
+            true
+        } else if let Some(id) = self.key_focus {
+            self.click(id);
+            true
         } else {
             false
+        }
+    }
+
+    /// Up or down: through a dropdown's items, the page's controls, or else the pages themselves.
+    pub fn key_vertical(&mut self, down: bool) -> bool {
+        if self.editing.is_some() {
+            return false;
+        }
+        if let Some(cid) = self.popover {
+            return self.popover_step(cid, down);
+        }
+        if self.key_focus.is_some() {
+            return self.key_tab(!down);
+        }
+        let next = if down {
+            (self.selected + 1).min(settings_ui::CATEGORY_COUNT - 1)
+        } else {
+            self.selected.saturating_sub(1)
+        };
+        if next == self.selected {
+            return false;
+        }
+        self.click(next as u64);
+        true
+    }
+
+    /// Home or End: the first or last page (or dropdown item).
+    pub fn key_home_end(&mut self, end: bool) -> bool {
+        if self.editing.is_some() || self.key_focus.is_some() {
+            return false;
+        }
+        if let Some(cid) = self.popover {
+            let items = settings_ui::control_items(cid, &self.fonts);
+            let matches = settings_ui::filter_indices(&items, &self.popover_query);
+            let Some(index) = (if end { matches.last() } else { matches.first() }).copied() else {
+                return false;
+            };
+            self.popover_hover = Some(settings_ui::POPOVER_BASE + index as u64);
+            self.popover_scroll = if end {
+                settings_ui::popover_max_scroll_for(matches.len(), self.page_clip, self.viewport.1)
+            } else {
+                0
+            };
+            return true;
+        }
+        let page = if end {
+            settings_ui::CATEGORY_COUNT - 1
+        } else {
+            0
+        };
+        self.click(page as u64);
+        true
+    }
+
+    /// Tab: into the page's controls and on to the next (shift: the previous); off either end, back to the pages.
+    pub fn key_tab(&mut self, backward: bool) -> bool {
+        if self.editing.is_some() || self.popover.is_some() {
+            return false;
+        }
+        let at = self
+            .key_focus
+            .and_then(|id| self.page_controls.iter().position(|(_, each)| *each == id));
+        let next = match (at, backward) {
+            (None, false) => Some(0),
+            (None, true) => self.page_controls.len().checked_sub(1),
+            (Some(at), false) => Some(at + 1).filter(|next| *next < self.page_controls.len()),
+            (Some(at), true) => at.checked_sub(1),
+        };
+        self.key_focus = next
+            .and_then(|index| self.page_controls.get(index))
+            .map(|(_, id)| *id);
+        self.scroll_to_key_focus();
+        true
+    }
+
+    /// Left: back to moving between pages; right: into the page.
+    pub fn key_horizontal(&mut self, right: bool) -> bool {
+        if self.editing.is_some() || self.popover.is_some() {
+            return false;
+        }
+        match (right, self.key_focus) {
+            (true, None) => self.key_tab(false),
+            (false, Some(_)) => {
+                self.key_focus = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn popover_step(&mut self, cid: u64, down: bool) -> bool {
+        let items = settings_ui::control_items(cid, &self.fonts);
+        let matches = settings_ui::filter_indices(&items, &self.popover_query);
+        if matches.is_empty() {
+            return false;
+        }
+        let at = self.popover_hover.and_then(|id| {
+            matches
+                .iter()
+                .position(|index| settings_ui::POPOVER_BASE + *index as u64 == id)
+        });
+        let next = match (at, down) {
+            (None, _) => 0,
+            (Some(at), true) => (at + 1).min(matches.len() - 1),
+            (Some(at), false) => at.saturating_sub(1),
+        };
+        let Some(index) = matches.get(next) else {
+            return false;
+        };
+        self.popover_hover = Some(settings_ui::POPOVER_BASE + *index as u64);
+        let shown = settings_ui::popover_visible_cap(self.page_clip, self.viewport.1);
+        if next < self.popover_scroll {
+            self.popover_scroll = next;
+        } else if next >= self.popover_scroll + shown {
+            self.popover_scroll = next + 1 - shown;
+        }
+        true
+    }
+
+    fn scroll_to_key_focus(&mut self) {
+        let Some(rect) = self.key_focus.and_then(|id| {
+            self.page_controls
+                .iter()
+                .find(|(_, each)| *each == id)
+                .map(|(rect, _)| *rect)
+        }) else {
+            return;
+        };
+        let clip = self.page_clip;
+        if rect.y < clip.y {
+            self.page_scroll = (self.page_scroll - (clip.y - rect.y)).max(0.0);
+        } else if rect.y + rect.h > clip.y + clip.h {
+            self.page_scroll += rect.y + rect.h - (clip.y + clip.h);
         }
     }
 
@@ -1430,5 +1615,51 @@ mod tests {
         );
         view.select_category(settings_ui::KEYMAP);
         assert_eq!(view.selected, settings_ui::KEYMAP);
+    }
+
+    #[test]
+    fn the_window_works_from_the_keyboard() {
+        let mut view = SettingsView::new(Settings::default());
+        let start = view.selected;
+        assert!(view.key_vertical(true));
+        assert_eq!(view.selected, start + 1, "down opens the next page");
+        assert!(view.key_vertical(false));
+        assert_eq!(view.selected, start);
+        assert!(view.key_home_end(true));
+        assert_eq!(view.selected, settings_ui::CATEGORY_COUNT - 1);
+        assert!(view.key_home_end(false));
+        assert_eq!(view.selected, 0);
+
+        let anywhere = Rect::new(0.0, 0.0, 10.0, 10.0, ui::Rgba::TRANSPARENT);
+        view.page_controls = vec![
+            (anywhere, settings_ui::CTRL_THEME),
+            (anywhere, settings_ui::CTRL_START_AT_LOGIN),
+        ];
+        assert!(view.key_tab(false));
+        assert_eq!(view.key_focus, Some(settings_ui::CTRL_THEME));
+        assert!(view.key_enter(), "enter opens the dropdown");
+        assert_eq!(view.popover, Some(settings_ui::CTRL_THEME));
+        let before = view.popover_hover;
+        assert!(view.key_vertical(true));
+        assert_ne!(view.popover_hover, before, "down moves through its items");
+        let picked = view.popover_hover;
+        assert!(view.key_enter());
+        assert!(
+            view.popover.is_none() && picked.is_some(),
+            "enter picks the item"
+        );
+
+        assert!(view.key_tab(false));
+        assert_eq!(view.key_focus, Some(settings_ui::CTRL_START_AT_LOGIN));
+        assert!(view.key_text(" "), "space presses the control");
+        assert!(view.take_side_effects().toggle_login_item);
+        assert!(view.key_horizontal(false), "left goes back to the pages");
+        assert_eq!(view.key_focus, None);
+        assert!(view.key_tab(true));
+        assert!(
+            view.key_escape(),
+            "escape leaves the controls before closing anything"
+        );
+        assert_eq!(view.key_focus, None);
     }
 }
