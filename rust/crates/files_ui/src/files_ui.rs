@@ -4987,6 +4987,30 @@ impl Item for FileItem {
         if self.read_only && !reads_only(key) {
             return;
         }
+        if vim_mode() && self.buffer.is_some() {
+            if self.vim.mode() == vim::Mode::Insert {
+                if key == EditKey::Enter {
+                    self.vim.note_typed("\n");
+                }
+            } else {
+                // Normal and Visual mode read these keys as vim's own, never as typing.
+                let command = match key {
+                    EditKey::Enter => Some("j"),
+                    EditKey::Backspace => Some("h"),
+                    EditKey::Delete => Some("x"),
+                    EditKey::Tab | EditKey::Backtab => Some(""),
+                    _ => None,
+                };
+                if let Some(command) = command {
+                    if let Some(b) = self.buffer.as_mut() {
+                        self.vim.text(command, b);
+                    }
+                    self.refresh();
+                    self.ensure_cursor_visible();
+                    return;
+                }
+            }
+        }
         if self.footer_key(key, shift) {
             return;
         }
@@ -9785,6 +9809,15 @@ mod scroll_tests {
         assert_eq!(
             item.buffer.as_ref().map(|b| b.text()).as_deref(),
             Some("zbc\n")
+        );
+        item.input_text("v");
+        assert_eq!(item.mode_label(), Some("-- VISUAL --"));
+        item.input_text("ly");
+        item.input_key(EditKey::Enter, false);
+        assert_eq!(
+            item.buffer.as_ref().map(|b| b.text()).as_deref(),
+            Some("zbc\n"),
+            "Enter moves, never types"
         );
         set_vim_mode(false);
         assert_eq!(item.mode_label(), None);
