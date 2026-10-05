@@ -2060,6 +2060,23 @@ pub trait FunctionView: ItemInput + 'static {
     fn on_click(&mut self, _id: u64) -> bool {
         false
     }
+    /// Whether the file tree has the keyboard.
+    fn tree_focused(&self) -> bool {
+        false
+    }
+    fn set_tree_focused(&mut self, _focused: bool) {}
+    /// The tree row the keyboard acts on, as (path relative to the root, is a folder).
+    fn tree_selection(&self) -> Option<(String, bool)> {
+        None
+    }
+    /// A list key in the focused tree; false when it is not one.
+    fn tree_nav(&mut self, _key: EditKey, _shift: bool) -> bool {
+        false
+    }
+    /// Opens (`expand`) or closes the picked folder, or every folder with `all`.
+    fn tree_expand(&mut self, _expand: bool, _all: bool) -> bool {
+        false
+    }
     fn on_scroll(&mut self, _dx: f32, _dy: f32, _vw: f32, _vh: f32) -> bool {
         false
     }

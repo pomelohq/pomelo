@@ -46,10 +46,27 @@ pub enum Action {
     ActivateLastTab,
     ActivatePreviousTab,
     ActivateNextTab,
+    TreeOpen,
+    TreeRename,
+    TreeNewFile,
+    TreeNewDirectory,
+    TreeCut,
+    TreeCopy,
+    TreePaste,
+    TreeDuplicate,
+    TreeCopyPath,
+    TreeCopyRelativePath,
+    TreeTrash,
+    TreeDelete,
+    TreeRevealInFinder,
+    TreeCollapse,
+    TreeExpand,
+    TreeCollapseAll,
+    TreeExpandAll,
 }
 
 impl Action {
-    pub const ALL: [Action; 50] = [
+    pub const ALL: [Action; 67] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -100,6 +117,23 @@ impl Action {
         Action::ActivateLastTab,
         Action::ActivatePreviousTab,
         Action::ActivateNextTab,
+        Action::TreeOpen,
+        Action::TreeRename,
+        Action::TreeNewFile,
+        Action::TreeNewDirectory,
+        Action::TreeCut,
+        Action::TreeCopy,
+        Action::TreePaste,
+        Action::TreeDuplicate,
+        Action::TreeCopyPath,
+        Action::TreeCopyRelativePath,
+        Action::TreeTrash,
+        Action::TreeDelete,
+        Action::TreeRevealInFinder,
+        Action::TreeCollapse,
+        Action::TreeExpand,
+        Action::TreeCollapseAll,
+        Action::TreeExpandAll,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -147,6 +181,23 @@ impl Action {
             Action::ActivateLastTab => "pane::ActivateLastItem",
             Action::ActivatePreviousTab => "pane::ActivatePreviousItem",
             Action::ActivateNextTab => "pane::ActivateNextItem",
+            Action::TreeOpen => "project_panel::Open",
+            Action::TreeRename => "project_panel::Rename",
+            Action::TreeNewFile => "project_panel::NewFile",
+            Action::TreeNewDirectory => "project_panel::NewDirectory",
+            Action::TreeCut => "project_panel::Cut",
+            Action::TreeCopy => "project_panel::Copy",
+            Action::TreePaste => "project_panel::Paste",
+            Action::TreeDuplicate => "project_panel::Duplicate",
+            Action::TreeCopyPath => "project_panel::CopyPath",
+            Action::TreeCopyRelativePath => "project_panel::CopyRelativePath",
+            Action::TreeTrash => "project_panel::Trash",
+            Action::TreeDelete => "project_panel::Delete",
+            Action::TreeRevealInFinder => "project_panel::RevealInFileManager",
+            Action::TreeCollapse => "project_panel::CollapseSelectedEntry",
+            Action::TreeExpand => "project_panel::ExpandSelectedEntry",
+            Action::TreeCollapseAll => "project_panel::CollapseAllEntries",
+            Action::TreeExpandAll => "project_panel::ExpandAllEntries",
         }
     }
 
@@ -205,6 +256,23 @@ impl Action {
             Action::ActivateLastTab => "Go to Last Tab",
             Action::ActivatePreviousTab => "Previous Tab",
             Action::ActivateNextTab => "Next Tab",
+            Action::TreeOpen => "Files: Open",
+            Action::TreeRename => "Files: Rename",
+            Action::TreeNewFile => "Files: New File",
+            Action::TreeNewDirectory => "Files: New Folder",
+            Action::TreeCut => "Files: Cut",
+            Action::TreeCopy => "Files: Copy",
+            Action::TreePaste => "Files: Paste",
+            Action::TreeDuplicate => "Files: Duplicate",
+            Action::TreeCopyPath => "Files: Copy Path",
+            Action::TreeCopyRelativePath => "Files: Copy Relative Path",
+            Action::TreeTrash => "Files: Move to Trash",
+            Action::TreeDelete => "Files: Delete",
+            Action::TreeRevealInFinder => "Files: Reveal in Finder",
+            Action::TreeCollapse => "Files: Collapse",
+            Action::TreeExpand => "Files: Expand",
+            Action::TreeCollapseAll => "Files: Collapse All",
+            Action::TreeExpandAll => "Files: Expand All",
         }
     }
 
@@ -354,10 +422,17 @@ pub enum KeyMatch {
     None,
 }
 
+/// Where a binding applies: the whole window, or only while one part of it has the keyboard.
+pub const WORKSPACE: &str = "Workspace";
+/// The file tree has the keyboard.
+pub const PROJECT_PANEL: &str = "ProjectPanel";
+/// The contexts a keymap file may bind; others (the editor's own) are not the window's.
+pub const CONTEXTS: &[&str] = &[WORKSPACE, PROJECT_PANEL];
+
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {
     /// Later entries win, so the user's file (read after the defaults) overrides them; `None` unbinds.
-    bindings: Vec<(Vec<Keystroke>, Option<Action>)>,
+    bindings: Vec<(&'static str, Vec<Keystroke>, Option<Action>)>,
 }
 
 /// macOS binds window commands on Command; `ctrl-`` stays because `cmd-`` cycles the app's windows.
@@ -452,6 +527,71 @@ pub const OTHER_DEFAULTS: &[(&str, Action)] = &[
     ("ctrl-shift-]", Action::ActivateNextTab),
 ];
 
+/// Bindings that apply only while one part of the window has the keyboard, as `(context, keys, action)`.
+pub const MACOS_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
+    (PROJECT_PANEL, "space", Action::TreeOpen),
+    (PROJECT_PANEL, "enter", Action::TreeRename),
+    (PROJECT_PANEL, "f2", Action::TreeRename),
+    (PROJECT_PANEL, "cmd-n", Action::TreeNewFile),
+    (PROJECT_PANEL, "cmd-alt-n", Action::TreeNewDirectory),
+    (PROJECT_PANEL, "cmd-x", Action::TreeCut),
+    (PROJECT_PANEL, "cmd-c", Action::TreeCopy),
+    (PROJECT_PANEL, "cmd-v", Action::TreePaste),
+    (PROJECT_PANEL, "cmd-d", Action::TreeDuplicate),
+    (PROJECT_PANEL, "cmd-alt-c", Action::TreeCopyPath),
+    (
+        PROJECT_PANEL,
+        "cmd-alt-shift-c",
+        Action::TreeCopyRelativePath,
+    ),
+    (PROJECT_PANEL, "backspace", Action::TreeTrash),
+    (PROJECT_PANEL, "delete", Action::TreeTrash),
+    (PROJECT_PANEL, "cmd-backspace", Action::TreeTrash),
+    (PROJECT_PANEL, "cmd-alt-backspace", Action::TreeDelete),
+    (PROJECT_PANEL, "cmd-delete", Action::TreeDelete),
+    (PROJECT_PANEL, "cmd-alt-r", Action::TreeRevealInFinder),
+    (PROJECT_PANEL, "left", Action::TreeCollapse),
+    (PROJECT_PANEL, "right", Action::TreeExpand),
+    (PROJECT_PANEL, "cmd-left", Action::TreeCollapseAll),
+    (PROJECT_PANEL, "cmd-right", Action::TreeExpandAll),
+];
+
+pub const OTHER_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
+    (PROJECT_PANEL, "space", Action::TreeOpen),
+    (PROJECT_PANEL, "enter", Action::TreeRename),
+    (PROJECT_PANEL, "f2", Action::TreeRename),
+    (PROJECT_PANEL, "ctrl-n", Action::TreeNewFile),
+    (PROJECT_PANEL, "ctrl-alt-n", Action::TreeNewDirectory),
+    (PROJECT_PANEL, "ctrl-x", Action::TreeCut),
+    (PROJECT_PANEL, "ctrl-c", Action::TreeCopy),
+    (PROJECT_PANEL, "ctrl-v", Action::TreePaste),
+    (PROJECT_PANEL, "ctrl-d", Action::TreeDuplicate),
+    (PROJECT_PANEL, "ctrl-alt-c", Action::TreeCopyPath),
+    (
+        PROJECT_PANEL,
+        "ctrl-alt-shift-c",
+        Action::TreeCopyRelativePath,
+    ),
+    (PROJECT_PANEL, "backspace", Action::TreeTrash),
+    (PROJECT_PANEL, "delete", Action::TreeTrash),
+    (PROJECT_PANEL, "ctrl-backspace", Action::TreeTrash),
+    (PROJECT_PANEL, "ctrl-alt-backspace", Action::TreeDelete),
+    (PROJECT_PANEL, "ctrl-delete", Action::TreeDelete),
+    (PROJECT_PANEL, "ctrl-alt-r", Action::TreeRevealInFinder),
+    (PROJECT_PANEL, "left", Action::TreeCollapse),
+    (PROJECT_PANEL, "right", Action::TreeExpand),
+    (PROJECT_PANEL, "ctrl-left", Action::TreeCollapseAll),
+    (PROJECT_PANEL, "ctrl-right", Action::TreeExpandAll),
+];
+
+fn platform_context_defaults() -> &'static [(&'static str, &'static str, Action)] {
+    if cfg!(target_os = "macos") {
+        MACOS_CONTEXT_DEFAULTS
+    } else {
+        OTHER_CONTEXT_DEFAULTS
+    }
+}
+
 fn platform_defaults() -> &'static [(&'static str, Action)] {
     if cfg!(target_os = "macos") {
         MACOS_DEFAULTS
@@ -470,11 +610,14 @@ fn sequence(text: &str) -> Option<Vec<Keystroke>> {
 
 impl Keymap {
     pub fn defaults() -> Keymap {
+        let window = platform_defaults()
+            .iter()
+            .filter_map(|(keys, action)| Some((WORKSPACE, sequence(keys)?, Some(*action))));
+        let contextual = platform_context_defaults()
+            .iter()
+            .filter_map(|(context, keys, action)| Some((*context, sequence(keys)?, Some(*action))));
         Keymap {
-            bindings: platform_defaults()
-                .iter()
-                .filter_map(|(keys, action)| Some((sequence(keys)?, Some(*action))))
-                .collect(),
+            bindings: window.chain(contextual).collect(),
         }
     }
 
@@ -505,13 +648,13 @@ impl Keymap {
             return vec!["keymap.json: expected a list of sections".into()];
         };
         for section in sections {
-            let context = section
+            let named = section
                 .get("context")
                 .and_then(|context| context.as_str())
-                .unwrap_or("Workspace");
-            if context != "Workspace" {
+                .unwrap_or(WORKSPACE);
+            let Some(context) = CONTEXTS.iter().find(|known| **known == named).copied() else {
                 continue;
-            }
+            };
             let Some(bindings) = section.get("bindings").and_then(|b| b.as_object()) else {
                 continue;
             };
@@ -527,21 +670,42 @@ impl Keymap {
                         continue;
                     }
                 };
-                self.bindings.push((strokes, action));
+                self.bindings.push((context, strokes, action));
             }
         }
         problems
     }
 
-    /// What `pending` then `stroke` does.
+    /// What `pending` then `stroke` does in the window as a whole.
     pub fn match_keys(&self, pending: &[Keystroke], stroke: &Keystroke) -> KeyMatch {
+        self.match_in(&[WORKSPACE], pending, stroke)
+    }
+
+    /// What `pending` then `stroke` does where `contexts` (broadest first) have the keyboard: the most specific
+    /// context that binds the keys wins.
+    pub fn match_in(
+        &self,
+        contexts: &[&str],
+        pending: &[Keystroke],
+        stroke: &Keystroke,
+    ) -> KeyMatch {
         let mut typed: Vec<Keystroke> = pending.to_vec();
         typed.push(stroke.normalized());
-        if let Some((_, action)) = self.bindings.iter().rev().find(|(keys, _)| *keys == typed) {
-            return action.map_or(KeyMatch::None, KeyMatch::Action);
+        for context in contexts.iter().rev() {
+            if let Some((_, _, action)) = self
+                .bindings
+                .iter()
+                .rev()
+                .find(|(bound, keys, _)| bound == context && *keys == typed)
+            {
+                return action.map_or(KeyMatch::None, KeyMatch::Action);
+            }
         }
-        let longer = self.bindings.iter().rev().any(|(keys, action)| {
-            action.is_some() && keys.len() > typed.len() && keys[..typed.len()] == typed[..]
+        let longer = self.bindings.iter().rev().any(|(bound, keys, action)| {
+            contexts.contains(bound)
+                && action.is_some()
+                && keys.len() > typed.len()
+                && keys[..typed.len()] == typed[..]
         });
         if longer {
             KeyMatch::Pending
@@ -552,9 +716,9 @@ impl Keymap {
 
     /// The binding that currently runs `action`, as text (`cmd-k cmd-s`).
     pub fn binding_for(&self, action: Action) -> Option<String> {
-        let mut rebound: Vec<&Vec<Keystroke>> = Vec::new();
-        for (keys, bound) in self.bindings.iter().rev() {
-            if rebound.contains(&keys) {
+        let mut rebound: Vec<(&str, &Vec<Keystroke>)> = Vec::new();
+        for (context, keys, bound) in self.bindings.iter().rev() {
+            if rebound.contains(&(*context, keys)) {
                 continue;
             }
             if *bound == Some(action) {
@@ -565,7 +729,7 @@ impl Keymap {
                         .join(" "),
                 );
             }
-            rebound.push(keys);
+            rebound.push((*context, keys));
         }
         None
     }
@@ -684,6 +848,58 @@ mod tests {
             actions
         };
         assert_eq!(actions(MACOS_DEFAULTS), actions(OTHER_DEFAULTS));
+    }
+
+    #[test]
+    fn a_panel_binding_wins_only_while_the_panel_has_the_keyboard() {
+        let mut keymap = Keymap::defaults();
+        let new_file = if cfg!(target_os = "macos") {
+            "cmd-n"
+        } else {
+            "ctrl-n"
+        };
+        assert_eq!(
+            keymap.match_keys(&[], &stroke(new_file)),
+            KeyMatch::Action(Action::NewWorkspace)
+        );
+        assert_eq!(
+            keymap.match_in(&[WORKSPACE, PROJECT_PANEL], &[], &stroke(new_file)),
+            KeyMatch::Action(Action::TreeNewFile)
+        );
+        assert_eq!(
+            keymap.match_in(&[WORKSPACE, PROJECT_PANEL], &[], &stroke("space")),
+            KeyMatch::Action(Action::TreeOpen)
+        );
+        assert_eq!(keymap.match_keys(&[], &stroke("space")), KeyMatch::None);
+        let problems = keymap.apply_user(
+            r#"[{"context": "ProjectPanel", "bindings": {"f2": null, "cmd-shift-r": "project_panel::Rename"}}]"#,
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            keymap.match_in(&[WORKSPACE, PROJECT_PANEL], &[], &stroke("f2")),
+            KeyMatch::None
+        );
+        assert_eq!(
+            keymap.match_in(&[WORKSPACE, PROJECT_PANEL], &[], &stroke("cmd-shift-r")),
+            KeyMatch::Action(Action::TreeRename)
+        );
+    }
+
+    #[test]
+    fn every_context_binding_is_readable_and_not_doubled() {
+        for table in [MACOS_CONTEXT_DEFAULTS, OTHER_CONTEXT_DEFAULTS] {
+            let mut keys: Vec<(&str, &str)> = table
+                .iter()
+                .map(|(context, keys, _)| (*context, *keys))
+                .collect();
+            let before = keys.len();
+            keys.sort();
+            keys.dedup();
+            assert_eq!(keys.len(), before, "a key is bound twice in one context");
+            assert!(table
+                .iter()
+                .all(|(context, keys, _)| CONTEXTS.contains(context) && sequence(keys).is_some()));
+        }
     }
 
     #[test]

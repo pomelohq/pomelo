@@ -565,13 +565,44 @@ impl WorkspaceView {
                 self.layout.bottom.collapsed = !self.layout.bottom.collapsed;
                 self.pending.persist = true;
             }
-            Action::FocusFiles
-            | Action::FocusGit
+            Action::FocusFiles => {
+                // Pressed again while the tree has the keyboard, it goes back to the editor.
+                if self.tree_has_keys() {
+                    if let Some(files) = self.layout.files_view.as_mut() {
+                        files.set_tree_focused(false);
+                    }
+                    return true;
+                }
+                self.show_function(PaneKind::Files);
+                self.set_terminal_focus(false);
+                self.set_agent_focus(false);
+                self.focus_group(InputGroup::Center);
+                if let Some(files) = self.layout.files_view.as_mut() {
+                    files.set_tree_focused(true);
+                }
+            }
+            Action::TreeOpen
+            | Action::TreeRename
+            | Action::TreeNewFile
+            | Action::TreeNewDirectory
+            | Action::TreeCut
+            | Action::TreeCopy
+            | Action::TreePaste
+            | Action::TreeDuplicate
+            | Action::TreeCopyPath
+            | Action::TreeCopyRelativePath
+            | Action::TreeTrash
+            | Action::TreeDelete
+            | Action::TreeRevealInFinder
+            | Action::TreeCollapse
+            | Action::TreeExpand
+            | Action::TreeCollapseAll
+            | Action::TreeExpandAll => return self.run_tree_action(action),
+            Action::FocusGit
             | Action::FocusServices
             | Action::FocusDatabase
             | Action::FocusPullRequests => {
                 let kind = match action {
-                    Action::FocusFiles => PaneKind::Files,
                     Action::FocusServices => PaneKind::Services,
                     Action::FocusDatabase => PaneKind::Database,
                     _ => PaneKind::Git,
@@ -5090,6 +5121,14 @@ impl WorkspaceView {
     /// Left-button press: route a header/menu click, close the menu, toggle a dock, or begin a divider drag.
     pub fn mouse_down(&mut self, x: f32, y: f32) {
         self.press = (x, y);
+        let (vw, vh) = self.viewport;
+        let tree = self.layout.tree_region(vw, vh);
+        let on_tree = x >= tree.x && x < tree.x + tree.w && y >= tree.y && y < tree.y + tree.h;
+        if !on_tree && self.menu.is_none() {
+            if let Some(files) = self.layout.files_view.as_mut() {
+                files.set_tree_focused(false);
+            }
+        }
         self.titlebar_press = y < crate::TOP_BAR_H
             && self.hit(x, y).is_none()
             && self.prompt_shown.is_none()
@@ -5498,10 +5537,115 @@ impl WorkspaceView {
                 return panel.text(text);
             }
         }
+        if self.tree_has_keys() {
+            return true;
+        }
         let group = self.text_group();
         self.input(group)
             .map(|v| v.editor_text(text))
             .unwrap_or(false)
+    }
+
+    /// Whether a folder of functions' panel `kind` is on screen.
+    fn function_shown(&self, kind: PaneKind) -> bool {
+        [
+            DockPosition::Left,
+            DockPosition::Right,
+            DockPosition::Bottom,
+        ]
+        .into_iter()
+        .any(|side| {
+            let open = match side {
+                DockPosition::Left => !self.layout.panels_collapsed,
+                DockPosition::Right => !self.layout.right.collapsed,
+                DockPosition::Bottom => !self.layout.bottom.collapsed,
+            };
+            open && self.layout.active_panels[side.index()] == Some(Shown::Func(kind))
+        })
+    }
+
+    /// The file tree has the keyboard: it is on screen, took the focus, and nothing floats over it.
+    fn tree_has_keys(&self) -> bool {
+        self.menu.is_none()
+            && self.prompt_shown.is_none()
+            && self.window_modal.is_none()
+            && !self.editor_modal_open()
+            && self.focused_group() == InputGroup::Center
+            && self.function_shown(PaneKind::Files)
+            && self
+                .layout
+                .files_view
+                .as_ref()
+                .is_some_and(|files| files.tree_focused())
+    }
+
+    /// Where the keyboard is, broadest first, for keymap bindings that apply in one part of the window.
+    pub fn key_contexts(&self) -> Vec<&'static str> {
+        let mut contexts = vec![crate::keymap::WORKSPACE];
+        if self.tree_has_keys() {
+            contexts.push(crate::keymap::PROJECT_PANEL);
+        }
+        contexts
+    }
+
+    /// A key while the tree has the keyboard: list keys move, Escape hands the keyboard back to the editor,
+    /// commands that open something take it with them, and the rest stays out of the file underneath.
+    /// `None` passes the key on as usual.
+    fn tree_key(&mut self, key: EditKey, shift: bool) -> Option<bool> {
+        let files = self.layout.files_view.as_mut()?;
+        if key == EditKey::Escape {
+            files.set_tree_focused(false);
+            return Some(true);
+        }
+        if files.tree_nav(key, shift) {
+            return Some(true);
+        }
+        if files.claims_key(key) {
+            files.set_tree_focused(false);
+            return None;
+        }
+        Some(true)
+    }
+
+    /// Runs a file tree action on the row the keyboard is on, the way its context menu would.
+    fn run_tree_action(&mut self, action: crate::keymap::Action) -> bool {
+        use crate::keymap::Action;
+        let Some(files) = self.layout.files_view.as_mut() else {
+            return false;
+        };
+        match action {
+            Action::TreeExpand | Action::TreeCollapse => {
+                return files.tree_expand(action == Action::TreeExpand, false);
+            }
+            Action::TreeExpandAll | Action::TreeCollapseAll => {
+                return files.tree_expand(action == Action::TreeExpandAll, true);
+            }
+            _ => {}
+        }
+        let Some((path, is_dir)) = files.tree_selection() else {
+            return false;
+        };
+        let item = match action {
+            Action::TreeOpen if is_dir => return files.tree_expand(true, false),
+            Action::TreeOpen => MENU_TREE_OPEN,
+            Action::TreeRename => MENU_TREE_RENAME,
+            Action::TreeNewFile => MENU_TREE_NEW_FILE,
+            Action::TreeNewDirectory => MENU_TREE_NEW_DIR,
+            Action::TreeCut => MENU_TREE_CUT,
+            Action::TreeCopy => MENU_TREE_COPY,
+            Action::TreePaste => MENU_TREE_PASTE,
+            Action::TreeDuplicate => MENU_TREE_DUPLICATE,
+            Action::TreeCopyPath => MENU_COPY_PATH,
+            Action::TreeCopyRelativePath => MENU_COPY_REL_PATH,
+            Action::TreeTrash => MENU_TREE_TRASH,
+            Action::TreeDelete => MENU_TREE_DELETE,
+            Action::TreeRevealInFinder => MENU_REVEAL,
+            _ => return false,
+        };
+        self.menu_path = Some((path, is_dir));
+        self.apply_menu(TREE_MENU_TARGET, item);
+        self.menu_path = None;
+        true
     }
 
     fn panel_text_kind(&self) -> Option<crate::PaneKind> {
@@ -5606,6 +5750,11 @@ impl WorkspaceView {
                 let changed = panel.key(key, shift);
                 self.apply_panel_requests();
                 return changed;
+            }
+        }
+        if self.tree_has_keys() {
+            if let Some(handled) = self.tree_key(key, shift) {
+                return handled;
             }
         }
         let claimed = self
