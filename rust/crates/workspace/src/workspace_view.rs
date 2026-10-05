@@ -658,6 +658,28 @@ impl WorkspaceView {
                 self.focus_panel_list(kind);
             }
             Action::FocusEditor => self.focus_editor(),
+            Action::MenuSelectNext
+            | Action::MenuSelectPrevious
+            | Action::MenuSelectFirst
+            | Action::MenuSelectLast => {
+                let key = match action {
+                    Action::MenuSelectNext => EditKey::Down,
+                    Action::MenuSelectPrevious => EditKey::Up,
+                    Action::MenuSelectFirst => EditKey::Home,
+                    _ => EditKey::End,
+                };
+                if self.tree_has_keys() {
+                    return self
+                        .layout
+                        .files_view
+                        .as_mut()
+                        .is_some_and(|files| files.tree_nav(key, false));
+                }
+                return match self.panel_with_keys() {
+                    Some(kind) => self.panel_list_key(kind, key, false) == Some(true),
+                    None => false,
+                };
+            }
             Action::NextRegion | Action::PreviousRegion => {
                 return self.step_region(action == Action::NextRegion)
             }
@@ -10071,6 +10093,10 @@ mod tests {
             assert!(view.key_contexts().contains(&GIT_PANEL));
             assert!(view.editor_key(EditKey::Down, false));
             assert!(
+                view.run_action(Action::MenuSelectNext),
+                "vim's j moves the list too"
+            );
+            assert!(
                 view.editor_text("x"),
                 "letters stay out of the file underneath"
             );
@@ -10085,7 +10111,7 @@ mod tests {
             assert!(!view.key_contexts().contains(&GIT_PANEL));
         });
         let state = state.borrow();
-        assert_eq!(state.moves, 1);
+        assert_eq!(state.moves, 2);
         assert_eq!(state.actions, vec![Action::GitPush]);
         assert!(!state.keyboard);
     }
