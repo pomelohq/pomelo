@@ -87,10 +87,22 @@ pub enum Action {
     GitChangesTab,
     GitRemoteTab,
     GitHistoryTab,
+    ServicesOpen,
+    ServicesToggleRunning,
+    ServicesRestart,
+    ServicesOpenInBrowser,
+    ServicesLogs,
+    ServicesCollapse,
+    ServicesExpand,
+    DatabaseOpen,
+    DatabaseCollapse,
+    DatabaseExpand,
+    DatabaseCopyUrl,
+    DatabaseNewConsole,
 }
 
 impl Action {
-    pub const ALL: [Action; 91] = [
+    pub const ALL: [Action; 103] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -182,6 +194,18 @@ impl Action {
         Action::GitChangesTab,
         Action::GitRemoteTab,
         Action::GitHistoryTab,
+        Action::ServicesOpen,
+        Action::ServicesToggleRunning,
+        Action::ServicesRestart,
+        Action::ServicesOpenInBrowser,
+        Action::ServicesLogs,
+        Action::ServicesCollapse,
+        Action::ServicesExpand,
+        Action::DatabaseOpen,
+        Action::DatabaseCollapse,
+        Action::DatabaseExpand,
+        Action::DatabaseCopyUrl,
+        Action::DatabaseNewConsole,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -272,6 +296,18 @@ impl Action {
             Action::GitChangesTab => "git_panel::ActivateChangesTab",
             Action::GitRemoteTab => "git_panel::ActivateRemoteTab",
             Action::GitHistoryTab => "git_panel::ActivateHistoryTab",
+            Action::ServicesOpen => "services_panel::Open",
+            Action::ServicesToggleRunning => "services_panel::ToggleRunning",
+            Action::ServicesRestart => "services_panel::Restart",
+            Action::ServicesOpenInBrowser => "services_panel::OpenInBrowser",
+            Action::ServicesLogs => "services_panel::ViewLogs",
+            Action::ServicesCollapse => "services_panel::CollapseSelectedEntry",
+            Action::ServicesExpand => "services_panel::ExpandSelectedEntry",
+            Action::DatabaseOpen => "database_panel::Open",
+            Action::DatabaseCollapse => "database_panel::CollapseSelectedEntry",
+            Action::DatabaseExpand => "database_panel::ExpandSelectedEntry",
+            Action::DatabaseCopyUrl => "database_panel::CopyUrl",
+            Action::DatabaseNewConsole => "database_panel::NewConsole",
         }
     }
 
@@ -371,6 +407,18 @@ impl Action {
             Action::GitChangesTab => "Git: Changes",
             Action::GitRemoteTab => "Git: Remote",
             Action::GitHistoryTab => "Git: History",
+            Action::ServicesOpen => "Services: Open",
+            Action::ServicesToggleRunning => "Services: Start or Stop",
+            Action::ServicesRestart => "Services: Restart",
+            Action::ServicesOpenInBrowser => "Services: Open in Browser",
+            Action::ServicesLogs => "Services: View Logs",
+            Action::ServicesCollapse => "Services: Collapse",
+            Action::ServicesExpand => "Services: Expand",
+            Action::DatabaseOpen => "Database: Open",
+            Action::DatabaseCollapse => "Database: Collapse",
+            Action::DatabaseExpand => "Database: Expand",
+            Action::DatabaseCopyUrl => "Database: Copy Connection URL",
+            Action::DatabaseNewConsole => "Database: New Console",
         }
     }
 
@@ -528,8 +576,19 @@ pub const PROJECT_PANEL: &str = "ProjectPanel";
 pub const TAB_SWITCHER: &str = "TabSwitcher";
 /// The Git panel's list has the keyboard.
 pub const GIT_PANEL: &str = "GitPanel";
+/// The Services panel's list has the keyboard.
+pub const SERVICES_PANEL: &str = "ServicesPanel";
+/// The Database panel's tree has the keyboard.
+pub const DATABASE_PANEL: &str = "DatabasePanel";
 /// The contexts a keymap file may bind; others (the editor's own) are not the window's.
-pub const CONTEXTS: &[&str] = &[WORKSPACE, PROJECT_PANEL, TAB_SWITCHER, GIT_PANEL];
+pub const CONTEXTS: &[&str] = &[
+    WORKSPACE,
+    PROJECT_PANEL,
+    TAB_SWITCHER,
+    GIT_PANEL,
+    SERVICES_PANEL,
+    DATABASE_PANEL,
+];
 
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {
@@ -694,6 +753,18 @@ pub const MACOS_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
     (GIT_PANEL, "cmd-1", Action::GitChangesTab),
     (GIT_PANEL, "cmd-2", Action::GitRemoteTab),
     (GIT_PANEL, "cmd-3", Action::GitHistoryTab),
+    (SERVICES_PANEL, "enter", Action::ServicesOpen),
+    (SERVICES_PANEL, "s", Action::ServicesToggleRunning),
+    (SERVICES_PANEL, "r", Action::ServicesRestart),
+    (SERVICES_PANEL, "o", Action::ServicesOpenInBrowser),
+    (SERVICES_PANEL, "l", Action::ServicesLogs),
+    (SERVICES_PANEL, "left", Action::ServicesCollapse),
+    (SERVICES_PANEL, "right", Action::ServicesExpand),
+    (DATABASE_PANEL, "enter", Action::DatabaseOpen),
+    (DATABASE_PANEL, "left", Action::DatabaseCollapse),
+    (DATABASE_PANEL, "right", Action::DatabaseExpand),
+    (DATABASE_PANEL, "cmd-alt-c", Action::DatabaseCopyUrl),
+    (DATABASE_PANEL, "cmd-n", Action::DatabaseNewConsole),
 ];
 
 pub const OTHER_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
@@ -750,6 +821,18 @@ pub const OTHER_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
     (GIT_PANEL, "ctrl-1", Action::GitChangesTab),
     (GIT_PANEL, "ctrl-2", Action::GitRemoteTab),
     (GIT_PANEL, "ctrl-3", Action::GitHistoryTab),
+    (SERVICES_PANEL, "enter", Action::ServicesOpen),
+    (SERVICES_PANEL, "s", Action::ServicesToggleRunning),
+    (SERVICES_PANEL, "r", Action::ServicesRestart),
+    (SERVICES_PANEL, "o", Action::ServicesOpenInBrowser),
+    (SERVICES_PANEL, "l", Action::ServicesLogs),
+    (SERVICES_PANEL, "left", Action::ServicesCollapse),
+    (SERVICES_PANEL, "right", Action::ServicesExpand),
+    (DATABASE_PANEL, "enter", Action::DatabaseOpen),
+    (DATABASE_PANEL, "left", Action::DatabaseCollapse),
+    (DATABASE_PANEL, "right", Action::DatabaseExpand),
+    (DATABASE_PANEL, "ctrl-alt-c", Action::DatabaseCopyUrl),
+    (DATABASE_PANEL, "ctrl-n", Action::DatabaseNewConsole),
 ];
 
 fn platform_context_defaults() -> &'static [(&'static str, &'static str, Action)] {

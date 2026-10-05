@@ -8,6 +8,8 @@ use pom_db::{
     Table, TableKind,
 };
 use ui::measure;
+use workspace::keymap::Action as KeyAction;
+use workspace::list_nav::{ListNav, NavMove};
 use workspace::persistence::SerializedItem;
 use workspace::text_field::TextField;
 use workspace::{
@@ -97,6 +99,8 @@ pub struct DatabasePanel {
     /// The console being renamed in place, and its field.
     pub(crate) rename: Option<(String, TextField)>,
     pub(crate) selected: Option<String>,
+    /// The tree has the keyboard.
+    pub(crate) keyboard: bool,
     menu: Option<(Row, Vec<Entry>)>,
     confirm: Option<(Action, Row)>,
     /// Fixes running for a failed database, by its name; each answers with what to tell the person.
@@ -126,6 +130,7 @@ impl DatabasePanel {
             filter_focused: false,
             rename: None,
             selected: None,
+            keyboard: false,
             menu: None,
             confirm: None,
             fixes: HashMap::new(),
@@ -1610,6 +1615,163 @@ impl DatabasePanel {
     }
 }
 
+impl DatabasePanel {
+    fn selected_index(&self) -> Option<usize> {
+        let key = self.selected.as_ref()?;
+        self.rows.iter().position(|row| row.key() == *key)
+    }
+
+    fn selectable(row: &Row) -> bool {
+        !matches!(row, Row::Note { .. } | Row::Failure { .. })
+    }
+
+    fn select_index(&mut self, index: usize) {
+        let Some(row) = self.rows.get(index) else {
+            return;
+        };
+        self.selected = Some(row.key());
+        let top: f32 = self
+            .rows
+            .iter()
+            .enumerate()
+            .take(index)
+            .map(|(at, row)| self.row_height(at, row))
+            .sum();
+        let height = self.row_height(index, row);
+        let shown_h = self.viewport_h - HEADER_H - FILTER_H;
+        if top < self.scroll {
+            self.scroll = top;
+        } else if top + height > self.scroll + shown_h {
+            self.scroll = top + height - shown_h;
+        }
+    }
+
+    fn move_selection(&mut self, movement: NavMove) {
+        let mut nav = ListNav {
+            selected: self.selected_index(),
+        };
+        let rows = &self.rows;
+        nav.apply(movement, rows.len(), false, |index| {
+            rows.get(index).is_some_and(Self::selectable)
+        });
+        if let Some(index) = nav.selected {
+            self.select_index(index);
+        }
+    }
+
+    fn take_keyboard(&mut self, on: bool) {
+        self.keyboard = on;
+        if on {
+            self.filter_focused = false;
+            if self.selected_index().is_none() {
+                self.move_selection(NavMove::First);
+            }
+        }
+    }
+
+    fn row_open(row: &Row) -> Option<bool> {
+        match row {
+            Row::Section {
+                section: Section::Consoles,
+                open,
+                ..
+            }
+            | Row::Repo { open, .. }
+            | Row::Database { open, .. }
+            | Row::Group { open, .. }
+            | Row::Bucket { open, .. }
+            | Row::Prefix { open, .. } => Some(*open),
+            Row::Table {
+                open,
+                has_columns: true,
+                ..
+            } => Some(*open),
+            _ => None,
+        }
+    }
+
+    /// Folds an open row; from one that is closed or does not fold, goes to the row it sits under.
+    fn collapse_selected(&mut self) -> bool {
+        let Some(index) = self.selected_index() else {
+            return false;
+        };
+        let Some(row) = self.rows.get(index) else {
+            return false;
+        };
+        if Self::row_open(row) == Some(true) {
+            self.click_row(index, CHEVRON);
+            return true;
+        }
+        let depth = row.depth();
+        let parent = (0..index)
+            .rev()
+            .find(|above| self.rows.get(*above).is_some_and(|row| row.depth() < depth));
+        if let Some(parent) = parent {
+            self.select_index(parent);
+        }
+        true
+    }
+
+    fn expand_selected(&mut self) -> bool {
+        let Some(index) = self.selected_index() else {
+            return false;
+        };
+        match self.rows.get(index).and_then(Self::row_open) {
+            Some(false) => self.click_row(index, CHEVRON),
+            Some(true) => self.move_selection(NavMove::Next),
+            None => return false,
+        }
+        true
+    }
+
+    /// Runs the selected row's menu item for `action`, when its menu offers it.
+    fn run_row_entry(&mut self, action: Action) -> bool {
+        let Some(row) = self
+            .selected_index()
+            .and_then(|index| self.rows.get(index).cloned())
+        else {
+            return false;
+        };
+        let (database, has_main_copy, repo_database) = self.menu_facts(&row);
+        let offered = menu::entries(
+            &row,
+            &Facts {
+                database: database.as_ref(),
+                has_main_copy,
+                repo_database: repo_database.as_ref(),
+                on_main: self.on_main(),
+            },
+        )
+        .into_iter()
+        .any(|entry| entry.action == action && !entry.disabled);
+        if offered {
+            self.choose(action, row);
+        }
+        offered
+    }
+
+    fn run_key_action(&mut self, action: KeyAction) -> bool {
+        match action {
+            KeyAction::DatabaseOpen => {
+                let Some(index) = self.selected_index() else {
+                    return false;
+                };
+                self.click_row(index, 0);
+                true
+            }
+            KeyAction::DatabaseCollapse => self.collapse_selected(),
+            KeyAction::DatabaseExpand => self.expand_selected(),
+            KeyAction::DatabaseCopyUrl => self.run_row_entry(Action::CopyUrl),
+            KeyAction::DatabaseNewConsole => {
+                let database = self.selected_database();
+                self.create_console(database, None, "");
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 /// Whether `console` is one of this workspace's: saved for its branch, or, from before consoles were per
 /// workspace, on one of its databases.
 fn belongs_to(console: &Console, branch: &str, databases: &[String]) -> bool {
@@ -1854,6 +2016,30 @@ impl SidePanelView for DatabasePanel {
     fn blur(&mut self) {
         self.filter_focused = false;
         self.rename = None;
+    }
+
+    fn has_keyboard(&self) -> bool {
+        self.keyboard
+    }
+
+    fn set_keyboard(&mut self, on: bool) {
+        self.take_keyboard(on);
+    }
+
+    fn key_context(&self) -> Option<&'static str> {
+        Some(workspace::keymap::DATABASE_PANEL)
+    }
+
+    fn list_key(&mut self, key: EditKey, shift: bool) -> bool {
+        let Some(movement) = workspace::list_nav::nav_move(key, shift) else {
+            return false;
+        };
+        self.move_selection(movement);
+        true
+    }
+
+    fn panel_action(&mut self, action: KeyAction) -> bool {
+        self.run_key_action(action)
     }
 
     fn restore_item(&mut self, item: &SerializedItem) -> Option<Box<dyn Item>> {
@@ -2255,6 +2441,60 @@ mod tests {
             panel.take_requests().as_slice(),
             [PanelRequest::Reveal { id, .. }] if id.starts_with("db-table:")
         ));
+    }
+
+    #[test]
+    fn the_tree_works_from_the_keyboard() {
+        let (context, mut panel) = panel();
+        let name = api_main(&context);
+        let mut schema = users_schema();
+        schema.columns.push(column("users", "name", false));
+        panel.show_schema(&name, schema);
+        panel.render(320.0, 2000.0);
+        assert_eq!(panel.key_context(), Some(workspace::keymap::DATABASE_PANEL));
+        panel.set_keyboard(true);
+        assert!(
+            panel.selected.is_some(),
+            "taking the keyboard picks the first row"
+        );
+        let users = |panel: &DatabasePanel| {
+            panel
+                .rows
+                .iter()
+                .position(|row| matches!(row, Row::Table { table, .. } if table.name == "users"))
+        };
+        while panel.selected_index() != users(&panel) {
+            assert!(panel.list_key(EditKey::Down, false), "reaches the table");
+        }
+        assert!(panel.panel_action(KeyAction::DatabaseExpand));
+        panel.render(320.0, 2000.0);
+        assert!(panel
+            .rows
+            .iter()
+            .any(|row| matches!(row, Row::Column { .. })));
+        assert!(panel.panel_action(KeyAction::DatabaseCollapse));
+        panel.render(320.0, 2000.0);
+        assert!(!panel
+            .rows
+            .iter()
+            .any(|row| matches!(row, Row::Column { .. })));
+        assert!(panel.panel_action(KeyAction::DatabaseOpen));
+        assert!(matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::Reveal { id, .. }] if id.starts_with("db-table:")
+        ));
+        assert!(panel.panel_action(KeyAction::DatabaseCollapse));
+        assert!(
+            matches!(
+                panel
+                    .selected_index()
+                    .and_then(|index| panel.rows.get(index)),
+                Some(Row::Group { .. })
+            ),
+            "from a closed row it goes up to its parent"
+        );
+        assert!(panel.panel_action(KeyAction::DatabaseNewConsole));
+        assert_eq!(context.context.consoles().len(), 1);
     }
 
     #[test]

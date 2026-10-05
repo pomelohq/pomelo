@@ -2,6 +2,7 @@
 //! attention), then its services by repo, with the shared containers pinned at the bottom. Clicking a running
 //! service opens its console as a center tab.
 
+mod keys;
 mod model;
 mod tab;
 mod view;
@@ -11,6 +12,7 @@ use std::path::PathBuf;
 
 use pom_services::ServiceTarget;
 use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use workspace::list_nav::ListNav;
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{AgentFix, EditKey, MenuItem, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
 
@@ -41,6 +43,9 @@ const MENU_BASE: u64 = 9_000_000;
 const TAB_BUTTON_BASE: u64 = MENU_BASE + 1_000;
 /// Palette entries: a service by twice its index (plus one to stop it), a repo command from here on.
 const PALETTE_COMMAND_BASE: u64 = 50_000;
+const PALETTE_RESTART_BASE: u64 = 60_000;
+const PALETTE_LOGS_BASE: u64 = 70_000;
+const PALETTE_OPEN_BASE: u64 = 80_000;
 
 pub struct TabButton {
     pub icon: IconKind,
@@ -314,9 +319,15 @@ pub struct ServicesPanel {
     counts: Counts,
     collapsed: HashSet<String>,
     hover: Option<u64>,
+    /// The list has the keyboard, and the row it is on.
+    keyboard: bool,
+    nav: ListNav,
     scroll: f32,
     viewport_h: f32,
     content_h: f32,
+    /// Height of the overview cards above the first row, and of the scrolling list.
+    preamble_h: f32,
+    list_h: f32,
     filter: TextField,
     filter_focused: bool,
     status_filter: StatusFilter,
@@ -347,9 +358,13 @@ impl ServicesPanel {
             counts: Counts::default(),
             collapsed: HashSet::new(),
             hover: None,
+            keyboard: false,
+            nav: ListNav::default(),
             scroll: 0.0,
             viewport_h: 0.0,
             content_h: 0.0,
+            preamble_h: 0.0,
+            list_h: 0.0,
             filter: {
                 let mut field = TextField::default();
                 field.set_font_size(12.5);
@@ -767,7 +782,11 @@ impl ServicesPanel {
             .gap(6.0)
             .items_center()
             .on_click(self.id(index, Control::Row));
-        if hovered {
+        if self.keyboard_row() == Some(index) {
+            body = body
+                .bg(colors.element_selected)
+                .border(1.0, colors.panel_focused_border);
+        } else if hovered {
             body = body.bg(colors.ghost_element_hover);
         } else if related {
             body = body.bg(colors.text_accent.alpha(0.08)).pin_left_edge(
@@ -2135,6 +2154,26 @@ impl SidePanelView for ServicesPanel {
                 }
             })
             .collect();
+        for (index, target) in context.targets(&config).iter().enumerate() {
+            let name = format!("{}/{}", target.repo, target.service);
+            let index = index as u64;
+            if self.model.status(&context.runner.holder_name(target)) == Status::Running {
+                entries.push(PaletteEntry {
+                    label: format!("services: restart {name}"),
+                    id: PALETTE_RESTART_BASE + index,
+                });
+            }
+            entries.push(PaletteEntry {
+                label: format!("services: view logs {name}"),
+                id: PALETTE_LOGS_BASE + index,
+            });
+            if self.url(target).is_some() {
+                entries.push(PaletteEntry {
+                    label: format!("services: open {name} in browser"),
+                    id: PALETTE_OPEN_BASE + index,
+                });
+            }
+        }
         entries.extend(
             self.repo_commands(None)
                 .into_iter()
@@ -2148,6 +2187,28 @@ impl SidePanelView for ServicesPanel {
     }
 
     fn run_palette_entry(&mut self, id: u64) {
+        if id >= PALETTE_RESTART_BASE {
+            let context = self.model.context.clone();
+            let Some(config) = context.config() else {
+                return;
+            };
+            let (base, index) = (id / 10_000 * 10_000, (id % 10_000) as usize);
+            let Some(target) = context.targets(&config).get(index).cloned() else {
+                return;
+            };
+            let holder = context.runner.holder_name(&target);
+            match base {
+                PALETTE_RESTART_BASE => self.model.run(Action::Restart, target),
+                PALETTE_LOGS_BASE => self.open_tab(&target, &holder, false),
+                PALETTE_OPEN_BASE => {
+                    if let Some(url) = self.url(&target) {
+                        self.requests.push(PanelRequest::OpenUrl(url));
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if let Some(index) = id.checked_sub(PALETTE_COMMAND_BASE) {
             if let Some(command) = self.repo_commands(None).get(index as usize).cloned() {
                 self.run_command(&command);
@@ -2174,6 +2235,7 @@ impl SidePanelView for ServicesPanel {
         }
         self.viewport_h = height;
         self.rebuild_rows();
+        self.nav.clamp(self.rows.len());
         let colors = theme();
         let mut header = div()
             .row()
@@ -2201,6 +2263,8 @@ impl SidePanelView for ServicesPanel {
         let list_h = (height - HEADER_H - FILTER_H - shared_h - 1.0).max(0.0);
         let blocks = self.blocks(width);
         self.content_h = blocks.iter().map(|(_, block_h)| block_h).sum::<f32>() + 8.0;
+        self.preamble_h = self.content_h - 8.0 - self.tree_rows().len() as f32 * ROW_H;
+        self.list_h = list_h;
         let max_scroll = (self.content_h - list_h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         let mut list = div().col().h_px(list_h);
@@ -2284,6 +2348,7 @@ impl SidePanelView for ServicesPanel {
         let Some(row) = self.rows.get(index).cloned() else {
             return;
         };
+        self.nav.selected = Some(index);
         match (row, control) {
             (Row::Group { key, .. }, Control::Row) => self.toggle_group(key),
             (Row::Group { key, .. }, Control::StartAll | Control::StopAll) => {
@@ -2384,6 +2449,26 @@ impl SidePanelView for ServicesPanel {
 
     fn blur(&mut self) {
         self.filter_focused = false;
+    }
+
+    fn has_keyboard(&self) -> bool {
+        self.keyboard
+    }
+
+    fn set_keyboard(&mut self, on: bool) {
+        self.take_keyboard(on);
+    }
+
+    fn key_context(&self) -> Option<&'static str> {
+        Some(workspace::keymap::SERVICES_PANEL)
+    }
+
+    fn list_key(&mut self, key: EditKey, shift: bool) -> bool {
+        self.nav_key(key, shift)
+    }
+
+    fn panel_action(&mut self, action: workspace::keymap::Action) -> bool {
+        self.run_key_action(action)
     }
 
     fn open_menu(&mut self, id: u64) -> bool {

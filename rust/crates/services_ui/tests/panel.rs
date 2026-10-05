@@ -511,3 +511,66 @@ fn a_shared_tab_shows_the_container_like_a_service() {
         "{texts:?}"
     );
 }
+
+#[test]
+fn the_list_works_from_the_keyboard() {
+    use workspace::keymap::Action;
+    use workspace::EditKey;
+
+    let mut fixture = Fixture::new();
+    fixture.panel.render(300.0, 400.0);
+    assert_eq!(
+        fixture.panel.key_context(),
+        Some(workspace::keymap::SERVICES_PANEL)
+    );
+    fixture.panel.set_keyboard(true);
+    assert!(fixture.panel.list_key(EditKey::Down, false), "onto web");
+    assert!(fixture.panel.panel_action(Action::ServicesToggleRunning));
+    fixture.wait_for("web to run", |panel| {
+        panel.status("api", "web") == Status::Running
+    });
+    let labels: Vec<String> = fixture
+        .panel
+        .palette_entries()
+        .into_iter()
+        .map(|entry| entry.label)
+        .collect();
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "services: restart api/web"),
+        "{labels:?}"
+    );
+    assert!(fixture.panel.panel_action(Action::ServicesLogs));
+    assert!(matches!(
+        fixture.panel.take_requests().as_slice(),
+        [PanelRequest::Reveal { id, .. }] if id == "service:svc-demo-feat-api-web"
+    ));
+    assert!(fixture.panel.panel_action(Action::ServicesToggleRunning));
+    fixture.wait_for("web to stop", |panel| {
+        panel.status("api", "web") == Status::Stopped
+    });
+
+    assert!(
+        fixture.panel.panel_action(Action::ServicesCollapse),
+        "up to api"
+    );
+    assert!(
+        fixture.panel.panel_action(Action::ServicesCollapse),
+        "folds api"
+    );
+    fixture.panel.render(300.0, 400.0);
+    fixture.panel.list_key(EditKey::Down, false);
+    assert!(
+        !fixture.panel.panel_action(Action::ServicesLogs),
+        "a folded group hides its services"
+    );
+    assert!(fixture.panel.list_key(EditKey::Home, false));
+    assert!(fixture.panel.panel_action(Action::ServicesExpand));
+    fixture.panel.render(300.0, 400.0);
+    assert!(fixture.panel.list_key(EditKey::Down, false));
+    assert!(
+        fixture.panel.panel_action(Action::ServicesLogs),
+        "web is back"
+    );
+}
