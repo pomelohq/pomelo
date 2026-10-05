@@ -577,6 +577,17 @@ pub const REFRESH_MINUTES_MIN: u64 = 1;
 pub const REFRESH_MINUTES_MAX: u64 = 1440;
 pub const RESET_OFFSET: u64 = 100_000;
 
+/// Whether a page hit id is a control Tab stops on: not the search field, the navbar, a dropdown's items, a
+/// section anchor or a reset button.
+pub fn is_keyboard_control(id: u64) -> bool {
+    id >= 100
+        && id != CTRL_SEARCH
+        && id != CTRL_SEARCH_CLEAR
+        && !(NAV_JUMP_BASE..NAV_JUMP_END).contains(&id)
+        && !(NAV_TOGGLE_BASE..SECTION_ANCHOR_BASE + 1_000).contains(&id)
+        && id < RESET_OFFSET
+}
+
 /// Font-size bounds, matching the reference's `FontSize` stepper (min 6, max 72).
 pub const FONT_SIZE_MIN: f32 = 6.0;
 pub const FONT_SIZE_MAX: f32 = 72.0;

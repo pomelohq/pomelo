@@ -4115,6 +4115,22 @@ impl ApplicationHandler for App {
                         Key::Named(NamedKey::Backspace) => {
                             self.with_settings_view(|v, _| v.key_backspace())
                         }
+                        Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) => {
+                            let down = event.logical_key == Key::Named(NamedKey::ArrowDown);
+                            self.with_settings_view(|v, _| v.key_vertical(down))
+                        }
+                        Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) => {
+                            let right = event.logical_key == Key::Named(NamedKey::ArrowRight);
+                            self.with_settings_view(|v, _| v.key_horizontal(right))
+                        }
+                        Key::Named(NamedKey::Home | NamedKey::End) => {
+                            let end = event.logical_key == Key::Named(NamedKey::End);
+                            self.with_settings_view(|v, _| v.key_home_end(end))
+                        }
+                        Key::Named(NamedKey::Tab) => {
+                            let backward = self.shift_down;
+                            self.with_settings_view(|v, _| v.key_tab(backward))
+                        }
                         _ => {
                             let text = event.text.as_ref().map(|t| t.to_string());
                             text.map(|t| {
