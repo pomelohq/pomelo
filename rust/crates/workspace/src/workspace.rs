@@ -5,6 +5,7 @@
 pub mod agent_popover;
 mod form;
 pub mod keymap;
+pub mod list_nav;
 pub mod pane;
 pub mod pane_group;
 pub mod pane_group_view;
