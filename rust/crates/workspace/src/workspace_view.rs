@@ -328,6 +328,11 @@ pub struct WorkspaceView {
     item_menu: Vec<MenuItem>,
     menu_path: Option<(String, bool)>,
     submenu: Option<(f32, f32, f32, u64)>,
+    /// The keyboard's row in the open menu and in its submenu, for the menu it was made for.
+    menu_nav: crate::list_nav::ListNav,
+    submenu_nav: crate::list_nav::ListNav,
+    menu_nav_in_submenu: bool,
+    menu_nav_target: Option<u64>,
     menu_editor_anchor: Option<(Vec<usize>, usize)>,
     /// The tab a tab context menu was opened on: its group, pane id and index.
     menu_tab: Option<(InputGroup, u64, usize)>,
@@ -368,6 +373,10 @@ impl WorkspaceView {
             menu: None,
             item_menu: Vec::new(),
             menu_path: None,
+            menu_nav: crate::list_nav::ListNav::default(),
+            submenu_nav: crate::list_nav::ListNav::default(),
+            menu_nav_in_submenu: false,
+            menu_nav_target: None,
             submenu: None,
             menu_editor_anchor: None,
             menu_tab: None,
@@ -2634,16 +2643,8 @@ impl WorkspaceView {
                 };
             }
             let items = self.menu_items(target);
-            let painted = context_menu(
-                mx,
-                mtop,
-                mbottom,
-                w,
-                h,
-                &items,
-                self.session_menu_hover,
-                None,
-            );
+            let main_highlight = self.menu_highlight(false).or(self.session_menu_hover);
+            let painted = context_menu(mx, mtop, mbottom, w, h, &items, main_highlight, None);
             header_hits.extend(painted.hits.iter().copied());
             overlays.push(Overlay {
                 painted,
@@ -2651,16 +2652,8 @@ impl WorkspaceView {
             });
             if let Some((sx, stop, sleft, parent)) = self.submenu {
                 let sub = self.menu_items(parent);
-                let painted = context_menu(
-                    sx,
-                    stop,
-                    stop,
-                    w,
-                    h,
-                    &sub,
-                    self.session_menu_hover,
-                    Some(sleft),
-                );
+                let sub_highlight = self.menu_highlight(true).or(self.session_menu_hover);
+                let painted = context_menu(sx, stop, stop, w, h, &sub, sub_highlight, Some(sleft));
                 header_hits.extend(painted.hits.iter().copied());
                 overlays.push(Overlay {
                     painted,
@@ -3892,6 +3885,121 @@ impl WorkspaceView {
         self.submenu = None;
         self.menu_path = None;
         self.menu_editor_anchor = None;
+        self.menu_nav.clear();
+        self.submenu_nav.clear();
+        self.menu_nav_in_submenu = false;
+        self.menu_nav_target = None;
+    }
+
+    /// Runs a menu row as a click does: the row's own menu or the open one handles it, and the menu closes
+    /// unless the row opened a follow-up menu.
+    fn run_menu_row(&mut self, owner: u64, id: u64) {
+        let Some((_, _, _, target)) = self.menu else {
+            return;
+        };
+        let before = self.menu;
+        let owner = if self.menu_owns(owner) { owner } else { target };
+        self.apply_menu(owner, id);
+        if self.menu != before {
+            return;
+        }
+        self.close_menu();
+    }
+
+    /// A newly opened menu starts with no keyboard row.
+    fn menu_nav_sync(&mut self) {
+        let target = self.menu.map(|(_, _, _, target)| target);
+        if target != self.menu_nav_target {
+            self.menu_nav_target = target;
+            self.menu_nav.clear();
+            self.submenu_nav.clear();
+            self.menu_nav_in_submenu = false;
+        }
+    }
+
+    /// The rows the keyboard is moving in: the submenu once entered, else the menu, with the menu that owns them.
+    fn menu_nav_level(&self) -> Option<(u64, Vec<MenuItem>)> {
+        let (_, _, _, target) = self.menu?;
+        if self.menu_nav_in_submenu {
+            let parent = self.submenu?.3;
+            Some((parent, self.menu_items(parent)))
+        } else {
+            Some((target, self.menu_items(target)))
+        }
+    }
+
+    /// The row the keyboard has picked in the menu (`submenu` false) or in its submenu.
+    fn menu_highlight(&self, submenu: bool) -> Option<u64> {
+        let (_, _, _, target) = self.menu?;
+        if submenu {
+            if !self.menu_nav_in_submenu {
+                return None;
+            }
+            let parent = self.submenu?.3;
+            let index = self.submenu_nav.selected?;
+            return self.menu_items(parent).get(index).map(|item| item.id);
+        }
+        let index = self.menu_nav.selected?;
+        self.menu_items(target).get(index).map(|item| item.id)
+    }
+
+    fn menu_move(&mut self, movement: crate::list_nav::NavMove) {
+        let Some((_, items)) = self.menu_nav_level() else {
+            return;
+        };
+        let pickable = |index: usize| {
+            items
+                .get(index)
+                .is_some_and(|item| !item.disabled && !item.header)
+        };
+        let nav = if self.menu_nav_in_submenu {
+            &mut self.submenu_nav
+        } else {
+            &mut self.menu_nav
+        };
+        nav.apply(movement, items.len(), true, pickable);
+    }
+
+    /// Opens the submenu of the picked row and moves the keyboard into it.
+    fn menu_open_submenu(&mut self) -> bool {
+        if self.menu_nav_in_submenu {
+            return false;
+        }
+        let Some(id) = self.menu_highlight(false).filter(|id| is_submenu(*id)) else {
+            return false;
+        };
+        let Some(rect) = self
+            .header_hits
+            .iter()
+            .find(|(_, hit)| *hit == id)
+            .map(|(rect, _)| *rect)
+        else {
+            return false;
+        };
+        self.submenu = Some((rect.x + rect.w, rect.y, rect.x, id));
+        self.menu_nav_in_submenu = true;
+        self.submenu_nav.clear();
+        self.menu_move(crate::list_nav::NavMove::First);
+        true
+    }
+
+    /// Enter on the picked row: a submenu opens, any other row runs.
+    fn menu_confirm(&mut self) -> bool {
+        let submenu = self.menu_nav_in_submenu;
+        let Some(id) = self.menu_highlight(submenu) else {
+            return false;
+        };
+        if !submenu && is_submenu(id) {
+            return self.menu_open_submenu();
+        }
+        let Some((owner, items)) = self.menu_nav_level() else {
+            return false;
+        };
+        if items.iter().any(|item| item.id == id && item.disabled) {
+            return true;
+        }
+        self.run_menu_row(owner, id);
+        true
     }
 
     /// Opens the agent dock's popover under the pressed button, or closes it when that one is already open.
@@ -4942,6 +5050,11 @@ impl WorkspaceView {
                 if hovered != self.session_menu_hover {
                     self.session_menu_hover = hovered;
                     changed = true;
+                    if self.menu.is_some() {
+                        self.menu_nav.clear();
+                        self.submenu_nav.clear();
+                        self.menu_nav_in_submenu = false;
+                    }
                 }
                 if self.menu.is_some() {
                     if let Some(hid) = hovered {
@@ -5114,22 +5227,11 @@ impl WorkspaceView {
                 if row.disabled {
                     return;
                 }
-                let before = self.menu;
-                let owner = if self.menu_owns(*owner) {
-                    *owner
-                } else {
-                    target
-                };
-                self.apply_menu(owner, row.id);
-                // A panel item can open a follow-up menu (a picker); keep that one.
-                if self.menu != before {
-                    return;
-                }
+                let (owner, id) = (*owner, row.id);
+                self.run_menu_row(owner, id);
+                return;
             }
-            self.menu = None;
-            self.submenu = None;
-            self.menu_path = None;
-            self.menu_editor_anchor = None;
+            self.close_menu();
             return;
         }
         if let Some(group) = self.popover_group_at(x, y) {
@@ -5458,7 +5560,20 @@ impl WorkspaceView {
             return true;
         }
         if self.menu.is_some() {
+            self.menu_nav_sync();
+            if let Some(movement) = crate::list_nav::nav_move(key, shift) {
+                self.menu_move(movement);
+                return true;
+            }
             match key {
+                EditKey::Enter if self.menu_confirm() => return true,
+                EditKey::Right if self.menu_open_submenu() => return true,
+                EditKey::Left if self.menu_nav_in_submenu => {
+                    self.submenu = None;
+                    self.submenu_nav.clear();
+                    self.menu_nav_in_submenu = false;
+                    return true;
+                }
                 EditKey::Enter if self.menu_shortcut("Enter") => return true,
                 EditKey::Left if self.menu_shortcut("Left") => return true,
                 EditKey::Right if self.menu_shortcut("Right") => return true,
@@ -6056,8 +6171,10 @@ impl WorkspaceView {
 
     /// Whether key presses go raw to a terminal: the focused group's active item takes raw keystrokes.
     pub fn terminal_focused(&self) -> bool {
+        // An open menu takes the keys, even over a terminal tab it was opened from.
         if self.prompt_shown.is_some()
             || self.window_modal.is_some()
+            || self.menu.is_some()
             || self.panel_text_kind().is_some()
         {
             return false;
@@ -8490,6 +8607,61 @@ mod tests {
                 .any(|item| item.id == crate::MENU_TERM_ASK_AGENT),
             "an agent's own tab is not sent to an agent"
         );
+    }
+
+    #[test]
+    fn a_context_menu_is_driven_by_the_keyboard() {
+        let (mut app, h, e) = open();
+        app.draw(h);
+        let mut header = MenuItem::new(9001, "Group");
+        header.header = true;
+        let mut disabled = MenuItem::new(9003, "Unavailable");
+        disabled.disabled = true;
+        e.update(app.app_mut(), |view, _| {
+            view.item_menu = vec![
+                header,
+                MenuItem::new(9002, "First"),
+                disabled,
+                MenuItem::new(9004, "Last"),
+            ];
+            view.menu = Some((10.0, 10.0, 10.0, crate::ITEM_MENU_TARGET));
+        });
+        let highlight = |app: &ui::Application| e.read(app.app()).menu_highlight(false);
+        e.update(app.app_mut(), |view, _| {
+            view.editor_key(EditKey::Down, false)
+        });
+        assert_eq!(highlight(&app), Some(9002), "the group title is skipped");
+        e.update(app.app_mut(), |view, _| {
+            view.editor_key(EditKey::Down, false)
+        });
+        assert_eq!(highlight(&app), Some(9004), "a disabled row is skipped");
+        e.update(app.app_mut(), |view, _| {
+            view.editor_key(EditKey::Down, false)
+        });
+        assert_eq!(highlight(&app), Some(9002), "the menu wraps");
+        e.update(app.app_mut(), |view, _| {
+            view.editor_key(EditKey::End, false)
+        });
+        assert_eq!(highlight(&app), Some(9004));
+        assert!(
+            !e.read(app.app()).terminal_focused(),
+            "an open menu takes the keys before a terminal"
+        );
+        e.update(app.app_mut(), |view, _| {
+            view.editor_key(EditKey::Enter, false)
+        });
+        assert!(
+            e.read(app.app()).menu.is_none(),
+            "Enter runs the row and closes the menu"
+        );
+
+        e.update(app.app_mut(), |view, _| {
+            view.menu = Some((10.0, 10.0, 10.0, crate::ITEM_MENU_TARGET));
+        });
+        e.update(app.app_mut(), |view, _| {
+            view.editor_key(EditKey::Escape, false)
+        });
+        assert!(e.read(app.app()).menu.is_none(), "Escape closes it");
     }
 
     #[test]
