@@ -1844,6 +1844,7 @@ impl App {
             (terminal_ui::agent_font_size() - self.settings.agent_font_size).abs() > f32::EPSILON;
         terminal_ui::set_agent_font_size(self.settings.agent_font_size);
         terminal_ui::set_stop_agent_on_close(self.settings.agent_tab_close == "stop");
+        files_ui::set_vim_mode(self.settings.vim_mode);
         let caret = ui::CaretStyle {
             shape: match self.settings.cursor_shape.as_str() {
                 "block" => ui::CaretShape::Block,
@@ -2782,6 +2783,21 @@ impl App {
                 {
                     self.settings_dirty = true;
                 }
+                self.mark_all_mains_dirty();
+            }
+            Action::ToggleVimMode => {
+                self.settings.vim_mode = !self.settings.vim_mode;
+                if let Err(error) = self.settings.save() {
+                    eprintln!("settings: save: {error}");
+                }
+                let settings = self.settings.clone();
+                if self
+                    .with_settings_view(|view, _| view.replace_settings(settings))
+                    .is_some()
+                {
+                    self.settings_dirty = true;
+                }
+                self.apply_editor_defaults();
                 self.mark_all_mains_dirty();
             }
             Action::CommandPalette => {

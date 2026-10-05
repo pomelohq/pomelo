@@ -71,6 +71,18 @@ const DEFAULT_EDIT_FONT: f32 = 15.0; // matches the reference's default buffer f
 static EDIT_FONT_HUNDREDTHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1500);
 static SOFT_WRAP_DEFAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SPLIT_DIFF_DEFAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+thread_local! {
+    static VIM_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Turns modal (vim) editing on or off for every editor on the UI thread.
+pub fn set_vim_mode(on: bool) {
+    VIM_MODE.with(|mode| mode.set(on));
+}
+
+fn vim_mode() -> bool {
+    VIM_MODE.with(|mode| mode.get())
+}
 
 pub(crate) fn edit_font() -> f32 {
     EDIT_FONT_HUNDREDTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
@@ -760,6 +772,7 @@ struct FileItem {
     glides: caret_glide::Glides,
     /// A caret is mid-glide, so the next frame is wanted right away.
     caret_gliding: bool,
+    vim: vim::Vim,
     /// What the toolbar's Editor Controls show or hide in this editor.
     minimap: bool,
     /// The minimap as last drawn, for pointer presses and drags on it.
@@ -1111,6 +1124,7 @@ impl FileItem {
             active_indent: RefCell::default(),
             glides: caret_glide::Glides::default(),
             caret_gliding: false,
+            vim: vim::Vim::default(),
             minimap: false,
             minimap_layout: None,
             minimap_drag: None,
@@ -4186,6 +4200,10 @@ impl Item for FileItem {
         true
     }
 
+    fn mode_label(&self) -> Option<&'static str> {
+        (vim_mode() && self.buffer.is_some() && !self.read_only).then(|| self.vim.mode().label())
+    }
+
     fn cursor_status(&self) -> Option<String> {
         self.cursor_status_text()
     }
@@ -4859,6 +4877,19 @@ impl Item for FileItem {
         }
         self.hide_hover();
         self.refresh();
+        if vim_mode() {
+            let handled = self
+                .buffer
+                .as_mut()
+                .is_some_and(|b| self.vim.text(text, b) == vim::Outcome::Handled);
+            if handled {
+                self.close_completions();
+                self.refresh();
+                self.ensure_visible();
+                self.ensure_cursor_visible();
+                return;
+            }
+        }
         let language = editor::language::config(self.lang);
         let rope = self.rope_snapshot();
         let scope_at = scope_lookup(&self.syntax, &rope);
@@ -5014,6 +5045,14 @@ impl Item for FileItem {
             EditKey::Backtab if self.move_to_snippet_stop(false) => return,
             EditKey::Escape if self.buffer.as_mut().is_some_and(|b| b.exit_snippet()) => return,
             EditKey::Escape if self.dismiss_diagnostic() => return,
+            EditKey::Escape if vim_mode() => {
+                if let Some(b) = self.buffer.as_mut() {
+                    self.vim.escape(b);
+                }
+                self.refresh();
+                self.ensure_cursor_visible();
+                return;
+            }
             _ => {}
         }
         // One row of the previous page stays on screen.
@@ -5237,6 +5276,10 @@ impl Item for FileItem {
 
     fn carets(&mut self, content: Rect) -> ui::Painted {
         let style = ui::caret_style();
+        let mut style = style;
+        if vim_mode() && self.vim.mode() == vim::Mode::Normal {
+            style.shape = ui::CaretShape::Block;
+        }
         let glide = style.animate
             && !ui::reduce_motion()
             && matches!(style.shape, ui::CaretShape::Bar | ui::CaretShape::Block);
@@ -8381,6 +8424,10 @@ impl ItemInput for FilesView {
         self.panes.cursor_position()
     }
 
+    fn mode_label(&self) -> Option<&'static str> {
+        self.panes.mode_label()
+    }
+
     fn active_language(&self) -> Option<&'static str> {
         self.panes.active_language()
     }
@@ -9719,6 +9766,35 @@ mod line_width_tests {
 #[cfg(test)]
 mod scroll_tests {
     use super::*;
+
+    #[test]
+    fn vim_mode_reads_typed_keys_as_commands_until_insert() {
+        set_vim_mode(true);
+        let mut item = FileItem::new(PathBuf::from("/nonexistent"), "t.txt", Some("abc\n".into()));
+        assert_eq!(item.mode_label(), Some("-- NORMAL --"));
+        item.input_text("x");
+        assert_eq!(
+            item.buffer.as_ref().map(|b| b.text()).as_deref(),
+            Some("bc\n")
+        );
+        item.input_text("i");
+        assert_eq!(item.mode_label(), Some("-- INSERT --"));
+        item.input_text("z");
+        item.input_key(EditKey::Escape, false);
+        assert_eq!(item.mode_label(), Some("-- NORMAL --"));
+        assert_eq!(
+            item.buffer.as_ref().map(|b| b.text()).as_deref(),
+            Some("zbc\n")
+        );
+        set_vim_mode(false);
+        assert_eq!(item.mode_label(), None);
+        item.input_text("x");
+        assert_eq!(
+            item.buffer.as_ref().map(|b| b.text()).as_deref(),
+            Some("xzbc\n"),
+            "off, keys type"
+        );
+    }
 
     fn item(lines: usize, visible_rows: usize) -> FileItem {
         let text: String = (0..lines).map(|i| format!("line {i}\n")).collect();

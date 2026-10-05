@@ -1,0 +1,13 @@
+[package]
+name = "vim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vim mode (logic): modes, counts, motions and edits over an editor buffer. No rendering."
+
+[lib]
+path = "src/vim.rs"
+
+[dependencies]
+editor = { package = "pomelo-editor", path = "../editor" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

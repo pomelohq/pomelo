@@ -1259,6 +1259,10 @@ pub trait Item: 'static {
         false
     }
     fn render(&mut self) -> Node;
+    /// The editing mode the status bar names (vim's NORMAL / INSERT), when the item has one.
+    fn mode_label(&self) -> Option<&'static str> {
+        None
+    }
     fn cursor_status(&self) -> Option<String> {
         None
     }
@@ -1940,6 +1944,9 @@ pub trait ItemInput {
     fn editor_save(&mut self) -> Option<Result<(), String>>;
     fn editor_focused(&self) -> bool;
     fn cursor_position(&self) -> Option<String>;
+    fn mode_label(&self) -> Option<&'static str> {
+        None
+    }
     fn active_language(&self) -> Option<&'static str>;
     /// Popovers at the caret (completions) and under the pointer (hover), placed for a window of `viewport`.
     fn editor_popovers(&mut self, viewport: (f32, f32)) -> Vec<(Node, f32, f32)>;
@@ -3481,6 +3488,15 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                 .as_ref()
                 .and_then(|v| v.cursor_position())
                 .filter(|_| ch.cursor_position);
+            if let Some(mode) = layout.files_view.as_ref().and_then(|v| v.mode_label()) {
+                row = row.child(
+                    div()
+                        .h_px(20.0)
+                        .px(4.0)
+                        .items_center()
+                        .child(label(mode).size(12.0).mono().color(theme().text_muted)),
+                );
+            }
             let shows_position = position.is_some();
             if let Some(text) = position {
                 let mut button = div()

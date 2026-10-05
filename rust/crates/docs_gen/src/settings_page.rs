@@ -62,6 +62,7 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("languages", "Languages & Tools", "Per language name, settings over the shared ones: `enable_language_server`, `language_servers` and `completions` (`lsp`, `lsp_fetch_timeout_ms`). Unset keys keep the shared value."),
     ("terminal_shell", "Terminal", "The shell new terminals run, with its arguments; empty runs your login shell."),
     ("terminal_scrollback", "Terminal", "Lines of history each new terminal keeps."),
+    ("vim_mode", "Keymap", "Modal (vim) editing in the editor: Normal and Insert modes, motions and counts."),
     ("agent_command", "Agent", "The AI CLI the Agent button opens in a workspace; `claude` also gets pom's MCP server and prompt."),
     ("agent_open_in", "Agent", "Where agents open: `\"dock\"` in the agent dock, `\"center\"` as a tab next to the code."),
     ("agent_tab_close", "Agent", "Closing an agent's tab: `\"hide\"` leaves the agent running, `\"stop\"` ends it."),

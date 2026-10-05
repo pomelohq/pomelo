@@ -119,7 +119,7 @@ const LANGUAGES_TOOLS_SECTIONS: [&str; 6] = [
     "Languages",
 ];
 const TERMINAL_SECTIONS: [&str; 1] = ["Shell"];
-const KEYMAP_SECTIONS: [&str; 1] = ["Bindings"];
+const KEYMAP_SECTIONS: [&str; 2] = ["Modal Editing", "Bindings"];
 const AGENT_SECTIONS: [&str; 2] = ["Command", "Claude Code"];
 const NOTIFICATIONS_SECTIONS: [&str; 2] = ["Delivery", "Alert Sounds"];
 const DEV_SERVICES_SECTIONS: [&str; 4] = [
@@ -255,6 +255,7 @@ pub const CTRL_HIDE_MOUSE: u64 = 330;
 pub const CTRL_AGENT_TAB_CLOSE: u64 = 331;
 pub const CTRL_MULTI_CURSOR_MODIFIER: u64 = 332;
 pub const CTRL_CURSOR_BLINK: u64 = 333;
+pub const CTRL_VIM_MODE: u64 = 390;
 pub const CTRL_CURSOR_ANIMATION: u64 = 334;
 pub const CTRL_CURSOR_SHAPE: u64 = 335;
 pub const CTRL_REDUCE_MOTION: u64 = 336;
@@ -946,6 +947,7 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_AGENT_OPEN_IN => s.agent_open_in == d.agent_open_in,
         CTRL_MULTI_CURSOR_MODIFIER => s.multi_cursor_modifier == d.multi_cursor_modifier,
         CTRL_CURSOR_BLINK => s.cursor_blink == d.cursor_blink,
+        CTRL_VIM_MODE => s.vim_mode == d.vim_mode,
         CTRL_CURSOR_ANIMATION => s.cursor_animation == d.cursor_animation,
         CTRL_CURSOR_SHAPE => s.cursor_shape == d.cursor_shape,
         CTRL_REDUCE_MOTION => s.reduce_motion == d.reduce_motion,
@@ -1024,6 +1026,7 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_AGENT_OPEN_IN => s.agent_open_in = d.agent_open_in.clone(),
         CTRL_MULTI_CURSOR_MODIFIER => s.multi_cursor_modifier = d.multi_cursor_modifier.clone(),
         CTRL_CURSOR_BLINK => s.cursor_blink = d.cursor_blink,
+        CTRL_VIM_MODE => s.vim_mode = d.vim_mode,
         CTRL_CURSOR_ANIMATION => s.cursor_animation = d.cursor_animation.clone(),
         CTRL_CURSOR_SHAPE => s.cursor_shape = d.cursor_shape.clone(),
         CTRL_REDUCE_MOTION => s.reduce_motion = d.reduce_motion.clone(),
@@ -1097,6 +1100,10 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
         }
         CTRL_CURSOR_BLINK => {
             s.cursor_blink = !s.cursor_blink;
+            true
+        }
+        CTRL_VIM_MODE => {
+            s.vim_mode = !s.vim_mode;
             true
         }
         CTRL_CURSOR_ANIMATION => {
@@ -1823,7 +1830,7 @@ pub fn page(
     } else if selected == TERMINAL {
         render_page(&terminal_page(s), search, editing, w)
     } else if selected == KEYMAP {
-        render_page(&keymap_page(&state.keymap), search, editing, w)
+        render_page(&keymap_page(s, &state.keymap), search, editing, w)
     } else if selected == AGENT {
         render_page(&agent_page(s, &state.agent), search, editing, w)
     } else if selected == NOTIFICATIONS {
@@ -2062,7 +2069,7 @@ fn page_for(cat: usize) -> Option<Page> {
         EDITOR => Some(editor_page(&Settings::default())),
         LANGUAGES_TOOLS => Some(languages_tools_page(&Settings::default())),
         TERMINAL => Some(terminal_page(&Settings::default())),
-        KEYMAP => Some(keymap_page(&KeymapPage::default())),
+        KEYMAP => Some(keymap_page(&Settings::default(), &KeymapPage::default())),
         NOTIFICATIONS => Some(notifications_page(&Settings::default())),
         DEV_SERVICES => Some(dev_services_page(
             &Settings::default(),
@@ -3127,8 +3134,18 @@ fn terminal_page(s: &Settings) -> Page {
     }
 }
 
-fn keymap_page(keymap: &KeymapPage) -> Page {
+fn keymap_page(s: &Settings, keymap: &KeymapPage) -> Page {
     let mut items = vec![
+        PageItem::Header("Modal Editing"),
+        PageItem::Row(SettingRow {
+            title: "Vim Mode".into(),
+            description: "Enable vim mode and key bindings.".into(),
+            control: Control::Toggle {
+                id: CTRL_VIM_MODE,
+                on: s.vim_mode,
+            },
+            reset: reset_if_changed(CTRL_VIM_MODE, s),
+        }),
         PageItem::Header("Bindings"),
         PageItem::Row(SettingRow {
             title: "Edit Keybindings".into(),
@@ -4555,6 +4572,8 @@ mod tests {
         assert_eq!(s.reduce_motion, "on");
         assert!(handle_control(CTRL_CURSOR_BLINK, &mut s));
         assert!(!s.cursor_blink);
+        assert!(handle_control(CTRL_VIM_MODE, &mut s));
+        assert!(s.vim_mode);
         assert!(handle_control(CTRL_CURSOR_ANIMATION, &mut s));
         assert!(s.cursor_animation.enabled);
         for id in [
@@ -4562,6 +4581,7 @@ mod tests {
             CTRL_MULTI_CURSOR_MODIFIER,
             CTRL_REDUCE_MOTION,
             CTRL_CURSOR_BLINK,
+            CTRL_VIM_MODE,
             CTRL_CURSOR_ANIMATION,
         ] {
             assert!(reset_to_default(id, &mut s));
