@@ -342,6 +342,23 @@ pub trait SidePanelView: 'static {
         false
     }
     fn blur(&mut self) {}
+    /// Whether the panel's list has the keyboard (its rows move with the arrow keys).
+    fn has_keyboard(&self) -> bool {
+        false
+    }
+    fn set_keyboard(&mut self, _on: bool) {}
+    /// The keymap context this panel's list adds while it has the keyboard.
+    fn key_context(&self) -> Option<&'static str> {
+        None
+    }
+    /// A list key (up, down, home, end) while the list has the keyboard.
+    fn list_key(&mut self, _key: crate::EditKey, _shift: bool) -> bool {
+        false
+    }
+    /// A keymap action that belongs to this panel; false when it does not apply now.
+    fn panel_action(&mut self, _action: crate::keymap::Action) -> bool {
+        false
+    }
     fn restore_item(
         &mut self,
         _item: &crate::persistence::SerializedItem,

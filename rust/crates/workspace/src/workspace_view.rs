@@ -593,6 +593,7 @@ impl WorkspaceView {
                 self.set_terminal_focus(false);
                 self.set_agent_focus(false);
                 self.focus_group(InputGroup::Center);
+                self.set_panel_keyboard(None);
                 if let Some(files) = self.layout.files_view.as_mut() {
                     files.set_tree_focused(true);
                 }
@@ -631,21 +632,55 @@ impl WorkspaceView {
             | Action::TreeExpand
             | Action::TreeCollapseAll
             | Action::TreeExpandAll => return self.run_tree_action(action),
-            Action::FocusGit
-            | Action::FocusServices
-            | Action::FocusDatabase
-            | Action::FocusPullRequests => {
+            Action::FocusGit | Action::FocusServices | Action::FocusDatabase => {
                 let kind = match action {
                     Action::FocusServices => PaneKind::Services,
                     Action::FocusDatabase => PaneKind::Database,
                     _ => PaneKind::Git,
                 };
-                if action == Action::FocusPullRequests {
-                    self.show_function(kind);
-                } else if let Some(id) = function(kind) {
-                    self.header_click(id);
+                let keyboard = self
+                    .layout
+                    .side_panel(kind)
+                    .is_some_and(|panel| panel.key_context().is_some());
+                if !keyboard {
+                    if let Some(id) = function(kind) {
+                        self.header_click(id);
+                    }
+                    return true;
                 }
+                // Pressed again while the panel's list has the keyboard, it goes back to the editor.
+                if self.panel_with_keys() == Some(kind) {
+                    self.set_panel_keyboard(None);
+                    return true;
+                }
+                self.show_function(kind);
+                self.set_terminal_focus(false);
+                self.set_agent_focus(false);
+                self.focus_group(InputGroup::Center);
+                if let Some(panel) = self.layout.side_panel_mut(kind) {
+                    panel.blur();
+                }
+                self.set_panel_keyboard(Some(kind));
             }
+            Action::FocusPullRequests => self.show_function(PaneKind::Git),
+            Action::GitOpenEntry
+            | Action::GitToggleStaged
+            | Action::GitStageFile
+            | Action::GitUnstageFile
+            | Action::GitStageAll
+            | Action::GitUnstageAll
+            | Action::GitRestoreFile
+            | Action::GitCopyPath
+            | Action::GitCopyRelativePath
+            | Action::GitFocusCommitEditor
+            | Action::GitCollapse
+            | Action::GitExpand
+            | Action::GitFetch
+            | Action::GitPush
+            | Action::GitPull
+            | Action::GitChangesTab
+            | Action::GitRemoteTab
+            | Action::GitHistoryTab => return self.run_panel_action(PaneKind::Git, action),
             Action::ToggleAgent => self.header_click(AGENT_TOGGLE),
             Action::ToggleTerminal => self.toggle_terminal(),
             Action::NewTerminal => self.open_terminal_at(None),
@@ -5277,6 +5312,9 @@ impl WorkspaceView {
                 panel.blur();
             }
         }
+        if self.menu.is_none() {
+            self.set_panel_keyboard(pressed_panel);
+        }
         if let Some(rect) = self.modal_rect.take() {
             let inside = x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
             if !inside {
@@ -5601,7 +5639,7 @@ impl WorkspaceView {
                 return panel.text(text);
             }
         }
-        if self.tree_has_keys() {
+        if self.tree_has_keys() || self.panel_with_keys().is_some() {
             return true;
         }
         let group = self.text_group();
@@ -5650,8 +5688,85 @@ impl WorkspaceView {
             contexts.push(crate::keymap::TAB_SWITCHER);
         } else if self.tree_has_keys() {
             contexts.push(crate::keymap::PROJECT_PANEL);
+        } else if let Some(context) = self
+            .panel_with_keys()
+            .and_then(|kind| self.layout.side_panel(kind))
+            .and_then(|panel| panel.key_context())
+        {
+            contexts.push(context);
         }
         contexts
+    }
+
+    /// The side panel whose list has the keyboard: shown, picked by a click or its focus key, not typing into
+    /// its own text field, and nothing floats over it.
+    fn panel_with_keys(&self) -> Option<PaneKind> {
+        if self.menu.is_some()
+            || self.prompt_shown.is_some()
+            || self.window_modal.is_some()
+            || self.editor_modal_open()
+            || self.focused_group() != InputGroup::Center
+        {
+            return None;
+        }
+        self.layout
+            .side_panels
+            .iter()
+            .find(|panel| {
+                panel.has_keyboard() && !panel.text_focused() && self.function_shown(panel.kind())
+            })
+            .map(|panel| panel.kind())
+    }
+
+    /// Hands the keyboard to side panel `kind` (`None` gives it back to the editor), taking it from the tree.
+    fn set_panel_keyboard(&mut self, kind: Option<PaneKind>) {
+        for panel in self.layout.side_panels.iter_mut() {
+            let on = Some(panel.kind()) == kind;
+            if panel.has_keyboard() != on {
+                panel.set_keyboard(on);
+            }
+        }
+        if kind.is_some() {
+            if let Some(files) = self.layout.files_view.as_mut() {
+                files.set_tree_focused(false);
+            }
+        }
+    }
+
+    /// A key while a panel list has the keyboard, the way `tree_key` treats the file tree's.
+    fn panel_list_key(&mut self, kind: PaneKind, key: EditKey, shift: bool) -> Option<bool> {
+        if key == EditKey::Escape {
+            self.set_panel_keyboard(None);
+            return Some(true);
+        }
+        let moved = self
+            .layout
+            .side_panel_mut(kind)
+            .is_some_and(|panel| panel.list_key(key, shift));
+        if moved {
+            self.apply_panel_requests();
+            return Some(true);
+        }
+        let claimed = self
+            .layout
+            .files_view
+            .as_ref()
+            .is_some_and(|files| files.claims_key(key));
+        if claimed {
+            self.set_panel_keyboard(None);
+            return None;
+        }
+        Some(true)
+    }
+
+    /// Runs a panel's keymap action in panel `kind`, whether or not its list has the keyboard.
+    fn run_panel_action(&mut self, kind: PaneKind, action: crate::keymap::Action) -> bool {
+        let handled = self
+            .layout
+            .side_panel_mut(kind)
+            .is_some_and(|panel| panel.panel_action(action));
+        self.apply_panel_requests();
+        handled
     }
 
     fn tab_switcher_shown(switcher: &TabSwitcher) -> bool {
@@ -6017,6 +6132,11 @@ impl WorkspaceView {
                 let changed = panel.key(key, shift);
                 self.apply_panel_requests();
                 return changed;
+            }
+        }
+        if let Some(kind) = self.panel_with_keys() {
+            if let Some(handled) = self.panel_list_key(kind, key, shift) {
+                return handled;
             }
         }
         if self.tree_has_keys() {
@@ -9629,5 +9749,95 @@ mod tests {
         assert!(e.read(app.app()).notification_text().is_none());
         let text = frame_text(&app.draw(h).expect("frame"));
         assert!(!text.contains("Invalid pom.yml"), "{text}");
+    }
+
+    #[derive(Default)]
+    struct ListState {
+        keyboard: bool,
+        moves: usize,
+        actions: Vec<crate::keymap::Action>,
+    }
+
+    struct ListPanel(std::rc::Rc<std::cell::RefCell<ListState>>);
+
+    impl crate::SidePanelView for ListPanel {
+        fn kind(&self) -> PaneKind {
+            PaneKind::Git
+        }
+        fn render(&mut self, _width: f32, _height: f32) -> ui::Node {
+            ui::div().into()
+        }
+        fn click(&mut self, _id: u64) {}
+        fn set_hover(&mut self, _id: Option<u64>) -> bool {
+            false
+        }
+        fn scroll(&mut self, _dy: f32) -> bool {
+            false
+        }
+        fn open_menu(&mut self, _id: u64) -> bool {
+            false
+        }
+        fn menu_items(&self) -> Vec<MenuItem> {
+            Vec::new()
+        }
+        fn menu_action(&mut self, _item: u64) {}
+        fn take_requests(&mut self) -> Vec<crate::PanelRequest> {
+            Vec::new()
+        }
+        fn has_keyboard(&self) -> bool {
+            self.0.borrow().keyboard
+        }
+        fn set_keyboard(&mut self, on: bool) {
+            self.0.borrow_mut().keyboard = on;
+        }
+        fn key_context(&self) -> Option<&'static str> {
+            Some(crate::keymap::GIT_PANEL)
+        }
+        fn list_key(&mut self, key: EditKey, _shift: bool) -> bool {
+            let moved = key == EditKey::Down;
+            if moved {
+                self.0.borrow_mut().moves += 1;
+            }
+            moved
+        }
+        fn panel_action(&mut self, action: crate::keymap::Action) -> bool {
+            self.0.borrow_mut().actions.push(action);
+            true
+        }
+    }
+
+    #[test]
+    fn a_side_panel_list_takes_the_keyboard_and_gives_it_back() {
+        use crate::keymap::{Action, GIT_PANEL};
+        let (mut app, h, e) = open_with(Some(sample_project()));
+        let state = std::rc::Rc::new(std::cell::RefCell::new(ListState::default()));
+        let panel = ListPanel(state.clone());
+        e.update(app.app_mut(), |view, _| {
+            view.set_side_panels(vec![Box::new(panel)]);
+        });
+        app.draw(h);
+        e.update(app.app_mut(), |view, _| {
+            assert!(!view.key_contexts().contains(&GIT_PANEL));
+            assert!(view.run_action(Action::FocusGit));
+            assert!(view.key_contexts().contains(&GIT_PANEL));
+            assert!(view.editor_key(EditKey::Down, false));
+            assert!(
+                view.editor_text("x"),
+                "letters stay out of the file underneath"
+            );
+            assert!(view.run_action(Action::GitPush));
+            assert!(view.run_action(Action::FocusGit));
+            assert!(
+                !view.key_contexts().contains(&GIT_PANEL),
+                "pressed again it goes back to the editor"
+            );
+            assert!(view.run_action(Action::FocusGit));
+            assert!(view.editor_key(EditKey::Escape, false));
+            assert!(!view.key_contexts().contains(&GIT_PANEL));
+        });
+        let state = state.borrow();
+        assert_eq!(state.moves, 1);
+        assert_eq!(state.actions, vec![Action::GitPush]);
+        assert!(!state.keyboard);
     }
 }

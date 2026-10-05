@@ -69,10 +69,28 @@ pub enum Action {
     PreviousWorkspace,
     NextWorkspace,
     NextWorkspaceNeedingAttention,
+    GitOpenEntry,
+    GitToggleStaged,
+    GitStageFile,
+    GitUnstageFile,
+    GitStageAll,
+    GitUnstageAll,
+    GitRestoreFile,
+    GitCopyPath,
+    GitCopyRelativePath,
+    GitFocusCommitEditor,
+    GitCollapse,
+    GitExpand,
+    GitFetch,
+    GitPush,
+    GitPull,
+    GitChangesTab,
+    GitRemoteTab,
+    GitHistoryTab,
 }
 
 impl Action {
-    pub const ALL: [Action; 73] = [
+    pub const ALL: [Action; 91] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -146,6 +164,24 @@ impl Action {
         Action::PreviousWorkspace,
         Action::NextWorkspace,
         Action::NextWorkspaceNeedingAttention,
+        Action::GitOpenEntry,
+        Action::GitToggleStaged,
+        Action::GitStageFile,
+        Action::GitUnstageFile,
+        Action::GitStageAll,
+        Action::GitUnstageAll,
+        Action::GitRestoreFile,
+        Action::GitCopyPath,
+        Action::GitCopyRelativePath,
+        Action::GitFocusCommitEditor,
+        Action::GitCollapse,
+        Action::GitExpand,
+        Action::GitFetch,
+        Action::GitPush,
+        Action::GitPull,
+        Action::GitChangesTab,
+        Action::GitRemoteTab,
+        Action::GitHistoryTab,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -218,6 +254,24 @@ impl Action {
             Action::NextWorkspaceNeedingAttention => {
                 "workspace::ActivateNextWorkspaceNeedingAttention"
             }
+            Action::GitOpenEntry => "git_panel::OpenSelectedEntry",
+            Action::GitToggleStaged => "git::ToggleStaged",
+            Action::GitStageFile => "git::StageFile",
+            Action::GitUnstageFile => "git::UnstageFile",
+            Action::GitStageAll => "git::StageAll",
+            Action::GitUnstageAll => "git::UnstageAll",
+            Action::GitRestoreFile => "git::RestoreFile",
+            Action::GitCopyPath => "git_panel::CopyPath",
+            Action::GitCopyRelativePath => "git_panel::CopyRelativePath",
+            Action::GitFocusCommitEditor => "git_panel::FocusEditor",
+            Action::GitCollapse => "git_panel::CollapseSelectedEntry",
+            Action::GitExpand => "git_panel::ExpandSelectedEntry",
+            Action::GitFetch => "git::Fetch",
+            Action::GitPush => "git::Push",
+            Action::GitPull => "git::Pull",
+            Action::GitChangesTab => "git_panel::ActivateChangesTab",
+            Action::GitRemoteTab => "git_panel::ActivateRemoteTab",
+            Action::GitHistoryTab => "git_panel::ActivateHistoryTab",
         }
     }
 
@@ -299,6 +353,24 @@ impl Action {
             Action::PreviousWorkspace => "Previous Workspace",
             Action::NextWorkspace => "Next Workspace",
             Action::NextWorkspaceNeedingAttention => "Next Workspace Waiting for You",
+            Action::GitOpenEntry => "Git: Open",
+            Action::GitToggleStaged => "Git: Toggle Staged",
+            Action::GitStageFile => "Git: Stage File",
+            Action::GitUnstageFile => "Git: Unstage File",
+            Action::GitStageAll => "Git: Stage All",
+            Action::GitUnstageAll => "Git: Unstage All",
+            Action::GitRestoreFile => "Git: Discard Changes",
+            Action::GitCopyPath => "Git: Copy Path",
+            Action::GitCopyRelativePath => "Git: Copy Relative Path",
+            Action::GitFocusCommitEditor => "Git: Focus Commit Message",
+            Action::GitCollapse => "Git: Collapse",
+            Action::GitExpand => "Git: Expand",
+            Action::GitFetch => "Git: Fetch",
+            Action::GitPush => "Git: Push",
+            Action::GitPull => "Git: Pull",
+            Action::GitChangesTab => "Git: Changes",
+            Action::GitRemoteTab => "Git: Remote",
+            Action::GitHistoryTab => "Git: History",
         }
     }
 
@@ -454,8 +526,10 @@ pub const WORKSPACE: &str = "Workspace";
 pub const PROJECT_PANEL: &str = "ProjectPanel";
 /// The tab switcher is open.
 pub const TAB_SWITCHER: &str = "TabSwitcher";
+/// The Git panel's list has the keyboard.
+pub const GIT_PANEL: &str = "GitPanel";
 /// The contexts a keymap file may bind; others (the editor's own) are not the window's.
-pub const CONTEXTS: &[&str] = &[WORKSPACE, PROJECT_PANEL, TAB_SWITCHER];
+pub const CONTEXTS: &[&str] = &[WORKSPACE, PROJECT_PANEL, TAB_SWITCHER, GIT_PANEL];
 
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {
@@ -597,6 +671,29 @@ pub const MACOS_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
         "ctrl-backspace",
         Action::TabSwitcherCloseSelected,
     ),
+    (GIT_PANEL, "enter", Action::GitOpenEntry),
+    (GIT_PANEL, "space", Action::GitToggleStaged),
+    (GIT_PANEL, "cmd-alt-y", Action::GitToggleStaged),
+    (GIT_PANEL, "cmd-y", Action::GitStageFile),
+    (GIT_PANEL, "cmd-shift-y", Action::GitUnstageFile),
+    (GIT_PANEL, "cmd-ctrl-y", Action::GitStageAll),
+    (GIT_PANEL, "cmd-ctrl-shift-y", Action::GitUnstageAll),
+    (GIT_PANEL, "backspace", Action::GitRestoreFile),
+    (GIT_PANEL, "delete", Action::GitRestoreFile),
+    (GIT_PANEL, "cmd-backspace", Action::GitRestoreFile),
+    (GIT_PANEL, "cmd-delete", Action::GitRestoreFile),
+    (GIT_PANEL, "cmd-alt-c", Action::GitCopyPath),
+    (GIT_PANEL, "cmd-alt-shift-c", Action::GitCopyRelativePath),
+    (GIT_PANEL, "tab", Action::GitFocusCommitEditor),
+    (GIT_PANEL, "shift-tab", Action::GitFocusCommitEditor),
+    (GIT_PANEL, "left", Action::GitCollapse),
+    (GIT_PANEL, "right", Action::GitExpand),
+    (GIT_PANEL, "ctrl-g ctrl-g", Action::GitFetch),
+    (GIT_PANEL, "ctrl-g up", Action::GitPush),
+    (GIT_PANEL, "ctrl-g down", Action::GitPull),
+    (GIT_PANEL, "cmd-1", Action::GitChangesTab),
+    (GIT_PANEL, "cmd-2", Action::GitRemoteTab),
+    (GIT_PANEL, "cmd-3", Action::GitHistoryTab),
 ];
 
 pub const OTHER_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
@@ -630,6 +727,29 @@ pub const OTHER_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
         "ctrl-backspace",
         Action::TabSwitcherCloseSelected,
     ),
+    (GIT_PANEL, "enter", Action::GitOpenEntry),
+    (GIT_PANEL, "space", Action::GitToggleStaged),
+    (GIT_PANEL, "ctrl-alt-y", Action::GitToggleStaged),
+    (GIT_PANEL, "alt-y", Action::GitStageFile),
+    (GIT_PANEL, "alt-shift-y", Action::GitUnstageFile),
+    (GIT_PANEL, "ctrl-space", Action::GitStageAll),
+    (GIT_PANEL, "ctrl-shift-space", Action::GitUnstageAll),
+    (GIT_PANEL, "backspace", Action::GitRestoreFile),
+    (GIT_PANEL, "delete", Action::GitRestoreFile),
+    (GIT_PANEL, "ctrl-backspace", Action::GitRestoreFile),
+    (GIT_PANEL, "ctrl-delete", Action::GitRestoreFile),
+    (GIT_PANEL, "ctrl-alt-c", Action::GitCopyPath),
+    (GIT_PANEL, "ctrl-alt-shift-c", Action::GitCopyRelativePath),
+    (GIT_PANEL, "tab", Action::GitFocusCommitEditor),
+    (GIT_PANEL, "shift-tab", Action::GitFocusCommitEditor),
+    (GIT_PANEL, "left", Action::GitCollapse),
+    (GIT_PANEL, "right", Action::GitExpand),
+    (GIT_PANEL, "ctrl-g ctrl-g", Action::GitFetch),
+    (GIT_PANEL, "ctrl-g up", Action::GitPush),
+    (GIT_PANEL, "ctrl-g down", Action::GitPull),
+    (GIT_PANEL, "ctrl-1", Action::GitChangesTab),
+    (GIT_PANEL, "ctrl-2", Action::GitRemoteTab),
+    (GIT_PANEL, "ctrl-3", Action::GitHistoryTab),
 ];
 
 fn platform_context_defaults() -> &'static [(&'static str, &'static str, Action)] {

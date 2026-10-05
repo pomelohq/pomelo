@@ -4,6 +4,7 @@
 //! the panel refreshes while it is shown.
 
 mod commit_area;
+mod keys;
 mod render;
 mod rows;
 mod scan;
@@ -22,6 +23,7 @@ use git::working_copy::{self, Staging, Upstream};
 use git::{ChangeStatus, FileChange};
 use rows::Row;
 use scan::{review_key, RepoScan, Scan, Scanner};
+use workspace::list_nav::ListNav;
 use workspace::{EditKey, MenuItem, PaneKind, PanelRequest, SidePanelView};
 
 const ROW_STRIDE: u64 = 8;
@@ -194,6 +196,9 @@ pub struct GitPanel {
     base: u64,
     rows: Vec<Row>,
     hover: Option<u64>,
+    /// The list has the keyboard, and the row it is on.
+    keyboard: bool,
+    nav: ListNav,
     scroll: f32,
     viewport_h: f32,
     menu: Option<OpenMenu>,
@@ -241,6 +246,8 @@ impl GitPanel {
             base: workspace::side_panel_base(PaneKind::Git),
             rows: Vec::new(),
             hover: None,
+            keyboard: false,
+            nav: ListNav::default(),
             scroll: 0.0,
             viewport_h: 0.0,
             menu: None,
@@ -1311,13 +1318,9 @@ impl GitPanel {
             return;
         };
         let scan = self.current();
+        let fold = self.fold_key(&row).unwrap_or_default();
         match row {
-            Row::RepoHeader { repo, history } => {
-                let name = self
-                    .sources
-                    .get(repo)
-                    .map(|source| source.name.clone())
-                    .unwrap_or_default();
+            Row::RepoHeader { repo, .. } => {
                 if control == Control::Check {
                     let all_staged = scan.repos.get(repo).is_some_and(|state| {
                         state
@@ -1327,19 +1330,14 @@ impl GitPanel {
                     });
                     self.stage_repo(repo, !all_staged);
                 } else {
-                    self.toggle_fold(format!("{}:{name}", if history { "h" } else { "c" }));
+                    self.toggle_fold(fold);
                 }
             }
             Row::Section { repo, staged, .. } => {
                 if control == Control::Check {
                     self.stage_repo(repo, !staged);
                 } else {
-                    let name = self
-                        .sources
-                        .get(repo)
-                        .map(|source| source.name.clone())
-                        .unwrap_or_default();
-                    self.toggle_fold(format!("s:{name}:{staged}"));
+                    self.toggle_fold(fold);
                 }
             }
             Row::Directory {
@@ -1354,12 +1352,7 @@ impl GitPanel {
                         self.stage_directory(repo, scope, &path, staging);
                     }
                 } else {
-                    let name = self
-                        .sources
-                        .get(repo)
-                        .map(|source| source.name.clone())
-                        .unwrap_or_default();
-                    self.toggle_fold(format!("d:{}:{name}:{path}", scope.key()));
+                    self.toggle_fold(fold);
                 }
             }
             Row::File {
@@ -1372,14 +1365,7 @@ impl GitPanel {
             Row::Card { repo } => match control {
                 Control::Action => self.remote_primary(repo),
                 Control::Menu => self.remote_menu(repo),
-                _ => {
-                    let name = self
-                        .sources
-                        .get(repo)
-                        .map(|source| source.name.clone())
-                        .unwrap_or_default();
-                    self.toggle_fold(format!("r:{name}"));
-                }
+                _ => self.toggle_fold(fold),
             },
             Row::PullRequest { repo, .. } => {
                 if control == Control::External {
@@ -1389,22 +1375,7 @@ impl GitPanel {
                 }
             }
             Row::CreatePullRequest { repo } => self.create_pull_request(repo),
-            Row::CommitGroup { repo, incoming, .. } => {
-                let name = self
-                    .sources
-                    .get(repo)
-                    .map(|source| source.name.clone())
-                    .unwrap_or_default();
-                self.toggle_fold(format!("{}:{name}", if incoming { "in" } else { "out" }));
-            }
-            Row::FilesHeader { repo, .. } => {
-                let name = self
-                    .sources
-                    .get(repo)
-                    .map(|source| source.name.clone())
-                    .unwrap_or_default();
-                self.toggle_fold(format!("rf:{name}"));
-            }
+            Row::CommitGroup { .. } | Row::FilesHeader { .. } => self.toggle_fold(fold),
             Row::Commit {
                 repo,
                 commit,
@@ -1549,6 +1520,7 @@ impl SidePanelView for GitPanel {
             }
         }
         if let Some((index, control)) = self.decode(id) {
+            self.select_row(index);
             self.click_row(index, control);
         }
     }
@@ -1581,6 +1553,7 @@ impl SidePanelView for GitPanel {
             EditKey::ReplaceAll if shift && !self.commit.amend => self.toggle_amend(),
             EditKey::ReplaceAll => self.commit_now(),
             EditKey::Escape => self.commit.focused = false,
+            EditKey::Tab => self.take_keyboard(true),
             _ => return self.commit.editor.key(key, shift),
         }
         true
@@ -1588,6 +1561,26 @@ impl SidePanelView for GitPanel {
 
     fn blur(&mut self) {
         self.commit.focused = false;
+    }
+
+    fn has_keyboard(&self) -> bool {
+        self.keyboard
+    }
+
+    fn set_keyboard(&mut self, on: bool) {
+        self.take_keyboard(on);
+    }
+
+    fn key_context(&self) -> Option<&'static str> {
+        Some(workspace::keymap::GIT_PANEL)
+    }
+
+    fn list_key(&mut self, key: EditKey, shift: bool) -> bool {
+        self.nav_key(key, shift)
+    }
+
+    fn panel_action(&mut self, action: workspace::keymap::Action) -> bool {
+        self.run_key_action(action)
     }
 
     fn set_hover(&mut self, id: Option<u64>) -> bool {
