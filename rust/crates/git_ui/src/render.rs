@@ -68,7 +68,9 @@ impl GitPanel {
         let id = self.id(index, Control::Check);
         let boxed = div().child(checkbox(id, staging, self.hot(id)));
         if self.hot(id) {
-            tooltip(boxed, tip, false).into()
+            let tip =
+                workspace::keymap::with_key_hint(tip, workspace::keymap::Action::GitToggleStaged);
+            tooltip(boxed, &tip, false).into()
         } else {
             boxed.into()
         }
@@ -319,7 +321,11 @@ impl GitPanel {
                     self.hot(fetch) || fetching,
                 );
                 if self.hot(fetch) {
-                    button = tooltip(button, "git fetch in every repo", false);
+                    let tip = workspace::keymap::with_key_hint(
+                        "git fetch in every repo",
+                        workspace::keymap::Action::GitFetch,
+                    );
+                    button = tooltip(button, &tip, false);
                 }
                 fill(bar.child(button)).child(self.view_options()).into()
             }

@@ -647,7 +647,10 @@ pub(crate) fn render_panel(
             panel,
             NEW_CONSOLE,
             IconKind::Plus,
-            "New Console",
+            &workspace::keymap::with_key_hint(
+                "New Console",
+                workspace::keymap::Action::DatabaseNewConsole,
+            ),
         ))
         .child(header_button(panel, REFRESH, IconKind::RotateCw, "Refresh"))
         .child(header_button(

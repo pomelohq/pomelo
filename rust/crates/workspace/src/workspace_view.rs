@@ -186,6 +186,15 @@ struct Zoom {
     sides: [bool; 4],
 }
 
+/// A part of the window the keyboard can be moved to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Region {
+    Editor,
+    Panel(PaneKind),
+    Terminal,
+    Agent,
+}
+
 /// Which pane group input goes to: the editor area's or the terminal panel's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum InputGroup {
@@ -589,14 +598,7 @@ impl WorkspaceView {
                     }
                     return true;
                 }
-                self.show_function(PaneKind::Files);
-                self.set_terminal_focus(false);
-                self.set_agent_focus(false);
-                self.focus_group(InputGroup::Center);
-                self.set_panel_keyboard(None);
-                if let Some(files) = self.layout.files_view.as_mut() {
-                    files.set_tree_focused(true);
-                }
+                self.focus_tree();
             }
             Action::ToggleTabSwitcher | Action::ToggleTabSwitcherLast => {
                 let forward = action == Action::ToggleTabSwitcher;
@@ -653,14 +655,11 @@ impl WorkspaceView {
                     self.set_panel_keyboard(None);
                     return true;
                 }
-                self.show_function(kind);
-                self.set_terminal_focus(false);
-                self.set_agent_focus(false);
-                self.focus_group(InputGroup::Center);
-                if let Some(panel) = self.layout.side_panel_mut(kind) {
-                    panel.blur();
-                }
-                self.set_panel_keyboard(Some(kind));
+                self.focus_panel_list(kind);
+            }
+            Action::FocusEditor => self.focus_editor(),
+            Action::NextRegion | Action::PreviousRegion => {
+                return self.step_region(action == Action::NextRegion)
             }
             Action::FocusPullRequests => self.show_function(PaneKind::Git),
             Action::GitOpenEntry
@@ -705,11 +704,20 @@ impl WorkspaceView {
             Action::ToggleAgent => self.header_click(AGENT_TOGGLE),
             Action::ToggleTerminal => self.toggle_terminal(),
             Action::NewTerminal => self.open_terminal_at(None),
-            Action::CloseActiveItem | Action::CloseAllItems => {
-                let command = if action == Action::CloseActiveItem {
-                    crate::pane::PaneCommand::CloseActiveItem
-                } else {
-                    crate::pane::PaneCommand::CloseAllItems
+            Action::CloseActiveItem
+            | Action::CloseAllItems
+            | Action::CloseOtherItems
+            | Action::CloseItemsToTheLeft
+            | Action::CloseItemsToTheRight
+            | Action::CloseCleanItems => {
+                use crate::pane::PaneCommand;
+                let command = match action {
+                    Action::CloseActiveItem => PaneCommand::CloseActiveItem,
+                    Action::CloseOtherItems => PaneCommand::CloseOtherItems,
+                    Action::CloseItemsToTheLeft => PaneCommand::CloseItemsToTheLeft,
+                    Action::CloseItemsToTheRight => PaneCommand::CloseItemsToTheRight,
+                    Action::CloseCleanItems => PaneCommand::CloseCleanItems,
+                    _ => PaneCommand::CloseAllItems,
                 };
                 let group = self.focused_group();
                 let handled = self
@@ -1549,6 +1557,7 @@ impl WorkspaceView {
 
     /// The keymap's bindings, shown next to the window commands in the palette.
     pub fn set_bindings(&mut self, bindings: Vec<(crate::keymap::Action, String)>) {
+        crate::keymap::set_key_hints(&bindings);
         self.bindings = bindings;
     }
 
@@ -5803,6 +5812,111 @@ impl WorkspaceView {
         handled
     }
 
+    fn focus_tree(&mut self) {
+        self.show_function(PaneKind::Files);
+        self.focus_group(InputGroup::Center);
+        self.set_panel_keyboard(None);
+        if let Some(files) = self.layout.files_view.as_mut() {
+            files.set_tree_focused(true);
+        }
+    }
+
+    fn focus_panel_list(&mut self, kind: PaneKind) {
+        self.show_function(kind);
+        self.focus_group(InputGroup::Center);
+        if let Some(panel) = self.layout.side_panel_mut(kind) {
+            panel.blur();
+        }
+        self.set_panel_keyboard(Some(kind));
+    }
+
+    /// Back to the editor from a panel list, the tree, a terminal or an agent.
+    fn focus_editor(&mut self) {
+        self.focus_group(InputGroup::Center);
+        self.set_panel_keyboard(None);
+        if let Some(files) = self.layout.files_view.as_mut() {
+            files.set_tree_focused(false);
+        }
+    }
+
+    /// The parts of the window that can hold the keyboard, in the order Next Region visits them.
+    fn regions(&self) -> Vec<Region> {
+        let mut regions = vec![Region::Editor];
+        for side in [
+            DockPosition::Left,
+            DockPosition::Right,
+            DockPosition::Bottom,
+        ] {
+            if !self.layout.dock_open(side) {
+                continue;
+            }
+            let region = match self.layout.shown_on(side) {
+                Some(Shown::Func(PaneKind::Files)) => Region::Panel(PaneKind::Files),
+                Some(Shown::Func(kind))
+                    if self
+                        .layout
+                        .side_panel(kind)
+                        .is_some_and(|panel| panel.key_context().is_some()) =>
+                {
+                    Region::Panel(kind)
+                }
+                Some(Shown::Terminal) => Region::Terminal,
+                Some(Shown::Agent) => Region::Agent,
+                _ => continue,
+            };
+            if !regions.contains(&region) {
+                regions.push(region);
+            }
+        }
+        if self.layout.terminal_visible() && !regions.contains(&Region::Terminal) {
+            regions.push(Region::Terminal);
+        }
+        if self.layout.agent_visible() && !regions.contains(&Region::Agent) {
+            regions.push(Region::Agent);
+        }
+        regions
+    }
+
+    fn current_region(&self) -> Region {
+        match self.focused_group() {
+            InputGroup::Agent => Region::Agent,
+            InputGroup::Panel => Region::Terminal,
+            InputGroup::Center if self.tree_has_keys() => Region::Panel(PaneKind::Files),
+            InputGroup::Center => self.panel_with_keys().map_or(Region::Editor, Region::Panel),
+        }
+    }
+
+    /// Moves the keyboard to the next (or previous) region, wrapping around.
+    fn step_region(&mut self, forward: bool) -> bool {
+        let regions = self.regions();
+        if regions.len() < 2 {
+            return false;
+        }
+        let at = regions
+            .iter()
+            .position(|region| *region == self.current_region())
+            .unwrap_or(0);
+        let next = if forward {
+            (at + 1) % regions.len()
+        } else {
+            (at + regions.len() - 1) % regions.len()
+        };
+        match regions.get(next).copied() {
+            Some(Region::Editor) | None => self.focus_editor(),
+            Some(Region::Panel(PaneKind::Files)) => self.focus_tree(),
+            Some(Region::Panel(kind)) => self.focus_panel_list(kind),
+            Some(Region::Terminal) => {
+                self.set_panel_keyboard(None);
+                self.focus_group(InputGroup::Panel);
+            }
+            Some(Region::Agent) => {
+                self.set_panel_keyboard(None);
+                self.focus_group(InputGroup::Agent);
+            }
+        }
+        true
+    }
+
     /// The groups whose front tab an agent action looks at: the focused one, then the agent dock's.
     fn agent_action_groups(&self) -> Vec<InputGroup> {
         let mut groups = vec![self.focused_group()];
@@ -10000,6 +10114,46 @@ mod tests {
             assert!(view.run_action(Action::RunNotificationAction));
             assert!(view.notification_text().is_none());
             assert!(view.take_effects().update.is_some(), "restarts to update");
+        });
+    }
+
+    #[test]
+    fn regions_cycle_and_cmd_escape_returns_to_the_editor() {
+        use crate::keymap::{Action, GIT_PANEL};
+        let (mut app, h, e) = open_with(Some(sample_project()));
+        let state = std::rc::Rc::new(std::cell::RefCell::new(ListState::default()));
+        e.update(app.app_mut(), |view, _| {
+            view.set_side_panels(vec![Box::new(ListPanel(state.clone()))]);
+        });
+        app.draw(h);
+        e.update(app.app_mut(), |view, _| {
+            assert!(view.run_action(Action::FocusGit));
+            assert!(view.key_contexts().contains(&GIT_PANEL));
+            assert!(view.run_action(Action::FocusEditor));
+            assert_eq!(view.current_region(), Region::Editor);
+            assert!(!view.key_contexts().contains(&GIT_PANEL));
+
+            let regions = view.regions();
+            assert!(
+                regions.contains(&Region::Panel(PaneKind::Git)),
+                "{regions:?}"
+            );
+            let mut visited = Vec::new();
+            for _ in 0..regions.len() {
+                assert!(view.run_action(Action::NextRegion));
+                visited.push(view.current_region());
+            }
+            assert_eq!(
+                visited.last(),
+                Some(&Region::Editor),
+                "wraps around: {visited:?}"
+            );
+            assert!(
+                visited.contains(&Region::Panel(PaneKind::Git)),
+                "{visited:?}"
+            );
+            assert!(view.run_action(Action::PreviousRegion));
+            assert_eq!(Some(&view.current_region()), regions.last());
         });
     }
 }

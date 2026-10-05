@@ -1255,17 +1255,25 @@ impl PaneGroupView {
                 self.toggle_zoom();
                 true
             }
-            PaneCommand::CloseActiveItem | PaneCommand::CloseAllItems => {
+            PaneCommand::CloseActiveItem
+            | PaneCommand::CloseAllItems
+            | PaneCommand::CloseOtherItems
+            | PaneCommand::CloseItemsToTheLeft
+            | PaneCommand::CloseItemsToTheRight
+            | PaneCommand::CloseCleanItems => {
                 let Some((pane, index)) = self
                     .pane_at(&self.active)
                     .and_then(|pane| Some((pane.id, pane.active?)))
                 else {
                     return false;
                 };
-                let which = if command == PaneCommand::CloseActiveItem {
-                    CloseTabs::This
-                } else {
-                    CloseTabs::All
+                let which = match command {
+                    PaneCommand::CloseActiveItem => CloseTabs::This,
+                    PaneCommand::CloseOtherItems => CloseTabs::Others,
+                    PaneCommand::CloseItemsToTheLeft => CloseTabs::Left,
+                    PaneCommand::CloseItemsToTheRight => CloseTabs::Right,
+                    PaneCommand::CloseCleanItems => CloseTabs::Clean,
+                    _ => CloseTabs::All,
                 };
                 self.close_tabs(pane, index, which);
                 true
@@ -3145,5 +3153,23 @@ mod tests {
         }
         assert!(view.pane_command(PaneCommand::CloseAllItems));
         assert_eq!(titles(&mut view), ["a"], "pinned tabs stay");
+
+        if let Some(pane) = view.active_pane_mut() {
+            for title in ["b", "c", "d"] {
+                pane.add_item(Box::new(Plain(title)));
+            }
+            pane.active = Some(2);
+        }
+        assert!(view.pane_command(PaneCommand::CloseItemsToTheRight));
+        assert_eq!(titles(&mut view), ["a", "b", "c"]);
+        assert!(view.pane_command(PaneCommand::CloseItemsToTheLeft));
+        assert_eq!(titles(&mut view), ["a", "c"], "the pinned tab stays");
+        if let Some(pane) = view.active_pane_mut() {
+            pane.add_item(Box::new(Plain("e")));
+        }
+        assert!(view.pane_command(PaneCommand::CloseOtherItems));
+        assert_eq!(titles(&mut view), ["a", "e"]);
+        assert!(view.pane_command(PaneCommand::CloseCleanItems));
+        assert_eq!(titles(&mut view), ["a"]);
     }
 }
