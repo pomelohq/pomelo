@@ -40,6 +40,10 @@ pub enum PaneCommand {
     TogglePinTab,
     CloseActiveItem,
     CloseAllItems,
+    CloseOtherItems,
+    CloseItemsToTheLeft,
+    CloseItemsToTheRight,
+    CloseCleanItems,
 }
 
 #[derive(Default)]

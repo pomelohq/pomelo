@@ -106,10 +106,17 @@ pub enum Action {
     StopAgent,
     RunNotificationAction,
     DismissNotification,
+    CloseOtherItems,
+    CloseItemsToTheLeft,
+    CloseItemsToTheRight,
+    CloseCleanItems,
+    FocusEditor,
+    NextRegion,
+    PreviousRegion,
 }
 
 impl Action {
-    pub const ALL: [Action; 110] = [
+    pub const ALL: [Action; 117] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -220,6 +227,13 @@ impl Action {
         Action::StopAgent,
         Action::RunNotificationAction,
         Action::DismissNotification,
+        Action::CloseOtherItems,
+        Action::CloseItemsToTheLeft,
+        Action::CloseItemsToTheRight,
+        Action::CloseCleanItems,
+        Action::FocusEditor,
+        Action::NextRegion,
+        Action::PreviousRegion,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -329,6 +343,13 @@ impl Action {
             Action::StopAgent => "agent::StopAgent",
             Action::RunNotificationAction => "notification::RunAction",
             Action::DismissNotification => "notification::Dismiss",
+            Action::CloseOtherItems => "pane::CloseOtherItems",
+            Action::CloseItemsToTheLeft => "pane::CloseItemsToTheLeft",
+            Action::CloseItemsToTheRight => "pane::CloseItemsToTheRight",
+            Action::CloseCleanItems => "pane::CloseCleanItems",
+            Action::FocusEditor => "workspace::FocusCenter",
+            Action::NextRegion => "workspace::ActivateNextRegion",
+            Action::PreviousRegion => "workspace::ActivatePreviousRegion",
         }
     }
 
@@ -447,6 +468,13 @@ impl Action {
             Action::StopAgent => "Agent: Stop",
             Action::RunNotificationAction => "Notification: Run Action",
             Action::DismissNotification => "Notification: Dismiss",
+            Action::CloseOtherItems => "Close Other Tabs",
+            Action::CloseItemsToTheLeft => "Close Tabs to the Left",
+            Action::CloseItemsToTheRight => "Close Tabs to the Right",
+            Action::CloseCleanItems => "Close Saved Tabs",
+            Action::FocusEditor => "Focus the Editor",
+            Action::NextRegion => "Focus Next Region",
+            Action::PreviousRegion => "Focus Previous Region",
         }
     }
 
@@ -600,6 +628,31 @@ pub enum KeyMatch {
 pub const WORKSPACE: &str = "Workspace";
 /// The file tree has the keyboard.
 pub const PROJECT_PANEL: &str = "ProjectPanel";
+thread_local! {
+    static KEY_HINTS: std::cell::RefCell<Vec<(Action, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Records the window's bindings so tooltips anywhere can name the keys of their action.
+pub fn set_key_hints(bindings: &[(Action, String)]) {
+    KEY_HINTS.with(|hints| *hints.borrow_mut() = bindings.to_vec());
+}
+
+/// `text` followed by the keys bound to `action`, when it has any.
+pub fn with_key_hint(text: &str, action: Action) -> String {
+    let keys = KEY_HINTS.with(|hints| {
+        hints
+            .borrow()
+            .iter()
+            .find(|(bound, _)| *bound == action)
+            .map(|(_, keys)| keys.clone())
+    });
+    match keys {
+        Some(keys) => format!("{text}  {keys}"),
+        None => text.to_string(),
+    }
+}
+
 /// The tab switcher is open.
 pub const TAB_SWITCHER: &str = "TabSwitcher";
 /// The Git panel's list has the keyboard.
@@ -660,6 +713,13 @@ pub const MACOS_DEFAULTS: &[(&str, Action)] = &[
     ("cmd-k .", Action::StopAgent),
     ("cmd-k enter", Action::RunNotificationAction),
     ("cmd-k escape", Action::DismissNotification),
+    ("cmd-alt-t", Action::CloseOtherItems),
+    ("cmd-k e", Action::CloseItemsToTheLeft),
+    ("cmd-k t", Action::CloseItemsToTheRight),
+    ("cmd-k u", Action::CloseCleanItems),
+    ("cmd-escape", Action::FocusEditor),
+    ("cmd-k tab", Action::NextRegion),
+    ("cmd-k shift-tab", Action::PreviousRegion),
     ("cmd-shift-u", Action::OpenAgentUsage),
     ("cmd-1", Action::ActivateTab(0)),
     ("cmd-2", Action::ActivateTab(1)),
@@ -718,6 +778,13 @@ pub const OTHER_DEFAULTS: &[(&str, Action)] = &[
     ("ctrl-k .", Action::StopAgent),
     ("ctrl-k enter", Action::RunNotificationAction),
     ("ctrl-k escape", Action::DismissNotification),
+    ("ctrl-alt-t", Action::CloseOtherItems),
+    ("ctrl-k e", Action::CloseItemsToTheLeft),
+    ("ctrl-k t", Action::CloseItemsToTheRight),
+    ("ctrl-k u", Action::CloseCleanItems),
+    ("ctrl-escape", Action::FocusEditor),
+    ("ctrl-k tab", Action::NextRegion),
+    ("ctrl-k shift-tab", Action::PreviousRegion),
     ("ctrl-shift-u", Action::OpenAgentUsage),
     ("ctrl-1", Action::ActivateTab(0)),
     ("ctrl-2", Action::ActivateTab(1)),
@@ -1217,5 +1284,15 @@ mod tests {
                 "{keys}"
             );
         }
+    }
+
+    #[test]
+    fn tooltips_name_the_keys_of_their_action() {
+        set_key_hints(&[(Action::GitFetch, "ctrl-g ctrl-g".into())]);
+        assert_eq!(
+            with_key_hint("Fetch All", Action::GitFetch),
+            "Fetch All  ctrl-g ctrl-g"
+        );
+        assert_eq!(with_key_hint("Push", Action::GitPush), "Push", "unbound");
     }
 }
