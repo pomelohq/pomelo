@@ -58,6 +58,8 @@ pub struct Pane {
     pub tab_scroll_active: Option<usize>,
     /// The id of the preview tab: the next preview opened replaces it, until it is kept.
     pub preview: Option<String>,
+    /// Tab ids in the order they were last active, the most recent last.
+    pub activation: Vec<String>,
 }
 
 impl PaneId for Pane {
@@ -138,6 +140,38 @@ impl Pane {
         if edited {
             self.keep_preview();
         }
+    }
+
+    /// Remembers the active tab as the most recently used one.
+    pub fn note_activation(&mut self) {
+        const KEPT: usize = 64;
+        let Some(id) = self.active_item().and_then(|item| item.id()) else {
+            return;
+        };
+        if self.activation.last() == Some(&id) {
+            return;
+        }
+        self.activation.retain(|seen| *seen != id);
+        self.activation.push(id);
+        if self.activation.len() > KEPT {
+            self.activation.remove(0);
+        }
+    }
+
+    /// Tab indices, the most recently used first; tabs never active follow in tab order.
+    pub fn indices_by_recency(&self) -> Vec<usize> {
+        let rank = |index: usize| {
+            self.open
+                .get(index)
+                .and_then(|item| item.id())
+                .and_then(|id| self.activation.iter().rposition(|seen| *seen == id))
+        };
+        let mut indices: Vec<usize> = (0..self.open.len()).collect();
+        indices.sort_by_key(|index| match rank(*index) {
+            Some(position) => (0, usize::MAX - position),
+            None => (1, *index),
+        });
+        indices
     }
 
     pub fn is_preview(&self, index: usize) -> bool {

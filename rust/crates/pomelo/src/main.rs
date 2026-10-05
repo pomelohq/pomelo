@@ -3637,6 +3637,11 @@ impl ApplicationHandler for App {
                 alt: self.alt_down,
                 ctrl: self.ctrl_down,
             });
+            if self.with_workspace_view(id, |v, _| v.modifiers_changed()) == Some(true) {
+                if let Some(m) = self.mains.get_mut(&id) {
+                    m.dirty = true;
+                }
+            }
             if let Some((x, y)) = self.mains.get(&id).map(|m| m.cursor) {
                 let scale = self
                     .mains

@@ -581,6 +581,9 @@ pub const WORKSPACE_TICKET_END: u64 = 6000;
 /// A group header in the WORKSPACES list (or its marker on the rail), by `TicketGroup::index`.
 pub const WORKSPACE_GROUP_BASE: u64 = 6000;
 pub const WORKSPACE_GROUP_END: u64 = 6010;
+/// Rows of the tab switcher.
+pub const TAB_SWITCHER_BASE: u64 = 8000;
+pub const TAB_SWITCHER_END: u64 = 9000;
 /// The WORKSPACES header's new-workspace button.
 pub const WORKSPACE_NEW: u64 = 14;
 /// The status bar's button for the active workspace's Jira ticket.

@@ -194,6 +194,20 @@ enum InputGroup {
     Agent,
 }
 
+/// The tab switcher: the focused pane's tabs, most recently used first. Opened with ctrl held, it waits a
+/// moment before showing (a quick tap just goes back to the previous tab) and lets go of ctrl to pick.
+struct TabSwitcher {
+    group: InputGroup,
+    entries: Vec<crate::pane_group_view::TabEntry>,
+    nav: crate::list_nav::ListNav,
+    held: bool,
+    opened: Instant,
+}
+
+/// How long a held ctrl-tab waits before the switcher shows.
+const TAB_SWITCHER_DELAY: Duration = Duration::from_millis(300);
+const TAB_SWITCHER_W: f32 = 448.0;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
     None,
@@ -333,6 +347,7 @@ pub struct WorkspaceView {
     submenu_nav: crate::list_nav::ListNav,
     menu_nav_in_submenu: bool,
     menu_nav_target: Option<u64>,
+    tab_switcher: Option<TabSwitcher>,
     menu_editor_anchor: Option<(Vec<usize>, usize)>,
     /// The tab a tab context menu was opened on: its group, pane id and index.
     menu_tab: Option<(InputGroup, u64, usize)>,
@@ -377,6 +392,7 @@ impl WorkspaceView {
             submenu_nav: crate::list_nav::ListNav::default(),
             menu_nav_in_submenu: false,
             menu_nav_target: None,
+            tab_switcher: None,
             submenu: None,
             menu_editor_anchor: None,
             menu_tab: None,
@@ -581,6 +597,23 @@ impl WorkspaceView {
                     files.set_tree_focused(true);
                 }
             }
+            Action::ToggleTabSwitcher | Action::ToggleTabSwitcherLast => {
+                let forward = action == Action::ToggleTabSwitcher;
+                if self.tab_switcher.is_some() {
+                    self.tab_switcher_move(if forward {
+                        crate::list_nav::NavMove::Next
+                    } else {
+                        crate::list_nav::NavMove::Previous
+                    });
+                } else {
+                    return self.open_tab_switcher(!forward);
+                }
+            }
+            Action::TabSwitcherCloseSelected => return self.tab_switcher_close_selected(),
+            Action::PreviousWorkspace | Action::NextWorkspace => {
+                return self.step_workspace(action == Action::NextWorkspace);
+            }
+            Action::NextWorkspaceNeedingAttention => return self.next_workspace_needing_you(),
             Action::TreeOpen
             | Action::TreeRename
             | Action::TreeNewFile
@@ -1332,7 +1365,10 @@ impl WorkspaceView {
     }
 
     pub fn ticking(&self) -> bool {
-        self.toast.is_some()
+        self.tab_switcher
+            .as_ref()
+            .is_some_and(|switcher| !Self::tab_switcher_shown(switcher))
+            || self.toast.is_some()
             || self
                 .page
                 .as_ref()
@@ -2604,7 +2640,16 @@ impl WorkspaceView {
             node: modal.render(),
             elevation: crate::Elevation::Modal,
         });
-        let modal = match window_modal {
+        let tab_switcher = self
+            .tab_switcher
+            .as_ref()
+            .filter(|switcher| Self::tab_switcher_shown(switcher))
+            .map(|switcher| crate::ModalView {
+                width: TAB_SWITCHER_W,
+                node: tab_switcher_node(switcher, self.session_menu_hover),
+                elevation: crate::Elevation::Modal,
+            });
+        let modal = match window_modal.or(tab_switcher) {
             Some(modal) => Some(modal),
             None => self
                 .layout
@@ -5148,6 +5193,22 @@ impl WorkspaceView {
                 self.titlebar_click = Some((now, x, y));
             }
         }
+        if self.tab_switcher.is_some() {
+            let row = self
+                .hit(x, y)
+                .filter(|id| (crate::TAB_SWITCHER_BASE..crate::TAB_SWITCHER_END).contains(id))
+                .map(|id| (id - crate::TAB_SWITCHER_BASE) as usize);
+            match row {
+                Some(row) => {
+                    if let Some(switcher) = self.tab_switcher.as_mut() {
+                        switcher.nav.selected = Some(row);
+                    }
+                    self.confirm_tab_switcher();
+                }
+                None => self.tab_switcher = None,
+            }
+            return;
+        }
         if self.prompt_shown.is_some() {
             if let Some(index) = self
                 .hit(x, y)
@@ -5526,6 +5587,9 @@ impl WorkspaceView {
         if self.prompt_shown.is_some() {
             return false;
         }
+        if self.tab_switcher.is_some() {
+            return true;
+        }
         if self.menu.is_some() {
             return self.menu_shortcut(&text.trim().to_uppercase());
         }
@@ -5582,10 +5646,203 @@ impl WorkspaceView {
     /// Where the keyboard is, broadest first, for keymap bindings that apply in one part of the window.
     pub fn key_contexts(&self) -> Vec<&'static str> {
         let mut contexts = vec![crate::keymap::WORKSPACE];
-        if self.tree_has_keys() {
+        if self.tab_switcher.is_some() {
+            contexts.push(crate::keymap::TAB_SWITCHER);
+        } else if self.tree_has_keys() {
             contexts.push(crate::keymap::PROJECT_PANEL);
         }
         contexts
+    }
+
+    fn tab_switcher_shown(switcher: &TabSwitcher) -> bool {
+        !switcher.held || switcher.opened.elapsed() >= TAB_SWITCHER_DELAY
+    }
+
+    /// Lists the focused pane's tabs, the most recent first, on the previous tab (or the oldest with
+    /// `select_last`); false with nothing to switch between.
+    fn open_tab_switcher(&mut self, select_last: bool) -> bool {
+        let group = self.focused_group();
+        let Some(panes) = self.group_view_mut(group) else {
+            return false;
+        };
+        let entries = panes.tabs_by_recency();
+        if entries.is_empty() {
+            return false;
+        }
+        let mut nav = crate::list_nav::ListNav::default();
+        let movement = if select_last {
+            crate::list_nav::NavMove::Last
+        } else {
+            crate::list_nav::NavMove::First
+        };
+        nav.apply(movement, entries.len(), true, |_| true);
+        if !select_last {
+            nav.apply(crate::list_nav::NavMove::Next, entries.len(), true, |_| {
+                true
+            });
+        }
+        self.tab_switcher = Some(TabSwitcher {
+            group,
+            entries,
+            nav,
+            held: ui::modifiers().ctrl,
+            opened: Instant::now(),
+        });
+        true
+    }
+
+    fn tab_switcher_move(&mut self, movement: crate::list_nav::NavMove) {
+        if let Some(switcher) = self.tab_switcher.as_mut() {
+            let len = switcher.entries.len();
+            switcher.nav.apply(movement, len, true, |_| true);
+        }
+    }
+
+    fn confirm_tab_switcher(&mut self) {
+        let Some(switcher) = self.tab_switcher.take() else {
+            return;
+        };
+        let Some(index) = switcher
+            .nav
+            .selected
+            .and_then(|row| switcher.entries.get(row))
+            .map(|entry| entry.index)
+        else {
+            return;
+        };
+        if let Some(panes) = self.group_view_mut(switcher.group) {
+            panes.activate_tab(index);
+        }
+    }
+
+    /// Closes the highlighted tab and keeps the switcher open on the rest.
+    fn tab_switcher_close_selected(&mut self) -> bool {
+        let Some(switcher) = self.tab_switcher.as_ref() else {
+            return false;
+        };
+        let group = switcher.group;
+        let Some(index) = switcher
+            .nav
+            .selected
+            .and_then(|row| switcher.entries.get(row))
+            .map(|entry| entry.index)
+        else {
+            return false;
+        };
+        let row = switcher.nav.selected;
+        // The tab in front stays in front; only the highlighted one goes.
+        let front = switcher.entries.first().and_then(|entry| entry.id.clone());
+        let Some(panes) = self.group_view_mut(group) else {
+            return false;
+        };
+        panes.activate_tab(index);
+        panes.pane_command(crate::pane::PaneCommand::CloseActiveItem);
+        if let Some(front) = front {
+            panes.reveal_item(&front);
+        }
+        let entries = panes.tabs_by_recency();
+        self.ask_about_pending_close();
+        match self.tab_switcher.as_mut() {
+            Some(switcher) if !entries.is_empty() => {
+                switcher.entries = entries;
+                switcher.nav.selected = row;
+                switcher.nav.clamp(switcher.entries.len());
+            }
+            _ => self.tab_switcher = None,
+        }
+        true
+    }
+
+    /// Letting go of ctrl picks the highlighted tab of a switcher opened with it held.
+    pub fn modifiers_changed(&mut self) -> bool {
+        let release = self
+            .tab_switcher
+            .as_ref()
+            .is_some_and(|switcher| switcher.held && !ui::modifiers().ctrl);
+        if release {
+            self.confirm_tab_switcher();
+        }
+        release
+    }
+
+    /// The workspaces in the order the WORKSPACES list shows them: main first, then as listed or grouped.
+    fn sidebar_order(&self) -> Vec<usize> {
+        let Some(project) = self.layout.project.as_ref() else {
+            return Vec::new();
+        };
+        let count = project.workspaces.len();
+        let mut order = Vec::with_capacity(count);
+        if count > 0 {
+            order.push(0);
+        }
+        match self.grouping.as_ref() {
+            None => order.extend(1..count),
+            Some(grouping) => {
+                for group in &grouping.order {
+                    if grouping.folded.contains(group) {
+                        continue;
+                    }
+                    order.extend((1..count).filter(|index| self.row_group(*index) == *group));
+                }
+            }
+        }
+        order
+    }
+
+    fn current_workspace(&self) -> Option<usize> {
+        let project = self.layout.project.as_ref()?;
+        project
+            .workspaces
+            .iter()
+            .position(|branch| *branch == project.active)
+    }
+
+    /// The workspace above (or below, `forward`) the current one in the list, wrapping around.
+    fn step_workspace(&mut self, forward: bool) -> bool {
+        let order = self.sidebar_order();
+        if order.len() < 2 {
+            return false;
+        }
+        let at = self
+            .current_workspace()
+            .and_then(|current| order.iter().position(|index| *index == current))
+            .unwrap_or(0);
+        let next = if forward {
+            (at + 1) % order.len()
+        } else {
+            (at + order.len() - 1) % order.len()
+        };
+        self.pending.activate_workspace = order.get(next).copied();
+        true
+    }
+
+    /// The next workspace, after the current one in list order, whose agent waits for an answer.
+    fn next_workspace_needing_you(&mut self) -> bool {
+        let order = self.sidebar_order();
+        let Some(project) = self.layout.project.as_ref() else {
+            return false;
+        };
+        let at = self
+            .current_workspace()
+            .and_then(|current| order.iter().position(|index| *index == current))
+            .unwrap_or(0);
+        let waiting = (1..=order.len())
+            .map(|step| order[(at + step) % order.len()])
+            .find(|index| {
+                project.workspaces.get(*index).is_some_and(|branch| {
+                    self.layout.agent_states.get(branch) == Some(&crate::AgentDot::AwaitingInput)
+                })
+            });
+        match waiting {
+            Some(index) => {
+                self.pending.activate_workspace = Some(index);
+                true
+            }
+            None => {
+                self.show_toast("No workspace is waiting for you", None);
+                true
+            }
+        }
     }
 
     /// A key while the tree has the keyboard: list keys move, Escape hands the keyboard back to the editor,
@@ -5694,6 +5951,16 @@ impl WorkspaceView {
     pub fn editor_key(&mut self, key: EditKey, shift: bool) -> bool {
         if self.prompt_shown.is_some() {
             return self.prompt_key(key, shift);
+        }
+        if self.tab_switcher.is_some() {
+            if let Some(movement) = crate::list_nav::nav_move(key, shift) {
+                self.tab_switcher_move(movement);
+            } else if key == EditKey::Enter {
+                self.confirm_tab_switcher();
+            } else if key == EditKey::Escape {
+                self.tab_switcher = None;
+            }
+            return true;
         }
         if self.usage_popover.is_some() && key == EditKey::Escape {
             self.usage_popover = None;
@@ -6324,6 +6591,7 @@ impl WorkspaceView {
         if self.prompt_shown.is_some()
             || self.window_modal.is_some()
             || self.menu.is_some()
+            || self.tab_switcher.is_some()
             || self.panel_text_kind().is_some()
         {
             return false;
@@ -7559,6 +7827,45 @@ const PROMPT_W: f32 = 320.0;
 
 /// A confirmation over a dimmed window, after the reference's in-app prompt: message, muted detail, and one
 /// full-width button per answer with the highlighted one tinted.
+/// The tab switcher's list: each tab's icon and title, the highlighted one selected, the preview in italics.
+fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
+    let colors = ui::theme();
+    let mut list = ui::div()
+        .col()
+        .p(4.0)
+        .rounded(8.0)
+        .bg(colors.elevated_surface_background)
+        .border(1.0, colors.border_variant);
+    for (row, entry) in switcher.entries.iter().enumerate() {
+        let id = crate::TAB_SWITCHER_BASE + row as u64;
+        let glyph: ui::Node = match entry.icon {
+            Some(kind) => ui::icon(kind).size(14.0).color(colors.icon_muted).into(),
+            None => ui::material_icon(entry.material).size(14.0).into(),
+        };
+        let mut title = ui::label(entry.title.clone()).color(colors.text);
+        if entry.preview {
+            title = title.italic();
+        }
+        let mut line = ui::div()
+            .row()
+            .h_px(28.0)
+            .px(8.0)
+            .gap(8.0)
+            .items_center()
+            .rounded(6.0)
+            .on_click(id)
+            .child(glyph)
+            .child(title);
+        if switcher.nav.selected == Some(row) {
+            line = line.bg(colors.element_selected);
+        } else if hovered == Some(id) {
+            line = line.bg(colors.element_hover);
+        }
+        list = list.child(line);
+    }
+    list.into()
+}
+
 fn prompt_dialog(prompt: &crate::Prompt, active: usize, w: f32, h: f32) -> Painted {
     let colors = ui::theme();
     let scale = ui::ui_text_scale();
@@ -8755,6 +9062,52 @@ mod tests {
                 .iter()
                 .any(|item| item.id == crate::MENU_TERM_ASK_AGENT),
             "an agent's own tab is not sent to an agent"
+        );
+    }
+
+    #[test]
+    fn workspaces_step_in_list_order_and_find_the_one_waiting_for_you() {
+        let project = crate::ProjectInfo {
+            workspaces: vec![
+                "main".into(),
+                "feat-a".into(),
+                "feat-b".into(),
+                "feat-c".into(),
+            ],
+            active: "feat-a".into(),
+            ..sample_project()
+        };
+        let (mut app, h, e) = open_with(Some(project));
+        app.draw(h);
+        let next = |app: &mut Application, action| {
+            e.update(app.app_mut(), |view, _| {
+                assert!(view.run_action(action));
+                view.take_effects().activate_workspace
+            })
+        };
+        use crate::keymap::Action;
+        assert_eq!(next(&mut app, Action::NextWorkspace), Some(2));
+        assert_eq!(next(&mut app, Action::PreviousWorkspace), Some(0));
+        e.update(app.app_mut(), |view, _| {
+            if let Some(project) = view.layout.project.as_mut() {
+                project.active = "main".into();
+            }
+        });
+        assert_eq!(
+            next(&mut app, Action::PreviousWorkspace),
+            Some(3),
+            "the list wraps around"
+        );
+        e.update(app.app_mut(), |view, _| {
+            view.set_agent_states(
+                [("feat-b".to_string(), crate::AgentDot::AwaitingInput)]
+                    .into_iter()
+                    .collect(),
+            );
+        });
+        assert_eq!(
+            next(&mut app, Action::NextWorkspaceNeedingAttention),
+            Some(2)
         );
     }
 

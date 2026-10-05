@@ -127,6 +127,17 @@ pub enum GroupClick {
     },
 }
 
+/// A tab as the tab switcher lists it.
+#[derive(Clone)]
+pub struct TabEntry {
+    pub index: usize,
+    pub id: Option<String>,
+    pub title: String,
+    pub preview: bool,
+    pub icon: Option<ui::IconKind>,
+    pub material: ui::MaterialIcon,
+}
+
 pub struct PaneGroupView {
     config: PaneGroupConfig,
     pub group: Member<Pane>,
@@ -293,6 +304,45 @@ impl PaneGroupView {
         }
         let path = self.active.clone();
         self.group.leaf_at_mut(&path)
+    }
+
+    pub fn note_activations(&mut self) {
+        self.group
+            .for_each_pane_mut(&mut |pane| pane.note_activation());
+    }
+
+    /// The active pane's tabs, the most recently used first.
+    pub fn tabs_by_recency(&mut self) -> Vec<TabEntry> {
+        self.note_activations();
+        let Some(pane) = self.active_pane_mut() else {
+            return Vec::new();
+        };
+        pane.indices_by_recency()
+            .into_iter()
+            .filter_map(|index| {
+                let item = pane.open.get(index)?;
+                Some(TabEntry {
+                    index,
+                    id: item.id(),
+                    title: item.title(),
+                    preview: pane.is_preview(index),
+                    icon: item.tab_icon(),
+                    material: item.icon().unwrap_or(ui::MaterialIcon::Document),
+                })
+            })
+            .collect()
+    }
+
+    /// Makes tab `index` of the active pane the active one.
+    pub fn activate_tab(&mut self, index: usize) -> bool {
+        let Some(pane) = self.active_pane_mut() else {
+            return false;
+        };
+        if index >= pane.open.len() {
+            return false;
+        }
+        pane.activate_user(index);
+        true
     }
 
     pub fn reveal_item(&mut self, id: &str) -> bool {
@@ -788,6 +838,7 @@ impl PaneGroupView {
 
     /// Lay the panes out in `area`: each pane's chrome and body, and the dividers between them.
     pub fn layout(&mut self, area: Rect) -> (Vec<PanePlacement>, Vec<DividerPlacement>) {
+        self.note_activations();
         let mut placements = Vec::new();
         let mut pane_order = Vec::new();
         let mut pane_rects = Vec::new();
