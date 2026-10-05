@@ -3971,6 +3971,9 @@ impl ApplicationHandler for App {
                         "p" => key(EditKey::Up),
                         "n" => key(EditKey::Down),
                         "h" => key(EditKey::Backspace),
+                        // Vim's half-page scrolls; outside vim mode these keep their text-field meaning.
+                        "d" if self.settings.vim_mode => key(EditKey::PageDown),
+                        "u" if self.settings.vim_mode => key(EditKey::PageUp),
                         "d" => key(EditKey::Delete),
                         "w" => key(EditKey::DeleteWordLeft),
                         "t" => key(EditKey::Transpose),

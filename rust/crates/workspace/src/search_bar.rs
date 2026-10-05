@@ -204,6 +204,17 @@ impl SearchBar {
         self.activate_current(item);
     }
 
+    /// Searches again for the last query after the bar was closed, without showing or focusing it.
+    pub fn resume(&mut self, item: &mut dyn Searchable) {
+        if !self.dismissed || self.query.text().is_empty() {
+            return;
+        }
+        self.dismissed = false;
+        self.focus = None;
+        self.searched = None;
+        self.refresh(item);
+    }
+
     pub fn dismiss(&mut self, item: &mut dyn Searchable) {
         self.dismissed = true;
         self.focus = None;

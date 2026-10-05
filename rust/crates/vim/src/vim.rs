@@ -32,6 +32,17 @@ impl Mode {
     }
 }
 
+/// Work for the editor around the buffer: its find bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Request {
+    /// `/` and `?`: open the find bar.
+    OpenSearch,
+    /// `n` / `N`: the next or previous match of the find bar's query.
+    NextMatch { reverse: bool },
+    /// `*` / `#`: search for the word under the cursor (now selected), forward or back.
+    SearchSelection { backward: bool },
+}
+
 /// Whether the editor still has to act on the key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -179,11 +190,39 @@ pub struct Vim {
     recording_insert: bool,
     last_change: Vec<Recorded>,
     replaying: bool,
+    requests: Vec<Request>,
 }
 
 impl Vim {
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// The find-bar work the last keys asked for, once.
+    pub fn take_requests(&mut self) -> Vec<Request> {
+        std::mem::take(&mut self.requests)
+    }
+
+    fn search(&mut self, typed: char, buffer: &mut EditorBuffer) -> Done {
+        self.count = None;
+        self.requests.push(match typed {
+            '/' | '?' => Request::OpenSearch,
+            'n' | 'N' => Request::NextMatch {
+                reverse: typed == 'N',
+            },
+            _ => {
+                let cursor = buffer.cursor();
+                if char_at(buffer, cursor).is_none_or(|c| kind(c, false) != CharKind::Word) {
+                    return Done::Moved;
+                }
+                buffer.collapse_cursors();
+                buffer.select_word_at(cursor);
+                Request::SearchSelection {
+                    backward: typed == '#',
+                }
+            }
+        });
+        Done::Moved
     }
 
     /// Where the block cursor sits in Visual mode, which the selection's end does not show.
@@ -425,6 +464,7 @@ impl Vim {
                 self.operate_on_lines(operator, count, buffer)
             }
             'p' | 'P' => self.paste(typed == 'p', buffer),
+            '/' | '?' | 'n' | 'N' | '*' | '#' => self.search(typed, buffer),
             'J' => self.join_lines(buffer),
             'u' => {
                 self.count = None;
@@ -1182,6 +1222,28 @@ mod tests {
         check("|abcd", "vlcX<esc>", "|Xcd");
         check("|a\nb\n", "Vj>", "    |a\n    b\n");
         check("ab|c", "v<esc>", "ab|c");
+    }
+
+    #[test]
+    fn search_keys_ask_the_find_bar() {
+        let mut vim = Vim::default();
+        run(&mut vim, "|foo bar", "/");
+        assert_eq!(vim.take_requests(), [Request::OpenSearch]);
+        run(&mut vim, "|foo bar", "nN");
+        assert_eq!(
+            vim.take_requests(),
+            [
+                Request::NextMatch { reverse: false },
+                Request::NextMatch { reverse: true }
+            ]
+        );
+        run(&mut vim, "f|oo bar", "#");
+        assert_eq!(
+            vim.take_requests(),
+            [Request::SearchSelection { backward: true }]
+        );
+        run(&mut vim, "foo| bar", "*");
+        assert!(vim.take_requests().is_empty(), "no word under the cursor");
     }
 
     #[test]

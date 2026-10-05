@@ -1029,6 +1029,28 @@ impl PaneGroupView {
         pane.search_target()
     }
 
+    /// Runs the find-bar keys the active item asked for while handling its input.
+    fn run_pane_keys(&mut self) {
+        let keys = self
+            .editable_item_mut()
+            .map(|item| item.take_pane_keys())
+            .unwrap_or_default();
+        if keys.is_empty() {
+            return;
+        }
+        for key in keys {
+            if matches!(key, EditKey::SelectNextMatch | EditKey::SelectPreviousMatch) {
+                if let Some((bar, item)) = self.active_pane_mut().and_then(Pane::search_target) {
+                    bar.resume(item);
+                }
+            }
+            self.search_command(key);
+        }
+        if let Some(item) = self.editable_item_mut() {
+            item.pane_keys_done();
+        }
+    }
+
     /// Run a find-bar key command on the focused pane; returns false for keys it does not handle.
     pub fn search_command(&mut self, key: EditKey) -> bool {
         let Some((bar, item)) = self.active_pane_mut().and_then(Pane::search_target) else {
@@ -1188,6 +1210,7 @@ impl PaneGroupView {
             }
             None => false,
         };
+        self.run_pane_keys();
         self.refresh_search();
         changed
     }
@@ -1749,13 +1772,15 @@ impl ItemInput for PaneGroupView {
                 bar.input(item, text);
                 return true;
             }
-            match group.editable_item_mut() {
+            let typed = match group.editable_item_mut() {
                 Some(item) => {
                     item.input_text(text);
                     true
                 }
                 None => false,
-            }
+            };
+            group.run_pane_keys();
+            typed
         })
     }
 
