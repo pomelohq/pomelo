@@ -17,7 +17,8 @@ Pomelo runs on macOS today; the Windows / Linux column shows the keys those
 platforms will use.
 
 The context says where a binding works: `Workspace` everywhere in the window,
-`ProjectPanel` only while the file tree has the keyboard. A keymap file
+`ProjectPanel` only while the file tree has the keyboard, `TabSwitcher` only
+while the tab switcher is open. A keymap file
 section binds a context with `\"context\": \"ProjectPanel\"`.
 
 | Action | Name | Context | macOS | Windows / Linux |

@@ -12266,3 +12266,77 @@ mod tree_keyboard_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tab_switcher_tests {
+    use super::*;
+    use workspace::keymap::{Action, TAB_SWITCHER};
+
+    fn titles(view: &mut workspace::WorkspaceView) -> Option<String> {
+        view.layout()
+            .files_view
+            .as_ref()
+            .and_then(|files| files.active_file_path())
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+    }
+
+    #[test]
+    fn ctrl_tab_goes_back_to_the_previous_tab_and_closes_from_the_list() {
+        let temp = tempfile::tempdir().expect("temp");
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            std::fs::write(temp.path().join(name), "x\n").expect("file");
+        }
+        let mut files = FilesView::scanned(temp.path().to_path_buf());
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            files.open_path(name);
+            files.panes.keep_edited_previews();
+            if let Some(pane) = files.panes.active_pane_mut() {
+                pane.keep_preview();
+            }
+            files.panes.note_activations();
+        }
+        let mut view = workspace::WorkspaceView::new(workspace::Layout {
+            project: Some(workspace::ProjectInfo::default()),
+            files_view: Some(Box::new(files)),
+            ..Default::default()
+        });
+        assert_eq!(titles(&mut view).as_deref(), Some("c.rs"));
+
+        assert!(view.run_action(Action::ToggleTabSwitcher));
+        assert!(view.key_contexts().contains(&TAB_SWITCHER));
+        assert!(view.editor_text("x"), "typing does not reach the file");
+        view.editor_key(EditKey::Enter, false);
+        assert_eq!(
+            titles(&mut view).as_deref(),
+            Some("b.rs"),
+            "the previous tab"
+        );
+        assert!(!view.key_contexts().contains(&TAB_SWITCHER));
+
+        view.run_action(Action::ToggleTabSwitcher);
+        view.run_action(Action::ToggleTabSwitcher);
+        view.editor_key(EditKey::Enter, false);
+        assert_eq!(
+            titles(&mut view).as_deref(),
+            Some("a.rs"),
+            "pressed twice, the one before"
+        );
+
+        view.run_action(Action::ToggleTabSwitcher);
+        assert!(
+            view.run_action(Action::TabSwitcherCloseSelected),
+            "b.rs goes"
+        );
+        view.editor_key(EditKey::Escape, false);
+        view.run_action(Action::ToggleTabSwitcher);
+        view.editor_key(EditKey::Enter, false);
+        assert_eq!(
+            titles(&mut view).as_deref(),
+            Some("c.rs"),
+            "ctrl-backspace closed the highlighted tab, so the previous one is now c.rs"
+        );
+    }
+}

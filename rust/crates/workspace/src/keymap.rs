@@ -63,10 +63,16 @@ pub enum Action {
     TreeExpand,
     TreeCollapseAll,
     TreeExpandAll,
+    ToggleTabSwitcher,
+    ToggleTabSwitcherLast,
+    TabSwitcherCloseSelected,
+    PreviousWorkspace,
+    NextWorkspace,
+    NextWorkspaceNeedingAttention,
 }
 
 impl Action {
-    pub const ALL: [Action; 67] = [
+    pub const ALL: [Action; 73] = [
         Action::CommandPalette,
         Action::FileFinder,
         Action::ProjectSearch,
@@ -134,6 +140,12 @@ impl Action {
         Action::TreeExpand,
         Action::TreeCollapseAll,
         Action::TreeExpandAll,
+        Action::ToggleTabSwitcher,
+        Action::ToggleTabSwitcherLast,
+        Action::TabSwitcherCloseSelected,
+        Action::PreviousWorkspace,
+        Action::NextWorkspace,
+        Action::NextWorkspaceNeedingAttention,
     ];
 
     /// The name a keymap file binds, `namespace::Action`.
@@ -198,6 +210,14 @@ impl Action {
             Action::TreeExpand => "project_panel::ExpandSelectedEntry",
             Action::TreeCollapseAll => "project_panel::CollapseAllEntries",
             Action::TreeExpandAll => "project_panel::ExpandAllEntries",
+            Action::ToggleTabSwitcher => "tab_switcher::Toggle",
+            Action::ToggleTabSwitcherLast => "tab_switcher::ToggleSelectLast",
+            Action::TabSwitcherCloseSelected => "tab_switcher::CloseSelectedItem",
+            Action::PreviousWorkspace => "workspace::ActivatePreviousWorkspace",
+            Action::NextWorkspace => "workspace::ActivateNextWorkspace",
+            Action::NextWorkspaceNeedingAttention => {
+                "workspace::ActivateNextWorkspaceNeedingAttention"
+            }
         }
     }
 
@@ -273,6 +293,12 @@ impl Action {
             Action::TreeExpand => "Files: Expand",
             Action::TreeCollapseAll => "Files: Collapse All",
             Action::TreeExpandAll => "Files: Expand All",
+            Action::ToggleTabSwitcher => "Switch Tab",
+            Action::ToggleTabSwitcherLast => "Switch Tab (Oldest First)",
+            Action::TabSwitcherCloseSelected => "Tab Switcher: Close Selected Tab",
+            Action::PreviousWorkspace => "Previous Workspace",
+            Action::NextWorkspace => "Next Workspace",
+            Action::NextWorkspaceNeedingAttention => "Next Workspace Waiting for You",
         }
     }
 
@@ -426,8 +452,10 @@ pub enum KeyMatch {
 pub const WORKSPACE: &str = "Workspace";
 /// The file tree has the keyboard.
 pub const PROJECT_PANEL: &str = "ProjectPanel";
+/// The tab switcher is open.
+pub const TAB_SWITCHER: &str = "TabSwitcher";
 /// The contexts a keymap file may bind; others (the editor's own) are not the window's.
-pub const CONTEXTS: &[&str] = &[WORKSPACE, PROJECT_PANEL];
+pub const CONTEXTS: &[&str] = &[WORKSPACE, PROJECT_PANEL, TAB_SWITCHER];
 
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {
@@ -479,6 +507,11 @@ pub const MACOS_DEFAULTS: &[(&str, Action)] = &[
     ("cmd-alt-right", Action::ActivateNextTab),
     ("cmd-shift-[", Action::ActivatePreviousTab),
     ("cmd-shift-]", Action::ActivateNextTab),
+    ("ctrl-tab", Action::ToggleTabSwitcher),
+    ("ctrl-shift-tab", Action::ToggleTabSwitcherLast),
+    ("cmd-alt-up", Action::PreviousWorkspace),
+    ("cmd-alt-down", Action::NextWorkspace),
+    ("cmd-alt-a", Action::NextWorkspaceNeedingAttention),
 ];
 
 /// Linux and Windows: the same commands on Control, with those platforms' tab keys.
@@ -525,6 +558,11 @@ pub const OTHER_DEFAULTS: &[(&str, Action)] = &[
     ("ctrl-pagedown", Action::ActivateNextTab),
     ("ctrl-shift-[", Action::ActivatePreviousTab),
     ("ctrl-shift-]", Action::ActivateNextTab),
+    ("ctrl-tab", Action::ToggleTabSwitcher),
+    ("ctrl-shift-tab", Action::ToggleTabSwitcherLast),
+    ("ctrl-alt-up", Action::PreviousWorkspace),
+    ("ctrl-alt-down", Action::NextWorkspace),
+    ("ctrl-alt-a", Action::NextWorkspaceNeedingAttention),
 ];
 
 /// Bindings that apply only while one part of the window has the keyboard, as `(context, keys, action)`.
@@ -554,6 +592,11 @@ pub const MACOS_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
     (PROJECT_PANEL, "right", Action::TreeExpand),
     (PROJECT_PANEL, "cmd-left", Action::TreeCollapseAll),
     (PROJECT_PANEL, "cmd-right", Action::TreeExpandAll),
+    (
+        TAB_SWITCHER,
+        "ctrl-backspace",
+        Action::TabSwitcherCloseSelected,
+    ),
 ];
 
 pub const OTHER_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
@@ -582,6 +625,11 @@ pub const OTHER_CONTEXT_DEFAULTS: &[(&str, &str, Action)] = &[
     (PROJECT_PANEL, "right", Action::TreeExpand),
     (PROJECT_PANEL, "ctrl-left", Action::TreeCollapseAll),
     (PROJECT_PANEL, "ctrl-right", Action::TreeExpandAll),
+    (
+        TAB_SWITCHER,
+        "ctrl-backspace",
+        Action::TabSwitcherCloseSelected,
+    ),
 ];
 
 fn platform_context_defaults() -> &'static [(&'static str, &'static str, Action)] {
