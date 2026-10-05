@@ -4200,6 +4200,37 @@ impl Item for FileItem {
         true
     }
 
+    fn take_pane_keys(&mut self) -> Vec<EditKey> {
+        self.vim
+            .take_requests()
+            .into_iter()
+            .flat_map(|request| match request {
+                vim::Request::OpenSearch => vec![EditKey::DeploySearch],
+                vim::Request::NextMatch { reverse: false } => vec![EditKey::SelectNextMatch],
+                vim::Request::NextMatch { reverse: true } => vec![EditKey::SelectPreviousMatch],
+                vim::Request::SearchSelection { backward } => vec![
+                    EditKey::UseSelectionForFind,
+                    if backward {
+                        EditKey::SelectPreviousMatch
+                    } else {
+                        EditKey::SelectNextMatch
+                    },
+                ],
+            })
+            .collect()
+    }
+
+    fn pane_keys_done(&mut self) {
+        // A found match is selected; Normal mode keeps only a cursor, at its start.
+        if vim_mode() && self.vim.mode() == vim::Mode::Normal {
+            if let Some(b) = self.buffer.as_mut() {
+                let start = b.newest().start;
+                b.collapse_cursors();
+                b.place_cursor(start);
+            }
+        }
+    }
+
     fn mode_label(&self) -> Option<&'static str> {
         (vim_mode() && self.buffer.is_some() && !self.read_only).then(|| self.vim.mode().label())
     }
@@ -12373,6 +12404,45 @@ mod tree_keyboard_tests {
             !view.key_contexts().contains(&PROJECT_PANEL),
             "while the name is edited, keys go to the field"
         );
+    }
+}
+
+#[cfg(test)]
+mod vim_search_tests {
+    use super::*;
+
+    #[test]
+    fn star_and_n_search_through_the_find_bar() {
+        let temp = tempfile::tempdir().expect("temp");
+        std::fs::write(temp.path().join("a.rs"), "foo bar\nfoo baz\nfoo\n").expect("file");
+        let mut files = FilesView::scanned(temp.path().to_path_buf());
+        files.open_path("a.rs");
+        set_vim_mode(true);
+        let line = |files: &FilesView| {
+            files
+                .cursor_position()
+                .and_then(|text| text.split(':').next().map(str::to_string))
+        };
+        assert!(files.editor_text("*"));
+        assert_eq!(line(&files).as_deref(), Some("2"), "* goes to the next foo");
+        assert!(files.editor_text("n"));
+        assert_eq!(line(&files).as_deref(), Some("3"));
+        assert!(files.editor_text("N"));
+        assert_eq!(line(&files).as_deref(), Some("2"));
+        files.editor_key(EditKey::Escape, false);
+        assert!(
+            files.editor_text("n"),
+            "n searches again after the bar closed"
+        );
+        assert_eq!(line(&files).as_deref(), Some("3"));
+        assert!(files.editor_text("x"));
+        assert!(
+            files
+                .cursor_position()
+                .is_some_and(|text| text.starts_with("3:1")),
+            "x deletes at the match, a cursor not a selection"
+        );
+        set_vim_mode(false);
     }
 }
 

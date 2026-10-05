@@ -1320,6 +1320,12 @@ pub trait Item: 'static {
     fn toolbar_click(&mut self, _id: u64) -> bool {
         false
     }
+    /// Find-bar keys the item asked its pane to run after its last input (vim's `/`, `n`, `*`).
+    fn take_pane_keys(&mut self) -> Vec<EditKey> {
+        Vec::new()
+    }
+    /// The pane ran the keys `take_pane_keys` gave it.
+    fn pane_keys_done(&mut self) {}
     /// A keymap action aimed at the item (an agent tab's take over, allow, deny); false when it does not apply.
     fn item_action(&mut self, _action: crate::keymap::Action) -> bool {
         false
