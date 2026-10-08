@@ -631,7 +631,8 @@ enum LineKind {
     },
     Rule(RuleKind),
     TableRow {
-        cells: Vec<Runs>,
+        /// Each cell's text, already wrapped to its column.
+        cells: Vec<Vec<Runs>>,
         widths: Vec<f32>,
         alignments: Vec<Alignment>,
         header: bool,
@@ -767,6 +768,43 @@ fn wrap_spans(spans: &[Span], width: f32, font: Font) -> Vec<Runs> {
         rows.pop();
     }
     rows
+}
+
+/// A cell's narrowest possible width (its widest word) and its width on one line.
+fn content_widths(spans: &[Span], font: Font) -> (f32, f32) {
+    let mut narrowest = 0.0_f32;
+    let mut one_line = 0.0_f32;
+    for span in spans {
+        one_line += font.width(&span.text, span.style);
+        for word in span.text.split_whitespace() {
+            narrowest = narrowest.max(font.width(word, span.style));
+        }
+    }
+    (narrowest, one_line)
+}
+
+/// Column widths for a table `available` wide: each column's content on one line when it all fits; otherwise
+/// every column keeps its widest word and the rest of the room goes to columns in proportion to how much more
+/// they want, so long text wraps instead of crowding out short columns. When even the widest words do not fit,
+/// columns shrink in proportion and wrapping breaks inside words.
+fn column_widths(least: &[f32], most: &[f32], available: f32) -> Vec<f32> {
+    let available = available.max(0.0);
+    let wanted: f32 = most.iter().sum();
+    if wanted <= available {
+        return most.to_vec();
+    }
+    let floor: f32 = least.iter().sum();
+    if floor >= available {
+        let factor = if floor > 0.0 { available / floor } else { 0.0 };
+        return least.iter().map(|width| width * factor).collect();
+    }
+    let room = available - floor;
+    let extra = wanted - floor;
+    least
+        .iter()
+        .zip(most)
+        .map(|(low, high)| low + (high - low) * room / extra)
+        .collect()
 }
 
 fn syntax_theme() -> editor::Theme {
@@ -1017,38 +1055,45 @@ impl Markdown {
                 Block::Table { alignments, rows } => {
                     let font = Font::of(&style, None);
                     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-                    let cell_runs = |cell: &Vec<Span>| -> Runs {
+                    let cell_font = |row_index: usize| Font {
+                        weight: (row_index == 0).then_some(HEADING_WEIGHT),
+                        ..font
+                    };
+                    let one_line = |cell: &Vec<Span>| -> Vec<Span> {
                         cell.iter()
-                            .map(|span| (span.text.replace('\n', " "), span.style))
+                            .map(|span| Span {
+                                text: span.text.replace('\n', " "),
+                                style: span.style,
+                            })
                             .collect()
                     };
-                    let mut widths = vec![0.0_f32; columns];
+                    let (mut least, mut most) = (vec![0.0_f32; columns], vec![0.0_f32; columns]);
                     for (row_index, row) in rows.iter().enumerate() {
-                        let cell_font = Font {
-                            weight: (row_index == 0).then_some(HEADING_WEIGHT),
-                            ..font
-                        };
+                        let cell_font = cell_font(row_index);
                         for (column, cell) in row.iter().enumerate() {
-                            let text_width: f32 = cell_runs(cell)
-                                .iter()
-                                .map(|(text, span)| cell_font.width(text, *span))
-                                .sum();
-                            widths[column] =
-                                widths[column].max(text_width + 2.0 * TABLE_CELL_PAD_X);
+                            let (narrowest, widest_line) =
+                                content_widths(&one_line(cell), cell_font);
+                            least[column] = least[column].max(narrowest + 2.0 * TABLE_CELL_PAD_X);
+                            most[column] = most[column].max(widest_line + 2.0 * TABLE_CELL_PAD_X);
                         }
                     }
-                    let total: f32 = widths.iter().sum::<f32>() + RULE_THICKNESS;
-                    if total > width && total > 0.0 {
-                        let factor = width / total;
-                        for column_width in &mut widths {
-                            *column_width *= factor;
-                        }
-                    }
+                    let widths = column_widths(&least, &most, width - RULE_THICKNESS);
                     let table_width: f32 = widths.iter().sum::<f32>() + RULE_THICKNESS;
                     widest = widest.max(table_width.min(width));
                     for (row_index, row) in rows.iter().enumerate() {
-                        let mut cells: Vec<Runs> = row.iter().map(cell_runs).collect();
-                        cells.resize(columns, Vec::new());
+                        let cell_font = cell_font(row_index);
+                        let mut cells: Vec<Vec<Runs>> = row
+                            .iter()
+                            .enumerate()
+                            .map(|(column, cell)| {
+                                let inner =
+                                    (widths[column] - RULE_THICKNESS - 2.0 * TABLE_CELL_PAD_X)
+                                        .max(1.0);
+                                wrap_spans(&one_line(cell), inner, cell_font)
+                            })
+                            .collect();
+                        cells.resize(columns, vec![Vec::new()]);
+                        let tallest = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
                         lines.push(Line {
                             kind: LineKind::TableRow {
                                 cells,
@@ -1057,7 +1102,7 @@ impl Markdown {
                                 header: row_index == 0,
                                 odd: row_index > 0 && row_index % 2 == 0,
                             },
-                            height: style.line_height + 2.0 * TABLE_CELL_PAD_Y,
+                            height: tallest as f32 * style.line_height + 2.0 * TABLE_CELL_PAD_Y,
                             block: 0,
                         });
                     }
@@ -1290,27 +1335,32 @@ impl MarkdownLayout {
                     for (column, cell) in cells.iter().enumerate() {
                         let cell_width = widths.get(column).copied().unwrap_or(0.0);
                         let mut content = div()
-                            .row()
-                            .items_center()
+                            .col()
                             .w_px((cell_width - RULE_THICKNESS).max(0.0))
                             .h_px(line.height)
-                            .px(TABLE_CELL_PAD_X);
-                        content = match alignments.get(column) {
-                            Some(Alignment::Center) => content.justify_center(),
-                            Some(Alignment::Right) => content.justify_end(),
-                            _ => content,
-                        };
+                            .px(TABLE_CELL_PAD_X)
+                            .py(TABLE_CELL_PAD_Y);
                         if let Some(background) = background {
                             content = content.bg(background);
                         }
-                        for (text, style) in cell {
-                            content = content.child(render_run(
-                                text,
-                                *style,
-                                colors.editor_foreground,
-                                font,
-                                link_base,
-                            ));
+                        for runs in cell {
+                            let mut text_row =
+                                div().row().items_center().h_px(self.style.line_height);
+                            text_row = match alignments.get(column) {
+                                Some(Alignment::Center) => text_row.justify_center(),
+                                Some(Alignment::Right) => text_row.justify_end(),
+                                _ => text_row,
+                            };
+                            for (text, style) in runs {
+                                text_row = text_row.child(render_run(
+                                    text,
+                                    *style,
+                                    colors.editor_foreground,
+                                    font,
+                                    link_base,
+                                ));
+                            }
+                            content = content.child(text_row);
                         }
                         row = row.child(content).child(rule());
                     }
@@ -1585,6 +1635,97 @@ mod tests {
         };
         assert!(widths.iter().sum::<f32>() <= 300.0);
         assert!(layout.width <= 300.0);
+    }
+
+    type TableRowView<'a> = (&'a Vec<Vec<Runs>>, &'a Vec<f32>, bool, f32);
+
+    fn table_rows(layout: &MarkdownLayout) -> Vec<TableRowView<'_>> {
+        layout
+            .lines
+            .iter()
+            .filter_map(|line| match &line.kind {
+                LineKind::TableRow {
+                    cells,
+                    widths,
+                    header,
+                    ..
+                } => Some((cells, widths, *header, line.height)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assert_cells_fit(layout: &MarkdownLayout, available: f32) {
+        for (cells, widths, header, _) in table_rows(layout) {
+            assert!(widths.iter().sum::<f32>() + RULE_THICKNESS <= available + 0.5);
+            let font = Font {
+                weight: header.then_some(HEADING_WEIGHT),
+                ..Font::of(&DOCUMENT_STYLE, None)
+            };
+            for (column, rows) in cells.iter().enumerate() {
+                let inner = widths[column] - RULE_THICKNESS - 2.0 * TABLE_CELL_PAD_X;
+                for runs in rows {
+                    let used: f32 = runs
+                        .iter()
+                        .map(|(text, style)| font.width(text, *style))
+                        .sum();
+                    assert!(
+                        used <= inner + 0.5,
+                        "{runs:?} is {used} wide in a {inner} column"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn long_cells_wrap_inside_their_column_and_rows_grow() {
+        let source = "| Check | Result |\n|---|---|\n\
+                      | Local end to end (myproject web, a mock authorization server, the local api) | `limit=3` and `limit=150` reach the API URL |\n\
+                      | lint | Clean |";
+        let layout = Markdown::parse(source).layout(420.0, DOCUMENT_STYLE);
+        assert_cells_fit(&layout, 420.0);
+        let rows = table_rows(&layout);
+        let (long, short) = (rows[1].3, rows[2].3);
+        assert!(
+            long > short,
+            "the wrapped row is taller ({long} vs {short})"
+        );
+        assert!(rows[1].0[0].len() > 1, "the long first cell wraps");
+        let code_kept = rows[1].0[1]
+            .iter()
+            .flatten()
+            .filter(|(_, style)| style.code)
+            .count();
+        assert!(code_kept >= 2, "inline code survives wrapping");
+    }
+
+    #[test]
+    fn the_last_column_stays_inside_the_table() {
+        let source = format!(
+            "| Item | Owner or next step |\n|---|---|\n| short | {} |",
+            "a needs an sdk bump which affects every caller ".repeat(4)
+        );
+        let layout = Markdown::parse(&source).layout(360.0, DOCUMENT_STYLE);
+        assert_cells_fit(&layout, 360.0);
+        assert!(layout.width <= 360.0);
+    }
+
+    #[test]
+    fn columns_share_spare_room_by_how_much_they_want() {
+        assert_eq!(
+            column_widths(&[10.0, 10.0], &[50.0, 30.0], 200.0),
+            vec![50.0, 30.0]
+        );
+        let widths = column_widths(&[20.0, 20.0], &[220.0, 40.0], 100.0);
+        assert!((widths.iter().sum::<f32>() - 100.0).abs() < 0.01);
+        assert!(
+            widths[0] > widths[1],
+            "the column with more text gets more room"
+        );
+        assert!(widths[1] >= 20.0, "no column drops below its widest word");
+        let squeezed = column_widths(&[80.0, 40.0], &[200.0, 90.0], 60.0);
+        assert!((squeezed.iter().sum::<f32>() - 60.0).abs() < 0.01);
     }
 
     #[test]
