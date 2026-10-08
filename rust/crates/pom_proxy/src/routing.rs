@@ -36,21 +36,41 @@ impl ProjectRoute {
 }
 
 /// Where a request should go.
+/// What went wrong, for a page that explains it to a person.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProblemKind {
+    /// The service's processes run but nothing listens yet.
+    Starting,
+    /// The service has a port but is not running.
+    Stopped,
+    /// The workspace or service is unknown here.
+    NoRoute,
+    /// The host is not a workspace address at all.
+    #[default]
+    NotFound,
+    /// The service took no connection.
+    Unreachable,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Problem {
+    pub kind: ProblemKind,
+    /// `repo/service`, when known.
+    pub target: String,
+    /// The workspace's branch (or its host label), when known.
+    pub workspace: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
     /// A local loopback backend; `prefix` was stripped from the path and is re-added to cookie paths.
-    Local {
-        address: SocketAddr,
-        prefix: String,
-    },
+    Local { address: SocketAddr, prefix: String },
     /// A remote environment's base URL.
-    External {
-        url: String,
-        prefix: String,
-    },
+    External { url: String, prefix: String },
     Error {
         status: u16,
         message: String,
+        problem: Problem,
     },
 }
 
@@ -449,12 +469,22 @@ impl Router {
                 message: format!(
                     "dev-proxy: {target} is still starting (building, not listening yet) - retry shortly"
                 ),
+                problem: Problem {
+                    kind: ProblemKind::Starting,
+                    target: target.to_string(),
+                    workspace: branch.to_string(),
+                },
             },
             Err(Unavailable::Stopped) => Route::Error {
                 status: 503,
                 message: format!(
                     "dev-proxy: {target} is not running in {branch} - start it in Pomelo or with `pom start`"
                 ),
+                problem: Problem {
+                    kind: ProblemKind::Stopped,
+                    target: target.to_string(),
+                    workspace: branch.to_string(),
+                },
             },
             Err(Unavailable::Unknown) => no_route(branch, target),
         }
@@ -521,6 +551,7 @@ impl Router {
             return unrouted(Route::Error {
                 status: 404,
                 message: format!("open a workspace at http://<service>.<repo>.<branch>.{DOMAIN}"),
+                problem: Problem::default(),
             });
         };
         if labels.len() == 2 {
@@ -668,6 +699,11 @@ fn no_route(branch_label: &str, target: &str) -> Route {
     Route::Error {
         status: 502,
         message: format!("no dev-proxy route for {branch_label} / {target}"),
+        problem: Problem {
+            kind: ProblemKind::NoRoute,
+            target: target.to_string(),
+            workspace: branch_label.to_string(),
+        },
     }
 }
 
@@ -675,6 +711,7 @@ fn no_route_for(host: &str, path: &str) -> Route {
     Route::Error {
         status: 404,
         message: format!("no dev-proxy route for {host}{path}"),
+        problem: Problem::default(),
     }
 }
 

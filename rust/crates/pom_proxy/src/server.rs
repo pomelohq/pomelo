@@ -8,7 +8,7 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::header::{
-    HeaderMap, HeaderName, HeaderValue, CONNECTION, CONTENT_TYPE, HOST, SET_COOKIE,
+    HeaderMap, HeaderName, HeaderValue, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, HOST, SET_COOKIE,
 };
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -16,7 +16,9 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::routing::{rewrite_external_cookie, rewrite_local_cookie, Route, Router};
+use crate::routing::{
+    rewrite_external_cookie, rewrite_local_cookie, Problem, ProblemKind, Route, Router,
+};
 use crate::{
     capture_of, clock, finish, record, Capture, Delivery, ProxyLog, ProxyLogEntry, RequestKind,
 };
@@ -188,6 +190,37 @@ fn text_response(status: u16, message: &str) -> Response<Body> {
     response
 }
 
+/// Marks a response the proxy made itself because the backend took no connection, so a browser can get a page.
+const UNREACHABLE: &str = "x-pom-unreachable";
+
+/// A browser navigating to the page gets an explanation it can act on; scripts, `fetch` and curl keep the text.
+fn wants_page(headers: &HeaderMap) -> bool {
+    let navigation = headers
+        .get("sec-fetch-mode")
+        .is_some_and(|mode| mode.as_bytes() == b"navigate");
+    let html = headers
+        .get(hyper::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"));
+    navigation || html
+}
+
+fn error_response(status: u16, message: &str, problem: &Problem, page: bool) -> Response<Body> {
+    if !page {
+        return text_response(status, message);
+    }
+    let mut response = Response::new(full(crate::error_page::render(status, message, problem)));
+    *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 fn is_upgrade(headers: &HeaderMap) -> bool {
     headers.contains_key(hyper::header::UPGRADE)
         && headers
@@ -251,6 +284,10 @@ async fn handle_proxy(
         .headers()
         .get("sec-fetch-mode")
         .is_some_and(|mode| mode.as_bytes() == b"navigate");
+    let page = wants_page(request.headers());
+    let workspace_label = crate::routing::host_labels(&host)
+        .and_then(|labels| labels.last().cloned())
+        .unwrap_or_default();
     let request_capture = Capture::default();
     let (request_parts, request_body) = request.into_parts();
     let request = Request::from_parts(
@@ -286,9 +323,16 @@ async fn handle_proxy(
             status,
             &format!("dev-proxy: fault {id} injected by `pom proxy fault` (remove it with `pom proxy fault rm {id}`)"),
         ),
-        (None, Route::Error { status, message }) => text_response(status, &message),
+        (
+            None,
+            Route::Error {
+                status,
+                message,
+                problem,
+            },
+        ) => error_response(status, &message, &problem, page),
         (None, Route::Local { address, prefix }) => {
-            forward(
+            let mut response = forward(
                 shared,
                 request,
                 Upstream::Local(address),
@@ -297,7 +341,25 @@ async fn handle_proxy(
                 &prefix,
                 client,
             )
-            .await
+            .await;
+            if response.headers_mut().remove(UNREACHABLE).is_some() && page {
+                let problem = Problem {
+                    kind: ProblemKind::Unreachable,
+                    target: decision
+                        .logged
+                        .as_ref()
+                        .map(|logged| format!("{}/{}", logged.repo, logged.service))
+                        .unwrap_or_default(),
+                    workspace: workspace_label.clone(),
+                };
+                response = error_response(
+                    502,
+                    &format!("dev-proxy: backend not reachable at {address}"),
+                    &problem,
+                    true,
+                );
+            }
+            response
         }
         (None, Route::External { url, prefix }) => match url.parse::<Uri>() {
             Ok(uri) if uri.authority().is_some() => {
@@ -442,10 +504,14 @@ async fn forward(
             if let Upstream::Local(address) = upstream {
                 shared.router.forget(address);
             }
-            return text_response(
+            let mut response = text_response(
                 502,
                 &format!("dev-proxy: backend not reachable - is the service running? ({error})"),
             );
+            response
+                .headers_mut()
+                .insert(UNREACHABLE, HeaderValue::from_static("1"));
+            return response;
         }
     };
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
