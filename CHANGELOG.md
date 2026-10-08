@@ -4,6 +4,14 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.9] - 2026-10-09
+
+### Changed
+- A browser opening a service that is starting, stopped or not answering gets a page saying what is wrong and how to start it, and it reloads by itself once the service is up. (#232)
+
+### Fixed
+- Markdown preview tables size their columns to the content and wrap cell text, instead of running text into the next column. (#231)
+
 ## [0.8.8] - 2026-10-06
 
 ### Added
