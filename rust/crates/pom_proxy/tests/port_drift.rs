@@ -341,6 +341,51 @@ fn a_stopped_service_says_it_is_not_running() {
 }
 
 #[test]
+fn a_browser_gets_a_page_that_explains_and_rechecks_while_scripts_keep_the_text() {
+    let machine = FakeMachine::default();
+    machine.set(|world| world.leases = vec![lease(dead_port_below(65000), PortState::Assigned)]);
+    let (_proxy, proxy_port) = start(machine.clone());
+    let page = send(
+        proxy_port,
+        HOST,
+        "/",
+        "Sec-Fetch-Mode: navigate\r\nAccept: text/html\r\n",
+    );
+    assert!(page.starts_with("HTTP/1.1 503"), "{page}");
+    assert!(page.contains("content-type: text/html"), "{page}");
+    assert!(page.contains("api/server is not running"), "{page}");
+    assert!(
+        page.contains("pom -w feat-login start api/server"),
+        "{page}"
+    );
+    assert!(
+        page.contains("location.reload()"),
+        "the page rechecks on its own"
+    );
+
+    let text = get(proxy_port, HOST, "/");
+    assert!(text.contains("content-type: text/plain"), "{text}");
+    assert!(!text.contains("<html"), "{text}");
+
+    let unreachable = one_shot_backend();
+    machine.set(|world| {
+        world.leases = vec![lease(unreachable, PortState::Running)];
+        world.listening = Some(unreachable);
+        world.holder_alive = true;
+    });
+    std::thread::sleep(Duration::from_millis(600));
+    let first = get(proxy_port, HOST, "/");
+    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+    let page = send(proxy_port, HOST, "/", "Accept: text/html\r\n");
+    assert!(page.starts_with("HTTP/1.1 502"), "{page}");
+    assert!(page.contains("does not answer"), "{page}");
+    assert!(
+        !page.contains("x-pom-unreachable"),
+        "the internal marker never leaves the proxy"
+    );
+}
+
+#[test]
 fn host_routed_page_loads_and_failures_are_logged_but_not_every_module() {
     let service = backend("127.0.0.1:0");
     let machine = FakeMachine::default();

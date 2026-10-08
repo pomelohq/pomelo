@@ -1,3 +1,4 @@
+mod error_page;
 mod faults;
 mod machine;
 mod routing;
@@ -13,7 +14,8 @@ pub use faults::{
 pub use machine::{listening_ports_in_tree, SystemMachine};
 pub use routing::{
     branch_labels, host_labels, reachable, resolve_service_key, rewrite_external_cookie,
-    rewrite_local_cookie, ConfigSource, Decision, Logged, Machine, ProjectRoute, Route, Router,
+    rewrite_local_cookie, ConfigSource, Decision, Logged, Machine, Problem, ProblemKind,
+    ProjectRoute, Route, Router,
 };
 
 const LOG_CAPACITY: usize = 300;
