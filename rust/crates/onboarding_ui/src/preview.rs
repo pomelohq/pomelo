@@ -49,8 +49,9 @@ fn check(kind: CheckKind, status: CheckStatus, detail: &str) -> Check {
 
 /// The page in the state `which` names: repos, setup, review, progress, repair, skipped, done.
 pub fn preview_page(which: &str) -> OnboardingPage {
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
     let mut state = Onboarding::new(
-        PathBuf::from("/Users/you/Workspaces"),
+        home.join("pom"),
         vec![
             (AgentCli::Claude, true),
             (AgentCli::Codex, true),
@@ -58,25 +59,23 @@ pub fn preview_page(which: &str) -> OnboardingPage {
         ],
     );
     state.form.name.set_text("myproject");
+    state.form.name.move_to_end();
     let scans = [
         scan(
             "api",
             &["Rails"],
             Some("docker-compose.yml"),
             &["postgres", "redis"],
-            3,
+            1,
         ),
-        scan("web", &["Vite"], None, &[], 1),
+        scan("web", &["Vite", "React"], None, &[], 2),
     ];
-    for (source, scan) in [
-        "/Users/you/code/myproject-api",
-        "/Users/you/code/myproject-web",
-    ]
-    .into_iter()
-    .zip(scans.clone())
+    for (source, scan) in ["code/myproject/api", "code/myproject/web"]
+        .into_iter()
+        .zip(scans.clone())
     {
         state.form.repos.push(RepoRow {
-            source: source.into(),
+            source: home.join(source).to_string_lossy().into_owned(),
             alias: TextField::default(),
             scan: Some(scan),
         });
@@ -86,7 +85,7 @@ pub fn preview_page(which: &str) -> OnboardingPage {
         alias: TextField::default(),
         scan: None,
     });
-    state.form.focus = None;
+    state.form.focus = (which == "repos").then_some(crate::model::Field::Name);
     match which {
         "setup" => state.form.step = Step::Setup,
         "review" => state.form.step = Step::Review,
@@ -129,7 +128,7 @@ fn fill_run(run: &mut Run, which: &str, scans: &[RepoScan]) {
         "worker",
         &["Node"],
         Some("compose.yml"),
-        &["redis", "minio"],
+        &["redis"],
         0,
     ));
     run.scans = scans;
@@ -195,13 +194,15 @@ fn fill_run(run: &mut Run, which: &str, scans: &[RepoScan]) {
     }
     let mut boot = check(
         CheckKind::Boot {
-            repo: "api".into(),
-            service: "web".into(),
+            repo: "web".into(),
+            service: "app".into(),
         },
         CheckStatus::Failed,
-        "PG::ConnectionBad: database \"myproject_main\" does not exist",
+        "Error: Cannot find module '@acme/ui'",
     );
-    boot.output = "=> Booting Puma\n=> Rails 7.1 application starting\nPG::ConnectionBad: database \"myproject_main\" does not exist".into();
+    boot.output =
+        "VITE v5.4.11  ready in 412 ms\nError: Cannot find module '@acme/ui'\n  at web/src/main.tsx:3"
+            .into();
     run.record(boot);
     if which == "fixing" {
         if let Some(finding) = run.finding.as_mut() {
@@ -226,19 +227,23 @@ fn fill_run(run: &mut Run, which: &str, scans: &[RepoScan]) {
         ));
         run.counts = Counts {
             repos: 3,
-            services: 4,
-            shared: 3,
+            services: 5,
+            shared: 2,
             databases: 2,
         };
         run.secrets_imported = 4;
         run.set_up = vec![
+            ("api".into(), vec!["Rails".into()], "server, jobs".into()),
             (
-                "api".into(),
-                vec!["Rails".into()],
-                "web, jobs - migrate, seed".into(),
+                "web".into(),
+                vec!["Vite".into(), "React".into()],
+                "app".into(),
             ),
-            ("web".into(), vec!["Vite".into()], "dev".into()),
-            ("worker".into(), vec!["Node".into()], "consumer".into()),
+            (
+                "worker".into(),
+                vec!["Node".into()],
+                "consumer, scheduler".into(),
+            ),
         ];
     }
 }

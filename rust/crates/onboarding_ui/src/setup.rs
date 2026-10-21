@@ -1,627 +1,459 @@
 //! A project being set up, phase by phase, and the summary once it is ready.
 
-use onboarding::{CheckKind, CheckStatus, Segment};
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use onboarding::{CheckKind, CheckStatus};
+use ui::{div, icon, label, theme, IconKind, Node};
+use workspace::{text_line, ButtonKind};
 
 use crate::ids::*;
 use crate::model::{Onboarding, Phase, Request, Run};
-use crate::view::{self, StepMark, Tone};
+use crate::view;
 
-const LOG_LINES: usize = 8;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PhaseState {
+    Done,
+    Running,
+    Pending,
+    Failed,
+}
 
-pub(crate) fn progress(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
+pub(crate) fn progress(state: &Onboarding, width: f32, _hovered: Option<u64>) -> Node {
     let Some(run) = state.run.as_ref() else {
         return div().into();
     };
-    let hot = |id: u64| hovered == Some(id);
-    let mut right = Vec::new();
-    if run.agent_active() && run.error.is_none() {
-        right.push(agent_cli_button(run, hot(AGENT_CLI)));
-    }
-    if run.error.is_none() {
-        right.push(view::button(
-            PAUSE,
-            None,
-            if run.paused { "Resume" } else { "Pause" },
-            Tone::Plain,
-            hot(PAUSE),
-            true,
-            None,
-        ));
-    }
-    right.push(view::button(
-        STOP,
-        None,
-        "Cancel",
-        Tone::Ghost,
-        hot(STOP),
-        true,
-        None,
-    ));
-    let sub = format!(
-        "{} - {} so far",
-        match run.repos.len() {
-            1 => "1 repository".to_string(),
-            count => format!("{count} repositories"),
-        },
-        view::seconds_text(run.started.elapsed().as_secs())
-    );
-    let percent = (run.progress() * 100.0).round() as u32;
-    let bar = div()
-        .row()
-        .items_center()
-        .gap(10.0)
-        .child(view::progress_bar(run.progress(), None))
-        .child(
-            label(format!("{percent}%"))
-                .size(view::HINT)
-                .color(theme().text_placeholder),
-        );
     let shown: Vec<Phase> = Phase::ALL
         .into_iter()
         .filter(|phase| *phase != Phase::Repair || run.finding.is_some() || run.repaired)
         .collect();
-    let mut timeline = div().col();
-    for (index, phase) in shown.iter().enumerate() {
-        let last = index + 1 == shown.len();
-        timeline = timeline.child(phase_row(run, *phase, last, width, hovered));
-    }
-    div()
+    let rows = shown
+        .iter()
+        .map(|phase| {
+            let (state, note) = phase_state(run, *phase);
+            phase_row(&phase_title(run, *phase), state, note.as_deref())
+        })
+        .collect();
+    let mut column = div()
         .col()
         .w_px(width)
         .gap(view::PAGE_GAP)
-        .child(view::header(
+        .child(view::head(
             &format!("Setting up {}", run.name),
-            &sub,
-            right,
+            Some("Clone, scan, configure, then verify until every repo installs and boots."),
         ))
-        .child(bar)
-        .child(timeline)
-        .into()
+        .child(view::panel_list(rows, 6.0));
+    if let Some(error) = &run.error {
+        column = column.child(problem_card(
+            "The project was not created",
+            error,
+            None,
+            vec![view::button(
+                BACK_TO_FORM,
+                "Back to the form",
+                None,
+                ButtonKind::Secondary,
+                true,
+            )],
+            width,
+        ));
+    } else if let Some(card) = finding_card(run, width) {
+        column = column.child(card);
+    }
+    column.into()
 }
 
-fn agent_cli_button(run: &Run, hot: bool) -> Node {
-    view::button(
-        AGENT_CLI,
-        Some(IconKind::Sparkle),
-        if run.agent_shown {
-            "Hide agent CLI"
-        } else {
-            "Show agent CLI"
-        },
-        Tone::Plain,
-        hot,
-        true,
+pub(crate) fn progress_footer(state: &Onboarding) -> Node {
+    let Some(run) = state.run.as_ref() else {
+        return div().into();
+    };
+    let mut leading = Vec::new();
+    let mut buttons = Vec::new();
+    if run.error.is_none() {
+        if run.agent_configuring() {
+            if run.agent != pom_agent::AgentCli::Claude {
+                leading.push(view::button(
+                    VERIFY_NOW,
+                    "It is done - verify",
+                    None,
+                    ButtonKind::Ghost,
+                    true,
+                ));
+            }
+            leading.push(view::button(
+                SKIP_AGENT,
+                "Skip the agent",
+                None,
+                ButtonKind::Ghost,
+                true,
+            ));
+        }
+        if run.agent_skipped {
+            leading.push(view::button(
+                RESUME_AGENT,
+                &format!("Let {} finish it", run.agent.title()),
+                None,
+                ButtonKind::Ghost,
+                true,
+            ));
+        }
+        if run.agent_active() {
+            buttons.push(view::button(
+                AGENT_CLI,
+                if run.agent_shown {
+                    "Hide agent CLI"
+                } else {
+                    "Show agent CLI"
+                },
+                None,
+                ButtonKind::Ghost,
+                true,
+            ));
+        }
+        buttons.push(view::button(
+            PAUSE,
+            if run.paused { "Resume" } else { "Pause" },
+            None,
+            ButtonKind::Ghost,
+            true,
+        ));
+    }
+    buttons.push(view::button(
+        STOP,
+        "Cancel",
         None,
-    )
+        ButtonKind::Secondary,
+        true,
+    ));
+    view::footer(None, leading, buttons)
 }
 
 fn phase_title(run: &Run, phase: Phase) -> String {
     match phase {
         Phase::Clone => "Clone repositories".into(),
         Phase::Scan => "Scan".into(),
-        Phase::Configure if run.with_agent => format!("Configure with {}", run.agent.title()),
+        Phase::Configure if run.with_agent && !run.agent_skipped => {
+            format!("Configure with {}", run.agent.title())
+        }
         Phase::Configure => "Draft pom.yml".into(),
         Phase::Verify => "Verify".into(),
         Phase::Repair => "Repair".into(),
     }
 }
 
-fn phase_row(run: &Run, phase: Phase, last: bool, width: f32, hovered: Option<u64>) -> Node {
-    let colors = theme();
+fn names(list: &[&str]) -> String {
+    match list {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+fn check_headline(kind: &CheckKind) -> String {
+    match kind {
+        CheckKind::Doctor => "the config doctor found errors".to_string(),
+        CheckKind::Install { repo } => format!("{repo} did not install"),
+        CheckKind::Boot { repo, service } if repo.is_empty() => format!("{service} did not boot"),
+        CheckKind::Boot { repo, service } => format!("{repo} > {service} did not boot"),
+    }
+}
+
+/// How far a phase got, and the one line that says what it found or is doing.
+fn phase_state(run: &Run, phase: Phase) -> (PhaseState, Option<String>) {
     let reached = run.phase_at[phase.index()].is_some();
     let current = run.phase == phase && run.finished.is_none();
-    let failed = (phase == Phase::Clone && run.error.is_some())
-        || (phase == Phase::Repair && current && run.finding.is_some());
-    let mark = if failed {
-        StepMark::Failed
-    } else if current {
-        StepMark::Working
-    } else if reached {
-        StepMark::Done
-    } else {
-        StepMark::Todo(phase.index() + 1)
-    };
-    let mut rail = div()
-        .col()
-        .w_px(20.0)
-        .items_center()
-        .child(view::step_mark(mark, 20.0));
-    if !last {
-        rail = rail.child(div().w_px(1.0).flex(1.0).bg(colors.border_variant));
-    }
-    let mut title =
-        div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .child(label(phase_title(run, phase)).size(14.0).color(if reached {
-                colors.text
-            } else {
-                colors.text_muted
-            }));
-    if phase == Phase::Scan {
-        title = title.child(view::chip("0 tokens", false));
-    }
-    if phase == Phase::Repair && run.repaired && run.finding.is_none() {
-        title = title.child(label("fixed").size(view::HINT).color(colors.success));
-    }
-    title = title.child(div().flex(1.0));
-    if let Some(seconds) = run.phase_seconds(phase) {
-        title = title.child(view::hint(&view::seconds_text(seconds)));
-    }
-    let detail_w = width - 32.0;
-    let mut body = div().col().flex(1.0).pb(16.0).child(title);
-    if reached {
-        let detail = match phase {
-            Phase::Clone => clone_detail(run, hovered),
-            Phase::Scan => scan_detail(run, detail_w),
-            Phase::Configure => configure_detail(run, hovered),
-            Phase::Verify => verify_detail(run, detail_w),
-            Phase::Repair => repair_detail(run, hovered),
-        };
-        if let Some(detail) = detail {
-            body = body.child(div().col().pt(8.0).gap(6.0).child(detail));
+    match phase {
+        Phase::Clone => {
+            if let Some(error) = &run.error {
+                let first = error.lines().next().unwrap_or_default().to_string();
+                return (PhaseState::Failed, Some(first));
+            }
+            let mut cloned = Vec::new();
+            let mut linked = Vec::new();
+            let mut done = 0;
+            for (repo, clone) in run.repos.iter().zip(&run.clone) {
+                match clone.linked {
+                    Some(true) => linked.push(repo.as_str()),
+                    Some(false) => cloned.push(repo.as_str()),
+                    None => {}
+                }
+                if clone.linked.is_some() {
+                    done += 1;
+                }
+            }
+            if current {
+                let percent = (run.progress() * 100.0).round() as u32;
+                return (
+                    PhaseState::Running,
+                    Some(format!("{done} of {} - {percent}%", run.repos.len())),
+                );
+            }
+            let mut parts = Vec::new();
+            if !cloned.is_empty() {
+                parts.push(format!("{} cloned", names(&cloned)));
+            }
+            if !linked.is_empty() {
+                parts.push(format!("{} linked", names(&linked)));
+            }
+            (PhaseState::Done, Some(parts.join(", ")))
         }
+        _ if !reached => (PhaseState::Pending, None),
+        Phase::Scan if current => (PhaseState::Running, Some("reading each repo".into())),
+        Phase::Scan => {
+            let mut shared: Vec<&str> = run
+                .scans
+                .iter()
+                .flat_map(|scan| scan.infra.iter().map(String::as_str))
+                .collect();
+            shared.sort_unstable();
+            shared.dedup();
+            let repos = match run.scans.len() {
+                1 => "1 repo".to_string(),
+                count => format!("{count} repos"),
+            };
+            let shared = match shared.len() {
+                1 => "1 shared service".to_string(),
+                count => format!("{count} shared services"),
+            };
+            (PhaseState::Done, Some(format!("{repos}, {shared}")))
+        }
+        Phase::Configure if current => {
+            let latest = run.summary.last().map(|line| {
+                line.iter()
+                    .map(|segment| segment.text.as_str())
+                    .collect::<String>()
+            });
+            let note = latest.unwrap_or_else(|| {
+                if run.agent_active() {
+                    format!("{} is reading the repos", run.agent.title())
+                } else {
+                    "drafting from what the scan found".to_string()
+                }
+            });
+            (PhaseState::Running, Some(note))
+        }
+        Phase::Configure if run.agent_skipped => (
+            PhaseState::Done,
+            Some("drafted from the scan; you finish it".into()),
+        ),
+        Phase::Configure => (PhaseState::Done, None),
+        Phase::Verify => {
+            let failed = run
+                .checks
+                .iter()
+                .find(|check| check.status == CheckStatus::Failed);
+            if let Some(check) = failed {
+                return (PhaseState::Failed, Some(check_headline(&check.kind)));
+            }
+            if current {
+                let passed = run
+                    .checks
+                    .iter()
+                    .filter(|check| check.status == CheckStatus::Passed)
+                    .count();
+                return (
+                    PhaseState::Running,
+                    Some(format!("{passed} of {} checks passed", run.checks.len())),
+                );
+            }
+            (
+                PhaseState::Done,
+                Some("every repo installs and boots".into()),
+            )
+        }
+        Phase::Repair => match &run.finding {
+            Some(finding) if finding.fixing => (
+                PhaseState::Running,
+                Some(format!("{} is fixing it", run.agent.title())),
+            ),
+            Some(_) => (PhaseState::Pending, Some("waiting for you".into())),
+            None => (PhaseState::Done, Some("fixed".into())),
+        },
     }
-    div().row().gap(12.0).child(rail).child(body).into()
 }
 
-fn clone_detail(run: &Run, hovered: Option<u64>) -> Option<Node> {
+fn phase_row(title: &str, state: PhaseState, note: Option<&str>) -> Node {
     let colors = theme();
-    let mut column = div().col().gap(6.0);
-    for (repo, clone) in run.repos.iter().zip(&run.clone) {
-        let status = match clone.linked {
-            Some(true) => "linked".to_string(),
-            Some(false) => "cloned".to_string(),
-            None => format!("{}%", clone.percent),
-        };
-        let value = if clone.linked.is_some() {
-            1.0
-        } else {
-            f32::from(clone.percent) / 100.0
-        };
-        column = column.child(
+    let (kind, tint, ink) = match state {
+        PhaseState::Done => (IconKind::Check, colors.success, colors.text_muted),
+        PhaseState::Running => (IconKind::LoadCircle, colors.text_accent, colors.text),
+        PhaseState::Pending => (
+            IconKind::Circle,
+            colors.text_placeholder,
+            colors.text_placeholder,
+        ),
+        PhaseState::Failed => (IconKind::XCircle, colors.error, colors.error),
+    };
+    let mut row = div()
+        .row()
+        .h_px(34.0)
+        .px(8.0)
+        .gap(10.0)
+        .items_center()
+        .rounded(4.0)
+        .child(icon(kind).size(14.0).color(tint))
+        .child(
             div()
                 .row()
+                .flex(1.0)
                 .items_center()
-                .gap(10.0)
-                .child(
-                    div().w_px(150.0).child(
-                        label(repo.clone())
-                            .size(view::TEXT)
-                            .mono()
-                            .color(colors.text)
-                            .truncate(),
-                    ),
-                )
-                .child(view::progress_bar(value, None))
-                .child(
-                    div()
-                        .row()
-                        .w_px(90.0)
-                        .justify_end()
-                        .child(view::hint(&status)),
-                ),
+                .child(label(title.to_string()).size(13.0).color(ink).truncate()),
         );
+    if state == PhaseState::Running {
+        row = row.bg(colors.element_selected);
     }
-    if let Some(error) = &run.error {
-        column = column
-            .child(finding_box(
-                false,
-                vec![
-                    label("The project was not created")
-                        .size(view::TEXT)
-                        .color(colors.error)
-                        .into(),
-                    label(error.clone())
-                        .size(view::HINT)
-                        .mono()
-                        .color(colors.text)
-                        .into(),
-                ],
-            ))
-            .child(div().row().child(view::button(
-                BACK_TO_FORM,
-                None,
-                "Back to the form",
-                Tone::Plain,
-                hovered == Some(BACK_TO_FORM),
-                true,
-                None,
-            )));
+    if let Some(note) = note.filter(|note| !note.is_empty()) {
+        row = row.child(view::muted(note).truncate());
     }
-    Some(column.into())
+    row.into()
 }
 
-fn scan_detail(run: &Run, width: f32) -> Option<Node> {
-    if run.scans.is_empty() {
-        return Some(view::hint("Reading each repo...").into());
+/// A raised card about what went wrong: what failed, its output, and what to do about it.
+fn problem_card(
+    title: &str,
+    output: &str,
+    hint: Option<&str>,
+    buttons: Vec<Node>,
+    width: f32,
+) -> Node {
+    let colors = theme();
+    let mut log = div()
+        .col()
+        .px(12.0)
+        .py(10.0)
+        .rounded(4.0)
+        .bg(colors.editor_background);
+    for line in output.lines() {
+        log = log.child(text_line(
+            16.0,
+            label(line.to_string())
+                .size(12.0)
+                .mono()
+                .color(colors.text_muted)
+                .truncate(),
+        ));
     }
-    let colors = theme();
-    let rows = run
-        .scans
-        .iter()
-        .map(|scan| {
-            let name = if scan.alias.is_empty() {
-                &scan.name
-            } else {
-                &scan.alias
-            };
-            let mut chips: Vec<Node> = scan
-                .stack
-                .iter()
-                .map(|stack| view::chip(stack, true))
-                .collect();
-            chips.extend(scan.infra.iter().map(|infra| view::chip(infra, false)));
-            if chips.is_empty() {
-                chips.push(view::chip("nothing detected", false));
-            }
-            view::row()
-                .child(
-                    div().w_px(150.0).child(
-                        label(name.clone())
-                            .size(view::TEXT)
-                            .mono()
-                            .color(colors.text)
-                            .truncate(),
-                    ),
-                )
-                .child(
-                    div()
-                        .col()
-                        .flex(1.0)
-                        .child(view::pack(chips, width - 180.0, 5.0)),
-                )
-                .child(
-                    label(format!("{} env", scan.env_files))
-                        .size(view::HINT)
-                        .color(colors.text_muted),
-                )
-                .into()
-        })
-        .collect();
-    Some(view::rows(rows))
-}
-
-fn log_box(lines: &[Vec<Segment>], empty: &str) -> Node {
-    let colors = theme();
     let mut column = div()
         .col()
-        .gap(3.0)
-        .px(10.0)
-        .py(8.0)
-        .rounded(6.0)
-        .bg(Rgba::new(0.0, 0.0, 0.0, 0.2));
-    if lines.is_empty() {
-        return column
-            .child(
-                label(empty.to_string())
-                    .size(12.0)
-                    .mono()
-                    .color(colors.text_muted),
-            )
-            .into();
+        .gap(10.0)
+        .p(14.0)
+        .rounded(10.0)
+        .bg(colors.element_background)
+        .child(
+            div()
+                .row()
+                .h_px(20.0)
+                .items_center()
+                .gap(8.0)
+                .child(icon(IconKind::BadgeAlert).size(16.0).color(colors.error))
+                .child(view::strong_line(title)),
+        )
+        .child(log);
+    if let Some(hint) = hint {
+        column = column.child(view::note_paragraph(hint, width - 28.0));
     }
-    for line in &lines[lines.len().saturating_sub(LOG_LINES)..] {
-        let mut row = div().row().items_center();
-        for segment in line {
-            row = row.child(
-                label(segment.text.clone())
-                    .size(12.0)
-                    .mono()
-                    .weight(if segment.strong { 500 } else { 400 })
-                    .color(if segment.strong {
-                        colors.text
-                    } else {
-                        colors.text_muted
-                    })
-                    .truncate(),
-            );
-        }
-        column = column.child(row);
+    let mut row = div().row().items_center().gap(8.0);
+    for button in buttons {
+        row = row.child(button);
     }
-    column.into()
+    column.child(row).into()
 }
 
-fn configure_detail(run: &Run, hovered: Option<u64>) -> Option<Node> {
-    let colors = theme();
-    let hot = |id: u64| hovered == Some(id);
-    let open_config = view::button(
-        OPEN_CONFIG,
-        None,
-        "Open pom.yml",
-        Tone::Plain,
-        hot(OPEN_CONFIG),
-        true,
-        None,
-    );
-    if !run.agent_active() {
-        let text = format!(
-            "{}pom.yml was drafted from what the scan found (services, setup commands, shared services, env files). Verify checks the draft; what it cannot fix, you finish in pom.yml.",
-            if run.agent_skipped {
-                "The agent was stopped. "
-            } else {
-                ""
-            }
-        );
-        let mut buttons = div().row().gap(6.0).child(open_config);
-        if run.agent_skipped {
-            buttons = buttons.child(view::button(
-                RESUME_AGENT,
-                Some(IconKind::Sparkle),
-                &format!("Let {} finish it after all", run.agent.title()),
-                Tone::Agent,
-                hot(RESUME_AGENT),
-                true,
+fn finding_card(run: &Run, width: f32) -> Option<Node> {
+    let finding = run.finding.as_ref()?;
+    let check = &finding.check;
+    let mut lines: Vec<&str> = check
+        .output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if !check.detail.is_empty() && !lines.contains(&check.detail.as_str()) {
+        lines.push(&check.detail);
+    }
+    let output = lines[lines.len().saturating_sub(4)..].join("\n");
+    let title = match check.kind {
+        CheckKind::Doctor => "The config doctor found errors".to_string(),
+        _ => check_headline(&check.kind),
+    };
+    let mut buttons = Vec::new();
+    if finding.fixing {
+        buttons.push(view::button(
+            CANCEL_FIX,
+            "Cancel",
+            None,
+            ButtonKind::Secondary,
+            true,
+        ));
+    } else {
+        if run.agent_active() {
+            buttons.push(view::button(
+                FIX_AGENT,
+                &format!("Fix with {}", run.agent.title()),
                 None,
+                ButtonKind::Primary,
+                true,
             ));
         }
-        let note = div()
-            .col()
-            .p(10.0)
-            .rounded(7.0)
-            .border(1.0, colors.border_variant)
-            .child(
-                label(text)
-                    .size(view::SMALL)
-                    .color(colors.text_muted)
-                    .wrap(640.0),
-            );
-        return Some(div().col().gap(6.0).child(note).child(buttons).into());
+        buttons.push(view::button(
+            FIX_MANUAL,
+            "Fix manually",
+            None,
+            ButtonKind::Secondary,
+            true,
+        ));
+        buttons.push(view::button(
+            RETRY,
+            "Verify again",
+            None,
+            ButtonKind::Ghost,
+            true,
+        ));
+        if matches!(check.kind, CheckKind::Boot { .. }) {
+            buttons.push(view::button(
+                SKIP_SERVICE,
+                "Skip this service",
+                None,
+                ButtonKind::Ghost,
+                true,
+            ));
+        }
     }
-    let reading = format!("{} is reading the repos...", run.agent.title());
-    let mut buttons = div()
+    let hint = if finding.fixing {
+        Some("It reads the output and changes pom.yml; verify runs again when it is done")
+    } else if finding.manual {
+        None
+    } else {
+        Some("Fix it here or let the agent change pom.yml, then verify again")
+    };
+    let card = problem_card(&title, &output, hint, buttons, width);
+    if !finding.manual || finding.fixing {
+        return Some(card);
+    }
+    let mut manual = div()
         .row()
         .items_center()
-        .gap(6.0)
-        .child(agent_cli_button(run, hot(AGENT_CLI)))
-        .child(open_config);
-    if run.agent_configuring() {
-        buttons = buttons.child(div().flex(1.0));
-        if run.agent != pom_agent::AgentCli::Claude {
-            buttons = buttons.child(view::button(
-                VERIFY_NOW,
-                None,
-                "It is done - verify",
-                Tone::Plain,
-                hot(VERIFY_NOW),
-                true,
-                None,
-            ));
-        }
-        buttons = buttons.child(view::button(
-            SKIP_AGENT,
-            None,
-            "Skip the agent - finish manually",
-            Tone::Ghost,
-            hot(SKIP_AGENT),
+        .gap(8.0)
+        .child(view::muted("Fix it yourself:"))
+        .child(workspace::outlined_button(
+            OPEN_CONFIG,
+            Some(IconKind::File),
+            "Open pom.yml",
             true,
-            None,
+        ));
+    if let Some(repo) = finding_repo(&check.kind) {
+        manual = manual.child(workspace::outlined_button(
+            OPEN_TERMINAL,
+            Some(IconKind::Terminal),
+            &format!("Open a terminal in {repo}"),
+            true,
         ));
     }
     Some(
         div()
             .col()
-            .gap(6.0)
-            .child(log_box(&run.summary, &reading))
-            .child(buttons)
+            .gap(10.0)
+            .child(card)
+            .child(manual.child(view::muted("then Verify again")))
             .into(),
     )
-}
-
-fn verify_detail(run: &Run, width: f32) -> Option<Node> {
-    let colors = theme();
-    if run.checks.is_empty() {
-        return Some(view::hint("Starting...").into());
-    }
-    let rows = run
-        .checks
-        .iter()
-        .map(|check| {
-            let (kind, color) = match check.status {
-                CheckStatus::Passed => (IconKind::Check, colors.success),
-                CheckStatus::Failed => (IconKind::Close, colors.error),
-                CheckStatus::Running => (IconKind::RotateCw, colors.text_accent),
-            };
-            view::row()
-                .child(div().w_px(14.0).child(icon(kind).size(12.0).color(color)))
-                .child(
-                    div().w_px(170.0).child(
-                        label(check.kind.title())
-                            .size(view::TEXT)
-                            .color(colors.text)
-                            .truncate(),
-                    ),
-                )
-                .child(
-                    div().row().flex(1.0).child(
-                        label(check.detail.clone())
-                            .size(12.0)
-                            .mono()
-                            .color(if check.status == CheckStatus::Failed {
-                                colors.error
-                            } else {
-                                colors.text_muted
-                            })
-                            .truncate(),
-                    ),
-                )
-                .w_px(width)
-                .into()
-        })
-        .collect();
-    Some(view::rows(rows))
-}
-
-fn finding_box(fixing: bool, children: Vec<Node>) -> Node {
-    let colors = theme();
-    let (border, bg) = if fixing {
-        (
-            view::agent_tint().alpha(0.5),
-            view::agent_tint().alpha(0.07),
-        )
-    } else {
-        (colors.error.alpha(0.35), colors.error.alpha(0.07))
-    };
-    let mut column = div()
-        .col()
-        .gap(7.0)
-        .p(10.0)
-        .rounded(7.0)
-        .border(1.0, border)
-        .bg(bg);
-    for child in children {
-        column = column.child(child);
-    }
-    column.into()
-}
-
-fn repair_detail(run: &Run, hovered: Option<u64>) -> Option<Node> {
-    let colors = theme();
-    let finding = run.finding.as_ref()?;
-    let hot = |id: u64| hovered == Some(id);
-    let check = &finding.check;
-    let headline = match &check.kind {
-        CheckKind::Doctor => "The config doctor found errors".to_string(),
-        CheckKind::Install { repo } => format!("{repo} did not install"),
-        CheckKind::Boot { repo, service } if repo.is_empty() => format!("{service} did not boot"),
-        CheckKind::Boot { repo, service } => format!("{repo} > {service} did not boot"),
-    };
-    let tail: Vec<&str> = check
-        .output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && *line != check.detail)
-        .collect();
-    let tail = tail[tail.len().saturating_sub(3)..].join("\n");
-    let mut children: Vec<Node> = Vec::new();
-    if finding.fixing {
-        children.push(
-            div()
-                .row()
-                .items_center()
-                .gap(6.0)
-                .child(
-                    icon(IconKind::RotateCw)
-                        .size(12.0)
-                        .color(view::agent_tint()),
-                )
-                .child(
-                    label(format!("{} is fixing it...", run.agent.title()))
-                        .size(view::TEXT)
-                        .color(view::agent_tint()),
-                )
-                .into(),
-        );
-    } else {
-        children.push(label(headline).size(view::TEXT).color(colors.error).into());
-    }
-    children.push(
-        label(check.detail.clone())
-            .size(12.0)
-            .mono()
-            .color(colors.text)
-            .wrap(620.0)
-            .into(),
-    );
-    if finding.fixing {
-        children.push(
-            view::hint(
-                "It reads the output and changes pom.yml; verify runs again when it is done",
-            )
-            .into(),
-        );
-        children.push(
-            div()
-                .row()
-                .child(view::button(
-                    CANCEL_FIX,
-                    None,
-                    "Cancel",
-                    Tone::Plain,
-                    hot(CANCEL_FIX),
-                    true,
-                    None,
-                ))
-                .into(),
-        );
-    } else {
-        if !tail.is_empty() {
-            children.push(view::hint(&tail).mono().wrap(620.0).into());
-        }
-        let mut buttons = div().row().gap(6.0);
-        if run.agent_active() {
-            buttons = buttons.child(view::button(
-                FIX_AGENT,
-                Some(IconKind::Sparkle),
-                &format!("Fix with {}", run.agent.title()),
-                Tone::Agent,
-                hot(FIX_AGENT),
-                true,
-                None,
-            ));
-        }
-        buttons = buttons.child(view::button(
-            FIX_MANUAL,
-            None,
-            "Fix manually",
-            Tone::Plain,
-            hot(FIX_MANUAL) || finding.manual,
-            true,
-            None,
-        ));
-        buttons = buttons.child(view::button(
-            RETRY,
-            None,
-            "Verify again",
-            Tone::Plain,
-            hot(RETRY),
-            true,
-            None,
-        ));
-        if matches!(check.kind, CheckKind::Boot { .. }) {
-            buttons = buttons.child(view::button(
-                SKIP_SERVICE,
-                None,
-                "Skip this service",
-                Tone::Ghost,
-                hot(SKIP_SERVICE),
-                true,
-                None,
-            ));
-        }
-        children.push(buttons.into());
-        if finding.manual {
-            let mut manual = div()
-                .row()
-                .items_center()
-                .gap(6.0)
-                .child(view::hint("Fix it yourself:"))
-                .child(view::button(
-                    OPEN_CONFIG,
-                    Some(IconKind::File),
-                    "Open pom.yml",
-                    Tone::Plain,
-                    hot(OPEN_CONFIG),
-                    true,
-                    None,
-                ));
-            if let Some(repo) = finding_repo(&check.kind) {
-                manual = manual.child(view::button(
-                    OPEN_TERMINAL,
-                    Some(IconKind::Terminal),
-                    &format!("Open a terminal in {repo}"),
-                    Tone::Plain,
-                    hot(OPEN_TERMINAL),
-                    true,
-                    None,
-                ));
-            }
-            children.push(manual.child(view::hint("then Verify again")).into());
-        }
-    }
-    Some(finding_box(finding.fixing, children))
 }
 
 fn finding_repo(kind: &CheckKind) -> Option<&str> {
@@ -638,44 +470,32 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
         return div().into();
     };
     let colors = theme();
-    let hot = |id: u64| hovered == Some(id);
-    let workspace_title = match &run.first_workspace {
-        Some(branch) => format!("Open {branch}"),
-        None => "Create a workspace".to_string(),
-    };
-    let primary = view::button(
-        OPEN_WORKSPACE,
-        None,
-        &workspace_title,
-        Tone::Primary,
-        hot(OPEN_WORKSPACE),
-        true,
-        None,
-    );
-    let stat_w = (width - 30.0) / 4.0;
+    let titles: Vec<&str> = crate::model::Step::ALL
+        .iter()
+        .map(|step| step.title())
+        .collect();
+    let workspace_title = workspace_title(run);
+    let stat_w = (width - 3.0 * 12.0) / 4.0;
     let stat = |value: usize, text: &str| -> Node {
-        div()
+        view::card_frame(false)
             .col()
             .w_px(stat_w)
-            .p(12.0)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .child(
+            .gap(2.0)
+            .px(14.0)
+            .py(12.0)
+            .child(text_line(
+                28.0,
                 label(value.to_string())
-                    .size(22.0)
+                    .size(20.0)
                     .weight(600)
                     .color(colors.text),
-            )
-            .child(
-                label(text.to_string())
-                    .size(view::HINT)
-                    .color(colors.text_muted),
-            )
+            ))
+            .child(text_line(16.0, view::muted(text)))
             .into()
     };
     let stats = div()
         .row()
-        .gap(10.0)
+        .gap(12.0)
         .child(stat(run.counts.repos, "repositories"))
         .child(stat(run.counts.services, "services"))
         .child(stat(run.counts.shared, "shared services"))
@@ -684,60 +504,63 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
         .set_up
         .iter()
         .map(|(alias, stack, services)| {
-            view::row()
-                .child(
-                    div().w_px(150.0).child(
-                        label(alias.clone())
-                            .size(view::TEXT)
-                            .mono()
-                            .color(colors.text)
-                            .truncate(),
-                    ),
-                )
-                .child(div().col().flex(1.0).child(view::pack(
-                    stack.iter().map(|stack| view::chip(stack, true)).collect(),
-                    width / 2.0,
-                    5.0,
-                )))
-                .child(
-                    label(services.clone())
-                        .size(view::HINT)
-                        .color(colors.text_muted),
-                )
-                .into()
+            view::repo_row(
+                view::repo_icon(stack, false),
+                view::strong_line(alias),
+                &stack.join(", "),
+                vec![view::muted(services).into()],
+            )
         })
         .collect();
-    let card_w = (width - 20.0) / 3.0;
+    let card_w = (width - 2.0 * 12.0) / 3.0;
+    let card = |id: u64, lead: Node, title: &str, text: &str, primary: bool| -> Node {
+        let mut frame = view::card_frame(primary)
+            .col()
+            .w_px(card_w)
+            .gap(6.0)
+            .p(14.0)
+            .on_click(id)
+            .child(lead)
+            .child(view::strong_line(title))
+            .child(view::note_paragraph(text, card_w - 28.0));
+        if hovered == Some(id) && !primary {
+            frame = frame.bg(colors.element_hover);
+        }
+        frame.into()
+    };
     let cards = div()
         .row()
-        .gap(10.0)
-        .child(view::card(
+        .gap(12.0)
+        .child(card(
             OPEN_WORKSPACE + 1000,
-            IconKind::Branch,
+            icon(IconKind::Branch)
+                .size(16.0)
+                .color(colors.text_accent)
+                .into(),
             &workspace_title,
             "A branch of every repo with its own ports and databases, copied from main.",
-            card_w,
-            hot(OPEN_WORKSPACE + 1000),
+            true,
         ))
-        .child(view::card(
+        .child(card(
             START_MAIN,
-            IconKind::Package,
+            icon(IconKind::Play)
+                .size(16.0)
+                .color(colors.text_muted)
+                .into(),
             "Start main's services",
             "Run main as it is, to compare against your branches.",
-            card_w,
-            hot(START_MAIN),
+            false,
         ))
-        .child(view::card(
+        .child(card(
             OPEN_CONFIG,
-            IconKind::Folder,
+            ui::material_icon(ui::MaterialIcon::Yaml).size(16.0).into(),
             "Open pom.yml",
             if run.agent_active() {
                 "What the agent wrote, with the config doctor's notes."
             } else {
                 "The drafted config, with the config doctor's notes."
             },
-            card_w,
-            hot(OPEN_CONFIG),
+            false,
         ));
     let took = run
         .finished
@@ -748,34 +571,57 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
         1 => "1 .env file became secrets. ".to_string(),
         count => format!("{count} .env files became secrets. "),
     };
+    let sub = match run.skipped.len() {
+        0 => "Every repo installs and boots from main".to_string(),
+        1 => "Installs and boots from main; 1 service was skipped".to_string(),
+        count => format!("Installs and boots from main; {count} services were skipped"),
+    };
     let mut column = div()
         .col()
         .w_px(width)
         .gap(view::PAGE_GAP)
-        .child(view::header(
-            &format!("{} is ready", run.name),
-            &match run.skipped.len() {
-                0 => "Every repo installs and boots from main".to_string(),
-                1 => "Installs and boots from main; 1 service was skipped".to_string(),
-                count => format!("Installs and boots from main; {count} services were skipped"),
-            },
-            vec![primary],
-        ))
+        .child(view::steps(&titles, titles.len(), true))
+        .child(view::head(&format!("{} is ready", run.name), Some(&sub)))
         .child(stats);
     if !rows.is_empty() {
-        column = column.child(view::section(
+        column = column.child(workspace::field(
             "What was set up",
+            view::panel_list(rows, 4.0),
             None,
-            vec![view::rows(rows)],
+            None,
         ));
     }
     column
-        .child(view::section("Next", None, vec![cards.into()]))
-        .child(view::hint(&format!(
-            "{secrets}Took {}.",
-            view::seconds_text(took)
-        )))
+        .child(workspace::field("Next", cards.into(), None, None))
+        .child(text_line(
+            16.0,
+            view::muted(&format!("{secrets}Took {}.", view::seconds_text(took))),
+        ))
         .into()
+}
+
+fn workspace_title(run: &Run) -> String {
+    match &run.first_workspace {
+        Some(branch) => format!("Open {branch}"),
+        None => "Create a workspace".to_string(),
+    }
+}
+
+pub(crate) fn done_footer(state: &Onboarding) -> Node {
+    let Some(run) = state.run.as_ref() else {
+        return div().into();
+    };
+    view::footer(
+        None,
+        Vec::new(),
+        vec![view::button(
+            OPEN_WORKSPACE,
+            &workspace_title(run),
+            Some("enter"),
+            ButtonKind::Primary,
+            true,
+        )],
+    )
 }
 
 pub(crate) fn click(state: &mut Onboarding, id: u64) {

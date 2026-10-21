@@ -96,7 +96,12 @@ impl OnboardingPage {
     /// The page as it is drawn at `width`, for tests and snapshots.
     pub fn tree(&self, width: f32) -> Node {
         let state = self.shared.borrow();
-        let content_w = (width - 2.0 * view::PAGE_PAD_X).clamp(200.0, view::CONTENT_MAX_W);
+        let column = if state.screen == Screen::Done {
+            view::WIDE_W
+        } else {
+            view::COLUMN_W
+        };
+        let content_w = column.min(width - 2.0 * view::PAGE_PAD_X).max(200.0);
         let body = match state.screen {
             Screen::NewProject => new_project::render(&state, content_w, self.hovered),
             Screen::Progress => setup::progress(&state, content_w, self.hovered),
@@ -111,6 +116,17 @@ impl OnboardingPage {
             .items_center()
             .child(body)
             .into()
+    }
+
+    /// The bar pinned to the bottom of the page with the screen's actions.
+    pub fn footer(&self, width: f32) -> Node {
+        let state = self.shared.borrow();
+        let bar = match state.screen {
+            Screen::NewProject => new_project::footer(&state),
+            Screen::Progress => setup::progress_footer(&state),
+            Screen::Done => setup::done_footer(&state),
+        };
+        div().col().w_px(width).child(bar).into()
     }
 
     fn hit(&self, x: f32, y: f32) -> Option<u64> {
@@ -201,8 +217,9 @@ impl Item for OnboardingPage {
     fn paint_body(&mut self, body: Rect, _focused: bool) -> Option<ui::Painted> {
         let scale = ui::ui_text_scale();
         let tree = self.tree(body.w / scale);
+        let footer_h = view::FOOTER_H * scale;
         self.content_h = ui::measure(&tree).1 * scale;
-        self.body_h = body.h;
+        self.body_h = (body.h - footer_h).max(0.0);
         self.scroll = self
             .scroll
             .clamp(0.0, (self.content_h - self.body_h).max(0.0));
@@ -214,12 +231,29 @@ impl Item for OnboardingPage {
             Rgba::TRANSPARENT,
         );
         let painted = ui::render(&tree, shifted);
+        let visible = body.y + self.body_h;
         self.hits = painted
             .hits
             .iter()
             .copied()
-            .filter(|(rect, _)| rect.y + rect.h > body.y && rect.y < body.y + body.h)
+            .filter(|(rect, _)| rect.y + rect.h > body.y && rect.y < visible)
             .collect();
+        Some(painted)
+    }
+
+    // The footer floats as its own layer so the scrolled page's text never shows through it.
+    fn paint_popover(&mut self, body: Rect) -> Option<ui::Painted> {
+        let scale = ui::ui_text_scale();
+        let footer_h = view::FOOTER_H * scale;
+        let area = Rect::new(
+            body.x,
+            body.y + body.h - footer_h,
+            body.w,
+            footer_h,
+            Rgba::TRANSPARENT,
+        );
+        let painted = ui::render(&self.footer(body.w / scale), area);
+        self.hits.extend(painted.hits.iter().copied());
         Some(painted)
     }
 
@@ -230,6 +264,11 @@ impl Item for OnboardingPage {
     fn keystroke(&mut self, keystroke: &Keystroke) -> TerminalKeyOutcome {
         let cmd = keystroke.modifiers.cmd;
         let mut state = self.shared.borrow_mut();
+        if state.screen == Screen::Done && keystroke.key == "enter" {
+            setup::click(&mut state, ids::OPEN_WORKSPACE);
+            state.changed();
+            return TerminalKeyOutcome::Handled;
+        }
         if state.screen != Screen::NewProject {
             return TerminalKeyOutcome::Ignored;
         }

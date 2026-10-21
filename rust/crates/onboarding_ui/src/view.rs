@@ -1,194 +1,143 @@
 //! Drawing pieces of the onboarding page that carry no state of their own.
 
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rgba};
+use workspace::text_field::{FieldFont, TextField};
+use workspace::{text_line, ButtonKind};
 
-pub const CONTENT_MAX_W: f32 = 780.0;
-pub const PAGE_PAD_X: f32 = 40.0;
-pub const PAGE_PAD_TOP: f32 = 44.0;
-pub const PAGE_PAD_BOTTOM: f32 = 60.0;
-pub const PAGE_GAP: f32 = 22.0;
-pub const BUTTON_H: f32 = 28.0;
-pub const TEXT: f32 = 13.0;
-pub const SMALL: f32 = 12.5;
-pub const HINT: f32 = 12.0;
+pub const COLUMN_W: f32 = 640.0;
+pub const WIDE_W: f32 = 760.0;
+pub const PAGE_PAD_X: f32 = 24.0;
+pub const PAGE_PAD_TOP: f32 = 36.0;
+pub const PAGE_PAD_BOTTOM: f32 = 20.0;
+pub const PAGE_GAP: f32 = 16.0;
+pub const FOOTER_H: f32 = 52.0;
+const INPUT_H: f32 = 30.0;
 
-pub fn agent_tint() -> Rgba {
-    theme().terminal_ansi[5]
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Tone {
-    Plain,
-    Primary,
-    Agent,
-    Ghost,
-}
-
-/// A page button; `keys` is the shortcut shown after its label.
-pub fn button(
-    id: u64,
-    kind: Option<IconKind>,
-    text: &str,
-    tone: Tone,
-    hot: bool,
-    enabled: bool,
-    keys: Option<&str>,
-) -> Node {
+/// The wizard's place along Repositories, Setup, Review; `done` marks every step finished.
+pub fn steps(titles: &[&str], current: usize, done: bool) -> Node {
     let colors = theme();
-    let (bg, border) = match tone {
-        Tone::Plain => (colors.element_background, colors.border),
-        Tone::Primary => (colors.info_background, colors.info_border),
-        Tone::Agent => (agent_tint().alpha(0.12), agent_tint().alpha(0.55)),
-        Tone::Ghost => (Rgba::TRANSPARENT, Rgba::TRANSPARENT),
-    };
-    let bg = if hot && enabled {
-        match tone {
-            Tone::Primary => colors.info_border.alpha(0.6),
-            _ => colors.element_hover,
-        }
-    } else {
-        bg
-    };
-    let text_color = match (enabled, tone, hot) {
-        (false, _, _) => colors.text_disabled,
-        (true, Tone::Ghost, false) => colors.text_muted,
-        _ => colors.text,
-    };
-    let mut row = div()
-        .row()
-        .h_px(BUTTON_H)
-        .px(12.0)
-        .gap(6.0)
-        .items_center()
-        .rounded(5.0)
-        .bg(bg)
-        .border(1.0, border);
-    if enabled {
-        row = row.on_click(id);
-    }
-    if let Some(kind) = kind {
-        let tint = match tone {
-            Tone::Agent => agent_tint(),
-            _ => text_color,
+    let mut row = div().row().items_center().gap(18.0);
+    for (index, title) in titles.iter().enumerate() {
+        let finished = done || index < current;
+        let active = !done && index == current;
+        let mut mark = div()
+            .row()
+            .w_px(20.0)
+            .h_px(20.0)
+            .rounded(10.0)
+            .items_center()
+            .justify_center()
+            .bg(if active {
+                colors.accent_fill
+            } else {
+                colors.element_background
+            });
+        mark = if finished {
+            mark.child(icon(IconKind::Check).size(10.0).color(colors.success))
+        } else {
+            mark.child(label((index + 1).to_string()).size(12.0).color(if active {
+                colors.on_accent
+            } else {
+                colors.text_placeholder
+            }))
         };
-        row = row.child(icon(kind).size(13.0).color(tint));
-    }
-    row = row.child(label(text.to_string()).size(TEXT).color(text_color));
-    if let Some(keys) = keys {
+        let ink = if active {
+            colors.text
+        } else if finished {
+            colors.text_muted
+        } else {
+            colors.text_placeholder
+        };
         row = row.child(
-            label(keys.to_string())
-                .size(11.0)
-                .mono()
-                .color(colors.text_placeholder),
+            div()
+                .row()
+                .items_center()
+                .gap(8.0)
+                .on_click(crate::ids::STEP_BASE + index as u64)
+                .child(mark)
+                .child(label(title.to_string()).size(12.0).color(ink)),
         );
     }
     row.into()
 }
 
-/// The page's top: the logo, a title with a line under it, and the buttons at the right.
-pub fn header(title: &str, sub: &str, right: Vec<Node>) -> Node {
+/// A page title with the muted line under it.
+pub fn head(title: &str, sub: Option<&str>) -> Node {
     let colors = theme();
-    let logo = div()
-        .row()
-        .w_px(40.0)
-        .h_px(40.0)
-        .rounded(10.0)
-        .items_center()
-        .justify_center()
-        .bg(Rgba::hex("#a63d9e"))
-        .child(
-            label("P")
-                .size(18.0)
-                .weight(600)
-                .color(Rgba::new(1.0, 1.0, 1.0, 1.0)),
-        );
-    let text = div()
-        .col()
-        .flex(1.0)
-        .gap(2.0)
-        .child(
-            label(title.to_string())
-                .size(20.0)
-                .weight(600)
-                .color(colors.text)
-                .truncate(),
-        )
-        .child(
+    let mut column = div().col().gap(4.0).child(text_line(
+        28.0,
+        label(title.to_string())
+            .size(20.0)
+            .weight(600)
+            .color(colors.text)
+            .truncate(),
+    ));
+    if let Some(sub) = sub {
+        column = column.child(text_line(
+            20.0,
             label(sub.to_string())
-                .size(SMALL)
-                .italic()
-                .color(colors.text_muted)
+                .size(13.0)
+                .color(colors.text_placeholder)
                 .truncate(),
-        );
-    let mut row = div().row().items_center().gap(16.0).child(logo).child(text);
-    let mut buttons = div().row().items_center().gap(8.0);
-    for node in right {
-        buttons = buttons.child(node);
-    }
-    row = row.child(buttons);
-    div().col().gap(PAGE_GAP).child(row).child(divider()).into()
-}
-
-pub fn divider() -> Node {
-    div().h_px(1.0).bg(theme().border_variant).into()
-}
-
-/// An uppercase section title, with `trailing` at its right.
-pub fn section_title(title: &str, trailing: Option<Node>) -> Node {
-    let mut row = div().row().items_center().child(
-        div().row().flex(1.0).child(
-            label(title.to_uppercase())
-                .size(11.0)
-                .weight(600)
-                .color(theme().text_placeholder),
-        ),
-    );
-    if let Some(trailing) = trailing {
-        row = row.child(trailing);
-    }
-    row.into()
-}
-
-pub fn section(title: &str, trailing: Option<Node>, body: Vec<Node>) -> Node {
-    let mut column = div().col().gap(10.0).child(section_title(title, trailing));
-    for node in body {
-        column = column.child(node);
+        ));
     }
     column.into()
 }
 
-/// Rows in a rounded box, a line between each.
-pub fn rows(items: Vec<Node>) -> Node {
-    let colors = theme();
-    let mut column = div().col().rounded(8.0).border(1.0, colors.border_variant);
-    for (index, item) in items.into_iter().enumerate() {
-        if index > 0 {
-            column = column.child(div().h_px(1.0).bg(colors.border_variant));
-        }
+/// Rows on the panel layer, 2px apart inside a 4px inset.
+pub fn panel_list(items: Vec<Node>, inset: f32) -> Node {
+    let mut column = div()
+        .col()
+        .gap(2.0)
+        .p(inset)
+        .rounded(6.0)
+        .bg(theme().panel_background);
+    for item in items {
         column = column.child(item);
     }
     column.into()
 }
 
-/// One row's frame: padding and a minimum height.
-pub fn row() -> ui::Div {
-    div().row().items_center().gap(10.0).px(12.0).py(9.0)
+/// A card on the panel layer; `chosen` rings it in the accent.
+pub fn card_frame(chosen: bool) -> ui::Div {
+    let colors = theme();
+    let frame = div().rounded(10.0).bg(colors.panel_background);
+    if chosen {
+        frame.border(1.0, colors.text_accent)
+    } else {
+        frame
+    }
 }
 
-pub fn chip(text: &str, detected: bool) -> Node {
+pub fn chip(text: &str, on: bool) -> Node {
     let colors = theme();
     div()
         .row()
         .h_px(20.0)
-        .px(7.0)
+        .px(8.0)
         .items_center()
         .rounded(4.0)
-        .border(1.0, colors.border_variant)
-        .child(label(text.to_string()).size(11.5).color(if detected {
-            colors.text
-        } else {
+        .bg(colors.element_active)
+        .child(label(text.to_string()).size(12.0).color(if on {
             colors.text_muted
+        } else {
+            colors.text_placeholder
         }))
+        .into()
+}
+
+/// A round status badge: a dot in the tone's color, then the word.
+pub fn pill(text: &str, tone: Rgba) -> Node {
+    div()
+        .row()
+        .h_px(20.0)
+        .px(7.0)
+        .gap(5.0)
+        .items_center()
+        .rounded(10.0)
+        .bg(theme().ghost_element_hover)
+        .child(dot(tone, 6.0))
+        .child(label(text.to_string()).size(11.0).medium().color(tone))
         .into()
 }
 
@@ -201,253 +150,231 @@ pub fn dot(color: Rgba, size: f32) -> Node {
         .into()
 }
 
-/// Lays `nodes` out left to right, starting a new line when the next would pass `width`.
-pub fn pack(nodes: Vec<Node>, width: f32, gap: f32) -> Node {
-    let mut column = div().col().gap(gap);
-    let mut line = div().row().gap(gap).items_center();
-    let mut used = 0.0;
-    for node in nodes {
-        let node_width = ui::measure(&node).0;
-        if used > 0.0 && used + gap + node_width > width {
-            column = column.child(line);
-            line = div().row().gap(gap).items_center();
-            used = 0.0;
-        }
-        used += if used > 0.0 {
-            gap + node_width
-        } else {
-            node_width
-        };
-        line = line.child(node);
-    }
-    if used > 0.0 {
-        column = column.child(line);
-    }
-    column.into()
-}
-
-/// A getting-started card: a title with its icon and a short description.
-pub fn card(id: u64, kind: IconKind, title: &str, text: &str, width: f32, hot: bool) -> Node {
+/// A 14px radio mark: a hairline ring, or a thick accent ring when chosen.
+pub fn radio(on: bool) -> Node {
     let colors = theme();
-    div()
-        .col()
-        .w_px(width)
-        .p(14.0)
-        .gap(6.0)
-        .rounded(8.0)
-        .border(
-            1.0,
-            if hot {
-                colors.border
-            } else {
-                colors.border_variant
-            },
-        )
-        .bg(if hot {
-            colors.element_hover
-        } else {
-            Rgba::new(0.0, 0.0, 0.0, 0.08)
-        })
-        .on_click(id)
-        .child(
-            div()
-                .row()
-                .items_center()
-                .gap(8.0)
-                .child(icon(kind).size(14.0).color(colors.icon_muted))
-                .child(label(title.to_string()).size(14.0).color(colors.text)),
-        )
-        .child(
-            label(text.to_string())
-                .size(SMALL)
-                .color(colors.text_muted)
-                .wrap(width - 28.0),
-        )
-        .into()
+    let mark = div().row().w_px(14.0).h_px(14.0).rounded(7.0);
+    if on {
+        mark.items_center()
+            .justify_center()
+            .bg(colors.accent_fill)
+            .child(dot(colors.panel_background, 6.0))
+            .into()
+    } else {
+        mark.border(1.0, colors.border).into()
+    }
 }
 
-pub fn hint(text: &str) -> ui::Label {
+pub fn muted(text: &str) -> ui::Label {
     label(text.to_string())
-        .size(HINT)
+        .size(12.0)
         .color(theme().text_placeholder)
 }
 
-pub fn progress_bar(value: f32, width: Option<f32>) -> Node {
-    let colors = theme();
-    let track = div().h_px(4.0).rounded(2.0).bg(colors.border_variant);
-    let track = match width {
-        Some(width) => track.w_px(width),
-        None => track.flex(1.0),
-    };
-    let fill = value.clamp(0.0, 1.0);
-    track
-        .row()
-        .child(
-            div()
-                .flex(fill.max(0.0001))
-                .h_px(4.0)
-                .rounded(2.0)
-                .bg(colors.text_accent),
-        )
-        .child(div().flex((1.0 - fill).max(0.0001)).h_px(4.0))
-        .into()
+/// Small muted copy broken into lines that fit `width`.
+pub fn note_paragraph(text: &str, width: f32) -> Node {
+    workspace::paragraph(text, 12.0, 16.0, width, theme().text_placeholder)
 }
 
-/// A 16px checkbox before a title and its explanation.
-pub fn check(id: u64, on: bool, title: &str, detail: Option<Node>) -> Node {
-    let colors = theme();
-    let mut box_ = div()
-        .row()
-        .w_px(16.0)
-        .h_px(16.0)
-        .rounded(3.0)
-        .items_center()
-        .justify_center()
-        .border(1.0, colors.border);
-    if on {
-        box_ = box_.child(icon(IconKind::Check).size(11.0).color(colors.text_accent));
-    }
-    let mut text = div()
-        .col()
-        .flex(1.0)
-        .gap(2.0)
-        .child(label(title.to_string()).size(TEXT).color(colors.text));
-    if let Some(detail) = detail {
-        text = text.child(detail);
-    }
-    div()
-        .row()
-        .gap(9.0)
-        .py(4.0)
-        .child(div().col().pt(1.0).child(box_).on_click(id))
-        .child(text)
-        .on_click(id)
-        .into()
-}
-
-/// A round radio mark, filled when chosen.
-pub fn radio(on: bool) -> Node {
-    let colors = theme();
-    let mut mark = div()
-        .row()
-        .w_px(16.0)
-        .h_px(16.0)
-        .rounded(8.0)
-        .items_center()
-        .justify_center()
-        .border(
-            1.5,
-            if on {
-                colors.text_accent
-            } else {
-                colors.border
-            },
-        );
-    if on {
-        mark = mark.child(dot(colors.text_accent, 8.0));
-    }
-    mark.into()
-}
-
-/// A small numbered or checked circle, as the stepper and the phase timeline use.
-pub fn step_mark(content: StepMark, size: f32) -> Node {
-    let colors = theme();
-    let (border, color) = match content {
-        StepMark::Done => (colors.success.alpha(0.6), colors.success),
-        StepMark::Current(_) | StepMark::Working => (colors.text_accent, colors.text_accent),
-        StepMark::Failed => (colors.error, colors.error),
-        StepMark::Todo(_) => (colors.border, colors.text_placeholder),
-    };
-    let mut mark = div()
-        .row()
-        .w_px(size)
-        .h_px(size)
-        .rounded(size / 2.0)
-        .items_center()
-        .justify_center()
-        .border(1.0, border)
-        .bg(colors.editor_background);
-    if content == StepMark::Done {
-        mark = mark.bg(colors.success.alpha(0.15));
-    }
-    mark = match content {
-        StepMark::Done => mark.child(icon(IconKind::Check).size(11.0).color(color)),
-        StepMark::Working => mark.child(icon(IconKind::RotateCw).size(11.0).color(color)),
-        StepMark::Failed => mark.child(label("!").size(11.0).weight(600).color(color)),
-        StepMark::Current(n) | StepMark::Todo(n) => {
-            mark.child(label(n.to_string()).size(11.0).color(color))
-        }
-    };
-    mark.into()
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum StepMark {
-    Done,
-    Current(usize),
-    Working,
-    Failed,
-    Todo(usize),
-}
-
-/// A segmented control; `options` are (id, text, enabled).
+/// Mutually exclusive choices on a sunken track; the chosen one sits raised, unavailable ones are dimmed.
 pub fn segmented(options: &[(u64, &str, bool)], selected: usize) -> Node {
     let colors = theme();
-    let mut row = div()
+    let mut group = div()
         .row()
         .p(2.0)
         .gap(2.0)
-        .rounded(5.0)
-        .bg(colors.element_background);
+        .rounded(6.0)
+        .bg(colors.background);
     for (index, (id, text, enabled)) in options.iter().enumerate() {
-        let on = index == selected;
-        let color = if !enabled {
-            colors.text_muted.alpha(0.45)
-        } else if on {
+        let chosen = index == selected;
+        let ink = if !enabled {
+            colors.text_disabled
+        } else if chosen {
             colors.text
         } else {
             colors.text_muted
         };
-        let mut part = div()
+        let mut cell = div()
             .row()
-            .items_center()
+            .h_px(26.0)
             .px(10.0)
-            .py(3.0)
+            .items_center()
             .rounded(4.0)
-            .on_click(*id)
-            .child(label(text.to_string()).size(SMALL).color(color));
-        if on {
-            part = part.bg(colors.element_selected);
+            .on_click(*id);
+        if chosen {
+            cell = cell.bg(colors.element_background);
         }
-        row = row.child(part);
+        group = group.child(cell.child(label(text.to_string()).size(12.0).color(ink)));
+    }
+    div().row().child(group).into()
+}
+
+/// A one-line input box around `field`, on the surface layer, ringed while focused.
+pub fn input(
+    id: u64,
+    field: &TextField,
+    placeholder: &str,
+    focused: bool,
+    error: bool,
+    font: FieldFont,
+) -> ui::Div {
+    let colors = theme();
+    let border = match (error, focused) {
+        (true, _) => colors.error,
+        (false, true) => colors.border_focused,
+        (false, false) => colors.border,
+    };
+    let mut frame = div()
+        .row()
+        .items_center()
+        .h_px(INPUT_H)
+        .px(10.0)
+        .rounded(6.0)
+        .bg(colors.editor_background)
+        .border(1.0, border)
+        .on_click(id);
+    if focused && !error {
+        frame = frame.ring(3.0, colors.overlay_selected);
+    }
+    frame.child(div().row().flex(1.0).items_center().child(field.render(
+        placeholder,
+        focused,
+        colors.text,
+        20.0,
+        font,
+    )))
+}
+
+/// The footer bar: an optional muted note or quiet actions at the left, the buttons right-aligned.
+pub fn footer(note: Option<&str>, leading: Vec<Node>, buttons: Vec<Node>) -> Node {
+    let mut start = div().row().flex(1.0).items_center().gap(8.0);
+    if let Some(note) = note {
+        start = start.child(muted(note).truncate());
+    }
+    for node in leading {
+        start = start.child(node);
+    }
+    let mut row = div()
+        .row()
+        .h_px(FOOTER_H)
+        .px(16.0)
+        .gap(8.0)
+        .items_center()
+        .bg(theme().panel_background)
+        .child(start);
+    for button in buttons {
+        row = row.child(button);
     }
     row.into()
 }
 
-/// A text field in a bordered box.
-pub fn input(id: u64, content: Node, focused: bool, width: Option<f32>, height: f32) -> Node {
+pub fn button(id: u64, text: &str, keys: Option<&str>, kind: ButtonKind, enabled: bool) -> Node {
+    workspace::modal_button(id, text, keys, kind, enabled)
+}
+
+/// A small icon-only button with no fill until hovered.
+pub fn icon_button(id: u64, kind: IconKind, hot: bool) -> Node {
     let colors = theme();
-    let frame = div()
+    div()
+        .row()
+        .w_px(28.0)
+        .h_px(24.0)
+        .rounded(6.0)
+        .items_center()
+        .justify_center()
+        .bg(if hot {
+            colors.ghost_element_hover
+        } else {
+            Rgba::TRANSPARENT
+        })
+        .on_click(id)
+        .child(icon(kind).size(14.0).color(colors.icon))
+        .into()
+}
+
+/// The file-type icon a repo's detected stack reads as, if any.
+pub fn stack_icon(stack: &[String]) -> Option<MaterialIcon> {
+    let has = |words: &[&str]| {
+        stack
+            .iter()
+            .any(|name| words.iter().any(|word| name.eq_ignore_ascii_case(word)))
+    };
+    Some(if has(&["React", "Next.js", "Vite"]) {
+        MaterialIcon::React
+    } else if has(&["Rails", "Ruby", "Rack", "Sinatra"]) {
+        MaterialIcon::Ruby
+    } else if has(&["Node", "Express", "NestJS"]) {
+        MaterialIcon::NodeJs
+    } else if has(&["Python", "Django", "Flask", "FastAPI"]) {
+        MaterialIcon::Python
+    } else if has(&["Go"]) {
+        MaterialIcon::Go
+    } else if has(&["Rust", "Cargo"]) {
+        MaterialIcon::Rust
+    } else if has(&["Angular", "TypeScript"]) {
+        MaterialIcon::TypeScript
+    } else if has(&["PHP", "Laravel"]) {
+        MaterialIcon::Php
+    } else if has(&["Elixir", "Phoenix"]) {
+        MaterialIcon::Elixir
+    } else if has(&["Java", "Spring"]) {
+        MaterialIcon::Java
+    } else {
+        return None;
+    })
+}
+
+/// A repo's icon: its stack's file icon, else a folder for a local repo and a branch for one still to clone.
+pub fn repo_icon(stack: &[String], remote: bool) -> Node {
+    match stack_icon(stack) {
+        Some(material) => material_icon(material).size(18.0).into(),
+        None => icon(if remote {
+            IconKind::Branch
+        } else {
+            IconKind::Folder
+        })
+        .size(18.0)
+        .color(theme().icon_muted)
+        .into(),
+    }
+}
+
+/// One repo row: its icon, its name over a muted second line, then `trailing` at the right.
+pub fn repo_row(lead: Node, name: Node, second: &str, trailing: Vec<Node>) -> Node {
+    let colors = theme();
+    let mut row = div()
         .row()
         .items_center()
-        .h_px(height)
-        .px(9.0)
-        .rounded(5.0)
-        .bg(colors.editor_background)
-        .border(
-            1.0,
-            if focused {
-                colors.border_focused
-            } else {
-                colors.border_variant
-            },
-        )
-        .on_click(id)
-        .child(content);
-    match width {
-        Some(width) => frame.w_px(width).into(),
-        None => frame.flex(1.0).into(),
+        .gap(12.0)
+        .pl(10.0)
+        .pr(6.0)
+        .py(8.0)
+        .rounded(4.0)
+        .child(lead)
+        .child(
+            div().col().flex(1.0).child(name).child(text_line(
+                16.0,
+                label(second.to_string())
+                    .size(12.0)
+                    .color(colors.text_placeholder)
+                    .truncate_start(),
+            )),
+        );
+    for node in trailing {
+        row = row.child(node);
     }
+    row.into()
+}
+
+pub fn strong_line(text: &str) -> Node {
+    text_line(
+        20.0,
+        label(text.to_string())
+            .size(13.0)
+            .medium()
+            .color(theme().text)
+            .truncate(),
+    )
 }
 
 pub fn seconds_text(seconds: u64) -> String {

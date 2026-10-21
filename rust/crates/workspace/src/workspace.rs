@@ -21,7 +21,7 @@ mod workspace_view;
 pub use form::{
     accent_action, checkbox, field, field_label, is_window_modal_id, key_chip, modal_button,
     modal_footer, modal_frame, modal_header, modal_note, modal_section, outlined_button,
-    overlay_ring, progress_bar, prompt_card, segmented, status_line, text_line,
+    overlay_ring, paragraph, progress_bar, prompt_card, segmented, status_line, text_line,
     toggle_button_group, ButtonKind, InputField, ModalResult, WindowModal, PROMPT_WIDTH,
     WINDOW_MODAL_BASE, WINDOW_MODAL_END,
 };
