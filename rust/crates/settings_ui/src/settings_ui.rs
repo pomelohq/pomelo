@@ -630,24 +630,25 @@ pub fn chrome_flags(s: &Settings) -> ui::ChromeFlags {
     }
 }
 
-const THEMES: [&str; 6] = [
-    "Pomelo Dark",
-    "Pomelo Light",
-    "One Dark",
-    "One Light",
-    "Ayu Mirage",
-    "Gruvbox Dark",
-];
-
-/// The built-in themes, then the user's (a user theme named like a built-in one replaces it).
+/// The built-in themes, dark before light, then the user's (a user theme named like a built-in one replaces it).
 pub fn theme_names() -> Vec<String> {
-    let mut names: Vec<String> = THEMES.iter().map(|name| name.to_string()).collect();
+    let mut names: Vec<String> = ui::builtin_theme_names()
+        .into_iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
     for name in ui::theme_file::user_theme_names() {
         if !names.contains(&name) {
             names.push(name);
         }
     }
     names
+}
+
+fn themes_of(appearance: ui::Appearance) -> Vec<String> {
+    theme_names()
+        .into_iter()
+        .filter(|name| ui::by_name(name).appearance == appearance)
+        .collect()
 }
 
 /// The theme after `current` in the theme list, wrapping around.
@@ -657,7 +658,7 @@ pub fn next_theme(current: &str) -> String {
     names
         .get(at.map_or(0, |at| (at + 1) % names.len()))
         .cloned()
-        .unwrap_or_else(|| THEMES[0].to_string())
+        .unwrap_or_else(|| "Pomelo Dark".to_string())
 }
 
 /// Popover-item click ids start here (an item's id = POPOVER_BASE + its index in the option list).
@@ -712,7 +713,10 @@ fn cap(s: &str) -> String {
 pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
     let sv = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect();
     match id {
-        CTRL_THEME | CTRL_THEME_LIGHT | CTRL_THEME_DARK => theme_names(),
+        CTRL_THEME => theme_names(),
+        // The light and dark slots of the dynamic mode only offer themes of that appearance.
+        CTRL_THEME_LIGHT => themes_of(ui::Appearance::Light),
+        CTRL_THEME_DARK => themes_of(ui::Appearance::Dark),
         CTRL_THEME_SELECTION => sv(&["Static", "Dynamic"]),
         CTRL_FONT_FAMILY => fonts.to_vec(),
         CTRL_BUFFER_FAMILY | CTRL_TERM_FAMILY => std::iter::once(".PomeloMono".to_string())
@@ -4628,7 +4632,11 @@ mod tests {
     fn controls_mutate_settings() {
         let mut s = Settings::default();
         // Dropdowns select a value from a popover (index into control_items).
-        assert!(apply_choice(CTRL_THEME, 1, &[], &mut s));
+        let light = theme_names()
+            .iter()
+            .position(|t| t == "Pomelo Light")
+            .unwrap();
+        assert!(apply_choice(CTRL_THEME, light, &[], &mut s));
         assert_eq!(s.theme, "Pomelo Light");
         let fonts = vec!["Helvetica".to_string(), "Menlo".to_string()];
         assert!(apply_choice(CTRL_FONT_FAMILY, 1, &fonts, &mut s));

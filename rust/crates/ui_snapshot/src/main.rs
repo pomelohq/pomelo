@@ -154,8 +154,18 @@ fn scene_args(args: &[String]) -> anyhow::Result<Option<(String, usize)>> {
     let mut rest = args[4..].iter();
     while let Some(flag) = rest.next() {
         match (flag.as_str(), rest.next()) {
-            ("--theme", Some(value)) if value == "light" => theme = "Pomelo Light",
-            ("--theme", Some(_)) => theme = "Pomelo Dark",
+            // The canvas names themes by slug ("one-dark"); "dark" and "light" are Pomelo's own.
+            ("--theme", Some(value)) => {
+                theme = match value.as_str() {
+                    "dark" => "Pomelo Dark",
+                    "light" => "Pomelo Light",
+                    slug => ui::builtin_theme_names()
+                        .into_iter()
+                        .map(|(name, _)| name)
+                        .find(|name| name.to_lowercase().replace(' ', "-") == slug)
+                        .ok_or_else(|| anyhow::anyhow!("unknown theme {slug}"))?,
+                }
+            }
             ("--size", Some(value)) => size = value.clone(),
             _ => anyhow::bail!("unexpected argument {flag}"),
         }
@@ -3180,7 +3190,13 @@ fn main() -> anyhow::Result<()> {
             ui::set_theme(ui::one_light());
         } else {
             settings.theme = t.clone();
-            ui::set_theme(ui::by_name(&t));
+            let colors = ui::by_name(&t);
+            // Dynamic mode reads the slot for the theme's own appearance.
+            match colors.appearance {
+                ui::Appearance::Dark => settings.theme_dark = t.clone(),
+                ui::Appearance::Light => settings.theme_light = t.clone(),
+            }
+            ui::set_theme(colors);
         }
     }
     if let Ok(f) = std::env::var("UIFONT") {
