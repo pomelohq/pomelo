@@ -144,11 +144,11 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: "One Dark".into(),
+            theme: "Pomelo Dark".into(),
             theme_selection: "static".into(),
             theme_mode: "system".into(),
-            theme_light: "One Light".into(),
-            theme_dark: "One Dark".into(),
+            theme_light: "Pomelo Light".into(),
+            theme_dark: "Pomelo Dark".into(),
             theme_overrides: serde_json::Value::Object(serde_json::Map::new()),
             ui_font: ".PomeloSans".into(),
             ui_font_size: 16.0,
@@ -571,6 +571,6 @@ mod tests {
     fn partial_json_fills_defaults() {
         let s: Settings = serde_json::from_str(r#"{"ui_font_size": 15.0}"#).unwrap();
         assert_eq!(s.ui_font_size, 15.0);
-        assert_eq!(s.theme, "One Dark"); // missing key -> default
+        assert_eq!(s.theme, "Pomelo Dark"); // missing key -> default
     }
 }

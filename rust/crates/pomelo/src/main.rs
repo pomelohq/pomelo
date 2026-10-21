@@ -2923,7 +2923,7 @@ impl App {
         let mut colors = ui::by_name(&name);
         let mut syntax = ui::theme_file::user_theme(&name)
             .map(|theme| theme.syntax)
-            .unwrap_or_default();
+            .unwrap_or_else(|| ui::builtin_syntax(&name));
         let mut problems = self.theme_file_problems.clone();
         if let Some(overrides) = self
             .settings
