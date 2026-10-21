@@ -3,14 +3,16 @@ use std::collections::HashSet;
 use pom_services::{ServiceExplain, ServiceTarget};
 use terminal::Modifiers;
 use ui::{div, label, theme, IconKind, Node, Rect, Rgba};
-use workspace::{Item, ItemTick};
+use workspace::{field_label, Item, ItemTick};
 
-use crate::{hit_at, icon_button, EnvironmentContext};
+use crate::{action_button, hit_at, EnvironmentContext};
 
 pub const ITEM_ID: &str = "environment";
-const ROW_H: f32 = 26.0;
-const KEY_W: f32 = 210.0;
-const BADGE_W: f32 = 88.0;
+const ROW_H: f32 = 30.0;
+const KEY_W: f32 = 220.0;
+const BADGE_W: f32 = 80.0;
+const ACTIONS_W: f32 = 48.0;
+const PICKER_W: f32 = 160.0;
 const REPO: u64 = 1;
 const SERVICE: u64 = 2;
 const BRANCH: u64 = 3;
@@ -202,39 +204,39 @@ impl EnvItem {
         let colors = theme();
         div()
             .col()
-            .gap(3.0)
-            .child(
-                label(title.to_string())
-                    .size(10.0)
-                    .color(colors.text_placeholder),
-            )
+            .gap(6.0)
+            .child(field_label(title))
             .child(
                 div()
                     .row()
-                    .h_px(24.0)
-                    .px(8.0)
-                    .gap(6.0)
+                    .w_px(PICKER_W)
+                    .h_px(28.0)
+                    .px(10.0)
+                    .gap(10.0)
                     .items_center()
-                    .rounded(4.0)
-                    .border(1.0, colors.border_variant)
+                    .rounded(6.0)
+                    .border(1.0, colors.border)
                     .bg(if self.hovered == Some(id) {
                         colors.ghost_element_hover
                     } else {
-                        Rgba::TRANSPARENT
+                        colors.element_background
                     })
                     .on_click(id)
                     .child(
-                        label(if value.is_empty() {
-                            "-".to_string()
-                        } else {
-                            value.to_string()
-                        })
-                        .size(12.0)
-                        .color(colors.text),
+                        div().row().flex(1.0).child(
+                            label(if value.is_empty() {
+                                "-".to_string()
+                            } else {
+                                value.to_string()
+                            })
+                            .size(12.0)
+                            .color(colors.text)
+                            .truncate(),
+                        ),
                     )
                     .child(
                         ui::icon(IconKind::ChevronUpDown)
-                            .size(10.0)
+                            .size(11.0)
                             .color(colors.icon_muted),
                     ),
             )
@@ -245,21 +247,28 @@ impl EnvItem {
         div()
             .row()
             .w_px(BADGE_W)
-            .justify_end()
             .child(
                 div()
                     .row()
                     .h_px(18.0)
-                    .px(6.0)
+                    .px(7.0)
                     .items_center()
-                    .rounded(9.0)
-                    .bg(Rgba::new(color.r, color.g, color.b, 0.12))
-                    .child(label(text.to_string()).size(10.0).color(color)),
+                    .rounded(4.0)
+                    .bg(color.alpha(0.14))
+                    .child(label(text.to_string()).size(12.0).medium().color(color)),
             )
             .into()
     }
 
-    fn line(&self, key: &str, value: &str, badge: Node, actions: Vec<Node>, masked: bool) -> Node {
+    fn line(
+        &self,
+        striped: bool,
+        key: &str,
+        value: &str,
+        badge: Node,
+        actions: Vec<Node>,
+        masked: bool,
+    ) -> Node {
         let colors = theme();
         let shown = if masked {
             "*".repeat(12)
@@ -268,16 +277,26 @@ impl EnvItem {
         } else {
             value.to_string()
         };
-        let mut row = div()
+        let mut tools = div()
+            .row()
+            .w_px(ACTIONS_W)
+            .gap(7.0)
+            .items_center()
+            .justify_end();
+        for action in actions {
+            tools = tools.child(action);
+        }
+        let row = div()
             .row()
             .h_px(ROW_H)
-            .px(20.0)
+            .px(8.0)
             .gap(12.0)
             .items_center()
+            .rounded(4.0)
             .child(
                 div().row().w_px(KEY_W).child(
                     label(key.to_string())
-                        .size(11.5)
+                        .size(12.0)
                         .mono()
                         .color(colors.text)
                         .truncate(),
@@ -286,30 +305,82 @@ impl EnvItem {
             .child(
                 div().row().flex(1.0).items_center().child(
                     label(shown)
-                        .size(11.5)
+                        .size(12.0)
                         .mono()
                         .color(if masked {
                             colors.text_placeholder
                         } else {
-                            colors.text_muted
+                            colors.text
                         })
                         .truncate(),
                 ),
-            );
-        for action in actions {
-            row = row.child(action);
+            )
+            .child(badge)
+            .child(tools);
+        if striped {
+            row.bg(colors.panel_background).into()
+        } else {
+            row.into()
         }
-        row.child(badge).into()
     }
 
     fn section(title: String) -> Node {
         div()
             .row()
-            .px(20.0)
+            .px(8.0)
             .pt(14.0)
             .pb(6.0)
-            .child(label(title).size(10.0).color(theme().text_muted))
+            .child(field_label(&title))
             .into()
+    }
+
+    fn legend(preset: &str) -> Node {
+        let colors = theme();
+        let entry = |text: &str, color: Rgba, meaning: &str| {
+            div()
+                .row()
+                .gap(6.0)
+                .items_center()
+                .child(
+                    div()
+                        .row()
+                        .h_px(18.0)
+                        .px(7.0)
+                        .items_center()
+                        .rounded(4.0)
+                        .bg(color.alpha(0.14))
+                        .child(label(text.to_string()).size(12.0).medium().color(color)),
+                )
+                .child(
+                    label(meaning.to_string())
+                        .size(12.0)
+                        .color(colors.text_placeholder),
+                )
+        };
+        div()
+            .row()
+            .px(8.0)
+            .pt(16.0)
+            .gap(20.0)
+            .items_center()
+            .child(entry("own", colors.text_accent, "set in this repo's env"))
+            .child(entry(preset, colors.success, "from a preset"))
+            .child(entry(
+                "resolved",
+                colors.text_placeholder,
+                "filled in by Pomelo",
+            ))
+            .into()
+    }
+
+    /// Shows `explain` on `port` as if the config had resolved it (previews).
+    pub fn show(&mut self, explain: ServiceExplain, port: Option<u16>, revealed: &[&str]) {
+        self.repo = explain.repo.clone();
+        self.service = explain.service.clone();
+        self.explain = Some(explain);
+        self.port = port;
+        self.error = None;
+        self.revealed = revealed.iter().map(|key| key.to_string()).collect();
     }
 
     /// The service the tab shows (tests).
@@ -343,41 +414,43 @@ impl Item for EnvItem {
             .row()
             .gap(14.0)
             .px(20.0)
-            .py(12.0)
-            .child(self.picker(REPO, "REPO", &self.repo))
-            .child(self.picker(SERVICE, "SERVICE", &self.service))
-            .child(self.picker(BRANCH, "BRANCH", &self.branch))
+            .pt(14.0)
+            .pb(10.0)
+            .child(self.picker(REPO, "Repo", &self.repo))
+            .child(self.picker(SERVICE, "Service", &self.service))
+            .child(self.picker(BRANCH, "Branch", &self.branch))
             .child(self.picker(
                 PROFILE,
-                "PROFILE",
+                "Profile",
                 if self.profile.is_empty() {
                     "local"
                 } else {
                     &self.profile
                 },
             ));
-        let mut table = div().col();
+        let mut table = div().col().px(12.0).pb(12.0);
         match (&self.explain, &self.error) {
             (Some(explain), _) => {
                 if !explain.databases.is_empty() {
-                    table = table.child(Self::section("DATABASES - per branch".into()));
-                    for (key, value) in &explain.databases {
+                    table = table.child(Self::section("Databases - per branch".into()));
+                    for (index, (key, value)) in explain.databases.iter().enumerate() {
                         table = table.child(self.line(
+                            index.is_multiple_of(2),
                             key,
                             value,
-                            Self::badge("db", colors.text_accent),
+                            Self::badge("db", colors.info),
                             Vec::new(),
                             false,
                         ));
                     }
                 }
                 table = table.child(Self::section(match self.port {
-                    Some(port) => format!("ENVIRONMENT - port {port}"),
-                    None => "ENVIRONMENT".into(),
+                    Some(port) => format!("Environment - port {port}"),
+                    None => "Environment".into(),
                 }));
                 if explain.env.is_empty() {
                     table = table.child(
-                        div().row().px(20.0).py(8.0).child(
+                        div().row().px(8.0).py(8.0).child(
                             label("no env for this service")
                                 .size(12.0)
                                 .color(colors.text_muted),
@@ -385,24 +458,28 @@ impl Item for EnvItem {
                     );
                 }
                 let first = (self.scroll / ROW_H) as usize;
-                let visible = ((height - 150.0) / ROW_H).max(1.0) as usize;
+                let visible = ((height - 190.0) / ROW_H).max(1.0) as usize;
                 for (index, line) in explain.env.iter().enumerate().skip(first).take(visible) {
                     let base = ROW_BASE + index as u64 * ROW_STRIDE;
                     let masked =
                         line.secret && !line.value.is_empty() && !self.revealed.contains(&line.key);
                     let mut actions = Vec::new();
                     if line.secret && !line.value.is_empty() {
-                        actions.push(icon_button(
+                        actions.push(action_button(
                             base + REVEAL,
                             IconKind::Eye,
-                            colors.icon_muted,
+                            if masked {
+                                colors.icon_muted
+                            } else {
+                                colors.text_accent
+                            },
                             self.hovered == Some(base + REVEAL),
                         ));
                     } else {
-                        actions.push(div().w_px(22.0).into());
+                        actions.push(div().w_px(16.0).into());
                     }
                     if !line.value.is_empty() {
-                        actions.push(icon_button(
+                        actions.push(action_button(
                             base + COPY,
                             IconKind::Copy,
                             colors.icon_muted,
@@ -415,6 +492,7 @@ impl Item for EnvItem {
                         _ => ("resolved", colors.text_placeholder),
                     };
                     table = table.child(self.line(
+                        (index - first).is_multiple_of(2),
                         &line.key,
                         &line.value,
                         Self::badge(text, color),
@@ -422,13 +500,19 @@ impl Item for EnvItem {
                         masked,
                     ));
                 }
+                let preset = explain
+                    .env
+                    .iter()
+                    .find_map(|line| line.source.strip_prefix("preset:"))
+                    .unwrap_or("preset");
+                table = table.child(Self::legend(preset));
             }
             (None, Some(error)) => {
                 table = table.child(
                     div()
                         .row()
-                        .p(16.0)
-                        .child(label(error.clone()).size(11.0).mono().color(colors.error)),
+                        .p(8.0)
+                        .child(label(error.clone()).size(12.0).mono().color(colors.error)),
                 );
             }
             (None, None) => {
@@ -447,7 +531,6 @@ impl Item for EnvItem {
             .h_px(height)
             .bg(colors.editor_background)
             .child(pickers)
-            .child(div().h_px(1.0).bg(colors.border_variant))
             .child(table)
             .into();
         let painted = ui::render(&tree, body);

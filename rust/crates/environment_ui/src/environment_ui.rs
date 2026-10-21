@@ -35,15 +35,15 @@ fn hit_at(hits: &[(Rect, u64)], x: f32, y: f32) -> Option<u64> {
         .map(|(_, id)| *id)
 }
 
-fn icon_button(id: u64, kind: ui::IconKind, color: ui::Rgba, hot: bool) -> Node {
+fn action_button(id: u64, kind: ui::IconKind, color: ui::Rgba, hot: bool) -> Node {
     let mut button = div()
-        .w_px(22.0)
+        .w_px(16.0)
         .h_px(20.0)
         .rounded(4.0)
         .items_center()
         .justify_center()
         .on_click(id)
-        .child(ui::icon(kind).size(12.0).color(color));
+        .child(ui::icon(kind).size(13.0).color(color));
     if hot {
         button = button.bg(ui::theme().ghost_element_hover);
     }

@@ -53,6 +53,18 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "data-keyspace" => (0, &[("DATABASE", "board-keyspace")]),
         "data-bucket" => (0, &[("DATABASE", "board-bucket")]),
         "data-failed" => (0, &[("DBFAILURE", "1")]),
+        // The Environment and Secrets tab bodies; ENVTAB=board-* draws the boards' rows.
+        "data-env" => (0, &[("ENVTAB", "board-env")]),
+        "data-secrets" => (0, &[("ENVTAB", "board-secrets")]),
+        // The ticket tab body from a recorded issue, and with no Jira site set up.
+        "data-ticket" => (0, &[("TICKETTAB", "board")]),
+        "data-ticket-unset" => (0, &[("TICKETTAB", "board-unset")]),
+        // cmd-shift-f over a fixture of the board's three files, and before the first search.
+        "editor-search" => (
+            0,
+            &[("SEARCH", "User.where(active: true)"), ("SEARCHBOARD", "1")],
+        ),
+        "editor-search-empty" => (0, &[("SEARCH", ""), ("SEARCHBOARD", "1")]),
         // The welcome page alone at the editor area's size, the pointer on New project; WELCOME=docker
         // has Docker stopped.
         "project-welcome" => (0, &[("WELCOME", "ok")]),
@@ -1681,6 +1693,9 @@ fn main() -> anyhow::Result<()> {
 
     if let Ok(which) = std::env::var("ENVTAB") {
         use workspace::Item;
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
         let dir = std::env::temp_dir().join(format!("pom-snapshot-env-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         std::fs::write(
@@ -1690,11 +1705,22 @@ fn main() -> anyhow::Result<()> {
         let config = std::sync::Arc::new(pom_config::Config::load(&dir.join("pom.yml"))?);
         let state = pom_paths::StateDir::new(dir.join("state"));
         let store = pom_secrets::SecretStore::new(state.clone(), "myproject");
-        for (name, value) in [
-            ("STRIPE_KEY", "sk_test_123"),
-            ("GITHUB_TOKEN", "ghp_example"),
-            ("SENTRY_DSN", "https://example.invalid/1"),
-        ] {
+        let secrets: &[(&str, &str)] = if which == "board-secrets" {
+            &[
+                ("STRIPE_SECRET_KEY", "sk_test_123"),
+                ("SMTP_PASSWORD", "mailpit-dev"),
+                ("GITHUB_TOKEN", "ghp_example"),
+                ("SENTRY_DSN", "https://example.invalid/1"),
+                ("OPENAI_API_KEY", "sk-example"),
+            ]
+        } else {
+            &[
+                ("STRIPE_KEY", "sk_test_123"),
+                ("GITHUB_TOKEN", "ghp_example"),
+                ("SENTRY_DSN", "https://example.invalid/1"),
+            ]
+        };
+        for (name, value) in secrets {
             store
                 .set(name, value)
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1716,9 +1742,76 @@ fn main() -> anyhow::Result<()> {
             workspaces: vec![("main".into(), true), ("feat-login".into(), false)],
             branch: "feat-login".into(),
         };
-        let (width, height) = (820.0_f32, 420.0_f32);
+        let (width, height) = match scene_size() {
+            Some(size) if which.starts_with("board-") => size,
+            _ => (820.0_f32, 420.0_f32),
+        };
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
-        let mut item: Box<dyn Item> = if which == "secrets" {
+        let mut item: Box<dyn Item> = if which == "board-env" {
+            let line = |key: &str, value: &str, source: &str, secret: bool| pom_services::EnvLine {
+                key: key.into(),
+                value: value.into(),
+                source: source.into(),
+                secret,
+            };
+            let mut item = environment_ui::EnvItem::new(context);
+            item.show(
+                pom_services::ServiceExplain {
+                    repo: "api".into(),
+                    alias: "api".into(),
+                    service: "server".into(),
+                    cmd: "rails s".into(),
+                    databases: [("main".to_string(), "myproject_api_feat-login".to_string())]
+                        .into_iter()
+                        .collect(),
+                    env: vec![
+                        line(
+                            "DATABASE_URL",
+                            "postgres://postgres@localhost:5432/myproject_api_feat-login",
+                            "own",
+                            false,
+                        ),
+                        line("REDIS_URL", "redis://localhost:6379/3", "own", false),
+                        line("RAILS_ENV", "development", "preset:rails", false),
+                        line("RAILS_LOG_TO_STDOUT", "1", "preset:rails", false),
+                        line(
+                            "WEB_URL",
+                            "http://app.web.feat-login.localhost:8767",
+                            "resolved",
+                            false,
+                        ),
+                        line("STRIPE_SECRET_KEY", "sk_test_51Hx...", "own", true),
+                        line("SMTP_PASSWORD", "mailpit-dev", "own", true),
+                        line("PORT", "3000", "resolved", false),
+                    ],
+                },
+                Some(3000),
+                &["SMTP_PASSWORD"],
+            );
+            Box::new(item)
+        } else if which == "board-secrets" {
+            let mut item = environment_ui::SecretsItem::new(context);
+            item.type_new("POSTHOG_KEY", "phc_example1");
+            item.show_states(("SMTP_PASSWORD", "mailpit-dev"), "SENTRY_DSN");
+            item.set_focused(true);
+            // The pointer rests on the armed row, as the board draws it.
+            let row = item.paint_body(body, true).and_then(|painted| {
+                painted
+                    .hits
+                    .iter()
+                    .find(|(_, id)| *id == 111)
+                    .map(|(rect, _)| *rect)
+            });
+            if let Some(rect) = row {
+                item.pointer_move(
+                    rect.x + 4.0,
+                    rect.y + 4.0,
+                    terminal::Modifiers::default(),
+                    true,
+                );
+            }
+            Box::new(item)
+        } else if which == "secrets" {
             Box::new(environment_ui::SecretsItem::new(context))
         } else {
             Box::new(environment_ui::EnvItem::new(context))
@@ -1749,10 +1842,40 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Ok(query) = std::env::var("SEARCH") {
-        let root = std::env::current_dir()?;
-        let mut item =
-            files_ui::project_search_preview(root, &query, std::env::var("FILTERS").is_ok());
-        let (width, height) = (900.0_f32, 560.0_f32);
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let board = std::env::var_os("SEARCHBOARD").is_some();
+        let (width, height) = match (board, scene_size()) {
+            (true, Some(size)) => size,
+            _ => (900.0_f32, 560.0_f32),
+        };
+        let mut item = if board {
+            let root =
+                std::env::temp_dir().join(format!("pom-snapshot-search-{}", std::process::id()));
+            search_fixture(&root)?;
+            let mut item = if query.is_empty() {
+                files_ui::project_search_preview(root.clone(), "", false)
+            } else {
+                files_ui::project_search_scoped(
+                    root.clone(),
+                    &query,
+                    "User.active",
+                    "api/**/*.rb, web/src/**",
+                )
+            };
+            item.set_focused(false);
+            if let Err(error) = std::fs::remove_dir_all(&root) {
+                eprintln!("remove {}: {error}", root.display());
+            }
+            item
+        } else {
+            files_ui::project_search_preview(
+                std::env::current_dir()?,
+                &query,
+                std::env::var("FILTERS").is_ok(),
+            )
+        };
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
         let painted = item
             .paint_body(body, true)
@@ -1808,9 +1931,15 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if std::env::var("TICKETTAB").is_ok() {
+    if let Ok(which) = std::env::var("TICKETTAB") {
         use workspace::Item;
-        let (width, height) = (720.0_f32, 620.0_f32);
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let (width, height) = match scene_size() {
+            Some(size) if which.starts_with("board") => size,
+            _ => (720.0_f32, 620.0_f32),
+        };
         let dir = std::env::temp_dir().join(format!("pom-snapshot-ticket-{}", std::process::id()));
         let mut item = jira_ui::TicketItem::new(
             pom_paths::StateDir::new(dir.join("state")),
@@ -1818,7 +1947,42 @@ fn main() -> anyhow::Result<()> {
             "PROJ-101".into(),
             std::sync::Arc::new(|| {}),
         );
-        item.show(
+        let comment = |id: &str, author: &str, created: &str, body: &str| pom_jira::Comment {
+            id: id.into(),
+            author: author.into(),
+            avatar: String::new(),
+            created: created.into(),
+            body: body.into(),
+        };
+        let link = |title: &str| pom_jira::WebLink {
+            title: title.into(),
+            url: "https://example.com".into(),
+            icon: String::new(),
+        };
+        if which == "board-unset" {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while item.is_busy() && std::time::Instant::now() < deadline {
+                item.tick(&|| None);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        } else if which == "board" {
+            item.show(
+                pom_jira::IssueDetail {
+                    key: "PROJ-101".into(),
+                    summary: "Login with Google".into(),
+                    status: "In Progress".into(),
+                    url: "https://example.atlassian.net/browse/PROJ-101".into(),
+                    description: "Let people sign in with their Google account next to email and password.\n\n**Acceptance**\n\n- A \"Continue with Google\" button on the login page\n- First sign-in creates the user; a matching `email` links to the existing one\n- Errors come back to the login page with a message".into(),
+                    comments: vec![
+                        comment("1", "Sam Lee", "2026-10-21T16:20:00.000+0700", "Use the existing session cookie; no new token storage."),
+                        comment("2", "Alex Dev", "2026-10-22T10:05:00.000+0700", "Callback route is in, spec next."),
+                    ],
+                    web_links: vec![link("Design doc"), link("OAuth consent screen")],
+                },
+                "indeterminate",
+            );
+        } else {
+            item.show(
             pom_jira::IssueDetail {
                 key: "PROJ-101".into(),
                 summary: "Flag escalated conversations in the inbox".into(),
@@ -1849,6 +2013,7 @@ fn main() -> anyhow::Result<()> {
             },
             "indeterminate",
         );
+        }
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
         let painted = item
             .paint_body(body, true)
@@ -4275,6 +4440,38 @@ impl workspace::Item for SampleTab {
 }
 
 /// Canned object storage answers for the Database snapshots.
+fn scene_size() -> Option<(f32, f32)> {
+    let size = std::env::var("SCENESIZE").ok()?;
+    let (width, height) = size.split_once('x')?;
+    Some((width.parse().ok()?, height.parse().ok()?))
+}
+
+/// The three files the project search boards find `User.where(active: true)` in.
+fn search_fixture(root: &std::path::Path) -> anyhow::Result<()> {
+    let files = [
+        (
+            "api/app/controllers/users_controller.rb",
+            "class UsersController < ApplicationController\n  before_action :set_user, only: :show\n\n  def index\n    @users = User.where(active: true).order(:name)\n    render json: @users\n  end\n\n  def show\n    render json: @user\n  end\n\n  private\n\n  def set_user\n    @user = User.where(active: true).find(params[:id])\n  end\nend\n",
+        ),
+        (
+            "api/spec/requests/users_spec.rb",
+            "require \"rails_helper\"\n\nRSpec.describe \"Users\", type: :request do\n  describe \"GET /users\" do\n    before { create_list(:user, 30) }\n\n    it \"lists active users\" do\n      get \"/users\"\n      expect(User.where(active: true).count).to eq(30)\n    end\n  end\nend\n",
+        ),
+        (
+            "web/src/api/users.ts",
+            "import { client } from \"./client\";\n\nexport async function activeUsers() {\n  // mirrors User.where(active: true) on the server\n  return client.get(\"/users\");\n}\n",
+        ),
+    ];
+    for (path, text) in files {
+        let path = root.join(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, text)?;
+    }
+    Ok(())
+}
+
 struct SnapshotStorage;
 
 struct BoardAvatar;
