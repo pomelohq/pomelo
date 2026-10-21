@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node};
 use workspace::text_field::{FieldFont, TextField, INPUT_FONT};
 
-use crate::command_palette::scroll_rows;
+use crate::command_palette::{picker_action, picker_footer, scroll_rows};
 use crate::fuzzy::{match_paths, CharBag};
 
 pub const WIDTH: f32 = 544.0;
@@ -312,6 +312,12 @@ impl FileFinder {
             .child(head)
             .child(div().h_px(1.0).bg(colors.border_variant))
             .child(results)
+            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(picker_footer(vec![
+                picker_action(None, &["enter"], "Open"),
+                picker_action(None, &["up", "down"], "Move"),
+                picker_action(None, &["escape"], "Close"),
+            ]))
             .into()
     }
 
@@ -347,7 +353,7 @@ impl FileFinder {
             .rounded(4.0)
             .on_click(id_base + row as u64);
         if row == self.selected {
-            item = item.bg(colors.element_selected);
+            item = item.bg(colors.overlay_selected);
         } else if self.hovered == Some(id_base + row as u64) {
             item = item.bg(colors.ghost_element_hover);
         }
@@ -360,6 +366,7 @@ impl FileFinder {
         let path_labels = div()
             .row()
             .flex(1.0)
+            .py(1.0)
             .gap(6.0)
             .items_center()
             .child(name_label)

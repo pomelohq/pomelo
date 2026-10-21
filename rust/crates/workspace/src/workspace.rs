@@ -34,8 +34,8 @@ pub use panel::{
 };
 pub use ui::render_keystroke;
 pub use update::{
-    UpdateAction, UpdateButton, UpdateInfo, UpdateMenuItem, UpdateTone, UPDATE_BUTTON,
-    UPDATE_DISMISS,
+    button as update_button, UpdateAction, UpdateButton, UpdateInfo, UpdateMenuItem, UpdateTone,
+    UPDATE_BUTTON, UPDATE_DISMISS,
 };
 pub use usage::{
     tone as usage_tone, UsageAccount, UsageInfo, UsageToday, UsageWindow, APP_MENU, USAGE_CHIP,
@@ -49,8 +49,9 @@ pub use welcome::{
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
 pub use workspace_view::{
-    delete_workspace_detail, elevation_shadow, unpushed_warning, ParkedWorkspace, ResizeCursor,
-    SessionRequest, TitlebarGesture, WorkspaceEffects, WorkspaceRequests, WorkspaceView,
+    delete_workspace_detail, elevation_shadow, notification_preview, toast_preview,
+    unpushed_warning, ParkedWorkspace, ResizeCursor, SessionRequest, TitlebarGesture,
+    WorkspaceEffects, WorkspaceRequests, WorkspaceView,
 };
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the

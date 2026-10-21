@@ -721,6 +721,16 @@ impl CommandPalette {
         self.switcher.as_ref().map(|s| s.new_workspace.id)
     }
 
+    fn empty_text(&self) -> String {
+        let text = self.field.text();
+        let query = text.trim();
+        if self.switcher.is_some() || query.is_empty() {
+            "No matches".into()
+        } else {
+            format!("No commands match {query}")
+        }
+    }
+
     pub fn with_placeholder(mut self, placeholder: &'static str) -> Self {
         self.placeholder = placeholder;
         self
@@ -937,7 +947,7 @@ impl CommandPalette {
                 .child(
                     div().row().px(4.0).child(
                         div().row().flex(1.0).items_center().px(6.0).py(4.0).child(
-                            label("No matches")
+                            label(self.empty_text())
                                 .label_size(LabelSize::Default)
                                 .color(colors.text_muted),
                         ),
@@ -968,20 +978,7 @@ impl CommandPalette {
         };
         let footer = match &self.switcher {
             Some(switcher) => self.switcher_footer(switcher, id_base),
-            None => div()
-                .row()
-                .justify_end()
-                .items_center()
-                .p(6.0)
-                .gap(4.0)
-                .child(footer_button(
-                    id_base + PaletteClick::Run.offset(),
-                    "Run",
-                    "enter",
-                    colors.text,
-                    self.hovered == Some(id_base + PaletteClick::Run.offset()),
-                ))
-                .into(),
+            None => self.palette_footer(id_base),
         };
         div()
             .col()
@@ -1014,7 +1011,7 @@ impl CommandPalette {
             .rounded(4.0)
             .on_click(id_base + PaletteClick::Row(row).offset());
         if row == self.selected {
-            item = item.bg(colors.element_selected);
+            item = item.bg(colors.overlay_selected);
         }
         let keys = div().row().items_center().gap(4.0).children(
             command
@@ -1153,53 +1150,89 @@ impl CommandPalette {
     }
 
     fn switcher_footer(&self, switcher: &workspace::WorkspaceSwitcher, id_base: u64) -> Node {
-        let colors = theme();
-        let action = |click: Option<PaletteClick>, keys: &str, text: &str| {
-            let mut button = div()
-                .row()
-                .h_px(22.0)
-                .px(4.0)
-                .gap(6.0)
-                .items_center()
-                .rounded(4.0)
-                .child(
-                    div()
-                        .row()
-                        .h_px(18.0)
-                        .px(5.0)
-                        .items_center()
-                        .rounded(4.0)
-                        .bg(if colors.appearance == ui::Appearance::Light {
-                            colors.element_active
-                        } else {
-                            colors.element_hover
-                        })
-                        .child(render_keystroke(keys, 11.0)),
-                )
-                .child(label(text).size(12.0).color(colors.text_placeholder));
-            if let Some(click) = click {
-                let id = id_base + click.offset();
-                button = button.on_click(id);
-                if self.hovered == Some(id) {
-                    button = button.bg(colors.ghost_element_hover);
-                }
-            }
-            button
+        let click = |click: PaletteClick| {
+            let id = id_base + click.offset();
+            Some((id, self.hovered == Some(id)))
         };
-        let mut footer = div()
-            .row()
-            .justify_end()
-            .items_center()
-            .px(8.0)
-            .py(6.0)
-            .gap(6.0)
-            .bg(colors.panel_background)
-            .child(action(Some(PaletteClick::Run), "enter", "Switch"));
+        let mut actions = vec![picker_action(
+            click(PaletteClick::Run),
+            &["enter"],
+            "Switch",
+        )];
         if let Some(keys) = switcher.new_workspace.keys.first() {
-            footer = footer.child(action(Some(PaletteClick::New), keys, "New workspace"));
+            actions.push(picker_action(
+                click(PaletteClick::New),
+                &[keys.as_str()],
+                "New workspace",
+            ));
         }
-        footer.child(action(None, "escape", "Close")).into()
+        actions.push(picker_action(None, &["escape"], "Close"));
+        picker_footer(actions)
     }
+
+    fn palette_footer(&self, id_base: u64) -> Node {
+        let run = id_base + PaletteClick::Run.offset();
+        picker_footer(vec![
+            picker_action(Some((run, self.hovered == Some(run))), &["enter"], "Run"),
+            picker_action(None, &["up", "down"], "Move"),
+            picker_action(None, &["escape"], "Close"),
+        ])
+    }
+}
+
+/// A picker's footer bar: its actions on the right, each a key chip then what the key does.
+pub(crate) fn picker_footer(actions: Vec<Node>) -> Node {
+    div()
+        .row()
+        .justify_end()
+        .items_center()
+        .px(8.0)
+        .py(6.0)
+        .gap(6.0)
+        .bg(theme().panel_background)
+        .children(actions)
+        .into()
+}
+
+/// One footer action: a chip per key, then its name; `click` is its id and whether the pointer is over it.
+pub(crate) fn picker_action(click: Option<(u64, bool)>, keys: &[&str], text: &str) -> Node {
+    let colors = theme();
+    let chip = |keys: &str| {
+        div()
+            .row()
+            .h_px(18.0)
+            .px(5.0)
+            .items_center()
+            .rounded(4.0)
+            .bg(if colors.appearance == ui::Appearance::Light {
+                colors.element_active
+            } else {
+                colors.element_hover
+            })
+            .child(render_keystroke(keys, 11.0))
+    };
+    let mut button = div()
+        .row()
+        .h_px(22.0)
+        .px(4.0)
+        .gap(6.0)
+        .items_center()
+        .rounded(4.0)
+        .child(
+            div()
+                .row()
+                .items_center()
+                .gap(3.0)
+                .children(keys.iter().map(|keys| Node::from(chip(keys)))),
+        )
+        .child(label(text).size(12.0).color(colors.text_placeholder));
+    if let Some((id, hovered)) = click {
+        button = button.on_click(id);
+        if hovered {
+            button = button.bg(colors.ghost_element_hover);
+        }
+    }
+    button.into()
 }
 
 fn with_alpha(color: ui::Rgba, alpha: f32) -> ui::Rgba {

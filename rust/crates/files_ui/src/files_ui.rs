@@ -891,6 +891,14 @@ pub fn workspace_switcher_preview(switcher: workspace::WorkspaceSwitcher, query:
     palette.render(PALETTE_BASE)
 }
 
+pub fn command_palette_preview(commands: &[workspace::ExtraCommand], query: &str) -> Node {
+    let memory = command_palette::PaletteMemory::default();
+    let mut palette = command_palette::CommandPalette::with_commands(&memory, commands, false);
+    palette.field.insert(query);
+    palette.update_matches();
+    palette.render(PALETTE_BASE)
+}
+
 pub fn file_finder_preview(paths: Vec<String>, recent: Vec<String>, query: &str) -> Node {
     let active = recent.first().cloned();
     let mut finder = file_finder::FileFinder::new(
