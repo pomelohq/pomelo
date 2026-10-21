@@ -169,6 +169,13 @@ impl ProjectDiagnostics {
         }
     }
 
+    pub fn showing(sources: Vec<DiagnosticsSource>) -> Self {
+        let mut view = Self::new(true);
+        view.generation = Some(0);
+        view.apply(sources);
+        view
+    }
+
     pub fn set_include_warnings(&mut self, include: bool) {
         if self.include_warnings != include {
             self.include_warnings = include;

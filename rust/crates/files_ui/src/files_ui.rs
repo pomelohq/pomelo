@@ -911,6 +911,175 @@ pub fn file_finder_preview(paths: Vec<String>, recent: Vec<String>, query: &str)
     finder.render(FINDER_BASE)
 }
 
+pub type PreviewDiagnostic = (
+    u32,
+    u32,
+    u32,
+    bool,
+    &'static str,
+    &'static str,
+    &'static str,
+);
+
+pub fn project_diagnostics_preview(
+    files: Vec<(String, String, Vec<PreviewDiagnostic>)>,
+) -> Box<dyn Item> {
+    use lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
+    let sources = files
+        .into_iter()
+        .map(
+            |(relative, text, problems)| project_diagnostics::DiagnosticsSource {
+                relative,
+                text: Some(text),
+                diagnostics: problems
+                    .into_iter()
+                    .map(
+                        |(line, start, end, error, message, source, code)| Diagnostic {
+                            range: Range::new(Position::new(line, start), Position::new(line, end)),
+                            severity: Some(if error {
+                                DiagnosticSeverity::ERROR
+                            } else {
+                                DiagnosticSeverity::WARNING
+                            }),
+                            code: (!code.is_empty()).then(|| NumberOrString::String(code.into())),
+                            source: Some(source.into()),
+                            message: message.into(),
+                            ..Diagnostic::default()
+                        },
+                    )
+                    .collect(),
+            },
+        )
+        .collect();
+    Box::new(project_diagnostics::ProjectDiagnostics::showing(sources))
+}
+
+pub fn go_to_line_preview(line: usize, column: usize, line_count: usize, query: &str) -> Node {
+    let mut modal = go_to_line::GoToLine::new(line + 1, column + 1, line_count, (0.0, 0.0));
+    modal.field.insert(query);
+    modal.render()
+}
+
+pub fn hover_preview(
+    relative: &str,
+    text: &str,
+    (line, column): (usize, usize),
+    problems: Vec<PreviewDiagnostic>,
+    markdown: &str,
+    (width, height): (f32, f32),
+) -> Vec<(Node, Rect)> {
+    use lsp::lsp_types::DiagnosticSeverity;
+    let mut item = FileItem::new(PathBuf::from("/nonexistent"), relative, Some(text.into()));
+    workspace::Item::set_body_height(&mut item, height);
+    let Some(buffer) = item.buffer.as_ref() else {
+        return Vec::new();
+    };
+    let at = |line: u32, column: u32| buffer.rope.line_to_char(line as usize) + column as usize;
+    let offset = at(line as u32, column as u32);
+    item.diagnostics = problems
+        .into_iter()
+        .map(
+            |(line, start, end, error, message, source, code)| DiagnosticEntry {
+                server: None,
+                range: at(line, start)..at(line, end),
+                severity: if error {
+                    DiagnosticSeverity::ERROR
+                } else {
+                    DiagnosticSeverity::WARNING
+                },
+                message: message.into(),
+                source: Some(source.into()),
+                code: (!code.is_empty()).then(|| code.into()),
+            },
+        )
+        .collect();
+    item.show_hover_answer(offset, markdown);
+    let nodes = item.hover_popover_nodes(Rect::new(0.0, 0.0, width, height, Rgba::TRANSPARENT));
+    let bounds = item.hover.bounds.borrow().clone();
+    let (left, top) = bounds.iter().fold((f32::MAX, f32::MAX), |(x, y), rect| {
+        (x.min(rect.x), y.min(rect.y))
+    });
+    nodes
+        .into_iter()
+        .zip(bounds)
+        .map(|((node, _, _), rect)| {
+            let placed = Rect::new(
+                rect.x - left,
+                rect.y - top,
+                rect.w,
+                rect.h,
+                Rgba::TRANSPARENT,
+            );
+            (node, placed)
+        })
+        .collect()
+}
+
+pub type PreviewCompletion = (&'static str, &'static str, bool);
+
+pub fn completion_preview(
+    items: Vec<PreviewCompletion>,
+    query: &str,
+    documentation: &str,
+) -> Vec<(Node, Rect)> {
+    use lsp::lsp_types::CompletionItemKind;
+    let candidates = items
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, (label, detail, snippet))| completions_menu::Completion {
+                label: label.into(),
+                detail: None,
+                kind: completions_menu::CompletionKind::Lsp {
+                    item: Box::new(lsp::LspCompletion {
+                        label: label.into(),
+                        detail: Some(detail.into()),
+                        kind: Some(if snippet {
+                            CompletionItemKind::SNIPPET
+                        } else {
+                            CompletionItemKind::METHOD
+                        }),
+                        filter_text: label.into(),
+                        sort_text: Some(format!("{index:04}")),
+                        new_text: label.into(),
+                        is_snippet: snippet,
+                        replace_range: 0..0,
+                        insert_range: None,
+                        insert_as_is: false,
+                        deprecated: false,
+                        additional_edits: Vec::new(),
+                        documentation: Some(lsp::CompletionDocumentation::MultiLineMarkdown(
+                            documentation.into(),
+                        )),
+                        raw: serde_json::Value::Null,
+                        server: None,
+                    }),
+                    synced_version: 0,
+                },
+            },
+        )
+        .collect();
+    let Some(menu) = completions_menu::CompletionsMenu::from_candidates(candidates, query) else {
+        return Vec::new();
+    };
+    let max_height = completions_menu::MAX_VISIBLE as f32 * edit_line_h() + 8.0;
+    let menu_rect = Rect::new(
+        0.0,
+        0.0,
+        completions_menu::WIDTH,
+        menu.height(),
+        Rgba::TRANSPARENT,
+    );
+    let mut placed = vec![(menu.render(COMPLETION_BASE), menu_rect)];
+    if let Some((aside, width, height)) =
+        menu.render_aside(completions_menu::ASIDE_MAX_WIDTH, max_height)
+    {
+        let x = completions_menu::WIDTH + completions_menu::MENU_GAP;
+        placed.push((aside, Rect::new(x, 0.0, width, height, Rgba::TRANSPARENT)));
+    }
+    placed
+}
+
 pub fn project_search_preview(root: PathBuf, query: &str, filters: bool) -> Box<dyn Item> {
     let mut search = project_search::ProjectSearch::new(root, query);
     search.wait_for_results(filters);

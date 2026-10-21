@@ -487,7 +487,7 @@ impl CompletionsMenu {
             if self.hovered == Some(id_base + row as u64) {
                 item = item.bg(colors.ghost_element_hover);
             } else if row == self.selected {
-                item = item.bg(colors.element_selected);
+                item = item.bg(colors.overlay_selected);
             }
             let Some((entry, completion)) = self
                 .entries

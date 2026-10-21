@@ -1073,8 +1073,9 @@ impl Markdown {
                         for (column, cell) in row.iter().enumerate() {
                             let (narrowest, widest_line) =
                                 content_widths(&one_line(cell), cell_font);
-                            least[column] = least[column].max(narrowest + 2.0 * TABLE_CELL_PAD_X);
-                            most[column] = most[column].max(widest_line + 2.0 * TABLE_CELL_PAD_X);
+                            let chrome = 2.0 * TABLE_CELL_PAD_X + RULE_THICKNESS;
+                            least[column] = least[column].max(narrowest + chrome);
+                            most[column] = most[column].max(widest_line + chrome);
                         }
                     }
                     let widths = column_widths(&least, &most, width - RULE_THICKNESS);
@@ -1621,6 +1622,17 @@ mod tests {
             "h3 gets none"
         );
         assert_eq!(layout.lines[0].height, (14.0_f32 * 1.75 * 1.25).ceil());
+    }
+
+    #[test]
+    fn cells_that_fit_stay_on_one_line() {
+        let layout = Markdown::parse("| Method | Notes |\n|---|---|\n| PATCH | name, email |")
+            .layout(600.0, DOCUMENT_STYLE);
+        for line in &layout.lines {
+            if let LineKind::TableRow { cells, .. } = &line.kind {
+                assert!(cells.iter().all(|cell| cell.len() == 1));
+            }
+        }
     }
 
     #[test]

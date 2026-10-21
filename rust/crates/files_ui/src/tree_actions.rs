@@ -191,8 +191,9 @@ fn git_output(root: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn has_restorable_changes(root: &Path, path: &str) -> bool {
-    git_output(root, &["status", "--porcelain", "--", path]).is_some_and(|status| {
+fn has_restorable_changes(work_dir: &Path, full: &Path) -> bool {
+    let full = full.to_string_lossy();
+    git_output(work_dir, &["status", "--porcelain", "--", &full]).is_some_and(|status| {
         status.lines().any(|line| {
             let code = line.get(..2).unwrap_or("");
             code != "??" && (code.contains('M') || code.contains('D'))
@@ -203,14 +204,16 @@ fn has_restorable_changes(root: &Path, path: &str) -> bool {
 impl FilesView {
     pub(crate) fn menu_state(&self, path: Option<&str>) -> TreeMenuState {
         let is_dir = path.is_none_or(|path| self.root.join(path).is_dir());
-        let has_git_repo = git_work_dir(&self.root).is_some();
+        let full = self.root.join(path.unwrap_or(""));
+        let work_dir = git_work_dir(&full);
         TreeMenuState {
             is_dir,
             is_root: path.is_none(),
-            has_git_repo,
-            has_git_changes: has_git_repo
-                && !is_dir
-                && path.is_some_and(|path| has_restorable_changes(&self.root, path)),
+            has_git_repo: work_dir.is_some(),
+            has_git_changes: !is_dir
+                && work_dir
+                    .as_deref()
+                    .is_some_and(|work_dir| has_restorable_changes(work_dir, &full)),
             can_paste: self.tree_ops.clipboard.is_some(),
         }
     }
@@ -337,7 +340,14 @@ impl FilesView {
                 self.reload_tree();
             }
             TreePrompt::Restore { path } => {
-                if git_output(&self.root, &["checkout", "HEAD", "--", &path]).is_none() {
+                let full = self.root.join(&path);
+                let restored = git_work_dir(&full).and_then(|work_dir| {
+                    git_output(
+                        &work_dir,
+                        &["checkout", "HEAD", "--", &full.to_string_lossy()],
+                    )
+                });
+                if restored.is_none() {
                     self.tree_ops.toast = Some(format!("Failed to restore {}", file_name(&path)));
                 }
                 FunctionView::refresh_disk_state(self);
@@ -376,10 +386,10 @@ impl FilesView {
     }
 
     fn add_to_gitignore(&mut self, path: &str, is_dir: bool) {
-        let Some(work_dir) = git_work_dir(&self.root) else {
+        let full = self.root.join(path);
+        let Some(work_dir) = git_work_dir(&full) else {
             return;
         };
-        let full = self.root.join(path);
         let Ok(relative) = full.strip_prefix(&work_dir) else {
             return;
         };

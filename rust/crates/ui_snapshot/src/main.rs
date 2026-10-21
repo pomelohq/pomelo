@@ -8,8 +8,10 @@
 use std::io::BufWriter;
 
 mod e2e;
+mod editor_fixture;
 mod git_fixture;
 mod modal_fixture;
+mod terminal_fixture;
 
 /// A design board's screen: the settings category it shows and the switches that put it in the board's state.
 fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
@@ -56,6 +58,180 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         // The Environment and Secrets tab bodies; ENVTAB=board-* draws the boards' rows.
         "data-env" => (0, &[("ENVTAB", "board-env")]),
         "data-secrets" => (0, &[("ENVTAB", "board-secrets")]),
+        // The editor and terminal boards in the window at the boards' size; CROP keeps the part each one is about.
+        "editor-open" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "open"),
+                ("CROP", "342,40,1092,832"),
+            ],
+        ),
+        "editor-split" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "split"),
+                ("CROP", "342,40,1092,832"),
+            ],
+        ),
+        "editor-tabs" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "tabs"),
+                ("CROP", "496,80,448,176"),
+            ],
+        ),
+        "editor-find" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "find"),
+                ("CROP", "342,106,1092,85"),
+            ],
+        ),
+        "editor-diagnostics" => (0, &[("DIAGBOARD", "1")]),
+        "editor-language" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "language"),
+                ("CROP", "448,80,544,376"),
+            ],
+        ),
+        "editor-goto" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "goto"),
+                ("CROP", "528,80,384,59"),
+            ],
+        ),
+        "editor-goto-states" => (0, &[("PICKER", "goto-states")]),
+        "editor-readonly" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "readonly"),
+                ("READONLY", "1"),
+                ("CROP", "56,40,1384,860"),
+            ],
+        ),
+        "editor-markdown" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "markdown"),
+                ("CROP", "342,40,1092,832"),
+            ],
+        ),
+        "editor-image" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "image"),
+                ("CROP", "342,40,1092,832"),
+            ],
+        ),
+        "editor-vim-normal" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "vim-normal"),
+                ("CROP", "56,40,1384,860"),
+            ],
+        ),
+        "editor-vim-visual" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "vim-visual"),
+                ("CROP", "56,40,1384,860"),
+            ],
+        ),
+        "editor-hover" => (0, &[("PICKER", "hover")]),
+        "editor-completion" => (0, &[("PICKER", "completion:fi")]),
+        "terminal-dock" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "term-dock"),
+                ("SETTLE", "80"),
+                ("CROP", "342,512,1092,360"),
+            ],
+        ),
+        "terminal-split" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "term-split"),
+                ("SETTLE", "80"),
+                ("CROP", "342,512,1092,360"),
+            ],
+        ),
+        "terminal-zoomed" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "term-zoomed"),
+                ("SETTLE", "80"),
+                ("CROP", "56,48,1378,824"),
+            ],
+        ),
+        "terminal-search" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "term-search"),
+                ("SETTLE", "80"),
+                ("CROP", "342,512,1092,360"),
+            ],
+        ),
+        "terminal-exited" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "term-exited"),
+                ("SETTLE", "80"),
+                ("CROP", "342,512,1092,360"),
+            ],
+        ),
+        "terminal-spawn-failed" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "term-spawn-failed"),
+                ("SETTLE", "80"),
+                ("CROP", "342,512,1092,360"),
+            ],
+        ),
+        "editor-tree-menu" => (
+            0,
+            &[
+                ("MAINVIEW", "window"),
+                ("RAIL", "1"),
+                ("EDITORBOARD", "tree-menu"),
+                ("CROP", "200,209,203,449"),
+            ],
+        ),
         // The ticket tab body from a recorded issue, and with no Jira site set up.
         "data-ticket" => (0, &[("TICKETTAB", "board")]),
         "data-ticket-unset" => (0, &[("TICKETTAB", "board-unset")]),
@@ -232,7 +408,9 @@ fn scene_args(args: &[String]) -> anyhow::Result<Option<(String, usize)>> {
     std::env::set_var("THEME", theme);
     std::env::set_var("THEMESELECTION", "dynamic");
     std::env::set_var("SCENESIZE", size);
-    if switches.iter().any(|(key, _)| *key == "MAINVIEW") {
+    if let Some((_, board)) = switches.iter().find(|(key, _)| *key == "EDITORBOARD") {
+        editor_board_fixture(board)?;
+    } else if switches.iter().any(|(key, _)| *key == "MAINVIEW") {
         window_fixture()?;
     }
     std::env::set_var("EXPANDED", category.to_string());
@@ -409,11 +587,280 @@ fn pr_fixture(view: &str) -> pull_request_ui::PrItem {
     item
 }
 
+pub fn fixture_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("/tmp/pomelo-qa-fixture/{}", std::process::id()))
+}
+
+struct FixtureCleanup;
+
+impl Drop for FixtureCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(fixture_dir());
+    }
+}
+
 /// The files the window boards show, written to a scratch folder the window scene opens.
-const FIXTURE_ROOT: &str = "/tmp/pomelo-qa-fixture/myproject";
+fn fixture_root() -> std::path::PathBuf {
+    fixture_dir().join("myproject")
+}
+
+fn editor_board_fixture(board: &str) -> anyhow::Result<()> {
+    let root = fixture_root();
+    editor_fixture::create(&root)?;
+    let open = |paths: &[&str]| {
+        paths
+            .iter()
+            .map(|path| root.join(path).display().to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let controller = "api/app/controllers/users_controller.rb";
+    let (files, select) = match board {
+        "language" => (open(&["web/src/api/users"]), "6,0,0"),
+        "markdown" => (open(&["api/README.md"]), "6,8,0"),
+        "image" => (open(&["web/public/logo.png"]), "0,0,0"),
+        "readonly" => (open(&[controller]), "5,4,0"),
+        "tabs" => (
+            open(&[
+                controller,
+                "api/config/routes.rb",
+                "api/README.md",
+                "web/src/api/users.ts",
+                "pom.yml",
+            ]),
+            "5,4,0",
+        ),
+        _ => (
+            open(&[
+                controller,
+                "api/config/routes.rb",
+                "api/README.md",
+                controller,
+            ]),
+            "5,4,0",
+        ),
+    };
+    std::env::set_var("FILESROOT", &root);
+    std::env::set_var("OPENFILES", files);
+    std::env::set_var("SELECT", select);
+    let shell = match board_terminals(board) {
+        Some(terms) => terminal_fixture::create(&fixture_dir(), &terms)?,
+        None if board == "term-spawn-failed" => "/usr/local/bin/fish".into(),
+        None => return Ok(()),
+    };
+    std::env::set_var("TERMSHELL", shell);
+    Ok(())
+}
+
+fn board_terminals(board: &str) -> Option<Vec<terminal_fixture::Term>> {
+    use terminal_fixture::*;
+    let term = |dir, program, argument, lines, exit| Term {
+        dir,
+        program,
+        argument,
+        lines,
+        exit,
+    };
+    let server = || term("api", "rails", Some("server"), server_log(), None);
+    let shell_tab = || term(".", "zsh", None, shell(), None);
+    Some(match board {
+        "term-dock" => vec![
+            server(),
+            term("web", "pnpm", Some("dev"), dev_server(), None),
+            shell_tab(),
+        ],
+        "term-split" => vec![
+            server(),
+            shell_tab(),
+            term("web", "pnpm", Some("test"), dev_server(), None),
+        ],
+        "term-zoomed" => {
+            let mut lines = shell();
+            lines.truncate(8);
+            lines.extend(rspec());
+            vec![
+                term("api", "bundle", Some("exec"), lines, None),
+                shell_tab(),
+            ]
+        }
+        "term-search" => vec![
+            server(),
+            term("web", "pnpm", Some("dev"), dev_server(), None),
+        ],
+        "term-exited" => vec![
+            server(),
+            term("api", "rails", Some("db:migrate"), migrate(), Some(1)),
+        ],
+        _ => return None,
+    })
+}
+
+fn move_caret(view: &mut workspace::WorkspaceView, line: usize, column: usize) {
+    view.editor_key(workspace::EditKey::DocumentStart, false);
+    for _ in 0..line {
+        view.editor_key(workspace::EditKey::Down, false);
+    }
+    for _ in 0..column {
+        view.editor_key(workspace::EditKey::Right, false);
+    }
+}
+
+type BoardStep = Box<dyn Fn(&mut workspace::WorkspaceView)>;
+
+fn editor_board_steps(board: &str) -> Vec<BoardStep> {
+    use workspace::pane::PaneCommand;
+    let root = fixture_root();
+    let open = |path: &'static str| -> BoardStep {
+        let path = root.join(path);
+        Box::new(move |view| view.open_file(&path))
+    };
+    match board {
+        "split" => {
+            let (spec, other) = (
+                root.join("api/spec/requests/users_spec.rb"),
+                root.join("api/spec/models/user_spec.rb"),
+            );
+            vec![Box::new(move |view| {
+                view.pane_command(PaneCommand::Split(
+                    workspace::pane_group::SplitDirection::Right,
+                ));
+                view.open_file(&spec);
+                view.open_file(&other);
+                view.pane_command(PaneCommand::ActivateItem(0));
+                view.pane_command(PaneCommand::CloseActiveItem);
+                view.pane_command(PaneCommand::ActivateItem(0));
+                move_caret(view, 8, 16);
+            })]
+        }
+        "tabs" => vec![
+            Box::new(|view| view.deploy_project_diagnostics(false)),
+            open("pom.yml"),
+            open("web/src/api/users.ts"),
+            open("api/README.md"),
+            open("api/config/routes.rb"),
+            open("api/app/controllers/users_controller.rb"),
+            Box::new(|view| {
+                view.run_action(workspace::keymap::Action::ToggleTabSwitcher);
+            }),
+        ],
+        "find" => vec![
+            Box::new(|view| {
+                view.editor_key(workspace::EditKey::DeploySearch, false);
+            }),
+            Box::new(|view| {
+                view.editor_text("user");
+                view.editor_key(workspace::EditKey::ToggleSearchWholeWord, false);
+                view.editor_key(workspace::EditKey::ToggleSearchReplace, false);
+            }),
+            Box::new(|view| {
+                view.editor_key(workspace::EditKey::Tab, false);
+                view.editor_text("account");
+                view.editor_key(workspace::EditKey::Tab, false);
+            }),
+        ],
+        "language" => vec![
+            Box::new(|view| {
+                view.editor_key(workspace::EditKey::ToggleLanguageSelector, false);
+            }),
+            Box::new(|view| {
+                view.editor_text("t");
+            }),
+        ],
+        "goto" => vec![
+            Box::new(|view| {
+                view.editor_key(workspace::EditKey::ToggleGoToLine, false);
+            }),
+            Box::new(|view| {
+                view.editor_text("26:5");
+            }),
+        ],
+        "image" => {
+            let (logo, broken) = (
+                root.join("web/public/logo.png"),
+                root.join("web/public/broken.png"),
+            );
+            vec![
+                Box::new(move |view| {
+                    view.pane_command(PaneCommand::Split(
+                        workspace::pane_group::SplitDirection::Right,
+                    ));
+                    view.open_file(&broken);
+                    view.pane_command(PaneCommand::ActivateItem(0));
+                    view.pane_command(PaneCommand::CloseActiveItem);
+                }),
+                Box::new(move |view| {
+                    view.pane_command(PaneCommand::ActivatePane(
+                        workspace::pane_group::SplitDirection::Left,
+                    ));
+                    let _ = &logo;
+                }),
+            ]
+        }
+        "markdown" => vec![Box::new(|view| {
+            view.editor_key(workspace::EditKey::OpenMarkdownPreviewToTheSide, false);
+        })],
+        "vim-normal" => vec![Box::new(|view| move_caret(view, 5, 13))],
+        "vim-visual" => vec![Box::new(|view| {
+            move_caret(view, 5, 2);
+            view.editor_text("Vjj");
+        })],
+        board if board.starts_with("term-") => {
+            let mut steps: Vec<BoardStep> = board_terminals(board)
+                .unwrap_or_else(|| {
+                    vec![terminal_fixture::Term {
+                        dir: ".",
+                        program: "",
+                        argument: None,
+                        lines: Vec::new(),
+                        exit: None,
+                    }]
+                })
+                .iter()
+                .map(|term| -> BoardStep {
+                    let dir = root.join(term.dir);
+                    Box::new(move |view| view.open_terminal_in(dir.clone()))
+                })
+                .collect();
+            let first = |view: &mut workspace::WorkspaceView| {
+                view.pane_command(PaneCommand::ActivateItem(0));
+            };
+            match board {
+                "term-dock" | "term-search" => steps.push(Box::new(first)),
+                "term-split" => {
+                    steps[1] = Box::new(|view| {
+                        view.pane_command(PaneCommand::Split(
+                            workspace::pane_group::SplitDirection::Right,
+                        ));
+                    });
+                    steps.push(Box::new(first));
+                }
+                "term-zoomed" => steps.push(Box::new(|view| {
+                    view.pane_command(PaneCommand::ActivateItem(0));
+                    view.pane_command(PaneCommand::ToggleZoom);
+                })),
+                _ => {}
+            }
+            if board == "term-search" {
+                steps.push(Box::new(|view| {
+                    view.editor_key(workspace::EditKey::DeploySearch, false);
+                }));
+                steps.push(Box::new(|view| {
+                    view.editor_text("Completed");
+                    view.editor_key(workspace::EditKey::ToggleSearchCaseSensitive, false);
+                }));
+            }
+            steps
+        }
+        "tree-menu" => vec![Box::new(|view| {
+            view.right_click(200.0, 205.0);
+        })],
+        _ => Vec::new(),
+    }
+}
 
 fn window_fixture() -> anyhow::Result<()> {
-    let root = std::path::Path::new(FIXTURE_ROOT);
+    let root = fixture_root();
+    let root = root.as_path();
     let _ = std::fs::remove_dir_all(root);
     let files: [(&str, &str); 7] = [
         (
@@ -454,6 +901,7 @@ fn window_fixture() -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
+    let _cleanup = FixtureCleanup;
     let args: Vec<String> = std::env::args().collect();
     let (out, category) = match scene_args(&args)? {
         Some(scene) => scene,
@@ -1899,6 +2347,59 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if std::env::var_os("DIAGBOARD").is_some() {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let (width, height) = scene_size().unwrap_or((1092.0, 798.0));
+        let users_ts = editor_fixture::API_TS.to_string();
+        let mut item = files_ui::project_diagnostics_preview(vec![
+            (
+                "web/src/api/users.ts".into(),
+                users_ts,
+                vec![
+                    (12, 41, 56, true, "A function whose declared type is neither 'undefined', 'void', nor 'any' must return a value.", "ts", "2355"),
+                    (13, 44, 52, true, "Cannot find name 'pageSize'.", "ts", "2304"),
+                ],
+            ),
+            (
+                "api/app/controllers/users_controller.rb".into(),
+                editor_fixture::CONTROLLER.to_string(),
+                vec![(
+                    14,
+                    4,
+                    6,
+                    false,
+                    "Style/GuardClause: Use a guard clause instead of wrapping the code inside a conditional expression.",
+                    "rubocop",
+                    "",
+                )],
+            ),
+        ]);
+        item.set_focused(true);
+        let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+        let painted = item
+            .paint_body(body, true)
+            .ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let mut r = ui::UiRenderer::new_headless(width as u32, height as u32, 1.0)?;
+        let layers: Vec<ui::Layer> = vec![(
+            painted.rects.as_slice(),
+            painted.tris.as_slice(),
+            painted.texts.as_slice(),
+            painted.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().editor_background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(query) = std::env::var("FINDER") {
         let root = std::env::current_dir()?;
         let paths = files::project_files(&root, false);
@@ -2305,7 +2806,9 @@ fn main() -> anyhow::Result<()> {
     } else {
         2.0_f32
     };
+    let crop = window_crop();
     let (lw, lh) = match (scene_size, std::env::var("MAINVIEW")) {
+        (Some(_), Ok(_)) if crop.is_some() => (1440.0, 900.0),
         (Some(size), _) => size,
         (None, Ok(_)) => (
             std::env::var("SNAPW")
@@ -2859,17 +3362,74 @@ fn main() -> anyhow::Result<()> {
             ui::set_theme(ui::by_name(&name));
         }
         let (kind, query) = picker.split_once(':').unwrap_or((picker.as_str(), ""));
-        let node = if kind == "finder" {
-            files_ui::file_finder_preview(finder_fixture(), Vec::new(), query)
-        } else {
-            files_ui::command_palette_preview(&palette_fixture(), query)
+        let popovers = match kind {
+            "hover" => Some(files_ui::hover_preview(
+                "web/src/api/users.ts",
+                editor_fixture::API_TS,
+                (13, 44),
+                vec![(13, 44, 52, true, "Cannot find name 'pageSize'.", "ts", "2304")],
+                "```typescript\nfunction fetchUsers({ page, per }: Page): Promise<User[]>\n```\n\nThe server caps per at 100; ask for less and page instead.",
+                (1092.0, 770.0),
+            )),
+            "completion" => Some(files_ui::completion_preview(
+                vec![
+                    ("filter", "(predicate) => User[]", false),
+                    ("find", "(predicate) => User", false),
+                    ("findIndex", "(predicate) => number", false),
+                    ("findLast", "(predicate) => User", false),
+                    ("fill", "(value, start?, end?)", false),
+                    ("flat", "(depth?) => User[]", false),
+                    ("for in", "snippet", true),
+                ],
+                query,
+                "```typescript\nfind(predicate): User | undefined\n```\n\nReturns the value of the first element in the array where predicate is true, and undefined otherwise.",
+            )),
+            _ => None,
         };
-        let painted = ui::render(
-            &node,
-            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
-        );
+        let painted = match popovers {
+            Some(popovers) => {
+                let mut painted = ui::Painted::default();
+                for (node, rect) in popovers {
+                    let rect =
+                        ui::Rect::new(rect.x + 24.0, rect.y + 24.0, rect.w, rect.h, rect.color);
+                    painted.rects.extend(workspace::elevation_shadow(
+                        rect,
+                        workspace::Elevation::Elevated,
+                    ));
+                    let part = ui::render(&ui::div().col().child(node).into(), rect);
+                    painted.rects.extend(part.rects);
+                    painted.tris.extend(part.tris);
+                    painted.texts.extend(part.texts);
+                    painted.icons.extend(part.icons);
+                }
+                painted
+            }
+            None => {
+                let node = match kind {
+                    "finder" => files_ui::file_finder_preview(finder_fixture(), Vec::new(), query),
+                    "goto-states" => ui::div()
+                        .col()
+                        .gap(8.0)
+                        .children(
+                            ["", "26:5", "-2"]
+                                .map(|query| files_ui::go_to_line_preview(5, 4, 31, query)),
+                        )
+                        .into(),
+                    _ => files_ui::command_palette_preview(&palette_fixture(), query),
+                };
+                ui::render(
+                    &node,
+                    ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+                )
+            }
+        };
+        let under = if kind == "hover" || kind == "completion" {
+            ui::theme().editor_background
+        } else {
+            ui::theme().background
+        };
         r.render_frame(
-            ui::theme().background,
+            under,
             &[(
                 painted.rects.as_slice(),
                 painted.tris.as_slice(),
@@ -3150,6 +3710,9 @@ fn main() -> anyhow::Result<()> {
                         eprintln!("snapshot: buffer font reset to its default");
                     }
                 }
+                if std::env::var("EDITORBOARD").is_ok_and(|board| board.starts_with("vim")) {
+                    files_ui::set_vim_mode(true);
+                }
                 let files_view = std::env::var("DIFFFILE").ok().map(|file| {
                     let path = std::path::PathBuf::from(&file);
                     let root = path
@@ -3172,7 +3735,8 @@ fn main() -> anyhow::Result<()> {
                         Ok(root) => std::path::PathBuf::from(root),
                         Err(_) => paths.first()?.parent()?.to_path_buf(),
                     };
-                    let mut files = files_ui::FilesView::new(root);
+                    let mut files =
+                        files_ui::FilesView::new(root).read_only(std::env::var("READONLY").is_ok());
                     for path in &paths {
                         workspace::FunctionView::open_file_at(&mut files, path, None, None);
                     }
@@ -3229,10 +3793,18 @@ fn main() -> anyhow::Result<()> {
                 };
                 if window {
                     layout.left.width = 256.0;
-                    layout.right.collapsed = false;
+                    layout.right.collapsed = std::env::var_os("EDITORBOARD").is_some();
                     layout.right.width = 380.0;
                     layout.bottom.collapsed = true;
                     layout.usage = window_usage();
+                }
+                if let Ok(shell) = std::env::var("TERMSHELL") {
+                    terminal_ui::set_terminal_defaults(15.0, &shell, 10_000);
+                    layout.terminal_view = Some(Box::new(terminal_ui::TerminalPanel::new(
+                        fixture_root(),
+                        std::sync::Arc::new(ui::wake),
+                    )));
+                    layout.bottom.width = 360.0;
                 }
                 let mut view = workspace::WorkspaceView::new(layout);
                 view.set_sessions(sessions, current);
@@ -3889,6 +4461,12 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        if let Ok(board) = std::env::var("EDITORBOARD") {
+            for step in editor_board_steps(&board) {
+                app.draw(handle).expect("frame");
+                entity.update(app.app_mut(), |view, _| step(view));
+            }
+        }
         // Background work (the diff's hunks, a large file's load) settles over a few frames; SETTLE=<frames>.
         let settle = std::env::var("SETTLE")
             .ok()
@@ -4049,6 +4627,10 @@ fn main() -> anyhow::Result<()> {
         layers.push((lights.as_slice(), &[], &[], &[], None));
         r.render_frame(ui::theme().background, &layers)?;
         let (w, h, rgba) = r.read_rgba()?;
+        let (w, h, rgba) = match crop {
+            Some(rect) => crop_rgba(w, &rgba, rect),
+            None => (w, h, rgba),
+        };
         let file = std::fs::File::create(&out)?;
         let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
         enc.set_color(png::ColorType::Rgba);
@@ -4653,6 +5235,30 @@ fn switcher_fixture() -> workspace::WorkspaceSwitcher {
 }
 
 /// The workspaces the window boards list, the active one first after main.
+fn window_crop() -> Option<(u32, u32, u32, u32)> {
+    let crop = std::env::var("CROP").ok()?;
+    if std::env::var_os("NOCROP").is_some() {
+        return Some((0, 0, 1440, 900));
+    }
+    let parts: Vec<u32> = crop
+        .split(',')
+        .filter_map(|part| part.parse().ok())
+        .collect();
+    match parts[..] {
+        [x, y, w, h] => Some((x, y, w, h)),
+        _ => None,
+    }
+}
+
+fn crop_rgba(width: u32, rgba: &[u8], (x, y, w, h): (u32, u32, u32, u32)) -> (u32, u32, Vec<u8>) {
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for row in y..y + h {
+        let start = ((row * width + x) * 4) as usize;
+        out.extend_from_slice(rgba.get(start..start + (w * 4) as usize).unwrap_or(&[]));
+    }
+    (w, h, out)
+}
+
 fn window_project() -> workspace::ProjectInfo {
     let pr =
         |count: usize, severity: workspace::PrSeverity, trouble: Option<workspace::PrTrouble>| {
@@ -4725,7 +5331,7 @@ fn window_project() -> workspace::ProjectInfo {
     workspace::ProjectInfo {
         name: "myproject".into(),
         branch: "main".into(),
-        config_path: format!("{FIXTURE_ROOT}/pom.yml").into(),
+        config_path: fixture_root().join("pom.yml"),
         workspaces: rows.iter().map(|row| row.0.to_string()).collect(),
         active: "proj-101-login-google".into(),
         labels: rows.iter().map(|row| row.1.to_string()).collect(),
@@ -4768,7 +5374,8 @@ fn board_pull_requests(
     roots: &[std::path::PathBuf],
     branch: &str,
 ) -> anyhow::Result<pull_request_ui::PullRequests> {
-    let state = std::path::Path::new("/tmp/pomelo-qa-fixture/pr-state");
+    let state = fixture_dir().join("pr-state");
+    let state = state.as_path();
     let _ = std::fs::remove_dir_all(state);
     let prs = pull_request_ui::PullRequests::new(
         pom_paths::StateDir::new(state.to_path_buf()),

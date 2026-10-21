@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use terminal::Waker;
-use ui::{label, theme, IconKind, Node, Painted, Rect};
+use ui::{div, label, theme, IconKind, Node, Painted, Rect};
 use workspace::pane::{Pane, PaneCommand};
 use workspace::pane_group::SplitDirection;
 use workspace::pane_group_view::{
@@ -57,6 +57,25 @@ impl HolderScope {
     }
 }
 
+fn spawn_failure(error: String) -> Node {
+    let colors = theme();
+    div()
+        .col()
+        .flex(1.0)
+        .p(16.0)
+        .gap(2.0)
+        .items_center()
+        .justify_center()
+        .bg(colors.editor_background)
+        .child(
+            label("Failed to start the shell")
+                .size(14.0)
+                .color(colors.text),
+        )
+        .child(label(error).size(12.0).color(colors.text_muted))
+        .into()
+}
+
 fn spawn_terminal(
     root: &Path,
     waker: &Waker,
@@ -73,7 +92,7 @@ fn spawn_terminal(
             Some(item)
         }
         Err(error) => {
-            *spawn_error = Some(format!("Failed to start the shell: {error}"));
+            *spawn_error = Some(error.to_string());
             None
         }
     }
@@ -326,10 +345,8 @@ impl TerminalPanelView for TerminalPanel {
         self.panes.set_focused(focused);
         self.reconcile_focus();
         let mut backdrop = Painted::default();
-        if self.is_empty() {
-            let message = self.spawn_error.clone().unwrap_or_default();
-            let node = label(message).size(13.0).color(theme().text_muted).into();
-            backdrop = ui::render(&node, region);
+        if let Some(error) = self.spawn_error.clone().filter(|_| self.is_empty()) {
+            backdrop = ui::render(&spawn_failure(error), region);
         }
         let (panes, dividers) = self.panes.layout(region);
         (backdrop, EditorLayout { panes, dividers })
