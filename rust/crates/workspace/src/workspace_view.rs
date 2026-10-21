@@ -2286,8 +2286,14 @@ impl WorkspaceView {
             // Sit in the same bottom strip as the status bar, vertically centered like its icons.
             let strip = crate::STATUS_BAR_H;
             let btn_h = 20.0;
+            // Centred under the folded rail; at the open sidebar's far edge, away from the list.
+            let btn_x = if self.layout.left.collapsed {
+                region.x + (region.w - 26.0) / 2.0
+            } else {
+                region.x + region.w - 8.0 - 26.0
+            };
             let btn_rect = Rect::new(
-                region.x + 8.0,
+                btn_x,
                 region.y + region.h - strip + (strip - btn_h) / 2.0,
                 26.0,
                 btn_h,

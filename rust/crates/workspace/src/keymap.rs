@@ -658,16 +658,20 @@ pub fn set_key_hints(bindings: &[(Action, String)]) {
     KEY_HINTS.with(|hints| *hints.borrow_mut() = bindings.to_vec());
 }
 
-/// `text` followed by the keys bound to `action`, when it has any.
-pub fn with_key_hint(text: &str, action: Action) -> String {
-    let keys = KEY_HINTS.with(|hints| {
+/// The keys bound to `action`, when it has any.
+pub fn key_hint(action: Action) -> Option<String> {
+    KEY_HINTS.with(|hints| {
         hints
             .borrow()
             .iter()
             .find(|(bound, _)| *bound == action)
             .map(|(_, keys)| keys.clone())
-    });
-    match keys {
+    })
+}
+
+/// `text` followed by the keys bound to `action`, when it has any.
+pub fn with_key_hint(text: &str, action: Action) -> String {
+    match key_hint(action) {
         Some(keys) => format!("{text}  {keys}"),
         None => text.to_string(),
     }

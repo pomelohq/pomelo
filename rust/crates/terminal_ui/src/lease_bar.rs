@@ -1,6 +1,5 @@
 //! The strip over an agent tab someone else drives: who drives it, Take over, and a tool call waiting for an
-//! approval with Allow and Deny. Laid out like the reference's banner (severity icon, message, actions at the
-//! end) and its permission row (Allow with a check, Deny with a cross).
+//! approval with Allow and Deny, each a raised card on the panel's tray.
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -8,7 +7,8 @@ use std::time::{Duration, Instant};
 use pom_agent::{PendingApproval, SessionState};
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
-use ui::{div, icon, label, theme, Div, IconKind, Node, Rgba};
+use ui::{div, icon, label, render_keystroke_in, theme, Appearance, Div, IconKind, Node, Rgba};
+use workspace::keymap::{key_hint, Action};
 
 const TAKE_OVER: u64 = 0;
 const ALLOW: u64 = 1;
@@ -39,9 +39,8 @@ pub struct LeaseBar {
     cached: RefCell<(Option<Instant>, Snapshot)>,
 }
 
-fn faded(color: Rgba, factor: f32) -> Rgba {
-    Rgba::new(color.r, color.g, color.b, color.a * factor)
-}
+/// The approval's actions share its line only when the strip is at least this wide; narrower, they wrap under it.
+const ONE_LINE_W: f32 = 612.0;
 
 impl LeaseBar {
     pub fn new(holder: &str, state: StateDir, holders: SocketDir) -> LeaseBar {
@@ -77,103 +76,14 @@ impl LeaseBar {
         self.cached.borrow_mut().0 = None;
     }
 
-    fn action(&self, id: u64, icon_kind: Option<(IconKind, Rgba)>, text: &str) -> Div {
-        let colors = theme();
-        let mut button = div()
-            .row()
-            .h_px(22.0)
-            .px(4.0)
-            .gap(4.0)
-            .items_center()
-            .rounded(4.0)
-            .hover_bg(colors.ghost_element_hover)
-            .active_bg(colors.ghost_element_active)
-            .on_click(self.base + id);
-        if let Some((kind, color)) = icon_kind {
-            button = button.child(icon(kind).size(12.0).color(color));
-        }
-        button.child(label(text).size(12.0).color(colors.text))
-    }
-
-    fn banner(
-        &self,
-        kind: IconKind,
-        icon_color: Rgba,
-        background: Rgba,
-        border: Rgba,
-        message: String,
-        actions: Div,
-    ) -> Div {
-        let colors = theme();
-        div()
-            .row()
-            .py(2.0)
-            .pl(8.0)
-            .pr(4.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(4.0)
-            .bg(background)
-            .border(1.0, border)
-            .child(icon(kind).size(12.0).color(icon_color))
-            .child(
-                div()
-                    .flex(1.0)
-                    .child(label(message).size(13.0).color(colors.text)),
-            )
-            .child(actions)
-    }
-
     /// The strip, or nothing while the person at the app drives the session and nothing waits on them.
     pub fn render(&self, width: f32) -> Option<Node> {
         let snapshot = self.snapshot();
-        let colors = theme();
-        let mut rows = Vec::new();
-        if let Some(driver) = &snapshot.driver {
-            rows.push(self.banner(
-                IconKind::Eye,
-                colors.icon_muted,
-                faded(colors.info_background, 0.5),
-                faded(colors.border, 0.5),
-                format!("Watching - {driver} drives this session"),
-                self.action(TAKE_OVER, None, "Take over"),
-            ));
-        }
-        if let Some(pending) = &snapshot.pending {
-            let actions = div()
-                .row()
-                .gap(2.0)
-                .child(self.action(ALLOW, Some((IconKind::Check, colors.success)), "Allow"))
-                .child(self.action(DENY, Some((IconKind::Close, colors.error)), "Deny"));
-            rows.push(self.banner(
-                IconKind::Warning,
-                colors.warning,
-                faded(colors.warning_background, 0.5),
-                faded(colors.warning_border, 0.4),
-                format!("Waiting for approval: {} {}", pending.tool, pending.summary),
-                actions,
-            ));
-        }
-        if rows.is_empty() {
-            return None;
-        }
-        let mut strip = div()
-            .col()
-            .w_px(width)
-            .px(8.0)
-            .py(6.0)
-            .gap(4.0)
-            .bg(colors.toolbar_background);
-        for row in rows {
-            strip = strip.child(row);
-        }
-        Some(
-            div()
-                .col()
-                .w_px(width)
-                .child(strip)
-                .child(div().h_px(1.0).bg(colors.border))
-                .into(),
+        strip(
+            self.base,
+            snapshot.driver.as_deref(),
+            snapshot.pending.as_ref(),
+            width,
         )
     }
 
@@ -217,6 +127,215 @@ impl LeaseBar {
         self.forget();
         true
     }
+}
+
+/// The strip a session shows for `driver` and `pending`, its buttons' click ids counted from `base`.
+pub fn strip(
+    base: u64,
+    driver: Option<&str>,
+    pending: Option<&PendingApproval>,
+    width: f32,
+) -> Option<Node> {
+    let colors = theme();
+    let mut cards = Vec::new();
+    if let Some(driver) = driver {
+        cards.push(
+            div()
+                .row()
+                .h_px(36.0)
+                .pl(12.0)
+                .pr(6.0)
+                .gap(8.0)
+                .items_center()
+                .child(
+                    icon(IconKind::Eye)
+                        .size(14.0)
+                        .color(colors.text_placeholder),
+                )
+                .child(
+                    div().row().flex(1.0).child(
+                        label(format!("Watching - {driver} drives this session"))
+                            .size(12.0)
+                            .color(colors.text)
+                            .truncate(),
+                    ),
+                )
+                .child(button(base + TAKE_OVER, None, "Take over", None, false)),
+        );
+    }
+    if let Some(pending) = pending {
+        let actions = div()
+            .row()
+            .gap(6.0)
+            .child(button(
+                base + ALLOW,
+                Some(IconKind::Check),
+                "Allow",
+                key_hint(Action::AgentAllow),
+                true,
+            ))
+            .child(button(
+                base + DENY,
+                Some(IconKind::Close),
+                "Deny",
+                key_hint(Action::AgentDeny),
+                false,
+            ));
+        let what = div()
+            .row()
+            .flex(1.0)
+            .h_px(20.0)
+            .items_center()
+            .child(
+                label(format!("{} ", pending.tool))
+                    .mono()
+                    .size(12.0)
+                    .weight(700)
+                    .color(colors.text),
+            )
+            .child(
+                div().row().flex(1.0).child(
+                    label(pending.summary.clone())
+                        .mono()
+                        .size(12.0)
+                        .color(colors.text)
+                        .truncate(),
+                ),
+            );
+        let head = div()
+            .row()
+            .h_px(20.0)
+            .gap(8.0)
+            .items_center()
+            .child(attention_pill("Waiting for approval"))
+            .child(what);
+        let card = if width < ONE_LINE_W {
+            div()
+                .col()
+                .p(8.0)
+                .pl(12.0)
+                .gap(8.0)
+                .child(head)
+                .child(div().row().justify_end().child(actions))
+        } else {
+            div()
+                .row()
+                .p(8.0)
+                .pl(12.0)
+                .gap(8.0)
+                .items_center()
+                .child(div().row().flex(1.0).child(head))
+                .child(actions)
+        };
+        cards.push(card);
+    }
+    if cards.is_empty() {
+        return None;
+    }
+    // Each card sits on a ring with a darker edge under it, the way a raised card casts its shadow.
+    let mut tray = div().col().w_px(width).px(7.0).pt(7.0).pb(5.0).gap(3.0);
+    for card in cards {
+        tray = tray.child(
+            div().col().pb(1.0).rounded(11.0).bg(shadow()).child(
+                div()
+                    .col()
+                    .p(1.0)
+                    .rounded(11.0)
+                    .bg(colors.border)
+                    .child(card.rounded(10.0).bg(colors.element_background)),
+            ),
+        );
+    }
+    Some(
+        div()
+            .col()
+            .w_px(width)
+            .bg(colors.panel_background)
+            .child(tray)
+            .child(div().h_px(1.0).bg(colors.border_variant))
+            .into(),
+    )
+}
+
+fn shadow() -> Rgba {
+    match theme().appearance {
+        Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
+        Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.1),
+    }
+}
+
+fn attention_pill(text: &str) -> Div {
+    let colors = theme();
+    let pill = div()
+        .row()
+        .h_px(20.0)
+        .px(7.0)
+        .items_center()
+        .rounded(10.0)
+        .bg(colors.attention)
+        .child(label(text).size(11.0).medium().color(colors.on_attention));
+    // The yellow is close to white, so on a light card it needs an edge to stand off it.
+    match colors.appearance {
+        Appearance::Light => pill.border(1.0, colors.on_attention.alpha(0.22)),
+        Appearance::Dark => pill,
+    }
+}
+
+/// A small button: filled with the accent when `primary`, else ghost, with its keys in a chip after the text.
+fn button(
+    id: u64,
+    glyph: Option<IconKind>,
+    text: &str,
+    keys: Option<String>,
+    primary: bool,
+) -> Div {
+    let colors = theme();
+    let (ink, keys_ink, chip) = if primary {
+        (
+            colors.on_accent,
+            colors.on_accent,
+            Rgba::new(1.0, 1.0, 1.0, 0.18),
+        )
+    } else {
+        // A translucent wash: the flat hover color matches the card and would vanish on it.
+        let chip = match colors.appearance {
+            Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
+            Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.08),
+        };
+        (colors.text, colors.text_muted, chip)
+    };
+    let mut button = div()
+        .row()
+        .h_px(24.0)
+        .px(8.0)
+        .gap(4.0)
+        .items_center()
+        .rounded(6.0)
+        .on_click(id);
+    button = if primary {
+        button.bg(colors.accent_fill)
+    } else {
+        button
+            .hover_bg(colors.ghost_element_hover)
+            .active_bg(colors.ghost_element_active)
+    };
+    if let Some(kind) = glyph {
+        button = button.child(icon(kind).size(14.0).color(ink));
+    }
+    button = button.child(label(text).size(12.0).medium().color(ink));
+    if let Some(keys) = keys {
+        button = button.child(
+            div()
+                .row()
+                .h_px(18.0)
+                .px(5.0)
+                .items_center()
+                .rounded(4.0)
+                .bg(chip)
+                .child(render_keystroke_in(&keys, 11.0, keys_ink)),
+        );
+    }
+    button
 }
 
 #[cfg(test)]

@@ -38,6 +38,18 @@ impl Rgba {
         Self::new(channel(0), channel(2), channel(4), a)
     }
 
+    /// This color painted over an opaque `base`, as the renderer blends: for overlapping shapes that must not
+    /// double their tint.
+    pub fn over(self, base: Rgba) -> Rgba {
+        let mix = |top: f32, bottom: f32| top * self.a + bottom * (1.0 - self.a);
+        Rgba::new(
+            mix(self.r, base.r),
+            mix(self.g, base.g),
+            mix(self.b, base.b),
+            1.0,
+        )
+    }
+
     /// 8-bit sRGB components (for glyph rendering, which takes u8 rgba).
     pub fn to_u8(self) -> [u8; 4] {
         let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -147,6 +159,13 @@ pub struct ThemeColors {
     pub hint_border: Rgba,
     pub ignored_background: Rgba,
     pub ignored_border: Rgba,
+
+    /// The one thing that needs you now (an agent waiting), as a fill, and the ink drawn on it.
+    pub attention: Rgba,
+    pub on_attention: Rgba,
+    /// The accent as a fill (the current workspace's tile), and the ink drawn on it.
+    pub accent_fill: Rgba,
+    pub on_accent: Rgba,
 }
 
 /// Pomelo Dark: the app's own theme, layered surfaces with one violet accent. Borders and element states are
@@ -256,6 +275,10 @@ pub fn pomelo_dark() -> ThemeColors {
         hint_border: h("#3a3e47"),
         ignored_background: h("#7c82901f"),
         ignored_border: h("#3a3e47"),
+        attention: h("#f2d64b"),
+        on_attention: h("#2b2300"),
+        accent_fill: h("#8e47b0"),
+        on_accent: h("#ffffff"),
     }
 }
 
@@ -365,6 +388,10 @@ pub fn pomelo_light() -> ThemeColors {
         hint_border: h("#d2cfd7"),
         ignored_background: h("#827c8e1f"),
         ignored_border: h("#d2cfd7"),
+        attention: h("#f2d64b"),
+        on_attention: h("#2b2300"),
+        accent_fill: h("#7b2f95"),
+        on_accent: h("#ffffff"),
     }
 }
 
@@ -474,6 +501,10 @@ pub fn one_dark() -> ThemeColors {
         hint_border: h("#293b5b"),
         ignored_background: h("#696b771a"),
         ignored_border: h("#464b57"),
+        attention: h("#dec184"),
+        on_attention: h("#282c33"),
+        accent_fill: h("#47679e"),
+        on_accent: h("#ffffff"),
     }
 }
 
@@ -583,6 +614,10 @@ pub fn one_light() -> ThemeColors {
         hint_border: h("#cbcdf6"),
         ignored_background: h("#dcdcdd"),
         ignored_border: h("#c9c9ca"),
+        attention: h("#e5c07b"),
+        on_attention: h("#383a42"),
+        accent_fill: h("#5c78e2"),
+        on_accent: h("#ffffff"),
     }
 }
 
@@ -692,6 +727,10 @@ pub fn gruvbox_dark() -> ThemeColors {
         hint_border: h("#303a36"),
         ignored_background: h("#4c4642"),
         ignored_border: h("#5b534d"),
+        attention: h("#f9bd2f"),
+        on_attention: h("#282828"),
+        accent_fill: h("#458588"),
+        on_accent: h("#fbf1c7"),
     }
 }
 
@@ -801,6 +840,10 @@ pub fn ayu_mirage() -> ThemeColors {
         hint_border: h("#24556f"),
         ignored_background: h("#464a52"),
         ignored_border: h("#53565d"),
+        attention: h("#fecf72"),
+        on_attention: h("#242835"),
+        accent_fill: h("#24556f"),
+        on_accent: h("#ffffff"),
     }
 }
 

@@ -10,7 +10,7 @@ pub mod theme_file;
 pub use app::*;
 pub use components::*;
 pub use element::*;
-pub use key_binding::render_keystroke;
+pub use key_binding::{render_keystroke, render_keystroke_in};
 pub use theme::*;
 
 // Re-export the reactive core so view crates depend on `ui` alone (the framework exposes these from one crate).
@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use glyphon::{
-    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, Style,
-    SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
+    Attrs, Buffer, Cache, Color, ColorMode, Family, FontSystem, Metrics, Resolution, Shaping,
+    Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
 };
 use wgpu::util::DeviceExt;
 use wgpu::{
@@ -346,7 +346,7 @@ fn present_with_transaction(_surface: &wgpu::Surface<'static>, _on: bool) {}
 fn ui_config(width: u32, height: u32) -> SurfaceConfiguration {
     SurfaceConfiguration {
         usage: TextureUsages::RENDER_ATTACHMENT,
-        format: TextureFormat::Bgra8UnormSrgb,
+        format: TextureFormat::Bgra8Unorm,
         color_space: wgpu::SurfaceColorSpace::Auto,
         width: width.max(1),
         height: height.max(1),
@@ -360,14 +360,6 @@ fn ui_config(width: u32, height: u32) -> SurfaceConfiguration {
 fn glyph_color(c: Rgba) -> Color {
     let [r, g, b, a] = c.to_u8();
     Color::rgba(r, g, b, a)
-}
-
-fn srgb_to_linear(c: f64) -> f64 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
 }
 
 pub struct UiRenderer {
@@ -1498,7 +1490,7 @@ impl UiRenderer {
         let swash_cache = SwashCache::new();
         let cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &cache);
-        let mut atlas = TextAtlas::new(&device, &queue, &cache, format);
+        let mut atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Web);
         let text_renderers = (0..4)
             .map(|_| {
                 TextRenderer::new(
@@ -1680,12 +1672,12 @@ impl UiRenderer {
             IconTexKey::Material(m, px) => (
                 px,
                 px,
-                wgpu::TextureFormat::Rgba8UnormSrgb,
+                wgpu::TextureFormat::Rgba8Unorm,
                 rasterize_material(m, px),
                 px * 4,
             ),
             IconTexKey::Image(id) => match images().lock().ok().and_then(|m| m.get(&id).cloned()) {
-                Some((w, h, rgba)) => (w, h, wgpu::TextureFormat::Rgba8UnormSrgb, rgba, w * 4),
+                Some((w, h, rgba)) => (w, h, wgpu::TextureFormat::Rgba8Unorm, rgba, w * 4),
                 None => return,
             },
         };
@@ -1804,17 +1796,11 @@ impl UiRenderer {
             Vec::with_capacity((rects.len() + tris.len()) * 6 * FLOATS_PER_VERT);
         let s = self.scale;
         let ndc = |x: f32, y: f32| ((x * s) / vw * 2.0 - 1.0, 1.0 - (y * s) / vh * 2.0);
-        let lin = |c: Rgba| {
-            [
-                srgb_to_linear(c.r as f64) as f32,
-                srgb_to_linear(c.g as f64) as f32,
-                srgb_to_linear(c.b as f64) as f32,
-                c.a,
-            ]
-        };
+        // Colors go to the GPU as sRGB and blend there, like a browser composites them.
+        let rgba = |c: Rgba| [c.r, c.g, c.b, c.a];
         for r in rects {
-            let col = lin(r.color);
-            let bcol = lin(r.border_color);
+            let col = rgba(r.color);
+            let bcol = rgba(r.border_color);
             let bw = r.border * s;
             let (l, t) = ndc(r.x, r.y);
             let (rr, b) = ndc(r.x + r.w, r.y + r.h);
@@ -1839,7 +1825,7 @@ impl UiRenderer {
         }
         // Triangles: solid fill via the same pipeline (huge hsize + local 0 -> SDF always inside), no border.
         for tr in tris {
-            let col = lin(tr.color);
+            let col = rgba(tr.color);
             for [x, y] in tr.p {
                 let (px, py) = ndc(x, y);
                 verts.extend_from_slice(&[
@@ -2168,12 +2154,7 @@ impl UiRenderer {
                         (
                             IconTexKey::Mono(q.kind, px),
                             0.0,
-                            [
-                                srgb_to_linear(q.color.r as f64) as f32,
-                                srgb_to_linear(q.color.g as f64) as f32,
-                                srgb_to_linear(q.color.b as f64) as f32,
-                                q.color.a,
-                            ],
+                            [q.color.r, q.color.g, q.color.b, q.color.a],
                             (q.x, q.y, q.w, q.h),
                         )
                     };
@@ -2247,9 +2228,9 @@ impl UiRenderer {
         for (i, (_, _, _, _, clip)) in layers.iter().enumerate() {
             let load = if i == 0 {
                 LoadOp::Clear(wgpu::Color {
-                    r: srgb_to_linear(clear.r as f64),
-                    g: srgb_to_linear(clear.g as f64),
-                    b: srgb_to_linear(clear.b as f64),
+                    r: clear.r as f64,
+                    g: clear.g as f64,
+                    b: clear.b as f64,
                     a: clear.a as f64,
                 })
             } else {
@@ -2318,18 +2299,11 @@ impl UiRenderer {
         let vh = self.config.height as f32;
         let s = self.scale;
         let ndc = |x: f32, y: f32| ((x * s) / vw * 2.0 - 1.0, 1.0 - (y * s) / vh * 2.0);
-        let lin = |c: Rgba| {
-            [
-                srgb_to_linear(c.r as f64) as f32,
-                srgb_to_linear(c.g as f64) as f32,
-                srgb_to_linear(c.b as f64) as f32,
-                c.a,
-            ]
-        };
+        let rgba = |c: Rgba| [c.r, c.g, c.b, c.a];
         let mut verts: Vec<f32> = Vec::with_capacity((rects.len() + tris.len()) * 6 * 16);
         for r in rects {
-            let col = lin(r.color);
-            let bcol = lin(r.border_color);
+            let col = rgba(r.color);
+            let bcol = rgba(r.border_color);
             let bw = r.border * s;
             let (l, t) = ndc(r.x, r.y);
             let (rr, b) = ndc(r.x + r.w, r.y + r.h);
@@ -2351,7 +2325,7 @@ impl UiRenderer {
             }
         }
         for tr in tris {
-            let col = lin(tr.color);
+            let col = rgba(tr.color);
             for [x, y] in tr.p {
                 let (px, py) = ndc(x, y);
                 verts.extend_from_slice(&[
@@ -2471,6 +2445,22 @@ impl UiRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translucent_colors_blend_like_a_browser() {
+        // A machine without a GPU adapter has nothing to render with; the test has nothing to say there.
+        let Ok(mut renderer) = UiRenderer::new_headless(4, 4, 1.0) else {
+            return;
+        };
+        let black = Rect::new(0.0, 0.0, 4.0, 4.0, Rgba::new(0.0, 0.0, 0.0, 1.0));
+        let half_white = Rect::new(0.0, 0.0, 4.0, 4.0, Rgba::new(1.0, 1.0, 1.0, 0.5));
+        renderer
+            .render(&[black, half_white], &[], &[])
+            .expect("render");
+        let (_, _, pixels) = renderer.read_rgba().expect("read back");
+        // Blending in sRGB gives the midpoint, 128; blending in linear light would give about 188.
+        assert!(pixels[0].abs_diff(128) <= 2, "got {}", pixels[0]);
+    }
 
     #[test]
     fn symbols_meant_as_text_take_a_text_font_and_emoji_stay_emoji() {
