@@ -635,16 +635,54 @@ impl ServiceItem {
             .into()
     }
 
-    fn fact(title: &str, value: Node) -> Node {
-        div()
+    /// One fact of the card: an uppercase title over its value, with the columns it spans.
+    fn fact(title: &str, value: Node) -> (FactSpan, Node) {
+        let span = match title {
+            "URL" | "Connection" => FactSpan::Two,
+            "Command" => FactSpan::Row,
+            _ => FactSpan::One,
+        };
+        let node = div()
             .col()
-            .gap(3.0)
+            .gap(6.0)
             .child(
-                label(title.to_string())
-                    .size(11.0)
-                    .color(theme().text_placeholder),
+                div().row().h_px(14.0).items_center().child(
+                    label(title.to_uppercase())
+                        .size(10.5)
+                        .weight(600)
+                        .color(theme().text_muted),
+                ),
             )
-            .child(value)
+            .child(div().row().items_center().child(value))
+            .into();
+        (span, node)
+    }
+
+    /// The state as a pill: a dot and the words in the state's tone.
+    fn status_pill(text: String, tone: ui::Rgba) -> Node {
+        div()
+            .row()
+            .h_px(22.0)
+            .pl(8.0)
+            .pr(10.0)
+            .gap(7.0)
+            .rounded(11.0)
+            .items_center()
+            .bg(tone.alpha(0.14))
+            .child(div().w_px(7.0).h_px(7.0).rounded(3.5).bg(tone))
+            .child(label(text).size(12.0).medium().color(tone).truncate())
+            .into()
+    }
+
+    fn chip(text: String) -> Node {
+        div()
+            .row()
+            .h_px(20.0)
+            .px(8.0)
+            .rounded(4.0)
+            .items_center()
+            .bg(translucent(0.05, 0.04))
+            .child(label(text).size(12.0).color(theme().text))
             .into()
     }
 
@@ -920,21 +958,18 @@ impl ServiceItem {
                 if let Some(uptime) = self.uptime() {
                     text.push_str(&format!(" - up {uptime}"));
                 }
-                label(text).size(12.5).color(colors.success).into()
+                Self::status_pill(text, colors.success)
             }
-            State::Busy(text) => label(*text).size(12.5).color(colors.text_accent).into(),
+            State::Busy(text) => Self::status_pill(text.to_string(), colors.warning),
             State::Crashed => {
                 let text = match crash {
                     Some(crash) => format!("Crashed - {}", crash.exit),
                     None => "Crashed".to_string(),
                 };
-                label(text).size(12.5).color(colors.error).into()
+                Self::status_pill(text, colors.error)
             }
-            State::Failed { .. } => label("Could not start")
-                .size(12.5)
-                .color(colors.warning)
-                .into(),
-            State::Stopped => label("Stopped").size(12.5).color(colors.text_muted).into(),
+            State::Failed { .. } => Self::status_pill("Could not start".into(), colors.error),
+            State::Stopped => Self::status_pill("Stopped".into(), colors.text_placeholder),
         };
         let mut facts = vec![Self::fact("Status", status)];
         if *state == State::Running {
@@ -946,11 +981,7 @@ impl ServiceItem {
             {
                 facts.push(Self::fact(
                     "PID",
-                    label(pid.to_string())
-                        .size(12.5)
-                        .mono()
-                        .color(colors.text)
-                        .into(),
+                    label(pid.to_string()).size(12.0).color(colors.text).into(),
                 ));
             }
         }
@@ -961,7 +992,7 @@ impl ServiceItem {
                     .row()
                     .gap(6.0)
                     .items_center()
-                    .child(label(url).size(12.5).mono().color(colors.text_accent))
+                    .child(label(url).size(12.0).color(colors.text_accent).truncate())
                     .child(view::icon_button(self.base + COPY_URL, IconKind::Copy))
                     .into(),
             ));
@@ -979,8 +1010,8 @@ impl ServiceItem {
                         .items_center()
                         .child(
                             label(format!(":{port}"))
-                                .size(12.5)
-                                .mono()
+                                .size(12.0)
+                                .weight(600)
                                 .color(colors.text),
                         )
                         .child(Self::link(self.base + NEW_PORT, "Change"))
@@ -992,20 +1023,17 @@ impl ServiceItem {
                 self.context
                     .runner
                     .mode(&self.target.repo, &self.target.service, &service);
-            if modes.len() > 1 {
-                facts.push(Self::fact(
+            // How it runs follows where it is reached and what it reads: the mode comes after the env facts.
+            let mode_fact = if modes.len() > 1 {
+                Some(Self::fact(
                     "Mode",
                     self.choice(&modes, &current_mode, MODE_BASE),
-                ));
+                ))
             } else if !current_mode.is_empty() {
-                facts.push(Self::fact(
-                    "Mode",
-                    label(current_mode.clone())
-                        .size(12.5)
-                        .color(colors.text)
-                        .into(),
-                ));
-            }
+                Some(Self::fact("Mode", Self::chip(current_mode.clone())))
+            } else {
+                None
+            };
             if let Some(dir) = config.repos.get(&self.target.repo) {
                 let profiles = dir.env_profiles(Some(&service));
                 let current = self.context.runner.env_profile(&config, &self.target);
@@ -1015,10 +1043,7 @@ impl ServiceItem {
                         self.choice(&profiles, &current, PROFILE_BASE),
                     ));
                 } else if !current.is_empty() {
-                    facts.push(Self::fact(
-                        "Env profile",
-                        label(current).size(12.5).color(colors.text).into(),
-                    ));
+                    facts.push(Self::fact("Env profile", Self::chip(current)));
                 }
                 if let Some(file) = dir.env_output.first() {
                     let shown = format!("{}/{}", self.target.repo, file.file);
@@ -1028,12 +1053,13 @@ impl ServiceItem {
                             .row()
                             .gap(8.0)
                             .items_center()
-                            .child(label(shown).size(12.5).mono().color(colors.text))
+                            .child(label(shown).size(12.0).color(colors.text).truncate())
                             .child(Self::link(self.base + OPEN_ENV, "Open"))
                             .into(),
                     ));
                 }
             }
+            facts.extend(mode_fact);
             let mode = self
                 .context
                 .runner
@@ -1042,36 +1068,102 @@ impl ServiceItem {
             if !command.is_empty() {
                 facts.push(Self::fact(
                     "Command",
-                    div()
-                        .row()
-                        .gap(6.0)
-                        .items_center()
-                        .child({
-                            let text = label(command).size(12.5).mono().color(colors.text);
-                            let natural = ui::measure(&text.clone().into()).0;
-                            div()
-                                .row()
-                                .w_px(natural.min(width - 60.0))
-                                .child(text.truncate())
-                        })
-                        .child(view::icon_button(self.base + COPY_COMMAND, IconKind::Copy))
-                        .into(),
+                    Self::command_block(command, self.base + COPY_COMMAND),
                 ));
             }
         }
+        fact_card(facts, width)
+    }
+
+    /// A command as a code block across the card, a copy button at its end.
+    fn command_block(command: String, copy: u64) -> Node {
+        let colors = theme();
         div()
-            .col()
-            .px(14.0)
-            .pt(10.0)
-            .pb(11.0)
-            .child(view::pack(facts, width - 28.0, 22.0))
+            .row()
+            .flex(1.0)
+            .h_px(32.0)
+            .px(10.0)
+            .gap(6.0)
+            .rounded(6.0)
+            .items_center()
+            .bg(colors.background)
+            .child(label("$").size(12.0).color(colors.text_placeholder))
+            .child(label(command).size(12.0).color(colors.text).truncate())
+            .child(div().row().flex(1.0))
+            .child(view::icon_button(copy, IconKind::Copy))
             .into()
     }
 }
 
+/// White over a dark theme, the ink color over a light one, at the given strengths.
+fn translucent(dark: f32, light: f32) -> ui::Rgba {
+    match theme().appearance {
+        ui::Appearance::Dark => ui::Rgba::new(1.0, 1.0, 1.0, dark),
+        ui::Appearance::Light => ui::Rgba::new(0.114, 0.09, 0.188, light),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FactSpan {
+    One,
+    Two,
+    Row,
+}
+
+/// The facts as one card on a three-column grid: wide facts take two columns, the command a row of its own
+/// at the end.
+fn fact_card(facts: Vec<(FactSpan, Node)>, width: f32) -> Node {
+    const COL_GAP: f32 = 20.0;
+    let colors = theme();
+    let inner = (width - 2.0 * 16.0 - 2.0 * 16.0).max(120.0);
+    let column = (inner - 2.0 * COL_GAP) / 3.0;
+    let (mut command, mut cells): (Vec<_>, Vec<_>) = facts
+        .into_iter()
+        .partition(|(span, _)| *span == FactSpan::Row);
+    cells.append(&mut command);
+    let mut grid = div().col().gap(14.0);
+    let mut line = div().row().gap(COL_GAP);
+    let mut used = 0;
+    for (span, node) in cells {
+        let columns = match span {
+            FactSpan::One => 1,
+            FactSpan::Two => 2,
+            FactSpan::Row => 3,
+        };
+        if used > 0 && used + columns > 3 {
+            grid = grid.child(line);
+            line = div().row().gap(COL_GAP);
+            used = 0;
+        }
+        let w = column * columns as f32 + COL_GAP * (columns - 1) as f32;
+        line = line.child(div().col().w_px(w).child(node));
+        used += columns;
+    }
+    if used > 0 {
+        grid = grid.child(line);
+    }
+    div()
+        .col()
+        .px(16.0)
+        .pt(4.0)
+        .pb(14.0)
+        .child(
+            div()
+                .col()
+                .debug("fact-card")
+                .px(16.0)
+                .py(14.0)
+                .rounded(10.0)
+                .bg(colors.element_background)
+                .border(1.0, translucent(0.06, 0.08))
+                .child(grid),
+        )
+        .into()
+}
+
 impl ServiceItem {
     /// A shared container's image, port, connection and the repos of this workspace that use it.
-    fn shared_facts(&self, name: &str) -> Vec<Node> {
+    fn shared_facts(&self, name: &str) -> Vec<(FactSpan, Node)> {
         let colors = theme();
         let mut facts = Vec::new();
         let config = self.context.config();
@@ -1084,20 +1176,14 @@ impl ServiceItem {
         if let Some(image) = image {
             facts.push(Self::fact(
                 "Image",
-                label(image).size(12.5).mono().color(colors.text).into(),
+                label(image).size(12.0).color(colors.text).into(),
             ));
         }
         let command = def.filter(|def| def.is_command());
         if let (Some(def), Some(config)) = (command, config.as_ref()) {
             facts.push(Self::fact(
                 "Command",
-                div()
-                    .row()
-                    .gap(6.0)
-                    .items_center()
-                    .child(label(def.cmd.clone()).size(12.5).mono().color(colors.text))
-                    .child(view::icon_button(self.base + COPY_COMMAND, IconKind::Copy))
-                    .into(),
+                Self::command_block(def.cmd.clone(), self.base + COPY_COMMAND),
             ));
             let folder = self.context.runner.shared_command_dir(config, def);
             let shown = folder
@@ -1108,7 +1194,7 @@ impl ServiceItem {
                 .unwrap_or_else(|| "project folder".to_string());
             facts.push(Self::fact(
                 "Folder",
-                label(shown).size(12.5).mono().color(colors.text).into(),
+                label(shown).size(12.0).color(colors.text).into(),
             ));
         }
         let port = self.context.runner.shared_host_port(name);
@@ -1116,8 +1202,8 @@ impl ServiceItem {
             facts.push(Self::fact(
                 "Port",
                 label(format!(":{port}"))
-                    .size(12.5)
-                    .mono()
+                    .size(12.0)
+                    .weight(600)
                     .color(colors.text)
                     .into(),
             ));
@@ -1133,7 +1219,12 @@ impl ServiceItem {
                     .row()
                     .gap(6.0)
                     .items_center()
-                    .child(label(connection).size(12.5).mono().color(colors.text))
+                    .child(
+                        label(connection)
+                            .size(12.0)
+                            .color(colors.text_accent)
+                            .truncate(),
+                    )
                     .child(view::icon_button(self.base + COPY_URL, IconKind::Copy))
                     .into(),
             ));
@@ -1145,11 +1236,11 @@ impl ServiceItem {
             "Used by",
             if users.is_empty() {
                 label("not used here")
-                    .size(12.5)
+                    .size(12.0)
                     .color(colors.text_placeholder)
                     .into()
             } else {
-                label(users.join(", ")).size(12.5).color(colors.text).into()
+                label(users.join(", ")).size(12.0).color(colors.text).into()
             },
         ));
         facts

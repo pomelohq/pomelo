@@ -494,9 +494,9 @@ fn a_shared_tab_shows_the_container_like_a_service() {
         "shared",
         "Stop",
         "Restart",
-        "Image",
+        "IMAGE",
         "postgres:16",
-        "Used by",
+        "USED BY",
         "ready to accept connections",
     ] {
         assert!(
