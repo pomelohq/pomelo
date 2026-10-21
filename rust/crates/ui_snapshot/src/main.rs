@@ -39,6 +39,16 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "git-discard-file" => (0, &[("PROMPT", "discard-file")]),
         "git-pr-merge-confirm" => (0, &[("MERGECONFIRM", "1")]),
         "project-switcher-filtered" => (0, &[("SWITCHER", "rate")]),
+        // cmd-shift-p and cmd-p alone at their width; PICKER is the picker and its query.
+        "system-palette" => (0, &[("PICKER", "palette:work")]),
+        "system-palette-empty" => (0, &[("PICKER", "palette:deploy prod")]),
+        "system-file-finder" => (0, &[("PICKER", "finder:users")]),
+        // A notification card, a toast or the title bar's update button alone; NOTICE names which.
+        "system-notifications" => (0, &[("NOTICE", "update-ready")]),
+        "system-notifications-toast" => (0, &[("NOTICE", "toast")]),
+        "system-notifications-update" => (0, &[("NOTICE", "update-ready-button")]),
+        "system-invalid-config" => (0, &[("NOTICE", "invalid-config")]),
+        "system-update-progress" => (0, &[("NOTICE", "update-downloading")]),
         // The New project tab's page alone, at the size of the board's page; ONBOARDSCENE is its state.
         "system-onboarding-repos" => (0, &[("ONBOARDSCENE", "repos")]),
         "system-onboarding-setup" => (0, &[("ONBOARDSCENE", "setup")]),
@@ -2127,6 +2137,146 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Ok(which) = std::env::var("NOTICE") {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let colors = ui::theme();
+        let update = |label: &str, tone, progress: Option<f32>| workspace::UpdateButton {
+            label: label.into(),
+            icon: if progress.is_some() {
+                ui::IconKind::Download
+            } else {
+                ui::IconKind::RotateCw
+            },
+            progress,
+            tooltip: None,
+            tone,
+            dismissable: progress.is_none(),
+            click: None,
+        };
+        let (node, backdrop) = match which.as_str() {
+            "toast" => (
+                workspace::toast_preview("Start the agent first to add the selection to it", None)
+                    .0,
+                colors.editor_background,
+            ),
+            "update-downloading" => (
+                workspace::update_button(
+                    &update(
+                        "Downloading 0.7.4",
+                        workspace::UpdateTone::Normal,
+                        Some(0.45),
+                    ),
+                    None,
+                ),
+                colors.title_bar_background,
+            ),
+            "update-ready-button" => (
+                workspace::update_button(
+                    &update("Restart to Update", workspace::UpdateTone::Ready, None),
+                    None,
+                ),
+                colors.title_bar_background,
+            ),
+            name => (
+                workspace::notification_preview(name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown notice {name}"))?
+                    .0,
+                colors.editor_background,
+            ),
+        };
+        // The board frames a toast or the update button with 8px of what lies under it.
+        let frame = if matches!(
+            which.as_str(),
+            "toast" | "update-downloading" | "update-ready-button"
+        ) {
+            8.0
+        } else {
+            0.0
+        };
+        let content = ui::render(
+            &ui::div().row().p(frame).child(node).into(),
+            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        let mut painted = ui::Painted::default();
+        if !which.starts_with("update") {
+            let (right, bottom) = content
+                .rects
+                .iter()
+                .fold((0.0_f32, 0.0_f32), |(r, b), rect| {
+                    (r.max(rect.x + rect.w), b.max(rect.y + rect.h))
+                });
+            let card = ui::Rect::new(
+                frame,
+                frame,
+                right - frame,
+                bottom - frame,
+                ui::Rgba::TRANSPARENT,
+            );
+            painted.rects.extend(workspace::elevation_shadow(
+                card,
+                workspace::Elevation::Modal,
+            ));
+        }
+        painted.rects.extend(content.rects);
+        painted.tris.extend(content.tris);
+        painted.texts.extend(content.texts);
+        painted.icons.extend(content.icons);
+        r.render_frame(
+            backdrop,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(picker) = std::env::var("PICKER") {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let (kind, query) = picker.split_once(':').unwrap_or((picker.as_str(), ""));
+        let node = if kind == "finder" {
+            files_ui::file_finder_preview(finder_fixture(), Vec::new(), query)
+        } else {
+            files_ui::command_palette_preview(&palette_fixture(), query)
+        };
+        let painted = ui::render(
+            &node,
+            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        r.render_frame(
+            ui::theme().background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(query) = std::env::var("SWITCHER") {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
@@ -3722,6 +3872,55 @@ fn update_snapshot(which: &str) -> auto_update::Snapshot {
 }
 
 /// The window boards' workspaces as cmd-alt-o lists them, with their agents, the login one current.
+/// The window commands the palette board lists, with the keys they are bound to.
+fn palette_fixture() -> Vec<workspace::ExtraCommand> {
+    [
+        ("workspace: switch workspace", "cmd-alt-o"),
+        ("workspace: new workspace", "cmd-n"),
+        (
+            "workspace: activate next workspace needing attention",
+            "cmd-alt-a",
+        ),
+        ("workspace: activate previous workspace", "cmd-alt-up"),
+        ("workspace: activate next workspace", "cmd-alt-down"),
+        ("workspace: open ticket", ""),
+        ("workspace: export config", ""),
+        ("workspace: import config", ""),
+        ("workspace: toggle left dock", "cmd-b"),
+        ("terminal: new terminal", "ctrl-`"),
+        ("git: commit", "cmd-enter"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(id, (name, keys))| workspace::ExtraCommand {
+        name: name.into(),
+        keys: (!keys.is_empty())
+            .then(|| keys.to_string())
+            .into_iter()
+            .collect(),
+        id: id as u64,
+    })
+    .collect()
+}
+
+/// The project files the Go to file board searches.
+fn finder_fixture() -> Vec<String> {
+    [
+        "api/app/controllers/users_controller.rb",
+        "api/app/controllers/sessions_controller.rb",
+        "api/app/models/user.rb",
+        "api/config/routes.rb",
+        "api/spec/requests/users_spec.rb",
+        "web/src/components/UsersTable.tsx",
+        "web/src/hooks/useUsers.ts",
+        "web/src/main.tsx",
+        "worker/src/jobs.ts",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
 fn switcher_fixture() -> workspace::WorkspaceSwitcher {
     let project = window_project();
     let agent = |branch: &str| match branch {

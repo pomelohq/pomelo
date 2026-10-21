@@ -183,6 +183,8 @@ struct Notification {
     primary: Option<String>,
     action: Option<NotificationAction>,
     level: Option<crate::NoticeLevel>,
+    /// Shown in place of the level's icon.
+    icon: Option<IconKind>,
     buttons: Vec<String>,
     copy: bool,
 }
@@ -1241,16 +1243,7 @@ impl WorkspaceView {
             return;
         }
         self.shown_problem = Some(message.clone());
-        self.notification = Some(Notification {
-            title: "Invalid pom.yml".into(),
-            message,
-            primary: Some("Open pom.yml".into()),
-            action: Some(NotificationAction::OpenFile(
-                config_path.to_path_buf(),
-                line,
-            )),
-            ..Notification::default()
-        });
+        self.notification = Some(invalid_config_notification(message, config_path, line));
     }
 
     /// Running services started with the previous config: offer to restart them (none clears the offer).
@@ -1333,13 +1326,7 @@ impl WorkspaceView {
 
     /// A release that may fix the crash is downloaded; the button restarts into it.
     pub fn notify_update_ready(&mut self, title: String, message: String) {
-        self.notification = Some(Notification {
-            title,
-            message,
-            primary: Some("Restart to Update".into()),
-            action: Some(NotificationAction::RestartUpdate),
-            ..Notification::default()
-        });
+        self.notification = Some(update_ready_notification(title, message));
     }
 
     pub fn notify_release_notes(&mut self, title: String, message: String, button: &str) {
@@ -2601,72 +2588,16 @@ impl WorkspaceView {
             let progress =
                 ((now - t.shown_at).as_secs_f32() / TOAST_ANIM.as_secs_f32()).clamp(0.0, 1.0);
             let slide = (1.0 - progress) * 12.0;
-            let weight = ui::ui_font_weight();
-            let msg_w = ui::measure_text_width(&t.message, 13.0, false, weight);
-            let action_w = t
-                .action
-                .as_ref()
-                .map(|a| ui::measure_text_width(a, 13.0, false, weight) + 20.0)
-                .unwrap_or(0.0);
-            let (pad, gap, close_w, toast_h) = (12.0, 10.0, 18.0, 34.0);
-            let action_span = if action_w > 0.0 { gap + action_w } else { 0.0 };
-            let toast_w = pad + msg_w + action_span + gap + close_w + pad;
+            let (row, toast_w, toast_h) = toast_row(&t.message, t.action.as_deref());
             let x = ((w - toast_w) / 2.0).max(8.0);
             let y = h - crate::STATUS_BAR_H - toast_h - 14.0 + slide;
             let rect = Rect::new(x, y, toast_w, toast_h, Rgba::TRANSPARENT);
             t.rect = rect;
-            let mut row = ui::div()
-                .row()
-                .items_center()
-                .px(pad)
-                .gap(gap)
-                .rounded(8.0)
-                .bg(ui::theme().elevated_surface_background)
-                .border(1.0, ui::theme().border)
-                .child(
-                    ui::label(t.message.clone())
-                        .size(13.0)
-                        .color(ui::theme().text),
-                );
-            if let Some(a) = &t.action {
-                row = row.child(
-                    ui::div()
-                        .px(8.0)
-                        .h_px(22.0)
-                        .rounded(6.0)
-                        .items_center()
-                        .justify_center()
-                        .bg(ui::theme().element_hover)
-                        .on_click(TOAST_ACTION)
-                        .child(ui::label(a.clone()).size(13.0).color(ui::theme().text)),
-                );
-            }
-            row = row.child(
-                ui::div()
-                    .w_px(close_w)
-                    .h_px(close_w)
-                    .rounded(4.0)
-                    .items_center()
-                    .justify_center()
-                    .on_click(TOAST_CLOSE)
-                    .child(
-                        ui::icon(IconKind::Close)
-                            .size(11.0)
-                            .color(ui::theme().icon_muted),
-                    ),
-            );
             let mut painted = Painted::default();
-            painted.rects.push(Rect {
-                x: x - 2.0,
-                y: y - 1.0,
-                w: toast_w + 4.0,
-                h: toast_h + 4.0,
-                color: Rgba::new(0.0, 0.0, 0.0, 0.14),
-                radius: 10.0,
-                border: 0.0,
-                border_color: Rgba::TRANSPARENT,
-            });
-            let p = ui::render(&row.into(), rect);
+            painted
+                .rects
+                .extend(elevation_shadow(rect, crate::Elevation::Modal));
+            let p = ui::render(&row, rect);
             header_hits.extend(p.hits.iter().copied());
             painted.rects.extend(p.rects);
             painted.tris.extend(p.tris);
@@ -8657,38 +8588,139 @@ fn server_notification(notice: crate::ServerNotice) -> Notification {
     }
 }
 
-fn notice_button(id: u64, text: &str, hovered: Option<u64>) -> ui::Div {
-    let mut button = ui::div()
-        .h_px(22.0)
-        .px(4.0)
-        .items_center()
-        .rounded(4.0)
-        .on_click(id)
-        .child(
-            ui::label(text.to_string())
-                .label_size(ui::LabelSize::Small)
-                .color(ui::theme().text),
-        );
-    if hovered == Some(id) {
-        button = button.bg(ui::theme().ghost_element_hover);
+fn invalid_config_notification(
+    message: String,
+    config_path: &std::path::Path,
+    line: Option<u32>,
+) -> Notification {
+    Notification {
+        title: "Invalid pom.yml".into(),
+        message,
+        primary: Some("Open pom.yml".into()),
+        action: Some(NotificationAction::OpenFile(
+            config_path.to_path_buf(),
+            line,
+        )),
+        level: Some(crate::NoticeLevel::Error),
+        ..Notification::default()
     }
-    button
 }
 
-fn notification_card(notification: &Notification, w: f32, h: f32, hovered: Option<u64>) -> Painted {
+fn update_ready_notification(title: String, message: String) -> Notification {
+    Notification {
+        title,
+        message,
+        primary: Some("Restart to Update".into()),
+        action: Some(NotificationAction::RestartUpdate),
+        icon: Some(IconKind::Download),
+        ..Notification::default()
+    }
+}
+
+const TOAST_HEIGHT: f32 = 36.0;
+
+/// A toast's pill: the message, its action and a close button; also its width and height.
+fn toast_row(message: &str, action: Option<&str>) -> (ui::Node, f32, f32) {
+    let colors = ui::theme();
+    let weight = ui::ui_font_weight();
+    let (pad_left, pad_right, gap, close_w) = (14.0, 6.0, 10.0, 24.0);
+    let message_w = ui::measure_text_width(message, 13.0, false, weight);
+    let action_w = action
+        .map(|text| ui::measure_text_width(text, 12.0, false, weight) + 16.0 + gap)
+        .unwrap_or(0.0);
+    let width = pad_left + message_w + action_w + gap + close_w + pad_right;
+    let mut row = ui::div()
+        .row()
+        .items_center()
+        .h_px(TOAST_HEIGHT)
+        .pl(pad_left)
+        .pr(pad_right)
+        .gap(gap)
+        .rounded(8.0)
+        .bg(colors.elevated_surface_background)
+        .border(1.0, colors.border)
+        .child(ui::label(message.to_string()).size(13.0).color(colors.text));
+    if let Some(text) = action {
+        row = row.child(
+            ui::div()
+                .row()
+                .h_px(24.0)
+                .px(8.0)
+                .rounded(6.0)
+                .items_center()
+                .on_click(TOAST_ACTION)
+                .child(
+                    ui::label(text.to_string())
+                        .size(12.0)
+                        .medium()
+                        .color(colors.text),
+                ),
+        );
+    }
+    let row = row.child(
+        ui::div()
+            .w_px(close_w)
+            .h_px(close_w)
+            .rounded(6.0)
+            .items_center()
+            .justify_center()
+            .on_click(TOAST_CLOSE)
+            .child(
+                ui::icon(IconKind::Close)
+                    .size(12.0)
+                    .color(colors.icon_muted),
+            ),
+    );
+    (row.into(), width, TOAST_HEIGHT)
+}
+
+/// A toast alone, as the window draws it above the status bar.
+pub fn toast_preview(message: &str, action: Option<&str>) -> (ui::Node, f32, f32) {
+    toast_row(message, action)
+}
+
+/// A notification card alone at its width, in the state `which` names: `update-ready` or `invalid-config`.
+pub fn notification_preview(which: &str) -> Option<(ui::Node, f32)> {
+    let notification = match which {
+        "update-ready" => update_ready_notification(
+            "A fixed version is ready".into(),
+            "0.8.2 is downloaded. Services and terminals keep running across the restart.".into(),
+        ),
+        "invalid-config" => invalid_config_notification(
+            "line 4: cannot unmarshal !!seq into a repo path. The last valid config keeps running."
+                .into(),
+            std::path::Path::new("pom.yml"),
+            Some(4),
+        ),
+        _ => return None,
+    };
+    let card_w = NOTIFICATION_W * ui::ui_text_scale();
+    Some((notification_node(&notification, card_w, None), card_w))
+}
+
+/// The card: the level's icon, the title, the message and the actions under it, with copy and close on the right.
+fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u64>) -> ui::Node {
+    let colors = ui::theme();
     let scale = ui::ui_text_scale();
-    let card_w = (NOTIFICATION_W * scale)
-        .min(w - 2.0 * NOTIFICATION_MARGIN)
-        .max(0.0);
-    let close_w = 20.0;
-    let text_w = (card_w / scale - 2.0 * NOTIFICATION_PAD - close_w - 16.0).max(40.0);
+    let control_w = 24.0;
+    let icon = notification
+        .icon
+        .map(|kind| (kind, colors.info))
+        .or(notification.level.map(|level| match level {
+            crate::NoticeLevel::Error => (IconKind::XCircle, colors.error),
+            crate::NoticeLevel::Warning => (IconKind::Warning, colors.warning),
+            crate::NoticeLevel::Info => (IconKind::Info, colors.info),
+        }));
+    let controls_w = control_w * if notification.copy { 2.0 } else { 1.0 };
+    let icon_w = if icon.is_some() { 16.0 + 10.0 } else { 0.0 };
+    let text_w = (card_w / scale - NOTIFICATION_PAD - 8.0 - icon_w - controls_w - 10.0).max(40.0);
     let mut message = ui::div().col().gap(2.0);
     let lines: Vec<&str> = notification.message.lines().collect();
     for line in lines.iter().take(NOTIFICATION_MAX_LINES) {
         message = message.child(
             ui::label(line.to_string())
                 .label_size(ui::LabelSize::Small)
-                .color(ui::theme().text_muted)
+                .color(colors.text_muted)
                 .wrap(text_w),
         );
     }
@@ -8696,89 +8728,101 @@ fn notification_card(notification: &Notification, w: f32, h: f32, hovered: Optio
         message = message.child(
             ui::label("...")
                 .label_size(ui::LabelSize::Small)
-                .color(ui::theme().text_muted),
+                .color(colors.text_muted),
         );
     }
-    let mut close = ui::div()
-        .w_px(close_w)
-        .h_px(close_w)
-        .rounded(4.0)
-        .items_center()
-        .justify_center()
-        .on_click(crate::NOTIFICATION_CLOSE)
+    let mut text = ui::div()
+        .col()
+        .flex(1.0)
+        .gap(4.0)
         .child(
-            ui::icon(IconKind::Close)
-                .size(12.0)
-                .color(ui::theme().icon_muted),
-        );
-    if hovered == Some(crate::NOTIFICATION_CLOSE) {
-        close = close.bg(ui::theme().ghost_element_hover);
+            ui::label(notification.title.clone())
+                .size(13.0)
+                .medium()
+                .color(colors.text),
+        )
+        .child(message);
+    let mut actions = ui::div().row().gap(6.0).pt(6.0);
+    let mut has_actions = false;
+    if let Some(primary) = &notification.primary {
+        has_actions = true;
+        actions = actions.child(crate::small_button(
+            crate::NOTIFICATION_PRIMARY,
+            None,
+            primary,
+            None,
+            crate::ButtonKind::Primary,
+            true,
+            hovered,
+        ));
     }
-    let mut title = ui::div().row().items_center().gap(8.0);
-    if let Some(level) = notification.level {
-        let (kind, color) = match level {
-            crate::NoticeLevel::Error => (IconKind::XCircle, ui::theme().error),
-            crate::NoticeLevel::Warning => (IconKind::Warning, ui::theme().warning),
-            crate::NoticeLevel::Info => (IconKind::Info, ui::theme().icon_muted),
-        };
-        title = title.child(ui::icon(kind).size(14.0).color(color));
+    for (index, label) in notification.buttons.iter().enumerate() {
+        let id = crate::NOTIFICATION_BUTTON_BASE + index as u64;
+        if id < crate::NOTIFICATION_BUTTON_END {
+            has_actions = true;
+            actions = actions.child(crate::small_button(
+                id,
+                None,
+                label,
+                None,
+                crate::ButtonKind::Ghost,
+                true,
+                hovered,
+            ));
+        }
     }
-    let title = title.child(
-        ui::label(notification.title.clone())
-            .label_size(ui::LabelSize::Default)
-            .color(ui::theme().text),
-    );
-    let mut controls = ui::div().row().gap(4.0);
-    if notification.copy {
-        let mut copy = ui::div()
-            .w_px(close_w)
-            .h_px(close_w)
-            .rounded(4.0)
+    if has_actions {
+        text = text.child(actions);
+    }
+    let control = |id: u64, kind: IconKind| {
+        let mut button = ui::div()
+            .w_px(control_w)
+            .h_px(control_w)
+            .rounded(6.0)
             .items_center()
             .justify_center()
-            .on_click(crate::NOTIFICATION_COPY)
-            .child(
-                ui::icon(IconKind::Copy)
-                    .size(12.0)
-                    .color(ui::theme().icon_muted),
-            );
-        if hovered == Some(crate::NOTIFICATION_COPY) {
-            copy = copy.bg(ui::theme().ghost_element_hover);
+            .on_click(id)
+            .child(ui::icon(kind).size(12.0).color(colors.icon_muted));
+        if hovered == Some(id) {
+            button = button.bg(colors.ghost_element_hover);
         }
-        controls = controls.child(copy);
+        button
+    };
+    let mut controls = ui::div().row();
+    if notification.copy {
+        controls = controls.child(control(crate::NOTIFICATION_COPY, IconKind::Copy));
     }
-    let header = ui::div()
-        .row()
-        .justify_between()
-        .gap(16.0)
-        .child(ui::div().col().gap(2.0).child(title).child(message))
-        .child(controls.child(close));
+    controls = controls.child(control(crate::NOTIFICATION_CLOSE, IconKind::Close));
     let mut card = ui::div()
-        .col()
-        .p(NOTIFICATION_PAD)
-        .gap(8.0)
+        .row()
+        .w_px(card_w)
+        .pt(NOTIFICATION_PAD)
+        .pb(NOTIFICATION_PAD)
+        .pl(NOTIFICATION_PAD)
+        .pr(8.0)
+        .gap(10.0)
         .rounded(8.0)
-        .bg(ui::theme().elevated_surface_background)
-        .border(1.0, ui::theme().border)
-        .child(header);
-    if let Some(primary) = &notification.primary {
-        card = card.child(ui::div().row().child(notice_button(
-            crate::NOTIFICATION_PRIMARY,
-            primary,
-            hovered,
-        )));
+        .bg(colors.elevated_surface_background)
+        .border(1.0, colors.border);
+    if let Some((kind, color)) = icon {
+        card = card.child(
+            ui::div()
+                .pt(1.0)
+                .child(ui::icon(kind).size(16.0).color(color)),
+        );
     }
-    if !notification.buttons.is_empty() {
-        let mut row = ui::div().row().gap(4.0);
-        for (index, text) in notification.buttons.iter().enumerate() {
-            let id = crate::NOTIFICATION_BUTTON_BASE + index as u64;
-            if id < crate::NOTIFICATION_BUTTON_END {
-                row = row.child(notice_button(id, text, hovered));
-            }
-        }
-        card = card.child(row);
-    }
-    let node: ui::Node = ui::div().col().child(card).into();
+    card.child(text).child(controls).into()
+}
+
+fn notification_card(notification: &Notification, w: f32, h: f32, hovered: Option<u64>) -> Painted {
+    let scale = ui::ui_text_scale();
+    let card_w = (NOTIFICATION_W * scale)
+        .min(w - 2.0 * NOTIFICATION_MARGIN)
+        .max(0.0);
+    let node: ui::Node = ui::div()
+        .col()
+        .child(notification_node(notification, card_w, hovered))
+        .into();
     let probe = ui::render(&node, Rect::new(0.0, 0.0, card_w, h, Rgba::TRANSPARENT));
     let card_h = probe.rects.iter().map(|r| r.y + r.h).fold(0.0, f32::max);
     let x = w - NOTIFICATION_MARGIN - card_w;
