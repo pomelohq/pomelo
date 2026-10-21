@@ -30,22 +30,27 @@ pub enum PaletteAction {
 pub enum PaletteClick {
     Row(usize),
     Run,
+    /// The workspace switcher's new-workspace button.
+    New,
 }
 
 impl PaletteClick {
     const RUN: u64 = 0;
+    const NEW: u64 = 1;
 
     pub fn offset(self) -> u64 {
         match self {
             PaletteClick::Run => Self::RUN,
-            PaletteClick::Row(index) => index as u64 + 1,
+            PaletteClick::New => Self::NEW,
+            PaletteClick::Row(index) => index as u64 + 2,
         }
     }
 
     pub fn from_offset(offset: u64) -> Self {
         match offset {
             Self::RUN => PaletteClick::Run,
-            n => PaletteClick::Row((n - 1) as usize),
+            Self::NEW => PaletteClick::New,
+            n => PaletteClick::Row((n - 2) as usize),
         }
     }
 }
@@ -580,6 +585,8 @@ pub struct CommandPalette {
     placeholder: &'static str,
     /// The query the matches were made for; a new one puts the selection back on the best match.
     matched_query: String,
+    /// Set when the palette lists workspaces: one entry per command, in the same order.
+    switcher: Option<workspace::WorkspaceSwitcher>,
 }
 
 /// Move a row list's first visible row by a wheel delta (positive = toward the top), carrying partial rows over
@@ -666,9 +673,52 @@ impl CommandPalette {
             hovered: None,
             placeholder: PLACEHOLDER,
             matched_query: String::new(),
+            switcher: None,
         };
         palette.update_matches();
         palette
+    }
+
+    /// The workspaces in the order given, matched on their name, ticket key and branch.
+    pub fn workspace_switcher(switcher: workspace::WorkspaceSwitcher) -> Self {
+        let commands = switcher
+            .entries
+            .iter()
+            .map(|entry| {
+                let key = workspace::ticket_key(&entry.row).unwrap_or_default();
+                Command {
+                    name: format!(
+                        "{} {key} {}",
+                        workspace::switcher_title(&entry.row),
+                        entry.row.branch
+                    ),
+                    action: PaletteAction::External(entry.id),
+                    binding: Vec::new(),
+                    usage: None,
+                }
+            })
+            .collect();
+        let mut palette = Self {
+            field: TextField::default(),
+            commands,
+            used_count: 0,
+            matches: Vec::new(),
+            selected: 0,
+            scroll_top: 0,
+            scroll_remainder: 0.0,
+            scrollbar: Default::default(),
+            hovered: None,
+            placeholder: "Switch to workspace...",
+            matched_query: String::new(),
+            switcher: Some(switcher),
+        };
+        palette.update_matches();
+        palette
+    }
+
+    /// The id the switcher's new-workspace button hands back.
+    pub fn new_workspace_id(&self) -> Option<u64> {
+        self.switcher.as_ref().map(|s| s.new_workspace.id)
     }
 
     pub fn with_placeholder(mut self, placeholder: &'static str) -> Self {
@@ -770,6 +820,9 @@ impl CommandPalette {
     pub fn confirm(&self, memory: &mut PaletteMemory) -> Option<PaletteAction> {
         let found = self.matches.get(self.selected)?;
         let command = self.commands.get(found.candidate)?;
+        if self.switcher.is_some() {
+            return Some(command.action);
+        }
         let query = self.field.text();
         if !query.is_empty() {
             memory.history.add(query);
@@ -779,12 +832,16 @@ impl CommandPalette {
     }
 
     pub fn scroll_by(&mut self, dy: f32) -> bool {
-        let max_top = self.matches.len().saturating_sub(Self::visible_rows());
+        let max_top = self.max_top();
+        let step = match self.switcher {
+            Some(_) => SWITCHER_ROW_HEIGHT,
+            None => row_height(),
+        };
         let moved = scroll_rows(
             &mut self.scroll_top,
             &mut self.scroll_remainder,
             dy,
-            row_height() * ui::ui_text_scale(),
+            step * ui::ui_text_scale(),
             max_top,
         );
         if moved {
@@ -793,20 +850,67 @@ impl CommandPalette {
         moved
     }
 
-    fn visible_rows() -> usize {
-        ((MAX_RESULTS_HEIGHT - 8.0) / row_height()).floor().max(1.0) as usize
+    fn list_height(&self) -> f32 {
+        match self.switcher {
+            Some(_) => SWITCHER_LIST_HEIGHT,
+            None => MAX_RESULTS_HEIGHT - 8.0,
+        }
+    }
+
+    /// Section headers only make sense over the whole list, not over matches ranked by score.
+    fn shows_sections(&self) -> bool {
+        self.switcher.is_some() && self.matched_query.trim().is_empty()
+    }
+
+    fn header_of(&self, row: usize) -> Option<&'static str> {
+        let switcher = self.switcher.as_ref().filter(|_| self.shows_sections())?;
+        switcher
+            .entries
+            .get(self.matches.get(row)?.candidate)?
+            .section
+    }
+
+    fn height_of(&self, row: usize) -> f32 {
+        match self.switcher {
+            Some(_) if self.header_of(row).is_some() => {
+                SWITCHER_ROW_HEIGHT + SWITCHER_HEADER_HEIGHT
+            }
+            Some(_) => SWITCHER_ROW_HEIGHT,
+            None => row_height(),
+        }
+    }
+
+    /// One past the last row that fits when the list starts at `top`; at least one row shows.
+    fn visible_end(&self, top: usize) -> usize {
+        let mut used = 0.0;
+        let mut end = top;
+        while end < self.matches.len() {
+            used += self.height_of(end);
+            if used > self.list_height() + 0.5 && end > top {
+                break;
+            }
+            end += 1;
+        }
+        end
+    }
+
+    fn max_top(&self) -> usize {
+        let mut top = self.matches.len();
+        while top > 0 && self.visible_end(top - 1) == self.matches.len() {
+            top -= 1;
+        }
+        top
     }
 
     fn scroll_to_selected(&mut self) {
-        let visible = Self::visible_rows();
         let before = self.scroll_top;
         if self.selected < self.scroll_top {
             self.scroll_top = self.selected;
-        } else if self.selected >= self.scroll_top + visible {
-            self.scroll_top = self.selected + 1 - visible;
         }
-        let max_top = self.matches.len().saturating_sub(visible);
-        self.scroll_top = self.scroll_top.min(max_top);
+        while self.selected >= self.visible_end(self.scroll_top) {
+            self.scroll_top += 1;
+        }
+        self.scroll_top = self.scroll_top.min(self.max_top());
         if self.scroll_top != before {
             self.scrollbar.reveal();
         }
@@ -841,36 +945,44 @@ impl CommandPalette {
                 )
                 .into()
         } else {
-            let visible = Self::visible_rows();
-            let end = (self.scroll_top + visible).min(self.matches.len());
+            let end = self.visible_end(self.scroll_top);
+            let shown: f32 = (self.scroll_top..end).map(|row| self.height_of(row)).sum();
             let scrollbar = crate::list_scrollbar::render(
                 WIDTH - 1.0,
-                visible as f32 * row_height() + 8.0,
+                shown + 8.0,
                 self.scroll_top,
-                visible,
+                end - self.scroll_top,
                 self.matches.len(),
                 self.scrollbar.opacity(),
             );
+            let rows = (self.scroll_top..end).map(|row| match self.switcher {
+                Some(_) => self.render_workspace_row(row, id_base),
+                None => self.render_row(row, id_base),
+            });
             div()
                 .col()
                 .py(4.0)
                 .children(scrollbar)
-                .children((self.scroll_top..end).map(|row| self.render_row(row, id_base)))
+                .children(rows)
                 .into()
         };
-        let footer = div()
-            .row()
-            .justify_end()
-            .items_center()
-            .p(6.0)
-            .gap(4.0)
-            .child(footer_button(
-                id_base + PaletteClick::Run.offset(),
-                "Run",
-                "enter",
-                colors.text,
-                self.hovered == Some(id_base + PaletteClick::Run.offset()),
-            ));
+        let footer = match &self.switcher {
+            Some(switcher) => self.switcher_footer(switcher, id_base),
+            None => div()
+                .row()
+                .justify_end()
+                .items_center()
+                .p(6.0)
+                .gap(4.0)
+                .child(footer_button(
+                    id_base + PaletteClick::Run.offset(),
+                    "Run",
+                    "enter",
+                    colors.text,
+                    self.hovered == Some(id_base + PaletteClick::Run.offset()),
+                ))
+                .into(),
+        };
         div()
             .col()
             .w_px(WIDTH)
@@ -922,12 +1034,204 @@ impl CommandPalette {
                         .items_center()
                         .justify_between()
                         .gap(8.0)
-                        .child(highlighted_label(&command.name, &found.positions))
+                        .child(highlighted_label(
+                            &command.name,
+                            &found.positions,
+                            LabelSize::Default.px(),
+                        ))
                         .child(keys),
                 ),
             )
             .into()
     }
+}
+
+const SWITCHER_ROW_HEIGHT: f32 = 45.0;
+const SWITCHER_HEADER_HEIGHT: f32 = 26.0;
+const SWITCHER_LIST_HEIGHT: f32 = 420.0;
+const SWITCHER_TILE: f32 = 32.0;
+const SWITCHER_TITLE: f32 = 13.0;
+/// The row's horizontal insets: the list's, the item's, then the gap after the tile.
+const SWITCHER_TEXT_LEFT: f32 = 6.0 + 8.0 + SWITCHER_TILE + 10.0;
+const SWITCHER_TEXT_RIGHT: f32 = 8.0 + 6.0;
+
+impl CommandPalette {
+    /// One workspace: the sidebar's tile, its name with the matched letters, and its status or its branch; the
+    /// first of a section carries the section's header above it.
+    fn render_workspace_row(&self, row: usize, id_base: u64) -> Node {
+        let colors = theme();
+        let Some((found, entry)) = self.switcher.as_ref().and_then(|switcher| {
+            let found = self.matches.get(row)?;
+            Some((found, switcher.entries.get(found.candidate)?))
+        }) else {
+            return div().into();
+        };
+        let current = self
+            .switcher
+            .as_ref()
+            .is_some_and(|switcher| switcher.current == entry.row.index);
+        let current_pill = current.then(|| {
+            div()
+                .row()
+                .h_px(18.0)
+                .px(7.0)
+                .items_center()
+                .rounded(9.0)
+                .bg(with_alpha(colors.text_accent, 0.14))
+                .child(
+                    label("current")
+                        .size(10.5)
+                        .medium()
+                        .color(colors.text_accent),
+                )
+        });
+        let pill_w = if current {
+            ui::measure_text_width("current", 10.5, false, 500) + 14.0 + 10.0
+        } else {
+            0.0
+        };
+        let title = workspace::switcher_title(&entry.row);
+        let title_w = WIDTH - SWITCHER_TEXT_LEFT - SWITCHER_TEXT_RIGHT - pill_w;
+        let waiting = entry.row.agent == Some(workspace::AgentDot::AwaitingInput);
+        let line = workspace::switcher_status(&entry.row).unwrap_or_else(|| {
+            label(entry.row.branch.clone())
+                .size(11.0)
+                .mono()
+                .color(colors.text_placeholder)
+                .truncate()
+                .into()
+        });
+        let text = div()
+            .col()
+            .flex(1.0)
+            .gap(3.0)
+            .child(div().row().h_px(16.0).items_center().child(fitted_label(
+                &title,
+                &found.positions,
+                title_w,
+            )))
+            .child(
+                div()
+                    .row()
+                    .h_px(if waiting { 20.0 } else { 14.0 })
+                    .items_center()
+                    .child(line),
+            );
+        let mut item = div()
+            .row()
+            .flex(1.0)
+            .h_px(44.0)
+            .px(8.0)
+            .gap(10.0)
+            .items_center()
+            .rounded(6.0)
+            .on_click(id_base + PaletteClick::Row(row).offset())
+            .child(workspace::switcher_tile(&entry.row, current))
+            .child(text)
+            .children(current_pill.map(Node::from));
+        if row == self.selected {
+            item = item.bg(colors.overlay_selected);
+        }
+        let mut column = div().col().px(6.0).pb(1.0);
+        if let Some(section) = self.header_of(row) {
+            column = column.child(
+                div()
+                    .row()
+                    .h_px(SWITCHER_HEADER_HEIGHT)
+                    .pt(10.0)
+                    .pb(4.0)
+                    .px(8.0)
+                    .child(
+                        label(section.to_uppercase())
+                            .size(10.5)
+                            .weight(600)
+                            .color(colors.text_placeholder),
+                    ),
+            );
+        }
+        column.child(item).into()
+    }
+
+    fn switcher_footer(&self, switcher: &workspace::WorkspaceSwitcher, id_base: u64) -> Node {
+        let colors = theme();
+        let action = |click: Option<PaletteClick>, keys: &str, text: &str| {
+            let mut button = div()
+                .row()
+                .h_px(22.0)
+                .px(4.0)
+                .gap(6.0)
+                .items_center()
+                .rounded(4.0)
+                .child(
+                    div()
+                        .row()
+                        .h_px(18.0)
+                        .px(5.0)
+                        .items_center()
+                        .rounded(4.0)
+                        .bg(if colors.appearance == ui::Appearance::Light {
+                            colors.element_active
+                        } else {
+                            colors.element_hover
+                        })
+                        .child(render_keystroke(keys, 11.0)),
+                )
+                .child(label(text).size(12.0).color(colors.text_placeholder));
+            if let Some(click) = click {
+                let id = id_base + click.offset();
+                button = button.on_click(id);
+                if self.hovered == Some(id) {
+                    button = button.bg(colors.ghost_element_hover);
+                }
+            }
+            button
+        };
+        let mut footer = div()
+            .row()
+            .justify_end()
+            .items_center()
+            .px(8.0)
+            .py(6.0)
+            .gap(6.0)
+            .bg(colors.panel_background)
+            .child(action(Some(PaletteClick::Run), "enter", "Switch"));
+        if let Some(keys) = switcher.new_workspace.keys.first() {
+            footer = footer.child(action(Some(PaletteClick::New), keys, "New workspace"));
+        }
+        footer.child(action(None, "escape", "Close")).into()
+    }
+}
+
+fn with_alpha(color: ui::Rgba, alpha: f32) -> ui::Rgba {
+    ui::Rgba::new(color.r, color.g, color.b, alpha)
+}
+
+/// [`highlighted_label`] cut with a trailing "..." to fit `width`, since the runs cannot shrink one by one.
+fn fitted_label(text: &str, positions: &[usize], width: f32) -> Node {
+    let size = SWITCHER_TITLE;
+    let measure =
+        |candidate: &str| ui::measure_text_width(candidate, size, false, ui::ui_font_weight());
+    if measure(text) <= width {
+        return highlighted_label(text, positions, size);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut keep = chars.len();
+    while keep > 0 {
+        let head: String = chars[..keep].iter().collect();
+        if measure(&format!("{}...", head.trim_end())) <= width {
+            break;
+        }
+        keep -= 1;
+    }
+    let head: String = chars[..keep].iter().collect();
+    let head = head.trim_end();
+    let kept = head.chars().count();
+    let positions: Vec<usize> = positions.iter().copied().filter(|p| *p < kept).collect();
+    div()
+        .row()
+        .child(highlighted_label(head, &positions, size))
+        .child(label("...").size(size).color(theme().text))
+        .into()
 }
 
 /// A row's height in design px: a label line plus the item padding.
@@ -936,7 +1240,7 @@ fn row_height() -> f32 {
 }
 
 /// The name with matched chars in the accent color.
-fn highlighted_label(text: &str, positions: &[usize]) -> Node {
+fn highlighted_label(text: &str, positions: &[usize], size: f32) -> Node {
     let colors = theme();
     let mut row = div().row();
     let mut run = String::new();
@@ -949,11 +1253,7 @@ fn highlighted_label(text: &str, positions: &[usize]) -> Node {
             } else {
                 colors.text
             };
-            row = row.child(
-                label(std::mem::take(&mut run))
-                    .label_size(LabelSize::Default)
-                    .color(color),
-            );
+            row = row.child(label(std::mem::take(&mut run)).size(size).color(color));
         }
         run_matched = matched;
         run.push(c);
@@ -964,7 +1264,7 @@ fn highlighted_label(text: &str, positions: &[usize]) -> Node {
         } else {
             colors.text
         };
-        row = row.child(label(run).label_size(LabelSize::Default).color(color));
+        row = row.child(label(run).size(size).color(color));
     }
     row.into()
 }
@@ -1077,5 +1377,89 @@ mod tests {
         palette.field.insert("d");
         palette.update_matches();
         assert_eq!(palette.selected(), 0);
+    }
+
+    fn switcher(labels: &[&str]) -> workspace::WorkspaceSwitcher {
+        let entries = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| workspace::SwitcherEntry {
+                row: workspace::WorkspaceRow {
+                    index,
+                    label: label.to_string(),
+                    branch: format!("{}-branch", label.replace(' ', "-")),
+                    agent: None,
+                    ticket: String::new(),
+                    ticket_category: String::new(),
+                    running: 0,
+                    pr: None,
+                    missing: Vec::new(),
+                },
+                section: (index == 0).then_some("Main"),
+                id: 500 + index as u64,
+            })
+            .collect();
+        workspace::WorkspaceSwitcher {
+            entries,
+            current: 0,
+            new_workspace: workspace::ExtraCommand {
+                name: "New workspace".into(),
+                keys: vec!["cmd-n".into()],
+                id: 7,
+            },
+        }
+    }
+
+    #[test]
+    fn a_long_workspace_name_is_cut_inside_the_picker() {
+        let long =
+            "Rate limit the public API and every internal endpoint behind the gateway with a \
+                    per-tenant budget";
+        let palette = CommandPalette::workspace_switcher(switcher(&[long, long]));
+        let painted = ui::render(
+            &palette.render(0),
+            ui::Rect::new(0.0, 0.0, WIDTH, 600.0, ui::Rgba::TRANSPARENT),
+        );
+        let titles: Vec<&ui::Text> = painted
+            .texts
+            .iter()
+            .filter(|text| {
+                long.starts_with(text.text.trim_end_matches("...")) || text.text == "..."
+            })
+            .collect();
+        assert!(
+            titles.iter().any(|text| text.text == "..."),
+            "the name is cut"
+        );
+        for text in painted.texts.iter() {
+            let right = text.x
+                + ui::measure_text_width(&text.text, text.size, text.font, text.weight)
+                    * text.scale;
+            assert!(right <= WIDTH, "{:?} ends at {right}", text.text);
+        }
+    }
+
+    #[test]
+    fn the_switcher_keeps_its_order_and_hands_back_the_picked_workspace() {
+        let mut memory = PaletteMemory::default();
+        let mut palette = CommandPalette::workspace_switcher(switcher(&["zeta", "alpha", "mid"]));
+        let order: Vec<usize> = palette.matches().iter().map(|m| m.candidate).collect();
+        assert_eq!(order, [0, 1, 2], "no alphabetical or usage sort");
+        palette.select_next(&mut memory);
+        assert_eq!(
+            palette.confirm(&mut memory),
+            Some(PaletteAction::External(501))
+        );
+        palette.field.insert("mid-branch");
+        palette.update_matches();
+        assert_eq!(
+            palette.confirm(&mut memory),
+            Some(PaletteAction::External(502))
+        );
+        assert_eq!(palette.new_workspace_id(), Some(7));
+        assert!(
+            memory.usage.is_empty(),
+            "switching leaves the command ranking alone"
+        );
     }
 }

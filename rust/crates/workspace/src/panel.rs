@@ -1340,6 +1340,86 @@ fn workspace_row(
     item.into()
 }
 
+/// The workspace switcher's order: what needs you first (an agent waiting, then a PR in trouble), then main,
+/// then the rest under the sidebar's ticket groups in its order, folded groups included. Each entry names the
+/// section it opens, if it is the first of one.
+pub fn switcher_order<'r>(
+    rows: &'r [WorkspaceRow],
+    grouping: Option<&crate::Grouping>,
+) -> Vec<(Option<&'static str>, &'r WorkspaceRow)> {
+    let waiting = |row: &&WorkspaceRow| row.agent == Some(AgentDot::AwaitingInput);
+    let needs: Vec<&WorkspaceRow> = rows
+        .iter()
+        .filter(waiting)
+        .chain(
+            rows.iter()
+                .filter(|row| !waiting(row) && pr_trouble(row).is_some()),
+        )
+        .collect();
+    let rest = || {
+        rows.iter()
+            .filter(|row| !needs.iter().any(|need| need.index == row.index))
+    };
+    let default_grouping;
+    let grouping = match grouping {
+        Some(grouping) => grouping,
+        None => {
+            default_grouping = crate::Grouping::from_keys(&[], &[]);
+            &default_grouping
+        }
+    };
+    let mut sections: Vec<(&'static str, Vec<&WorkspaceRow>)> = vec![
+        ("Needs you", needs.clone()),
+        ("Main", rest().filter(|row| row.index == 0).collect()),
+    ];
+    for group in &grouping.order {
+        sections.push((
+            group.label(),
+            rest()
+                .filter(|row| {
+                    row.index != 0
+                        && crate::TicketGroup::of(&row.ticket, &row.ticket_category) == *group
+                })
+                .collect(),
+        ));
+    }
+    sections
+        .into_iter()
+        .flat_map(|(title, members)| {
+            members
+                .into_iter()
+                .enumerate()
+                .map(move |(position, row)| ((position == 0).then_some(title), row))
+        })
+        .collect()
+}
+
+/// A workspace's tile as the list draws it, for the switcher.
+pub fn switcher_tile(row: &WorkspaceRow, current: bool) -> Node {
+    workspace_tile(row, LIST_TILE, current, false, true).into()
+}
+
+/// A workspace's name as the list shows it, without a leading ticket key.
+pub fn switcher_title(row: &WorkspaceRow) -> String {
+    title(row, ticket_key(row).as_deref())
+}
+
+/// The one line the list puts under a workspace: the pill when its agent waits, else a phrase in its tone.
+pub fn switcher_status(row: &WorkspaceRow) -> Option<Node> {
+    let colors = theme();
+    if row.agent == Some(AgentDot::AwaitingInput) {
+        return Some(attention_pill("Waiting for you"));
+    }
+    if let Some((_, trouble)) = pr_trouble(row) {
+        return Some(headline(trouble.label().into(), colors.error));
+    }
+    if agent_working(row.agent) {
+        return Some(headline("Agent working".into(), colors.info));
+    }
+    (shown_pr(row).and_then(|pr| pr.trouble) == Some(crate::PrTrouble::Pending))
+        .then(|| headline("Checks running".into(), colors.warning))
+}
+
 /// A row's second line: one short phrase in its tone.
 fn headline(text: String, color: Rgba) -> Node {
     div()
@@ -2037,6 +2117,42 @@ mod tests {
             grouping.order.len(),
             TicketGroup::ALL.len(),
             "missing groups come back"
+        );
+    }
+
+    #[test]
+    fn the_switcher_lists_what_needs_you_first_then_main_then_the_groups_folded_or_not() {
+        let ticket = |index: usize, status: &str, category: &str| WorkspaceRow {
+            ticket: status.into(),
+            ticket_category: category.into(),
+            ..row(index, &format!("proj-{index}"), None)
+        };
+        let failing = crate::PrSummary {
+            count: 1,
+            severity: crate::PrSeverity::Danger,
+            trouble: Some(crate::PrTrouble::ChecksFailed),
+        };
+        let rows = [
+            row(0, "main", None),
+            WorkspaceRow {
+                pr: Some(failing),
+                ..ticket(1, "In Review", "indeterminate")
+            },
+            ticket(2, "Done", "done"),
+            row(3, "spike", Some(AgentDot::AwaitingInput)),
+            ticket(4, "In Progress", "indeterminate"),
+        ];
+        let grouping = crate::Grouping::from_keys(&["done".into()], &["done".into()]);
+        let shape: Vec<String> = switcher_order(&rows, Some(&grouping))
+            .into_iter()
+            .map(|(section, row)| match section {
+                Some(section) => format!("{section}:{}", row.index),
+                None => row.index.to_string(),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            ["Needs you:3", "1", "Main:0", "Done:2", "In progress:4"]
         );
     }
 

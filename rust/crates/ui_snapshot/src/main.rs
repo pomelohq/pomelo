@@ -24,6 +24,9 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "project-sidebar-window-folded" => (0, &[("MAINVIEW", "window"), ("RAIL", "1")]),
         // The strip over an agent someone else drives while a tool call waits, at the dock's width.
         "agents-strip" => (0, &[("AGENTSTRIP", "1")]),
+        // cmd-alt-o over the window boards' workspaces, alone at the picker's width; SWITCHER is the query.
+        "project-switcher" => (0, &[("SWITCHER", "")]),
+        "project-switcher-filtered" => (0, &[("SWITCHER", "rate")]),
         // One tab bar as every pane draws it: the agent dock's, and the design system's sample row.
         // A service tab's facts card, running, stopped and crashed, at the boards' card size.
         "services-running" => (0, &[("SERVICES", "api/server"), ("FACTS", "674")]),
@@ -1979,6 +1982,35 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Ok(query) = std::env::var("SWITCHER") {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let node = files_ui::workspace_switcher_preview(switcher_fixture(), &query);
+        let painted = ui::render(
+            &node,
+            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        r.render_frame(
+            ui::theme().background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if std::env::var("AGENTSTRIP").is_ok() {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
@@ -3541,6 +3573,49 @@ fn update_snapshot(which: &str) -> auto_update::Snapshot {
         dismissed: which == "dismissed",
         supported: true,
         last_checked: Some(std::time::SystemTime::UNIX_EPOCH),
+    }
+}
+
+/// The window boards' workspaces as cmd-alt-o lists them, with their agents, the login one current.
+fn switcher_fixture() -> workspace::WorkspaceSwitcher {
+    let project = window_project();
+    let agent = |branch: &str| match branch {
+        "proj-101-login-google" => Some(workspace::AgentDot::ToolUse),
+        "api-102-rate-limit" => Some(workspace::AgentDot::AwaitingInput),
+        "investigate-0917-5fwg" => Some(workspace::AgentDot::Thinking),
+        _ => None,
+    };
+    let rows: Vec<workspace::WorkspaceRow> = project
+        .workspaces
+        .iter()
+        .enumerate()
+        .map(|(index, branch)| workspace::WorkspaceRow {
+            index,
+            label: project.label(index).to_string(),
+            branch: branch.clone(),
+            agent: agent(branch),
+            ticket: project.tickets[index].clone(),
+            ticket_category: project.ticket_categories[index].clone(),
+            running: project.running[index],
+            pr: project.prs[index],
+            missing: Vec::new(),
+        })
+        .collect();
+    workspace::WorkspaceSwitcher {
+        entries: workspace::switcher_order(&rows, None)
+            .into_iter()
+            .map(|(section, row)| workspace::SwitcherEntry {
+                row: row.clone(),
+                section,
+                id: row.index as u64,
+            })
+            .collect(),
+        current: 1,
+        new_workspace: workspace::ExtraCommand {
+            name: "New workspace".into(),
+            keys: vec!["cmd-n".into()],
+            id: 0,
+        },
     }
 }
 
