@@ -199,6 +199,18 @@ struct Invocation {
     command: Command,
 }
 
+/// [`run`] on the process's own stdout and stderr.
+pub fn run_on_std(args: &[String], cwd: &Path) -> i32 {
+    let (mut out, mut err) = std_handles();
+    run(args, cwd, &mut out, &mut err)
+}
+
+/// Unlocked: a stage on another thread prints its warnings to stderr while the command streams, and a lock
+/// held for the whole command would leave that thread waiting forever.
+fn std_handles() -> (std::io::Stdout, std::io::Stderr) {
+    (std::io::stdout(), std::io::stderr())
+}
+
 /// Runs `args` (the program name first) as if typed in `cwd`; returns the exit code.
 pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let invocation = match parse(args.get(1..).unwrap_or_default()) {
@@ -1082,6 +1094,21 @@ fn ports(state: &StateDir, out: &mut dyn Write) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn another_thread_can_warn_while_the_command_holds_its_output() {
+        let (mut out, mut err) = std_handles();
+        writeln!(err, "streaming").ok();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            eprintln!("a warning from a stage thread");
+            done.send(()).ok();
+        });
+        assert!(finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok());
+        writeln!(out, "still streaming").ok();
+    }
 
     fn parsed(line: &str) -> Result<Invocation, String> {
         let args: Vec<String> = line.split_whitespace().map(str::to_string).collect();

@@ -8,7 +8,5 @@ fn main() {
         std::process::exit(code);
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let mut stdout = std::io::stdout().lock();
-    let mut stderr = std::io::stderr().lock();
-    std::process::exit(pom_cli::run(&args, &cwd, &mut stdout, &mut stderr));
+    std::process::exit(pom_cli::run_on_std(&args, &cwd));
 }

@@ -2304,7 +2304,7 @@ impl UiRenderer {
                 label: Some("ui-layer"),
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view: &self.msaa,
-                    resolve_target: Some(&view),
+                    resolve_target: None,
                     depth_slice: None,
                     ops: Operations {
                         load,
@@ -2350,6 +2350,32 @@ impl UiRenderer {
             }
             self.text_renderers[i].render(&self.atlas, &self.viewport, &mut pass)?;
         }
+        // Layers draw into the multisampled target and resolve once, rather than each pass resolving the frame.
+        encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("ui-resolve"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: &self.msaa,
+                resolve_target: Some(&view),
+                depth_slice: None,
+                ops: Operations {
+                    load: if layers.is_empty() {
+                        LoadOp::Clear(wgpu::Color {
+                            r: clear.r as f64,
+                            g: clear.g as f64,
+                            b: clear.b as f64,
+                            a: clear.a as f64,
+                        })
+                    } else {
+                        LoadOp::Load
+                    },
+                    store: StoreOp::Discard,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
         self.queue.submit(Some(encoder.finish()));
         if let Some(frame) = frame {
             self.queue.present(frame);
