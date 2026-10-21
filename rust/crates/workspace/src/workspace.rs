@@ -25,7 +25,8 @@ pub use form::{
 };
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
-    side_panel_kind, terminal_content, terminal_dock_body, AgentDot, AgentEmptyPanel, AgentFix,
+    side_panel_kind, switcher_order, switcher_status, switcher_tile, switcher_title,
+    terminal_content, terminal_dock_body, ticket_key, AgentDot, AgentEmptyPanel, AgentFix,
     DockPosition, PaletteEntry, PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView,
     TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
@@ -1997,6 +1998,23 @@ pub struct ExtraCommand {
     pub id: u64,
 }
 
+/// What cmd-alt-o lists: every workspace in the switcher's order, each with the section it opens and the id
+/// handed back when it is picked, plus the new-workspace command its footer offers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceSwitcher {
+    pub entries: Vec<SwitcherEntry>,
+    /// The `WorkspaceRow::index` of the workspace the window shows.
+    pub current: usize,
+    pub new_workspace: ExtraCommand,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwitcherEntry {
+    pub row: WorkspaceRow,
+    pub section: Option<&'static str>,
+    pub id: u64,
+}
+
 pub trait FunctionView: ItemInput + 'static {
     /// The window's own commands, listed in the command palette next to the editor's.
     fn set_extra_commands(&mut self, _commands: Vec<ExtraCommand>) {}
@@ -2004,6 +2022,8 @@ pub trait FunctionView: ItemInput + 'static {
     fn editor_metrics_changed(&mut self) {}
     /// Opens the palette with only `commands` (a switcher), showing `placeholder` in its query.
     fn open_command_list(&mut self, _commands: Vec<ExtraCommand>, _placeholder: &'static str) {}
+    /// Opens the palette as the workspace switcher.
+    fn open_workspace_switcher(&mut self, _switcher: WorkspaceSwitcher) {}
     /// The window command picked in the palette, once.
     fn take_extra_command(&mut self) -> Option<u64> {
         None

@@ -31,6 +31,7 @@ fn key_label(key: &str) -> String {
     match key {
         "pageup" => "PageUp".to_string(),
         "pagedown" => "PageDown".to_string(),
+        "escape" => "Esc".to_string(),
         key => {
             let mut chars = key.chars();
             chars.next().map_or_else(String::new, |first| {

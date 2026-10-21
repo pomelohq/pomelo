@@ -749,30 +749,13 @@ impl WorkspaceView {
                 return handled;
             }
             Action::SwitchWorkspace => {
-                let Some(project) = self.layout.project.as_ref() else {
+                let Some(switcher) = self.workspace_switcher() else {
                     return false;
                 };
-                let entries: Vec<crate::ExtraCommand> = project
-                    .workspaces
-                    .iter()
-                    .enumerate()
-                    .map(|(index, branch)| {
-                        let label = project.label(index);
-                        crate::ExtraCommand {
-                            name: if label == branch.as_str() {
-                                branch.clone()
-                            } else {
-                                format!("{label}  {branch}")
-                            },
-                            keys: Vec::new(),
-                            id: PALETTE_WORKSPACE_BASE + index as u64,
-                        }
-                    })
-                    .collect();
                 self.set_terminal_focus(false);
                 self.set_agent_focus(false);
                 match self.layout.files_view.as_mut() {
-                    Some(files) => files.open_command_list(entries, "Switch to workspace..."),
+                    Some(files) => files.open_workspace_switcher(switcher),
                     None => return false,
                 }
             }
@@ -888,6 +871,10 @@ impl WorkspaceView {
     pub fn open_window_modal(&mut self, modal: Box<dyn crate::WindowModal>) {
         self.menu = None;
         self.layout.session_menu = false;
+        // A picker such as the workspace switcher would sit under the modal, still taking keys.
+        if let Some(files) = self.layout.files_view.as_mut() {
+            files.dismiss_modal();
+        }
         self.window_modal = Some(modal);
     }
 
@@ -1583,6 +1570,87 @@ impl WorkspaceView {
         self.bindings = bindings;
     }
 
+    /// The WORKSPACES list's rows: every workspace not being created or deleted right now.
+    fn workspace_rows(&self) -> Vec<crate::panel::WorkspaceRow> {
+        let busy: Vec<&str> = self
+            .workspace_ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.status,
+                    crate::OpStatus::Queued | crate::OpStatus::Running
+                )
+            })
+            .map(|op| op.branch.as_str())
+            .collect();
+        self.layout
+            .project
+            .iter()
+            .flat_map(|project| {
+                project
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, branch)| (project, index, branch))
+            })
+            .filter(|(_, _, branch)| !busy.contains(&branch.as_str()))
+            .map(|(project, index, branch)| crate::panel::WorkspaceRow {
+                index,
+                label: project.label(index).to_string(),
+                branch: branch.clone(),
+                agent: self.layout.agent_states.get(branch).copied(),
+                ticket: project.tickets.get(index).cloned().unwrap_or_default(),
+                ticket_category: project
+                    .ticket_categories
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_default(),
+                running: project.running.get(index).copied().unwrap_or(0),
+                pr: project.prs.get(index).copied().flatten(),
+                missing: project.missing.get(index).cloned().unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    fn shown_workspace(&self) -> usize {
+        self.layout
+            .project
+            .as_ref()
+            .and_then(|project| project.workspaces.iter().position(|b| *b == project.active))
+            .unwrap_or(0)
+    }
+
+    fn workspace_switcher(&self) -> Option<crate::WorkspaceSwitcher> {
+        use crate::keymap::Action;
+        self.layout.project.as_ref()?;
+        let rows = self.workspace_rows();
+        let entries = crate::panel::switcher_order(&rows, self.grouping.as_ref())
+            .into_iter()
+            .map(|(section, row)| crate::SwitcherEntry {
+                row: row.clone(),
+                section,
+                id: PALETTE_WORKSPACE_BASE + row.index as u64,
+            })
+            .collect();
+        let new_index = Action::ALL
+            .iter()
+            .position(|a| *a == Action::NewWorkspace)?;
+        Some(crate::WorkspaceSwitcher {
+            entries,
+            current: self.shown_workspace(),
+            new_workspace: crate::ExtraCommand {
+                name: "New workspace".into(),
+                keys: self
+                    .bindings
+                    .iter()
+                    .find(|(bound, _)| *bound == Action::NewWorkspace)
+                    .map(|(_, keys)| vec![keys.clone()])
+                    .unwrap_or_default(),
+                id: PALETTE_ACTION_BASE + new_index as u64,
+            },
+        })
+    }
+
     /// The window's commands for the palette: its actions, then what each side panel offers.
     fn palette_commands(&self) -> Vec<crate::ExtraCommand> {
         use crate::keymap::Action;
@@ -1994,51 +2062,8 @@ impl WorkspaceView {
                 )),
             }
         }
-        let busy: Vec<&str> = self
-            .workspace_ops
-            .iter()
-            .filter(|op| {
-                matches!(
-                    op.status,
-                    crate::OpStatus::Queued | crate::OpStatus::Running
-                )
-            })
-            .map(|op| op.branch.as_str())
-            .collect();
-        let workspaces: Vec<crate::panel::WorkspaceRow> = self
-            .layout
-            .project
-            .iter()
-            .flat_map(|project| {
-                project
-                    .workspaces
-                    .iter()
-                    .enumerate()
-                    .map(move |(index, branch)| (project, index, branch))
-            })
-            .filter(|(_, _, branch)| !busy.contains(&branch.as_str()))
-            .map(|(project, index, branch)| crate::panel::WorkspaceRow {
-                index,
-                label: project.label(index).to_string(),
-                branch: branch.clone(),
-                agent: self.layout.agent_states.get(branch).copied(),
-                ticket: project.tickets.get(index).cloned().unwrap_or_default(),
-                ticket_category: project
-                    .ticket_categories
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_default(),
-                running: project.running.get(index).copied().unwrap_or(0),
-                pr: project.prs.get(index).copied().flatten(),
-                missing: project.missing.get(index).cloned().unwrap_or_default(),
-            })
-            .collect();
-        let current = self
-            .layout
-            .project
-            .as_ref()
-            .and_then(|project| project.workspaces.iter().position(|b| *b == project.active))
-            .unwrap_or(0);
+        let workspaces = self.workspace_rows();
+        let current = self.shown_workspace();
         let row_ghost = self
             .row_drag
             .filter(|_| self.dragging == Drag::WorkspaceRow)
