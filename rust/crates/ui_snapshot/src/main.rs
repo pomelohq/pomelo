@@ -49,6 +49,12 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "system-notifications-update" => (0, &[("NOTICE", "update-ready-button")]),
         "system-invalid-config" => (0, &[("NOTICE", "invalid-config")]),
         "system-update-progress" => (0, &[("NOTICE", "update-downloading")]),
+        // The welcome page alone at the editor area's size, the pointer on New project; WELCOME=docker
+        // has Docker stopped.
+        "project-welcome" => (0, &[("WELCOME", "ok")]),
+        "project-welcome-docker" => (0, &[("WELCOME", "docker")]),
+        "project-row-menu" => (0, &[("ROWMENU", "workspace")]),
+        "project-row-menu-main" => (0, &[("ROWMENU", "main")]),
         // The New project tab's page alone, at the size of the board's page; ONBOARDSCENE is its state.
         "system-onboarding-repos" => (0, &[("ONBOARDSCENE", "repos")]),
         "system-onboarding-setup" => (0, &[("ONBOARDSCENE", "setup")]),
@@ -2126,6 +2132,109 @@ fn main() -> anyhow::Result<()> {
                     None,
                 ),
             ],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(which) = std::env::var("ROWMENU") {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let main = which == "main";
+        let items = workspace::workspace_row_menu(workspace::RowMenuFacts {
+            ticket: !main,
+            running: true,
+            main,
+            missing: main,
+        });
+        let (card, _, _) = workspace::context_menu_card(&items, items.first().map(|item| item.id));
+        let painted = ui::render(
+            &card,
+            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        r.render_frame(
+            ui::theme().panel_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(which) = std::env::var("WELCOME") {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        workspace::keymap::set_key_hints(&[(
+            workspace::keymap::Action::OpenProject,
+            "cmd-o".into(),
+        )]);
+        let home = std::env::var("HOME").unwrap_or_default();
+        let sessions: Vec<workspace::Session> = ["myproject", "storefront", "billing"]
+            .into_iter()
+            .map(|name| workspace::Session {
+                name: name.into(),
+                path: std::path::PathBuf::from(format!("{home}/code/{name}")),
+                running: false,
+                missing: false,
+            })
+            .collect();
+        let docker = which != "docker";
+        let checks = vec![
+            workspace::MachineCheck {
+                name: "Docker".into(),
+                ok: docker,
+                detail: if docker {
+                    "Running".into()
+                } else {
+                    "Docker is not running. Shared services and databases start once it is.".into()
+                },
+                fix: (!docker).then(|| "Start Docker".to_string()),
+            },
+            workspace::MachineCheck {
+                name: "git".into(),
+                ok: true,
+                detail: "git version 2.50.1".into(),
+                fix: None,
+            },
+        ];
+        let page = workspace::welcome_page(
+            &sessions,
+            &checks,
+            lw,
+            Some(workspace::WELCOME_NEW_PROJECT_CARD),
+        );
+        let painted = ui::render(
+            &page,
+            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        r.render_frame(
+            ui::theme().editor_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
         )?;
         let (w, h, rgba) = r.read_rgba()?;
         let file = std::fs::File::create(&out)?;
