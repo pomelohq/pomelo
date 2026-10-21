@@ -1384,19 +1384,66 @@ fn rasterize_material(m: MaterialIcon, px: u32) -> Vec<u8> {
     out
 }
 
+#[cfg(target_os = "macos")]
+fn window_instance(_window: &Arc<WinitWindow>) -> Instance {
+    Instance::default()
+}
+
+/// GL presents to a Wayland or X11 window only through an instance made for that window's display.
+#[cfg(not(target_os = "macos"))]
+fn window_instance(window: &Arc<WinitWindow>) -> Instance {
+    Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(
+        Box::new(window.clone()),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn window_adapter(instance: &Instance, surface: &wgpu::Surface) -> Result<wgpu::Adapter> {
+    pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
+        compatible_surface: Some(surface),
+        ..Default::default()
+    }))
+    .map_err(|error| anyhow::anyhow!("no GPU adapter: {error}"))
+}
+
+/// A hardware adapter before a software one: in VMs Vulkan often offers only llvmpipe, which burns the CPU on
+/// every frame, while GL reaches the host GPU.
+#[cfg(not(target_os = "macos"))]
+fn window_adapter(instance: &Instance, surface: &wgpu::Surface) -> Result<wgpu::Adapter> {
+    let mut adapters: Vec<wgpu::Adapter> =
+        pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()))
+            .into_iter()
+            .filter(|adapter| adapter.is_surface_supported(surface))
+            .collect();
+    adapters.sort_by_key(|adapter| adapter.get_info().device_type == wgpu::DeviceType::Cpu);
+    adapters
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no GPU adapter can draw to the window"))
+}
+
+/// GL adapters cannot meet the default limits; ask only for what WebGL2-class hardware has.
+fn device_descriptor(adapter: &wgpu::Adapter) -> DeviceDescriptor<'static> {
+    if adapter.get_info().backend == wgpu::Backend::Gl {
+        DeviceDescriptor {
+            required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                .using_resolution(adapter.limits()),
+            ..Default::default()
+        }
+    } else {
+        DeviceDescriptor::default()
+    }
+}
+
 impl UiRenderer {
     pub fn new(window: Arc<WinitWindow>) -> Result<Self> {
         let size = window.inner_size();
         let scale = window.scale_factor() as f32;
-        let instance = Instance::default();
+        let instance = window_instance(&window);
         let surface = instance.create_surface(window.clone())?;
-        let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .map_err(|error| anyhow::anyhow!("no GPU adapter: {error}"))?;
+        let adapter = window_adapter(&instance, &surface)?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&DeviceDescriptor::default()))?;
+            pollster::block_on(adapter.request_device(&device_descriptor(&adapter)))?;
 
         let config = ui_config(size.width, size.height);
         surface.configure(&device, &config);
