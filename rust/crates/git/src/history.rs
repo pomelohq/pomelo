@@ -2,6 +2,7 @@
 //! its upstream not pulled yet, and the files one commit changed.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use time::{OffsetDateTime, UtcOffset};
 
@@ -150,13 +151,30 @@ pub fn patch(root: &Path, against: &str) -> Option<String> {
     )
 }
 
+/// Seconds since the epoch that stand for "now", or 0 for the real clock.
+static FROZEN_NOW: AtomicI64 = AtomicI64::new(0);
+
+/// Pins "now" to today's local noon and returns it, so relative times and day groups read the same whatever
+/// the hour a fixture is rendered at.
+pub fn freeze_now_at_local_noon() -> i64 {
+    let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let noon = OffsetDateTime::now_utc()
+        .to_offset(offset)
+        .replace_time(time::Time::MIDNIGHT)
+        + time::Duration::hours(12);
+    let timestamp = noon.unix_timestamp();
+    FROZEN_NOW.store(timestamp, Ordering::Relaxed);
+    timestamp
+}
+
 fn local(timestamp: i64) -> Option<(OffsetDateTime, OffsetDateTime)> {
     let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     let at = OffsetDateTime::from_unix_timestamp(timestamp).ok()?;
-    Some((
-        at.to_offset(offset),
-        OffsetDateTime::now_utc().to_offset(offset),
-    ))
+    let now = match FROZEN_NOW.load(Ordering::Relaxed) {
+        0 => OffsetDateTime::now_utc(),
+        frozen => OffsetDateTime::from_unix_timestamp(frozen).ok()?,
+    };
+    Some((at.to_offset(offset), now.to_offset(offset)))
 }
 
 pub fn relative_time(timestamp: i64) -> String {

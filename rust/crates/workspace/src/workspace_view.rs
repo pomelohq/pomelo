@@ -8351,7 +8351,7 @@ fn prompt_dialog(prompt: &crate::Prompt, active: usize, w: f32, h: f32) -> Paint
 /// so each blurred layer is a stack of rects growing across the blur width, the alpha split between them.
 const SHADOW_MAX_LAYERS: f32 = 48.0;
 
-fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
+pub fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
     let light = ui::theme().appearance == ui::Appearance::Light;
     let shadows: &[(f32, f32, f32)] = match (elevation, light) {
         (crate::Elevation::Elevated, true) => &[(2.0, 0.12, 3.0), (1.0, 0.03, 0.0)],
@@ -8368,6 +8368,8 @@ fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
             (6.0, 0.04, 12.0),
             (1.0, 0.12, 0.0),
         ],
+        (crate::Elevation::Overlay, true) => &[(12.0, 0.16, 16.0)],
+        (crate::Elevation::Overlay, false) => &[(12.0, 0.5, 16.0)],
     };
     let layers: Vec<(f32, f32, f32, f32)> = shadows
         .iter()

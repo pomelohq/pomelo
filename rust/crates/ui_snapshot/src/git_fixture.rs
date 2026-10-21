@@ -134,10 +134,7 @@ impl Repo {
     fn git(&self, args: &[&str]) -> anyhow::Result<()> {
         let date = match self.ago {
             Some(ago) => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|elapsed| elapsed.as_secs())
-                    .unwrap_or_default();
+                let now = git::history::freeze_now_at_local_noon().max(0) as u64;
                 format!("@{} +0000", now.saturating_sub(ago))
             }
             None => format!("2026-10-{:02}T10:00:00", 10 + self.clock),

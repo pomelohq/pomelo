@@ -3,9 +3,11 @@ use std::rc::Rc;
 
 use pom_proxy::{Delivery, Payload, ProxyLogEntry, RequestKind};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, label, theme, ButtonStyle, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{segmented, EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{
+    small_button, toggle_button_group, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome,
+};
 
 pub const TAB_ID: &str = "dev-requests";
 
@@ -17,9 +19,12 @@ const KIND_BASE: u64 = 10;
 const STATUS_BASE: u64 = 20;
 const TAB_BASE: u64 = 30;
 const ROW_BASE: u64 = 1_000;
-const SIDE_W: f32 = 440.0;
-const LIST_MIN_W: f32 = 420.0;
-const TOOLBAR_H: f32 = 40.0;
+const LIST_SHARE: f32 = 1.4 / 2.4;
+const TOOLBAR_H: f32 = 46.0;
+const CARD_INSET: f32 = 8.0;
+const CARD_GAP: f32 = 6.0;
+const FOOT_H: f32 = 36.0;
+const DETAIL_PAD: f32 = 14.0;
 const BODY_LINES_SHOWN: usize = 300;
 const MASK: &str = "********";
 
@@ -288,7 +293,7 @@ fn json_runs(line: &str) -> Vec<(&str, &'static str)> {
 
 /// A body line colored like the editor colors JSON.
 fn json_line(line: &str, syntax: &editor::Theme) -> Node {
-    let mut row = div().row().items_center();
+    let mut row = div().row().items_center().h_px(16.0);
     for (text, capture) in json_runs(line) {
         let color = if capture.is_empty() {
             syntax.foreground
@@ -369,15 +374,7 @@ fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
     label(text.into()).label_size(LabelSize::Small).color(color)
 }
 
-fn cell(text: impl Into<String>, width: f32, color: Rgba) -> Node {
-    div()
-        .row()
-        .w_px(width)
-        .child(small(text, color).truncate())
-        .into()
-}
-
-fn server_dot(server: &ServerStatus, served_elsewhere: bool) -> Node {
+fn server_dot(name: &str, server: &ServerStatus, served_elsewhere: bool) -> Node {
     let colors = theme();
     let color = if !server.enabled {
         colors.text_disabled
@@ -389,9 +386,9 @@ fn server_dot(server: &ServerStatus, served_elsewhere: bool) -> Node {
     div()
         .row()
         .items_center()
-        .gap(5.0)
+        .gap(6.0)
         .child(div().w_px(7.0).h_px(7.0).rounded(3.5).bg(color))
-        .child(small(format!(":{}", server.port), colors.text_muted).mono())
+        .child(small(format!("{name} :{}", server.port), colors.text_muted))
         .into()
 }
 
@@ -403,70 +400,102 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         KindFilter::Webhook => 2,
     };
     let border = if state.filter_focused {
-        colors.text_accent
-    } else if hovered == Some(FILTER) {
-        colors.border
+        colors.border_focused
     } else {
-        colors.border_variant
+        colors.border
     };
-    let field = div()
+    let mut field = div()
         .row()
         .items_center()
-        .w_px(200.0)
-        .h_px(26.0)
-        .px(8.0)
-        .rounded(5.0)
+        .gap(8.0)
+        .w_px(240.0)
+        .h_px(30.0)
+        .px(10.0)
+        .rounded(6.0)
         .border(1.0, border)
-        .bg(colors.element_background)
+        .bg(colors.editor_background)
         .on_click(FILTER)
-        .child(state.filter.render(
-            "Filter path or service",
-            state.filter_focused,
-            colors.text,
-            24.0,
-            FieldFont::Ui,
-        ));
+        .child(
+            icon(IconKind::Filter)
+                .size(14.0)
+                .color(colors.text_placeholder),
+        )
+        .child(
+            div()
+                .row()
+                .flex(1.0)
+                .items_center()
+                .child(state.filter.render(
+                    "Filter path or service",
+                    state.filter_focused,
+                    colors.text,
+                    20.0,
+                    FieldFont::Ui,
+                )),
+        );
+    if state.filter_focused {
+        field = field.ring(3.0, colors.overlay_selected);
+    }
     let mut bar = div()
         .row()
         .items_center()
-        .gap(10.0)
-        .px(12.0)
+        .gap(8.0)
+        .px(CARD_INSET)
         .h_px(TOOLBAR_H)
-        .bg(colors.panel_background)
-        .child(segmented(
+        .child(toggle_button_group(
             &[
-                (KIND_BASE, "All"),
-                (KIND_BASE + 1, "Proxy"),
-                (KIND_BASE + 2, "Webhooks"),
+                (KIND_BASE, None, "All"),
+                (KIND_BASE + 1, None, "Proxy"),
+                (KIND_BASE + 2, None, "Webhooks"),
             ],
             kind,
-            hovered,
         ))
-        .child(segmented(
-            &[(STATUS_BASE, "Any Status"), (STATUS_BASE + 1, "Errors")],
+        .child(toggle_button_group(
+            &[
+                (STATUS_BASE, None, "Any Status"),
+                (STATUS_BASE + 1, None, "Errors"),
+            ],
             usize::from(state.errors_only),
-            hovered,
         ))
         .child(field)
         .child(div().flex(1.0))
-        .child(server_dot(&state.proxy, state.served_elsewhere))
-        .child(server_dot(&state.webhook, state.served_elsewhere));
+        .child(
+            div()
+                .row()
+                .items_center()
+                .gap(12.0)
+                .child(server_dot("proxy", &state.proxy, state.served_elsewhere))
+                .child(server_dot(
+                    "webhooks",
+                    &state.webhook,
+                    state.served_elsewhere,
+                )),
+        );
     if !state.served_elsewhere {
-        bar = bar.child(ui::button(RESTART, "Restart", ButtonStyle::Subtle));
+        bar = bar.child(small_button(
+            RESTART,
+            Some(IconKind::RotateCw),
+            "Restart",
+            None,
+            ButtonKind::Ghost,
+            true,
+            hovered,
+        ));
     }
     bar.into()
 }
 
-fn kind_label(kind: RequestKind) -> Node {
+fn kind_text(kind: RequestKind) -> ui::Label {
     let colors = theme();
     match kind {
-        RequestKind::Proxy => cell("PROXY", 62.0, colors.text_placeholder),
-        RequestKind::Webhook => cell("WEBHOOK", 62.0, colors.hint),
+        RequestKind::Proxy => small("PROXY", colors.text_placeholder).mono(),
+        RequestKind::Webhook => small("WEBHOOK", colors.info).mono(),
     }
 }
 
 fn row(entry: &ProxyLogEntry, hovered: bool, selected: bool) -> Node {
     let colors = theme();
+    let fixed = |width: f32, text: ui::Label| div().row().w_px(width).child(text.truncate());
     let mut line = div()
         .row()
         .items_center()
@@ -474,29 +503,26 @@ fn row(entry: &ProxyLogEntry, hovered: bool, selected: bool) -> Node {
         .px(12.0)
         .h_px(30.0)
         .on_click(ROW_BASE + entry.seq)
-        .child(
-            div()
-                .row()
-                .w_px(64.0)
-                .child(small(entry.time.clone(), colors.text_muted).mono()),
-        )
-        .child(kind_label(entry.kind))
-        .child(cell(entry.method.clone(), 46.0, colors.text))
+        .child(fixed(
+            62.0,
+            small(entry.time.clone(), colors.text_muted).mono(),
+        ))
+        .child(fixed(62.0, kind_text(entry.kind)))
+        .child(fixed(40.0, small(entry.method.clone(), colors.text)))
         .child(
             div()
                 .row()
                 .flex(1.0)
                 .child(small(entry.path.clone(), colors.text).mono().truncate()),
         )
-        .child(cell(
-            entry.status.to_string(),
+        .child(fixed(
             34.0,
-            status_color(entry.status),
+            small(entry.status.to_string(), status_color(entry.status)).mono(),
         ))
         .child(
             div()
                 .row()
-                .w_px(54.0)
+                .w_px(46.0)
                 .justify_end()
                 .child(small(format!("{} ms", entry.ms), colors.text_muted)),
         );
@@ -513,9 +539,6 @@ fn list(state: &DevRequestsState, hovered: Option<u64>) -> Node {
     let mut column = div().col();
     let mut any = false;
     for entry in state.visible() {
-        if any {
-            column = column.child(div().h_px(1.0).bg(colors.border_variant));
-        }
         any = true;
         column = column.child(row(
             entry,
@@ -532,10 +555,21 @@ fn list(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         column = column.child(
             div()
                 .col()
-                .gap(4.0)
-                .p(16.0)
-                .child(label("No requests").color(colors.text))
-                .child(small(hint, colors.text_muted)),
+                .items_center()
+                .gap(8.0)
+                .pt(60.0)
+                .child(
+                    icon(IconKind::ArrowUpRight)
+                        .size(20.0)
+                        .color(colors.text_placeholder),
+                )
+                .child(
+                    label("No requests")
+                        .size(13.0)
+                        .medium()
+                        .color(colors.text_placeholder),
+                )
+                .child(centered_lines(hint, 360.0)),
         );
     }
     column.into()
@@ -548,48 +582,92 @@ fn section_title(text: &str) -> ui::Label {
         .color(theme().text_placeholder)
 }
 
-fn key_value(name: &str, value: impl Into<String>, color: Rgba) -> Node {
+fn key_value(name: ui::Label, value: ui::Label) -> Node {
     div()
         .row()
-        .gap(10.0)
-        .child(cell(name, 96.0, theme().text_placeholder))
-        .child(div().row().flex(1.0).child(small(value, color).truncate()))
+        .items_center()
+        .h_px(16.0)
+        .gap(12.0)
+        .child(div().row().w_px(96.0).child(name.truncate()))
+        .child(div().row().flex(1.0).child(value.truncate()))
         .into()
+}
+
+fn fact(name: &str, value: impl Into<String>, color: Rgba) -> Node {
+    key_value(small(name, theme().text_muted), small(value, color))
+}
+
+fn centered_lines(text: &str, width: f32) -> Node {
+    let colors = theme();
+    let fits = |candidate: &str| {
+        ui::measure_text_width(candidate, 12.0, false, ui::ui_font_weight()) / ui::ui_text_scale()
+            <= width
+    };
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if fits(&format!("{line} {word}")) => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    let mut column = div().col().w_px(width);
+    for line in lines {
+        column = column.child(
+            div()
+                .row()
+                .h_px(16.0)
+                .items_center()
+                .justify_center()
+                .child(small(line, colors.text_muted)),
+        );
+    }
+    column.into()
+}
+
+fn key_values(rows: Vec<Node>) -> Node {
+    let mut column = div().col().gap(6.0).px(DETAIL_PAD).py(6.0);
+    for row in rows {
+        column = column.child(row);
+    }
+    column.into()
+}
+
+fn section_head(title: Node, action: Option<Node>) -> Node {
+    let mut head = div()
+        .row()
+        .items_center()
+        .pl(DETAIL_PAD)
+        .pr(8.0)
+        .pt(8.0)
+        .h_px(32.0)
+        .child(div().row().flex(1.0).items_center().gap(8.0).child(title));
+    if let Some(action) = action {
+        head = head.child(action);
+    }
+    head.into()
 }
 
 fn headers_block(headers: &[(String, String)], revealed: bool) -> Node {
     let colors = theme();
-    let mut column = div().col().gap(3.0);
     if headers.is_empty() {
-        return column.child(small("No headers", colors.text_muted)).into();
+        return key_values(vec![small("No headers", colors.text_muted).into()]);
     }
-    for (name, value) in headers {
-        let masked = sensitive(name) && !revealed;
-        let (shown, color) = if masked {
-            (MASK.to_string(), colors.text_placeholder)
-        } else {
-            (value.clone(), colors.text)
-        };
-        column = column.child(
-            div()
-                .row()
-                .gap(10.0)
-                .child(
-                    div().row().w_px(150.0).child(
-                        small(name.clone(), colors.text_placeholder)
-                            .mono()
-                            .truncate(),
-                    ),
-                )
-                .child(
-                    div()
-                        .row()
-                        .flex(1.0)
-                        .child(small(shown, color).mono().truncate()),
-                ),
-        );
-    }
-    column.into()
+    let rows = headers
+        .iter()
+        .map(|(name, value)| {
+            let masked = sensitive(name) && !revealed;
+            let shown = if masked {
+                small(MASK, colors.text_placeholder)
+            } else {
+                small(value.clone(), colors.text)
+            };
+            key_value(small(name.clone(), colors.text_muted).mono(), shown.mono())
+        })
+        .collect();
+    key_values(rows)
 }
 
 fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u64>) -> Node {
@@ -613,32 +691,45 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
         Some((_, kind)) => format!("{kind} - {}", format_bytes(payload.total)),
         None => format!("Binary - {}", format_bytes(payload.total)),
     };
-    let mut head = div()
+    let copy = shown
+        .as_ref()
+        .is_some_and(|(text, _)| !text.is_empty())
+        .then(|| {
+            small_button(
+                COPY_BODY,
+                Some(IconKind::Copy),
+                "Copy",
+                None,
+                ButtonKind::Ghost,
+                true,
+                hovered,
+            )
+        });
+    let title = div()
         .row()
         .items_center()
         .gap(8.0)
         .child(section_title("Body"))
         .child(small(meta, colors.text_placeholder))
-        .child(div().flex(1.0));
-    if shown.as_ref().is_some_and(|(text, _)| !text.is_empty()) {
-        let mut copy = ui::button(COPY_BODY, "Copy", ButtonStyle::Subtle);
-        if hovered == Some(COPY_BODY) {
-            copy = copy.bg(colors.ghost_element_hover);
-        }
-        head = head.child(copy);
-    }
-    let mut column = div().col().gap(6.0).child(head);
+        .into();
+    let mut column = div().col().child(section_head(title, copy));
     for note in notes {
-        column = column.child(small(note, colors.text_muted));
+        column = column.child(
+            div()
+                .row()
+                .px(DETAIL_PAD)
+                .pt(4.0)
+                .child(small(note, colors.text_muted)),
+        );
     }
     if let Some((text, kind)) = shown.filter(|(text, _)| !text.is_empty()) {
         let syntax = (kind == "JSON").then(workspace::syntax_theme);
         let mut code = div()
             .col()
-            .p(10.0)
-            .rounded(6.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.panel_background);
+            .px(12.0)
+            .py(10.0)
+            .rounded(4.0)
+            .bg(colors.editor_background);
         let lines: Vec<&str> = text.lines().collect();
         for line in lines.iter().take(BODY_LINES_SHOWN) {
             code = code.child(match &syntax {
@@ -658,7 +749,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
                 colors.text_placeholder,
             ));
         }
-        column = column.child(code);
+        column = column.child(div().col().px(DETAIL_PAD).py(6.0).child(code));
     }
     column.into()
 }
@@ -742,90 +833,90 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
     } else {
         (entry.status.to_string(), status_color(entry.status))
     };
-    let mut column = div()
-        .col()
-        .gap(12.0)
-        .p(16.0)
-        .child(
-            div()
-                .row()
-                .items_center()
-                .gap(8.0)
-                .child(kind_label(entry.kind))
-                .child(
-                    div().row().flex(1.0).child(
-                        small(format!("{} {}", entry.method, entry.path), colors.text)
-                            .mono()
-                            .truncate(),
-                    ),
-                )
-                .child(small(result, result_color)),
-        )
-        .child(
-            div()
-                .col()
-                .gap(4.0)
-                .child(key_value(
-                    "Service",
-                    format!("{}/{}", entry.repo, entry.service),
-                    colors.text,
-                ))
-                .child(key_value(
-                    "Received",
-                    format!("{} - {} ms", entry.time, entry.ms),
-                    colors.text,
-                )),
-        );
+    let mut facts = vec![
+        fact(
+            "Service",
+            format!("{}/{}", entry.repo, entry.service),
+            colors.text,
+        ),
+        fact(
+            "Received",
+            format!("{} - {} ms", entry.time, entry.ms),
+            colors.text,
+        ),
+    ];
     if !webhook {
-        column = column.child(
-            div()
-                .col()
-                .gap(4.0)
-                .child(key_value(
-                    "Profile",
-                    entry.profile.clone(),
-                    colors.text_muted,
-                ))
-                .child(key_value("Target", entry.target.clone(), colors.text_muted)),
-        );
+        facts.push(fact("Profile", entry.profile.clone(), colors.text_muted));
+        facts.push(fact("Target", entry.target.clone(), colors.text_muted));
     }
+    let mut column = div().col().child(
+        div()
+            .col()
+            .gap(10.0)
+            .px(DETAIL_PAD)
+            .pt(14.0)
+            .pb(6.0)
+            .child(
+                div()
+                    .row()
+                    .items_center()
+                    .h_px(16.0)
+                    .gap(8.0)
+                    .child(kind_text(entry.kind))
+                    .child(
+                        div().row().flex(1.0).child(
+                            small(format!("{} {}", entry.method, entry.path), colors.text)
+                                .mono()
+                                .truncate(),
+                        ),
+                    )
+                    .child(small(result, result_color)),
+            )
+            .child(div().col().gap(6.0).py(6.0).children(facts)),
+    );
     let tab = if !webhook && state.tab == DetailTab::FanOut {
         DetailTab::Request
     } else {
         state.tab
     };
-    let mut strip = div().row().gap(2.0);
+    let mut strip = div().row().gap(14.0);
     for (index, (kind, text)) in tabs_for(entry).iter().enumerate() {
         let id = TAB_BASE + index as u64;
         let on = *kind == tab;
-        let mut part = div()
-            .col()
-            .gap(4.0)
-            .pt(4.0)
-            .px(8.0)
-            .on_click(id)
-            .child(small(
-                text.clone(),
-                if on { colors.text } else { colors.text_muted },
-            ))
-            .child(div().h_px(2.0).bg(if on {
-                colors.text_accent
-            } else {
-                Rgba::TRANSPARENT
-            }));
-        if hovered == Some(id) && !on {
-            part = part.bg(colors.ghost_element_hover);
-        }
-        strip = strip.child(part);
+        let ink = if on || hovered == Some(id) {
+            colors.text
+        } else {
+            colors.text_muted
+        };
+        strip = strip.child(
+            div()
+                .col()
+                .on_click(id)
+                .child(
+                    div()
+                        .row()
+                        .items_center()
+                        .px(2.0)
+                        .h_px(26.0)
+                        .child(small(text.clone(), ink)),
+                )
+                .child(div().h_px(2.0).bg(if on {
+                    colors.text_accent
+                } else {
+                    Rgba::TRANSPARENT
+                })),
+        );
     }
     column = column.child(
         div()
             .col()
+            .px(DETAIL_PAD)
+            .pt(4.0)
             .child(strip)
             .child(div().h_px(1.0).bg(colors.border_variant)),
     );
     if tab == DetailTab::FanOut {
-        let mut deliveries = div().col();
+        let mut deliveries = div().col().px(DETAIL_PAD).py(6.0);
         if entry.deliveries.is_empty() {
             deliveries = deliveries.child(small(
                 "No workspace was running the service when it arrived.",
@@ -843,26 +934,25 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
             &entry.request_headers
         };
         let masked = !state.revealed && headers.iter().any(|(name, _)| sensitive(name));
-        let mut title = div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .child(section_title("Headers"));
-        if masked {
-            title = title.child(div().flex(1.0)).child(ui::button(
+        let reveal = masked.then(|| {
+            small_button(
                 REVEAL,
+                None,
                 "Show Hidden",
-                ButtonStyle::Subtle,
-            ));
-        }
+                None,
+                ButtonKind::Ghost,
+                true,
+                hovered,
+            )
+        });
         column = column
-            .child(title)
+            .child(section_head(section_title("Headers").into(), reveal))
             .child(headers_block(headers, state.revealed));
         if tab == DetailTab::Response && webhook {
-            column = column.child(small(
+            column = column.child(div().row().px(DETAIL_PAD).child(small(
                 "What the relay answered the sender, before fanning out.",
                 colors.text_muted,
-            ));
+            )));
         }
         let loaded = state
             .payloads
@@ -878,14 +968,27 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
                 headers,
                 hovered,
             )),
-            None => column.child(small("Loading the body...", colors.text_muted)),
+            None => column.child(
+                div()
+                    .row()
+                    .px(DETAIL_PAD)
+                    .child(small("Loading the body...", colors.text_muted)),
+            ),
         };
     }
-    column
+    column.into()
+}
+
+fn side_foot() -> Node {
+    div()
+        .row()
+        .items_center()
+        .px(DETAIL_PAD)
+        .h_px(FOOT_H)
         .child(
             small(
                 "Kept in memory for this session only.",
-                colors.text_placeholder,
+                theme().text_placeholder,
             )
             .truncate(),
         )
@@ -1087,48 +1190,67 @@ impl Item for DevRequestsPage {
 
     fn paint_body(&mut self, body: Rect, _focused: bool) -> Option<ui::Painted> {
         let scale = ui::ui_text_scale();
-        let (bar, list_tree, side_tree) = {
+        let (bar, list_tree, side_tree, selected) = {
             let state = self.shared.borrow();
             (
                 toolbar(&state, self.hovered),
                 list(&state, self.hovered),
                 side(&state, self.hovered),
+                state.selected_entry().is_some(),
             )
         };
-        let side_w = (SIDE_W * scale).min((body.w - LIST_MIN_W * scale).max(body.w * 0.4));
-        let list_w = body.w - side_w;
         let bar_h = TOOLBAR_H * scale;
-        let below = body.y + bar_h + scale;
-        let rest = (body.h - bar_h - scale).max(0.0);
+        let inset = CARD_INSET * scale;
+        let gap = CARD_GAP * scale;
+        let top = body.y + bar_h;
+        let cards_h = (body.h - bar_h - inset).max(0.0);
+        let cards_w = (body.w - 2.0 * inset - gap).max(0.0);
+        let list_w = (cards_w * LIST_SHARE).round();
+        let side_x = body.x + inset + list_w + gap;
+        let side_w = cards_w - list_w;
         let mut painted = ui::render(
             &bar,
             Rect::new(body.x, body.y, body.w, bar_h, Rgba::TRANSPARENT),
         );
-        for rule in [
-            Rect::new(body.x, body.y + bar_h, body.w, scale, Rgba::TRANSPARENT),
-            Rect::new(body.x + list_w, below, scale, rest, Rgba::TRANSPARENT),
+        let card = || div().rounded(6.0).bg(theme().panel_background).into();
+        for area in [
+            Rect::new(body.x + inset, top, list_w, cards_h, Rgba::TRANSPARENT),
+            Rect::new(side_x, top, side_w, cards_h, Rgba::TRANSPARENT),
         ] {
-            merge(
-                &mut painted,
-                ui::render(&div().bg(theme().border_variant).into(), rule),
-            );
+            merge(&mut painted, ui::render(&card(), area));
         }
         let rows = self.list.paint(
             &list_tree,
-            Rect::new(body.x, below, list_w, rest, Rgba::TRANSPARENT),
+            Rect::new(body.x + inset, top, list_w, cards_h, Rgba::TRANSPARENT),
         );
         merge(&mut painted, rows);
+        let foot_h = if selected { FOOT_H * scale } else { 0.0 };
         let detail = self.side.paint(
             &side_tree,
             Rect::new(
-                body.x + list_w + scale,
-                below,
-                (side_w - scale).max(0.0),
-                rest,
+                side_x,
+                top,
+                side_w,
+                (cards_h - foot_h).max(0.0),
                 Rgba::TRANSPARENT,
             ),
         );
         merge(&mut painted, detail);
+        if selected {
+            merge(
+                &mut painted,
+                ui::render(
+                    &side_foot(),
+                    Rect::new(
+                        side_x,
+                        top + cards_h - foot_h,
+                        side_w,
+                        foot_h,
+                        Rgba::TRANSPARENT,
+                    ),
+                ),
+            );
+        }
         self.hits = painted.hits.clone();
         Some(painted)
     }
@@ -1326,6 +1448,132 @@ pub fn preview_page() -> DevRequestsPage {
             payload(body),
             payload(br#"{"ok":true,"service":"api/server","fanout":2}"#),
         )),
+        ..DevRequestsState::default()
+    };
+    DevRequestsPage::new(Rc::new(RefCell::new(state)))
+}
+
+pub fn board_page(with_requests: bool) -> DevRequestsPage {
+    let header = |name: &str, value: &str| (name.to_string(), value.to_string());
+    let entry = |seq: u64,
+                 time: &str,
+                 kind: RequestKind,
+                 method: &str,
+                 path: &str,
+                 status: u16,
+                 ms: u64| {
+        ProxyLogEntry {
+            seq,
+            kind,
+            time: time.into(),
+            method: method.into(),
+            path: path.into(),
+            repo: "api".into(),
+            service: "server".into(),
+            profile: "local".into(),
+            target: "127.0.0.1:3000".into(),
+            status,
+            ms,
+            ..ProxyLogEntry::default()
+        }
+    };
+    let mut sessions = entry(
+        6,
+        "15:40:19",
+        RequestKind::Proxy,
+        "POST",
+        "/_pom_dev/api/server/v1/sessions",
+        401,
+        9,
+    );
+    sessions.target = "http://server.api.feat-login.localhost:8767/v1/sessions".into();
+    sessions.request_headers = vec![
+        header("content-type", "application/json"),
+        header("origin", "http://app.web.feat-login.localhost:8767"),
+        header("cookie", "_myproject_session=abc123"),
+    ];
+    let body = br#"{"email":"dev@example.com","password":"********"}"#;
+    let payload = |bytes: &[u8]| Payload {
+        bytes: bytes.to_vec(),
+        total: bytes.len() as u64,
+        complete: true,
+        evicted: false,
+    };
+    let entries = if with_requests {
+        vec![
+            entry(
+                7,
+                "15:40:24",
+                RequestKind::Proxy,
+                "GET",
+                "/_pom_dev/api/server/v1/users/42",
+                200,
+                6,
+            ),
+            sessions,
+            entry(
+                5,
+                "15:40:11",
+                RequestKind::Proxy,
+                "GET",
+                "/_pom_dev/api/server/v1/users?page=2",
+                200,
+                12,
+            ),
+            entry(
+                4,
+                "15:39:58",
+                RequestKind::Webhook,
+                "POST",
+                "/hooks/payments",
+                200,
+                15,
+            ),
+            entry(
+                3,
+                "15:39:40",
+                RequestKind::Proxy,
+                "GET",
+                "/_pom_dev/web/app/assets/main.js",
+                200,
+                18,
+            ),
+            entry(
+                2,
+                "15:39:02",
+                RequestKind::Webhook,
+                "POST",
+                "/hooks/payments",
+                202,
+                21,
+            ),
+            entry(
+                1,
+                "15:38:51",
+                RequestKind::Proxy,
+                "GET",
+                "/_pom_dev/api/server/health",
+                503,
+                24,
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
+    let state = DevRequestsState {
+        proxy: ServerStatus {
+            enabled: true,
+            running: true,
+            port: 8767,
+        },
+        webhook: ServerStatus {
+            enabled: true,
+            running: true,
+            port: 8766,
+        },
+        entries,
+        selected: with_requests.then_some(6),
+        payloads: with_requests.then(|| (6, payload(body), payload(b""))),
         ..DevRequestsState::default()
     };
     DevRequestsPage::new(Rc::new(RefCell::new(state)))
