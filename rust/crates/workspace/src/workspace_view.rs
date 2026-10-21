@@ -8194,7 +8194,7 @@ fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
             .child(glyph)
             .child(title);
         if switcher.nav.selected == Some(row) {
-            line = line.bg(colors.element_selected);
+            line = line.bg(colors.overlay_selected);
         } else if hovered == Some(id) {
             line = line.bg(colors.element_hover);
         }

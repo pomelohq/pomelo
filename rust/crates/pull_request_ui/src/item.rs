@@ -124,6 +124,7 @@ impl PrItem {
             review: TextArea::default(),
         };
         item.review.set_font_size(12.0);
+        item.review.set_ui_font();
         item.load();
         item
     }

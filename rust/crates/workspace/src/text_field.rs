@@ -217,6 +217,7 @@ pub struct TextArea {
     laid_out_version: Option<u64>,
     scroll_row: usize,
     visible_rows: usize,
+    mono: bool,
 }
 
 impl Default for TextArea {
@@ -232,6 +233,7 @@ impl Default for TextArea {
             laid_out_version: None,
             scroll_row: 0,
             visible_rows: 1,
+            mono: true,
         }
     }
 }
@@ -317,6 +319,27 @@ impl TextArea {
         self.laid_out_version = None;
     }
 
+    pub fn set_ui_font(&mut self) {
+        self.mono = false;
+        self.laid_out_version = None;
+    }
+
+    fn weight(&self) -> u16 {
+        if self.mono {
+            400
+        } else {
+            ui::ui_font_weight()
+        }
+    }
+
+    fn styled(&self, text: ui::Label) -> ui::Label {
+        if self.mono {
+            text.mono()
+        } else {
+            text
+        }
+    }
+
     /// Colors the text as code, with line numbers beside it.
     pub fn set_code(&mut self, highlighter: Option<Highlighter>) {
         self.highlighter = highlighter;
@@ -361,7 +384,12 @@ impl TextArea {
     }
 
     pub fn line_height(&self) -> f32 {
-        self.font_size * FieldFont::Mono.line_height()
+        let font = if self.mono {
+            FieldFont::Mono
+        } else {
+            FieldFont::Ui
+        };
+        self.font_size * font.line_height()
     }
 
     pub fn selected_text(&self) -> Option<String> {
@@ -389,7 +417,8 @@ impl TextArea {
                 .chars()
                 .filter(|c| *c != '\n' && *c != '\r')
                 .collect();
-            let (glyphs, advance) = ui::measure_glyphs(&text, self.font_size, true, 400);
+            let (glyphs, advance) =
+                ui::measure_glyphs(&text, self.font_size, self.mono, self.weight());
             let mut xs = Vec::with_capacity(text.chars().count() + 1);
             let mut glyph = 0;
             let mut x = 0.0;
@@ -550,9 +579,8 @@ impl TextArea {
                 .items_center()
                 .child(caret(show_caret))
                 .child(
-                    label(placeholder.to_string())
+                    self.styled(label(placeholder.to_string()))
                         .size(size)
-                        .mono()
                         .color(theme().text_placeholder),
                 );
             return column.child(placeholder_row).into();
@@ -638,9 +666,8 @@ impl TextArea {
                         run_end += 1;
                     }
                     runs = runs.child(
-                        label(piece(run_start, run_end))
+                        self.styled(label(piece(run_start, run_end)))
                             .size(size)
-                            .mono()
                             .color(capture_color(capture)),
                     );
                     run_start = run_end;

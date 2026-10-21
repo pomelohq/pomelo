@@ -1,9 +1,11 @@
 //! Scratch repositories holding the files the Git boards show, put in the state a board draws.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-const ROOT: &str = "/tmp/pomelo-qa-fixture/git";
+fn root() -> PathBuf {
+    crate::fixture_dir().join("git")
+}
 
 const CONTROLLER: &str = "class UsersController < ApplicationController
   before_action :authenticate_user!
@@ -119,7 +121,7 @@ struct Repo {
 
 impl Repo {
     fn create(name: &str) -> anyhow::Result<Repo> {
-        let root = Path::new(ROOT).join(name);
+        let root = root().join(name);
         std::fs::create_dir_all(&root)?;
         let repo = Repo {
             root,
@@ -184,7 +186,8 @@ impl Repo {
 
 /// Writes the api and web repositories on feat-login in `state` and returns their roots.
 pub fn create(state: State) -> anyhow::Result<Vec<PathBuf>> {
-    let root = Path::new(ROOT);
+    let root = root();
+    let root = root.as_path();
     if root.exists() {
         std::fs::remove_dir_all(root)?;
     }
@@ -279,7 +282,7 @@ impl RemoteState {
 
 /// A bare origin next to the scratch repos, with `repo`'s branches pushed to it.
 fn origin(repo: &Repo, name: &str) -> anyhow::Result<PathBuf> {
-    let bare = Path::new(ROOT).join("origin").join(format!("{name}.git"));
+    let bare = root().join("origin").join(format!("{name}.git"));
     std::fs::create_dir_all(&bare)?;
     let status = Command::new("git")
         .args(["init", "-q", "--bare", "-b", "main"])
@@ -296,7 +299,8 @@ fn origin(repo: &Repo, name: &str) -> anyhow::Result<PathBuf> {
 pub const NARROW_BRANCH: &str = "proj-101-paginate-the-users-index-and-cache-pages";
 
 pub fn create_remote(state: RemoteState) -> anyhow::Result<Vec<PathBuf>> {
-    let root = Path::new(ROOT);
+    let root = root();
+    let root = root.as_path();
     if root.exists() {
         std::fs::remove_dir_all(root)?;
     }

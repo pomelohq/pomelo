@@ -285,7 +285,7 @@ impl LanguageSelector {
             .rounded(4.0)
             .on_click(id);
         if row == self.selected {
-            item = item.bg(colors.element_selected);
+            item = item.bg(colors.overlay_selected);
         } else if self.hovered == Some(id) {
             item = item.bg(colors.ghost_element_hover);
         }

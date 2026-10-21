@@ -95,7 +95,7 @@ pub(crate) struct HoverState {
     hide_at: Option<Instant>,
     closest_distance: Option<f32>,
     /// Where the popovers were last placed, in window px.
-    bounds: RefCell<Vec<Rect>>,
+    pub(crate) bounds: RefCell<Vec<Rect>>,
 }
 
 impl FileItem {
@@ -432,6 +432,24 @@ impl FileItem {
             changed = true;
         }
         changed
+    }
+
+    pub(crate) fn show_hover_answer(&mut self, offset: usize, markdown: &str) {
+        self.hover.diagnostic = self.diagnostic_at(offset).map(|entry| DiagnosticPopover {
+            range: entry.range.clone(),
+            severity: entry.severity,
+            markdown: Markdown::parse(&diagnostic_markdown(entry)),
+            layout: LayoutCache::default(),
+            scroll: 0,
+            keyboard: true,
+        });
+        self.hover.info = vec![InfoPopover {
+            range: self.syntax_range_at(offset).unwrap_or(offset..offset),
+            markdown: Markdown::parse(markdown),
+            layout: LayoutCache::default(),
+            scroll: 0,
+            keyboard: true,
+        }];
     }
 
     /// The diagnostic most tightly around `offset`.

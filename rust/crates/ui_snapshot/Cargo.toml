@@ -9,6 +9,11 @@ description = "Headless UI snapshot tool: render a screen to PNG so we can eyeba
 name = "ui_snapshot"
 path = "src/main.rs"
 
+# What a terminal scene runs: it prints a board's output under the program name its tab is titled by.
+[[bin]]
+name = "term_player"
+path = "src/term_player.rs"
+
 [dependencies]
 serde_json.workspace = true
 pom_secrets = { path = "../pom_secrets" }
