@@ -83,17 +83,20 @@ impl GitPanel {
         }
     }
 
-    fn on_branch(&self, scan: &Scan, repo: usize) -> Option<Node> {
+    /// The "on <branch>" pill, cut to `max` wide when given (its branch truncates inside).
+    fn on_branch(&self, scan: &Scan, repo: usize, max: Option<f32>) -> Option<Node> {
         let (branch, kept) = self.other_branch(scan, repo)?;
         let color = if kept {
             theme().text_muted
         } else {
             theme().warning
         };
+        let mut pill = div().row();
+        if let Some(max) = max {
+            pill = pill.w_px(max);
+        }
         Some(
-            div()
-                .row()
-                .h_px(18.0)
+            pill.h_px(18.0)
                 .px(6.0)
                 .rounded(9.0)
                 .items_center()
@@ -461,7 +464,9 @@ impl GitPanel {
                         .weight(600)
                         .color(colors.text_placeholder),
                 ),
-            Row::RepoHeader { repo, history } => self.repo_header(index, *repo, *history, scan),
+            Row::RepoHeader { repo, history } => {
+                self.repo_header(index, *repo, *history, scan, width)
+            }
             Row::Section { staged, count, .. } => {
                 let (staging, tip) = if *staged {
                     (Staging::Staged, "Unstage everything in this repo")
@@ -570,7 +575,8 @@ impl GitPanel {
                     .child(
                         label(format!("{reviewed} of {total} files reviewed"))
                             .size(12.0)
-                            .color(colors.text_muted),
+                            .color(colors.text_muted)
+                            .truncate(),
                     )
                     .child(bar)
                     .child(div().row().flex(1.0))
@@ -582,7 +588,7 @@ impl GitPanel {
                         }),
                     ))
             }
-            Row::Card { repo } => self.card_header(index, *repo, scan, width),
+            Row::Card { repo } => self.card_header(index, *repo, scan),
             Row::PullRequest { repo, pull_request } => {
                 self.pull_request_block(index, *repo, pull_request)
             }
@@ -665,11 +671,13 @@ impl GitPanel {
                             .color(colors.text_muted)
                             .truncate(),
                     )
-                    .child(grow(
+                    .child(
                         label(format!("vs {base}"))
                             .size(12.0)
-                            .color(colors.text_placeholder),
-                    ))
+                            .color(colors.text_placeholder)
+                            .truncate(),
+                    )
+                    .child(div().row().flex(1.0))
                     .child(diff_stat(Some(*added), Some(*deleted), 11.5))
                     .child(
                         label(count.to_string())
@@ -726,10 +734,12 @@ impl GitPanel {
                     .flex(1.0)
                     .gap(2.0)
                     .child(
-                        label(commit.subject.clone())
-                            .size(12.0)
-                            .color(colors.text)
-                            .truncate(),
+                        div().row().child(
+                            label(commit.subject.clone())
+                                .size(12.0)
+                                .color(colors.text)
+                                .truncate(),
+                        ),
                     )
                     .child(
                         div()
@@ -796,74 +806,104 @@ impl GitPanel {
             .unwrap_or_default()
     }
 
-    fn repo_header(&self, index: usize, repo: usize, history: bool, scan: &Scan) -> Div {
+    fn repo_header(
+        &self,
+        index: usize,
+        repo: usize,
+        history: bool,
+        scan: &Scan,
+        width: f32,
+    ) -> Div {
+        const GAP: f32 = 7.0;
         let colors = theme();
         let name = self.source_name_of(repo);
         let open = !self.is_folded(&format!("{}:{name}", if history { "h" } else { "c" }));
-        let height = rows::REPO_HEADER_H;
-        let mut header = self
-            .row_base(index, height)
-            .gap(7.0)
-            .px(6.0)
-            .child(chevron(open));
+        let state = scan.repos.get(repo);
+        let mut leading: Vec<Node> = vec![chevron(open)];
         if !history {
-            if let Some(state) = scan.repos.get(repo) {
+            if let Some(state) = state {
                 let staging = rows::repo_staging(state);
                 let tip = if staging == Staging::Staged {
                     "Unstage everything in this repo"
                 } else {
                     "Stage everything in this repo"
                 };
-                header = header.child(self.check(index, staging, tip));
+                leading.push(self.check(index, staging, tip));
             }
         }
-        header = header.child(
-            label(name)
-                .size(12.0)
-                .weight(600)
-                .color(colors.text)
-                .truncate(),
-        );
-        let mut middle = div().row().flex(1.0).items_center();
-        if let Some(on_branch) = self.on_branch(scan, repo) {
-            middle = middle.child(on_branch);
-        }
-        header = header.child(middle);
-        let Some(state) = scan.repos.get(repo) else {
-            return header;
-        };
-        if history {
-            let unpushed = state
-                .history
-                .iter()
-                .filter(|commit| state.is_unpushed(&commit.sha))
-                .count();
-            let commits = state.history.len();
-            return header
-                .child(arrow_count(
+        let mut trailing: Vec<Node> = Vec::new();
+        if let Some(state) = state {
+            if history {
+                let unpushed = state
+                    .history
+                    .iter()
+                    .filter(|commit| state.is_unpushed(&commit.sha))
+                    .count();
+                let commits = state.history.len();
+                trailing.push(arrow_count(
                     IconKind::ArrowUp,
                     unpushed,
                     colors.text_placeholder,
-                ))
-                .child(
+                ));
+                trailing.push(
                     label(format!(
                         "{commits} commit{}",
                         if commits == 1 { "" } else { "s" }
                     ))
                     .size(12.0)
-                    .color(colors.text_placeholder),
+                    .color(colors.text_placeholder)
+                    .into(),
                 );
+            } else {
+                let (added, deleted) =
+                    state
+                        .uncommitted
+                        .iter()
+                        .fold((0, 0), |(added, deleted), file| {
+                            (
+                                added + file.added.unwrap_or(0),
+                                deleted + file.deleted.unwrap_or(0),
+                            )
+                        });
+                trailing.push(diff_stat(Some(added), Some(deleted), 11.5));
+            }
         }
-        let (added, deleted) = state
-            .uncommitted
-            .iter()
-            .fold((0, 0), |(added, deleted), file| {
-                (
-                    added + file.added.unwrap_or(0),
-                    deleted + file.deleted.unwrap_or(0),
-                )
-            });
-        header.child(diff_stat(Some(added), Some(deleted), 11.5))
+        let name_label = label(name)
+            .size(12.0)
+            .weight(600)
+            .color(colors.text)
+            .truncate();
+        // The repo name has priority: the branch pill only gets what the name and the stats leave, and its
+        // branch truncates inside it.
+        let used = 12.0
+            + leading
+                .iter()
+                .chain(trailing.iter())
+                .map(|node| ui::measure(node).0 + GAP)
+                .sum::<f32>()
+            + ui::measure(&name_label.clone().into()).0
+            + GAP;
+        let mut middle = div().row().flex(1.0).items_center();
+        if let Some(on_branch) = self.on_branch(scan, repo, None) {
+            let room = width - used;
+            if ui::measure(&on_branch).0 <= room {
+                middle = middle.child(on_branch);
+            } else if let Some(cut) = self
+                .on_branch(scan, repo, Some(room))
+                .filter(|_| room >= 40.0)
+            {
+                middle = middle.child(cut);
+            }
+        }
+        let mut header = self.row_base(index, rows::REPO_HEADER_H).gap(GAP).px(6.0);
+        for node in leading {
+            header = header.child(node);
+        }
+        header = header.child(name_label).child(middle);
+        for node in trailing {
+            header = header.child(node);
+        }
+        header
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -913,7 +953,7 @@ impl GitPanel {
         } else {
             colors.text
         };
-        let mut name_label = label(name.clone()).size(12.0).color(name_color);
+        let mut name_label = label(name.clone()).size(12.0).color(name_color).truncate();
         if deleted {
             name_label = name_label.strikethrough(colors.text_muted);
         }
@@ -969,7 +1009,7 @@ impl GitPanel {
             .child(status_icon(entry.status))
     }
 
-    fn card_header(&self, index: usize, repo: usize, scan: &Scan, width: f32) -> Div {
+    fn card_header(&self, index: usize, repo: usize, scan: &Scan) -> Div {
         let colors = theme();
         let name = self.source_name_of(repo);
         let open = !self.is_folded(&format!("r:{name}"));
@@ -1031,46 +1071,22 @@ impl GitPanel {
         }
         let menu = self.id(index, Control::Menu);
         trailing.push(icon_button(menu, IconKind::ChevronDown, self.hot(menu), true).into());
-        // A long repo name is cut to what the row leaves after the chevron, the action chip and the menu,
-        // keeping room for a little of the branch; the chip and the menu always fit.
-        const GAP: f32 = 7.0;
-        let fixed = 6.0
-            + 4.0
-            + 12.0
-            + GAP
-            + trailing
-                .iter()
-                .map(|node| ui::measure(node).0 + GAP)
-                .sum::<f32>();
-        let room = (width - fixed).max(40.0);
-        let name_w = ui::measure_text_width(&name, 13.0, false, 600) / ui::ui_text_scale();
-        let branch_room = 48.0;
+        // The name keeps its room and the branch takes what is left; on a narrow panel the branch goes first,
+        // then the name truncates. The chip and the menu always fit.
         let mut header = self
             .row_base(index, rows::CARD_HEADER_H)
             .pl(6.0)
             .pr(4.0)
             .gap(7.0)
-            .child(chevron(open));
-        header = if name_w + GAP + branch_room <= room {
-            header
-                .child(label(name).size(12.0).weight(600).color(colors.text))
-                .child(grow(branch_label))
-        } else {
-            header
-                .child(
-                    div()
-                        .row()
-                        .w_px((room - GAP - branch_room).max(40.0).min(name_w))
-                        .child(
-                            label(name)
-                                .size(12.0)
-                                .weight(600)
-                                .color(colors.text)
-                                .truncate(),
-                        ),
-                )
-                .child(grow(branch_label))
-        };
+            .child(chevron(open))
+            .child(
+                label(name)
+                    .size(12.0)
+                    .weight(600)
+                    .color(colors.text)
+                    .truncate(),
+            )
+            .child(grow(branch_label));
         for node in trailing {
             header = header.child(node);
         }
@@ -1104,31 +1120,38 @@ impl GitPanel {
             _ => "Review pending",
         };
         let dash = || label("-").size(12.0).color(colors.text_placeholder);
-        let mut second = div().row().h_px(18.0).gap(6.0).items_center();
+        let mut parts = Vec::new();
         if pr.conflict {
-            second = second
-                .child(label("Merge conflict").size(12.0).color(colors.error))
-                .child(dash());
+            parts.push(label("Merge conflict").size(12.0).color(colors.error));
         }
-        second = second
-            .child(label(checks).size(12.0).color(checks_color))
-            .child(dash())
-            .child(label(review).size(12.0).color(colors.text));
+        parts.push(label(checks).size(12.0).color(checks_color));
+        parts.push(label(review).size(12.0).color(colors.text));
         if pr.is_draft {
-            second = second
-                .child(dash())
-                .child(label("Draft").size(12.0).color(colors.text_placeholder));
+            parts.push(label("Draft").size(12.0).color(colors.text_placeholder));
         }
+        // Nested from the tail so a narrow card truncates the last part first and earlier parts only once
+        // everything after them is gone.
+        let mut tail: Option<Div> = None;
+        for part in parts.into_iter().rev() {
+            let mut link = div().row().gap(6.0).items_center().child(part.truncate());
+            if let Some(rest) = tail {
+                link = link.child(dash()).child(rest.flex(1.0));
+            }
+            tail = Some(link);
+        }
+        let second = tail.unwrap_or_else(div).h_px(18.0);
         let text = div()
             .col()
             .flex(1.0)
             .gap(1.0)
             .child(
-                label(format!("#{} {}", pr.number, pr.title))
-                    .size(12.0)
-                    .medium()
-                    .color(colors.text)
-                    .truncate(),
+                div().row().child(
+                    label(format!("#{} {}", pr.number, pr.title))
+                        .size(12.0)
+                        .medium()
+                        .color(colors.text)
+                        .truncate(),
+                ),
             )
             .child(second);
         let mut card = div()
@@ -1192,11 +1215,13 @@ impl GitPanel {
             .rounded(10.0)
             .bg(colors.editor_background)
             .child(
-                label(opened.commit.subject.clone())
-                    .size(12.0)
-                    .weight(600)
-                    .color(colors.text)
-                    .truncate(),
+                div().row().child(
+                    label(opened.commit.subject.clone())
+                        .size(12.0)
+                        .weight(600)
+                        .color(colors.text)
+                        .truncate(),
+                ),
             )
             .child(
                 div()
@@ -1252,8 +1277,16 @@ impl GitPanel {
             format!("in {} of {total}", total - drifted.len())
         };
         let pick = self.fixed(BRANCH_MENU);
-        let mut picker = div()
-            .row()
+        // A long branch keeps the row: it truncates inside the picker before the link on the right moves.
+        let link_w = link
+            .as_ref()
+            .map_or(0.0, |text| text_width(text, 13.0, false) + 8.0 + 6.0);
+        let picker_natural = 6.0 + 12.0 + 5.0 + text_width(&workspace_branch, 13.0, false) + 6.0;
+        let mut picker = div().row();
+        if picker_natural > width - link_w {
+            picker = picker.w_px((width - link_w).max(40.0));
+        }
+        let mut picker = picker
             .h_px(BRANCH_ROW_H)
             .px(6.0)
             .gap(5.0)
@@ -1265,7 +1298,8 @@ impl GitPanel {
                 label(workspace_branch)
                     .size(13.0)
                     .medium()
-                    .color(colors.text),
+                    .color(colors.text)
+                    .truncate(),
             );
         if self.hot(pick) {
             picker = tooltip(

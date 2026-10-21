@@ -46,6 +46,34 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
                 ),
             ],
         ),
+        // The Remote tab at 300px over long repo, branch, file and pull request names.
+        "git-remote-narrow" => (
+            0,
+            &[
+                ("GITFIXTURE", "remote:narrow"),
+                ("TAB", "remote"),
+                ("GITPRS", "1"),
+                ("GITVIEW", "tree"),
+                ("WSBRANCH", git_fixture::NARROW_BRANCH),
+            ],
+        ),
+        "git-changes-narrow" => (
+            0,
+            &[
+                ("GITFIXTURE", "remote:narrow"),
+                ("GITVIEW", "tree"),
+                ("WSBRANCH", git_fixture::NARROW_BRANCH),
+            ],
+        ),
+        "git-history-narrow" => (
+            0,
+            &[
+                ("GITFIXTURE", "remote:narrow"),
+                ("TAB", "history"),
+                ("GITPRS", "1"),
+                ("WSBRANCH", git_fixture::NARROW_BRANCH),
+            ],
+        ),
         "git-in-sync" => (
             0,
             &[
@@ -1603,7 +1631,8 @@ fn main() -> anyhow::Result<()> {
             sources.iter().map(|source| source.root.clone()).collect();
         let mut panel = git_ui::GitPanel::new(sources, None, std::sync::Arc::new(|| {}));
         if std::env::var("GITPRS").is_ok() {
-            panel = panel.with_pull_requests(board_pull_requests(&roots)?);
+            let branch = std::env::var("WSBRANCH").unwrap_or_else(|_| "feat-login".into());
+            panel = panel.with_pull_requests(board_pull_requests(&roots, &branch)?);
         }
         panel.render(width, height);
         panel.wait_for_scan();
@@ -3395,6 +3424,7 @@ fn window_usage() -> workspace::UsageInfo {
 /// The pull requests the Remote boards draw: api's with CI failing and changes requested, worker's passing.
 fn board_pull_requests(
     roots: &[std::path::PathBuf],
+    branch: &str,
 ) -> anyhow::Result<pull_request_ui::PullRequests> {
     let state = std::path::Path::new("/tmp/pomelo-qa-fixture/pr-state");
     let _ = std::fs::remove_dir_all(state);
@@ -3408,13 +3438,13 @@ fn board_pull_requests(
             repo: repo.into(),
             owner: "myorg".into(),
             name: repo.into(),
-            head: "feat-login".into(),
+            head: branch.into(),
         };
         let pull = pom_forge::PullRequest {
             number,
             title: title.into(),
             state: "OPEN".into(),
-            head_ref_name: "feat-login".into(),
+            head_ref_name: branch.into(),
             base_ref_name: "main".into(),
             checks: checks.into(),
             review: review.into(),
@@ -3423,6 +3453,19 @@ fn board_pull_requests(
         (target, pull)
     };
     let mut shown = Vec::new();
+    if branch != "feat-login" {
+        let (target, mut pull) = pr(
+            "myproject-api-service",
+            512,
+            "Paginate the users index and cache every page of results",
+            "fail",
+            "approved",
+        );
+        pull.conflict = true;
+        shown.push((roots[0].clone(), target, pull));
+        prs.show(branch, shown);
+        return Ok(prs);
+    }
     for (root, (target, pull)) in roots
         .iter()
         .zip([
@@ -3442,4 +3485,83 @@ fn board_pull_requests(
     }
     prs.show("feat-login", shown);
     Ok(prs)
+}
+
+#[cfg(test)]
+mod tests {
+    use workspace::SidePanelView;
+
+    /// Every text and icon of the panel at `width`, as (x, y, w, h, what).
+    fn boxes(node: &ui::Node, width: f32) -> Vec<(f32, f32, f32, f32, String)> {
+        let painted = ui::render(
+            node,
+            ui::Rect::new(0.0, 0.0, width, 832.0, ui::Rgba::TRANSPARENT),
+        );
+        let scale = ui::ui_text_scale();
+        let mut out: Vec<_> = painted
+            .texts
+            .iter()
+            .map(|text| {
+                let w =
+                    ui::measure_text_width(&text.text, text.size, text.font, text.weight) / scale;
+                // A line box, not just the em: glyphs sit lower than `y` by about the leading.
+                (text.x, text.y, w, text.size * 1.4, text.text.clone())
+            })
+            .collect();
+        out.extend(
+            painted
+                .icons
+                .iter()
+                .map(|icon| (icon.x, icon.y, icon.w, icon.h, format!("{:?}", icon.kind))),
+        );
+        out
+    }
+
+    #[test]
+    fn a_narrow_git_panel_truncates_instead_of_overlapping() {
+        let roots = crate::git_fixture::create_remote(crate::git_fixture::RemoteState::Narrow)
+            .expect("fixture");
+        let sources: Vec<git_ui::RepoSource> = roots
+            .iter()
+            .map(|root| git_ui::RepoSource {
+                name: root.file_name().unwrap().to_string_lossy().into_owned(),
+                root: root.clone(),
+                default_branch: "main".into(),
+                expected_branch: crate::git_fixture::NARROW_BRANCH.into(),
+                kept: false,
+            })
+            .collect();
+        let mut panel = git_ui::GitPanel::new(sources, None, std::sync::Arc::new(|| {}))
+            .with_pull_requests(
+                crate::board_pull_requests(&roots, crate::git_fixture::NARROW_BRANCH)
+                    .expect("pull requests"),
+            );
+        let width = 300.0;
+        panel.render(width, 832.0);
+        panel.wait_for_scan();
+        panel.set_view(true, true);
+        for tab in [
+            git_ui::Tab::Changes,
+            git_ui::Tab::Remote,
+            git_ui::Tab::History,
+        ] {
+            panel.set_tab(tab);
+            let found = boxes(&panel.render(width, 832.0), width);
+            for (x, _, w, _, what) in &found {
+                assert!(x + w <= width + 0.5, "{what} runs past the panel ({tab:?})");
+            }
+            for (i, a) in found.iter().enumerate() {
+                for b in &found[i + 1..] {
+                    let rows_meet = a.1 < b.1 + b.3 && b.1 < a.1 + a.3;
+                    let columns_meet = a.0 + 0.5 < b.0 + b.2 && b.0 + 0.5 < a.0 + a.2;
+                    assert!(
+                        !(rows_meet && columns_meet),
+                        "{} overlaps {} ({tab:?})",
+                        a.4,
+                        b.4
+                    );
+                }
+            }
+        }
+    }
 }
