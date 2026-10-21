@@ -139,7 +139,49 @@ fn images() -> &'static std::sync::Mutex<std::collections::HashMap<u64, ImageDat
     IMAGES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// Open views per image id; the pixels and their texture go once the last one closes.
+static IMAGE_HOLDERS: std::sync::Mutex<Vec<(u64, usize)>> = std::sync::Mutex::new(Vec::new());
+/// Ids whose texture the renderer drops at its next frame.
+static RELEASED_IMAGES: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Register a view of image `id`; pair with `release_image` when the view closes.
+pub fn retain_image(id: u64) {
+    if let Ok(mut holders) = IMAGE_HOLDERS.lock() {
+        match holders.iter_mut().find(|(held, _)| *held == id) {
+            Some((_, count)) => *count += 1,
+            None => holders.push((id, 1)),
+        }
+    }
+}
+
+pub fn release_image(id: u64) {
+    let Ok(mut holders) = IMAGE_HOLDERS.lock() else {
+        return;
+    };
+    let Some(index) = holders.iter().position(|(held, _)| *held == id) else {
+        return;
+    };
+    holders[index].1 -= 1;
+    if holders[index].1 > 0 {
+        return;
+    }
+    holders.swap_remove(index);
+    if let Ok(mut m) = images().lock() {
+        m.remove(&id);
+    }
+    if let Ok(mut released) = RELEASED_IMAGES.lock() {
+        released.push(id);
+    }
+}
+
+/// Store decoded pixels for `id`; dropped when no view holds the id any more (it closed while decoding).
 pub fn set_image(id: u64, width: u32, height: u32, rgba: Vec<u8>) {
+    let held = IMAGE_HOLDERS
+        .lock()
+        .is_ok_and(|holders| holders.iter().any(|(held, _)| *held == id));
+    if !held {
+        return;
+    }
     if let Ok(mut m) = images().lock() {
         m.insert(id, (width, height, rgba));
     }
@@ -775,6 +817,8 @@ fn load_ui_fonts(font_system: &mut FontSystem) -> (Option<String>, Option<String
     (sans, mono)
 }
 
+const MEASURE_CACHE_CAP: usize = 50_000;
+
 struct Measurer {
     font_system: FontSystem,
     sans: Option<String>,
@@ -808,7 +852,6 @@ impl Measurer {
         }
     }
 
-    /// Drop what was measured with fonts that have since changed.
     fn current(&mut self) -> &mut Self {
         let generation = theme::font_generation();
         if generation != self.generation {
@@ -817,6 +860,15 @@ impl Measurer {
             self.glyph_cache.clear();
             self.families = FamilyCache::default();
             self.generation = generation;
+        }
+        if self.cache.len() > MEASURE_CACHE_CAP {
+            self.cache.clear();
+        }
+        if self.wrap_cache.len() > MEASURE_CACHE_CAP {
+            self.wrap_cache.clear();
+        }
+        if self.glyph_cache.len() > MEASURE_CACHE_CAP {
+            self.glyph_cache.clear();
         }
         self
     }
@@ -1788,7 +1840,18 @@ impl UiRenderer {
         )
     }
 
+    fn drop_released_images(&mut self) {
+        let released = RELEASED_IMAGES
+            .lock()
+            .map(|mut released| std::mem::take(&mut *released))
+            .unwrap_or_default();
+        for id in released {
+            self.icon_cache.remove(&IconTexKey::Image(id));
+        }
+    }
+
     pub fn render(&mut self, rects: &[Rect], tris: &[Tri], texts: &[Text]) -> Result<()> {
+        self.drop_released_images();
         let vw = self.config.width as f32;
         let vh = self.config.height as f32;
         const FLOATS_PER_VERT: usize = 16; // pos2 + color4 + local2 + hsize2 + radius1 + bcolor4 + bwidth1
@@ -2112,6 +2175,7 @@ impl UiRenderer {
     /// each layer draws its shapes+text with an optional scissor clip and its own text renderer. This is how a
     /// scrolling menu list (clipped) sits above the body yet below an unclipped tooltip.
     pub fn render_frame(&mut self, clear: Rgba, layers: &[Layer]) -> Result<()> {
+        self.drop_released_images();
         const FPV: usize = 16;
         let mut verts: Vec<f32> = Vec::new();
         let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(layers.len());
@@ -2445,6 +2509,29 @@ impl UiRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_goes_once_its_last_view_closes() {
+        let id = 0x5eed_1234;
+        retain_image(id);
+        retain_image(id);
+        set_image(id, 1, 1, vec![0; 4]);
+        release_image(id);
+        assert!(has_image(id));
+        release_image(id);
+        assert!(!has_image(id));
+        set_image(id, 1, 1, vec![0; 4]);
+        assert!(!has_image(id));
+    }
+
+    #[test]
+    fn measuring_ever_new_text_keeps_the_cache_bounded() {
+        for line in 0..(MEASURE_CACHE_CAP + 10) {
+            measure_text_width(&format!("{line}"), 12.0, TextFont::Ui, 400);
+        }
+        let held = MEASURER.with(|cell| cell.borrow().as_ref().map_or(0, |m| m.cache.len()));
+        assert!(held <= MEASURE_CACHE_CAP + 1, "{held}");
+    }
 
     #[test]
     fn translucent_colors_blend_like_a_browser() {

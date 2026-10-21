@@ -37,7 +37,8 @@ fn map_range(b: &editor::EditorBuffer, range: Range<usize>, since: u64) -> Range
         range.start = editor::buffer::map_offset(batch, range.start, Bias::Left);
         range.end = editor::buffer::map_offset(batch, range.end, Bias::Right);
     }
-    range
+    let len = b.rope.len_chars();
+    range.start.min(len)..range.end.min(len)
 }
 
 impl FileItem {
@@ -46,6 +47,9 @@ impl FileItem {
         let (Some((offset, version)), Some(b)) = (initial, self.buffer.as_ref()) else {
             return true;
         };
+        if !b.logged_since(version) {
+            return false;
+        }
         let mut offset = offset;
         for batch in b.edits_since(version) {
             offset = editor::buffer::map_offset(batch, offset, Bias::Right);

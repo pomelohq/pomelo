@@ -134,6 +134,14 @@ impl Syntax {
 
     fn interpolate(&mut self, buffer: &EditorBuffer) {
         let version = buffer.version();
+        if !buffer.logged_since(self.interpolated_version.min(self.injections_interpolated)) {
+            self.tree = None;
+            self.injection_base = None;
+            self.injection_edits.clear();
+            self.injections_parsed = None;
+            self.injections_interpolated = version;
+            self.interpolated_version = version;
+        }
         if self.injections_interpolated < version {
             for edit in buffer.syntax_edits_since(self.injections_interpolated) {
                 self.injections.edit(edit);
@@ -309,6 +317,7 @@ impl Syntax {
             return;
         };
         match receiver.try_recv() {
+            Ok((Some(_), parsed_at)) if !buffer.logged_since(parsed_at) => self.background = None,
             Ok((Some(mut tree), parsed_at)) => {
                 for edit in buffer.syntax_edits_since(parsed_at) {
                     tree.edit(edit);

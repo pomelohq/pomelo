@@ -175,6 +175,16 @@ struct HistoryEntry {
     selections_after: Vec<Selection>,
 }
 
+impl HistoryEntry {
+    fn text_bytes(&self) -> usize {
+        self.batches
+            .iter()
+            .flatten()
+            .map(|r| r.old_text.len() + r.new_text.len())
+            .sum()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
     Left,
@@ -330,6 +340,7 @@ pub struct EditorBuffer {
     next_selection_id: usize,
     version: u64,
     log: Vec<LogEntry>,
+    log_floor: u64,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
     transaction_depth: usize,
@@ -395,6 +406,9 @@ struct AutocloseRegion {
 
 /// A saved marker no history entry carries, for text whose saved version is not in the undo history.
 const UNREACHABLE_SAVE: Option<usize> = Some(usize::MAX);
+const LOG_KEEP: usize = 1024;
+const HISTORY_MAX_ENTRIES: usize = 10_000;
+const HISTORY_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 impl Default for EditorBuffer {
     fn default() -> Self {
@@ -424,6 +438,7 @@ impl EditorBuffer {
             next_selection_id: 1,
             version: 0,
             log: Vec::new(),
+            log_floor: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             transaction_depth: 0,
@@ -458,6 +473,10 @@ impl EditorBuffer {
 
     pub fn set_group_interval(&mut self, interval: Duration) {
         self.group_interval = interval;
+    }
+
+    pub fn logged_since(&self, since: u64) -> bool {
+        since >= self.log_floor
     }
 
     pub fn edits_since(&self, since: u64) -> impl Iterator<Item = &[Edit]> {
@@ -693,6 +712,94 @@ impl EditorBuffer {
             entry.selections_after = selections;
         }
         self.group();
+        self.trim_history();
+    }
+
+    pub fn history_bytes(&self) -> usize {
+        let undo: usize = self
+            .undo_stack
+            .iter()
+            .chain(&self.redo_stack)
+            .map(HistoryEntry::text_bytes)
+            .sum();
+        let log: usize = self
+            .log
+            .iter()
+            .flat_map(|entry| &entry.new_texts)
+            .map(String::len)
+            .sum();
+        undo + log
+    }
+
+    fn trim_history(&mut self) {
+        if self.ime_undo_base.is_some() {
+            return;
+        }
+        let mut bytes = 0;
+        let mut keep = 0;
+        for entry in self.undo_stack.iter().rev() {
+            bytes += entry.text_bytes();
+            if keep > 0 && (bytes > HISTORY_MAX_BYTES || keep >= HISTORY_MAX_ENTRIES) {
+                break;
+            }
+            keep += 1;
+        }
+        let excess = self.undo_stack.len() - keep;
+        if excess > 0 {
+            self.undo_stack.drain(..excess);
+        }
+    }
+
+    pub fn reload(&mut self, text: &str) -> bool {
+        self.line_ending = LineEnding::detect(text);
+        let text = normalize_newlines(text);
+        let new = text.as_bytes();
+        let old_len = self.rope.len_bytes();
+        let mut prefix = 0;
+        for chunk in self.rope.chunks() {
+            let chunk = chunk.as_bytes();
+            let other = &new[prefix.min(new.len())..new.len().min(prefix + chunk.len())];
+            let same = chunk.iter().zip(other).take_while(|(a, b)| a == b).count();
+            prefix += same;
+            if same < chunk.len() {
+                break;
+            }
+        }
+        if prefix == old_len && prefix == new.len() {
+            return false;
+        }
+        while !text.is_char_boundary(prefix) {
+            prefix -= 1;
+        }
+        let limit = old_len.min(new.len()) - prefix;
+        let mut suffix = 0;
+        let (chunks, ..) = self.rope.chunks_at_byte(old_len);
+        for chunk in chunks.reversed() {
+            if suffix >= limit {
+                break;
+            }
+            let chunk = chunk.as_bytes();
+            let same = chunk
+                .iter()
+                .rev()
+                .zip(new[..new.len() - suffix].iter().rev())
+                .take(limit - suffix)
+                .take_while(|(a, b)| a == b)
+                .count();
+            suffix += same;
+            if same < chunk.len() {
+                break;
+            }
+        }
+        suffix = suffix.min(limit);
+        while !text.is_char_boundary(new.len() - suffix) {
+            suffix -= 1;
+        }
+        let start = self.rope.byte_to_char(prefix);
+        let end = self.rope.byte_to_char(old_len - suffix);
+        let inserted = text[prefix..new.len() - suffix].to_string();
+        self.edit(vec![(start..end, inserted)]);
+        true
     }
 
     fn group(&mut self) {
@@ -982,6 +1089,11 @@ impl EditorBuffer {
                 .collect(),
             syntax,
         });
+        if self.log.len() > 2 * LOG_KEEP {
+            let drop = self.log.len() - LOG_KEEP;
+            self.log_floor = self.log[drop - 1].version;
+            self.log.drain(..drop);
+        }
         replacements
     }
 
@@ -3878,6 +3990,74 @@ mod tests {
                 new: 1..3
             }]]
         );
+    }
+
+    #[test]
+    fn reloading_unchanged_text_records_nothing() {
+        let mut b = buffer("line one\nline two\n");
+        let version = b.version();
+        for _ in 0..100 {
+            assert!(!b.reload("line one\nline two\n"));
+        }
+        assert_eq!(b.version(), version);
+        assert!(!b.can_undo());
+    }
+
+    #[test]
+    fn reloading_an_appended_file_logs_only_the_new_tail() {
+        let big = "x".repeat(100_000);
+        let mut b = buffer(&big);
+        let version = b.version();
+        assert!(b.reload(&format!("{big}\nmore")));
+        let inserted: Vec<String> = b
+            .text_edits_since(version)
+            .flat_map(|(_, texts)| texts.to_vec())
+            .collect();
+        assert_eq!(inserted, vec!["\nmore".to_string()]);
+        assert_eq!(b.text(), format!("{big}\nmore"));
+        assert!(b.reload("ab"));
+        assert_eq!(b.text(), "ab");
+        assert!(b.reload("xab"));
+        assert_eq!(b.text(), "xab");
+        for (from, to) in [
+            ("aé", "aè"),
+            ("éa", "èa"),
+            ("日本語", "日本人語"),
+            ("", "x"),
+            ("x", ""),
+        ] {
+            let mut b = buffer(from);
+            assert!(b.reload(to));
+            assert_eq!(b.text(), to);
+            b.undo();
+            assert_eq!(b.text(), from);
+        }
+    }
+
+    #[test]
+    fn the_edit_log_keeps_only_recent_batches() {
+        let mut b = buffer("");
+        for _ in 0..(LOG_KEEP * 3) {
+            b.edit(vec![(0..0, "a".to_string())]);
+        }
+        assert!(b.log.len() <= 2 * LOG_KEEP);
+        assert!(!b.logged_since(0));
+        assert!(b.logged_since(b.version() - 10));
+        assert_eq!(b.edits_since(b.version() - 10).count(), 10);
+    }
+
+    #[test]
+    fn undo_history_is_capped_by_size() {
+        let mut b = buffer("");
+        let chunk = "y".repeat(HISTORY_MAX_BYTES / 3);
+        for _ in 0..5 {
+            b.finalize_last_transaction();
+            let len = b.rope.len_chars();
+            b.edit(vec![(len..len, chunk.clone())]);
+        }
+        let bytes: usize = b.undo_stack.iter().map(HistoryEntry::text_bytes).sum();
+        assert!(bytes <= HISTORY_MAX_BYTES);
+        assert!(b.can_undo());
     }
 
     #[test]

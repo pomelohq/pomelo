@@ -148,7 +148,11 @@ impl FileItem {
         }
         let origin = response.origin.clone().map(|range| {
             let mut range = range;
-            if let Some(b) = self.buffer.as_ref() {
+            if let Some(b) = self
+                .buffer
+                .as_ref()
+                .filter(|b| b.logged_since(response.synced.buffer_version))
+            {
                 for batch in b.edits_since(response.synced.buffer_version) {
                     range.start =
                         editor::buffer::map_offset(batch, range.start, editor::buffer::Bias::Left);

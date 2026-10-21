@@ -11,7 +11,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitStatus;
-use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event as BackendEvent, EventListener, Notify, WindowSize};
@@ -231,16 +232,43 @@ pub struct SyncOutcome {
     pub close: bool,
 }
 
+#[derive(Default)]
+struct Coalesced {
+    wakeup_queued: AtomicBool,
+    title: Mutex<Option<Option<String>>>,
+}
+
 #[derive(Clone)]
 struct Listener {
     events: mpsc::Sender<BackendEvent>,
     waker: Waker,
+    coalesced: Arc<Coalesced>,
 }
 
 impl EventListener for Listener {
     fn send_event(&self, event: BackendEvent) {
-        if self.events.send(event).is_ok() {
+        let queued = match event {
+            BackendEvent::Wakeup if self.coalesced.wakeup_queued.swap(true, Ordering::AcqRel) => {
+                return;
+            }
+            BackendEvent::Title(title) => self.set_title(Some(title)),
+            BackendEvent::ResetTitle => self.set_title(None),
+            event => self.events.send(event).is_ok(),
+        };
+        if queued {
             (self.waker)();
+        }
+    }
+}
+
+impl Listener {
+    fn set_title(&self, title: Option<String>) -> bool {
+        match self.coalesced.title.lock() {
+            Ok(mut slot) => {
+                *slot = Some(title);
+                true
+            }
+            Err(_) => false,
         }
     }
 }
@@ -297,6 +325,7 @@ pub struct Terminal {
     term: Arc<FairMutex<Term<Listener>>>,
     pty: Backend,
     events: mpsc::Receiver<BackendEvent>,
+    coalesced: Arc<Coalesced>,
     pending_resize: Option<TerminalBounds>,
     /// A reattached program drew for its last size; nudging the size once makes it redraw for this view.
     redraw_on_resize: bool,
@@ -347,9 +376,11 @@ impl Terminal {
             ..Config::default()
         };
         let (events_tx, events) = mpsc::channel();
+        let coalesced = Arc::new(Coalesced::default());
         let listener = Listener {
             events: events_tx,
             waker,
+            coalesced: coalesced.clone(),
         };
         let bounds = TerminalBounds::default();
         let term = Arc::new(FairMutex::new(Term::new(config, &bounds, listener.clone())));
@@ -384,6 +415,7 @@ impl Terminal {
                 term,
                 Backend::Holder(backend),
                 events,
+                coalesced,
                 bounds,
                 process,
             ));
@@ -408,6 +440,7 @@ impl Terminal {
             term,
             Backend::Local(pty),
             events,
+            coalesced,
             bounds,
             process,
         ))
@@ -417,6 +450,7 @@ impl Terminal {
         term: Arc<FairMutex<Term<Listener>>>,
         pty: Backend,
         events: mpsc::Receiver<BackendEvent>,
+        coalesced: Arc<Coalesced>,
         bounds: TerminalBounds,
         process: pty_info::PtyProcessInfo,
     ) -> Self {
@@ -425,6 +459,7 @@ impl Terminal {
             term,
             pty,
             events,
+            coalesced,
             pending_resize: None,
             redraw_on_resize,
             pending_scroll_to_bottom: false,
@@ -931,6 +966,17 @@ impl Terminal {
             self.term.lock().scroll_display(Scroll::Bottom);
             outcome.changed = true;
         }
+        self.coalesced.wakeup_queued.store(false, Ordering::Release);
+        let title = self
+            .coalesced
+            .title
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(title) = title {
+            self.title = title.unwrap_or_default();
+            outcome.title_changed = true;
+        }
         while let Ok(event) = self.events.try_recv() {
             self.process_event(event, host, &mut outcome);
         }
@@ -1111,6 +1157,27 @@ fn login_shell_argv() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unsynced_terminal_queues_one_wakeup_and_only_the_latest_title() {
+        let (events, received) = mpsc::channel();
+        let coalesced = Arc::new(Coalesced::default());
+        let listener = Listener {
+            events,
+            waker: Arc::new(|| {}),
+            coalesced: coalesced.clone(),
+        };
+        for frame in 0..10_000 {
+            listener.send_event(BackendEvent::Wakeup);
+            listener.send_event(BackendEvent::Title(format!("working {frame}")));
+        }
+        assert_eq!(received.try_iter().count(), 1);
+        let title = coalesced.title.lock().ok().and_then(|mut slot| slot.take());
+        assert_eq!(title, Some(Some("working 9999".to_string())));
+        coalesced.wakeup_queued.store(false, Ordering::Release);
+        listener.send_event(BackendEvent::Wakeup);
+        assert_eq!(received.try_iter().count(), 1);
+    }
     use std::time::{Duration, Instant};
 
     struct Host(Palette);
