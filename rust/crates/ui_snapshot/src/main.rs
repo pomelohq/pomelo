@@ -8,6 +8,7 @@
 use std::io::BufWriter;
 
 mod e2e;
+mod git_fixture;
 
 /// A design board's screen: the settings category it shows and the switches that put it in the board's state.
 fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
@@ -23,6 +24,14 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "project-sidebar-window-folded" => (0, &[("MAINVIEW", "window"), ("RAIL", "1")]),
         // The strip over an agent someone else drives while a tool call waits, at the dock's width.
         "agents-strip" => (0, &[("AGENTSTRIP", "1")]),
+        // The Git panel over scratch repos in the board's state; GITVIEW=tree|ungrouped, GITAMEND=1, GITSELECT=<rows down>.
+        "git-changes" => (0, &[("GITFIXTURE", "unstaged"), ("GITSELECT", "2")]),
+        "git-staged" => (0, &[("GITFIXTURE", "staged")]),
+        "git-staged-all" => (0, &[("GITFIXTURE", "staged-all")]),
+        "git-committed" => (0, &[("GITFIXTURE", "committed")]),
+        "git-commit-amend" => (0, &[("GITFIXTURE", "staged"), ("GITAMEND", "1")]),
+        "git-tree-view" => (0, &[("GITFIXTURE", "unstaged"), ("GITVIEW", "tree")]),
+        "git-grouped-none" => (0, &[("GITFIXTURE", "staged"), ("GITVIEW", "ungrouped")]),
         _ => return None,
     })
 }
@@ -59,6 +68,16 @@ fn scene_args(args: &[String]) -> anyhow::Result<Option<(String, usize)>> {
     std::env::set_var("EXPANDED", category.to_string());
     for (key, value) in switches {
         std::env::set_var(key, value);
+    }
+    if let Some((_, state)) = switches.iter().find(|(key, _)| *key == "GITFIXTURE") {
+        let Some(state) = git_fixture::State::parse(state) else {
+            anyhow::bail!("unknown git fixture state {state}");
+        };
+        let roots: Vec<String> = git_fixture::create(state)?
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect();
+        std::env::set_var("GITPANEL", roots.join(","));
     }
     Ok(Some((out.clone(), category)))
 }
@@ -1342,7 +1361,19 @@ fn main() -> anyhow::Result<()> {
     // With GITPANEL=<repo dir>, render the Git panel for that repository (against `main`).
     if let Ok(repo) = std::env::var("GITPANEL") {
         use workspace::SidePanelView;
-        let (width, height) = (330.0_f32, 820.0_f32);
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let scene_size = std::env::var("SCENESIZE").ok().and_then(|size| {
+            let (w, h) = size.split_once('x')?;
+            Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))
+        });
+        let (width, height) = scene_size.unwrap_or((330.0_f32, 820.0_f32));
+        let scale = if scene_size.is_some() {
+            1.0_f32
+        } else {
+            2.0_f32
+        };
         // GITPANEL=<repo>[,<repo>...]; WSBRANCH names the workspace branch.
         let sources: Vec<git_ui::RepoSource> = repo
             .split(',')
@@ -1366,6 +1397,29 @@ fn main() -> anyhow::Result<()> {
             Ok("history") => panel.set_tab(git_ui::Tab::History),
             _ => {}
         }
+        match std::env::var("GITVIEW").as_deref() {
+            Ok("tree") => panel.set_view(true, true),
+            Ok("ungrouped") => panel.set_view(false, false),
+            Ok(_) => panel.set_view(true, true),
+            Err(_) if scene_size.is_some() => panel.set_view(false, true),
+            Err(_) => {}
+        }
+        if let Some(steps) = std::env::var("GITSELECT")
+            .ok()
+            .and_then(|steps| steps.parse::<usize>().ok())
+        {
+            panel.render(width, height);
+            panel.key(workspace::EditKey::Tab, false);
+            for _ in 0..steps {
+                panel.list_key(workspace::EditKey::Down, false);
+            }
+        }
+        if std::env::var("GITAMEND").is_ok() {
+            panel.set_signoff(true);
+            if !panel.key(workspace::EditKey::ReplaceAll, true) {
+                anyhow::bail!("the panel did not take the amend key");
+            }
+        }
         panel.render(width, height);
         if let Ok(hover) = std::env::var("HOVER") {
             if let Ok(offset) = hover.parse::<u64>() {
@@ -1375,7 +1429,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
         let node = panel.render(width, height);
-        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        let mut r =
+            ui::UiRenderer::new_headless((width * scale) as u32, (height * scale) as u32, scale)?;
         let frame = ui::paint_frame(
             &ui::div()
                 .bg(ui::theme().panel_background)

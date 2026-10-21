@@ -273,6 +273,17 @@ impl GitPanel {
         self
     }
 
+    /// Turns Signoff on or off as the Commit Options menu does; for rendering a state without the menu.
+    pub fn set_signoff(&mut self, on: bool) {
+        self.commit.signoff = on;
+    }
+
+    /// Shows files as a tree or a list, grouped by staged or not, as View Options does.
+    pub fn set_view(&mut self, tree: bool, grouped: bool) {
+        self.tree_view = tree;
+        self.group_by_staging = grouped;
+    }
+
     pub fn tab(&self) -> Tab {
         self.tab
     }
@@ -1385,6 +1396,7 @@ impl GitPanel {
             Row::Message { .. }
             | Row::Progress { .. }
             | Row::Gap
+            | Row::CardPad { .. }
             | Row::CardNote { .. }
             | Row::Day(_)
             | Row::CommitHeader => {}

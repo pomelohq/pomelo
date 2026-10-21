@@ -14,12 +14,23 @@ pub(crate) const PROGRESS_H: f32 = 40.0;
 pub(crate) const GAP_H: f32 = 6.0;
 pub(crate) const DAY_H: f32 = 24.0;
 pub(crate) const COMMIT_HEADER_H: f32 = 56.0;
+pub(crate) const REPO_HEADER_H: f32 = 30.0;
+pub(crate) const SECTION_H: f32 = 24.0;
+/// The space between a card's edge and its first and last rows.
+pub(crate) const CARD_PAD: f32 = 4.0;
+/// The space between rows inside a repo's changes card.
+pub(crate) const CARD_ROW_GAP: f32 = 1.0;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Row {
     Message {
         text: String,
         indent: f32,
+        /// The repo whose card the message sits in, if any.
+        repo: Option<usize>,
+    },
+    CardPad {
+        repo: usize,
     },
     RepoHeader {
         repo: usize,
@@ -91,6 +102,29 @@ pub(crate) enum Row {
 
 impl Row {
     pub fn height(&self) -> f32 {
+        self.gap_above() + self.body_height()
+    }
+
+    /// Rows nested in a folder sit flush under it; the gap separates the card's top-level rows.
+    pub fn gap_above(&self) -> f32 {
+        match self {
+            Row::Section { .. } | Row::Message { repo: Some(_), .. } => CARD_ROW_GAP,
+            Row::File {
+                scope: Scope::Staged | Scope::Unstaged | Scope::Working,
+                depth,
+                flat,
+                ..
+            } if *flat || *depth <= 1 => CARD_ROW_GAP,
+            Row::Directory {
+                scope: Scope::Staged | Scope::Unstaged | Scope::Working,
+                depth,
+                ..
+            } if *depth <= 1 => CARD_ROW_GAP,
+            _ => 0.0,
+        }
+    }
+
+    fn body_height(&self) -> f32 {
         match self {
             Row::Progress { .. } => PROGRESS_H,
             Row::Gap => GAP_H,
@@ -99,6 +133,13 @@ impl Row {
             Row::Commit { .. } => COMMIT_ROW_H,
             Row::Day(_) => DAY_H,
             Row::CommitHeader => COMMIT_HEADER_H,
+            Row::CardPad { .. } => CARD_PAD,
+            Row::RepoHeader { history: false, .. } => REPO_HEADER_H,
+            Row::Section { .. } => SECTION_H,
+            Row::Directory {
+                scope: Scope::Staged | Scope::Unstaged | Scope::Working,
+                ..
+            } => SECTION_H,
             _ => ROW_H,
         }
     }
@@ -110,7 +151,16 @@ impl Row {
             | Row::CreatePullRequest { repo }
             | Row::CardNote { repo, .. }
             | Row::CommitGroup { repo, .. }
-            | Row::FilesHeader { repo, .. } => Some(*repo),
+            | Row::FilesHeader { repo, .. }
+            | Row::CardPad { repo }
+            | Row::Section { repo, .. }
+            | Row::RepoHeader {
+                repo,
+                history: false,
+            }
+            | Row::Message {
+                repo: Some(repo), ..
+            } => Some(*repo),
             Row::Commit {
                 repo,
                 in_card: true,
@@ -118,12 +168,12 @@ impl Row {
             } => Some(*repo),
             Row::File {
                 repo,
-                scope: Scope::Branch,
+                scope: Scope::Branch | Scope::Staged | Scope::Unstaged | Scope::Working,
                 ..
             }
             | Row::Directory {
                 repo,
-                scope: Scope::Branch,
+                scope: Scope::Branch | Scope::Staged | Scope::Unstaged | Scope::Working,
                 ..
             } => Some(*repo),
             _ => None,
@@ -268,7 +318,32 @@ impl GitPanel {
         rows.push(Row::Message {
             text: text.into(),
             indent,
+            repo: None,
         });
+    }
+
+    /// Each run of rows in one repo's card gets a pad above and below, so the card has room around its rows.
+    fn pad_cards(rows: Vec<Row>) -> Vec<Row> {
+        let mut padded = Vec::with_capacity(rows.len() + 8);
+        let mut open: Option<usize> = None;
+        for row in rows {
+            let card = row.card();
+            if open.is_some() && card != open {
+                padded.push(Row::CardPad {
+                    repo: open.unwrap_or_default(),
+                });
+                open = None;
+            }
+            if let (None, Some(repo)) = (open, card) {
+                padded.push(Row::CardPad { repo });
+                open = Some(repo);
+            }
+            padded.push(row);
+        }
+        if let Some(repo) = open {
+            padded.push(Row::CardPad { repo });
+        }
+        padded
     }
 
     pub(crate) fn build_rows(&self, scan: &Scan) -> Vec<Row> {
@@ -299,7 +374,7 @@ impl GitPanel {
             Tab::Remote => self.remote_rows(scan, &mut rows),
             Tab::History => self.history_rows(scan, &mut rows),
         }
-        rows
+        Self::pad_cards(rows)
     }
 
     fn changes_rows(&self, scan: &Scan, rows: &mut Vec<Row>) {
@@ -319,6 +394,9 @@ impl GitPanel {
             if repo.status.is_empty() {
                 quiet.push(name);
                 continue;
+            }
+            if rows.iter().any(|row| row.card().is_some()) {
+                rows.push(Row::Gap);
             }
             rows.push(Row::RepoHeader {
                 repo: index,
@@ -352,21 +430,16 @@ impl GitPanel {
                     })
                     .map(|entry| working_entry(repo, entry, scope))
                     .collect();
+                // An empty side says nothing the other side does not; the card shows only what is there.
+                if entries.is_empty() {
+                    continue;
+                }
                 rows.push(Row::Section {
                     repo: index,
                     staged,
                     count: entries.len(),
                 });
                 if self.is_folded(&format!("s:{name}:{staged}")) {
-                    continue;
-                }
-                if entries.is_empty() {
-                    let text = if staged {
-                        "Nothing staged yet - tick a file below"
-                    } else {
-                        "Everything is staged"
-                    };
-                    Self::message(rows, text, 42.0);
                     continue;
                 }
                 self.file_rows(scan, index, scope, entries, 1, rows);
