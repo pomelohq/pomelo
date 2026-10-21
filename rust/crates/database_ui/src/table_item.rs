@@ -13,7 +13,10 @@ use pom_db::{Database, Engine, QueryResult, Table, TableKind, TableStructure};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextArea, TextField};
-use workspace::{segmented, EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
+use workspace::{
+    field_label, segmented, small_button, ButtonKind, EditKey, Item, ItemTick, PanelRequest,
+    TerminalKeyOutcome,
+};
 
 use crate::details::{
     self, CellView, FoldAction, FoldTarget, JsonFold, Pane, RowField, Target, CANCEL_VALUE,
@@ -26,19 +29,23 @@ use crate::grid::{Grid, GridEvent};
 use crate::json::{self, Json};
 use crate::{DatabaseContext, Pending};
 
-const TOOLBAR_H: f32 = 36.0;
-const QUERY_H: f32 = 32.0;
+const TOOLBAR_H: f32 = 40.0;
+const QUERY_H: f32 = 36.0;
+const QUERY_FIELD_H: f32 = 28.0;
+const CARD_INSET: f32 = 8.0;
+const CARD_GAP: f32 = 6.0;
+const CARD_RADIUS: f32 = 6.0;
 /// Narrower than this (design px), the tab gives the whole width to the grid and hides the Details side.
 const SIDE_NEEDS: f32 = 620.0;
 /// Narrower than this, WHERE and ORDER BY take a row each.
 const QUERY_STACK_BELOW: f32 = 520.0;
-const STATUS_H: f32 = 28.0;
-const PENDING_H: f32 = 34.0;
+const STATUS_H: f32 = 32.0;
+const PENDING_H: f32 = 38.0;
 const FIELD_H: f32 = 24.0;
 const FILTER_H: f32 = 26.0;
 const FIELD_FONT: f32 = 12.0;
-const SIDE_W: f32 = 360.0;
-const SIDE_HEAD_H: f32 = 36.0;
+const SIDE_W: f32 = 300.0;
+const SIDE_HEAD_H: f32 = 38.0;
 const PAGE_SIZES: [usize; 4] = [100, 500, 1000, 5000];
 const DEFAULT_PAGE: usize = 500;
 /// A value longer than this, or on several lines, is edited in the Details side instead of in its cell.
@@ -1171,9 +1178,9 @@ impl TableItem {
         let colors = theme();
         let mut button = div()
             .row()
-            .w_px(22.0)
-            .h_px(22.0)
-            .rounded(4.0)
+            .w_px(24.0)
+            .h_px(24.0)
+            .rounded(6.0)
             .items_center()
             .justify_center()
             .child(icon(kind).size(12.0).color(if enabled {
@@ -1191,43 +1198,21 @@ impl TableItem {
     }
 
     fn text_button(&self, id: u64, text: String, on: bool) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .row()
-            .h_px(22.0)
-            .px(6.0)
-            .rounded(4.0)
-            .items_center()
-            .border(1.0, colors.border_variant)
-            .on_click(id)
-            .child(label(text).size(12.0).color(colors.text));
-        if on {
-            button = button.bg(colors.element_selected);
-        } else if self.hovered == Some(id) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        button.into()
+        let kind = if on {
+            ButtonKind::Secondary
+        } else {
+            ButtonKind::Ghost
+        };
+        small_button(id, None, &text, None, kind, true, self.hovered)
     }
 
     fn keyed_button(&self, id: u64, text: &str, keys: &str, on: bool) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .row()
-            .h_px(22.0)
-            .px(6.0)
-            .gap(6.0)
-            .rounded(4.0)
-            .items_center()
-            .border(1.0, colors.border_variant)
-            .on_click(id)
-            .child(label(text.to_string()).size(12.0).color(colors.text))
-            .child(workspace::render_keystroke(keys, 10.5));
-        if on {
-            button = button.bg(colors.element_selected);
-        } else if self.hovered == Some(id) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        button.into()
+        let kind = if on {
+            ButtonKind::Secondary
+        } else {
+            ButtonKind::Ghost
+        };
+        small_button(id, None, text, Some(keys), kind, true, self.hovered)
     }
 
     fn input(
@@ -1242,12 +1227,12 @@ impl TableItem {
         div()
             .row()
             .flex(1.0)
-            .h_px(FIELD_H)
-            .px(6.0)
-            .gap(6.0)
+            .h_px(QUERY_FIELD_H)
+            .px(10.0)
+            .gap(10.0)
             .items_center()
-            .rounded(4.0)
-            .bg(colors.editor_background)
+            .rounded(6.0)
+            .bg(colors.background)
             .border(
                 1.0,
                 if focused && self.focused {
@@ -1257,12 +1242,7 @@ impl TableItem {
                 },
             )
             .on_click(id)
-            .child(
-                label(prefix.to_string())
-                    .size(11.0)
-                    .mono()
-                    .color(colors.text_muted),
-            )
+            .child(field_label(prefix))
             .child(field.render(
                 placeholder,
                 focused && self.focused,
@@ -1342,7 +1322,8 @@ impl TableItem {
         let mut bar = div()
             .row()
             .h_px(TOOLBAR_H)
-            .px(10.0)
+            .pl(14.0)
+            .pr(10.0)
             .gap(8.0)
             .items_center()
             .child(crumb);
@@ -1383,7 +1364,15 @@ impl TableItem {
             self.focus == Focus::Order,
         );
         let rows = self.text_button(PAGE_SIZE, format!("{} rows", self.page_size), false);
-        let line = || div().row().h_px(QUERY_H).px(8.0).gap(8.0).items_center();
+        let line = || {
+            div()
+                .row()
+                .h_px(QUERY_H)
+                .px(10.0)
+                .pb(8.0)
+                .gap(8.0)
+                .items_center()
+        };
         if width < QUERY_STACK_BELOW {
             return div()
                 .col()
@@ -1410,13 +1399,7 @@ impl TableItem {
             .row()
             .h_px(FILTER_H)
             .items_center()
-            .bg(colors.editor_background)
-            .child(
-                div()
-                    .w_px(number_width)
-                    .h_px(FILTER_H)
-                    .bg(colors.panel_background),
-            );
+            .child(div().w_px(number_width).h_px(FILTER_H));
         for (column, _, width) in slices {
             let name = &self.grid.columns()[column];
             let focused = self.focus == Focus::Column(column) && self.focused;
@@ -1468,7 +1451,7 @@ impl TableItem {
 
     fn status_bar(&self) -> Node {
         let colors = theme();
-        let mut bar = div().row().h_px(STATUS_H).px(8.0).gap(4.0).items_center();
+        let mut bar = div().row().h_px(STATUS_H).px(8.0).gap(2.0).items_center();
         let data = self.view == View::Data;
         if !self.is_redis() && data {
             bar = bar
@@ -1497,7 +1480,15 @@ impl TableItem {
             ),
         );
         if !self.is_redis() && data {
-            bar = bar.child(self.text_button(EXPORT, "Export CSV".into(), false));
+            bar = bar.child(small_button(
+                EXPORT,
+                Some(IconKind::Download),
+                "Export CSV",
+                None,
+                ButtonKind::Ghost,
+                true,
+                self.hovered,
+            ));
         }
         bar.into()
     }
@@ -1514,10 +1505,12 @@ impl TableItem {
         div()
             .row()
             .h_px(PENDING_H)
-            .px(10.0)
+            .pl(12.0)
+            .pr(8.0)
             .gap(8.0)
             .items_center()
-            .bg(colors.warning.alpha(0.07))
+            .rounded(CARD_RADIUS)
+            .bg(colors.warning.alpha(0.09).over(colors.panel_background))
             .child(
                 label(format!(
                     "{count} {}",
@@ -1546,7 +1539,15 @@ impl TableItem {
             )
             .child(self.text_button(REVIEW, "Review SQL".into(), false))
             .child(self.text_button(DISCARD, "Discard".into(), false))
-            .child(self.keyed_button(APPLY, "Apply", "cmd-s", false))
+            .child(small_button(
+                APPLY,
+                None,
+                "Apply",
+                Some("cmd-s"),
+                ButtonKind::Primary,
+                true,
+                self.hovered,
+            ))
             .into()
     }
 
@@ -1556,7 +1557,8 @@ impl TableItem {
         div()
             .row()
             .h_px(SIDE_HEAD_H)
-            .px(10.0)
+            .pl(12.0)
+            .pr(8.0)
             .gap(8.0)
             .items_center()
             .child(segmented(
@@ -2174,59 +2176,92 @@ impl Item for TableItem {
         self.follow_selection();
         self.side_fits = body.w / scale >= SIDE_NEEDS;
         let side_open = self.view == View::Data && self.details && self.side_fits;
+        let width = body.w / scale;
         let side_w = if side_open {
-            (SIDE_W * scale).min(body.w * 0.5)
+            SIDE_W.min((width - 2.0 * CARD_INSET - CARD_GAP) * 0.5)
         } else {
             0.0
         };
-        let main = Rect::new(body.x, body.y, body.w - side_w, body.h, Rgba::TRANSPARENT);
-        let bottom_h = if self.edits.is_empty() {
-            STATUS_H
+        let pending_h = if self.edits.is_empty() {
+            0.0
         } else {
-            PENDING_H
+            PENDING_H + CARD_GAP
         };
         let querying = self.view == View::Data && !self.is_redis();
         let query_h = if querying {
-            Self::query_height(main.w / scale) + 1.0
+            Self::query_height(width)
         } else {
             0.0
         };
         self.grid.below_header = if querying { FILTER_H + 1.0 } else { 0.0 };
-        let above = TOOLBAR_H + 1.0 + query_h;
-        let middle_h = (main.h / scale - above - 1.0 - bottom_h).max(0.0);
-        let middle_area = Rect::new(
-            main.x,
-            main.y + above * scale,
-            main.w,
-            middle_h * scale,
-            Rgba::TRANSPARENT,
-        );
+        self.grid.header_fill = false;
+        let above = TOOLBAR_H + query_h;
+        let split_h = (body.h / scale - above - CARD_GAP - pending_h - STATUS_H).max(0.0);
+        let at = |x: f32, y: f32, w: f32, h: f32| {
+            Rect::new(
+                body.x + x * scale,
+                body.y + y * scale,
+                w * scale,
+                h * scale,
+                Rgba::TRANSPARENT,
+            )
+        };
+        let grid_w =
+            (width - 2.0 * CARD_INSET - if side_open { side_w + CARD_GAP } else { 0.0 }).max(0.0);
+        let middle_area = at(CARD_INSET, above, grid_w, split_h);
         let mut tree = div()
             .col()
-            .w_px(main.w / scale)
-            .h_px(main.h / scale)
+            .w_px(width)
+            .h_px(body.h / scale)
             .bg(colors.editor_background)
-            .child(self.toolbar(main.w / scale))
-            .child(div().h_px(1.0).bg(colors.border_variant));
+            .child(self.toolbar(width));
         if querying {
-            tree = tree
-                .child(self.query_bar(main.w / scale))
-                .child(div().h_px(1.0).bg(colors.border_variant));
+            tree = tree.child(self.query_bar(width));
         }
-        let middle: Node = match self.view {
+        tree = tree.child(
+            div()
+                .row()
+                .h_px(split_h + CARD_GAP)
+                .px(CARD_INSET)
+                .pb(CARD_GAP)
+                .child(
+                    div()
+                        .row()
+                        .w_px(grid_w)
+                        .h_px(split_h)
+                        .rounded(CARD_RADIUS)
+                        .bg(colors.panel_background),
+                ),
+        );
+        if !self.edits.is_empty() {
+            tree = tree.child(
+                div()
+                    .col()
+                    .h_px(pending_h)
+                    .px(CARD_INSET)
+                    .pb(CARD_GAP)
+                    .child(self.pending_bar()),
+            );
+        }
+        tree = tree.child(self.status_bar());
+        let tree: Node = tree.into();
+        let mut painted = ui::render(&tree, body);
+        let middle: Option<ui::Painted> = match self.view {
             View::Data if self.grid.columns().is_empty() => {
                 let text = if self.loading.busy() {
                     "Loading..."
                 } else {
                     "No rows"
                 };
-                div()
-                    .row()
-                    .h_px(middle_h)
-                    .justify_center()
-                    .pt(24.0)
-                    .child(label(text).color(colors.text_muted))
-                    .into()
+                Some(ui::render(
+                    &div()
+                        .row()
+                        .justify_center()
+                        .pt(24.0)
+                        .child(label(text).color(colors.text_muted))
+                        .into(),
+                    middle_area,
+                ))
             }
             View::Data => {
                 self.grid.set_area(middle_area);
@@ -2241,21 +2276,14 @@ impl Item for TableItem {
                     )
                 });
                 let grid = self.grid.render(middle_area, editor, filters);
-                div().col().h_px(middle_h).child(grid).into()
+                Some(ui::render(&grid, middle_area))
             }
-            View::Structure | View::Ddl => div().h_px(middle_h).into(),
+            View::Structure | View::Ddl => None,
         };
-        tree = tree
-            .child(middle)
-            .child(div().h_px(1.0).bg(colors.border_variant));
-        tree = tree.child(if self.edits.is_empty() {
-            self.status_bar()
-        } else {
-            self.pending_bar()
-        });
-        let tree: Node = tree.into();
-        let mut painted = ui::render(&tree, main);
-        details::clip_right(&mut painted, main.x + main.w);
+        if let Some(mut middle) = middle {
+            details::clip_right(&mut middle, middle_area.x + middle_area.w);
+            details::merge(&mut painted, middle);
+        }
         if self.view != View::Data {
             let content: Node = match (self.view, &self.structure, &self.ddl) {
                 (View::Structure, Some(structure), _) => {
@@ -2277,47 +2305,31 @@ impl Item for TableItem {
             details::merge(&mut painted, view);
         }
         if side_open {
-            let side = Rect::new(
-                body.x + body.w - side_w,
-                body.y,
-                side_w,
-                body.h,
-                Rgba::TRANSPARENT,
-            );
-            let rule = ui::render(
-                &div().bg(colors.border_variant).into(),
-                Rect::new(side.x, side.y, scale, side.h, Rgba::TRANSPARENT),
-            );
-            details::merge(&mut painted, rule);
+            let side = at(width - CARD_INSET - side_w, above, side_w, split_h);
             let background = ui::render(
-                &div().bg(colors.panel_background).into(),
-                Rect::new(
-                    side.x + scale,
-                    side.y,
-                    side.w - scale,
-                    side.h,
-                    Rgba::TRANSPARENT,
-                ),
+                &div()
+                    .rounded(CARD_RADIUS)
+                    .bg(colors.panel_background)
+                    .into(),
+                side,
             );
             details::merge(&mut painted, background);
             let head_h = SIDE_HEAD_H * scale;
             let head = ui::render(
-                &self.side_head(),
-                Rect::new(
-                    side.x + scale,
-                    side.y,
-                    side.w - scale,
-                    head_h,
-                    Rgba::TRANSPARENT,
-                ),
+                &div()
+                    .col()
+                    .child(self.side_head())
+                    .child(div().h_px(1.0).bg(colors.border_variant))
+                    .into(),
+                Rect::new(side.x, side.y, side.w, head_h + scale, Rgba::TRANSPARENT),
             );
             details::merge(&mut painted, head);
-            let content = self.side_content(side.w / scale - 1.0);
+            let content = self.side_content(side_w);
             let body_area = Rect::new(
-                side.x + scale,
-                side.y + head_h,
-                side.w - scale,
-                side.h - head_h,
+                side.x,
+                side.y + head_h + scale,
+                side.w,
+                side.h - head_h - scale,
                 Rgba::TRANSPARENT,
             );
             let mut content = self.side_pane.paint(&content, body_area);

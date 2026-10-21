@@ -62,7 +62,7 @@ fn progress_bar(progress: f32) -> Node {
         .w_px(46.0)
         .h_px(3.0)
         .rounded(2.0)
-        .bg(colors.border_variant)
+        .bg(colors.element_active)
         .child(
             div()
                 .flex(fill.max(0.0001))

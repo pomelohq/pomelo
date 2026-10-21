@@ -48,7 +48,11 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "system-notifications-toast" => (0, &[("NOTICE", "toast")]),
         "system-notifications-update" => (0, &[("NOTICE", "update-ready-button")]),
         "system-invalid-config" => (0, &[("NOTICE", "invalid-config")]),
-        "system-update-progress" => (0, &[("NOTICE", "update-downloading")]),
+        "system-update-states" => (0, &[("NOTICE", "update-states")]),
+        "data-table" => (0, &[("DATABASE", "board-table")]),
+        "data-keyspace" => (0, &[("DATABASE", "board-keyspace")]),
+        "data-bucket" => (0, &[("DATABASE", "board-bucket")]),
+        "data-failed" => (0, &[("DBFAILURE", "1")]),
         // The welcome page alone at the editor area's size, the pointer on New project; WELCOME=docker
         // has Docker stopped.
         "project-welcome" => (0, &[("WELCOME", "ok")]),
@@ -832,12 +836,17 @@ fn main() -> anyhow::Result<()> {
 
     if let Ok(which) = std::env::var("DATABASE") {
         use workspace::{Item, SidePanelView};
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
         let dir = std::env::temp_dir().join(format!("pom-snapshot-db-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
-        std::fs::write(
-            dir.join("pom.yml"),
-            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  queue:\n    image: rabbitmq:3\nrepos:\n  api:\n    databases:\n      dev: \"{{branch.safe}}\"\n      dev_tx: \"transaction_{{branch.safe}}\"\n      test: \"{{branch.safe}}_test\"\n    env:\n      REDIS_URL: \"{{shared.redis.url}}\"\n      S3_ENDPOINT: \"http://{{shared.files.host}}\"\n  web:\n    shared_services:\n      - redis\n    databases:\n      main: \"web_{{branch.safe}}\"\n",
-        )?;
+        let yaml = if which.starts_with("board-") {
+            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  storage:\n    image: minio/minio\nrepos:\n  api:\n    databases:\n      main: \"api_{{branch.safe}}\"\n    env:\n      REDIS_URL: \"{{shared.redis.url}}\"\n  web: {}\n  worker:\n    env:\n      REDIS_URL: \"{{shared.redis.url}}\"\n      S3_ENDPOINT: \"http://{{shared.storage.host}}\"\n"
+        } else {
+            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  queue:\n    image: rabbitmq:3\nrepos:\n  api:\n    databases:\n      dev: \"{{branch.safe}}\"\n      dev_tx: \"transaction_{{branch.safe}}\"\n      test: \"{{branch.safe}}_test\"\n    env:\n      REDIS_URL: \"{{shared.redis.url}}\"\n      S3_ENDPOINT: \"http://{{shared.files.host}}\"\n  web:\n    shared_services:\n      - redis\n    databases:\n      main: \"web_{{branch.safe}}\"\n"
+        };
+        std::fs::write(dir.join("pom.yml"), yaml)?;
         let config = std::sync::Arc::new(pom_config::Config::load(&dir.join("pom.yml"))?);
         let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
             pom_services::RunnerOptions {
@@ -868,7 +877,14 @@ fn main() -> anyhow::Result<()> {
                 count,
             }
         };
-        let (width, height) = if which == "failures" {
+        let scene_size = std::env::var("SCENESIZE").ok().and_then(|size| {
+            let (width, height) = size.split_once('x')?;
+            Some((width.parse::<f32>().ok()?, height.parse::<f32>().ok()?))
+        });
+        let (width, height) = if let (true, Some(size)) = (which.starts_with("board-"), scene_size)
+        {
+            size
+        } else if which == "failures" {
             (320.0_f32, 620.0_f32)
         } else if which == "panel" || which == "menu" {
             (300.0_f32, 1180.0_f32)
@@ -1233,6 +1249,245 @@ fn main() -> anyhow::Result<()> {
                 ),
             };
             item.show(keys, selected, value);
+            item.paint_body(body, true)
+                .ok_or_else(|| anyhow::anyhow!("no body"))?
+        } else if which == "board-bucket" {
+            let storage = databases
+                .iter()
+                .find(|db| db.engine == pom_db::Engine::Minio)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no object storage"))?;
+            let object =
+                |name: &str, size: u64, modified: &str| pom_db::object_storage::ObjectEntry {
+                    key: format!("avatars/{name}"),
+                    size,
+                    modified: modified.into(),
+                    etag: "9b2cf5e1a4d0".into(),
+                };
+            let mut item = database_ui::BucketItem::new(
+                database_ui::DatabaseContext {
+                    objects: std::sync::Arc::new(BoardAvatar),
+                    ..context
+                },
+                storage,
+                "uploads".into(),
+                "avatars/",
+                Some("avatars/b77e.png".into()),
+            );
+            let wait = |item: &mut database_ui::BucketItem| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while item.is_busy() && std::time::Instant::now() < deadline {
+                    item.tick(&|| None);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                item.tick(&|| None);
+            };
+            wait(&mut item);
+            item.show(
+                pom_db::object_storage::Listing {
+                    prefixes: Vec::new(),
+                    objects: vec![
+                        object("a1f3.png", 49_152, "2026-10-21T10:12:00.000Z"),
+                        object("b77e.png", 52_224, "2026-10-21T10:04:00.000Z"),
+                        object("c0d9.jpg", 217_088, "2026-10-20T16:40:00.000Z"),
+                        object("d4aa.png", 39_936, "2026-10-18T09:21:00.000Z"),
+                        object("e912.webp", 18_432, "2026-10-18T08:02:00.000Z"),
+                        object("f5c1.png", 45_056, "2026-10-16T14:55:00.000Z"),
+                    ],
+                    next: Some("more".into()),
+                },
+                Vec::new(),
+            );
+            wait(&mut item);
+            item.paint_body(body, true);
+            wait(&mut item);
+            let painted = item
+                .paint_body(body, true)
+                .ok_or_else(|| anyhow::anyhow!("no body"))?;
+            std::mem::forget(item);
+            painted
+        } else if which == "board-keyspace" {
+            let database = databases
+                .iter()
+                .find(|database| database.engine == pom_db::Engine::Redis)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no redis"))?;
+            let mut item = database_ui::KeyspaceItem::new(
+                context,
+                database,
+                table("", "session", pom_db::TableKind::Keyspace, Some(214)),
+            );
+            let hour = 3600;
+            let keys = [
+                ("4f2a9c", Some(23 * hour)),
+                ("8be310", Some(22 * hour)),
+                ("91c07d", Some(6 * hour)),
+                ("a3e55b", None),
+                ("c71f04", Some(41 * 60)),
+                ("d0b9e2", Some(18 * hour)),
+                ("e6a1f8", Some(3 * hour)),
+                ("f2c88a", Some(12 * hour)),
+            ]
+            .map(|(id, ttl)| pom_db::RedisKey {
+                key: format!("session:{id}"),
+                kind: "hash".into(),
+                ttl,
+            })
+            .to_vec();
+            item.show(
+                keys,
+                1,
+                pom_db::RedisValue::Hash(vec![
+                    ("user_id".into(), "2".into()),
+                    ("csrf".into(), "Yk3...9Qa".into()),
+                    ("return_to".into(), "/orders?page=2".into()),
+                    ("flash".into(), r#"{"notice":"Signed in"}"#.into()),
+                ]),
+            );
+            item.paint_body(body, true);
+            item.paint_body(body, true)
+                .ok_or_else(|| anyhow::anyhow!("no body"))?
+        } else if which == "board-table" {
+            let database = databases
+                .iter()
+                .find(|db| db.label == "main")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no main database"))?;
+            let mut item = database_ui::TableItem::new(
+                context,
+                database,
+                table("public", "users", pom_db::TableKind::Table, None),
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while item.is_busy() && std::time::Instant::now() < deadline {
+                item.tick(&|| None);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let people = [
+                (
+                    "dev",
+                    "Alex Dev",
+                    "admin",
+                    Some("2026-09-02 10:14:03"),
+                    r#"{"theme":"dark"}"#,
+                ),
+                (
+                    "sam",
+                    "Sam Lee",
+                    "member",
+                    Some("2026-09-03 08:41:55"),
+                    r#"{"digest":true}"#,
+                ),
+                (
+                    "kai",
+                    "Kai Moss",
+                    "member",
+                    None,
+                    r#"{"theme":"dark","digest":true,"beta":false}"#,
+                ),
+                (
+                    "rio",
+                    "Rio Park",
+                    "member",
+                    Some("2026-09-11 17:20:10"),
+                    r#"{"theme":"light"}"#,
+                ),
+                (
+                    "noa",
+                    "Noa Ruiz",
+                    "owner",
+                    Some("2026-09-12 09:02:44"),
+                    r#"{"digest":false}"#,
+                ),
+                (
+                    "lee",
+                    "Lee Chen",
+                    "member",
+                    Some("2026-09-14 13:37:21"),
+                    "{}",
+                ),
+                ("ash", "Ash Kim", "member", None, r#"{"beta":true}"#),
+                (
+                    "max",
+                    "Max Ode",
+                    "member",
+                    Some("2026-09-20 11:05:09"),
+                    "{}",
+                ),
+                (
+                    "ivy",
+                    "Ivy Tan",
+                    "member",
+                    Some("2026-09-21 16:48:30"),
+                    r#"{"theme":"dark"}"#,
+                ),
+                (
+                    "joe",
+                    "Joe Vale",
+                    "member",
+                    Some("2026-09-25 07:59:12"),
+                    "{}",
+                ),
+                (
+                    "uma",
+                    "Uma Roy",
+                    "admin",
+                    Some("2026-10-01 12:00:00"),
+                    r#"{"digest":true}"#,
+                ),
+                ("zed", "Zoe Hart", "member", None, "{}"),
+            ];
+            let rows = people
+                .iter()
+                .enumerate()
+                .map(|(index, (mail, name, role, confirmed, settings))| {
+                    vec![
+                        Some((index + 1).to_string()),
+                        Some(format!("{mail}@example.com")),
+                        Some(name.to_string()),
+                        Some(role.to_string()),
+                        confirmed.map(str::to_string),
+                        Some(settings.to_string()),
+                    ]
+                })
+                .collect();
+            let columns = ["id", "email", "name", "role", "confirmed_at", "settings"];
+            item.show_page(
+                pom_db::QueryResult {
+                    columns: columns.map(str::to_string).to_vec(),
+                    rows,
+                    ..pom_db::QueryResult::default()
+                },
+                Some(1284),
+            );
+            let types = [
+                "bigint",
+                "varchar",
+                "varchar",
+                "varchar",
+                "timestamp",
+                "jsonb",
+            ];
+            item.show_structure(pom_db::TableStructure {
+                columns: columns
+                    .iter()
+                    .zip(types)
+                    .map(|(name, data_type)| pom_db::ColumnInfo {
+                        name: name.to_string(),
+                        data_type: data_type.into(),
+                        nullable: *name != "id",
+                        default: None,
+                        primary_key: *name == "id",
+                        references: None,
+                    })
+                    .collect(),
+                indexes: Vec::new(),
+                referenced_by: Vec::new(),
+            });
+            item.edit_cell(1, 3, Some("admin"));
+            item.paint_body(body, true);
+            item.select_cell(2, 5);
+            item.paint_body(body, true);
             item.paint_body(body, true)
                 .ok_or_else(|| anyhow::anyhow!("no body"))?
         } else {
@@ -2246,6 +2501,42 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if std::env::var_os("DBFAILURE").is_some() {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let node = ui::div()
+            .p(8.0)
+            .child(database_ui::missing_database_preview(
+                lw - 16.0,
+                "myproject_api_feat-login",
+                "api",
+            ))
+            .into();
+        let painted = ui::render(
+            &node,
+            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        r.render_frame(
+            ui::theme().panel_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(which) = std::env::var("NOTICE") {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
@@ -2270,17 +2561,6 @@ fn main() -> anyhow::Result<()> {
                     .0,
                 colors.editor_background,
             ),
-            "update-downloading" => (
-                workspace::update_button(
-                    &update(
-                        "Downloading 0.7.4",
-                        workspace::UpdateTone::Normal,
-                        Some(0.45),
-                    ),
-                    None,
-                ),
-                colors.title_bar_background,
-            ),
             "update-ready-button" => (
                 workspace::update_button(
                     &update("Restart to Update", workspace::UpdateTone::Ready, None),
@@ -2288,6 +2568,63 @@ fn main() -> anyhow::Result<()> {
                 ),
                 colors.title_bar_background,
             ),
+            "update-states" => {
+                let states = [
+                    (
+                        "Checking for updates...",
+                        ui::IconKind::LoadCircle,
+                        workspace::UpdateTone::Normal,
+                        None,
+                        false,
+                    ),
+                    (
+                        "Downloading 0.7.4",
+                        ui::IconKind::Download,
+                        workspace::UpdateTone::Normal,
+                        Some(0.45),
+                        false,
+                    ),
+                    (
+                        "Verifying 0.7.4...",
+                        ui::IconKind::LoadCircle,
+                        workspace::UpdateTone::Normal,
+                        None,
+                        false,
+                    ),
+                    (
+                        "Restart to Update",
+                        ui::IconKind::RotateCw,
+                        workspace::UpdateTone::Ready,
+                        None,
+                        true,
+                    ),
+                    (
+                        "Update failed",
+                        ui::IconKind::Warning,
+                        workspace::UpdateTone::Warning,
+                        None,
+                        true,
+                    ),
+                ];
+                let mut sheet = ui::div().col().gap(8.0);
+                for (label, icon, tone, progress, dismissable) in states {
+                    let button = workspace::UpdateButton {
+                        label: label.into(),
+                        icon,
+                        progress,
+                        tooltip: None,
+                        tone,
+                        dismissable,
+                        click: None,
+                    };
+                    sheet = sheet.child(
+                        ui::div()
+                            .row()
+                            .child(workspace::update_button(&button, None)),
+                    );
+                }
+                (sheet.into(), colors.title_bar_background)
+            }
             name => (
                 workspace::notification_preview(name)
                     .ok_or_else(|| anyhow::anyhow!("unknown notice {name}"))?
@@ -2298,7 +2635,7 @@ fn main() -> anyhow::Result<()> {
         // The board frames a toast or the update button with 8px of what lies under it.
         let frame = if matches!(
             which.as_str(),
-            "toast" | "update-downloading" | "update-ready-button"
+            "toast" | "update-ready-button" | "update-states"
         ) {
             8.0
         } else {
@@ -3939,6 +4276,52 @@ impl workspace::Item for SampleTab {
 
 /// Canned object storage answers for the Database snapshots.
 struct SnapshotStorage;
+
+struct BoardAvatar;
+
+impl pom_db::object_storage::HttpTransport for BoardAvatar {
+    fn send(
+        &self,
+        _request: &pom_db::object_storage::HttpRequest,
+    ) -> Result<pom_db::object_storage::HttpResponse, String> {
+        let side = 256_u32;
+        let accent = ui::theme().accent_fill;
+        let mut pixels = Vec::with_capacity((side * side * 4) as usize);
+        let center = side as f32 / 2.0;
+        for y in 0..side {
+            for x in 0..side {
+                let distance =
+                    ((x as f32 + 0.5 - center).powi(2) + (y as f32 + 0.5 - center).powi(2)).sqrt();
+                let coverage = (center - distance).clamp(0.0, 1.0);
+                pixels.extend_from_slice(&[
+                    (accent.r * 255.0) as u8,
+                    (accent.g * 255.0) as u8,
+                    (accent.b * 255.0) as u8,
+                    (coverage * 255.0) as u8,
+                ]);
+            }
+        }
+        let mut body = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut body, side, side);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+            writer
+                .write_image_data(&pixels)
+                .map_err(|error| error.to_string())?;
+        }
+        body.resize(body.len().max(52_224), 0);
+        Ok(pom_db::object_storage::HttpResponse {
+            status: 200,
+            headers: vec![
+                ("Content-Type".into(), "image/png".into()),
+                ("Content-Length".into(), body.len().to_string()),
+            ],
+            body,
+        })
+    }
+}
 
 impl pom_db::object_storage::HttpTransport for SnapshotStorage {
     fn send(

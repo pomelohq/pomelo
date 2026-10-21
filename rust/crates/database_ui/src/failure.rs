@@ -1,5 +1,6 @@
 use pom_db::{ConnectError, ConnectErrorKind, Engine};
-use ui::{button, div, icon, label, measure, theme, ButtonStyle, IconKind, Node, Rgba};
+use ui::{div, icon, label, measure, theme, IconKind, Node, Rgba};
+use workspace::{small_button, ButtonKind};
 
 const PAD: f32 = 10.0;
 const GAP: f32 = 6.0;
@@ -349,22 +350,23 @@ impl Failure {
                     .into_iter()
                     .enumerate()
                     .map(|(index, action)| {
-                        let style = if index == 0 {
-                            ButtonStyle::TintedAccent
+                        let kind = if index == 0 {
+                            ButtonKind::Primary
                         } else {
-                            ButtonStyle::Outlined
+                            ButtonKind::Secondary
                         };
-                        button(id(action), action.label(), style).into()
+                        small_button(id(action), None, action.label(), None, kind, true, hover)
                     })
                     .collect();
-                buttons.push(
-                    button(
-                        id(FailureAction::FixWithAgent),
-                        "Fix with Claude",
-                        ButtonStyle::Outlined,
-                    )
-                    .into(),
-                );
+                buttons.push(small_button(
+                    id(FailureAction::FixWithAgent),
+                    Some(IconKind::Sparkle),
+                    "Fix with Claude",
+                    None,
+                    ButtonKind::Ghost,
+                    true,
+                    hover,
+                ));
                 for line in pack(buttons, inner, GAP) {
                     block = block.child(line);
                 }
