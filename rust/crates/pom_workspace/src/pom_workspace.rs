@@ -10,7 +10,6 @@ mod prepare;
 mod repo_branch;
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::Mutex;
 
 use pom_config::Config;
@@ -317,9 +316,8 @@ impl Run<'_> {
 /// Runs a shell command in `cwd` with the tool PATH and `env`; on failure, the tail of its output.
 /// `node --version` as the workspace's login shell resolves it (nvm, volta, asdf...).
 pub fn node_version(cwd: &Path, env: &[(String, String)]) -> Option<String> {
-    let output = Command::new("zsh")
-        .arg("-lc")
-        .arg("node --version")
+    let output = pom_shell::Shell::user()
+        .login_command("node --version")
         .current_dir(cwd)
         .env("PATH", pom_services::tool_path())
         .envs(
@@ -340,9 +338,13 @@ pub fn run_shell(
     cwd: &Path,
     env: &[(String, String)],
 ) -> Result<(), String> {
-    let output = Command::new("zsh")
-        .arg(if login { "-lc" } else { "-c" })
-        .arg(command)
+    let shell = pom_shell::Shell::user();
+    let mut shell_command = if login {
+        shell.login_command(command)
+    } else {
+        shell.script_command(command)
+    };
+    let output = shell_command
         .current_dir(cwd)
         .env("PATH", pom_services::tool_path())
         .envs(

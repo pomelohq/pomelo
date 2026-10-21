@@ -12,6 +12,8 @@ struct Fixture {
     temp: tempfile::TempDir,
     runner: ServiceRunner,
     config: Config,
+    // Leasing a shared port probes it by binding; tests probing 5432 at once would push each other off it.
+    _one_at_a_time: std::sync::MutexGuard<'static, ()>,
 }
 
 const CONFIG: &str = r#"session: demo
@@ -56,7 +58,11 @@ impl Fixture {
             binary: PathBuf::from("/nonexistent"),
             docker,
         });
+        static PROBING_PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
         Fixture {
+            _one_at_a_time: PROBING_PORTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             temp,
             runner,
             config,

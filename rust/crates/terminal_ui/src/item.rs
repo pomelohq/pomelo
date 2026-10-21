@@ -229,7 +229,9 @@ impl TerminalItem {
         waker: Waker,
     ) -> anyhow::Result<Self> {
         let mut argv = argv.into_iter();
-        let program = argv.next().unwrap_or_else(|| "zsh".to_string());
+        let program = argv
+            .next()
+            .unwrap_or_else(|| pom_shell::Shell::user().program().to_string());
         let lease_bar = crate::lease_bar::LeaseBar::new(
             &holder.name,
             pom_paths::StateDir::from_env(),

@@ -2,7 +2,6 @@
 //! ones that moved, so new workspaces start from current code and data.
 
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use pom_config::Config;
@@ -126,8 +125,8 @@ fn migrate(
     let env = context.runner.workspace_env(context.config, branch);
     env.write_env_files()
         .map_err(|error| format!("write env files: {error}"))?;
-    let mut child = Command::new("zsh")
-        .args(["-lc", command])
+    let mut child = pom_shell::Shell::user()
+        .login_command(command)
         .current_dir(worktree)
         .env("PATH", pom_services::tool_path())
         .envs(env.repo_env(repo))

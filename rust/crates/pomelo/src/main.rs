@@ -953,14 +953,10 @@ impl App {
                     pom_env::branch_safe(&branch)
                 ),
                 cwd: cwd.clone(),
-                argv: vec![
-                    "zsh".into(),
-                    "-lc".into(),
-                    format!(
-                        "export PATH='{}'; exec {command}",
-                        pom_services::tool_path().replace('\'', r"'\''")
-                    ),
-                ],
+                argv: pom_shell::Shell::user().login_argv(&format!(
+                    "export PATH='{}'; exec {command}",
+                    pom_services::tool_path().replace('\'', r"'\''")
+                )),
                 title: name,
             }
         };

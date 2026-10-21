@@ -256,7 +256,7 @@ pub fn side_launch(
         launch: AgentLaunch {
             holder,
             cwd: context.cwd.to_path_buf(),
-            argv: vec!["zsh".into(), "-c".into(), script],
+            argv: pom_shell::Shell::user().script_argv(&script),
             title: role.title().into(),
         },
         session,
@@ -506,7 +506,7 @@ pub fn side_resume(
     AgentLaunch {
         holder: record.holder.clone(),
         cwd: context.cwd.to_path_buf(),
-        argv: vec!["zsh".into(), "-c".into(), script],
+        argv: pom_shell::Shell::user().script_argv(&script),
         title: record.title.clone(),
     }
 }
@@ -554,7 +554,7 @@ pub fn second_opinion_launch(
             context.branch.replace('/', "_")
         ),
         cwd: context.cwd.to_path_buf(),
-        argv: vec!["zsh".into(), "-c".into(), script],
+        argv: pom_shell::Shell::user().script_argv(&script),
         title: format!("Second opinion ({cli})"),
     }
 }

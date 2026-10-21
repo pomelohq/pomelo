@@ -2564,6 +2564,7 @@ name = "lsp"
 version = "0.9.2"
 dependencies = [
  "lsp-types",
+ "pom_shell",
  "pomelo-editor",
  "ropey",
  "serde",
@@ -3546,6 +3547,7 @@ dependencies = [
  "pom_env",
  "pom_paths",
  "pom_ptyhost",
+ "pom_shell",
  "serde",
  "serde_json",
  "sha1",
@@ -3588,6 +3590,7 @@ dependencies = [
  "pom_secrets",
  "pom_services",
  "pom_sessions",
+ "pom_shell",
  "pom_workspace",
  "serde_json",
  "tempfile",
@@ -3735,6 +3738,7 @@ dependencies = [
  "pom_ptyhost",
  "pom_secrets",
  "pom_services",
+ "pom_shell",
  "pom_workspace",
  "serde",
  "serde_json",
@@ -3816,6 +3820,7 @@ dependencies = [
  "pom_ports",
  "pom_ptyhost",
  "pom_secrets",
+ "pom_shell",
  "serde",
  "serde_json",
  "tempfile",
@@ -3834,6 +3839,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pom_shell"
+version = "0.9.0"
+dependencies = [
+ "libc",
+ "workspace_hack",
+]
+
+[[package]]
 name = "pom_sync"
 version = "0.9.2"
 dependencies = [
@@ -3844,6 +3857,7 @@ dependencies = [
  "pom_paths",
  "pom_ptyhost",
  "pom_services",
+ "pom_shell",
  "serde_json",
  "tempfile",
  "workspace_hack",
@@ -3861,6 +3875,7 @@ dependencies = [
  "pom_paths",
  "pom_ptyhost",
  "pom_services",
+ "pom_shell",
  "serde",
  "serde_json",
  "tempfile",
@@ -3910,6 +3925,7 @@ dependencies = [
  "pom_ptyhost",
  "pom_secrets",
  "pom_services",
+ "pom_shell",
  "pom_workspace",
  "pomelo-editor",
  "pull_request_ui",
@@ -4658,6 +4674,7 @@ dependencies = [
  "pom_paths",
  "pom_ptyhost",
  "pom_services",
+ "pom_shell",
  "tempfile",
  "terminal",
  "terminal_ui",
@@ -5074,6 +5091,7 @@ dependencies = [
  "anyhow",
  "libc",
  "pom_ptyhost",
+ "pom_shell",
  "regex",
  "sysinfo",
  "tempfile",
@@ -5089,6 +5107,7 @@ dependencies = [
  "pom_agent",
  "pom_paths",
  "pom_ptyhost",
+ "pom_shell",
  "pomelo-editor",
  "regex",
  "serde_json",

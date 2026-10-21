@@ -9,6 +9,7 @@ description = "Language server client: runs servers over stdio, keeps open docum
 path = "src/lsp.rs"
 
 [dependencies]
+pom_shell = { path = "../pom_shell" }
 editor = { package = "pomelo-editor", path = "../editor" }
 lsp-types = "0.95.1"
 ropey.workspace = true

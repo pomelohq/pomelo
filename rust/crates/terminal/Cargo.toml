@@ -9,6 +9,7 @@ description = "Terminal core: a shell on a PTY feeding a VT emulator, with input
 path = "src/terminal.rs"
 
 [dependencies]
+pom_shell = { path = "../pom_shell" }
 alacritty_terminal = "0.26.0"
 anyhow.workspace = true
 libc = "0.2"

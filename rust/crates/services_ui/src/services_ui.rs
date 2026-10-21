@@ -2106,7 +2106,7 @@ impl ServicesPanel {
         self.requests.push(PanelRequest::RunCommand {
             title: format!("{}: {}", command.repo, command.label),
             cwd: worktree,
-            argv: vec!["zsh".into(), "-lc".into(), script],
+            argv: pom_shell::Shell::user().login_argv(&script),
             env: Vec::new(),
         });
     }

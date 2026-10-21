@@ -9,6 +9,7 @@ description = "Coding agents in workspaces: registering pom's MCP server and hoo
 path = "src/pom_agent.rs"
 
 [dependencies]
+pom_shell = { path = "../pom_shell" }
 libc = "0.2"
 pom_config = { path = "../pom_config" }
 pom_env = { path = "../pom_env" }

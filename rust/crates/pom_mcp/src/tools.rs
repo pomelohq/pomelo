@@ -3,7 +3,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -446,8 +446,8 @@ fn run_captured(
 
     let (mut reader, writer) = std::io::pipe().map_err(|error| error.to_string())?;
     let errors = writer.try_clone().map_err(|error| error.to_string())?;
-    let mut child = Command::new("zsh")
-        .args(["-lc", command])
+    let mut child = pom_shell::Shell::user()
+        .login_command(command)
         .current_dir(dir)
         .env("PATH", pom_services::tool_path())
         .envs(env)

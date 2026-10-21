@@ -453,8 +453,9 @@ fn offers_services_and_repo_commands_in_the_palette_and_the_repo_menu() {
     };
     assert_eq!(title, "api: Run migrations");
     assert!(cwd.ends_with("workspace--feat/api"));
+    let script = argv.last().map(String::as_str).unwrap_or_default();
     assert!(
-        argv[2].contains("echo migrated") && argv[2].contains("export PATH="),
+        script.contains("echo migrated") && script.contains("export PATH="),
         "{argv:?}"
     );
 
