@@ -1118,6 +1118,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
+name = "desktop"
+version = "0.9.2"
+dependencies = [
+ "workspace_hack",
+]
+
+[[package]]
 name = "dev_services_ui"
 version = "0.9.2"
 dependencies = [
@@ -1386,6 +1393,7 @@ dependencies = [
 name = "files_ui"
 version = "0.9.2"
 dependencies = [
+ "desktop",
  "files",
  "git",
  "grammars",
@@ -2322,6 +2330,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 name = "jira_ui"
 version = "0.9.2"
 dependencies = [
+ "desktop",
  "markdown",
  "pom_jira",
  "pom_paths",
@@ -3870,6 +3879,7 @@ dependencies = [
  "auto_update_ui",
  "block2 0.5.1",
  "database_ui",
+ "desktop",
  "dev_services_ui",
  "environment_ui",
  "files_ui",
@@ -4079,6 +4089,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 name = "pull_request_ui"
 version = "0.9.2"
 dependencies = [
+ "desktop",
  "git",
  "markdown",
  "pom_forge",
@@ -6957,6 +6968,7 @@ name = "workspace"
 version = "0.9.2"
 dependencies = [
  "arboard",
+ "desktop",
  "image",
  "pom_paths",
  "pomelo-editor",

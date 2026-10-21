@@ -3974,7 +3974,7 @@ pub fn session_action_tooltip(id: u64) -> Option<&'static str> {
     } else if (SESSION_OPENTHIS_BASE..SESSION_OPENTHIS_BASE + 100).contains(&id) {
         Some("Open in This Window")
     } else if (SESSION_REVEAL_BASE..SESSION_REVEAL_BASE + 100).contains(&id) {
-        Some("Reveal in Finder")
+        Some(desktop::REVEAL_LABEL)
     } else if (SESSION_DELETE_BASE..SESSION_DELETE_BASE + 100).contains(&id) {
         Some("Remove from List")
     } else {

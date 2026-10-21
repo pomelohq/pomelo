@@ -87,7 +87,8 @@ fn a_holder_survives_detach_and_replays_to_the_next_client() {
     holders.spawn("appsh-demo-1", &["cat"]);
     let mut first = holders.attach("appsh-demo-1", 0);
     first.connection.input(b"hello-A\n").expect("input");
-    read_until(&mut first, "hello-A");
+    // The terminal's echo comes before cat's copy; both must be in before the offset below is taken.
+    read_until(&mut first, "hello-A\r\nhello-A");
     drop(first);
 
     assert!(

@@ -3215,7 +3215,7 @@ impl WorkspaceView {
             }
             items.push(entry(
                 crate::MENU_TAB_REVEAL,
-                "Reveal in Finder",
+                desktop::REVEAL_LABEL,
                 true,
                 false,
             ));
@@ -3305,12 +3305,8 @@ impl WorkspaceView {
                 }
             }
             crate::MENU_TAB_REVEAL => {
-                if let Err(error) = std::process::Command::new("open")
-                    .arg("-R")
-                    .arg(&path)
-                    .spawn()
-                {
-                    eprintln!("reveal in Finder: {error}");
+                if let Err(error) = desktop::reveal(&path) {
+                    eprintln!("reveal in file manager: {error}");
                 }
             }
             crate::MENU_TAB_REVEAL_IN_TREE => {
@@ -3526,7 +3522,7 @@ impl WorkspaceView {
             let mut items = vec![
                 item(MENU_TREE_NEW_FILE, "New File", false),
                 item(MENU_TREE_NEW_DIR, "New Folder", false),
-                item(MENU_REVEAL, "Reveal in Finder", true),
+                item(MENU_REVEAL, desktop::REVEAL_LABEL, true),
                 item(MENU_TREE_OPEN_SYSTEM, "Open in Default App", false),
                 item(crate::MENU_TREE_OPEN_TERMINAL, "Open in Terminal", false),
                 item(MENU_TREE_CUT, "Cut", true),
@@ -3575,7 +3571,7 @@ impl WorkspaceView {
                 item(MENU_EDIT_COPY, "Copy", false),
                 item(MENU_EDIT_COPY_TRIM, "Copy and Trim", false),
                 item(MENU_EDIT_PASTE, "Paste", false),
-                item(MENU_EDIT_REVEAL, "Reveal in Finder", true),
+                item(MENU_EDIT_REVEAL, desktop::REVEAL_LABEL, true),
                 item(crate::MENU_EDIT_OPEN_TERMINAL, "Open in Terminal", false),
             ]
             .into_iter()
@@ -3902,7 +3898,7 @@ impl WorkspaceView {
                 }
             }
             crate::PanelRequest::OpenUrl(url) => {
-                if let Err(error) = std::process::Command::new("open").arg(&url).spawn() {
+                if let Err(error) = desktop::open(&url) {
                     self.show_toast(format!("Failed to open {url}: {error}"), None);
                 }
             }
@@ -4570,7 +4566,9 @@ impl WorkspaceView {
                 }
                 MENU_REVEAL => {
                     if let Some(p) = abs {
-                        let _ = std::process::Command::new("open").arg("-R").arg(p).spawn();
+                        if let Err(error) = desktop::reveal(p) {
+                            eprintln!("reveal in file manager: {error}");
+                        }
                     }
                 }
                 _ => {}
@@ -4640,12 +4638,8 @@ impl WorkspaceView {
                 MENU_EDIT_REVEAL => {
                     let path = self.active_file_in(group);
                     if let Some(path) = path {
-                        if let Err(error) = std::process::Command::new("open")
-                            .arg("-R")
-                            .arg(path)
-                            .spawn()
-                        {
-                            eprintln!("reveal in Finder: {error}");
+                        if let Err(error) = desktop::reveal(&path) {
+                            eprintln!("reveal in file manager: {error}");
                         }
                     }
                 }
@@ -7079,7 +7073,7 @@ impl WorkspaceView {
     fn open_terminal_target(&mut self, target: crate::TerminalOpenTarget) {
         match target {
             crate::TerminalOpenTarget::Url(url) => {
-                if let Err(error) = std::process::Command::new("open").arg(&url).spawn() {
+                if let Err(error) = desktop::open(&url) {
                     self.show_toast(format!("Failed to open {url}: {error}"), None);
                 }
             }

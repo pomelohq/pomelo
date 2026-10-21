@@ -41,7 +41,8 @@ pub fn spawn(
             &mut slave_fd,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            // macOS takes the size as `*mut`, Linux as `*const`; `as _` fits either.
+            &raw mut size as _,
         )
     };
     if result != 0 {

@@ -151,13 +151,16 @@ mod live_tests {
         std::thread::sleep(Duration::from_millis(300));
         std::fs::create_dir_all(temp.path().join("src"))?;
         std::fs::write(temp.path().join("src/new.rs"), "x")?;
+        // inotify watches a new folder only once it exists, so a file made right away may come as its folder.
+        let reported =
+            |path: &String| path == "src/new.rs" || (cfg!(target_os = "linux") && path == "src");
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut seen = Vec::new();
-        while Instant::now() < deadline && !seen.iter().any(|path: &String| path == "src/new.rs") {
+        while Instant::now() < deadline && !seen.iter().any(reported) {
             seen.extend(watcher.take_changes());
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(seen.iter().any(|path| path == "src/new.rs"), "{seen:?}");
+        assert!(seen.iter().any(reported), "{seen:?}");
         Ok(())
     }
 }

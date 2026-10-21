@@ -240,10 +240,7 @@ impl FilesView {
                 }
             }
             TreeAction::OpenWithSystem => {
-                if let Err(error) = std::process::Command::new("open")
-                    .arg(self.root.join(&target))
-                    .spawn()
-                {
+                if let Err(error) = desktop::open(self.root.join(&target)) {
                     self.tree_ops.toast = Some(format!("Failed to open {target}: {error}"));
                 }
             }

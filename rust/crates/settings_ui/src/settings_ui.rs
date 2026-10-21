@@ -5064,8 +5064,13 @@ mod tests {
         let terminal = texts_of(TERMINAL, &state, &settings);
         assert!(terminal.iter().any(|t| t.text == "10000"));
         let keymap = texts_of(KEYMAP, &state, &settings);
+        let drawn = if cfg!(target_os = "macos") {
+            "G"
+        } else {
+            "Ctrl+Shift+G"
+        };
         assert!(
-            keymap.iter().any(|t| t.text == "G")
+            keymap.iter().any(|t| t.text == drawn)
                 && !keymap.iter().any(|t| t.text == "ctrl-shift-g"),
             "a binding is drawn as key glyphs, not its text"
         );

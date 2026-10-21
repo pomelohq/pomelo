@@ -184,7 +184,7 @@ impl PrItem {
         if url.is_empty() {
             return;
         }
-        if let Err(error) = std::process::Command::new("open").arg(url).spawn() {
+        if let Err(error) = desktop::open(url) {
             self.error = Some(format!("Failed to open {url}: {error}"));
         }
     }

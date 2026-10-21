@@ -125,7 +125,7 @@ impl MarkdownPreview {
                 .to_string_lossy()
                 .into_owned()
         };
-        if let Err(error) = std::process::Command::new("open").arg(&target).spawn() {
+        if let Err(error) = desktop::open(&target) {
             self.error = Some(format!("Failed to open {target}: {error}"));
         }
     }

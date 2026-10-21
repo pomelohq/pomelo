@@ -202,7 +202,7 @@ fn write_release_notes(version: &str, body: &str) -> Result<std::path::PathBuf, 
 }
 
 fn open_url(url: &str) {
-    if let Err(error) = std::process::Command::new("/usr/bin/open").arg(url).spawn() {
+    if let Err(error) = desktop::open(url) {
         eprintln!("[update] open {url}: {error}");
     }
 }
